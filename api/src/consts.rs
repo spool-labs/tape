@@ -1,11 +1,10 @@
-use array_const_fn_init::array_const_fn_init;
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 
 pub const ARCHIVE: &[u8]                   = b"archive";
 pub const EPOCH: &[u8]                     = b"epoch";
+pub const BLOCK: &[u8]                     = b"block";
 pub const TREASURY: &[u8]                  = b"treasury";
-pub const SPOOL: &[u8]                     = b"spool";
 pub const TAPE: &[u8]                      = b"tape";
 pub const WRITER: &[u8]                    = b"writer";
 pub const MINER: &[u8]                     = b"miner";
@@ -24,7 +23,6 @@ pub const PROOF_LEN: usize                 = TREE_HEIGHT;
 pub const SEGMENT_SIZE: usize              = 128; // Bytes (chosen to fit recall proofs comfortably)
 pub const MAX_TAPE_SIZE: usize             = 2_usize.pow(TREE_HEIGHT as u32) * SEGMENT_SIZE; // 32MB
 
-pub const SPOOL_COUNT: usize               = 8;
 pub const NAME_LEN: usize                  = 32;  // Bytes
 pub const HEADER_SIZE: usize               = 128; // Bytes
 
@@ -32,11 +30,32 @@ pub const TOKEN_DECIMALS: u8               = 10;
 pub const ONE_TAPE: u64                    = 10u64.pow(TOKEN_DECIMALS as u32);
 pub const MAX_SUPPLY: u64                  = 7_000_000 * ONE_TAPE;
 
-pub const ONE_SECOND: i64                  = 1;
-pub const ONE_MINUTE: i64                  = 60 * ONE_SECOND;
-pub const EPOCH_DURATION_MINUTES: i64      = 15;
-pub const EPOCH_SECONDS: i64               = EPOCH_DURATION_MINUTES * ONE_MINUTE;
-pub const GRACE_PERIOD_SECONDS: i64        = 15 * ONE_SECOND;
+pub const ONE_SECOND: u64                  = 1;
+pub const ONE_MINUTE: u64                  = 60 * ONE_SECOND;
+
+pub const MINUTES_PER_HOUR: u64            = 60;
+pub const HOURS_PER_DAY: u64               = 24;
+pub const DAYS_PER_YEAR: u64               = 365;
+pub const TIME_HORIZON_YEARS: u64          = 100;
+pub const TIME_HORIZON_MINUTES: u64        = TIME_HORIZON_YEARS * (DAYS_PER_YEAR * HOURS_PER_DAY * MINUTES_PER_HOUR);
+
+// Binary megabyte (MiB)
+pub const BYTES_PER_MIB: u64               = 1 << 20; // 1,048,576 bytes
+
+// 1 TAPE ~= 1 MiB stored for 100 years
+pub const BYTES_PER_TAPE: u64              = BYTES_PER_MIB;
+
+pub const BLOCK_DURATION_SECONDS: u64      = ONE_MINUTE;
+pub const EPOCH_BLOCKS: u64                = 10;
+pub const EPOCHS_PER_YEAR: u64             = DAYS_PER_YEAR * HOURS_PER_DAY * MINUTES_PER_HOUR / 
+                                            (BLOCK_DURATION_SECONDS / ONE_MINUTE) / EPOCH_BLOCKS;
+
+pub const INITIAL_REWARD_RATE: u64         = ONE_TAPE;
+pub const MIN_DIFFICULTY: u64              = 7;
+pub const MIN_PARTICIPATION_TARGET: u64    = 1;
+pub const MAX_PARTICIPATION_TARGET: u64    = 100;
+pub const MIN_CONSISTENCY_MULTIPLIER: u64  = 1;
+pub const MAX_CONSISTENCY_MULTIPLIER: u64  = 32;
 
 // -- Const Addresses --
 // (There isn't a better way to do this yet; maybe a build.rs + include)
@@ -55,6 +74,12 @@ pub const EPOCH_ADDRESS: Pubkey =
 
 pub const EPOCH_BUMP: u8 =
     ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
+
+pub const BLOCK_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[BLOCK], &PROGRAM_ID).0);
+
+pub const BLOCK_BUMP: u8 =
+    ed25519::derive_program_address(&[BLOCK], &PROGRAM_ID).1;
 
 pub const MINT_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, &MINT_SEED], &PROGRAM_ID).0);
@@ -80,11 +105,3 @@ pub const TREASURY_ATA: Pubkey = Pubkey::new_from_array(
     .0,
 );
 
-pub const SPOOL_ADDRESSES: [Pubkey; SPOOL_COUNT] = 
-    array_const_fn_init![const_spool_address; 8];
-
-const fn const_spool_address(i: usize) -> Pubkey {
-    Pubkey::new_from_array(
-        ed25519::derive_program_address(&[SPOOL, &[i as u8]], &PROGRAM_ID).0
-    )
-}

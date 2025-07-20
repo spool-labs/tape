@@ -6,7 +6,6 @@ use crate::consts::*;
 pub enum InstructionType {
     Unknown = 0,
     Initialize,
-    Advance,
 
     // Tape instructions
     Create,
@@ -22,7 +21,6 @@ pub enum InstructionType {
 }
 
 instruction!(InstructionType, Initialize);
-instruction!(InstructionType, Advance);
 
 instruction!(InstructionType, Create);
 instruction!(InstructionType, Write);
@@ -38,10 +36,6 @@ instruction!(InstructionType, Claim);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Initialize {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Advance {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

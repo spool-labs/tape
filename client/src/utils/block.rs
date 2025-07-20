@@ -40,6 +40,13 @@ pub enum BlockError {
     InvalidPubkey,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct SegmentKey {
+    pub address: Pubkey,
+    pub segment_number: u64,
+    pub prev_slot: u64,
+}
+
 // Pulled out of logs
 #[derive(Debug)]
 pub enum TapeEvent {
@@ -71,8 +78,14 @@ pub struct TapeBlock {
 #[derive(Debug, Default)]
 pub struct ProcessedBlock {
     pub slot: u64,
-    pub tapes: HashMap<Pubkey, u64>,
-    pub writes: HashMap<(Pubkey, u64), Vec<u8>>,
+    pub finalized_tapes: HashMap<Pubkey, u64>,
+    pub segment_writes: HashMap<SegmentKey, Vec<u8>>,
+}
+
+#[derive(Debug, Default)]
+struct MergedTapeData {
+    finalized_tapes: HashMap<Pubkey, u64>,
+    segment_writes: HashMap<SegmentKey, Vec<u8>>,
 }
 
 pub fn process_block(block: UiConfirmedBlock, slot: u64) -> Result<ProcessedBlock, BlockError> {
@@ -83,29 +96,17 @@ pub fn process_block(block: UiConfirmedBlock, slot: u64) -> Result<ProcessedBloc
         process_transaction(&tx, &mut tape_block)?;
     }
 
-    let (num_writes, num_updates, num_finalize) = verify_counts(&tape_block)?;
-    let (tapes, writes) = merge_events_and_instructions(&tape_block)?;
-
-    if !(tapes.is_empty() && writes.is_empty()) {
-        println!(
-            "DEBUG: TapeBlock {}: {} write, {} update, {} finalize, {} tapes, {} writes",
-            slot,
-            num_writes,
-            num_updates,
-            num_finalize,
-            tapes.len(),
-            writes.len()
-        );
-    }
+    verify_counts(&tape_block)?;
+    let merged = merge_events_and_instructions(&tape_block)?;
 
     Ok(ProcessedBlock {
         slot,
-        tapes,
-        writes,
+        finalized_tapes: merged.finalized_tapes,
+        segment_writes: merged.segment_writes,
     })
 }
 
-fn verify_counts(tape_block: &TapeBlock) -> Result<(u64, u64, u64), BlockError> {
+fn verify_counts(tape_block: &TapeBlock) -> Result<(), BlockError> {
     let (mut write_events, mut update_events, mut finalize_events) = (0, 0, 0);
     for event in &tape_block.events {
         match event {
@@ -148,75 +149,113 @@ fn verify_counts(tape_block: &TapeBlock) -> Result<(u64, u64, u64), BlockError> 
         ));
     }
 
-    Ok((write_events, update_events, finalize_events))
+    Ok(())
 }
 
 fn merge_events_and_instructions(
     tape_block: &TapeBlock,
-) -> Result<(HashMap<Pubkey, u64>, HashMap<(Pubkey, u64), Vec<u8>>), BlockError> {
-    if tape_block.events.len() != tape_block.instructions.len() {
-        return Err(BlockError::CountMismatch("events and instructions"));
-    }
-
-    let mut tapes = HashMap::new();
-    let mut writes = HashMap::new();
+) -> Result<MergedTapeData, BlockError> {
+    let mut merged = MergedTapeData::default();
 
     // Iterate over events and instructions in parallel
     for (event, instruction) in tape_block.events.iter().zip(&tape_block.instructions) {
         match (event, instruction) {
             (TapeEvent::Write(write_event), TapeInstruction::Write { address, data }) => {
-                if write_event.address != address.to_bytes() {
-                    return Err(BlockError::InvalidData("Write event and instruction address mismatch"));
-                }
-
-                let base = write_event
-                    .num_total
-                    .saturating_sub(write_event.num_added);
-
-                // A single write instruction can contain multiple segments
-                let segments: Vec<&[u8]> = data.chunks(SEGMENT_SIZE).collect();
-
-                // Sanity check: number of chunks must match num_added
-                if segments.len() as u64 != write_event.num_added {
-                    return Err(BlockError::InvalidData("Segment count does not match num_added"));
-                }
-
-                for (i, segment) in segments.into_iter().enumerate() {
-                    let segment_number = base + i as u64;
-                    writes.insert((*address, segment_number), segment.to_vec());
-                }
+                merge_write(write_event, address, data, &mut merged)?;
             }
 
             (TapeEvent::Update(update_event), TapeInstruction::Update { address, segment_number, new_data, .. }) => {
-                if update_event.address != address.to_bytes() {
-                   return Err(BlockError::InvalidData("Update event/address mismatch"));
-                }
-
-                if update_event.segment_number != *segment_number {
-                    return Err(BlockError::InvalidData("Update event segment number mismatch"));
-                }
-
-                println!("DEBUG: updating segment {} of tape {}", segment_number, address);
-
-                // Record the “new_data”, effectively overwriting that segment:
-                writes.insert((*address, *segment_number), new_data.to_vec());
-
-                // (optional) verify old_data + proof
+                merge_update(update_event, address, *segment_number, new_data, &mut merged)?;
             }
 
             (TapeEvent::Finalize(finalize_event), TapeInstruction::Finalize { address }) => {
-                if finalize_event.address != address.to_bytes() {
-                    return Err(BlockError::InvalidData("Finalize event and instruction address mismatch"));
-                }
-
-                tapes.insert(*address, finalize_event.tape);
+                merge_finalize(finalize_event, address, &mut merged)?;
             }
 
             _ => return Err(BlockError::InvalidData("Event/instruction type mismatch")),
         }
     }
 
-    Ok((tapes, writes))
+    Ok(merged)
+}
+
+fn merge_write(
+    write_event: &WriteEvent,
+    address: &Pubkey,
+    data: &[u8],
+    merged: &mut MergedTapeData,
+) -> Result<(), BlockError> {
+    if write_event.address != address.to_bytes() {
+        return Err(BlockError::InvalidData("Write event and instruction address mismatch"));
+    }
+
+    let base = write_event
+        .num_total
+        .saturating_sub(write_event.num_added);
+
+    // A single write instruction can contain multiple segments
+    let segments: Vec<&[u8]> = data.chunks(SEGMENT_SIZE).collect();
+
+    // Sanity check: number of chunks must match num_added
+    if segments.len() as u64 != write_event.num_added {
+        return Err(BlockError::InvalidData("Segment count does not match num_added"));
+    }
+
+    for (i, segment) in segments.into_iter().enumerate() {
+        let segment_number = base + i as u64;
+
+        let key = SegmentKey {
+            address: *address,
+            segment_number,
+            prev_slot: write_event.prev_slot,
+        };
+        merged.segment_writes.insert(key, segment.to_vec());
+    }
+
+    Ok(())
+}
+
+fn merge_update(
+    update_event: &UpdateEvent,
+    address: &Pubkey,
+    segment_number: u64,
+    new_data: &[u8; SEGMENT_SIZE],
+    merged: &mut MergedTapeData,
+) -> Result<(), BlockError> {
+    if update_event.address != address.to_bytes() {
+       return Err(BlockError::InvalidData("Update event/address mismatch"));
+    }
+
+    if update_event.segment_number != segment_number {
+        return Err(BlockError::InvalidData("Update event segment number mismatch"));
+    }
+
+    let key = SegmentKey {
+        address: *address,
+        segment_number,
+        prev_slot: update_event.prev_slot,
+    };
+
+    // Record the “new_data”, effectively overwriting that segment
+    merged.segment_writes.insert(key, new_data.to_vec());
+
+    // (optional) verify old_data + proof
+
+    Ok(())
+}
+
+fn merge_finalize(
+    finalize_event: &FinalizeEvent,
+    address: &Pubkey,
+    merged: &mut MergedTapeData,
+) -> Result<(), BlockError> {
+    if finalize_event.address != address.to_bytes() {
+        return Err(BlockError::InvalidData("Finalize event and instruction address mismatch"));
+    }
+
+    merged.finalized_tapes.insert(*address, finalize_event.tape);
+
+    Ok(())
 }
 
 fn process_transaction(
@@ -224,7 +263,6 @@ fn process_transaction(
     tape_block: &mut TapeBlock,
 ) -> Result<(), BlockError> {
     if is_failed_transaction(tx) {
-        //println!("DEBUG: Skipping failed transaction");
         return Ok(());
     }
 
@@ -232,7 +270,6 @@ fn process_transaction(
     let ui_transaction = match encoded_tx {
         EncodedTransaction::Json(ui_tx) => ui_tx,
         _ => {
-            println!("DEBUG: Skipping non-JSON encoded transaction");
             return Ok(());
         }
     };
@@ -242,8 +279,6 @@ fn process_transaction(
             if let Some(meta) = &tx.meta {
                 if let OptionSerializer::Some(log_messages) = &meta.log_messages {
                     process_log_messages(log_messages, tape_block)?;
-                } else {
-                    println!("DEBUG: meta has no log messages");
                 }
             }
 
@@ -256,7 +291,6 @@ fn process_transaction(
             Ok(())
         }
         _ => {
-            println!("DEBUG: Skipping non-raw message");
             Ok(())
         }
     }
@@ -303,7 +337,7 @@ fn process_log_messages(
                         .map_err(|e| BlockError::Deserialization(e.to_string()))?;
                     events.push(TapeEvent::Finalize(*event));
                 }
-                _ => println!("DEBUG: Unknown event type"),
+                _ => {}
             }
         }
     }
@@ -319,7 +353,6 @@ fn process_top_level_instructions(
     for ix in instructions {
         let program_id_index = ix.program_id_index as usize;
         if program_id_index >= account_keys.len() {
-            //println!("DEBUG: Invalid program ID index");
             continue;
         }
 
@@ -343,12 +376,10 @@ fn process_inner_instructions(
     tape_block: &mut TapeBlock,
 ) -> Result<(), BlockError> {
     let Some(meta) = meta else {
-        //println!("DEBUG: No meta data found");
         return Ok(());
     };
 
     let OptionSerializer::Some(inner_instructions) = &meta.inner_instructions else {
-        //println!("DEBUG: No inner instructions found");
         return Ok(());
     };
 
@@ -357,7 +388,6 @@ fn process_inner_instructions(
             if let UiInstruction::Compiled(compiled_ix) = inner_ix {
                 let program_id_index = compiled_ix.program_id_index as usize;
                 if program_id_index >= account_keys.len() {
-                    //println!("DEBUG: Invalid program ID index in inner instruction");
                     continue;
                 }
 
@@ -370,8 +400,6 @@ fn process_inner_instructions(
                         tape_block.instructions.push(ix);
                     }
                 }
-            } else {
-                //println!("DEBUG: Skipping parsed inner instruction");
             }
         }
     }
@@ -401,7 +429,6 @@ fn process_instruction(
         .map_err(|_| BlockError::InvalidData("Invalid instruction data"))?;
 
     if ix_data.is_empty() {
-        println!("DEBUG: Empty instruction data");
         return Ok(None);
     }
 
@@ -411,7 +438,7 @@ fn process_instruction(
     match ix_type {
         InstructionType::Write => Ok(Some(TapeInstruction::Write {
             address: tape_address,
-            data: ix_data,
+            data: ix_data[1..].to_vec(),
         })),
         InstructionType::Update => {
             Update::try_from_bytes(&ix_data[1..])

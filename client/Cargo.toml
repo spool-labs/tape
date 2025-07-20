@@ -28,6 +28,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha3.workspace = true
 tokio.workspace = true
+thiserror.workspace = true
+log.workspace = true
 
 spl-token.workspace = true
 spl-associated-token-account.workspace = true

@@ -2,10 +2,11 @@ use tape_api::prelude::*;
 use steel::*;
 
 pub fn process_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let current_slot = Clock::get()?.slot;
     let [
         signer_info, 
         tape_info,
-        writer_info, 
+        writer_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -38,6 +39,11 @@ pub fn process_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         TapeError::UnexpectedState,
     )?;
 
+    check_condition(
+        tape.total_size as usize + data.len() <= MAX_TAPE_SIZE,
+        TapeError::TapeTooLong,
+    )?;
+
     // Convert the data to a canonical segments of data 
     // and write them to the Merkle tree (all segments are 
     // written as SEGMENT_SIZE bytes, no matter the size 
@@ -55,12 +61,16 @@ pub fn process_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         )?;
     }
 
+    let prev_slot = tape.tail_slot;
+
     tape.total_segments   += segment_count;
     tape.total_size       += data.len() as u64;
     tape.merkle_root       = writer.state.get_root().to_bytes();
     tape.state             = TapeState::Writing.into();
+    tape.tail_slot         = current_slot;
 
     WriteEvent {
+        prev_slot,
         num_added: segment_count,
         num_total: tape.total_segments,
         address: tape_address.to_bytes(),

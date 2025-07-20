@@ -17,6 +17,7 @@ pub enum EventType {
 pub struct WriteEvent {
     pub num_added: u64,
     pub num_total: u64,
+    pub prev_slot: u64,
     pub address: [u8; 32],
 }
 
@@ -24,6 +25,7 @@ pub struct WriteEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct UpdateEvent {
     pub segment_number: u64,
+    pub prev_slot: u64,
     pub address: [u8; 32],
 }
 

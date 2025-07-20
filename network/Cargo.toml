@@ -31,14 +31,24 @@ sha3.workspace = true
 tokio.workspace = true
 bytemuck.workspace = true
 rocksdb.workspace = true
+tempdir.workspace = true
 
 solana-client.workspace = true
 solana-sdk.workspace = true
 solana-transaction-status.workspace = true
 solana-account-decoder.workspace = true
 solana-transaction-status-client-types.workspace = true
-thiserror = "2.0.12"
+thiserror.workspace = true
+log.workspace = true
+
 axum = "0.8.4"
+num_cpus = "1.17.0"
+tar = "0.4.44"
 
 [dev-dependencies]
-tempdir = "0.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+
+[[bench]]
+name = "tape_store_bench"
+harness = false

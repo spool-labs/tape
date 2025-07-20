@@ -21,7 +21,6 @@ pub fn process_instruction(
     match ix {
         // Program instructions
         InstructionType::Initialize => process_initialize(accounts, data)?,
-        InstructionType::Advance => process_advance(accounts, data)?,
 
         // Tape instructions
         InstructionType::Create => process_create(accounts, data)?,

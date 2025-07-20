@@ -7,8 +7,8 @@ use brine_tree::MerkleTree;
 use steel::*;
 
 pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let current_slot = Clock::get()?.slot;
     let args = Create::try_from_bytes(data)?;
-
     let [
         signer_info, 
         tape_info,
@@ -79,6 +79,8 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
     tape.header            = args.header;
+    tape.first_slot        = current_slot; 
+    tape.tail_slot         = current_slot;
 
     writer.tape            = *tape_info.key;
     writer.state           = MerkleTree::new(&[empty_seed.as_ref()]);

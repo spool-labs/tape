@@ -1,8 +1,4 @@
 use tape_api::prelude::*;
-use solana_program::{
-    keccak::hashv, 
-    slot_hashes::SlotHash
-};
 use steel::*;
 
 pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -11,7 +7,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     let [
         signer_info,
         miner_info,
-        archive_info,
         system_program_info, 
         rent_info,
         slot_hashes_info
@@ -20,10 +15,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     };
 
     signer_info.is_signer()?;
-
-    let archive = archive_info
-        .is_archive()?
-        .as_account_mut::<Archive>(&tape_api::ID)?;
 
     let (miner_pda, _bump) = miner_pda(*signer_info.key, args.name);
 
@@ -51,41 +42,17 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     miner.name              = args.name;
 
     miner.multiplier        = 0;
-    miner.last_proof_hash   = [0; 32];
     miner.last_proof_at     = current_time;
     miner.total_proofs      = 0;
     miner.total_rewards     = 0;
     miner.unclaimed_rewards = 0;
 
-    let next_challenge = compute_challenge(
-        &miner.current_challenge,
+    let next_challenge = compute_next_challenge(
+        &miner_info.key.to_bytes(),
         slot_hashes_info
     );
 
-    let recall_tape_number = compute_recall_tape(
-        &next_challenge,
-        archive.tapes_stored
-    );
-
-    miner.current_challenge = next_challenge;
-    miner.recall_tape = recall_tape_number;
+    miner.challenge = next_challenge;
 
     Ok(())
-}
-
-// Helper: compute the next challenge.
-#[inline(always)]
-pub fn compute_challenge(
-    current_challenge: &[u8; 32],
-    slot_hashes_info: &AccountInfo,
-) -> [u8; 32] {
-    let slothash = &slot_hashes_info.data.borrow()
-        [0..core::mem::size_of::<SlotHash>()];
-
-    let next_challenge = hashv(&[
-        current_challenge,
-        slothash,
-    ]).0;
-
-    next_challenge
 }

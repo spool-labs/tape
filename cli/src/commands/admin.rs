@@ -27,13 +27,6 @@ pub async fn handle_admin_commands(cli: Cli, client: RpcClient, payer: Keypair) 
             log::print_divider();
         }
 
-        Commands::Epoch {} => {
-            let signature = tape_client::advance(&client, &payer).await?;
-            log::print_section_header("Epoch Advanced");
-            log::print_message(&format!("Signature: {}", signature));
-            log::print_divider();
-        }
-
         _ => {}
     }
     Ok(())

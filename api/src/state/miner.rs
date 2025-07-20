@@ -11,12 +11,12 @@ pub struct Miner {
 
     pub unclaimed_rewards: u64,
 
-    pub current_challenge: [u8; 32],
-    pub recall_tape: u64,
+    pub challenge: [u8; 32],
     pub multiplier: u64,
 
-    pub last_proof_hash: [u8; 32],
+    pub last_proof_block: u64,
     pub last_proof_at: i64,
+
     pub total_proofs: u64,
     pub total_rewards: u64,
 }

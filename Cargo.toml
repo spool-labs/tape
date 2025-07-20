@@ -3,7 +3,7 @@ resolver = "2"
 members = [ "api", "client", "cli", "network", "program", "example" ]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 homepage = "https://tapedrive.io"
@@ -13,10 +13,10 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "mining"]
 
 [workspace.dependencies]
-tape-api = { version = "0.1.8", path = "./api" }
-tape-client = { version = "0.1.8", path = "./client" }
-tape-network = { version = "0.1.8", path = "./network" }
-tape-program = { version = "0.1.8", path = "./program" }
+tape-api = { version = "0.2.0", path = "./api" }
+tape-client = { version = "0.2.0", path = "./client" }
+tape-network = { version = "0.2.0", path = "./network" }
+tape-program = { version = "0.2.0", path = "./program" }
 
 # program dependencies
 bytemuck = "1.14.3"
@@ -52,6 +52,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
 rand = "0.8"
+thiserror = "2.0.12"
 
 # cli-specific
 clap = { version = "4.5", features = ["derive"] }
@@ -64,10 +65,13 @@ indicatif = "0.17"
 console = "0.15"
 mime = "0.3"
 mime_guess = "2.0"
+log = "0.4"
+env_logger = "0.11"
 
 # network-specific
 futures = "0.3"
 rocksdb = "0.23.0"
+tempdir = "0.3"
 
 [patch.crates-io]
 

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use log::{debug, error};
 use solana_client::{
     client_error::{ClientErrorKind, Result as ClientResult},
     rpc_response::RpcSimulateTransactionResult,
@@ -20,24 +21,21 @@ where
     let mut backoff = Duration::from_millis(INITIAL_BACKOFF);
 
     for attempt in 0..MAX_RETRIES {
-        //println!("Attempt {} of {}, backoff: {:?}", attempt + 1, MAX_RETRIES, backoff);
-
         match tokio::time::timeout(TIMEOUT, f()).await {
             Ok(Ok(result)) => {
-                //println!("Attempt {} succeeded", attempt + 1);
                 return Ok(result);
             }
             Ok(Err(e)) if attempt == MAX_RETRIES - 1 => {
-                println!("Attempt {} failed with error: {:?}", attempt + 1, e);
+                error!("Attempt {} failed with error: {:?}", attempt + 1, e);
                 return Err(e);
             }
             Err(_) if attempt == MAX_RETRIES - 1 => {
-                println!("Attempt {} timed out after {:?}", attempt + 1, TIMEOUT);
+                error!("Attempt {} timed out after {:?}", attempt + 1, TIMEOUT);
                 return Err(anyhow::anyhow!("Retry failed"));
             }
             _ => {
-                println!("Attempt {} failed, retrying after backoff", attempt + 1);
-                println!("Waiting for backoff: {:?}", backoff);
+                error!("Attempt {} failed, retrying after backoff", attempt + 1);
+                debug!("Waiting for backoff: {:?}", backoff);
 
                 tokio::time::sleep(backoff).await;
                 backoff *= 2; // Exponential backoff

@@ -10,7 +10,6 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use crankx::Solution;
 use tape_api::prelude::*;
 use crate::utils::*;
-use rand::Rng;
 
 pub async fn perform_mining(
     client: &RpcClient,
@@ -21,14 +20,11 @@ pub async fn perform_mining(
     recall_segment: [u8; SEGMENT_SIZE],
     merkle_proof: [[u8; 32]; TREE_HEIGHT],
 ) -> Result<Signature> {
-    let spool_number = rand::thread_rng().gen_range(0..SPOOL_COUNT);
-    let (spool_address, _spool_bump) = spool_pda(spool_number as u8);
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(700_000);
     let mine_ix = build_mine_ix(
         signer.pubkey(),
         miner_address,
-        spool_address,
         tape_address,
         solution,
         recall_segment,

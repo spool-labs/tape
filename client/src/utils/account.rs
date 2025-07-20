@@ -4,8 +4,8 @@ use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType};
 use solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig};
 use solana_sdk::{pubkey::Pubkey, account::Account};
-use tape_api::pda::{archive_pda, epoch_pda, spool_pda};
-use tape_api::state::{Tape, Writer, Miner, Spool, Epoch, Archive};
+use tape_api::pda::{archive_pda, epoch_pda, block_pda};
+use tape_api::state::{Tape, Writer, Miner, Epoch, Block, Archive};
 use crate::utils::{deserialize, get_account, get_program_account};
 
 pub async fn get_tape_account(client: &RpcClient, tape_address: &Pubkey) -> Result<(Tape, Pubkey)> {
@@ -65,16 +65,6 @@ pub async fn get_miner_account(client: &RpcClient, miner_address: &Pubkey) -> Re
     Ok((account, *miner_address))
 }
 
-pub async fn get_spool_account(client: &RpcClient, spool: u8) -> Result<(Spool, Pubkey)> {
-    let (spool_address, _bump) = spool_pda(spool);
-    let account_bytes = get_account(client, &spool_address).await?;
-    let account: Account = deserialize(&account_bytes)?;
-    let account = Spool::unpack(&account.data)
-        .map_err(|e| anyhow!("Failed to unpack spool account: {}", e))
-        .copied()?;
-    Ok((account, spool_address))
-}
-
 pub async fn get_epoch_account(client: &RpcClient) -> Result<(Epoch, Pubkey)> {
     let (epoch_address, _bump) = epoch_pda();
     let account_bytes = get_account(client, &epoch_address).await?;
@@ -83,6 +73,16 @@ pub async fn get_epoch_account(client: &RpcClient) -> Result<(Epoch, Pubkey)> {
         .map_err(|e| anyhow!("Failed to unpack epoch account: {}", e))
         .copied()?;
     Ok((account, epoch_address))
+}
+
+pub async fn get_block_account(client: &RpcClient) -> Result<(Block, Pubkey)> {
+    let (block_address, _bump) = block_pda();
+    let account_bytes = get_account(client, &block_address).await?;
+    let account: Account = deserialize(&account_bytes)?;
+    let account = Block::unpack(&account.data)
+        .map_err(|e| anyhow!("Failed to unpack block account: {}", e))
+        .copied()?;
+    Ok((account, block_address))
 }
 
 pub async fn get_archive_account(client: &RpcClient) -> Result<(Archive, Pubkey)> {

@@ -52,7 +52,8 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         TapeError::UnexpectedState,
     )?;
 
-    archive.tapes_stored += 1;
+    archive.tapes_stored = archive.tapes_stored.saturating_add(1);
+    archive.bytes_stored = archive.bytes_stored.saturating_add(tape.total_size);
 
     tape.number            = archive.tapes_stored;
     tape.state             = TapeState::Finalized.into();

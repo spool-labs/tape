@@ -3,22 +3,12 @@ use solana_program::program_pack::Pack;
 use spl_token::state::Mint;
 use steel::*;
 
-const INITIAL_DIFFICULTY: u32  = 7;
-const INITIAL_REWARD_RATE: u64 = ONE_TAPE;
-
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
         signer_info, 
-        spool_0_info, 
-        spool_1_info, 
-        spool_2_info, 
-        spool_3_info, 
-        spool_4_info, 
-        spool_5_info, 
-        spool_6_info, 
-        spool_7_info, 
         archive_info, 
         epoch_info, 
+        block_info,
         metadata_info, 
         mint_info, 
         treasury_info, 
@@ -28,42 +18,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         associated_token_program_info, 
         metadata_program_info, 
         rent_sysvar_info,
+        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
-
-    spool_0_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[0]], &tape_api::ID)?;
-    spool_1_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[1]], &tape_api::ID)?;
-    spool_2_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[2]], &tape_api::ID)?;
-    spool_3_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[3]], &tape_api::ID)?;
-    spool_4_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[4]], &tape_api::ID)?;
-    spool_5_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[5]], &tape_api::ID)?;
-    spool_6_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[6]], &tape_api::ID)?;
-    spool_7_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[SPOOL, &[7]], &tape_api::ID)?;
 
     archive_info
         .is_empty()?
@@ -74,6 +32,11 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_empty()?
         .is_writable()?
         .has_seeds(&[EPOCH], &tape_api::ID)?;
+
+    block_info
+        .is_empty()?
+        .is_writable()?
+        .has_seeds(&[BLOCK], &tape_api::ID)?;
 
     // Check mint, metadata, treasury
     let (mint_address, mint_bump) = mint_pda();
@@ -110,38 +73,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     associated_token_program_info
         .is_program(&spl_associated_token_account::ID)?;
 
-    solana_program::log::msg!("metadata: {}", metadata_program_info.key);
-
     metadata_program_info
         .is_program(&mpl_token_metadata::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
-
-    let spool_infos = [
-        spool_0_info, 
-        spool_1_info, 
-        spool_2_info, 
-        spool_3_info, 
-        spool_4_info, 
-        spool_5_info, 
-        spool_6_info,
-        spool_7_info,
-    ];
-
-    // Initialize spools.
-    for i in 0..SPOOL_COUNT {
-        create_program_account::<Spool>(
-            spool_infos[i],
-            system_program_info,
-            signer_info,
-            &tape_api::ID,
-            &[SPOOL, &[i as u8]],
-        )?;
-        let spool = spool_infos[i].as_account_mut::<Spool>(&tape_api::ID)?;
-        spool.id = i as u64;
-        spool.available_rewards = 0;
-        spool.theoretical_rewards = 0;
-    }
 
     // Initialize epoch.
     create_program_account::<Epoch>(
@@ -154,10 +89,39 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
 
-    epoch.base_rate     = INITIAL_REWARD_RATE;
-    epoch.difficulty    = INITIAL_DIFFICULTY as u64;
-    epoch.last_epoch_at = 0;
+    epoch.number               = 1;
+    epoch.progress             = 0;
+    epoch.target_participation = MIN_PARTICIPATION_TARGET;
+    epoch.target_difficulty    = MIN_DIFFICULTY;
+    epoch.reward_rate          = INITIAL_REWARD_RATE;
+    epoch.duplicates           = 0;
+    epoch.last_epoch_at        = 0;
 
+    // Initialize block.
+    create_program_account::<Block>(
+        block_info,
+        system_program_info,
+        signer_info,
+        &tape_api::ID,
+        &[BLOCK],
+    )?;
+
+    let block = block_info.as_account_mut::<Block>(&tape_api::ID)?;
+
+    block.number            = 1;
+    block.progress          = 0;
+    block.last_proof_at     = 0;
+    block.last_block_at     = 0;
+
+    let next_challenge = compute_next_challenge(
+        &BLOCK_ADDRESS.to_bytes(),
+        slot_hashes_info
+    );
+
+    block.challenge = next_challenge;
+    block.challenge_set = 1;
+
+    // Initialize archive.
     create_program_account::<Archive>(
         archive_info,
         system_program_info,
@@ -168,8 +132,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
 
-    // No tapes have been created yet.
-    archive.tapes_stored  = 0;
+    archive.tapes_stored = 0;
+    archive.bytes_stored = 0;
 
     // Initialize treasury.
     create_program_account::<Treasury>(
@@ -236,6 +200,16 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         system_program_info,
         token_program_info,
         associated_token_program_info,
+    )?;
+
+    // Fund the treasury token account.
+    mint_to_signed(
+        mint_info,
+        treasury_tokens_info,
+        treasury_info,
+        token_program_info,
+        MAX_SUPPLY,
+        &[TREASURY],
     )?;
 
     Ok(())

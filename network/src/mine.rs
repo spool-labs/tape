@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use chrono::Utc;
+use log::{debug, error};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, pubkey::Pubkey};
 use tape_client::mine::mine::perform_mining;
@@ -18,24 +18,29 @@ use crankx::{
 
 use super::store::TapeStore;
 
+use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use num_cpus;
+
 pub async fn mine_loop(
     store: &TapeStore, 
     client: &RpcClient, 
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {
-    let interval = Duration::from_secs(60);
+    let interval = Duration::from_secs(1);
 
     loop {
         match try_mine_iteration(store, client, miner_address, signer).await {
-            Ok(()) => println!("DEBUG: Mining iteration completed successfully"),
+            Ok(()) => debug!("Mining iteration completed successfully"),
             Err(e) => {
                 // Log the error (you can use a proper logger like `log::error!` if set up)
-                eprintln!("ERROR: Mining iteration failed: {:?}", e);
+                error!("Mining iteration failed: {:?}", e);
             }
         }
 
-        println!("DEBUG: Waiting for next interval...");
+        debug!("Waiting for next interval...");
         sleep(interval).await;
     }
 }
@@ -46,58 +51,64 @@ async fn try_mine_iteration(
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {
-    let current_time = Utc::now().timestamp();
-
-    println!("DEBUG: Starting mine process...");
+    debug!("Starting mine process...");
 
     let epoch = get_epoch_account(client)
         .await
         .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
 
-    println!("DEBUG: Current time: {}", current_time);
-    println!("DEBUG: Epoch.last_epoch_at: {}", epoch.last_epoch_at);
-
-    if current_time > epoch.last_epoch_at + EPOCH_SECONDS {
-        println!("DEBUG: Epoch is stale, advancing...");
-        tape_client::advance(client, signer).await?;
-        println!("DEBUG: Advanced epoch to {}", current_time);
-    }
-
-    //println!("DEBUG: Epoch account: {:?}", epoch);
+    let block = get_block_account(client)
+        .await
+        .map_err(|e| anyhow!("Failed to get block account: {}", e))?.0;
 
     let miner = get_miner_account(client, miner_address)
         .await
         .map_err(|e| anyhow!("Failed to get miner account: {}", e))?.0;
 
-    //println!("DEBUG: Miner account: {:?}", miner);
+    let miner_challenge = compute_challenge(
+        &block.challenge,
+        &miner.challenge,
+    );
 
-    let tape_number = miner.recall_tape;
+    let tape_number = compute_recall_tape(
+        &miner_challenge,
+        block.challenge_set
+    );
 
-    println!("DEBUG: Recall tape number: {:?}", tape_number);
+    debug!("Recall tape number: {:?}", tape_number);
 
     let tape_address = store.get_tape_address(tape_number);
-
-    println!("DEBUG: Tape address: {:?}", tape_address);
 
     if let Ok(tape_address) = tape_address {
         let tape = get_tape_account(client, &tape_address)
             .await
             .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
 
-        //println!("DEBUG: Tape account: {:?}", tape);
+        let segment_number = compute_recall_segment(
+            &miner_challenge,
+            tape.total_segments
+        );
 
+        // Find the slot for the segment
+        let segment_slot = store.get_slot(tape_number, segment_number)?;
+
+        // Get the entire tape
         let segments = store.get_tape_segments(&tape_address)?;
         if segments.len() != tape.total_segments as usize {
-            return Err(anyhow!("Invalid number of segments for tape {}: expected {}, got {}", 
+            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
                 tape_address, tape.total_segments, segments.len()));
         }
 
-        let (solution, recall_segment, merkle_proof) = compute_challenge_solution(
-            &tape,
-            &miner,
-            segments,
-            epoch.difficulty,
-        )?;
+        debug!("Recall tape {}, segment {}, slot: {:?}", tape_number, segment_number, segment_slot);
+
+        let (solution, recall_segment, merkle_proof) = 
+            compute_challenge_solution(
+                &tape,
+                &miner_challenge,
+                segment_number,
+                segments,
+                epoch.target_difficulty,
+            )?;
 
         let sig = perform_mining(
             client, 
@@ -109,12 +120,12 @@ async fn try_mine_iteration(
             merkle_proof,
         ).await?;
 
-        println!("DEBUG: Mining successful! Signature: {:?}", sig);
+        debug!("Mining successful! Signature: {:?}", sig);
     } else {
-        println!("DEBUG: Tape not found, continuing...");
+        debug!("Tape not found, continuing...");
     }
 
-    println!("DEBUG: Catching up with primary...");
+    debug!("Catching up with primary...");
     store.catch_up_with_primary()?;
 
     Ok(())
@@ -122,20 +133,14 @@ async fn try_mine_iteration(
 
 fn compute_challenge_solution(
     tape: &Tape,
-    miner: &Miner,
+    miner_challenge: &[u8; 32],
+    segment_number: u64,
     segments: Vec<(u64, Vec<u8>)>,
     epoch_difficulty: u64,
 ) -> Result<(Solution, [u8; SEGMENT_SIZE], [[u8; 32]; TREE_HEIGHT])> {
-    //println!("DEBUG: Segments: {:?}", segments);
-
-    let segment_number = compute_recall_segment(
-        &miner.current_challenge,
-        tape.total_segments
-    );
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
-
     let mut merkle_tree = MerkleTree::<{TREE_HEIGHT}>::new(&[tape.merkle_seed.as_ref()]);
 
     for (segment_id, segment_data) in segments.iter() {
@@ -161,8 +166,6 @@ fn compute_challenge_solution(
         })?;
     }
 
-    //println!("DEBUG: Merkle root: {:?}", merkle_tree.get_root());
-
     let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
     let merkle_proof = merkle_proof
         .iter()
@@ -174,21 +177,21 @@ fn compute_challenge_solution(
     if merkle_tree.get_root() != tape.merkle_root.into() {
         return Err(anyhow!("Merkle root mismatch"));
     } else {
-        println!("DEBUG: Merkle root matches tape root!");
+        debug!("Merkle root matches tape root!");
     }
 
     let solution = solve_challenge(
-        miner.current_challenge, 
+        *miner_challenge, 
         &recall_segment, 
         epoch_difficulty
     )?;
 
-    println!("DEBUG: Solution difficulty: {:?}", solution.difficulty());
+    debug!("Solution difficulty: {:?}", solution.difficulty());
 
-    solution.is_valid(&miner.current_challenge, &recall_segment)
+    solution.is_valid(&miner_challenge, &recall_segment)
         .map_err(|_| anyhow!("Invalid solution"))?;
 
-    println!("DEBUG: Solution is valid!");
+    debug!("Solution is valid!");
 
     Ok((solution, recall_segment, merkle_proof))
 }
@@ -198,15 +201,58 @@ fn solve_challenge<const N: usize>(
     data: &[u8; N],
     difficulty: u64,
 ) -> Result<Solution, CrankXError> {
-    let mut memory = SolverMemory::new();
-    let mut nonce: u64 = 0;
+    let num_threads = num_cpus::get();
+    let (tx, rx): (Sender<Solution>, Receiver<Solution>) = channel();
+    let found = Arc::new(AtomicBool::new(false));
+    let challenge_arc = Arc::new(challenge);
+    let data_arc = Arc::new(*data);
+    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(num_threads);
 
-    loop {
-        if let Ok(solution) = solve_with_memory(&mut memory, &challenge, data, &nonce.to_le_bytes()) {
-            if solution.difficulty() >= difficulty as u32 {
-                return Ok(solution);
+    for i in 0..num_threads {
+        let tx_clone = tx.clone();
+        let found_clone = found.clone();
+        let challenge_clone = challenge_arc.clone();
+        let data_clone = data_arc.clone();
+
+        let handle = thread::spawn(move || {
+            let mut memory = SolverMemory::new();
+            let mut nonce: u64 = i as u64;
+
+            loop {
+                if found_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if let Ok(solution) = solve_with_memory(
+                    &mut memory,
+                    &*challenge_clone,
+                    &*data_clone,
+                    &nonce.to_le_bytes(),
+                ) {
+                    if solution.difficulty() >= difficulty as u32 {
+                        found_clone.store(true, Ordering::Relaxed);
+                        let _ = tx_clone.send(solution);
+                        break;
+                    }
+                }
+                // If solve_with_memory returns Err, skip and continue, as in the original
+
+                nonce += num_threads as u64;
             }
-        }
-        nonce += 1;
+        });
+
+        handles.push(handle);
     }
+
+    let solution = rx.recv().map_err(|_| CrankXError::EquiXFailure)?;
+
+    // Ensure all threads stop
+    found.store(true, Ordering::Relaxed);
+
+    // Wait for all threads to finish
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    Ok(solution)
 }

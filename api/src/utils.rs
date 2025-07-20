@@ -2,6 +2,10 @@ use steel::*;
 use crate::consts::*;
 use crate::error::*;
 use brine_tree::{MerkleTree, Leaf};
+use solana_program::{
+    keccak::hashv, 
+    slot_hashes::SlotHash
+};
 
 /// Helper: check a condition is true and return an error if not
 #[inline(always)]
@@ -97,6 +101,35 @@ pub fn update_segment(
     )?;
 
     Ok(())
+}
+
+/// Helper: compute the next challenge.
+#[inline(always)]
+pub fn compute_next_challenge(
+    current_challenge: &[u8; 32],
+    slot_hashes_info: &AccountInfo,
+) -> [u8; 32] {
+    let slothash = &slot_hashes_info.data.borrow()
+        [0..core::mem::size_of::<SlotHash>()];
+
+    let next_challenge = hashv(&[
+        current_challenge,
+        slothash,
+    ]).0;
+
+    next_challenge
+}
+
+
+/// Helper: compute the miner's challenge for a given block and their own challenge value.
+#[inline(always)]
+pub fn compute_challenge(
+    block_challenge: &[u8; 32],
+    miner_challenge: &[u8; 32],
+) -> [u8; 32] {
+    hashv(
+        &[block_challenge, miner_challenge],
+    ).to_bytes()
 }
 
 /// Helper: compute the recall tape number from a given challenge

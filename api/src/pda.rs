@@ -9,6 +9,10 @@ pub fn epoch_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[EPOCH], &crate::id())
 }
 
+pub fn block_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[BLOCK], &crate::id())
+}
+
 pub fn treasury_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TREASURY], &crate::id())
 }
@@ -38,10 +42,6 @@ pub fn metadata_pda(mint: Pubkey) -> (Pubkey, u8) {
     )
 }
 
-pub fn spool_pda(id: u8) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[SPOOL, &[id]], &crate::id())
-}
-
 pub fn tape_pda(authority: Pubkey, name: &[u8; NAME_LEN]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TAPE, authority.as_ref(), name.as_ref()], &crate::id())
 }
@@ -67,6 +67,10 @@ mod tests {
         let (pda, bump) = epoch_pda();
         assert_eq!(bump, EPOCH_BUMP);
         assert_eq!(pda, EPOCH_ADDRESS);
+
+        let (pda, bump) = block_pda();
+        assert_eq!(bump, BLOCK_BUMP);
+        assert_eq!(pda, BLOCK_ADDRESS);
 
         let (pda, bump) = mint_pda();
         assert_eq!(bump, MINT_BUMP);

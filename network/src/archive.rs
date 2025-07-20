@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Result};
+use log::{debug, error};
+use std::collections::HashSet;
 use solana_transaction_status_client_types::TransactionDetails;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use tokio::time::{sleep, Duration};
 use tape_client::{get_slot, get_blocks_with_limit, get_block_by_number, get_archive_account};
+use tape_client::utils::{process_block, ProcessedBlock};
 use reqwest::Client as HttpClient;
 use serde_json::json;
 use base64::decode;
 
-use super::block::{process_block, ProcessedBlock};
 use super::store::TapeStore;
 
 /// Archive loop that continuously fetches and processes blocks from the Solana network.
@@ -20,9 +22,9 @@ pub async fn archive_loop(
 ) -> Result<()> {
     // If a trusted peer is provided, sync with it first
     if let Some(peer_url) = trusted_peer.clone() {
-        println!("DEBUG: Using trusted peer: {}", peer_url);
-        println!("DEBUG: Syncing with trusted peer");
-        println!("DEBUG: This may take a while... please be patient");
+        debug!("Using trusted peer: {}", peer_url);
+        debug!("Syncing with trusted peer");
+        debug!("This may take a while... please be patient");
         sync_with_trusted_peer(store, client, &peer_url).await?;
     }
 
@@ -35,7 +37,7 @@ pub async fn archive_loop(
         }
     };
 
-    println!("DEBUG: Initial slot tip: {}", latest_slot);
+    debug!("Initial slot tip: {}", latest_slot);
 
     // Resume from store or start at current tip
     let mut last_processed_slot = starting_slot
@@ -52,16 +54,16 @@ pub async fn archive_loop(
             &mut last_processed_slot,
             &mut iteration_count,
         ).await {
-            Ok(()) => println!("DEBUG: Block processing iteration completed successfully"),
-            Err(e) => eprintln!("ERROR: Block processing iteration failed: {:?}", e),
+            Ok(()) => debug!("Block processing iteration completed successfully"),
+            Err(e) => error!("Block processing iteration failed: {:?}", e),
         }
 
-        drift_status(store, latest_slot, last_processed_slot);
+        print_drift_status(store, latest_slot, last_processed_slot);
         sleep(interval).await;
     }
 }
 
-/// Archive a block from the Solana network
+/// Attempts to archive a batch of blocks.
 async fn try_archive_iteration(
     store: &TapeStore,
     client: &RpcClient,
@@ -75,22 +77,18 @@ async fn try_archive_iteration(
     if *iteration_count % 10 == 0 {
         if let Ok(slot) = get_slot(client).await {
             *latest_slot = slot;
-            println!("DEBUG: Updated slot tip: {}", slot);
-        } else {
-            println!("DEBUG: Failed to get slot tip");
         }
     }
 
     // Fetch up to 100 new slots starting just above what we've processed
     let start = *last_processed_slot + 1;
     let slots = get_blocks_with_limit(client, start, 100).await?;
-    println!("DEBUG: Fetched {} new slots from {}", slots.len(), start);
 
     for slot in slots {
         let block = get_block_by_number(client, slot, TransactionDetails::Full).await?;
         let processed = process_block(block, slot)?;
 
-        if !processed.tapes.is_empty() || !processed.writes.is_empty() {
+        if !processed.finalized_tapes.is_empty() || !processed.segment_writes.is_empty() {
             archive_block(store, &processed)?;
         }
 
@@ -100,19 +98,21 @@ async fn try_archive_iteration(
     Ok(())
 }
 
+/// Archives the processed block data into the store.
 fn archive_block(store: &TapeStore, block: &ProcessedBlock) -> Result<()> {
-    for (address, number) in &block.tapes {
+    for (address, number) in &block.finalized_tapes {
         store.add_tape(*number, address)?;
     }
 
-    for ((tape, segment), data) in &block.writes {
-        store.add_segment(tape, *segment, data.clone())?;
+    for (key, data) in &block.segment_writes {
+        store.add_segment(&key.address, key.segment_number, data.clone())?;
+        store.add_slot(&key.address, key.segment_number, block.slot)?;
     }
 
     Ok(())
 }
 
-/// Syncs all tapes up to the current archive count from a trusted peer
+/// Syncs all tapes up to the current archive count from a trusted peer.
 async fn sync_with_trusted_peer(
     store: &TapeStore,
     client: &RpcClient,
@@ -123,58 +123,18 @@ async fn sync_with_trusted_peer(
     let total = archive.tapes_stored;
     let http = HttpClient::new();
 
-    for tape_number in 1..(total+1) {
+    for tape_number in 1..=total {
         // Skip if we already have this tape
         if store.get_tape_address(tape_number).is_ok() {
             continue;
         }
 
-        // Get the tape's Solana address
-        let addr_resp = http.post(trusted_peer_url)
-            .header("Content-Type", "application/json")
-            .body(json!({
-                "jsonrpc": "2.0", "id": 1,
-                "method": "getTapeAddress",
-                "params": { "tape_number": tape_number }
-            }).to_string())
-            .send().await?
-            .json::<serde_json::Value>().await?;
-
-        //println!("DEBUG: getTapeAddress response: {:?}", addr_resp);
-
-        let addr_str = addr_resp["result"]
-            .as_str()
-            .ok_or_else(|| anyhow!("Invalid getTapeAddress response: {:?}", addr_resp))?;
-        let tape_address: Pubkey = addr_str.parse()?;
-
-        // Store the tape record
+        let tape_address = fetch_tape_address(&http, trusted_peer_url, tape_number).await?;
         store.add_tape(tape_number, &tape_address)?;
 
-        // Fetch all segments for this tape
-        let seg_resp = http.post(trusted_peer_url)
-            .header("Content-Type", "application/json")
-            .body(json!({
-                "jsonrpc": "2.0", "id": 4,
-                "method": "getTape",
-                "params": { "tape_address": addr_str }
-            }).to_string())
-            .send().await?
-            .json::<serde_json::Value>().await?;
+        let segments = fetch_tape_segments(&http, trusted_peer_url, &tape_address).await?;
 
-        println!("DEBUG: Syncing tape {}, address {}", tape_number, tape_address);
-
-        let segments = seg_resp["result"].as_array()
-            .ok_or_else(|| anyhow!("Invalid getTape response: {:?}", seg_resp))?;
-
-        for seg in segments {
-            let seg_num = seg["segment_number"]
-                .as_u64()
-                .ok_or_else(|| anyhow!("Invalid segment_number: {:?}", seg))?;
-            let data_b64 = seg["data"]
-                .as_str()
-                .ok_or_else(|| anyhow!("Invalid data field: {:?}", seg))?;
-            let data = decode(data_b64)?;
-
+        for (seg_num, data) in segments {
             store.add_segment(&tape_address, seg_num, data)?;
         }
     }
@@ -182,7 +142,127 @@ async fn sync_with_trusted_peer(
     Ok(())
 }
 
-fn drift_status(
+pub async fn sync_from_block(
+    store: &TapeStore,
+    client: &RpcClient,
+    tape_address: &Pubkey,
+    starting_slot: u64,
+) -> Result<()> {
+
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut stack: Vec<u64> = Vec::new();
+
+    stack.push(starting_slot);
+
+    while let Some(current_slot) = stack.pop() {
+        if !visited.insert(current_slot) {
+            continue; // Skip if already visited
+        }
+
+        let block = get_block_by_number(client, current_slot, TransactionDetails::Full).await?;
+        let processed = process_block(block, current_slot)?;
+
+        if processed.finalized_tapes.is_empty() && 
+           processed.segment_writes.is_empty() {
+               continue; // Skip empty blocks
+        }
+
+        for (address, number) in &processed.finalized_tapes {
+            if address != tape_address {
+                continue;
+            }
+
+            store.add_tape(*number, address)?;
+        }
+
+        let mut parents: HashSet<u64> = HashSet::new();
+
+        for (key, data) in &processed.segment_writes {
+            if key.address != *tape_address {
+                continue;
+            }
+
+            store.add_segment(&key.address, key.segment_number, data.clone())?;
+            store.add_slot(&key.address, key.segment_number, processed.slot)?;
+
+            if key.prev_slot != 0 {
+                if key.prev_slot > processed.slot {
+                    return Err(anyhow!("Parent slot must be earlier than current slot"));
+                }
+
+                parents.insert(key.prev_slot);
+            }
+        }
+
+        for parent in parents {
+            stack.push(parent);
+        }
+    }
+
+    Ok(())
+}
+
+/// Fetches the Pubkey address for a given tape number from the trusted peer.
+async fn fetch_tape_address(
+    http: &HttpClient,
+    trusted_peer_url: &str,
+    tape_number: u64,
+) -> Result<Pubkey> {
+    let addr_resp = http.post(trusted_peer_url)
+        .header("Content-Type", "application/json")
+        .body(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "getTapeAddress",
+            "params": { "tape_number": tape_number }
+        }).to_string())
+        .send().await?
+        .json::<serde_json::Value>().await?;
+
+    let addr_str = addr_resp["result"]
+        .as_str()
+        .ok_or_else(|| anyhow!("Invalid getTapeAddress response: {:?}", addr_resp))?;
+
+    addr_str.parse().map_err(|_| anyhow!("Invalid Pubkey: {}", addr_str))
+}
+
+/// Fetches all segments for a tape from the trusted peer.
+async fn fetch_tape_segments(
+    http: &HttpClient,
+    trusted_peer_url: &str,
+    tape_address: &Pubkey,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    let addr_str = tape_address.to_string();
+    let seg_resp = http.post(trusted_peer_url)
+        .header("Content-Type", "application/json")
+        .body(json!({
+            "jsonrpc": "2.0", "id": 4,
+            "method": "getTape",
+            "params": { "tape_address": addr_str }
+        }).to_string())
+        .send().await?
+        .json::<serde_json::Value>().await?;
+
+    let segments = seg_resp["result"].as_array()
+        .ok_or_else(|| anyhow!("Invalid getTape response: {:?}", seg_resp))?;
+
+    let mut result = Vec::new();
+    for seg in segments {
+        let seg_num = seg["segment_number"]
+            .as_u64()
+            .ok_or_else(|| anyhow!("Invalid segment_number: {:?}", seg))?;
+        let data_b64 = seg["data"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Invalid data field: {:?}", seg))?;
+        let data = decode(data_b64)?;
+
+        result.push((seg_num, data));
+    }
+
+    Ok(result)
+}
+
+/// Prints the current drift status and updates health in the store.
+fn print_drift_status(
     store: &TapeStore,
     latest_slot: u64,
     last_processed_slot: u64,
@@ -191,7 +271,7 @@ fn drift_status(
 
     // Persist updated health (last_processed_slot + drift)
     if let Err(e) = store.update_health(last_processed_slot, drift) {
-        println!("ERROR: failed to write health metadata: {:?}", e);
+        eprintln!("ERROR: failed to write health metadata: {:?}", e);
     }
 
     let health_status = if drift < 50 {
@@ -202,8 +282,8 @@ fn drift_status(
         "Falling behind"
     };
 
-    println!(
-        "DEBUG: Drift {} slots behind tip ({}), status: {}",
+    debug!(
+        "Drift {} slots behind tip ({}), status: {}",
         drift, latest_slot, health_status
     );
 }

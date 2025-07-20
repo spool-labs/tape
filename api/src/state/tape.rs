@@ -16,6 +16,9 @@ pub struct Tape {
     pub merkle_root: [u8; 32],
     pub header:      [u8; HEADER_SIZE],
 
+    pub first_slot: u64,
+    pub tail_slot: u64,
+
     pub total_segments: u64,
     pub total_size: u64,
 }

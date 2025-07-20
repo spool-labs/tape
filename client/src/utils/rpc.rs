@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use base64;
+use log::debug;
 use solana_client::{
     nonblocking::rpc_client::RpcClient,
     rpc_client::GetConfirmedSignaturesForAddress2Config,
@@ -107,8 +108,8 @@ pub async fn send_with_retry(
                 attempts += 1;
                 let delay_ms = INITIAL_BACKOFF * (1 << attempts);
 
-                println!(
-                    "DEBUG: send_with_retry attempt {}/{}, waiting {}ms: {}",
+                debug!(
+                    "send_with_retry attempt {}/{}, waiting {}ms: {}",
                     attempts, max_retries, delay_ms, e
                 );
 
@@ -139,8 +140,8 @@ pub async fn get_transaction_with_retry(
             Err(e) if attempts < max_retries => {
                 attempts += 1;
                 let delay_ms = INITIAL_BACKOFF * (1 << attempts);
-                println!(
-                    "DEBUG: get_transaction_with_retry attempt {}/{}, waiting {}ms: {}",
+                debug!(
+                    "get_transaction_with_retry attempt {}/{}, waiting {}ms: {}",
                     attempts, max_retries, delay_ms, e
                 );
                 sleep(Duration::from_millis(delay_ms)).await;

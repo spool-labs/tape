@@ -3,6 +3,7 @@ use tape_api::prelude::*;
 use steel::*;
 
 pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let current_slot = Clock::get()?.slot;
     let args = Update::try_from_bytes(data)?;
 
     let [
@@ -65,9 +66,13 @@ pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     )
     .map_err(|_| TapeError::WriteFailed)?;
 
+    let prev_slot = tape.tail_slot;
+
     tape.merkle_root = writer.state.get_root().to_bytes();
+    tape.tail_slot   = current_slot;
 
     UpdateEvent {
+        prev_slot,
         segment_number: u64::from_le_bytes(segment_number),
         address: tape_address.to_bytes(),
     }

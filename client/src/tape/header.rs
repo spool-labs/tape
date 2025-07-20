@@ -8,35 +8,128 @@ pub const HEADER_MAGIC: [u8; 4] = *b"TAPE";
 /// The version of the header format.
 pub const HEADER_VERSION: u8 = 1;
 
-/// How many bytes to reserve for an ASCII "fallback" MIME‐string.
-/// If `mime_type == MimeType::Custom as u8`, then `mime_str` holds the real text.
-pub const MIME_STR_LEN: usize = 32;
-
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 /// Flags for the tape data header.
 pub enum TapeFlags {
 
-    /// No flags set (use this if you're producing a tape entirely on-chain AND SIMD-0258 is not
-    /// available).
+    /// No flags set (use this if you're producing a tape entirely on-chain, not uploading a file).
     None = 0,
 
-    /// Store the tape as a linked list of segments. Each segment’s first 64 bytes contain
-    /// the previous segment’s signature:
+    /// Store the tape data, prefixed with the segment number (u64). Each write can have multiple
+    /// segments associated with it, each segment will always contain a u64 prefix of the
+    /// segment number. This can later be used to discard duplicates or to re-order the data in case
+    /// of out-of-order writes.
     ///
-    ///     | <empty_sig><segment1_data> | <sig1><segment2_data> | … | <sigN-1><segmentN_data> |
-    ///     Tail: <sigN>
-    ///
-    /// This is the default for CLI-based writes, allowing off-chain files to be reconstructed
-    /// without TAPENET. If you disable this flag (and TAPENET isn’t available), you must use
-    /// `getSignaturesForAddress()` to gather all segments (which may include unrelated signatures).
-    ///
-    /// Although a tape can branch, only the path from tail back to the first segment is linked;
-    /// TAPENET will still return the full data. Linking is especially useful when writing quickly,
-    /// since a writer can rewind to the last known good segment if finalization hasn’t completed.
-    Linked = 1 << 0,
+    /// You should probably set this if you're uploading a file to a tape and want to write it
+    /// quickly.
+    Prefixed = 1 << 0,
 
     // Extend as needed...
+}
+
+/// Tape data header. Note, none of the fields are verified onchain, they are 
+/// opaque to the onchain program logic.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct TapeHeader {
+    /// Fixed “magic” string. Readers should verify this equals `HEADER_MAGIC`.
+    pub magic: [u8; 4],
+
+    /// Version of this header format. Readers should verify matches `HEADER_VERSION`.
+    pub version: u8,
+
+    /// Flags for the tape data.
+    pub flags: u8,
+
+    /// Predefined MIME type code.
+    pub mime_type: u8,
+
+    /// Compression algorithm used (or `None`).
+    pub compression: u8,
+
+    /// Data length in bytes
+    pub data_len: u64,
+
+    /// Encryption algorithm used (or `None`).
+    pub encryption_algo: u8,
+
+    /// Initialization Vector (nonce) for the chosen encryption algorithm.
+    /// If `encryption_algo == None`, this should be all zeros.
+    pub iv: [u8; 12],
+
+    _unused: [u8; 99], // future use
+}
+
+unsafe impl Zeroable for TapeHeader {}
+unsafe impl Pod for TapeHeader {}
+
+impl TapeHeader {
+    pub fn new(
+        mime_type: MimeType,
+        compression: CompressionAlgo,
+        encryption_algo: EncryptionAlgo,
+        flags: TapeFlags,
+    ) -> Self {
+
+        Self {
+            magic            : HEADER_MAGIC,
+            version          : HEADER_VERSION,
+            flags            : flags.into(),
+            mime_type        : mime_type.into(),
+            compression      : compression.into(),
+            encryption_algo  : encryption_algo.into(),
+
+            data_len         : 0, // will be set later
+            iv               : [0; 12], // empty IV/nonce
+            _unused          : [0; 99],
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bytemuck::bytes_of(self).to_vec()
+    }
+
+    pub fn try_from_bytes(data: &[u8]) -> Result<&Self> {
+
+        // Ensure we have at least 128 bytes.
+        if data.len() < std::mem::size_of::<Self>() {
+            bail!("Data too short for TapeHeader ({} < {})",
+                  data.len(), std::mem::size_of::<Self>());
+        }
+
+        // Check the magic prefix.
+        if &data[0..4] != HEADER_MAGIC {
+            bail!("Invalid magic number in TapeHeader");
+        }
+
+        // Check the version byte.
+        if data[4] != HEADER_VERSION {
+            bail!(
+                "Unsupported TapeHeader version: found {}, expected {}",
+                data[4], HEADER_VERSION
+            );
+        }
+
+        // Finally, try to cast via bytemuck.
+        let header: &Self = bytemuck::try_from_bytes(data)
+            .map_err(|e| anyhow!("Failed to cast bytes to TapeHeader: {}", e))?;
+
+        Ok(header)
+    }
+}
+
+impl std::fmt::Debug for TapeHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TapeHeader")
+            .field("version", &self.version)
+            .field("flags", &self.flags)
+            .field("mime_type", &self.mime_type)
+            .field("compression", &self.compression)
+            .field("encryption_algo", &self.encryption_algo)
+            .field("iv", &self.iv)
+            .finish()
+    }
 }
 
 #[repr(u8)]
@@ -98,9 +191,6 @@ pub enum MimeType {
     ApplicationRtf         = 70,  // application/rtf
     ApplicationSql         = 71,  // application/sql
     ApplicationYaml        = 72,  // application/x-yaml
-
-    // Reserved for custom or user-defined MIME types
-    Custom                 = 255, // Reserved for custom MIME types
 }
 
 #[repr(u8)]
@@ -120,130 +210,6 @@ pub enum EncryptionAlgo {
     None               = 0,
 
     // Extend as needed...
-}
-
-/// Tape data header. Note, none of the fields are verified onchain, they are 
-/// opaque to the onchain program logic.
-///
-/// Layout:
-/// - `magic` (4 bytes)           -> always `b"TAPE"`
-/// - `version` (1 byte)          -> format version (`1`)
-/// - `flags` (1 byte)            -> see `TapeFlags`
-/// - `mime_type` (1 byte)        -> see `MimeType`
-/// - `mime_str` (32 bytes)       -> null‐padded ASCII MIME string
-/// - `compression` (1 byte)      -> see `CompressionAlgo`
-/// - `encryption_algo` (1 byte)  -> see `EncryptionAlgo`
-/// - `iv` (12 bytes)             -> IV/nonce if encrypted; all zeros otherwise
-/// - `_unused` (11 bytes)        -> padding for 128-byte size
-/// - `tail_signature` (64 bytes) -> 64-byte blockchain signature (the “tail” end of the tape)
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
-pub struct TapeHeader {
-    /// Fixed “magic” string. Readers should verify this equals `HEADER_MAGIC`.
-    pub magic: [u8; 4],
-
-    /// Version of this header format. Readers should verify matches `HEADER_VERSION`.
-    pub version: u8,
-
-    /// Flags for the tape data.
-    pub flags: u8,
-
-    /// Predefined MIME type code (or `Custom` = 255 if you want to overload externally).
-    pub mime_type: u8,
-
-    /// If `mime_type == MimeType::Custom`, this contains a null‐padded ASCII MIME string.
-    /// Otherwise, it’s all zero, and readers ignore it.
-    pub mime_str: [u8; MIME_STR_LEN],
-
-    /// Compression algorithm used (or `None`).
-    pub compression: u8,
-
-    /// Encryption algorithm used (or `None`).
-    pub encryption_algo: u8,
-
-    /// Initialization Vector (nonce) for the chosen encryption algorithm.
-    /// If `encryption_algo == None`, this should be all zeros.
-    pub iv: [u8; 12],
-
-    _unused: [u8; 11], // Ensure 128-byte size
-
-    /// 64-byte signature from the tail end of the on-chain data.
-    pub tail_signature: [u8; 64],
-}
-
-impl TapeHeader {
-    pub fn new(
-        mime_type: MimeType,
-        compression: CompressionAlgo,
-        encryption_algo: EncryptionAlgo,
-        flags: TapeFlags,
-    ) -> Self {
-        assert!(
-            mime_type != MimeType::Custom, 
-            "Use custom MIME type only if you provide a valid `mime_str`."
-        );
-
-        Self {
-            magic            : HEADER_MAGIC,
-            version          : HEADER_VERSION,
-            flags            : flags.into(),
-            mime_type        : mime_type.into(),
-            mime_str         : [0; MIME_STR_LEN],
-            compression      : compression.into(),
-            encryption_algo  : encryption_algo.into(),
-
-            iv               : [0; 12], // empty IV/nonce
-            _unused          : [0; 11], // padding to ensure 128-byte size
-            tail_signature   : [0; 64], // empty signature
-        }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bytemuck::bytes_of(self).to_vec()
-    }
-
-    pub fn try_from_bytes(data: &[u8]) -> Result<&Self> {
-
-        // Ensure we have at least 128 bytes.
-        if data.len() < std::mem::size_of::<Self>() {
-            bail!("Data too short for TapeHeader ({} < {})",
-                  data.len(), std::mem::size_of::<Self>());
-        }
-
-        // Check the magic prefix.
-        if &data[0..4] != HEADER_MAGIC {
-            bail!("Invalid magic number in TapeHeader");
-        }
-
-        // Check the version byte.
-        if data[4] != HEADER_VERSION {
-            bail!(
-                "Unsupported TapeHeader version: found {}, expected {}",
-                data[4], HEADER_VERSION
-            );
-        }
-
-        // Finally, try to cast via bytemuck.
-        let header: &Self = bytemuck::try_from_bytes(data)
-            .map_err(|e| anyhow!("Failed to cast bytes to TapeHeader: {}", e))?;
-
-        Ok(header)
-    }
-}
-
-impl std::fmt::Debug for TapeHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TapeHeader")
-            .field("version", &self.version)
-            .field("flags", &self.flags)
-            .field("mime_type", &self.mime_type)
-            .field("mime_str", &String::from_utf8_lossy(&self.mime_str))
-            .field("compression", &self.compression)
-            .field("encryption_algo", &self.encryption_algo)
-            .field("iv", &self.iv)
-            .field("tail_signature", &self.tail_signature)
-            .finish()
-    }
 }
 
 
@@ -267,7 +233,6 @@ mod tests {
         assert_eq!(header.compression, CompressionAlgo::None as u8);
         assert_eq!(header.encryption_algo, EncryptionAlgo::None as u8);
         assert_eq!(header.iv, [0; 12]);
-        assert_eq!(header.tail_signature, [0; 64]);
     }
 
     #[test]
@@ -276,7 +241,7 @@ mod tests {
             MimeType::TextPlain,
             CompressionAlgo::Gzip,
             EncryptionAlgo::None,
-            TapeFlags::Linked,
+            TapeFlags::Prefixed,
         );
 
         let bytes = header.to_bytes();
