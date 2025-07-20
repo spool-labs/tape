@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::str::FromStr;
+use std::sync::Arc;
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer, pubkey::Pubkey};
@@ -10,7 +11,7 @@ use tape_client::{claim::claim_rewards, utils::create_ata};
 
 pub async fn handle_claim_command(
     cli: Cli,
-    client: RpcClient,
+    client: Arc<RpcClient>,
     payer: Keypair,
 ) -> Result<()> {
     if let Commands::Claim { miner, amount } = cli.command {

@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error};
+use tokio::task::JoinSet;
 use std::collections::HashSet;
+use std::sync::Arc;
 use solana_transaction_status_client_types::TransactionDetails;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
@@ -13,10 +15,12 @@ use base64::decode;
 
 use super::store::TapeStore;
 
+pub const ARCHIVE_PROCESS_MAX_CONCURRENCY: usize = 10;
+
 /// Archive loop that continuously fetches and processes blocks from the Solana network.
 pub async fn archive_loop(
     store: &TapeStore,
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     starting_slot: Option<u64>,
     trusted_peer: Option<String>,
 ) -> Result<()> {
@@ -66,7 +70,7 @@ pub async fn archive_loop(
 /// Attempts to archive a batch of blocks.
 async fn try_archive_iteration(
     store: &TapeStore,
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     latest_slot: &mut u64,
     last_processed_slot: &mut u64,
     iteration_count: &mut u64,
@@ -75,29 +79,57 @@ async fn try_archive_iteration(
 
     // Refresh the slot tip every 10 iterations
     if *iteration_count % 10 == 0 {
-        if let Ok(slot) = get_slot(client).await {
+        if let Ok(slot) = get_slot(&client).await {
             *latest_slot = slot;
         }
     }
 
     // Fetch up to 100 new slots starting just above what we've processed
     let start = *last_processed_slot + 1;
-    let slots = get_blocks_with_limit(client, start, 100).await?;
+    let slots = get_blocks_with_limit(&client, start, 100).await?;
+    println!("slots {:?}", slots);
 
-    for slot in slots {
-        let block = get_block_by_number(client, slot, TransactionDetails::Full).await?;
-        let processed = process_block(block, slot)?;
-
-        if !processed.finalized_tapes.is_empty() || !processed.segment_writes.is_empty() {
-            archive_block(store, &processed)?;
-        }
-
-        *last_processed_slot = slot;
+    for slots in slots.chunks(ARCHIVE_PROCESS_MAX_CONCURRENCY) {
+        let processed_blocks = get_processed_blocks_by_slots_batch(client, slots).await?;
+        let successfully_processed = processed_blocks.len();
+        archive_blocks(store, processed_blocks)?;
+        *last_processed_slot += successfully_processed as u64;
     }
 
     Ok(())
 }
 
+async fn get_processed_blocks_by_slots_batch(
+    client: &Arc<RpcClient>, 
+    slots: &[u64],
+)-> Result<Vec<ProcessedBlock>> {
+    let mut tasks = JoinSet::new();
+   
+    for s in slots {
+        let client = Arc::clone(&client);
+        let slot = *s;
+        tasks.spawn(async move {
+            get_processed_block_by_slot(&client, slot).await
+        });
+    }
+
+    let processed_blocks = tasks.join_all().await.into_iter()
+        .filter_map(|pb| pb.ok())
+        .collect::<Vec<ProcessedBlock>>();
+
+    Ok(processed_blocks)
+}
+
+async fn get_processed_block_by_slot(
+    client: &Arc<RpcClient>, 
+    slot: u64
+)-> Result<ProcessedBlock> {
+    let block = get_block_by_number(client, slot, TransactionDetails::Full).await?;
+    let processed = process_block(block, slot)?;
+    Ok(processed)
+}
+
+#[allow(dead_code)]
 /// Archives the processed block data into the store.
 fn archive_block(store: &TapeStore, block: &ProcessedBlock) -> Result<()> {
     for (address, number) in &block.finalized_tapes {
@@ -112,10 +144,45 @@ fn archive_block(store: &TapeStore, block: &ProcessedBlock) -> Result<()> {
     Ok(())
 }
 
+/// Archives the processed blocks data into the store.
+fn archive_blocks(store: &TapeStore, blocks: Vec<ProcessedBlock>) -> Result<()> {
+    for block in blocks {
+
+        let ProcessedBlock{
+            slot:_,
+            finalized_tapes,
+            segment_writes
+        } = block;
+        // 1. Tape insert batch
+        let (tape_numbers, tape_addresses): (Vec<_>, Vec<_>) =
+            finalized_tapes.into_iter().map(|(addr, num)| (num, addr)).unzip();
+
+        store.add_tapes_batch(&tape_numbers, &tape_addresses)?;
+
+        // 2. Segment and slot insert batches using fold
+        let (segment_addresses, segment_numbers, segment_data): (Vec<Pubkey>, Vec<u64>, Vec<Vec<u8>>) =
+            segment_writes
+                .into_iter()
+                .fold((Vec::new(), Vec::new(), Vec::new()), |(mut addrs, mut nums, mut data), (key, val)| {
+                    addrs.push(key.address);
+                    nums.push(key.segment_number);
+                    data.push(val);
+                    (addrs, nums, data)
+                });
+
+        let slot_values = vec![block.slot; segment_addresses.len()];
+
+        store.add_segments_batch(&segment_addresses, &segment_numbers, segment_data)?;
+        store.add_slots_batch(&segment_addresses, &segment_numbers, &slot_values)?;
+    }
+
+    Ok(())
+}
+
 /// Syncs all tapes up to the current archive count from a trusted peer.
 async fn sync_with_trusted_peer(
     store: &TapeStore,
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     trusted_peer_url: &str,
 ) -> Result<()> {
     // Fetch archive state to know how many tapes exist
@@ -144,7 +211,7 @@ async fn sync_with_trusted_peer(
 
 pub async fn sync_from_block(
     store: &TapeStore,
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     tape_address: &Pubkey,
     starting_slot: u64,
 ) -> Result<()> {
@@ -160,39 +227,68 @@ pub async fn sync_from_block(
         }
 
         let block = get_block_by_number(client, current_slot, TransactionDetails::Full).await?;
-        let processed = process_block(block, current_slot)?;
+        let ProcessedBlock{
+            segment_writes,
+            slot,
+            finalized_tapes
+        } = process_block(block, current_slot)?;
 
-        if processed.finalized_tapes.is_empty() && 
-           processed.segment_writes.is_empty() {
+        if finalized_tapes.is_empty() && 
+            segment_writes.is_empty() {
                continue; // Skip empty blocks
         }
 
-        for (address, number) in &processed.finalized_tapes {
-            if address != tape_address {
-                continue;
+        let (tape_number_vec,address_vec): (Vec<_>, Vec<_>) = finalized_tapes
+        .into_iter()
+        .filter_map(|(addr, num)| {
+            if addr == *tape_address {
+                Some((num, addr))
+            } else {
+                None
             }
+        })
+        .unzip();
 
-            store.add_tape(*number, address)?;
-        }
+        store.add_tapes_batch(&tape_number_vec, &address_vec)?;
+    
 
         let mut parents: HashSet<u64> = HashSet::new();
 
-        for (key, data) in &processed.segment_writes {
+        for (key, _) in &segment_writes {
             if key.address != *tape_address {
                 continue;
             }
 
-            store.add_segment(&key.address, key.segment_number, data.clone())?;
-            store.add_slot(&key.address, key.segment_number, processed.slot)?;
-
             if key.prev_slot != 0 {
-                if key.prev_slot > processed.slot {
+                if key.prev_slot > slot {
                     return Err(anyhow!("Parent slot must be earlier than current slot"));
                 }
 
                 parents.insert(key.prev_slot);
             }
         }
+
+        let (segment_addresses, segment_numbers, segment_data): (Vec<Pubkey>, Vec<u64>, Vec<Vec<u8>>) =
+            segment_writes
+                .into_iter()
+                .filter_map(|s|
+                    if s.0.address == *tape_address {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                )
+                .fold((Vec::new(), Vec::new(), Vec::new()), |(mut addrs, mut nums, mut data), (key, val)| {
+                    addrs.push(key.address);
+                    nums.push(key.segment_number);
+                    data.push(val);
+                    (addrs, nums, data)
+                });
+
+        let slot_values = vec![slot; segment_addresses.len()];
+
+        store.add_segments_batch(&segment_addresses, &segment_numbers, segment_data)?;
+        store.add_slots_batch(&segment_addresses, &segment_numbers, &slot_values)?;
 
         for parent in parents {
             stack.push(parent);

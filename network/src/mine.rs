@@ -25,7 +25,7 @@ use num_cpus;
 
 pub async fn mine_loop(
     store: &TapeStore, 
-    client: &RpcClient, 
+    client: &Arc<RpcClient>, 
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {
@@ -47,7 +47,7 @@ pub async fn mine_loop(
 
 async fn try_mine_iteration(
     store: &TapeStore,
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {

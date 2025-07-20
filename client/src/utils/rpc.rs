@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use base64;
 use log::debug;
@@ -38,25 +40,25 @@ pub fn rpc_tx_config() -> RpcTransactionConfig {
 }
 
 /// Sends a transaction and returns its serialized signature.
-pub async fn send_transaction(client: &RpcClient, tx: &Transaction) -> Result<Vec<u8>> {
+pub async fn send_transaction(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Vec<u8>> {
     let signature: Signature = with_logs(client.send_transaction(tx).await)?;
     serialize(&signature)
 }
 
 /// Sends and confirms a transaction, returning its serialized signature.
-pub async fn send_and_confirm_transaction(client: &RpcClient, tx: &Transaction) -> Result<Vec<u8>> {
+pub async fn send_and_confirm_transaction(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Vec<u8>> {
     let signature: Signature = with_logs(client.send_and_confirm_transaction(tx).await)?;
     serialize(&signature)
 }
 
 /// Fetches the latest blockhash and returns it serialized.
-pub async fn get_latest_blockhash(client: &RpcClient) -> Result<Vec<u8>> {
+pub async fn get_latest_blockhash(client: &Arc<RpcClient>) -> Result<Vec<u8>> {
     let hash: Hash = client.get_latest_blockhash().await?;
     serialize(&hash)
 }
 
 /// Fetches a transaction by signature, returning its serialized data.
-pub async fn get_transaction(client: &RpcClient, signature: &Signature) -> Result<Vec<u8>> {
+pub async fn get_transaction(client: &Arc<RpcClient>, signature: &Signature) -> Result<Vec<u8>> {
     let tx: EncodedConfirmedTransactionWithStatusMeta = client
         .get_transaction_with_config(signature, rpc_tx_config())
         .await?;
@@ -72,20 +74,20 @@ pub async fn get_transaction(client: &RpcClient, signature: &Signature) -> Resul
 }
 
 /// Sends a transaction and returns its signature.
-pub async fn send(client: &RpcClient, tx: &Transaction) -> Result<Signature> {
+pub async fn send(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Signature> {
     let signature_bytes = send_transaction(client, tx).await?;
     deserialize(&signature_bytes)
 }
 
 /// Sends and confirms a transaction, returning its signature.
-pub async fn send_and_confirm(client: &RpcClient, tx: &Transaction) -> Result<Signature> {
+pub async fn send_and_confirm(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Signature> {
     let signature_bytes = send_and_confirm_transaction(client, tx).await?;
     deserialize(&signature_bytes)
 }
 
 /// Sends a transaction with retry logic, returning its signature.
 pub async fn send_with_retry(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     instruction: &Instruction,
     payer: &Keypair,
     max_retries: u32,
@@ -129,7 +131,7 @@ pub async fn send_with_retry(
 
 /// Fetches a transaction with retry logic, returning the deserialized transaction.
 pub async fn get_transaction_with_retry(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signature: &Signature,
     max_retries: u32,
 ) -> Result<VersionedTransaction> {
@@ -160,14 +162,14 @@ pub async fn get_transaction_with_retry(
 }
 
 /// Fetches an account by address and returns its serialized data.
-pub async fn get_account(client: &RpcClient, address: &Pubkey) -> Result<Vec<u8>> {
+pub async fn get_account(client: &Arc<RpcClient>, address: &Pubkey) -> Result<Vec<u8>> {
     let account: Account = client.get_account(address).await?;
     serialize(&account)
 }
 
 /// Fetches program accounts with the given configuration.
 pub async fn get_program_account(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     config: RpcProgramAccountsConfig,
 ) -> Result<Vec<(Pubkey, Account)>> {
     client
@@ -178,7 +180,7 @@ pub async fn get_program_account(
 
 /// Fetches a block by slot number with retry logic, using the specified transaction details.
 pub async fn get_block_by_number(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     slot_number: u64,
     transaction_details: TransactionDetails,
 ) -> Result<UiConfirmedBlock> {
@@ -200,7 +202,7 @@ pub async fn get_block_by_number(
 }
 
 /// Fetches the latest confirmed block height with retry logic.
-pub async fn get_block_height(client: &RpcClient) -> Result<u64> {
+pub async fn get_block_height(client: &Arc<RpcClient>) -> Result<u64> {
     retry(|| async {
         client
             .get_block_height()
@@ -213,7 +215,7 @@ pub async fn get_block_height(client: &RpcClient) -> Result<u64> {
 }
 
 /// Fetches the current slot with retry logic.
-pub async fn get_slot(client: &RpcClient) -> Result<u64> {
+pub async fn get_slot(client: &Arc<RpcClient>) -> Result<u64> {
     retry(|| async {
         client
             .get_slot()
@@ -226,7 +228,7 @@ pub async fn get_slot(client: &RpcClient) -> Result<u64> {
 }
 
 /// Fetches a list of confirmed slots starting from `start_slot` with a `limit`, using retry logic.
-pub async fn get_blocks_with_limit(client: &RpcClient, start_slot: u64, limit: usize) -> Result<Vec<u64>> {
+pub async fn get_blocks_with_limit(client: &Arc<RpcClient>, start_slot: u64, limit: usize) -> Result<Vec<u64>> {
     retry(|| async {
         client
             .get_blocks_with_limit(start_slot, limit)
@@ -240,7 +242,7 @@ pub async fn get_blocks_with_limit(client: &RpcClient, start_slot: u64, limit: u
 
 /// Fetches transaction signatures for an address with the given configuration, with retry logic.
 pub async fn get_signatures_for_address(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     address: &Pubkey,
     before: Option<Signature>,
     until: Option<Signature>,

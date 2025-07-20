@@ -26,7 +26,7 @@ pub fn create_tape(svm: &mut LiteSVM, payer: &Keypair, tape_name: &str) -> (Pubk
     let (writer_address, _) = writer_pda(tape_address);
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_create_ix(payer_pk, &tape_name, TapeLayout::Raw);
+    let ix = build_create_ix(payer_pk, &tape_name, None);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
