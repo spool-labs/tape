@@ -53,15 +53,6 @@ fn run_integration() {
     initial_clock.slot = 42;
     svm.set_sysvar::<Clock>(&initial_clock);
 
-    // Create tapes
-    let tape_count = rand::thread_rng().gen_range(1..=20);
-    for tape_idx in 0..tape_count {
-        create_and_verify_tape(&mut svm, &payer, tape_idx as u64, &mut tape_db);
-    }
-
-    // Verify archive account after tape creation
-    verify_archive_account(&svm, tape_count as u64);
-
     // Register miner
     let miner_name = "miner-name";
     let miner_address = register_miner(&mut svm, &payer, miner_name);
@@ -91,12 +82,12 @@ fn run_integration() {
     println!("Recall tape: {}", recall_tape);
     println!("Computed challenge: {:?}", miner_challenge);
 
-    // Compute challenge solution
+    // Compute challenge solution for genesis tape
     let stored_tape = &tape_db[(recall_tape - 1) as usize];
     let (solution, recall_segment, merkle_proof) = 
         compute_challenge_solution(stored_tape, &miner, &epoch, &block);
 
-    // Perform mining
+    // Perform mining on genesis tape
     perform_mining(
         &mut svm,
         &payer,
@@ -106,6 +97,20 @@ fn run_integration() {
         recall_segment,
         merkle_proof,
     );
+
+    // Verify genesis tape is in expired state
+    let account = svm.get_account(&stored_tape.pubkey).unwrap();
+    let tape = Tape::unpack(&account.data).unwrap();
+    assert_eq!(tape.state, u64::from(TapeState::Expired));
+
+    // Create additional tapes
+    let tape_count = rand::thread_rng().gen_range(1..=20);
+    for tape_idx in 0..tape_count {
+        create_and_verify_tape(&mut svm, &payer, tape_idx as u64, &mut tape_db);
+    }
+
+    // Verify archive account after tape creation
+    verify_archive_account(&svm, tape_count as u64);
 
     // Print final state
     let account = svm.get_account(&miner_address).unwrap();

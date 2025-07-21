@@ -3,8 +3,6 @@ use brine_tree::{Leaf, verify};
 use steel::*;
 use tape_api::prelude::*;
 
-const FIXED_RECALL_SEGMENT: [u8; SEGMENT_SIZE] = [0; SEGMENT_SIZE];
-
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let current_time = Clock::get()?.unix_timestamp;
     let args = Mine::try_from_bytes(data)?;
@@ -173,17 +171,16 @@ fn check_poa(
     solution: &Solution,
 ) -> ProgramResult {
 
-
     // For expired tapes, enforce use of the fixed segment (no storage needed)
     if tape.state == TapeState::Expired as u64 {
         check_condition(
-            args.recall_segment == FIXED_RECALL_SEGMENT,
+            args.recall_segment == EMPTY_SEGMENT,
             TapeError::SolutionInvalid,
         )?;
 
         // Verify PoW using the fixed segment
         check_condition(
-            solution.is_valid(miner_challenge, &FIXED_RECALL_SEGMENT).is_ok(),
+            solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
             TapeError::SolutionInvalid,
         )?;
 
@@ -249,7 +246,6 @@ fn update_miner_state(
     current_time: i64,
     next_miner_challenge: [u8; 32],
 ) {
-
     miner.unclaimed_rewards   += final_reward;
     miner.total_rewards       += final_reward;
     miner.total_proofs        += 1;

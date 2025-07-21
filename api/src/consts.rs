@@ -78,6 +78,8 @@ pub const ADJUSTMENT_INTERVAL: u64 = 50;
 // ====================================================================
 /// Rent charged per segment per block
 pub const RENT_PER_SEGMENT: u64 = 100; // TODO: adjust this value
+/// Empty segment of SEGMENT_SIZE bytes used for expired tapes
+pub const EMPTY_SEGMENT: [u8; SEGMENT_SIZE] = [0; SEGMENT_SIZE];
 
 // ====================================================================
 // Miscellaneous
@@ -86,7 +88,6 @@ pub const RENT_PER_SEGMENT: u64 = 100; // TODO: adjust this value
 pub const NAME_LEN:   usize = 32;
 /// Header size in bytes
 pub const HEADER_SIZE: usize = 64;
-
 
 // ====================================================================
 // Const Addresses
