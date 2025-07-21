@@ -8,7 +8,6 @@ use tokio::time::{sleep, Duration};
 use tape_client::utils::*;
 use tape_api::prelude::*;
 
-use brine_tree::MerkleTree;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -141,7 +140,7 @@ fn compute_challenge_solution(
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
-    let mut merkle_tree = MerkleTree::<{TREE_HEIGHT}>::new(&[tape.merkle_seed.as_ref()]);
+    let mut merkle_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
 
     for (segment_id, segment_data) in segments.iter() {
         if *segment_id == segment_number {

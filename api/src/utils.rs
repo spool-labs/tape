@@ -1,7 +1,8 @@
 use steel::*;
 use crate::consts::*;
 use crate::error::*;
-use brine_tree::{MerkleTree, Leaf};
+use crate::state::TapeTree;
+use brine_tree::Leaf;
 use solana_program::{
     keccak::hashv, 
     slot_hashes::SlotHash
@@ -69,7 +70,7 @@ pub fn compute_leaf(
 /// Helper: write segment to the Merkle tree
 #[inline(always)]
 pub fn write_segment(
-    tree: &mut MerkleTree<{TREE_HEIGHT}>,
+    tree: &mut TapeTree,
     segment_id: u64,
     segment: &[u8; SEGMENT_SIZE],
 ) -> ProgramResult {
@@ -89,7 +90,7 @@ pub fn write_segment(
 /// Helper: update segment in the Merkle tree
 #[inline(always)]
 pub fn update_segment(
-    tree: &mut MerkleTree<{TREE_HEIGHT}>,
+    tree: &mut TapeTree,
     segment_id: u64,
     old_segment: &[u8; SEGMENT_SIZE],
     new_segment: &[u8; SEGMENT_SIZE],

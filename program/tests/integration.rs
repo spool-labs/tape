@@ -14,7 +14,6 @@ use solana_sdk::{
 use tape_api::prelude::*;
 use litesvm::LiteSVM;
 
-use brine_tree::MerkleTree;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -242,7 +241,7 @@ fn create_and_verify_tape(
     );
 
     let tape_seed = &[stored_tape.account.merkle_seed.as_ref()];
-    let mut writer_tree = MerkleTree::<TREE_HEIGHT>::new(tape_seed);
+    let mut writer_tree = TapeTree::new(tape_seed);
 
     write_tape(
         svm,
@@ -307,7 +306,7 @@ fn create_tape(
     let writer = Writer::unpack(&account.data).unwrap();
     assert_eq!(writer.tape, tape_address);
 
-    let writer_tree = MerkleTree::<{TREE_HEIGHT}>::new(&[tape.merkle_seed.as_ref()]);
+    let writer_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
     assert_eq!(writer.state, writer_tree);
 
     StoredTape {
@@ -323,7 +322,7 @@ fn write_tape(
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
-    writer_tree: &mut MerkleTree::<{TREE_HEIGHT}>,
+    writer_tree: &mut TapeTree,
 ) {
     let payer_pk = payer.pubkey();
     let mut total_size = 0;
@@ -378,7 +377,7 @@ fn update_tape(
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
-    writer_tree: &mut MerkleTree::<{TREE_HEIGHT}>,
+    writer_tree: &mut TapeTree,
 ) {
     let payer_pk = payer.pubkey();
     let target_segment: u64 = 0;
@@ -579,7 +578,7 @@ fn compute_challenge_solution(
     let solution = solve_challenge(miner_challenge, &recall_segment, epoch.target_difficulty).unwrap();
     assert!(solution.is_valid(&miner_challenge, &recall_segment).is_ok());
 
-    let merkle_tree = MerkleTree::<{TREE_HEIGHT}>::new(&[stored_tape.account.merkle_seed.as_ref()]);
+    let merkle_tree = TapeTree::new(&[stored_tape.account.merkle_seed.as_ref()]);
     let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number);
     let merkle_proof = merkle_proof
         .iter()
