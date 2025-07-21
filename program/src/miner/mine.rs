@@ -1,11 +1,9 @@
 use crankx::Solution;
 use brine_tree::{Leaf, verify};
-use solana_program::{
-    keccak::hashv,
-    slot_hashes::SlotHash,
-};
 use steel::*;
 use tape_api::prelude::*;
+
+const FIXED_RECALL_SEGMENT: [u8; SEGMENT_SIZE] = [0; SEGMENT_SIZE];
 
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let current_time = Clock::get()?.unix_timestamp;
@@ -66,7 +64,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     // Check if we should allow duplicate solutions 
     // (same miner submitting multiple times in a block).
-
     if miner.last_proof_block == block.number {
         if has_stalled(block, current_time) {
             epoch.duplicates = epoch.duplicates.saturating_add(1);
@@ -86,7 +83,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // }
 
     // Compute the miner's challenge based on the current block and unique miner challenge values.
-
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -107,31 +103,46 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         tape.total_segments
     );
 
-    // Validate that the miner actually has the data for the tape
+    // Check if tape is expired
+    let is_expired = tape.state == TapeState::Expired as u64;
+    if !is_expired {
+        // Validate storage proof for active tapes
+        let merkle_root = tape.merkle_root;
+        let merkle_proof = &args.recall_proof;
+        let leaf = Leaf::new(&[
+            (segment_number as u64).to_le_bytes().as_ref(),
+            args.recall_segment.as_ref(),
+        ]);
 
-    let merkle_root = tape.merkle_root;
-    let merkle_proof = &args.recall_proof;
-    let leaf = Leaf::new(&[
-        (segment_number as u64).to_le_bytes().as_ref(),
-        args.recall_segment.as_ref(),
-    ]);
+        assert!(merkle_proof.len() == PROOF_LEN as usize);
 
-    assert!(merkle_proof.len() == PROOF_LEN as usize);
+        check_condition(
+            verify(
+                merkle_root,
+                merkle_proof,
+                leaf
+            ),
+            TapeError::SolutionInvalid,
+        )?;
 
-    check_condition(
-        verify(
-            merkle_root,
-            merkle_proof,
-            leaf
-        ),
-        TapeError::SolutionInvalid,
-    )?;
+        // Verify PoW using the actual recalled segment
+        check_condition(
+            solution.is_valid(&miner_challenge, &args.recall_segment).is_ok(),
+            TapeError::SolutionInvalid,
+        )?;
+    } else {
+        // For expired tapes, enforce use of the fixed segment (no storage needed)
+        check_condition(
+            args.recall_segment == FIXED_RECALL_SEGMENT,
+            TapeError::SolutionInvalid,
+        )?;
 
-    // Verify that the PoW solution is good
-    check_condition(
-        solution.is_valid(&miner_challenge, &args.recall_segment).is_ok(),
-        TapeError::SolutionInvalid,
-    )?;
+        // Verify PoW using the fixed segment
+        check_condition(
+            solution.is_valid(&miner_challenge, &FIXED_RECALL_SEGMENT).is_ok(),
+            TapeError::SolutionInvalid,
+        )?;
+    }
 
     // Update miner multiplier
     update_miner_multiplier(miner, block);
@@ -140,11 +151,18 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let available_reward = epoch.reward_rate
         .saturating_div(epoch.target_participation);
 
-    // Scale the reward based on miner's consistency (how active they have been)
-    let final_reward = get_scaled_reward(
+    // Scale the reward based on miner's consistency multiplier
+    let scaled_reward = get_scaled_reward(
         available_reward,
         miner.multiplier
     );
+
+    // Reduced reward for expired tapes (they are easier to solve)
+    let final_reward = if is_expired {
+        scaled_reward.saturating_div(2)
+    } else {
+        scaled_reward
+    };
 
     let next_miner_challenge = compute_next_challenge(
         &miner.challenge,
@@ -159,10 +177,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     miner.last_proof_block     = block.number;
     miner.challenge            = next_miner_challenge;
 
-    // Update block
-    block.progress = block.progress
-        .saturating_add(1);
-
     // Apply rent to the tape
     let rent = tape.rent_owed(block.number);
     tape.balance = tape.balance
@@ -170,22 +184,12 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     // Check if the tape can be removed from the archive
     if tape.balance <= 0 {
-        let empty_seed = hashv(&[
-            tape_info.key.as_ref(),
-            &slot_hashes_info.data.borrow()[
-                0..core::mem::size_of::<SlotHash>()
-            ],
-        ]);
-
-        let empty_tree = TapeTree::new(&[empty_seed.as_ref()]);
-
-        tape.state             = TapeState::Expired.into();
-        // TODO: should we leave these fields as is or reset them?
-        tape.total_segments    = 0;
-        tape.total_size        = 0;
-        tape.merkle_seed       = empty_seed.to_bytes();
-        tape.merkle_root       = empty_tree.get_root().to_bytes();
+        tape.state = TapeState::Expired.into();
     }
+
+    // Update block
+    block.progress = block.progress
+        .saturating_add(1);
 
     // Check if we need to advance the block
     if block.progress >= epoch.target_participation {
@@ -210,7 +214,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         epoch.reward_rate = storage_rate
             .saturating_add(base_rate);
     } else {
-
         // Epoch is still in progress, increment the progress
         epoch.progress = epoch.progress
             .saturating_add(1);
