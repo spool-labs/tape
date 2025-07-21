@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use solana_sdk::{
     signature::{Keypair, Signer, Signature},
@@ -11,7 +13,7 @@ use crate::{
 };
 
 pub async fn write_to_tape(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     tape_address: Pubkey,
     writer_address: Pubkey,

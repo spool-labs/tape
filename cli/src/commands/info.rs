@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair};
@@ -9,7 +11,7 @@ use tape_client::TapeHeader;
 
 use super::network::resolve_miner;
 
-pub async fn handle_info_commands(cli: Cli, client: RpcClient, payer: Keypair) -> Result<()> {
+pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
     match cli.command {
         Commands::Info(info) => {
             match info {

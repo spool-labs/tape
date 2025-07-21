@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use std::str::FromStr;
+use std::sync::Arc;
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer, pubkey::Pubkey};
@@ -17,7 +18,7 @@ const DEVNET: &str = "https://devnet.tapedrive.io/api";
 use crate::cli::{Cli, Commands};
 use crate::log;
 
-pub async fn handle_network_commands(cli: Cli, client: RpcClient, payer: Keypair) -> Result<()> {
+pub async fn handle_network_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
     log::print_divider();
 
     match cli.command {
@@ -49,7 +50,7 @@ async fn handle_web(port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-async fn handle_archive(client: &RpcClient, starting_slot: Option<u64>, trusted_peer: Option<String>) -> Result<()> {
+async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>, trusted_peer: Option<String>) -> Result<()> {
     // Use the public devnet peer if none is provided
     let trusted_peer = match client.url() {
         url if url.contains("devnet") => {
@@ -65,7 +66,7 @@ async fn handle_archive(client: &RpcClient, starting_slot: Option<u64>, trusted_
     Ok(())
 }
 
-async fn handle_mine(client: &RpcClient, payer: &Keypair, pubkey: Option<String>, name: Option<String>) -> Result<()> {
+async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Option<String>, name: Option<String>) -> Result<()> {
     log::print_info("Starting mining service...");
 
     let miner_address = resolve_miner(client, payer, pubkey, name, true).await?;
@@ -77,7 +78,7 @@ async fn handle_mine(client: &RpcClient, payer: &Keypair, pubkey: Option<String>
     Ok(())
 }
 
-async fn handle_register(client: &RpcClient, payer: &Keypair, name: String) -> Result<()> {
+async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: String) -> Result<()> {
     log::print_info("Registering miner...");
 
     let (miner_address, _) = miner_pda(payer.pubkey(), to_name(&name));
@@ -106,7 +107,7 @@ async fn handle_register(client: &RpcClient, payer: &Keypair, name: String) -> R
 }
 
 pub async fn resolve_miner(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     payer: &Keypair,
     pubkey_opt: Option<String>,
     name_opt: Option<String>,

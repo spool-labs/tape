@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
@@ -10,7 +12,7 @@ use tape_api::prelude::*;
 use crate::utils::*;
 
 pub async fn register_miner(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     name: &str,
 ) -> Result<Signature> {

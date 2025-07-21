@@ -19,7 +19,7 @@ pub enum StoreError {
 
     #[error("Health column family not found")]
     HealthCfNotFound,
-    
+
     #[error("Tape by number column family not found")]
     TapeByNumberCfNotFound,
     #[error("Tape by address column family not found")]
@@ -44,6 +44,9 @@ pub enum StoreError {
     InvalidSegmentKey,
     #[error("Invalid path")]
     InvalidPath,
+    #[error("KeyValuesLenMismatch")]
+    InvalidKeyValuePairLen
+
 }
 
 pub struct TapeStore {
@@ -124,8 +127,8 @@ impl TapeStore {
             .ok_or(StoreError::HealthCfNotFound)?;
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(cf, b"last_processed_slot", &last_processed_slot.to_be_bytes());
-        batch.put_cf(cf, b"drift", &drift.to_be_bytes());
+        batch.put_cf(&cf, b"last_processed_slot", &last_processed_slot.to_be_bytes());
+        batch.put_cf(&cf, b"drift", &drift.to_be_bytes());
 
         self.db.write(batch)?;
 
@@ -141,12 +144,12 @@ impl TapeStore {
 
         let bh = self
             .db
-            .get_cf(cf, b"last_processed_slot")?
+            .get_cf(&cf, b"last_processed_slot")?
             .ok_or(StoreError::HealthCfNotFound)?;
 
         let dr = self
             .db
-            .get_cf(cf, b"drift")?
+            .get_cf(&cf, b"drift")?
             .ok_or(StoreError::HealthCfNotFound)?;
 
         let height = u64::from_be_bytes(bh[..].try_into().unwrap());
@@ -170,12 +173,46 @@ impl TapeStore {
         let address_key = address.to_bytes().to_vec();
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(cf_tape_by_number, &tape_number_key, &address.to_bytes());
-        batch.put_cf(cf_tape_by_address, &address_key, &tape_number.to_be_bytes());
+        batch.put_cf(&cf_tape_by_number, &tape_number_key, &address.to_bytes());
+        batch.put_cf(&cf_tape_by_address, &address_key, &tape_number.to_be_bytes());
         self.db.write(batch)?;
 
         Ok(())
     }
+
+    pub fn add_tapes_batch(
+        &self,
+        tape_number_vec: &[u64],
+        address_vec: &[Pubkey],
+    ) -> Result<(), StoreError> {
+        if tape_number_vec.len() != address_vec.len() {
+            return Err(StoreError::InvalidKeyValuePairLen);
+        }
+    
+        let cf_tape_by_number = self
+            .db
+            .cf_handle("tape_by_number")
+            .ok_or(StoreError::TapeByNumberCfNotFound)?;
+    
+        let cf_tape_by_address = self
+            .db
+            .cf_handle("tape_by_address")
+            .ok_or(StoreError::TapeByAddressCfNotFound)?;
+    
+        let mut batch = WriteBatch::default();
+    
+        for i in 0..tape_number_vec.len() {
+            let number_bytes = tape_number_vec[i].to_be_bytes();
+            let address_bytes = address_vec[i].to_bytes();
+    
+            batch.put_cf(&cf_tape_by_number, &number_bytes, &address_bytes);
+            batch.put_cf(&cf_tape_by_address, &address_bytes, &number_bytes);
+        }
+    
+        self.db.write(batch)?;
+        Ok(())
+    }
+    
 
     pub fn add_segment(
         &self,
@@ -196,9 +233,45 @@ impl TapeStore {
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
-        self.db.put_cf(cf, &key, &data)?;
+        self.db.put_cf(&cf, &key, &data)?;
 
         Ok(())
+    }
+
+    pub fn add_segments_batch(
+        &self,
+        tape_address_vec: &[Pubkey],
+        segment_number_vec: &[u64],
+        data_vec: Vec<Vec<u8>>
+    ) -> Result<(), StoreError> {
+        for d in data_vec.iter(){
+            if d.len() > SEGMENT_SIZE{
+                return Err(StoreError::SegmentSizeExceeded(SEGMENT_SIZE));
+            }
+        }
+
+        if tape_address_vec.len() != segment_number_vec.len() || data_vec.len() != segment_number_vec.len() {
+            return Err(StoreError::InvalidKeyValuePairLen)
+        }
+
+        let cf = self
+            .db
+            .cf_handle("segments")
+            .ok_or(StoreError::SegmentsCfNotFound)?;
+
+        let mut batch = WriteBatch::default();
+
+        for (i,d) in data_vec.into_iter().enumerate(){
+            let mut key = Vec::with_capacity(40);
+            key.extend_from_slice(&tape_address_vec[i].to_bytes());
+            key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
+            batch.put_cf(&cf, key, d);
+        }
+
+        self.db.write(batch)?;
+   
+        Ok(())
+
     }
 
     pub fn add_slot(
@@ -216,10 +289,41 @@ impl TapeStore {
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
-        self.db.put_cf(cf, &key, &slot.to_be_bytes())?;
+        self.db.put_cf(&cf, &key, &slot.to_be_bytes())?;
 
         Ok(())
     }
+
+    pub fn add_slots_batch(
+        &self,
+        tape_address_vec: &[Pubkey],
+        segment_number_vec: &[u64],
+        slot_vec: &[u64],
+    ) -> Result<(), StoreError> {
+        if tape_address_vec.len() != segment_number_vec.len() || slot_vec.len() != segment_number_vec.len() {
+            return Err(StoreError::InvalidKeyValuePairLen);
+        }
+    
+        let cf = self
+            .db
+            .cf_handle("slots")
+            .ok_or(StoreError::SlotsCfNotFound)?;
+    
+        let mut batch = WriteBatch::default();
+    
+        for i in 0..slot_vec.len() {
+            let mut key = Vec::with_capacity(40);
+            key.extend_from_slice(&tape_address_vec[i].to_bytes());
+            key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
+    
+            batch.put_cf(&cf, key, &slot_vec[i].to_be_bytes());
+        }
+    
+        self.db.write(batch)?;
+    
+        Ok(())
+    }
+    
 
     pub fn get_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
         let cf = self
@@ -230,7 +334,7 @@ impl TapeStore {
         let key = address.to_bytes().to_vec();
         let tape_number_bytes = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or_else(|| StoreError::TapeNotFoundForAddress(address.to_string()))?;
 
         Ok(u64::from_be_bytes(
@@ -249,7 +353,7 @@ impl TapeStore {
         let key = tape_number.to_be_bytes().to_vec();
         let address_bytes = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or(StoreError::TapeNotFound(tape_number))?;
 
         Pubkey::try_from(address_bytes.as_slice())
@@ -268,7 +372,7 @@ impl TapeStore {
         let prefix = tape_address.to_bytes().to_vec();
 
         let mut segments = Vec::new();
-        let iter = self.db.prefix_iterator_cf(cf, &prefix);
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
         for item in iter {
             let (key, value) = item?;
             if key.len() != 40 {
@@ -307,7 +411,7 @@ impl TapeStore {
 
         let segment_data = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), segment_number))?;
 
         Ok(segment_data)
@@ -331,7 +435,7 @@ impl TapeStore {
 
         let segment_data = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or(StoreError::SegmentNotFound(tape_number, segment_number))?;
 
         Ok(segment_data)
@@ -355,7 +459,7 @@ impl TapeStore {
 
         let slot_bytes = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or(StoreError::SegmentNotFound(tape_number, segment_number))?;
 
         Ok(u64::from_be_bytes(
@@ -379,7 +483,7 @@ impl TapeStore {
 
         let slot_bytes = self
             .db
-            .get_cf(cf, &key)?
+            .get_cf(&cf, &key)?
             .ok_or(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), segment_number))?;
 
         Ok(u64::from_be_bytes(
@@ -399,7 +503,7 @@ impl TapeStore {
             .db
             .cf_handle("tape_by_number")
             .ok_or(StoreError::TapeByNumberCfNotFound)?;
-        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         Ok(iter.count())
     }
 
@@ -408,7 +512,7 @@ impl TapeStore {
             .db
             .cf_handle("segments")
             .ok_or(StoreError::SegmentsCfNotFound)?;
-        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         Ok(iter.count())
     }
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use solana_sdk::{
     signature::{Keypair, Signer},
@@ -12,7 +14,7 @@ use super::TapeHeader;
 
 /// Finalizes the tape with the last segment's signature.
 pub async fn finalize_tape(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     tape_address: Pubkey,
     writer_address: Pubkey,
