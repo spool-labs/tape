@@ -54,23 +54,95 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
 
-    let solution   = Solution::new(args.digest, args.nonce);
-    let difficulty = solution.difficulty();
+    check_submission(&miner, &block, epoch, current_time)?;
+
+    // Compute the miner's challenge based on the current block 
+    // and unique miner challenge values.
+
+    let miner_challenge = compute_challenge(
+        &block.challenge,
+        &miner.challenge,
+    );
+
+    let tape_number = compute_recall_tape(
+        &miner_challenge,
+        block.challenge_set,
+    );
 
     check_condition(
-        difficulty >= epoch.target_difficulty as u32,
+        tape.number == tape_number,
+        TapeError::UnexpectedTape,
+    )?;
+
+    let solution = Solution::new(args.digest, args.nonce);
+    let difficulty = solution.difficulty() as u64;
+
+    check_condition(
+        difficulty >= epoch.target_difficulty,
         TapeError::SolutionTooEasy,
     )?;
 
-    // Check if we should allow duplicate solutions 
-    // (same miner submitting multiple times in a block).
-    if miner.last_proof_block == block.number {
-        if has_stalled(block, current_time) {
-            epoch.duplicates = epoch.duplicates.saturating_add(1);
-        } else {
-            return Err(TapeError::SolutionInvalid.into());
-        }
+    check_poa(
+        &tape,
+        &args,
+        &miner_challenge,
+        &solution,
+    )?;
+
+    // Update miner
+
+    update_multiplier(miner, block);
+
+    let next_challenge = compute_next_challenge(
+        &miner.challenge,
+        slot_hashes_info
+    );
+
+    let reward = calculate_reward(
+        &epoch,
+        &tape,
+        miner.multiplier);
+
+    update_miner_state(
+        miner,
+        block,
+        reward,
+        current_time,
+        next_challenge,
+    );
+
+    // Update tape
+
+    update_tape_balance(tape, block.number);
+
+    // Update block
+
+    block.progress = block.progress
+        .saturating_add(1);
+
+    if block.progress >= epoch.target_participation {
+        advance_block(block, current_time)?;
+
+        let next_block_challenge = compute_next_challenge(
+            &block.challenge,
+            slot_hashes_info
+        );
+
+        block.challenge = next_block_challenge;
+        block.challenge_set = archive.tapes_stored;
     }
+
+    update_epoch(epoch, &archive, current_time)?;
+
+    Ok(())
+}
+
+fn check_submission(
+    miner: &Miner,
+    block: &Block,
+    epoch: &mut Epoch,
+    current_time: i64,
+) -> ProgramResult {
 
     // Check if the proof is too early, just in case someone aquires insane hardware
     // and can solve the challenge faster than we can adjust the difficulty.
@@ -82,31 +154,47 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     //     return Err(TapeError::SolutionTooEarly.into());
     // }
 
-    // Compute the miner's challenge based on the current block and unique miner challenge values.
-    let miner_challenge = compute_challenge(
-        &block.challenge,
-        &miner.challenge,
-    );
+    if miner.last_proof_block == block.number {
+        if has_stalled(block, current_time) {
+            epoch.duplicates = epoch.duplicates.saturating_add(1);
+            Ok(())
+        } else {
+            Err(TapeError::SolutionInvalid.into())
+        }
+    } else {
+        Ok(())
+    }
+}
 
-    let recall_tape = compute_recall_tape(
-        &miner_challenge,
-        block.challenge_set,
-    );
+fn check_poa(
+    tape: &Tape,
+    args: &Mine,
+    miner_challenge: &[u8; 32],
+    solution: &Solution,
+) -> ProgramResult {
 
-    check_condition(
-        tape.number == recall_tape,
-        TapeError::SolutionInvalid,
-    )?;
 
-    let segment_number = compute_recall_segment(
-        &miner_challenge, 
-        tape.total_segments
-    );
+    // For expired tapes, enforce use of the fixed segment (no storage needed)
+    if tape.state == TapeState::Expired as u64 {
+        check_condition(
+            args.recall_segment == FIXED_RECALL_SEGMENT,
+            TapeError::SolutionInvalid,
+        )?;
 
-    // Check if tape is expired
-    let is_expired = tape.state == TapeState::Expired as u64;
-    if !is_expired {
-        // Validate storage proof for active tapes
+        // Verify PoW using the fixed segment
+        check_condition(
+            solution.is_valid(miner_challenge, &FIXED_RECALL_SEGMENT).is_ok(),
+            TapeError::SolutionInvalid,
+        )?;
+
+    // For non-expired tapes, verify the actual recalled segment
+    } else {
+
+        let segment_number = compute_recall_segment(
+            &miner_challenge, 
+            tape.total_segments
+        );
+
         let merkle_root = tape.merkle_root;
         let merkle_proof = &args.recall_proof;
         let leaf = Leaf::new(&[
@@ -127,26 +215,15 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
         // Verify PoW using the actual recalled segment
         check_condition(
-            solution.is_valid(&miner_challenge, &args.recall_segment).is_ok(),
-            TapeError::SolutionInvalid,
-        )?;
-    } else {
-        // For expired tapes, enforce use of the fixed segment (no storage needed)
-        check_condition(
-            args.recall_segment == FIXED_RECALL_SEGMENT,
-            TapeError::SolutionInvalid,
-        )?;
-
-        // Verify PoW using the fixed segment
-        check_condition(
-            solution.is_valid(&miner_challenge, &FIXED_RECALL_SEGMENT).is_ok(),
+            solution.is_valid(miner_challenge, &args.recall_segment).is_ok(),
             TapeError::SolutionInvalid,
         )?;
     }
 
-    // Update miner multiplier
-    update_miner_multiplier(miner, block);
+    Ok(())
+}
 
+fn calculate_reward(epoch: &Epoch, tape: &Tape, multiplier: u64) -> u64 {
     // Divide the scaled reward by the target participation, each miner gets an equal share
     let available_reward = epoch.reward_rate
         .saturating_div(epoch.target_participation);
@@ -154,31 +231,35 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // Scale the reward based on miner's consistency multiplier
     let scaled_reward = get_scaled_reward(
         available_reward,
-        miner.multiplier
+        multiplier
     );
 
     // Reduced reward for expired tapes (they are easier to solve)
-    let final_reward = if is_expired {
+    if tape.state == TapeState::Expired as u64 {
         scaled_reward.saturating_div(2)
     } else {
         scaled_reward
-    };
+    }
+}
 
-    let next_miner_challenge = compute_next_challenge(
-        &miner.challenge,
-        slot_hashes_info
-    );
+fn update_miner_state(
+    miner: &mut Miner,
+    block: &Block,
+    final_reward: u64,
+    current_time: i64,
+    next_miner_challenge: [u8; 32],
+) {
 
-    // Update miner
     miner.unclaimed_rewards   += final_reward;
     miner.total_rewards       += final_reward;
     miner.total_proofs        += 1;
     miner.last_proof_at        = current_time;
     miner.last_proof_block     = block.number;
     miner.challenge            = next_miner_challenge;
+}
 
-    // Apply rent to the tape
-    let rent = tape.rent_owed(block.number);
+fn update_tape_balance(tape: &mut Tape, block_number: u64) {
+    let rent = tape.rent_owed(block_number);
     tape.balance = tape.balance
         .saturating_sub(rent);
 
@@ -186,23 +267,13 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     if tape.balance <= 0 {
         tape.state = TapeState::Expired.into();
     }
+}
 
-    // Update block
-    block.progress = block.progress
-        .saturating_add(1);
-
-    // Check if we need to advance the block
-    if block.progress >= epoch.target_participation {
-        advance_block(block, current_time)?;
-
-        let next_block_challenge = compute_next_challenge(
-            &block.challenge,
-            slot_hashes_info
-        );
-
-        block.challenge = next_block_challenge;
-        block.challenge_set = archive.tapes_stored;
-    }
+fn update_epoch(
+    epoch: &mut Epoch,
+    archive: &Archive,
+    current_time: i64,
+) -> ProgramResult {
 
     // Check if we need to advance the epoch
     if epoch.progress >= EPOCH_BLOCKS {
@@ -213,8 +284,9 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
         epoch.reward_rate = storage_rate
             .saturating_add(base_rate);
+
+    // Epoch is still in progress, increment the progress
     } else {
-        // Epoch is still in progress, increment the progress
         epoch.progress = epoch.progress
             .saturating_add(1);
     }
@@ -234,8 +306,7 @@ fn has_stalled(block: &Block, current_time: i64) -> bool {
 //
 // This encourages miners to come up with strategies that allow them quick access to the tape data
 // needed to solve the challenge.
-#[inline(always)]
-fn update_miner_multiplier(miner: &mut Miner, block: &Block) {
+fn update_multiplier(miner: &mut Miner, block: &Block) {
     if miner.last_proof_block.saturating_add(1) == block.number {
         miner.multiplier = miner.multiplier
             .saturating_add(1)
@@ -258,7 +329,6 @@ fn get_scaled_reward(reward: u64, multiplier: u64) -> u64 {
 }
 
 // Helper: Advance the block state
-#[inline(always)]
 fn advance_block(
     block: &mut Block,
     current_time: i64,
@@ -274,7 +344,6 @@ fn advance_block(
 }
 
 // Helper: Advance the epoch state
-#[inline(always)]
 fn advance_epoch(
     epoch: &mut Epoch,
     current_time: i64,
@@ -301,7 +370,6 @@ fn advance_epoch(
 // If blocks were slower, decrease difficulty.
 //
 // This keeps block times near the 1-minute target.
-#[inline(always)]
 fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 
     let elapsed_time = current_time.saturating_sub(epoch.last_epoch_at);
@@ -330,7 +398,6 @@ fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 // * If any duplicates occurred (same miner submitting multiple times in a block), decrease X by 1.
 //
 // This helps tune how many miners can share in a block reward, balancing inclusivity and competitiveness.
-#[inline(always)]
 fn adjust_participation(epoch: &mut Epoch) {
 
     // If all miner submissions were unique, increase by 1
@@ -348,4 +415,3 @@ fn adjust_participation(epoch: &mut Epoch) {
             .max(MIN_PARTICIPATION_TARGET);
     }
 }
-

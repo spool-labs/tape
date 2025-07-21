@@ -15,12 +15,14 @@ pub enum TapeError {
 
     #[error("The provided hash is invalid")]
     SolutionInvalid = 20,
+    #[error("The provided tape doesn't match the expected tape")]
+    UnexpectedTape = 21,
     #[error("The provided hash did not satisfy the minimum required difficulty")]
-    SolutionTooEasy = 21,
+    SolutionTooEasy = 22,
     #[error("The provided solution is too early")]
-    SolutionTooEarly = 22,
+    SolutionTooEarly = 23,
     #[error("The provided claim is too large")]
-    ClaimTooLarge = 23,
+    ClaimTooLarge = 24,
 }
 
 error!(TapeError);
