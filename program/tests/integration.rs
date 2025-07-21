@@ -87,7 +87,7 @@ fn run_integration() {
     let (solution, recall_segment, merkle_proof) = 
         compute_challenge_solution(stored_tape, &miner, &epoch, &block);
 
-    // Perform mining on genesis tape
+    // Perform first mining on genesis tape
     perform_mining(
         &mut svm,
         &payer,
@@ -101,6 +101,56 @@ fn run_integration() {
     // Verify genesis tape is in expired state
     let account = svm.get_account(&stored_tape.pubkey).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
+    assert_eq!(tape.state, u64::from(TapeState::Expired));
+
+    // Store miner's rewards after first mining
+    let account = svm.get_account(&miner_address).unwrap();
+    let miner_after_first_mine = Miner::unpack(&account.data).unwrap();
+    let rewards_after_first_mine = miner_after_first_mine.unclaimed_rewards;
+
+    // Perform second mining run on expired genesis tape
+    // Recompute miner and block state
+    let miner_account = svm.get_account(&miner_address).unwrap();
+    let miner = Miner::unpack(&miner_account.data).unwrap();
+
+    let block_account = svm.get_account(&block_address).unwrap();
+    let block = Block::unpack(&block_account.data).unwrap();
+
+    let epoch_account = svm.get_account(&epoch_address).unwrap();
+    let epoch = Epoch::unpack(&epoch_account.data).unwrap();
+
+    let miner_challenge = compute_challenge(
+        &block.challenge,
+        &miner.challenge,
+    );
+
+    let recall_tape = compute_recall_tape(
+        &miner_challenge,
+        block.challenge_set
+    );
+
+    println!("Second mining recall tape: {}", recall_tape);
+    println!("Second mining computed challenge: {:?}", miner_challenge);
+
+    // Since tape is expired, use EMPTY_SEGMENT
+    let solution = solve_challenge(miner_challenge, &EMPTY_SEGMENT, epoch.target_difficulty).unwrap();
+    let recall_segment = EMPTY_SEGMENT;
+    let merkle_proof = [[0u8; 32]; PROOF_LEN]; // Merkle proof not needed for expired tape
+
+    perform_mining(
+        &mut svm,
+        &payer,
+        miner_address,
+        stored_tape.pubkey,
+        solution,
+        recall_segment,
+        merkle_proof,
+    );
+
+    // Verify second mining run
+    let account = svm.get_account(&miner_address).unwrap();
+    let miner_after_second_mine = Miner::unpack(&account.data).unwrap();
+    assert!(miner_after_second_mine.unclaimed_rewards > rewards_after_first_mine);
     assert_eq!(tape.state, u64::from(TapeState::Expired));
 
     // Create additional tapes
