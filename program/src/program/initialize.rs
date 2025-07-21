@@ -1,5 +1,5 @@
 use tape_api::prelude::*;
-use solana_program::program_pack::Pack;
+use solana_program::{program_pack::Pack, program::invoke};
 use spl_token::state::Mint;
 use steel::*;
 
@@ -13,6 +13,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         mint_info, 
         treasury_info, 
         treasury_tokens_info, 
+        tape_info,
+        writer_info,
+        tape_program_info,
         system_program_info, 
         token_program_info, 
         associated_token_program_info, 
@@ -66,6 +69,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?;
 
     // Check programs and sysvars.
+    tape_program_info
+        .is_program(&tape_api::ID)?;
     system_program_info
         .is_program(&system_program::ID)?;
     token_program_info
@@ -210,6 +215,59 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         token_program_info,
         MAX_SUPPLY,
         &[TREASURY],
+    )?;
+
+    // Create the genesis tape
+
+    let name = "genesis";
+    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &to_name(name));
+    let (writer_address, _writer_bump) = writer_pda(tape_address);
+
+    invoke(
+        &build_create_ix(
+            *signer_info.key,
+            name,
+            None
+        ),
+        &[
+            signer_info.clone(),
+            tape_info.clone(),
+            writer_info.clone(),
+            system_program_info.clone(),
+            rent_sysvar_info.clone(),
+            slot_hashes_info.clone(),
+        ],
+    )?;
+
+    invoke(
+        &build_write_ix(
+            *signer_info.key,
+            tape_address,
+            writer_address,
+            b"TAPEDRIVE",
+        ),
+        &[
+            signer_info.clone(),
+            tape_info.clone(),
+            writer_info.clone(),
+        ],
+    )?;
+
+    invoke(
+        &build_finalize_ix(
+            *signer_info.key,
+            tape_address,
+            writer_address,
+            None
+        ),
+        &[
+            signer_info.clone(),
+            tape_info.clone(),
+            writer_info.clone(),
+            archive_info.clone(),
+            system_program_info.clone(),
+            rent_sysvar_info.clone(),
+        ],
     )?;
 
     Ok(())

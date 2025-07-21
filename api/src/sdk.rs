@@ -200,6 +200,7 @@ pub fn build_close_ix(
 pub fn build_initialize_ix(
     signer: Pubkey
 ) -> Instruction {
+    let name = utils::to_name(GENISIS);
 
     let (archive_pda, _archive_bump) = archive_pda();
     let (epoch_pda, _epoch_bump) = epoch_pda();
@@ -208,6 +209,9 @@ pub fn build_initialize_ix(
     let (treasury_pda, _treasury_bump) = treasury_pda();
     let (treasury_ata, _treasury_ata_bump) = treasury_ata();
     let (metadata_pda, _metadata_bump) = metadata_pda(mint_pda);
+
+    let (tape_pda, _tape_bump) = tape_pda(signer, &name);
+    let (writer_pda, _writer_bump) = writer_pda(tape_pda);
 
     assert_eq!(archive_pda, ARCHIVE_ADDRESS);
     assert_eq!(epoch_pda, EPOCH_ADDRESS);
@@ -227,6 +231,9 @@ pub fn build_initialize_ix(
             AccountMeta::new(mint_pda, false),
             AccountMeta::new(treasury_pda, false),
             AccountMeta::new(treasury_ata, false),
+            AccountMeta::new(tape_pda, false),
+            AccountMeta::new(writer_pda, false),
+            AccountMeta::new_readonly(crate::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),

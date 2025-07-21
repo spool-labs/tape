@@ -3,7 +3,7 @@ use crate::consts::*;
 use crate::state;
 use super::AccountType;
 
-#[repr(C, align(8))] 
+#[repr(C)] 
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Tape {
     pub number: u64,
@@ -18,6 +18,9 @@ pub struct Tape {
 
     pub first_slot: u64,
     pub tail_slot: u64,
+
+    pub last_rent_block: u64,
+    pub total_rent_paid: u64,
 
     pub total_segments: u64,
     pub total_size: u64,

@@ -30,9 +30,18 @@ pub fn padded_array<const N: usize>(input: &[u8]) -> [u8; N] {
 
 /// Helper: convert a name to a fixed-size array
 #[inline(always)]
-pub fn to_name(val: &str) -> [u8; NAME_LEN] {
-    assert!(val.len() <= NAME_LEN, "name too long");
-    padded_array::<NAME_LEN>(val.as_bytes())
+pub fn to_name<T>(val: T) -> [u8; NAME_LEN]
+where
+    T: AsRef<[u8]>,
+{
+    let bytes = val.as_ref();
+    assert!(
+        bytes.len() <= NAME_LEN,
+        "name too long ({} > {})",
+        bytes.len(),
+        NAME_LEN
+    );
+    padded_array::<NAME_LEN>(bytes)
 }
 
 /// Helper: convert a name to a string

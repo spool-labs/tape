@@ -8,6 +8,7 @@ pub const TREASURY: &[u8]                  = b"treasury";
 pub const TAPE: &[u8]                      = b"tape";
 pub const WRITER: &[u8]                    = b"writer";
 pub const MINER: &[u8]                     = b"miner";
+pub const GENISIS: &[u8]                   = b"genesis";
 
 pub const MINT: &[u8]                      = b"mint";
 pub const MINT_SEED: &[u8]                 = &[152, 68, 212, 200, 25, 113, 221, 71];
@@ -33,17 +34,15 @@ pub const MAX_SUPPLY: u64                  = 7_000_000 * ONE_TAPE;
 pub const ONE_SECOND: u64                  = 1;
 pub const ONE_MINUTE: u64                  = 60 * ONE_SECOND;
 
+
 pub const MINUTES_PER_HOUR: u64            = 60;
 pub const HOURS_PER_DAY: u64               = 24;
 pub const DAYS_PER_YEAR: u64               = 365;
-pub const TIME_HORIZON_YEARS: u64          = 100;
-pub const TIME_HORIZON_MINUTES: u64        = TIME_HORIZON_YEARS * (DAYS_PER_YEAR * HOURS_PER_DAY * MINUTES_PER_HOUR);
 
-// Binary megabyte (MiB)
-pub const BYTES_PER_MIB: u64               = 1 << 20; // 1,048,576 bytes
+pub const BYTES_PER_MIB: u64               = 1_048_576; // 1 MiB = 2^20 bytes
+pub const MINUTES_PER_YEAR: u64            = MINUTES_PER_HOUR * HOURS_PER_DAY * DAYS_PER_YEAR;  // 525 600
+pub const RENT_DENOMINATOR: u128           = BYTES_PER_MIB as u128 * MINUTES_PER_YEAR as u128;
 
-// 1 TAPE ~= 1 MiB stored for 100 years
-pub const BYTES_PER_TAPE: u64              = BYTES_PER_MIB;
 
 pub const BLOCK_DURATION_SECONDS: u64      = ONE_MINUTE;
 pub const EPOCH_BLOCKS: u64                = 10;

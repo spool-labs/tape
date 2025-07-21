@@ -134,7 +134,7 @@ fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
         .get_account(&archive_address)
         .expect("Archive account should exist");
     let archive = Archive::unpack(&account.data).expect("Failed to unpack Archive account");
-    assert_eq!(archive.tapes_stored, expected_tapes_stored);
+    assert_eq!(archive.tapes_stored, expected_tapes_stored + 1);
 }
 
 fn verify_epoch_account(svm: &LiteSVM) {
@@ -484,7 +484,7 @@ fn finalize_tape(
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
     assert_eq!(tape.state, u64::from(TapeState::Finalized));
-    assert_eq!(tape.number, tape_idx + 1);
+    assert_eq!(tape.number, tape_idx + 2);
     assert_eq!(tape.total_segments, 10);
     assert_eq!(tape.total_size, stored_tape.account.total_size);
     assert_eq!(tape.merkle_root, stored_tape.account.merkle_root);
