@@ -17,8 +17,10 @@ pub enum TapeError {
     SolutionInvalid = 20,
     #[error("The provided hash did not satisfy the minimum required difficulty")]
     SolutionTooEasy = 21,
+    #[error("The provided solution is too early")]
+    SolutionTooEarly = 22,
     #[error("The provided claim is too large")]
-    ClaimTooLarge = 22,
+    ClaimTooLarge = 23,
 }
 
 error!(TapeError);

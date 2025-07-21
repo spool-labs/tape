@@ -28,7 +28,7 @@ pub fn process_instruction(
         InstructionType::Update => process_update(accounts, data)?,
         InstructionType::Finalize => process_finalize(accounts, data)?,
         InstructionType::SetHeader => process_set_header(accounts, data)?,
-        InstructionType::PayRent => process_pay_rent(accounts, data)?,
+        InstructionType::Subsidize => process_subsidize_rent(accounts, data)?,
 
         // Miner instructions
         InstructionType::Register => process_register(accounts, data)?,

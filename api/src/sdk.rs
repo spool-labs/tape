@@ -119,7 +119,7 @@ pub fn build_finalize_ix(
     }
 }
 
-pub fn build_pay_rent_ix(
+pub fn build_subsidize_ix(
     signer: Pubkey, 
     ata: Pubkey,
     tape: Pubkey,
@@ -137,7 +137,7 @@ pub fn build_pay_rent_ix(
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: PayRent {
+        data: Subsidize {
             amount: amount.to_le_bytes(),
         }.to_bytes(),
     }
@@ -181,7 +181,7 @@ pub fn build_mine_ix(
             AccountMeta::new(EPOCH_ADDRESS, false),
             AccountMeta::new(BLOCK_ADDRESS, false),
             AccountMeta::new(miner, false),
-            AccountMeta::new_readonly(tape, false),
+            AccountMeta::new(tape, false),
             AccountMeta::new_readonly(ARCHIVE_ADDRESS, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],

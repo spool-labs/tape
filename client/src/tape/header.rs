@@ -1,6 +1,14 @@
+use tape_api::prelude::*;
 use anyhow::{Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use solana_sdk::{
+    signature::{Keypair, Signer, Signature},
+    transaction::Transaction,
+    pubkey::Pubkey,
+};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use crate::utils::*;
 
 /// A 4-byte "magic" prefix to identify the header format.
 pub const HEADER_MAGIC: [u8; 4] = *b"TAPE";
@@ -207,6 +215,39 @@ pub enum MimeType {
     ApplicationSql         = 71,  // application/sql
     ApplicationYaml        = 72,  // application/x-yaml
 }
+
+
+/// Sets the tape header for a given tape account.
+pub async fn set_header(
+    client: &RpcClient,
+    signer: &Keypair,
+    tape_address: Pubkey,
+    header: TapeHeader,
+) -> Result<(Pubkey, Signature)> {
+
+    let header_data = &header.to_bytes().try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to convert header to bytes"))?;
+
+    let set_header_ix = build_set_header_ix(
+        signer.pubkey(), 
+        tape_address,
+        header_data
+    );
+
+    let blockhash_bytes = get_latest_blockhash(client).await?;
+    let recent_blockhash = deserialize(&blockhash_bytes)?;
+    let create_tx = Transaction::new_signed_with_payer(
+        &[set_header_ix],
+        Some(&signer.pubkey()),
+        &[signer],
+        recent_blockhash,
+    );
+
+    let signature = send_and_confirm(client, &create_tx).await?;
+
+    Ok((tape_address, signature))
+}
+
 
 #[cfg(test)]
 mod tests {

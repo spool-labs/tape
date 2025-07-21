@@ -75,6 +75,18 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         }
     }
 
+    // Check if the proof is too early, just in case someone aquires insane hardware
+    // and can solve the challenge faster than we can adjust the difficulty.
+
+    // let min_block_time = block.last_proof_at
+    //     .saturating_add(BLOCK_DURATION_SECONDS as i64 / 2);
+    //
+    // if current_time < min_block_time {
+    //     return Err(TapeError::SolutionTooEarly.into());
+    // }
+
+    // Compute the miner's challenge based on the current block and unique miner challenge values.
+
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -153,7 +165,8 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     // Apply rent to the tape
     let rent = tape.rent_owed(block.number);
-    tape.balance = tape.balance.saturating_sub(rent);
+    tape.balance = tape.balance
+        .saturating_sub(rent);
 
     // Check if the tape can be removed from the archive
     if tape.balance <= 0 {
@@ -167,6 +180,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         let empty_tree = TapeTree::new(&[empty_seed.as_ref()]);
 
         tape.state             = TapeState::Expired.into();
+        // TODO: should we leave these fields as is or reset them?
         tape.total_segments    = 0;
         tape.total_size        = 0;
         tape.merkle_seed       = empty_seed.to_bytes();

@@ -36,6 +36,10 @@ fn run_integration() {
     // Initialize program
     initialize_program(&mut svm, &payer);
 
+    // Fetch and store genesis tape
+    let mut tape_db = vec![];
+    fetch_genesis_tape(&mut svm, &payer, &mut tape_db);
+
     // Verify initial accounts
     verify_archive_account(&svm, 0);
     verify_epoch_account(&svm);
@@ -51,7 +55,6 @@ fn run_integration() {
     svm.set_sysvar::<Clock>(&initial_clock);
 
     // Create tapes
-    let mut tape_db = vec![];
     let tape_count = rand::thread_rng().gen_range(1..=20);
     for tape_idx in 0..tape_count {
         create_and_verify_tape(&mut svm, &payer, tape_idx as u64, &mut tape_db);
@@ -113,6 +116,27 @@ fn run_integration() {
     println!("next challenge: {:?}", miner.challenge);
 }
 
+fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<StoredTape>) {
+    let genesis_name = "genesis".to_string();
+    let genesis_name_bytes = to_name(&genesis_name);
+    let (genesis_pubkey, _) = tape_pda(payer.pubkey(), &genesis_name_bytes);
+
+    let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
+    let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
+
+    let genesis_data = b"hello, world";
+    let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
+    let segments = vec![genesis_segment];
+
+    let stored_genesis = StoredTape {
+        pubkey: genesis_pubkey,
+        segments,
+        account: *tape,
+    };
+
+    tape_db.push(stored_genesis);
+}
+
 fn setup_environment() -> (LiteSVM, Keypair) {
     let mut svm = setup_svm();
     let payer = create_payer(&mut svm);
@@ -147,12 +171,12 @@ fn verify_epoch_account(svm: &LiteSVM) {
     assert_eq!(epoch.progress, 0);
     assert_eq!(epoch.target_difficulty, MIN_DIFFICULTY);
     assert_eq!(epoch.target_participation, MIN_PARTICIPATION_TARGET);
-    assert_eq!(epoch.reward_rate, INITIAL_REWARD_RATE);
+    assert_eq!(epoch.reward_rate, get_base_rate(1));
     assert_eq!(epoch.duplicates, 0);
     assert_eq!(epoch.last_epoch_at, 0);
 }
 
-fn verify_block_account(svm: &LiteSVM,) {
+fn verify_block_account(svm: &LiteSVM) {
     let (block_address, _block_bump) = block_pda();
     let account = svm
         .get_account(&block_address)
@@ -205,7 +229,6 @@ fn create_and_verify_tape(
 ) {
     let payer_pk = payer.pubkey();
     let tape_name = format!("tape-name-{}", tape_idx);
-    let tape_header = [42; HEADER_SIZE];
     let (tape_address, _tape_bump) = tape_pda(payer_pk, &to_name(&tape_name));
     let (writer_address, _writer_bump) = writer_pda(tape_address);
 
@@ -214,7 +237,6 @@ fn create_and_verify_tape(
         svm, 
         payer, 
         &tape_name, 
-        tape_header, 
         tape_address, 
         writer_address
     );
@@ -257,7 +279,6 @@ fn create_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
     tape_name: &str,
-    tape_header: [u8; HEADER_SIZE],
     tape_address: Pubkey,
     writer_address: Pubkey,
 ) -> StoredTape {
@@ -265,7 +286,7 @@ fn create_tape(
 
     // Create tape
     let blockhash = svm.latest_blockhash();
-    let ix = build_create_ix(payer_pk, tape_name, Some(tape_header));
+    let ix = build_create_ix(payer_pk, tape_name);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
@@ -278,7 +299,7 @@ fn create_tape(
     assert_eq!(tape.state, u64::from(TapeState::Created));
     assert_ne!(tape.merkle_seed, [0; 32]);
     assert_eq!(tape.merkle_root, [0; 32]);
-    assert_eq!(tape.header, tape_header);
+    assert_eq!(tape.header, [0; HEADER_SIZE]);
     assert_eq!(tape.number, 0);
 
     // Verify writer account
@@ -405,7 +426,6 @@ fn update_tape(
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
 
-
     // Update local tree
     assert!(update_segment(
         writer_tree,
@@ -449,7 +469,7 @@ fn finalize_tape(
 
     // Finalize tape
     let blockhash = svm.latest_blockhash();
-    let ix = build_finalize_ix(payer_pk, tape_address, writer_address, None);
+    let ix = build_finalize_ix(payer_pk, tape_address, writer_address);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
@@ -493,7 +513,6 @@ fn finalize_tape(
     let account = svm.get_account(&writer_address).unwrap();
     assert!(account.data.is_empty());
 }
-
 
 fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubkey {
     let payer_pk = payer.pubkey();
@@ -601,7 +620,6 @@ fn perform_mining(
     let miner = Miner::unpack(&account.data).unwrap();
     assert!(miner.unclaimed_rewards > 0);
 }
-
 
 fn solve_challenge<const N: usize>(
     challenge: [u8; 32],

@@ -1,8 +1,8 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_pay_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = PayRent::try_from_bytes(data)?;
+pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let args = Subsidize::try_from_bytes(data)?;
     let [
         signer_info, 
         ata_info,
@@ -15,16 +15,10 @@ pub fn process_pay_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
 
     signer_info.is_signer()?;
 
+    // We don't require the owner of the tape to be the 
+    // signer; anyone can subsidize any tape.
     let tape = tape_info
-        .as_account_mut::<Tape>(&tape_api::ID)?
-        .assert_mut_err(
-            |p| p.authority == *signer_info.key,
-            ProgramError::MissingRequiredSignature,
-        )?;
-
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &tape.name);
-
-    tape_info.has_address(&tape_address)?;
+        .as_account_mut::<Tape>(&tape_api::ID)?;
 
     treasury_ata_info
         .is_writable()?;

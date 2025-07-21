@@ -98,7 +98,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.progress             = 0;
     epoch.target_participation = MIN_PARTICIPATION_TARGET;
     epoch.target_difficulty    = MIN_DIFFICULTY;
-    epoch.reward_rate          = 0;
+    epoch.reward_rate          = get_base_rate(1);
     epoch.duplicates           = 0;
     epoch.last_epoch_at        = 0;
 

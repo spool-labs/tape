@@ -20,7 +20,7 @@ pub async fn handle_admin_commands(cli: Cli, client: RpcClient, payer: Keypair) 
     }
 
     match cli.command {
-        Commands::Initialize {} => {
+        Commands::Init {} => {
             let signature = tape_client::initialize(&client, &payer).await?;
             log::print_section_header("Program Initialized");
             log::print_message(&format!("Signature: {}", signature));

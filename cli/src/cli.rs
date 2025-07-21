@@ -101,7 +101,7 @@ pub enum Commands {
     // Admin Commands
 
     #[command(hide = true)]
-    Initialize {},
+    Init {},
 
     // Store Management Commands
 

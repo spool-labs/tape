@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     let keypair_path = get_keypair_path(cli.keypair_path.clone());
 
     match cli.command {
-        Commands::Initialize {} |
+        Commands::Init {} |
         Commands::Write { .. } | 
         Commands::Register { .. } |
         Commands::Mine { .. }
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     match cli.command {
         // Admin Commands
 
-        Commands::Initialize { .. } => {
+        Commands::Init { .. } => {
             let payer = get_payer(keypair_path)?;
             admin::handle_admin_commands(cli, rpc_client, payer).await?;
         }
