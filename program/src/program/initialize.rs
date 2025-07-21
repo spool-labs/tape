@@ -98,7 +98,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.progress             = 0;
     epoch.target_participation = MIN_PARTICIPATION_TARGET;
     epoch.target_difficulty    = MIN_DIFFICULTY;
-    epoch.reward_rate          = INITIAL_REWARD_RATE;
+    epoch.reward_rate          = 0;
     epoch.duplicates           = 0;
     epoch.last_epoch_at        = 0;
 
@@ -227,7 +227,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &build_create_ix(
             *signer_info.key,
             name,
-            None
         ),
         &[
             signer_info.clone(),
@@ -244,7 +243,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             *signer_info.key,
             tape_address,
             writer_address,
-            b"TAPEDRIVE",
+            b"hello, world",
         ),
         &[
             signer_info.clone(),
@@ -258,7 +257,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             *signer_info.key,
             tape_address,
             writer_address,
-            None
         ),
         &[
             signer_info.clone(),

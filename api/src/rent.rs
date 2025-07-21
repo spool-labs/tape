@@ -1,46 +1,43 @@
 use crate::consts::*;
 use crate::state::{Tape, Archive};
 
-/// Rent for one block (~ 1 min).
-/// Rounded up so the protocol never under‑charges.
+/// Rent this tape pays **each block**.
+/// Uses saturating math to avoid overflow.
 #[inline]
-pub const fn rent_per_block(bytes: u64) -> u64 {
-    let num  = bytes as u128 * ONE_TAPE as u128;
-    let rent = num
-        .saturating_add(RENT_DENOMINATOR - 1)
-        .saturating_div(RENT_DENOMINATOR);
-    rent as u64
+pub const fn rent_per_block(total_segments: u64) -> u64 {
+    total_segments.saturating_mul(RENT_PER_SEGMENT)
 }
 
-/// Total rent owed by a tape since it last paid
+/// Rent owed from `last_block` (exclusive) up to `current_block` (inclusive).
 #[inline]
 pub const fn rent_owed(
-    bytes:         u64,
-    last_block:    u64,
-    current_block: u64,
+    total_segments: u64,
+    last_block:     u64,
+    current_block:  u64,
 ) -> u64 {
     let blocks = current_block.saturating_sub(last_block) as u128;
-    (rent_per_block(bytes) as u128 * blocks) as u64
+    (rent_per_block(total_segments) as u128 * blocks) as u64
 }
 
 impl Tape {
-    /// Rent this tape owes **per block** (smallest unit)
+    /// Rent this tape owes per block.
     #[inline]
     pub fn rent_per_block(&self) -> u64 {
-        rent_per_block(self.total_size)
+        rent_per_block(self.total_segments)
     }
-    /// Rent owed since `last_rent_block`
+
+    /// Rent owed since last_rent_block.
     #[inline]
     pub fn rent_owed(&self, current_block: u64) -> u64 {
-        rent_owed(self.total_size, self.last_rent_block, current_block)
+        rent_owed(self.total_segments, self.last_rent_block, current_block)
     }
 }
 
 impl Archive {
-    /// Global reward to miners for the current block
+    /// Global reward to miners for the current block.
     #[inline]
     pub fn block_reward(&self) -> u64 {
-        rent_per_block(self.bytes_stored)
+        rent_per_block(self.segments_stored)
     }
 }
 
@@ -49,46 +46,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rent_zero_bytes() {
+    fn rent_per_block_zero_segments() {
         assert_eq!(rent_per_block(0), 0);
-        assert_eq!(rent_owed(0, 0, 12345), 0);
     }
 
     #[test]
-    fn rent_one_mib_one_year() {
-        // For 1 MiB, over one year, should be ~1 TAPE
-        let per_block = rent_per_block(BYTES_PER_MIB);
-        assert!(per_block > 0);
-
-        let owed = rent_owed(BYTES_PER_MIB, 0, MINUTES_PER_YEAR);
-        assert!(owed >= ONE_TAPE);
-        assert!(owed <= ONE_TAPE + MINUTES_PER_YEAR);
+    fn rent_per_block_one_segment() {
+        assert_eq!(rent_per_block(1), RENT_PER_SEGMENT);
     }
 
     #[test]
-    fn reverse_block_saturates() {
-        // If current_block < last_block we expect zero owed.
-        assert_eq!(rent_owed(BYTES_PER_MIB, 10, 5), 0);
+    fn rent_per_block_max_segments_saturates() {
+        assert_eq!(rent_per_block(u64::MAX), u64::MAX);
     }
 
     #[test]
-    fn print_storage_rate_chart() {
-        let mut sizes = Vec::new();
+    fn rent_owed_zero_blocks() {
+        assert_eq!(rent_owed(10, 5, 5), 0);
+    }
 
-        sizes.push(0u64);
-        let mut x: u128 = BYTES_PER_MIB as u128;
-        while x <= u64::MAX as u128 {
-            sizes.push(x as u64);
-            x = x.saturating_mul(2);
-        }
-        sizes.push(x as u64);
-
-        let rents: Vec<u64> = sizes.iter().map(|&b| rent_per_block(b)).collect();
-
-        println!("{:>20} │ {:>20}", "storage", "rent");
-        println!("{}", "─".repeat(20 + 3 + 20));
-        for (&bytes, &rent) in sizes.iter().zip(rents.iter()) {
-            println!("{:>20} │ {:>20}", bytes, rent);
-        }
+    #[test]
+    fn rent_owed_basic() {
+        let segments = 10;
+        let last = 100_u64;
+        let current = 110_u64;
+        assert_eq!(
+            rent_owed(segments, last, current),
+            segments * RENT_PER_SEGMENT * (current - last)
+        );
     }
 }

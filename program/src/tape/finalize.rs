@@ -2,7 +2,7 @@ use tape_api::prelude::*;
 use steel::*;
 
 pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = Finalize::try_from_bytes(data)?;
+    let _args = Finalize::try_from_bytes(data)?;
     let [
         signer_info, 
         tape_info,
@@ -58,15 +58,9 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     tape.number            = archive.tapes_stored;
     tape.state             = TapeState::Finalized.into();
     tape.merkle_root       = writer.state.get_root().into();
-    tape.header            = args.header;
 
     // Close the writer and return rent to signer.
     writer_info.close(signer_info)?;
-
-    solana_program::msg!(
-        "Finalizing tape {}",
-        tape.number,
-    );
 
     FinalizeEvent {
         tape: tape.number,

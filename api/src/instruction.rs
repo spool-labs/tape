@@ -12,6 +12,8 @@ pub enum InstructionType {
     Write,
     Update,
     Finalize,
+    SetHeader,
+    PayRent,
 
     // Miner instructions
     Register,
@@ -26,6 +28,8 @@ instruction!(InstructionType, Create);
 instruction!(InstructionType, Write);
 instruction!(InstructionType, Update);
 instruction!(InstructionType, Finalize);
+instruction!(InstructionType, SetHeader);
+instruction!(InstructionType, PayRent);
 
 instruction!(InstructionType, Register);
 instruction!(InstructionType, Close);
@@ -41,7 +45,6 @@ pub struct Initialize {}
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Create {
     pub name: [u8; NAME_LEN],
-    pub header: [u8; HEADER_SIZE],
 }
 
 #[repr(C)]
@@ -61,8 +64,18 @@ pub struct Update {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Finalize {
+pub struct Finalize {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetHeader {
     pub header: [u8; HEADER_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct PayRent {
+    pub amount: [u8; 8],
 }
 
 #[repr(C)]

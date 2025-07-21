@@ -1,5 +1,8 @@
 use crate::consts::*;
 
+// Approximate epochs per year
+const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
+
 /// Pre-computed base rate based on current epoch number. After which, the archive
 /// storage fees would take over, with no further inflation.
 ///

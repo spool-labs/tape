@@ -19,8 +19,8 @@ pub struct Tape {
     pub first_slot: u64,
     pub tail_slot: u64,
 
+    pub balance: u64,
     pub last_rent_block: u64,
-    pub total_rent_paid: u64,
 
     pub total_segments: u64,
     pub total_size: u64,
@@ -33,6 +33,7 @@ pub enum TapeState {
     Created,
     Writing,
     Finalized,
+    Expired,
 }
 
 state!(AccountType, Tape);

@@ -3,7 +3,6 @@ use solana_program::{
     keccak::hashv,
     slot_hashes::SlotHash,
 };
-use brine_tree::MerkleTree;
 use steel::*;
 
 pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -78,12 +77,12 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     tape.total_size        = 0;
     tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
-    tape.header            = args.header;
+    tape.header            = [0; HEADER_SIZE];
     tape.first_slot        = current_slot; 
     tape.tail_slot         = current_slot;
 
     writer.tape            = *tape_info.key;
-    writer.state           = MerkleTree::new(&[empty_seed.as_ref()]);
+    writer.state           = TapeTree::new(&[empty_seed.as_ref()]);
 
     Ok(())
 }

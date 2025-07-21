@@ -1,5 +1,9 @@
 use crankx::Solution;
 use brine_tree::{Leaf, verify};
+use solana_program::{
+    keccak::hashv,
+    slot_hashes::SlotHash,
+};
 use steel::*;
 use tape_api::prelude::*;
 
@@ -33,7 +37,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         .as_account_mut::<Block>(&tape_api::ID)?;
 
     let tape = tape_info
-        .as_account::<Tape>(&tape_api::ID)?;
+        .as_account_mut::<Tape>(&tape_api::ID)?;
 
     let miner = miner_info
         .as_account_mut::<Miner>(&tape_api::ID)?;
@@ -120,8 +124,13 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     // Update miner multiplier
     update_miner_multiplier(miner, block);
 
+    // Divide the scaled reward by the target participation, each miner gets an equal share
+    let available_reward = epoch.reward_rate
+        .saturating_div(epoch.target_participation);
+
+    // Scale the reward based on miner's consistency (how active they have been)
     let final_reward = get_scaled_reward(
-        epoch.reward_rate,
+        available_reward,
         miner.multiplier
     );
 
@@ -142,6 +151,28 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     block.progress = block.progress
         .saturating_add(1);
 
+    // Apply rent to the tape
+    let rent = tape.rent_owed(block.number);
+    tape.balance = tape.balance.saturating_sub(rent);
+
+    // Check if the tape can be removed from the archive
+    if tape.balance <= 0 {
+        let empty_seed = hashv(&[
+            tape_info.key.as_ref(),
+            &slot_hashes_info.data.borrow()[
+                0..core::mem::size_of::<SlotHash>()
+            ],
+        ]);
+
+        let empty_tree = TapeTree::new(&[empty_seed.as_ref()]);
+
+        tape.state             = TapeState::Expired.into();
+        tape.total_segments    = 0;
+        tape.total_size        = 0;
+        tape.merkle_seed       = empty_seed.to_bytes();
+        tape.merkle_root       = empty_tree.get_root().to_bytes();
+    }
+
     // Check if we need to advance the block
     if block.progress >= epoch.target_participation {
         advance_block(block, current_time)?;
@@ -159,9 +190,8 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     if epoch.progress >= EPOCH_BLOCKS {
         advance_epoch(epoch, current_time)?;
 
-        // Update the reward rate for the new epoch
-        let storage_rate   = get_storage_rate(archive.bytes_stored);
-        let base_rate = get_base_rate(epoch.number);
+        let base_rate     = get_base_rate(epoch.number);
+        let storage_rate  = archive.block_reward();
 
         epoch.reward_rate = storage_rate
             .saturating_add(base_rate);
@@ -274,7 +304,9 @@ fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 }
 
 // Every epoch, the protocol adjusts the minimum required unique proofs for a single block. This
-// is referred to as the participation target.
+// is referred to as the participation target. We allow increasing only every ADJUSTMENT_INTERVAL
+// epochs while decreasing can happen every epoch. This helps keep the blocks going in case of a
+// large drop in participation.
 //
 // Participation Target (X):
 // * If all submissions during the epoch came from unique miners, increase X by 1.
@@ -283,13 +315,16 @@ fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 // This helps tune how many miners can share in a block reward, balancing inclusivity and competitiveness.
 #[inline(always)]
 fn adjust_participation(epoch: &mut Epoch) {
+
     // If all miner submissions were unique, increase by 1
     if epoch.duplicates == 0 {
-        epoch.target_participation = epoch.target_participation
-            .saturating_add(1)
-            .min(MAX_PARTICIPATION_TARGET);
+        if (epoch.number % ADJUSTMENT_INTERVAL) == 0 {
+            epoch.target_participation = epoch.target_participation
+                .saturating_add(1)
+                .min(MAX_PARTICIPATION_TARGET);
+        }
 
-    // If there were duplicates, decrease target by 1
+    // If there were duplicates, decrease target by 1 (regardless of the ADJUSTMENT_INTERVAL)
     } else {
         epoch.target_participation = epoch.target_participation
             .saturating_sub(1)
