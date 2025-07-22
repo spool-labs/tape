@@ -178,8 +178,6 @@ fn do_mining_run(
         let tape_account = svm.get_account(&stored_tape.pubkey).unwrap();
         let tape = Tape::unpack(&tape_account.data).unwrap();
 
-        println!("Using tape: {}; is_subsidized(): {}", stored_tape.pubkey, tape.is_subsidized());
-
         let (solution, recall_segment, merkle_proof) = 
             if tape.is_subsidized() {
                 compute_challenge_solution(stored_tape, &miner, &epoch, &block)

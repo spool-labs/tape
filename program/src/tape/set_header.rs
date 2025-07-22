@@ -23,7 +23,6 @@ pub fn process_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     tape_info.has_address(&tape_address)?;
 
-
     check_condition(
         tape.state.eq(&u64::from(TapeState::Writing)),
         TapeError::UnexpectedState,

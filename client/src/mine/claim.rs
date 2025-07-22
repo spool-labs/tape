@@ -4,7 +4,6 @@ use solana_sdk::{
     signature::{Keypair, Signature, Signer},
     transaction::Transaction,
     pubkey::Pubkey,
-    instruction::Instruction,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 
@@ -20,7 +19,7 @@ pub async fn claim_rewards(
 ) -> Result<Signature> {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(50_000);
-    let claim_ix: Instruction = build_claim_ix(signer.pubkey(), miner, beneficiary, amount);
+    let claim_ix = build_claim_ix(signer.pubkey(), miner, beneficiary, amount);
 
     let blockhash_bytes = get_latest_blockhash(client).await?;
     let recent_blockhash = deserialize(&blockhash_bytes)?;
