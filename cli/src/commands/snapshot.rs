@@ -1,6 +1,7 @@
 use std::env;
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -25,7 +26,7 @@ use crate::cli::{Cli, Commands, SnapshotCommands};
 use crate::log;
 use crate::utils::write_output;
 
-pub async fn handle_snapshot_commands(cli: Cli, client: RpcClient) -> Result<()> {
+pub async fn handle_snapshot_commands(cli: Cli, client: Arc<RpcClient>,) -> Result<()> {
     if let Commands::Snapshot(snapshot) = cli.command {
         match snapshot {
             SnapshotCommands::Stats {} => {
@@ -62,7 +63,7 @@ fn handle_stats() -> Result<()> {
     Ok(())
 }
 
-async fn handle_resync(client: &RpcClient, tape: &str) -> Result<()> {
+async fn handle_resync(client: &Arc<RpcClient>, tape: &str) -> Result<()> {
     let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
     let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
     let starting_slot = tape_account.tail_slot;
@@ -90,7 +91,7 @@ fn handle_load(input: &str) -> Result<()> {
 }
 
 async fn handle_get_tape(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     tape: &str,
     output: Option<String>,
     raw: bool,
@@ -138,7 +139,7 @@ async fn handle_get_tape(
     Ok(())
 }
 
-async fn handle_get_segment(client: &RpcClient, tape: &str, index: u32) -> Result<()> {
+async fn handle_get_segment(client: &Arc<RpcClient>, tape: &str, index: u32) -> Result<()> {
     let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
     let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
     if (index as u64) >= tape_account.total_segments {

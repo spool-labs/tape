@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use solana_sdk::{
     signature::{Keypair, Signer, Signature},
@@ -10,7 +12,7 @@ use crate::utils::*;
 
 /// Creates a new tape and returns the tape address, writer address, and initial signature.
 pub async fn create_tape(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     name: &str,
 ) -> Result<(Pubkey, Pubkey, Signature)> {

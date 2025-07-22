@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -10,7 +12,7 @@ use spl_associated_token_account::instruction::create_associated_token_account;
 use crate::utils::{deserialize, get_latest_blockhash, send_and_confirm_transaction};
 
 pub async fn create_ata(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     payer: &Keypair,
 ) -> Result<(Pubkey, Signature)> {
     let token_program_id = &spl_token::ID;

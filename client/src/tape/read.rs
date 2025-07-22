@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status_client_types::TransactionDetails;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::{collections::{BinaryHeap, HashMap, HashSet}, sync::Arc};
 use tape_api::prelude::*;
 use crate::utils::*;
 
@@ -29,7 +29,7 @@ pub fn init_read(start_slot: u64) -> ReadState {
 }
 
 pub async fn process_next_block(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     tape_address: &Pubkey,
     state: &mut ReadState,
 ) -> Result<bool> {
@@ -89,7 +89,7 @@ pub fn finalize_read(state: ReadState) -> Result<Vec<u8>> {
 }
 
 pub async fn read_from_block(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     tape_address: &Pubkey,
     slot: u64,
 ) -> Result<Vec<u8>> {

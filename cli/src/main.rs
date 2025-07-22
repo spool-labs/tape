@@ -4,6 +4,8 @@ mod log;
 mod commands;
 mod utils;
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -26,7 +28,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let rpc_url = cli.cluster.rpc_url();
-    let rpc_client = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized());
+    let rpc_client = Arc::new(RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized()));
     let keypair_path = get_keypair_path(cli.keypair_path.clone());
 
     match cli.command {

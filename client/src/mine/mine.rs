@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
@@ -12,7 +14,7 @@ use tape_api::prelude::*;
 use crate::utils::*;
 
 pub async fn perform_mining(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     miner_address: Pubkey,
     tape_address: Pubkey,

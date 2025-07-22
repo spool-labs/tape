@@ -29,7 +29,7 @@ const SEGMENTS_PER_TX: usize = 7; // 7 x 128 = 896 bytes
 const SAFE_SIZE: usize = SEGMENT_SIZE * SEGMENTS_PER_TX;
 const MAX_CONCURRENT: usize = 10;
 
-pub async fn handle_write_command(cli: Cli, client: RpcClient, payer: Keypair) -> Result<()> {
+pub async fn handle_write_command(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
     if let Commands::Write {
         ref filename,
         ref message,

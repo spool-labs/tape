@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -6,7 +8,7 @@ use solana_sdk::signature::Keypair;
 use crate::cli::{Cli, Commands};
 use crate::log;
 
-pub async fn handle_admin_commands(cli: Cli, client: RpcClient, payer: Keypair) -> Result<()> {
+pub async fn handle_admin_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
 
     log::print_divider();
     let proceed = Confirm::with_theme(&ColorfulTheme::default())

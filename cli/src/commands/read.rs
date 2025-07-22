@@ -4,6 +4,7 @@ use num_enum::TryFromPrimitive;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::{task, time::Duration};
 
 use crate::cli::{Cli, Commands};
@@ -15,7 +16,7 @@ use tape_client::{
     TapeHeader,
 };
 
-pub async fn handle_read_command(cli: Cli, client: RpcClient) -> Result<()> {
+pub async fn handle_read_command(cli: Cli, client: Arc<RpcClient>) -> Result<()> {
     if let Commands::Read { tape, output } = cli.command {
         let tape_address = Pubkey::from_str(&tape)
             .map_err(|_| anyhow::anyhow!("Invalid tape address: {}", tape))?;

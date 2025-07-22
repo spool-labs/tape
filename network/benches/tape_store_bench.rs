@@ -38,6 +38,33 @@ fn bench_add_segments(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_add_segments_batch(c: &mut Criterion) {
+    let temp_dir = TempDir::new("bench_add_segments_batch").unwrap();
+    let store = TapeStore::new(temp_dir.path()).unwrap();
+
+    let mut group = c.benchmark_group("add_segments_batch");
+    group.bench_function("batch", |b| {
+        let tape_address = Pubkey::new_unique();
+        let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
+        let segment_numbers = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
+        let segment_data = (0..SEGMENTS_PER_TAPE)
+            .map(|_| generate_random_data(SEGMENT_SIZE))
+            .collect::<Vec<_>>();
+
+        b.iter(|| {
+            store
+                .add_segments_batch(
+                    black_box(&segment_addresses),
+                    black_box(&segment_numbers),
+                    black_box(segment_data.clone()),
+                )
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
+
 fn bench_add_slots(c: &mut Criterion) {
     let temp_dir = TempDir::new("bench_add_slots").unwrap();
     let store = TapeStore::new(temp_dir.path()).unwrap();
@@ -60,6 +87,31 @@ fn bench_add_slots(c: &mut Criterion) {
     });
     group.finish();
 }
+
+fn bench_add_slots_batch(c: &mut Criterion) {
+    let temp_dir = TempDir::new("bench_add_slots_batch").unwrap();
+    let store = TapeStore::new(temp_dir.path()).unwrap();
+
+    let mut group = c.benchmark_group("add_slots_batch");
+    group.bench_function("batch", |b| {
+        let tape_address = Pubkey::new_unique();
+        let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
+        let segment_numbers = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
+        let slot_values = (0..SEGMENTS_PER_TAPE as u64).collect::<Vec<_>>();
+
+        b.iter(|| {
+            store
+                .add_slots_batch(
+                    black_box(&segment_addresses),
+                    black_box(&segment_numbers),
+                    black_box(&slot_values),
+                )
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
 
 fn bench_add_tape(c: &mut Criterion) {
     let mut group = c.benchmark_group("add_tape");
@@ -119,6 +171,25 @@ fn bench_add_many_tapes(c: &mut Criterion) {
     });
     group.finish();
 }
+
+fn bench_add_tapes_batch(c: &mut Criterion) {
+    let temp_dir = TempDir::new("bench_add_tapes_batch").unwrap();
+    let store = TapeStore::new(temp_dir.path()).unwrap();
+
+    let mut group = c.benchmark_group("add_tapes_batch");
+    group.bench_function("batch", |b| {
+        let tape_addresses = (0..NUM_TAPES).map(|_| Pubkey::new_unique()).collect::<Vec<_>>();
+        let tape_numbers = (1..=NUM_TAPES as u64).collect::<Vec<_>>();
+
+        b.iter(|| {
+            store
+                .add_tapes_batch(black_box(&tape_numbers), black_box(&tape_addresses))
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
 
 fn bench_get_segment(c: &mut Criterion) {
     let temp_dir = TempDir::new("bench_get_segment").unwrap();
@@ -302,9 +373,12 @@ criterion_group! {
     config = customized_criterion();
     targets = 
         bench_add_segments,
+        bench_add_segments_batch,
         bench_add_slots,
+        bench_add_slots_batch,
         bench_add_tape,
         bench_add_many_tapes,
+        bench_add_tapes_batch,
         bench_get_segment,
         bench_get_tape_segments,
         bench_get_slot,
