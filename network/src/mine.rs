@@ -83,31 +83,47 @@ async fn try_mine_iteration(
             .await
             .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
 
-        let segment_number = compute_recall_segment(
-            &miner_challenge,
-            tape.total_segments
-        );
+        
+        let (solution, recall_segment, merkle_proof) = if tape.has_minimum_rent() {
+            // This tape has minimum rent, we can recall a segment
+            
+            let segment_number = compute_recall_segment(
+                &miner_challenge,
+                tape.total_segments
+            );
 
-        // Find the slot for the segment
-        let segment_slot = store.get_slot(tape_number, segment_number)?;
+            // Find the slot for the segment
+            let segment_slot = store.get_slot(tape_number, segment_number)?;
 
-        // Get the entire tape
-        let segments = store.get_tape_segments(&tape_address)?;
-        if segments.len() != tape.total_segments as usize {
-            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
-                tape_address, tape.total_segments, segments.len()));
-        }
+            // Get the entire tape
+            let segments = store.get_tape_segments(&tape_address)?;
+            if segments.len() != tape.total_segments as usize {
+                return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
+                    tape_address, tape.total_segments, segments.len()));
+            }
 
-        debug!("Recall tape {}, segment {}, slot: {:?}", tape_number, segment_number, segment_slot);
+            debug!("Recall tape {}, segment {}, slot: {:?}", tape_number, segment_number, segment_slot);
 
-        let (solution, recall_segment, merkle_proof) = 
             compute_challenge_solution(
                 &tape,
                 &miner_challenge,
                 segment_number,
                 segments,
                 epoch.target_difficulty,
+            )?
+
+        // This tape does not have minimum rent, we use an empty segment
+        } else {
+            debug!("Tape {} does not have minimum rent, using empty segment", tape_address);
+
+            let solution = solve_challenge(
+                miner_challenge,
+                &EMPTY_SEGMENT,
+                epoch.target_difficulty,
             )?;
+
+            (solution, EMPTY_SEGMENT, EMPTY_PROOF)
+        };
 
         let sig = perform_mining(
             client, 

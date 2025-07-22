@@ -171,10 +171,14 @@ fn do_mining_run(
             if tape.has_minimum_rent() {
                 compute_challenge_solution(stored_tape, &miner, &epoch, &block)
             } else {
-                let solution = solve_challenge(miner_challenge, &EMPTY_SEGMENT, epoch.target_difficulty).unwrap();
-                let segment = [0; SEGMENT_SIZE];
-                let proof = [[0; 32]; PROOF_LEN];
-                (solution, segment, proof)
+
+                let solution = solve_challenge(
+                    miner_challenge, 
+                    &EMPTY_SEGMENT, 
+                    epoch.target_difficulty
+                ).unwrap();
+
+                (solution, EMPTY_SEGMENT, EMPTY_PROOF)
             };
 
         perform_mining(

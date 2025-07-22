@@ -216,7 +216,6 @@ pub enum MimeType {
     ApplicationYaml        = 72,  // application/x-yaml
 }
 
-
 /// Sets the tape header for a given tape account.
 pub async fn set_header(
     client: &RpcClient,

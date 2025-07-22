@@ -78,8 +78,11 @@ pub const ADJUSTMENT_INTERVAL: u64 = 50;
 // ====================================================================
 /// Rent charged per segment per block
 pub const RENT_PER_SEGMENT: u64 = 100; // TODO: adjust this value
-/// Empty segment of SEGMENT_SIZE bytes used for expired tapes
+                                       ///
+/// Empty segment of SEGMENT_SIZE bytes for tapes that don't have minimum rent
 pub const EMPTY_SEGMENT: [u8; SEGMENT_SIZE] = [0; SEGMENT_SIZE];
+/// Empty Merkle proof for tapes that don't have minimum rent
+pub const EMPTY_PROOF: [[u8; 32]; PROOF_LEN] = [[0; 32]; PROOF_LEN];
 
 // ====================================================================
 // Miscellaneous
