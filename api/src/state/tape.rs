@@ -33,7 +33,6 @@ pub enum TapeState {
     Created,
     Writing,
     Finalized,
-    Expired,
 }
 
 state!(AccountType, Tape);

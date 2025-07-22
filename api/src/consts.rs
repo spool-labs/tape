@@ -53,7 +53,7 @@ pub const ONE_TAPE: u64 = 10u64.pow(TOKEN_DECIMALS as u32);
 pub const MAX_SUPPLY: u64 = 7_000_000 * ONE_TAPE;
 
 /// Minimum PoW solution difficulty
-pub const MIN_DIFFICULTY: u64              = 7;
+pub const MIN_DIFFICULTY: u64              = 1;
 /// Minimum block participation required to solve a block
 pub const MIN_PARTICIPATION_TARGET: u64    = 1;
 /// Maximum block participation required to solve a block

@@ -134,8 +134,6 @@ pub fn build_subsidize_ix(
             AccountMeta::new(tape, false),
             AccountMeta::new(TREASURY_ATA, false),
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: Subsidize {
             amount: amount.to_le_bytes(),

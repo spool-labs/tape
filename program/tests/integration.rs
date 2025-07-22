@@ -1,7 +1,6 @@
 #![cfg(test)]
 pub mod utils;
 use utils::*;
-use rand::Rng;
 
 use solana_sdk::{
     signer::Signer,
@@ -40,7 +39,7 @@ fn run_integration() {
     fetch_genesis_tape(&mut svm, &payer, &mut tape_db);
 
     // Verify initial accounts
-    verify_archive_account(&svm, 0);
+    verify_archive_account(&svm, 1);
     verify_epoch_account(&svm);
     verify_block_account(&svm);
     verify_treasury_account(&svm);
@@ -48,126 +47,160 @@ fn run_integration() {
     verify_metadata_account(&svm);
     verify_treasury_ata(&svm);
 
-    // Advance clock
-    let mut initial_clock = svm.get_sysvar::<Clock>();
-    initial_clock.slot = 42;
-    svm.set_sysvar::<Clock>(&initial_clock);
-
     // Register miner
     let miner_name = "miner-name";
     let miner_address = register_miner(&mut svm, &payer, miner_name);
+    let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
 
-    // Get miner and epoch data
-    let miner_account = svm.get_account(&miner_address).unwrap();
-    let miner = Miner::unpack(&miner_account.data).unwrap();
+    // Mine the genesis tape (to earn some tokens)
+    do_mining_run(&mut svm, &payer, miner_address, &mut tape_db, 5);
+    claim_rewards(&mut svm, &payer, miner_address, ata);
 
-    let (epoch_address, _epoch_bump) = epoch_pda();
-    let epoch_account = svm.get_account(&epoch_address).unwrap();
-    let epoch = Epoch::unpack(&epoch_account.data).unwrap();
+    let ata_balance = get_ata_balance(&svm, &ata);
+    assert!(ata_balance > 0);
 
-    let (block_address, _block_bump) = block_pda();
-    let block_account = svm.get_account(&block_address).unwrap();
-    let block = Block::unpack(&block_account.data).unwrap();
+    println!("ATA balance after claiming rewards: {}", ata_balance);
 
-    let miner_challenge = compute_challenge(
-        &block.challenge,
-        &miner.challenge,
-    );
+    // Advance clock
+    let mut initial_clock = svm.get_sysvar::<Clock>();
+    initial_clock.slot = 10;
+    svm.set_sysvar::<Clock>(&initial_clock);
 
-    let recall_tape = compute_recall_tape(
-        &miner_challenge,
-        block.challenge_set
-    );
-
-    println!("Recall tape: {}", recall_tape);
-    println!("Computed challenge: {:?}", miner_challenge);
-
-    // Compute challenge solution for genesis tape
-    let stored_tape = &tape_db[(recall_tape - 1) as usize];
-    let (solution, recall_segment, merkle_proof) = 
-        compute_challenge_solution(stored_tape, &miner, &epoch, &block);
-
-    // Perform first mining on genesis tape
-    perform_mining(
-        &mut svm,
-        &payer,
-        miner_address,
-        stored_tape.pubkey,
-        solution,
-        recall_segment,
-        merkle_proof,
-    );
-
-    // Verify genesis tape is in expired state
-    let account = svm.get_account(&stored_tape.pubkey).unwrap();
-    let tape = Tape::unpack(&account.data).unwrap();
-    assert_eq!(tape.state, u64::from(TapeState::Expired));
-
-    // Store miner's rewards after first mining
-    let account = svm.get_account(&miner_address).unwrap();
-    let miner_after_first_mine = Miner::unpack(&account.data).unwrap();
-    let rewards_after_first_mine = miner_after_first_mine.unclaimed_rewards;
-
-    // Perform second mining run on expired genesis tape
-    // Recompute miner and block state
-    let miner_account = svm.get_account(&miner_address).unwrap();
-    let miner = Miner::unpack(&miner_account.data).unwrap();
-
-    let block_account = svm.get_account(&block_address).unwrap();
-    let block = Block::unpack(&block_account.data).unwrap();
-
-    let epoch_account = svm.get_account(&epoch_address).unwrap();
-    let epoch = Epoch::unpack(&epoch_account.data).unwrap();
-
-    let miner_challenge = compute_challenge(
-        &block.challenge,
-        &miner.challenge,
-    );
-
-    let recall_tape = compute_recall_tape(
-        &miner_challenge,
-        block.challenge_set
-    );
-
-    println!("Second mining recall tape: {}", recall_tape);
-    println!("Second mining computed challenge: {:?}", miner_challenge);
-
-    // Since tape is expired, use EMPTY_SEGMENT
-    let solution = solve_challenge(miner_challenge, &EMPTY_SEGMENT, epoch.target_difficulty).unwrap();
-    let recall_segment = EMPTY_SEGMENT;
-    let merkle_proof = [[0u8; 32]; PROOF_LEN]; // Merkle proof not needed for expired tape
-
-    perform_mining(
-        &mut svm,
-        &payer,
-        miner_address,
-        stored_tape.pubkey,
-        solution,
-        recall_segment,
-        merkle_proof,
-    );
-
-    // Verify second mining run
-    let account = svm.get_account(&miner_address).unwrap();
-    let miner_after_second_mine = Miner::unpack(&account.data).unwrap();
-    assert!(miner_after_second_mine.unclaimed_rewards > rewards_after_first_mine);
-    assert_eq!(tape.state, u64::from(TapeState::Expired));
-
-    // Create additional tapes
-    let tape_count = rand::thread_rng().gen_range(1..=20);
-    for tape_idx in 0..tape_count {
+    // Create tapes
+    let tape_count = 5;
+    for tape_idx in 1..tape_count {
         create_and_verify_tape(&mut svm, &payer, tape_idx as u64, &mut tape_db);
+
+        let stored_tape = &tape_db[tape_idx as usize - 1];
+        let tape_address = stored_tape.pubkey;
+        let min_rent = stored_tape.account.rent_per_block();
+
+        subsidize_tape_rent(&mut svm, &payer, ata, tape_address, min_rent);
+
+        // Verify the tape is subsidized
+        let account = svm.get_account(&tape_address).unwrap();
+        let tape = Tape::unpack(&account.data).unwrap();
+        assert!(tape.is_subsidized());
     }
 
     // Verify archive account after tape creation
-    verify_archive_account(&svm, tape_count as u64);
+    verify_archive_account(&svm, tape_count);
 
-    // Print final state
+    // Mine again with more tapes this time
+    do_mining_run(&mut svm, &payer, miner_address, &mut tape_db, 5);
+}
+
+fn subsidize_tape_rent(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    ata: Pubkey,
+    tape_address: Pubkey,
+    amount: u64,
+) {
+    let payer_pk = payer.pubkey();
+
+    let blockhash = svm.latest_blockhash();
+    let ix = build_subsidize_ix(
+        payer_pk, 
+        ata, 
+        tape_address, 
+        amount
+    );
+
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    let account = svm.get_account(&tape_address).unwrap();
+    let tape = Tape::unpack(&account.data).unwrap();
+    assert!(tape.balance >= amount);
+}
+
+fn claim_rewards(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    miner_address: Pubkey,
+    miner_ata: Pubkey,
+) {
+    let payer_pk = payer.pubkey();
+
+    let blockhash = svm.latest_blockhash();
+    let ix = build_claim_ix(
+        payer_pk, 
+        miner_address, 
+        miner_ata, 
+        0 // Claim all unclaimed rewards
+    );
+
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    // Verify miner account after claiming rewards
     let account = svm.get_account(&miner_address).unwrap();
     let miner = Miner::unpack(&account.data).unwrap();
 
-    println!("miner.balance: {:?}", miner.unclaimed_rewards);
-    println!("next challenge: {:?}", miner.challenge);
+    assert!(miner.unclaimed_rewards == 0);
+}
+
+fn do_mining_run(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    miner_address: Pubkey,
+    tape_db: &mut Vec<StoredTape>,
+    num_iterations: u64,
+) {
+    for _ in 0..num_iterations {
+
+        let (epoch_address, _epoch_bump) = epoch_pda();
+        let epoch_account = svm.get_account(&epoch_address).unwrap();
+        let epoch = Epoch::unpack(&epoch_account.data).unwrap();
+
+        let (block_address, _block_bump) = block_pda();
+        let block_account = svm.get_account(&block_address).unwrap();
+        let block = Block::unpack(&block_account.data).unwrap();
+
+        let miner_account = svm.get_account(&miner_address).unwrap();
+        let miner = Miner::unpack(&miner_account.data).unwrap();
+
+        let miner_challenge = compute_challenge(
+            &block.challenge,
+            &miner.challenge,
+        );
+
+        let recall_tape = compute_recall_tape(
+            &miner_challenge,
+            block.challenge_set
+        );
+
+        // Compute challenge solution
+        let stored_tape = &tape_db[(recall_tape - 1) as usize];
+        let tape_account = svm.get_account(&stored_tape.pubkey).unwrap();
+        let tape = Tape::unpack(&tape_account.data).unwrap();
+
+        println!("Using tape: {}; is_subsidized(): {}", stored_tape.pubkey, tape.is_subsidized());
+
+        let (solution, recall_segment, merkle_proof) = 
+            if tape.is_subsidized() {
+                compute_challenge_solution(stored_tape, &miner, &epoch, &block)
+            } else {
+                let solution = solve_challenge(miner_challenge, &EMPTY_SEGMENT, epoch.target_difficulty).unwrap();
+                let segment = [0; SEGMENT_SIZE];
+                let proof = [[0; 32]; PROOF_LEN];
+                (solution, segment, proof)
+            };
+
+        perform_mining(
+            svm,
+            &payer,
+            miner_address,
+            stored_tape.pubkey,
+            solution,
+            recall_segment,
+            merkle_proof,
+        );
+
+    }
 }
 
 fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<StoredTape>) {
@@ -177,6 +210,8 @@ fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<Stor
 
     let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
     let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
+
+    assert!(!tape.is_subsidized());
 
     let genesis_data = b"hello, world";
     let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
@@ -212,7 +247,7 @@ fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
         .get_account(&archive_address)
         .expect("Archive account should exist");
     let archive = Archive::unpack(&account.data).expect("Failed to unpack Archive account");
-    assert_eq!(archive.tapes_stored, expected_tapes_stored + 1);
+    assert_eq!(archive.tapes_stored, expected_tapes_stored);
 }
 
 fn verify_epoch_account(svm: &LiteSVM) {
@@ -283,6 +318,7 @@ fn create_and_verify_tape(
 ) {
     let payer_pk = payer.pubkey();
     let tape_name = format!("tape-name-{}", tape_idx);
+
     let (tape_address, _tape_bump) = tape_pda(payer_pk, &to_name(&tape_name));
     let (writer_address, _writer_bump) = writer_pda(tape_address);
 
@@ -558,7 +594,7 @@ fn finalize_tape(
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
     assert_eq!(tape.state, u64::from(TapeState::Finalized));
-    assert_eq!(tape.number, tape_idx + 2);
+    assert_eq!(tape.number, tape_idx + 1);
     assert_eq!(tape.total_segments, 10);
     assert_eq!(tape.total_size, stored_tape.account.total_size);
     assert_eq!(tape.merkle_root, stored_tape.account.merkle_root);

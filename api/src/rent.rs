@@ -20,6 +20,13 @@ pub const fn rent_owed(
 }
 
 impl Tape {
+
+    /// Check if this tape is subsidized.
+    #[inline]
+    pub fn is_subsidized(&self) -> bool {
+        self.balance >= self.rent_per_block()
+    }
+
     /// Rent this tape owes per block.
     #[inline]
     pub fn rent_per_block(&self) -> u64 {

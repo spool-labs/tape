@@ -6,8 +6,8 @@ pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let [
         signer_info, 
         ata_info,
-        treasury_ata_info, 
         tape_info,
+        treasury_ata_info, 
         token_program_info, 
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);

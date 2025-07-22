@@ -67,6 +67,9 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         block.challenge_set,
     );
 
+    solana_program::msg!("expected tape: {}", tape_number);
+    solana_program::msg!("actual tape: {}", tape.number);
+
     check_condition(
         tape.number == tape_number,
         TapeError::UnexpectedTape,
@@ -171,21 +174,9 @@ fn check_poa(
     solution: &Solution,
 ) -> ProgramResult {
 
-    // For expired tapes, enforce use of the fixed segment (no storage needed)
-    if tape.state == TapeState::Expired as u64 {
-        check_condition(
-            args.recall_segment == EMPTY_SEGMENT,
-            TapeError::SolutionInvalid,
-        )?;
-
-        // Verify PoW using the fixed segment
-        check_condition(
-            solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
-            TapeError::SolutionInvalid,
-        )?;
-
-    // For non-expired tapes, verify the actual recalled segment
-    } else {
+    // Check if the tape is mineable and has enough rent.
+    if tape.is_subsidized() {
+        solana_program::msg!("minable tape");
 
         let segment_number = compute_recall_segment(
             &miner_challenge, 
@@ -215,6 +206,22 @@ fn check_poa(
             solution.is_valid(miner_challenge, &args.recall_segment).is_ok(),
             TapeError::SolutionInvalid,
         )?;
+
+    // For expired tapes, enforce use of the fixed segment (no storage needed)
+    } else {
+        solana_program::msg!("not minable tape");
+
+        check_condition(
+            args.recall_segment == EMPTY_SEGMENT,
+            TapeError::SolutionInvalid,
+        )?;
+
+        // Verify PoW using the fixed segment
+        check_condition(
+            solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
+            TapeError::SolutionInvalid,
+        )?;
+
     }
 
     Ok(())
@@ -231,11 +238,12 @@ fn calculate_reward(epoch: &Epoch, tape: &Tape, multiplier: u64) -> u64 {
         multiplier
     );
 
-    // Reduced reward for expired tapes (they are easier to solve)
-    if tape.state == TapeState::Expired as u64 {
-        scaled_reward.saturating_div(2)
+    // If the tape is subsidized, miners get the full reward.
+    if tape.is_subsidized() {
+        scaled_reward
     } else {
         scaled_reward
+            .saturating_div(2)
     }
 }
 
@@ -256,13 +264,9 @@ fn update_miner_state(
 
 fn update_tape_balance(tape: &mut Tape, block_number: u64) {
     let rent = tape.rent_owed(block_number);
+
     tape.balance = tape.balance
         .saturating_sub(rent);
-
-    // Check if the tape can be removed from the archive
-    if tape.balance <= 0 {
-        tape.state = TapeState::Expired.into();
-    }
 }
 
 fn update_epoch(

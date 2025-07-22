@@ -38,7 +38,12 @@ pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    let amount = u64::from_le_bytes(args.amount);
+    let mut amount = u64::from_le_bytes(args.amount);
+
+    // If amount is zero, we claim the entire unclaimed rewards.
+    if amount == 0 {
+        amount = miner.unclaimed_rewards;
+    }
 
     // Update miner balance.
     miner.unclaimed_rewards = miner
