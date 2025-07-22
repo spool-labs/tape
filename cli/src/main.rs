@@ -6,24 +6,35 @@ mod utils;
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use clap::Parser;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
-
 use cli::{Cli, Commands};
 use keypair::{ get_payer, get_keypair_path };
 use commands::{admin, read, write, info, snapshot, network, claim};
 use env_logger::{self, Env};
 
-#[tokio::main]
-async fn main() -> Result<()> {
 
+fn main() -> Result<()>{
     // setup env_logger
     env_logger::Builder::from_env(Env::default()
         .default_filter_or(format!("tape_network=trace,tape_client=trace"))).init();
     
-   
+    let num_threads = num_cpus::get();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_threads)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(run_tape_cli())
+}
+
+
+async fn run_tape_cli() -> Result<()> {
+
     log::print_title(format!("⊙⊙ TAPEDRIVE {}", env!("CARGO_PKG_VERSION")).as_str());
 
     let cli = Cli::parse();

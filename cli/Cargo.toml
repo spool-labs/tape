@@ -34,6 +34,7 @@ console.workspace = true
 num_enum.workspace = true
 log.workspace = true
 env_logger.workspace = true
+num_cpus.workspace = true
 
 mime.workspace = true
 mime_guess.workspace = true
