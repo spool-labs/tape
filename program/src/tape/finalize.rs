@@ -52,6 +52,12 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         TapeError::UnexpectedState,
     )?;
 
+    // Can't finalize the tape if it doesn't have enough rent
+    check_condition(
+        tape.is_subsidized(),
+        TapeError::InsufficientRent,
+    )?;
+
     archive.tapes_stored = archive.tapes_stored.saturating_add(1);
     archive.bytes_stored = archive.bytes_stored.saturating_add(tape.total_size);
 

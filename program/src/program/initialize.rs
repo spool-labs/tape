@@ -1,5 +1,5 @@
 use tape_api::prelude::*;
-use solana_program::{program_pack::Pack, program::invoke};
+use solana_program::{program_pack::Pack, program::{invoke, invoke_signed}};
 use spl_token::state::Mint;
 use steel::*;
 
@@ -12,7 +12,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         metadata_info, 
         mint_info, 
         treasury_info, 
-        treasury_tokens_info, 
+        treasury_ata_info, 
         tape_info,
         writer_info,
         tape_program_info,
@@ -64,7 +64,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?
         .has_address(&treasury_address)?;
 
-    treasury_tokens_info
+    treasury_ata_info
         .is_empty()?
         .is_writable()?;
 
@@ -200,7 +200,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     create_associated_token_account(
         signer_info,
         treasury_info,
-        treasury_tokens_info,
+        treasury_ata_info,
         mint_info,
         system_program_info,
         token_program_info,
@@ -210,7 +210,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Fund the treasury token account.
     mint_to_signed(
         mint_info,
-        treasury_tokens_info,
+        treasury_ata_info,
         treasury_info,
         token_program_info,
         MAX_SUPPLY,
@@ -223,6 +223,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &to_name(name));
     let (writer_address, _writer_bump) = writer_pda(tape_address);
 
+    // Create the tape
     invoke(
         &build_create_ix(
             *signer_info.key,
@@ -238,6 +239,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         ],
     )?;
 
+    // Write "hello, world" to the tape
     invoke(
         &build_write_ix(
             *signer_info.key,
@@ -252,6 +254,23 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         ],
     )?;
 
+    // Subsidize the tape for 1 block
+    invoke_signed(
+        &build_subsidize_ix(
+            *treasury_info.key,
+            *treasury_ata_info.key,
+            tape_address,
+            rent_per_block(1),
+        ),
+        &[
+            treasury_info.clone(),
+            treasury_ata_info.clone(),
+            tape_info.clone(),
+        ],
+        &[&[TREASURY, &[TREASURY_BUMP]]]
+    )?;
+
+    // Finalize the tape
     invoke(
         &build_finalize_ix(
             *signer_info.key,

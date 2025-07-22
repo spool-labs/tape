@@ -69,18 +69,7 @@ fn run_integration() {
     // Create tapes
     let tape_count = 5;
     for tape_idx in 1..tape_count {
-        create_and_verify_tape(&mut svm, &payer, tape_idx as u64, &mut tape_db);
-
-        let stored_tape = &tape_db[tape_idx as usize - 1];
-        let tape_address = stored_tape.pubkey;
-        let min_rent = stored_tape.account.rent_per_block();
-
-        subsidize_tape_rent(&mut svm, &payer, ata, tape_address, min_rent);
-
-        // Verify the tape is subsidized
-        let account = svm.get_account(&tape_address).unwrap();
-        let tape = Tape::unpack(&account.data).unwrap();
-        assert!(tape.is_subsidized());
+        create_and_verify_tape(&mut svm, &payer, ata, tape_idx as u64, &mut tape_db);
     }
 
     // Verify archive account after tape creation
@@ -90,7 +79,7 @@ fn run_integration() {
     do_mining_run(&mut svm, &payer, miner_address, &mut tape_db, 5);
 }
 
-fn subsidize_tape_rent(
+fn subsidize_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
     ata: Pubkey,
@@ -209,7 +198,7 @@ fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<Stor
     let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
     let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
 
-    assert!(!tape.is_subsidized());
+    assert!(tape.is_subsidized());
 
     let genesis_data = b"hello, world";
     let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
@@ -311,6 +300,7 @@ fn verify_treasury_ata(svm: &LiteSVM) {
 fn create_and_verify_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    ata: Pubkey,
     tape_idx: u64,
     tape_db: &mut Vec<StoredTape>,
 ) {
@@ -350,6 +340,16 @@ fn create_and_verify_tape(
         &mut writer_tree,
     );
 
+    let min_rent = stored_tape.account.rent_per_block();
+
+    subsidize_tape(
+        svm, 
+        &payer, 
+        ata,
+        tape_address, 
+        min_rent,
+    );
+
     finalize_tape(
         svm,
         payer,
@@ -359,7 +359,6 @@ fn create_and_verify_tape(
         tape_idx,
     );
 
-    // Store the finalized tape for later
     tape_db.push(stored_tape);
 }
 
