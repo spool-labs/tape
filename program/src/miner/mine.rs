@@ -174,8 +174,8 @@ fn check_poa(
     solution: &Solution,
 ) -> ProgramResult {
 
-    // Check if the tape is mineable and has enough rent.
-    if tape.is_subsidized() {
+    // Check if the tape can be mined.
+    if tape.has_minimum_rent() {
         solana_program::msg!("minable tape");
 
         let segment_number = compute_recall_segment(
@@ -239,7 +239,7 @@ fn calculate_reward(epoch: &Epoch, tape: &Tape, multiplier: u64) -> u64 {
     );
 
     // If the tape is subsidized, miners get the full reward.
-    if tape.is_subsidized() {
+    if tape.has_minimum_rent() {
         scaled_reward
     } else {
         scaled_reward

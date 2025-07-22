@@ -168,7 +168,7 @@ fn do_mining_run(
         let tape = Tape::unpack(&tape_account.data).unwrap();
 
         let (solution, recall_segment, merkle_proof) = 
-            if tape.is_subsidized() {
+            if tape.has_minimum_rent() {
                 compute_challenge_solution(stored_tape, &miner, &epoch, &block)
             } else {
                 let solution = solve_challenge(miner_challenge, &EMPTY_SEGMENT, epoch.target_difficulty).unwrap();
@@ -198,7 +198,7 @@ fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<Stor
     let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
     let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
 
-    assert!(tape.is_subsidized());
+    assert!(tape.can_finalize());
 
     let genesis_data = b"hello, world";
     let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
@@ -340,7 +340,9 @@ fn create_and_verify_tape(
         &mut writer_tree,
     );
 
-    let min_rent = stored_tape.account.rent_per_block();
+    let min_rent = min_finalization_rent(
+        stored_tape.account.total_segments,
+    );
 
     subsidize_tape(
         svm, 

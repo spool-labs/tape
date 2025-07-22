@@ -54,7 +54,7 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
 
     // Can't finalize the tape if it doesn't have enough rent
     check_condition(
-        tape.is_subsidized(),
+        tape.can_finalize(),
         TapeError::InsufficientRent,
     )?;
 

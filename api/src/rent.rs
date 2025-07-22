@@ -1,11 +1,20 @@
 use crate::consts::*;
 use crate::state::{Tape, Archive};
 
-/// Rent this tape pays **each block**.
-/// Uses saturating math to avoid overflow.
+const BLOCKS_PER_YEAR: u64 = 60 * 60 * 24 * 365 / BLOCK_DURATION_SECONDS;
+
+/// Rent this tape pays each block.
 #[inline]
 pub const fn rent_per_block(total_segments: u64) -> u64 {
-    total_segments.saturating_mul(RENT_PER_SEGMENT)
+    total_segments
+        .saturating_mul(RENT_PER_SEGMENT)
+}
+
+/// Get the minimum rent required for a tape to finalize.
+#[inline]
+pub const fn min_finalization_rent(total_segments: u64) -> u64 {
+    rent_per_block(total_segments)
+        .saturating_mul(BLOCKS_PER_YEAR)
 }
 
 /// Rent owed from `last_block` (exclusive) up to `current_block` (inclusive).
@@ -23,8 +32,14 @@ impl Tape {
 
     /// Check if this tape is subsidized.
     #[inline]
-    pub fn is_subsidized(&self) -> bool {
+    pub fn has_minimum_rent(&self) -> bool {
         self.balance >= self.rent_per_block()
+    }
+
+    /// Check if this tape has enough balance to cover finalization.
+    #[inline]
+    pub fn can_finalize(&self) -> bool {
+        self.balance >= min_finalization_rent(self.total_segments)
     }
 
     /// Rent this tape owes per block.

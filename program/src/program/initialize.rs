@@ -260,7 +260,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             *treasury_info.key,
             *treasury_ata_info.key,
             tape_address,
-            rent_per_block(1),
+            min_finalization_rent(1),
         ),
         &[
             treasury_info.clone(),
