@@ -67,7 +67,6 @@ async fn main() -> Result<()> {
 
         // Miner Commands
 
-        Commands::Register { .. } |
         Commands::Claim { .. } => {
             let payer = get_payer(keypair_path)?;
             claim::handle_claim_command(cli, rpc_client, payer).await?;
@@ -75,6 +74,7 @@ async fn main() -> Result<()> {
 
         // Network Commands
 
+        Commands::Register { .. } |
         Commands::Web { .. } |
         Commands::Archive { .. } |
         Commands::Mine { .. } => {

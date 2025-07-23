@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tape_api::prelude::*;
 use anyhow::{Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
@@ -218,7 +220,7 @@ pub enum MimeType {
 
 /// Sets the tape header for a given tape account.
 pub async fn set_header(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     tape_address: Pubkey,
     header: TapeHeader,

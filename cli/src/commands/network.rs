@@ -25,8 +25,8 @@ pub async fn handle_network_commands(cli: Cli, client: Arc<RpcClient>, payer: Ke
         Commands::Web { port } => {
             handle_web(port).await?;
         }
-        Commands::Archive { starting_slot, trusted_peer } => {
-            handle_archive(&client, starting_slot, trusted_peer).await?;
+        Commands::Archive { starting_slot, trusted_peer, miner_address } => {
+            handle_archive(&client, starting_slot, trusted_peer, miner_address).await?;
         }
         Commands::Mine { pubkey, name } => {
             handle_mine(&client, &payer, pubkey, name).await?;
@@ -39,7 +39,7 @@ pub async fn handle_network_commands(cli: Cli, client: Arc<RpcClient>, payer: Ke
     Ok(())
 }
 
-async fn handle_web(port: Option<u16>) -> Result<()> {
+pub async fn handle_web(port: Option<u16>) -> Result<()> {
     let port = port.unwrap_or(3000);
 
     log::print_info("Starting web RPC service...");
@@ -50,7 +50,7 @@ async fn handle_web(port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>, trusted_peer: Option<String>) -> Result<()> {
+pub async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>, trusted_peer: Option<String>, miner_address: Option<String>) -> Result<()> {
     // Use the public devnet peer if none is provided
     let trusted_peer = match client.url() {
         url if url.contains("devnet") => {
@@ -59,14 +59,21 @@ async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>, tru
         _ => trusted_peer
     };
 
-    log::print_info("Starting archive service...");
+    let miner_address = if let Some(addr) = miner_address {
+        Some(Pubkey::from_str(&addr).unwrap())
+    } else {
+        None
+    };
 
     let primary_store = tape_network::store::primary()?;
-    archive_loop(&primary_store, client, starting_slot, trusted_peer).await?;
+
+    log::print_info("Starting archive service...");
+    archive_loop(&primary_store, client, miner_address, starting_slot, trusted_peer).await?;
+
     Ok(())
 }
 
-async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Option<String>, name: Option<String>) -> Result<()> {
+pub async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Option<String>, name: Option<String>) -> Result<()> {
     log::print_info("Starting mining service...");
 
     let miner_address = resolve_miner(client, payer, pubkey, name, true).await?;
@@ -78,7 +85,7 @@ async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Option<St
     Ok(())
 }
 
-async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: String) -> Result<()> {
+pub async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: String) -> Result<()> {
     log::print_info("Registering miner...");
 
     let (miner_address, _) = miner_pda(payer.pubkey(), to_name(&name));

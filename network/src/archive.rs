@@ -7,29 +7,47 @@ use solana_transaction_status_client_types::TransactionDetails;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use tokio::time::{sleep, Duration};
-use tape_client::{get_slot, get_blocks_with_limit, get_block_by_number, get_archive_account};
+use tape_client::{
+    get_slot, get_blocks_with_limit, get_block_by_number, get_archive_account,
+    get_tape_account, find_tape_account, init_read, process_next_block,
+    get_block_account, get_miner_account
+};
 use tape_client::utils::{process_block, ProcessedBlock};
 use reqwest::Client as HttpClient;
 use serde_json::json;
 use base64::decode;
+use tape_api::prelude::*;
 
 use super::store::TapeStore;
 
-pub const ARCHIVE_PROCESS_MAX_CONCURRENCY: usize = 10;
+pub const MAX_CONCURRENCY: usize = 10;
 
 /// Archive loop that continuously fetches and processes blocks from the Solana network.
 pub async fn archive_loop(
     store: &TapeStore,
     client: &Arc<RpcClient>,
+    miner_address: Option<Pubkey>,
     starting_slot: Option<u64>,
     trusted_peer: Option<String>,
 ) -> Result<()> {
     // If a trusted peer is provided, sync with it first
-    if let Some(peer_url) = trusted_peer.clone() {
+
+    if let Some(miner_address) = miner_address {
+        debug!("Using provided miner address: {}", miner_address);
+    } else {
+        debug!("No miner address provided, will not try to fetch miner data, only archive blocks");
+    }
+
+    debug!("Syncing missing tape addresses");
+    debug!("This may take a while... please be patient");
+
+    
+    if let Some(ref peer_url) = trusted_peer {
         debug!("Using trusted peer: {}", peer_url);
-        debug!("Syncing with trusted peer");
-        debug!("This may take a while... please be patient");
-        sync_with_trusted_peer(store, client, &peer_url).await?;
+        sync_addresses_from_trusted_peer(store, client, &peer_url).await?;
+    } else {
+        debug!("No trusted peer provided, syncing against Solana directly");
+        sync_addresses_from_solana(store, client).await?;
     }
 
     let interval = Duration::from_secs(2);
@@ -51,6 +69,63 @@ pub async fn archive_loop(
     let mut iteration_count = 0;
 
     loop {
+        debug!(
+            "Starting block processing iteration {}: latest_slot={}, last_processed_slot={}",
+            iteration_count, latest_slot, last_processed_slot
+        );
+
+        // Check what our miner needs at this moment
+        if let Some(miner_address) = miner_address {
+
+            let block = get_block_account(client)
+                .await
+                .map_err(|e| anyhow!("Failed to get block account: {}", e))?.0;
+
+            let miner = get_miner_account(client, &miner_address)
+                .await
+                .map_err(|e| anyhow!("Failed to get miner account: {}", e))?.0;
+
+            let miner_challenge = compute_challenge(
+                &block.challenge,
+                &miner.challenge,
+            );
+
+            let tape_number = compute_recall_tape(
+                &miner_challenge,
+                block.challenge_set
+            );
+
+            debug!("Miner currently needs tape number: {:?}", tape_number);
+
+            if let Ok(tape_address) = store.get_tape_address(tape_number) {
+                let tape = get_tape_account(client, &tape_address)
+                    .await
+                    .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
+
+                if let Ok(segment_count) = store.get_segment_count(&tape_address) {
+
+                    // Check if we have the correct number of segments locally
+                    if segment_count as u64 != tape.total_segments {
+                        debug!("Tape {} has {} segments, found {}, syncing...", tape_address, tape.total_segments, segment_count);
+                        debug!("Syncing segments for tape number {}", tape_number);
+
+                        if let Some(ref peer_url) = trusted_peer {
+                            debug!("Syncing segments from trusted peer: {}", peer_url);
+
+                            sync_segments_from_trusted_peer(store, &tape_address, &peer_url).await?;
+                        } else {
+
+                            debug!("Syncing segments from Solana RPC");
+                            sync_segments_from_solana(store, client, &tape_address).await?;
+                        }
+                    }
+                }
+            } else {
+                error!("Tape address not found for tape number {}", tape_number);
+            }
+        }
+
+
         match try_archive_iteration(
             store,
             client,
@@ -62,7 +137,11 @@ pub async fn archive_loop(
             Err(e) => error!("Block processing iteration failed: {:?}", e),
         }
 
+        // TODO: this is actually not working as intended, we need to both track and handle the
+        // drift properly
         print_drift_status(store, latest_slot, last_processed_slot);
+
+        // TODO: The fixed interval for the next iteration is nonsensical
         sleep(interval).await;
     }
 }
@@ -87,9 +166,8 @@ async fn try_archive_iteration(
     // Fetch up to 100 new slots starting just above what we've processed
     let start = *last_processed_slot + 1;
     let slots = get_blocks_with_limit(&client, start, 100).await?;
-    println!("slots {:?}", slots);
 
-    for slots in slots.chunks(ARCHIVE_PROCESS_MAX_CONCURRENCY) {
+    for slots in slots.chunks(MAX_CONCURRENCY) {
         let processed_blocks = get_processed_blocks_by_slots_batch(client, slots).await?;
         let successfully_processed = processed_blocks.len();
         archive_blocks(store, processed_blocks)?;
@@ -129,8 +207,8 @@ async fn get_processed_block_by_slot(
     Ok(processed)
 }
 
-#[allow(dead_code)]
 /// Archives the processed block data into the store.
+#[allow(dead_code)]
 fn archive_block(store: &TapeStore, block: &ProcessedBlock) -> Result<()> {
     for (address, number) in &block.finalized_tapes {
         store.add_tape(*number, address)?;
@@ -153,6 +231,7 @@ fn archive_blocks(store: &TapeStore, blocks: Vec<ProcessedBlock>) -> Result<()> 
             finalized_tapes,
             segment_writes
         } = block;
+
         // 1. Tape insert batch
         let (tape_numbers, tape_addresses): (Vec<_>, Vec<_>) =
             finalized_tapes.into_iter().map(|(addr, num)| (num, addr)).unzip();
@@ -174,36 +253,6 @@ fn archive_blocks(store: &TapeStore, blocks: Vec<ProcessedBlock>) -> Result<()> 
 
         store.add_segments_batch(&segment_addresses, &segment_numbers, segment_data)?;
         store.add_slots_batch(&segment_addresses, &segment_numbers, &slot_values)?;
-    }
-
-    Ok(())
-}
-
-/// Syncs all tapes up to the current archive count from a trusted peer.
-async fn sync_with_trusted_peer(
-    store: &TapeStore,
-    client: &Arc<RpcClient>,
-    trusted_peer_url: &str,
-) -> Result<()> {
-    // Fetch archive state to know how many tapes exist
-    let (archive, _) = get_archive_account(client).await?;
-    let total = archive.tapes_stored;
-    let http = HttpClient::new();
-
-    for tape_number in 1..=total {
-        // Skip if we already have this tape
-        if store.get_tape_address(tape_number).is_ok() {
-            continue;
-        }
-
-        let tape_address = fetch_tape_address(&http, trusted_peer_url, tape_number).await?;
-        store.add_tape(tape_number, &tape_address)?;
-
-        let segments = fetch_tape_segments(&http, trusted_peer_url, &tape_address).await?;
-
-        for (seg_num, data) in segments {
-            store.add_segment(&tape_address, seg_num, data)?;
-        }
     }
 
     Ok(())
@@ -250,7 +299,6 @@ pub async fn sync_from_block(
         .unzip();
 
         store.add_tapes_batch(&tape_number_vec, &address_vec)?;
-    
 
         let mut parents: HashSet<u64> = HashSet::new();
 
@@ -293,6 +341,95 @@ pub async fn sync_from_block(
         for parent in parents {
             stack.push(parent);
         }
+    }
+
+    Ok(())
+}
+
+/// Syncs tape addresses up to the current archive count from a trusted peer.
+async fn sync_addresses_from_trusted_peer(
+    store: &TapeStore,
+    client: &Arc<RpcClient>,
+    trusted_peer_url: &str,
+) -> Result<()> {
+    let (archive, _) = get_archive_account(client).await?;
+    let total = archive.tapes_stored;
+    let http = HttpClient::new();
+
+    for tape_number in 1..=total {
+        if store.get_tape_address(tape_number).is_ok() {
+            continue;
+        }
+
+        let tape_address = fetch_tape_address(&http, trusted_peer_url, tape_number).await?;
+        store.add_tape(tape_number, &tape_address)?;
+    }
+
+    Ok(())
+}
+
+/// Syncs segments for a specific tape address from a trusted peer.
+async fn sync_segments_from_trusted_peer(
+    store: &TapeStore,
+    tape_address: &Pubkey,
+    trusted_peer_url: &str,
+) -> Result<()> {
+    let http = HttpClient::new();
+    let segments = fetch_tape_segments(&http, trusted_peer_url, tape_address).await?;
+
+    for (seg_num, data) in segments {
+        if store.get_segment_by_address(tape_address, seg_num).is_ok() {
+            continue;
+        }
+        store.add_segment(tape_address, seg_num, data)?;
+    }
+
+    Ok(())
+}
+
+/// Syncs missing tapes up to the current archive using Solana RPC.
+async fn sync_addresses_from_solana(
+    store: &TapeStore,
+    client: &Arc<RpcClient>,
+) -> Result<()> {
+    let (archive, _) = get_archive_account(client).await?;
+    let total = archive.tapes_stored;
+
+    for tape_number in 1..=total {
+        // Skip if we already have this tape
+        if store.get_tape_address(tape_number).is_ok() {
+            continue;
+        }
+
+        let some_acc = find_tape_account(client, tape_number).await?;
+
+        let (pubkey, _) = some_acc.ok_or(anyhow!("Tape account not found for number {}", tape_number))?;
+        store.add_tape(tape_number, &pubkey)?;
+    }
+
+    Ok(())
+}
+
+/// Syncs segments for a specific tape address from Solana RPC using the tape's tail slot.
+async fn sync_segments_from_solana(
+    store: &TapeStore,
+    client: &Arc<RpcClient>,
+    tape_address: &Pubkey,
+) -> Result<()> {
+
+    let (tape, _) = get_tape_account(client, tape_address).await?;
+
+    let mut state = init_read(tape.tail_slot);
+    while process_next_block(client, tape_address, &mut state).await? {}
+
+
+    let mut keys: Vec<u64> = state.segments.keys().cloned().collect();
+    keys.sort();
+
+    for seg_num in keys {
+        debug!("Syncing segment {} for tape {}", seg_num, tape_address);
+        let segment = padded_array::<SEGMENT_SIZE>(&state.segments[&seg_num]);
+        store.add_segment(&tape_address, seg_num as u64, segment.to_vec())?;
     }
 
     Ok(())

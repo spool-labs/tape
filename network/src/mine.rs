@@ -79,10 +79,12 @@ async fn try_mine_iteration(
     let tape_address = store.get_tape_address(tape_number);
 
     if let Ok(tape_address) = tape_address {
+
+        debug!("Tape address: {:?}", tape_address);
+
         let tape = get_tape_account(client, &tape_address)
             .await
             .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
-
         
         let (solution, recall_segment, merkle_proof) = if tape.has_minimum_rent() {
             // This tape has minimum rent, we can recall a segment
@@ -92,9 +94,6 @@ async fn try_mine_iteration(
                 tape.total_segments
             );
 
-            // Find the slot for the segment
-            let segment_slot = store.get_slot(tape_number, segment_number)?;
-
             // Get the entire tape
             let segments = store.get_tape_segments(&tape_address)?;
             if segments.len() != tape.total_segments as usize {
@@ -102,7 +101,7 @@ async fn try_mine_iteration(
                     tape_address, tape.total_segments, segments.len()));
             }
 
-            debug!("Recall tape {}, segment {}, slot: {:?}", tape_number, segment_number, segment_slot);
+            debug!("Recall tape {}, segment {}", tape_number, segment_number);
 
             compute_challenge_solution(
                 &tape,
@@ -134,8 +133,14 @@ async fn try_mine_iteration(
             recall_segment, 
             merkle_proof,
         ).await?;
-
         debug!("Mining successful! Signature: {:?}", sig);
+
+        let (miner, _) = get_miner_account(client, miner_address)
+            .await
+            .map_err(|e| anyhow!("Failed to get miner account after mining: {}", e))?;
+
+        debug!("Miner {} has unclaimed rewards: {}", miner_address, miner.unclaimed_rewards);
+
     } else {
         debug!("Tape not found, continuing...");
     }

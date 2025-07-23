@@ -80,11 +80,14 @@ pub enum Commands {
     // Node Commands
 
     Archive {
-        #[arg(help = "Starting slot to archive from, defaults to the latest slot")]
+        #[arg(help = "Starting slot to archive from, defaults to the latest slot", short = 's', long = "starting-slot")]
         starting_slot: Option<u64>,
 
-        #[arg(help = "Trusted peer to connect to")]
+        #[arg(help = "Trusted peer to connect to", short = 'p', long = "peer")]
         trusted_peer: Option<String>,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
     Mine {
         #[arg(help = "Miner account public key", conflicts_with = "name")]

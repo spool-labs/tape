@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
@@ -10,7 +12,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::utils::*;
 
 pub async fn subsidize_tape(
-    client: &RpcClient,
+    client: &Arc<RpcClient>,
     signer: &Keypair,
     tape_address: Pubkey,
     ata: Pubkey,
