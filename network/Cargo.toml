@@ -41,9 +41,14 @@ solana-transaction-status-client-types.workspace = true
 thiserror.workspace = true
 log.workspace = true
 
-axum = "0.8.4"
-num_cpus = "1.17.0"
-tar = "0.4.44"
+axum.workspace = true
+num_cpus.workspace = true
+tar.workspace = true
+prometheus.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+lazy_static.workspace = true
+http-body-util.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

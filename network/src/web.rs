@@ -13,7 +13,57 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
 
+use crate::metrics::{record_metrics, run_metrics_server};
+
 use super::store::{StoreError, TapeStore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcMethod {
+    GetHealth,
+    GetTapeAddress,
+    GetTapeNumber,
+    GetSegment,
+    GetTape,
+    GetSlot,
+    GetSegmentByAddress,
+    GetSlotByAddress,
+}
+
+impl RpcMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RpcMethod::GetHealth => "getHealth",
+            RpcMethod::GetTapeAddress => "getTapeAddress",
+            RpcMethod::GetTapeNumber => "getTapeNumber",
+            RpcMethod::GetSegment => "getSegment",
+            RpcMethod::GetTape => "getTape",
+            RpcMethod::GetSlot => "getSlot",
+            RpcMethod::GetSegmentByAddress => "getSegmentByAddress",
+            RpcMethod::GetSlotByAddress => "getSlotByAddress",
+        }
+    }
+}
+
+impl FromStr for RpcMethod {
+    type Err = RpcError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "getHealth" => Ok(RpcMethod::GetHealth),
+            "getTapeAddress" => Ok(RpcMethod::GetTapeAddress),
+            "getTapeNumber" => Ok(RpcMethod::GetTapeNumber),
+            "getSegment" => Ok(RpcMethod::GetSegment),
+            "getTape" => Ok(RpcMethod::GetTape),
+            "getSlot" => Ok(RpcMethod::GetSlot),
+            "getSegmentByAddress" => Ok(RpcMethod::GetSegmentByAddress),
+            "getSlotByAddress" => Ok(RpcMethod::GetSlotByAddress),
+            _ => Err(RpcError {
+                code: ErrorCode::MethodNotFound.code(),
+                message: "method not found".into(),
+            }),
+        }
+    }
+}
 
 #[repr(i64)]
 #[derive(Copy, Clone)]
@@ -43,6 +93,12 @@ struct RpcRequest {
 pub struct RpcError {
     code: i64,
     message: String,
+}
+
+impl RpcError{
+    pub fn err_code(&self) -> i64 {
+        self.code
+    }
 }
 
 #[derive(Serialize)]
@@ -428,43 +484,55 @@ async fn rpc_handler(
     State(store): State<Arc<TapeStore>>,
     Json(req): Json<RpcRequest>,
 ) -> impl IntoResponse {
-
     let id = req.id.clone();
-    let outcome = match req.method.as_str() {
-        "getHealth" => rpc_get_health(&store, &req.params),
-        "getTapeAddress" => rpc_get_tape_address(&store, &req.params),
-        "getTapeNumber" => rpc_get_tape_number(&store, &req.params),
-        "getSegment" => rpc_get_segment(&store, &req.params),
-        "getTape" => rpc_get_tape(&store, &req.params),
-        "getSlot" => rpc_get_slot(&store, &req.params),
-        "getSegmentByAddress" => rpc_get_segment_by_address(&store, &req.params),
-        "getSlotByAddress" => rpc_get_slot_by_address(&store, &req.params),
-        _ => Err(RpcError {
-            code: ErrorCode::MethodNotFound.code(),
-            message: "method not found".into(),
-        }),
+
+    let rpc_method = match RpcMethod::from_str(req.method.as_str()) {
+        Ok(m) => m,
+        Err(err) => {
+            return make_response(id, Err(err));
+        }
     };
 
+    let outcome = record_metrics(&rpc_method, || {
+        match rpc_method {
+            RpcMethod::GetHealth => rpc_get_health(&store, &req.params),
+            RpcMethod::GetTapeAddress => rpc_get_tape_address(&store, &req.params),
+            RpcMethod::GetTapeNumber => rpc_get_tape_number(&store, &req.params),
+            RpcMethod::GetSegment => rpc_get_segment(&store, &req.params),
+            RpcMethod::GetTape => rpc_get_tape(&store, &req.params),
+            RpcMethod::GetSlot => rpc_get_slot(&store, &req.params),
+            RpcMethod::GetSegmentByAddress => rpc_get_segment_by_address(&store, &req.params),
+            RpcMethod::GetSlotByAddress => rpc_get_slot_by_address(&store, &req.params),
+        }
+    });
+
     make_response(id, outcome)
+}
+
+
+pub fn run_refresh_store(store:&Arc<TapeStore>) {
+    let store = Arc::clone(&store);
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(15);
+        loop {
+            store.catch_up_with_primary().unwrap();
+            tokio::time::sleep(interval).await;
+        }
+    });
 }
 
 pub async fn web_loop(
     store: TapeStore,
     port: u16,
 ) -> anyhow::Result<()> {
+
+    // Run metrics server 
+    run_metrics_server()?;
+
     let store = Arc::new(store);
 
     // Refresh the store every 15 seconds
-    {
-        let store = Arc::clone(&store);
-        tokio::spawn(async move {
-            let interval = std::time::Duration::from_secs(15);
-            loop {
-                store.catch_up_with_primary().unwrap();
-                tokio::time::sleep(interval).await;
-            }
-        });
-    }
+    run_refresh_store(&store);
 
     let app = Router::new()
         .route("/api", post(rpc_handler))
