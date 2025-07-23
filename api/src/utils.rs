@@ -1,7 +1,8 @@
 use steel::*;
 use crate::consts::*;
 use crate::error::*;
-use brine_tree::{MerkleTree, Leaf};
+use crate::state::TapeTree;
+use brine_tree::Leaf;
 use solana_program::{
     keccak::hashv, 
     slot_hashes::SlotHash
@@ -30,9 +31,18 @@ pub fn padded_array<const N: usize>(input: &[u8]) -> [u8; N] {
 
 /// Helper: convert a name to a fixed-size array
 #[inline(always)]
-pub fn to_name(val: &str) -> [u8; NAME_LEN] {
-    assert!(val.len() <= NAME_LEN, "name too long");
-    padded_array::<NAME_LEN>(val.as_bytes())
+pub fn to_name<T>(val: T) -> [u8; NAME_LEN]
+where
+    T: AsRef<[u8]>,
+{
+    let bytes = val.as_ref();
+    assert!(
+        bytes.len() <= NAME_LEN,
+        "name too long ({} > {})",
+        bytes.len(),
+        NAME_LEN
+    );
+    padded_array::<NAME_LEN>(bytes)
 }
 
 /// Helper: convert a name to a string
@@ -60,7 +70,7 @@ pub fn compute_leaf(
 /// Helper: write segment to the Merkle tree
 #[inline(always)]
 pub fn write_segment(
-    tree: &mut MerkleTree<{TREE_HEIGHT}>,
+    tree: &mut TapeTree,
     segment_id: u64,
     segment: &[u8; SEGMENT_SIZE],
 ) -> ProgramResult {
@@ -80,7 +90,7 @@ pub fn write_segment(
 /// Helper: update segment in the Merkle tree
 #[inline(always)]
 pub fn update_segment(
-    tree: &mut MerkleTree<{TREE_HEIGHT}>,
+    tree: &mut TapeTree,
     segment_id: u64,
     old_segment: &[u8; SEGMENT_SIZE],
     new_segment: &[u8; SEGMENT_SIZE],

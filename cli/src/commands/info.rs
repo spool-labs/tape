@@ -19,7 +19,8 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
                     let (archive, _address) = tapedrive::get_archive_account(&client).await?;
                     log::print_section_header("Archive Account");
                     log::print_message(&format!("Tapes: {}", archive.tapes_stored));
-                    log::print_message(&format!("Bytes Stored: {}", archive.bytes_stored));
+                    log::print_message(&format!("Segments: {}", archive.segments_stored));
+                    log::print_message(&format!("Bytes: {}", archive.bytes_stored));
                 }
                 InfoCommands::Epoch {} => {
                     let (epoch, _address) = tapedrive::get_epoch_account(&client).await?;
@@ -60,7 +61,6 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
                 InfoCommands::Tape { pubkey } => {
                     let tape_address: Pubkey = pubkey.parse()?;
                     let (tape, _) = tapedrive::get_tape_account(&client, &tape_address).await?;
-                    let header = TapeHeader::try_from_bytes(&tape.header)?;
 
                     log::print_section_header("Tape Account");
                     log::print_message(&format!("Id: {}", tape.number));
@@ -71,10 +71,16 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
                     log::print_message(&format!("Merkle Root: {:?}", tape.merkle_root));
                     log::print_message(&format!("First Slot: {}", tape.first_slot));
                     log::print_message(&format!("Tail Slot: {}", tape.tail_slot));
+                    log::print_message(&format!("Balance: {}", tape.balance));
+                    log::print_message(&format!("Last Rent Block: {}", tape.last_rent_block));
                     log::print_message(&format!("Total Segments: {}", tape.total_segments));
                     log::print_message(&format!("Total Size: {} bytes", tape.total_size));
                     log::print_message(&format!("State: {}", tape.state));
-                    log::print_message(&format!("{:?}", header));
+
+                    if let Ok(header) = TapeHeader::try_from_bytes(&tape.header) {
+                        log::print_message(&format!("Header: {:?}", header));
+                    }
+
                     log::print_divider();
                 }
 

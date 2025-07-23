@@ -1,6 +1,16 @@
+use std::sync::Arc;
+
+use tape_api::prelude::*;
 use anyhow::{Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use solana_sdk::{
+    signature::{Keypair, Signer, Signature},
+    transaction::Transaction,
+    pubkey::Pubkey,
+};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use crate::utils::*;
 
 /// A 4-byte "magic" prefix to identify the header format.
 pub const HEADER_MAGIC: [u8; 4] = *b"TAPE";
@@ -31,7 +41,7 @@ pub enum TapeFlags {
 /// Tape data header. Note, none of the fields are verified onchain, they are 
 /// opaque to the onchain program logic.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct TapeHeader {
     /// Fixed “magic” string. Readers should verify this equals `HEADER_MAGIC`.
     pub magic: [u8; 4],
@@ -51,18 +61,16 @@ pub struct TapeHeader {
     /// Data length in bytes
     pub data_len: u64,
 
-    /// Encryption algorithm used (or `None`).
-    pub encryption_algo: u8,
-
     /// Initialization Vector (nonce) for the chosen encryption algorithm.
     /// If `encryption_algo == None`, this should be all zeros.
     pub iv: [u8; 12],
 
-    _unused: [u8; 99], // future use
-}
+    /// Encryption algorithm used (or `None`).
+    pub encryption_algo: u8,
 
-unsafe impl Zeroable for TapeHeader {}
-unsafe impl Pod for TapeHeader {}
+    _alignment: [u8; 3], // reserved for future use
+    _unused: [u8; 32],   // reserved for future use
+}
 
 impl TapeHeader {
     pub fn new(
@@ -71,7 +79,6 @@ impl TapeHeader {
         encryption_algo: EncryptionAlgo,
         flags: TapeFlags,
     ) -> Self {
-
         Self {
             magic            : HEADER_MAGIC,
             version          : HEADER_VERSION,
@@ -79,10 +86,10 @@ impl TapeHeader {
             mime_type        : mime_type.into(),
             compression      : compression.into(),
             encryption_algo  : encryption_algo.into(),
-
-            data_len         : 0, // will be set later
-            iv               : [0; 12], // empty IV/nonce
-            _unused          : [0; 99],
+            data_len         : 0,
+            iv               : [0; 12],
+            _alignment       : [0; 3],
+            _unused          : [0; 32],
         }
     }
 
@@ -91,7 +98,6 @@ impl TapeHeader {
     }
 
     pub fn try_from_bytes(data: &[u8]) -> Result<&Self> {
-
         // Ensure we have at least 128 bytes.
         if data.len() < std::mem::size_of::<Self>() {
             bail!("Data too short for TapeHeader ({} < {})",
@@ -130,6 +136,25 @@ impl std::fmt::Debug for TapeHeader {
             .field("iv", &self.iv)
             .finish()
     }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+/// Compression algorithm used on the payload (if any).
+pub enum CompressionAlgo {
+    None   = 0,
+    Gzip   = 1,
+
+    // Extend as needed...
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+/// The encryption algorithm used on the payload (if any).
+pub enum EncryptionAlgo {
+    None               = 0,
+
+    // Extend as needed...
 }
 
 #[repr(u8)]
@@ -193,23 +218,35 @@ pub enum MimeType {
     ApplicationYaml        = 72,  // application/x-yaml
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-/// Compression algorithm used on the payload (if any).
-pub enum CompressionAlgo {
-    None   = 0,
-    Gzip   = 1,
+/// Sets the tape header for a given tape account.
+pub async fn set_header(
+    client: &Arc<RpcClient>,
+    signer: &Keypair,
+    tape_address: Pubkey,
+    header: TapeHeader,
+) -> Result<(Pubkey, Signature)> {
 
-    // Extend as needed...
-}
+    let header_data = &header.to_bytes().try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to convert header to bytes"))?;
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-/// The encryption algorithm used on the payload (if any).
-pub enum EncryptionAlgo {
-    None               = 0,
+    let set_header_ix = build_set_header_ix(
+        signer.pubkey(), 
+        tape_address,
+        header_data
+    );
 
-    // Extend as needed...
+    let blockhash_bytes = get_latest_blockhash(client).await?;
+    let recent_blockhash = deserialize(&blockhash_bytes)?;
+    let create_tx = Transaction::new_signed_with_payer(
+        &[set_header_ix],
+        Some(&signer.pubkey()),
+        &[signer],
+        recent_blockhash,
+    );
+
+    let signature = send_and_confirm(client, &create_tx).await?;
+
+    Ok((tape_address, signature))
 }
 
 

@@ -11,10 +11,8 @@ use crate::{
 pub fn build_create_ix(
     signer: Pubkey,
     name: &str,
-    header: Option<[u8; HEADER_SIZE]>,
 ) -> Instruction {
     let name = utils::to_name(name);
-    let header = header.unwrap_or([0; HEADER_SIZE]);
 
     let (tape_address, _tape_bump) = tape_pda(signer, &name);
     let (writer_address, _writer_bump) = writer_pda(tape_address);
@@ -31,7 +29,23 @@ pub fn build_create_ix(
         ],
         data: Create {
             name,
-            header,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_header_ix(
+    signer: Pubkey,
+    tape: Pubkey,
+    header: &[u8; HEADER_SIZE],
+) -> Instruction {
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(tape, false),
+        ],
+        data: SetHeader {
+            header: *header,
         }.to_bytes(),
     }
 }
@@ -89,9 +103,7 @@ pub fn build_finalize_ix(
     signer: Pubkey, 
     tape: Pubkey,
     writer: Pubkey,
-    header: Option<[u8; HEADER_SIZE]>,
 ) -> Instruction {
-    let header = header.unwrap_or([0; HEADER_SIZE]);
 
     Instruction {
         program_id: crate::ID,
@@ -103,8 +115,28 @@ pub fn build_finalize_ix(
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: Finalize {
-            header,
+        data: Finalize {}.to_bytes(),
+    }
+}
+
+pub fn build_subsidize_ix(
+    signer: Pubkey, 
+    ata: Pubkey,
+    tape: Pubkey,
+    amount: u64,
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(ata, false),
+            AccountMeta::new(tape, false),
+            AccountMeta::new(TREASURY_ATA, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: Subsidize {
+            amount: amount.to_le_bytes(),
         }.to_bytes(),
     }
 }
@@ -147,7 +179,7 @@ pub fn build_mine_ix(
             AccountMeta::new(EPOCH_ADDRESS, false),
             AccountMeta::new(BLOCK_ADDRESS, false),
             AccountMeta::new(miner, false),
-            AccountMeta::new_readonly(tape, false),
+            AccountMeta::new(tape, false),
             AccountMeta::new_readonly(ARCHIVE_ADDRESS, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
@@ -209,6 +241,10 @@ pub fn build_initialize_ix(
     let (treasury_ata, _treasury_ata_bump) = treasury_ata();
     let (metadata_pda, _metadata_bump) = metadata_pda(mint_pda);
 
+    let name = utils::to_name("genesis");
+    let (tape_pda, _tape_bump) = tape_pda(signer, &name);
+    let (writer_pda, _writer_bump) = writer_pda(tape_pda);
+
     assert_eq!(archive_pda, ARCHIVE_ADDRESS);
     assert_eq!(epoch_pda, EPOCH_ADDRESS);
     assert_eq!(block_pda, BLOCK_ADDRESS);
@@ -227,6 +263,9 @@ pub fn build_initialize_ix(
             AccountMeta::new(mint_pda, false),
             AccountMeta::new(treasury_pda, false),
             AccountMeta::new(treasury_ata, false),
+            AccountMeta::new(tape_pda, false),
+            AccountMeta::new(writer_pda, false),
+            AccountMeta::new_readonly(crate::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),

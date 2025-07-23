@@ -10,18 +10,12 @@ use tape_api::prelude::*;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::utils::*;
 
-use super::TapeHeader;
-
 /// Creates a new tape and returns the tape address, writer address, and initial signature.
 pub async fn create_tape(
     client: &Arc<RpcClient>,
     signer: &Keypair,
     name: &str,
-    header: TapeHeader,
 ) -> Result<(Pubkey, Pubkey, Signature)> {
-
-    let header_data = header.to_bytes().try_into()
-        .map_err(|_| anyhow::anyhow!("Failed to convert header to bytes"))?;
 
     let (tape_address, _tape_bump) = tape_pda(signer.pubkey(), &to_name(name));
     let (writer_address, _writer_bump) = writer_pda(tape_address);
@@ -29,7 +23,6 @@ pub async fn create_tape(
     let create_ix = build_create_ix(
         signer.pubkey(), 
         name, 
-        Some(header_data)
     );
 
     let blockhash_bytes = get_latest_blockhash(client).await?;

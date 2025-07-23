@@ -15,7 +15,6 @@ use solana_sdk::{
 };
 
 use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
-use brine_tree::MerkleTree;
 
 #[test]
 fn run_integration() {
@@ -49,7 +48,7 @@ fn run_integration() {
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
 
-    let mut local_tree = MerkleTree::new(&[tape.merkle_seed.as_ref()]); 
+    let mut local_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]); 
 
     let data = vec![42; 1024];
 

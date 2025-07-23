@@ -17,7 +17,7 @@ use tokio::{task, time::Duration};
 
 use tape_api::prelude::*;
 use tape_client::{
-    create_tape, encode_tape, finalize_tape, write_to_tape, CompressionAlgo, EncryptionAlgo,
+    create_tape, encode_tape, finalize_tape, set_header, write_to_tape, CompressionAlgo, EncryptionAlgo,
     TapeFlags, TapeHeader,
 };
 
@@ -78,14 +78,15 @@ pub async fn handle_write_command(cli: Cli, client: Arc<RpcClient>, payer: Keypa
 
         pb.set_message("Creating new tape (please wait)...");
         let (tape_address, writer_address, _sig) =
-            create_tape(&client, &payer, &tape_name, header).await?;
+            create_tape(&client, &payer, &tape_name).await?;
 
         write_chunks(&client, &payer, tape_address, writer_address, chunks, &pb).await?;
 
         pb.set_message("finalizing tape...");
         tokio::time::sleep(Duration::from_secs(32)).await;
 
-        finalize_tape(&client, &payer, tape_address, writer_address, header).await?;
+        set_header(&client, &payer, tape_address, header).await?;
+        finalize_tape(&client, &payer, tape_address, writer_address).await?;
 
         pb.finish_with_message("");
 

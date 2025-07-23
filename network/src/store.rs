@@ -360,6 +360,22 @@ impl TapeStore {
             .map_err(|e| StoreError::InvalidPubkey(e.to_string()))
     }
 
+    pub fn get_segment_count(
+        &self,
+        tape_address: &Pubkey,
+    ) -> Result<usize, StoreError> {
+        let cf = self
+            .db
+            .cf_handle("segments")
+            .ok_or(StoreError::SegmentsCfNotFound)?;
+
+        let prefix = tape_address.to_bytes().to_vec();
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+        let count = iter.count();
+
+        Ok(count)
+    }
+
     pub fn get_tape_segments(
         &self,
         tape_address: &Pubkey,

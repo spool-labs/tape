@@ -8,7 +8,6 @@ use tokio::time::{sleep, Duration};
 use tape_client::utils::*;
 use tape_api::prelude::*;
 
-use brine_tree::MerkleTree;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -80,35 +79,50 @@ async fn try_mine_iteration(
     let tape_address = store.get_tape_address(tape_number);
 
     if let Ok(tape_address) = tape_address {
+
+        debug!("Tape address: {:?}", tape_address);
+
         let tape = get_tape_account(client, &tape_address)
             .await
             .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
+        
+        let (solution, recall_segment, merkle_proof) = if tape.has_minimum_rent() {
+            // This tape has minimum rent, we can recall a segment
+            
+            let segment_number = compute_recall_segment(
+                &miner_challenge,
+                tape.total_segments
+            );
 
-        let segment_number = compute_recall_segment(
-            &miner_challenge,
-            tape.total_segments
-        );
+            // Get the entire tape
+            let segments = store.get_tape_segments(&tape_address)?;
+            if segments.len() != tape.total_segments as usize {
+                return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
+                    tape_address, tape.total_segments, segments.len()));
+            }
 
-        // Find the slot for the segment
-        let segment_slot = store.get_slot(tape_number, segment_number)?;
+            debug!("Recall tape {}, segment {}", tape_number, segment_number);
 
-        // Get the entire tape
-        let segments = store.get_tape_segments(&tape_address)?;
-        if segments.len() != tape.total_segments as usize {
-            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
-                tape_address, tape.total_segments, segments.len()));
-        }
-
-        debug!("Recall tape {}, segment {}, slot: {:?}", tape_number, segment_number, segment_slot);
-
-        let (solution, recall_segment, merkle_proof) = 
             compute_challenge_solution(
                 &tape,
                 &miner_challenge,
                 segment_number,
                 segments,
                 epoch.target_difficulty,
+            )?
+
+        // This tape does not have minimum rent, we use an empty segment
+        } else {
+            debug!("Tape {} does not have minimum rent, using empty segment", tape_address);
+
+            let solution = solve_challenge(
+                miner_challenge,
+                &EMPTY_SEGMENT,
+                epoch.target_difficulty,
             )?;
+
+            (solution, EMPTY_SEGMENT, EMPTY_PROOF)
+        };
 
         let sig = perform_mining(
             client, 
@@ -119,8 +133,14 @@ async fn try_mine_iteration(
             recall_segment, 
             merkle_proof,
         ).await?;
-
         debug!("Mining successful! Signature: {:?}", sig);
+
+        let (miner, _) = get_miner_account(client, miner_address)
+            .await
+            .map_err(|e| anyhow!("Failed to get miner account after mining: {}", e))?;
+
+        debug!("Miner {} has unclaimed rewards: {}", miner_address, miner.unclaimed_rewards);
+
     } else {
         debug!("Tape not found, continuing...");
     }
@@ -141,7 +161,7 @@ fn compute_challenge_solution(
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
-    let mut merkle_tree = MerkleTree::<{TREE_HEIGHT}>::new(&[tape.merkle_seed.as_ref()]);
+    let mut merkle_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
 
     for (segment_id, segment_data) in segments.iter() {
         if *segment_id == segment_number {

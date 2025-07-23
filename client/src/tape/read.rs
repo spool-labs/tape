@@ -7,9 +7,9 @@ use tape_api::prelude::*;
 use crate::utils::*;
 
 pub struct ReadState {
-    segments: HashMap<u64, Vec<u8>>,
-    visited: HashSet<u64>,
-    queue: BinaryHeap<u64>,
+    pub segments: HashMap<u64, Vec<u8>>,
+    pub visited: HashSet<u64>,
+    pub queue: BinaryHeap<u64>,
 }
 
 impl ReadState {
@@ -88,7 +88,7 @@ pub fn finalize_read(state: ReadState) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub async fn read_from_block(
+pub async fn get_tape_segments_starting_at(
     client: &Arc<RpcClient>,
     tape_address: &Pubkey,
     slot: u64,
