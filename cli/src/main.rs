@@ -19,7 +19,7 @@ use env_logger::{self, Env};
 fn main() -> Result<()>{
     // setup env_logger
     env_logger::Builder::from_env(Env::default()
-        .default_filter_or(format!("tape_network=trace,tape_client=trace"))).init();
+        .default_filter_or("tape_network=trace,tape_client=trace".to_string())).init();
     
     let num_threads = num_cpus::get();
 
@@ -56,7 +56,7 @@ async fn run_tape_cli() -> Result<()> {
         _ => {}
     }
 
-    log::print_message(&format!("Connected to: {}", rpc_url));
+    log::print_message(&format!("Connected to: {rpc_url}"));
 
     match cli.command {
         // Admin Commands

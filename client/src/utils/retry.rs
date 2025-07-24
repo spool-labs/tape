@@ -35,7 +35,7 @@ where
             }
             _ => {
                 error!("Attempt {} failed, retrying after backoff", attempt + 1);
-                debug!("Waiting for backoff: {:?}", backoff);
+                debug!("Waiting for backoff: {backoff:?}");
 
                 tokio::time::sleep(backoff).await;
                 backoff *= 2; // Exponential backoff
@@ -50,21 +50,35 @@ where
 pub fn with_logs(res: ClientResult<Signature>) -> Result<Signature> {
     match res {
         Ok(signature) => Ok(signature),
+
         Err(e) => {
+            use solana_client::rpc_request::{
+                RpcError::RpcResponseError,
+                RpcResponseErrorData::SendTransactionPreflightFailure,
+            };
+
+            // Check if the error is a simulation failure with logs
             if let ClientErrorKind::RpcError(
-                solana_client::rpc_request::RpcError::RpcResponseError { data, .. },
+                RpcResponseError {
+                    data: SendTransactionPreflightFailure(
+                        RpcSimulateTransactionResult {
+                            logs: Some(logs),
+                            ..
+                        }
+                    ),
+                    ..
+                }
             ) = e.kind()
             {
-                if let solana_client::rpc_request::RpcResponseErrorData::SendTransactionPreflightFailure(
-                    RpcSimulateTransactionResult { logs: Some(logs), .. }
-                ) = data {
-                    eprintln!("Transaction simulation failed:");
-                    for log in logs {
-                        eprintln!("  {}", log);
-                    }
+                eprintln!("Transaction simulation failed:");
+                for log in logs {
+                    eprintln!("  {log}");
                 }
             }
+
+    
             Err(anyhow!("Transaction failed: {}", e))
         }
     }
 }
+

@@ -184,8 +184,8 @@ impl TapeStore {
         let cf = self.get_cf_handle(ColumnFamily::Health)?;
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(&cf, StoreStaticKeys::LastProcessedSlot.as_bytes(), &last_processed_slot.to_be_bytes());
-        batch.put_cf(&cf,StoreStaticKeys::Drift.as_bytes(), &drift.to_be_bytes());
+        batch.put_cf(&cf, StoreStaticKeys::LastProcessedSlot.as_bytes(), last_processed_slot.to_be_bytes());
+        batch.put_cf(&cf,StoreStaticKeys::Drift.as_bytes(), drift.to_be_bytes());
 
         self.db.write(batch)?;
 
@@ -221,8 +221,8 @@ impl TapeStore {
         let address_key = address.to_bytes().to_vec();
 
         let mut batch = WriteBatch::default();
-        batch.put_cf(&cf_tape_by_number, &tape_number_key, &address.to_bytes());
-        batch.put_cf(&cf_tape_by_address, &address_key, &tape_number.to_be_bytes());
+        batch.put_cf(&cf_tape_by_number, &tape_number_key, address.to_bytes());
+        batch.put_cf(&cf_tape_by_address, &address_key, tape_number.to_be_bytes());
         self.db.write(batch)?;
 
         Ok(())
@@ -247,8 +247,8 @@ impl TapeStore {
             let number_bytes = tape_number_vec[i].to_be_bytes();
             let address_bytes = address_vec[i].to_bytes();
     
-            batch.put_cf(&cf_tape_by_number, &number_bytes, &address_bytes);
-            batch.put_cf(&cf_tape_by_address, &address_bytes, &number_bytes);
+            batch.put_cf(&cf_tape_by_number, number_bytes, address_bytes);
+            batch.put_cf(&cf_tape_by_address, address_bytes, number_bytes);
         }
     
         self.db.write(batch)?;
@@ -322,7 +322,7 @@ impl TapeStore {
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
-        self.db.put_cf(&cf, &key, &slot.to_be_bytes())?;
+        self.db.put_cf(&cf, &key, slot.to_be_bytes())?;
 
         Ok(())
     }
@@ -346,7 +346,7 @@ impl TapeStore {
             key.extend_from_slice(&tape_address_vec[i].to_bytes());
             key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
     
-            batch.put_cf(&cf, key, &slot_vec[i].to_be_bytes());
+            batch.put_cf(&cf, key, slot_vec[i].to_be_bytes());
         }
     
         self.db.write(batch)?;
@@ -628,22 +628,22 @@ fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
 }
 
 pub fn primary() -> Result<TapeStore, StoreError> {
-    let current_dir = env::current_dir().map_err(|e| StoreError::IoError(e))?;
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
     let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
-    std::fs::create_dir_all(&db_primary).map_err(|e| StoreError::IoError(e))?;
+    std::fs::create_dir_all(&db_primary).map_err(StoreError::IoError)?;
     TapeStore::new(&db_primary)
 }
 
 pub fn secondary() -> Result<TapeStore, StoreError> {
-    let current_dir = env::current_dir().map_err(|e| StoreError::IoError(e))?;
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
     let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
     let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB);
-    std::fs::create_dir_all(&db_secondary).map_err(|e| StoreError::IoError(e))?;
+    std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
     TapeStore::new_secondary(&db_primary, &db_secondary)
 }
 
 pub fn read_only() -> Result<TapeStore, StoreError> {
-    let current_dir = env::current_dir().map_err(|e| StoreError::IoError(e))?;
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
     let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
     TapeStore::new_read_only(&db_primary)
 }

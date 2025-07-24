@@ -43,7 +43,7 @@ pub async fn handle_web(port: Option<u16>) -> Result<()> {
     let port = port.unwrap_or(3000);
 
     log::print_info("Starting web RPC service...");
-    log::print_message(format!("Listening on port {}", port).as_str());
+    log::print_message(format!("Listening on port {port}").as_str());
 
     let secondary_store = tape_network::store::secondary()?;
     web_loop(secondary_store, port).await?;
@@ -59,11 +59,7 @@ pub async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>,
         _ => trusted_peer
     };
 
-    let miner_address = if let Some(addr) = miner_address {
-        Some(Pubkey::from_str(&addr).unwrap())
-    } else {
-        None
-    };
+    let miner_address = miner_address.map(|addr| Pubkey::from_str(&addr).unwrap());
 
     let primary_store = tape_network::store::primary()?;
 
@@ -78,7 +74,7 @@ pub async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Optio
 
     let miner_address = resolve_miner(client, payer, pubkey, name, true).await?;
 
-    log::print_message(&format!("Using miner address: {}", miner_address));
+    log::print_message(&format!("Using miner address: {miner_address}"));
 
     let secondary_store = tape_network::store::secondary()?;
     mine_loop(&secondary_store, client, &miner_address, payer).await?;
@@ -103,12 +99,12 @@ pub async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: Str
     register_miner(client, payer, &name).await?;
 
     log::print_section_header("Miner Registered");
-    log::print_message(&format!("Name: {}", name));
-    log::print_message(&format!("Address: {}", miner_address));
+    log::print_message(&format!("Name: {name}"));
+    log::print_message(&format!("Address: {miner_address}"));
 
     log::print_divider();
     log::print_info("More info:");
-    log::print_title(&format!("tapedrive get-miner {}", miner_address));
+    log::print_title(&format!("tapedrive get-miner {miner_address}"));
     log::print_divider();
     Ok(())
 }
@@ -144,7 +140,7 @@ pub async fn resolve_miner(
     log::print_message("Miner not registered, registering now...");
     register_miner(client, payer, &name).await?;
     log::print_message("Miner registered successfully");
-    log::print_message(&format!("Name: {}", name));
+    log::print_message(&format!("Name: {name}"));
 
     Ok(miner_address)
 }

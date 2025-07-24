@@ -97,7 +97,7 @@ fn bench_add_slots_batch(c: &mut Criterion) {
         let tape_address = Pubkey::new_unique();
         let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
         let segment_numbers = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
-        let slot_values = (0..SEGMENTS_PER_TAPE as u64).collect::<Vec<_>>();
+        let slot_values = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
 
         b.iter(|| {
             store

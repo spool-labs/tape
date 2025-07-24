@@ -29,12 +29,11 @@ pub async fn handle_claim_command(
 
         // Log ATA creation
         if ata_sig != solana_sdk::signature::Signature::default() {
-            log::print_message(&format!("Created ATA {} (payer), signature {}", beneficiary_ata, ata_sig));
+            log::print_message(&format!("Created ATA {beneficiary_ata} (payer), signature {ata_sig}"));
         }
 
         log::print_message(&format!(
-            "Miner: {}\n→ Beneficiary ATA (payer): {}\n→ Amount: {}",
-            miner_pubkey, beneficiary_ata, amount
+            "Miner: {miner_pubkey}\n→ Beneficiary ATA (payer): {beneficiary_ata}\n→ Amount: {amount}"
         ));
 
         // Confirm action with the user
@@ -54,7 +53,7 @@ pub async fn handle_claim_command(
             .map_err(|e| anyhow!("Failed to claim rewards: {}", e))?;
 
         log::print_section_header("Claim Submitted");
-        log::print_message(&format!("Signature: {}", signature));
+        log::print_message(&format!("Signature: {signature}"));
         log::print_divider();
     }
     Ok(())

@@ -15,6 +15,7 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         system_program_info,
         rent_sysvar_info,
         slot_hashes_info,
+        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

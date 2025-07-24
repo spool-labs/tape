@@ -33,7 +33,7 @@ pub async fn archive_loop(
     // If a trusted peer is provided, sync with it first
 
     if let Some(miner_address) = miner_address {
-        debug!("Using provided miner address: {}", miner_address);
+        debug!("Using provided miner address: {miner_address}");
     } else {
         debug!("No miner address provided, will not try to fetch miner data, only archive blocks");
     }
@@ -43,8 +43,8 @@ pub async fn archive_loop(
 
     
     if let Some(ref peer_url) = trusted_peer {
-        debug!("Using trusted peer: {}", peer_url);
-        sync_addresses_from_trusted_peer(store, client, &peer_url).await?;
+        debug!("Using trusted peer: {peer_url}");
+        sync_addresses_from_trusted_peer(store, client, peer_url).await?;
     } else {
         debug!("No trusted peer provided, syncing against Solana directly");
         sync_addresses_from_solana(store, client).await?;
@@ -59,7 +59,7 @@ pub async fn archive_loop(
         }
     };
 
-    debug!("Initial slot tip: {}", latest_slot);
+    debug!("Initial slot tip: {latest_slot}");
 
     // Resume from store or start at current tip
     let mut last_processed_slot = starting_slot
@@ -70,8 +70,7 @@ pub async fn archive_loop(
 
     loop {
         debug!(
-            "Starting block processing iteration {}: latest_slot={}, last_processed_slot={}",
-            iteration_count, latest_slot, last_processed_slot
+            "Starting block processing iteration {iteration_count}: latest_slot={latest_slot}, last_processed_slot={last_processed_slot}"
         );
 
         // Check what our miner needs at this moment
@@ -95,7 +94,7 @@ pub async fn archive_loop(
                 block.challenge_set
             );
 
-            debug!("Miner currently needs tape number: {:?}", tape_number);
+            debug!("Miner currently needs tape number: {tape_number:?}");
 
             if let Ok(tape_address) = store.get_tape_address(tape_number) {
                 let tape = get_tape_account(client, &tape_address)
@@ -107,12 +106,12 @@ pub async fn archive_loop(
                     // Check if we have the correct number of segments locally
                     if segment_count as u64 != tape.total_segments {
                         debug!("Tape {} has {} segments, found {}, syncing...", tape_address, tape.total_segments, segment_count);
-                        debug!("Syncing segments for tape number {}", tape_number);
+                        debug!("Syncing segments for tape number {tape_number}");
 
                         if let Some(ref peer_url) = trusted_peer {
-                            debug!("Syncing segments from trusted peer: {}", peer_url);
+                            debug!("Syncing segments from trusted peer: {peer_url}");
 
-                            sync_segments_from_trusted_peer(store, &tape_address, &peer_url).await?;
+                            sync_segments_from_trusted_peer(store, &tape_address, peer_url).await?;
                         } else {
 
                             debug!("Syncing segments from Solana RPC");
@@ -121,7 +120,7 @@ pub async fn archive_loop(
                     }
                 }
             } else {
-                error!("Tape address not found for tape number {}", tape_number);
+                error!("Tape address not found for tape number {tape_number}");
             }
         }
 
@@ -134,7 +133,7 @@ pub async fn archive_loop(
             &mut iteration_count,
         ).await {
             Ok(()) => debug!("Block processing iteration completed successfully"),
-            Err(e) => error!("Block processing iteration failed: {:?}", e),
+            Err(e) => error!("Block processing iteration failed: {e:?}"),
         }
 
         // TODO: this is actually not working as intended, we need to both track and handle the
@@ -158,14 +157,14 @@ async fn try_archive_iteration(
 
     // Refresh the slot tip every 10 iterations
     if *iteration_count % 10 == 0 {
-        if let Ok(slot) = get_slot(&client).await {
+        if let Ok(slot) = get_slot(client).await {
             *latest_slot = slot;
         }
     }
 
     // Fetch up to 100 new slots starting just above what we've processed
     let start = *last_processed_slot + 1;
-    let slots = get_blocks_with_limit(&client, start, 100).await?;
+    let slots = get_blocks_with_limit(client, start, 100).await?;
 
     for slots in slots.chunks(MAX_CONCURRENCY) {
         let processed_blocks = get_processed_blocks_by_slots_batch(client, slots).await?;
@@ -184,7 +183,7 @@ async fn get_processed_blocks_by_slots_batch(
     let mut tasks = JoinSet::new();
    
     for s in slots {
-        let client = Arc::clone(&client);
+        let client = Arc::clone(client);
         let slot = *s;
         tasks.spawn(async move {
             get_processed_block_by_slot(&client, slot).await
@@ -302,7 +301,7 @@ pub async fn sync_from_block(
 
         let mut parents: HashSet<u64> = HashSet::new();
 
-        for (key, _) in &segment_writes {
+        for key in segment_writes.keys() {
             if key.address != *tape_address {
                 continue;
             }
@@ -427,9 +426,9 @@ async fn sync_segments_from_solana(
     keys.sort();
 
     for seg_num in keys {
-        debug!("Syncing segment {} for tape {}", seg_num, tape_address);
+        debug!("Syncing segment {seg_num} for tape {tape_address}");
         let segment = padded_array::<SEGMENT_SIZE>(&state.segments[&seg_num]);
-        store.add_segment(&tape_address, seg_num as u64, segment.to_vec())?;
+        store.add_segment(tape_address, seg_num, segment.to_vec())?;
     }
 
     Ok(())
@@ -504,7 +503,7 @@ fn print_drift_status(
 
     // Persist updated health (last_processed_slot + drift)
     if let Err(e) = store.update_health(last_processed_slot, drift) {
-        eprintln!("ERROR: failed to write health metadata: {:?}", e);
+        eprintln!("ERROR: failed to write health metadata: {e:?}");
     }
 
     let health_status = if drift < 50 {
@@ -516,7 +515,6 @@ fn print_drift_status(
     };
 
     debug!(
-        "Drift {} slots behind tip ({}), status: {}",
-        drift, latest_slot, health_status
+        "Drift {drift} slots behind tip ({latest_slot}), status: {health_status}"
     );
 }

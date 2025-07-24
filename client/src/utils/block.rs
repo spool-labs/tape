@@ -56,6 +56,7 @@ pub enum TapeEvent {
 }
 
 // Pulled out of instruction data
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum TapeInstruction {
     Write { address: Pubkey, data: Vec<u8> },
@@ -460,7 +461,7 @@ fn process_instruction(
 
 fn is_failed_transaction(tx: &EncodedTransactionWithStatusMeta) -> bool {
     if let Some(meta) = &tx.meta {
-        if let solana_sdk::transaction::Result::Err(_) = meta.status {
+        if meta.status.is_err() {
             return true;
         }
     }

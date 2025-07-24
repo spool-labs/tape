@@ -74,8 +74,8 @@ pub async fn create_ata(
     let signature_bytes = send_and_confirm_transaction(client, &tx)
         .await
         .map_err(|e| {
-            let error_msg = format!("Failed to create ATA {} for mint {} and owner {}: {}", ata, mint, owner, e);
-            eprintln!("{}", error_msg);
+            let error_msg = format!("Failed to create ATA {ata} for mint {mint} and owner {owner}: {e}");
+            eprintln!("{error_msg}");
             anyhow!(error_msg)
         })?;
     let signature: Signature = deserialize(&signature_bytes)?;

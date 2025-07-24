@@ -9,6 +9,7 @@ pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         tape_info,
         treasury_ata_info, 
         token_program_info, 
+        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

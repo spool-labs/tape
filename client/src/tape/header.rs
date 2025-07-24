@@ -105,7 +105,7 @@ impl TapeHeader {
         }
 
         // Check the magic prefix.
-        if &data[0..4] != HEADER_MAGIC {
+        if data[0..4] != HEADER_MAGIC {
             bail!("Invalid magic number in TapeHeader");
         }
 
