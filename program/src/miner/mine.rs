@@ -13,7 +13,8 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         miner_info, 
         tape_info,
         archive_info,
-        slot_hashes_info
+        slot_hashes_info,
+        _rest@..
     ] = accounts else { 
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -52,7 +53,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
 
-    check_submission(&miner, &block, epoch, current_time)?;
+    check_submission(miner, block, epoch, current_time)?;
 
     // Compute the miner's challenge based on the current block 
     // and unique miner challenge values.
@@ -84,8 +85,8 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     )?;
 
     check_poa(
-        &tape,
-        &args,
+        tape,
+        args,
         &miner_challenge,
         &solution,
     )?;
@@ -100,8 +101,8 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     );
 
     let reward = calculate_reward(
-        &epoch,
-        &tape,
+        epoch,
+        tape,
         miner.multiplier);
 
     update_miner_state(
@@ -133,7 +134,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         block.challenge_set = archive.tapes_stored;
     }
 
-    update_epoch(epoch, &archive, current_time)?;
+    update_epoch(epoch, archive, current_time)?;
 
     Ok(())
 }
@@ -179,18 +180,18 @@ fn check_poa(
         solana_program::msg!("minable tape");
 
         let segment_number = compute_recall_segment(
-            &miner_challenge, 
+            miner_challenge, 
             tape.total_segments
         );
 
         let merkle_root = tape.merkle_root;
         let merkle_proof = &args.recall_proof;
         let leaf = Leaf::new(&[
-            (segment_number as u64).to_le_bytes().as_ref(),
+            { segment_number }.to_le_bytes().as_ref(),
             args.recall_segment.as_ref(),
         ]);
 
-        assert!(merkle_proof.len() == PROOF_LEN as usize);
+        assert!(merkle_proof.len() == PROOF_LEN);
 
         check_condition(
             verify(

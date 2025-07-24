@@ -77,7 +77,7 @@ pub fn write_segment(
 
     let leaf = compute_leaf(
         segment_id, 
-        &segment);
+        segment);
 
     check_condition(
         tree.try_add_leaf(leaf).is_ok(),
@@ -99,11 +99,11 @@ pub fn update_segment(
 
     let old_leaf = compute_leaf(
         segment_id, 
-        &old_segment);
+        old_segment);
 
     let new_leaf = compute_leaf(
         segment_id, 
-        &new_segment);
+        new_segment);
 
     check_condition(
         tree.try_replace_leaf(proof, old_leaf, new_leaf).is_ok(),
@@ -122,12 +122,12 @@ pub fn compute_next_challenge(
     let slothash = &slot_hashes_info.data.borrow()
         [0..core::mem::size_of::<SlotHash>()];
 
-    let next_challenge = hashv(&[
+    
+
+    hashv(&[
         current_challenge,
         slothash,
-    ]).0;
-
-    next_challenge
+    ]).0
 }
 
 

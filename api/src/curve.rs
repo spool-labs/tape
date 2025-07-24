@@ -10,7 +10,7 @@ const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 #[inline(always)]
 pub fn get_base_rate(current_epoch: u64) -> u64 {
     match current_epoch {
-        n if n < 1 * EPOCHS_PER_YEAR   => 10000000000, // Year ~1,  about 1.00 TAPE/min
+        n if n < EPOCHS_PER_YEAR   => 10000000000, // Year ~1,  about 1.00 TAPE/min
         n if n < 2 * EPOCHS_PER_YEAR   => 7500000000,  // Year ~2,  about 0.75 TAPE/min
         n if n < 3 * EPOCHS_PER_YEAR   => 5625000000,  // Year ~3,  about 0.56 TAPE/min
         n if n < 4 * EPOCHS_PER_YEAR   => 4218750000,  // Year ~4,  about 0.42 TAPE/min

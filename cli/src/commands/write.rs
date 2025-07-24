@@ -95,6 +95,7 @@ pub async fn handle_write_command(cli: Cli, client: Arc<RpcClient>, payer: Keypa
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_write_summary(
     cli: &Cli,
     source: &str,
@@ -107,14 +108,14 @@ fn print_write_summary(
 ) {
     if cli.verbose {
         log::print_section_header("Tape Write");
-        log::print_message(&format!("Source: {}", source));
-        log::print_message(&format!("Tape Name: {}", tape_name));
-        log::print_message(&format!("MIME Type: {}", mime));
-        log::print_message(&format!("Compression: {:?}", compression_algo));
-        log::print_message(&format!("Encryption: {:?}", encryption_algo));
-        log::print_message(&format!("Flags: {:?}", flags));
+        log::print_message(&format!("Source: {source}"));
+        log::print_message(&format!("Tape Name: {tape_name}"));
+        log::print_message(&format!("MIME Type: {mime}"));
+        log::print_message(&format!("Compression: {compression_algo:?}"));
+        log::print_message(&format!("Encryption: {encryption_algo:?}"));
+        log::print_message(&format!("Flags: {flags:?}"));
     }
-    log::print_count(&format!("Total Chunks: {}", chunk_count));
+    log::print_count(&format!("Total Chunks: {chunk_count}"));
     log::print_divider();
 }
 
@@ -195,13 +196,13 @@ fn print_write_completion(cli: &Cli, tape_address: Pubkey, chunk_count: usize) {
     if cli.verbose {
         log::print_divider();
         log::print_section_header("Metadata");
-        log::print_count(&format!("Tape Address: {}", tape_address));
-        log::print_count(&format!("Total Chunks: {}", chunk_count));
+        log::print_count(&format!("Tape Address: {tape_address}"));
+        log::print_count(&format!("Total Chunks: {chunk_count}"));
     }
 
     log::print_divider();
     log::print_info("To read the tape, run:");
-    log::print_title(&format!("tapedrive read {}", tape_address));
+    log::print_title(&format!("tapedrive read {tape_address}"));
     log::print_divider();
 }
 

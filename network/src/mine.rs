@@ -35,7 +35,7 @@ pub async fn mine_loop(
             Ok(()) => debug!("Mining iteration completed successfully"),
             Err(e) => {
                 // Log the error (you can use a proper logger like `log::error!` if set up)
-                error!("Mining iteration failed: {:?}", e);
+                error!("Mining iteration failed: {e:?}");
             }
         }
 
@@ -74,13 +74,13 @@ async fn try_mine_iteration(
         block.challenge_set
     );
 
-    debug!("Recall tape number: {:?}", tape_number);
+    debug!("Recall tape number: {tape_number:?}");
 
     let tape_address = store.get_tape_address(tape_number);
 
     if let Ok(tape_address) = tape_address {
 
-        debug!("Tape address: {:?}", tape_address);
+        debug!("Tape address: {tape_address:?}");
 
         let tape = get_tape_account(client, &tape_address)
             .await
@@ -101,7 +101,7 @@ async fn try_mine_iteration(
                     tape_address, tape.total_segments, segments.len()));
             }
 
-            debug!("Recall tape {}, segment {}", tape_number, segment_number);
+            debug!("Recall tape {tape_number}, segment {segment_number}");
 
             compute_challenge_solution(
                 &tape,
@@ -113,7 +113,7 @@ async fn try_mine_iteration(
 
         // This tape does not have minimum rent, we use an empty segment
         } else {
-            debug!("Tape {} does not have minimum rent, using empty segment", tape_address);
+            debug!("Tape {tape_address} does not have minimum rent, using empty segment");
 
             let solution = solve_challenge(
                 miner_challenge,
@@ -133,7 +133,7 @@ async fn try_mine_iteration(
             recall_segment, 
             merkle_proof,
         ).await?;
-        debug!("Mining successful! Signature: {:?}", sig);
+        debug!("Mining successful! Signature: {sig:?}");
 
         let (miner, _) = get_miner_account(client, miner_address)
             .await
@@ -208,7 +208,7 @@ fn compute_challenge_solution(
 
     debug!("Solution difficulty: {:?}", solution.difficulty());
 
-    solution.is_valid(&miner_challenge, &recall_segment)
+    solution.is_valid(miner_challenge, &recall_segment)
         .map_err(|_| anyhow!("Invalid solution"))?;
 
     debug!("Solution is valid!");
@@ -245,8 +245,8 @@ fn solve_challenge<const N: usize>(
 
                 if let Ok(solution) = solve_with_memory(
                     &mut memory,
-                    &*challenge_clone,
-                    &*data_clone,
+                    &challenge_clone,
+                    &data_clone,
                     &nonce.to_le_bytes(),
                 ) {
                     if solution.difficulty() >= difficulty as u32 {

@@ -17,7 +17,7 @@ pub fn write_output(output: Option<String>, data: &[u8], mime_type: MimeType) ->
             fs::write(&filename, data)?;
 
             log::print_divider();
-            log::print_message(&format!("Wrote output to: {}", filename));
+            log::print_message(&format!("Wrote output to: {filename}"));
         }
         None => {
             io::stdout().write_all(data)?;

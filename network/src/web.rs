@@ -175,7 +175,7 @@ pub fn rpc_get_tape_address(store: &TapeStore, params: &Value) -> Result<Value, 
         .map_err(|e| match e {
             StoreError::TapeNotFound(n) => RpcError {
                 code: ErrorCode::ServerError.code(),
-                message: format!("tape {} not found", n),
+                message: format!("tape {n} not found"),
             },
             other => RpcError {
                 code: ErrorCode::ServerError.code(),
@@ -208,7 +208,7 @@ pub fn rpc_get_tape_number(store: &TapeStore, params: &Value) -> Result<Value, R
 
     let pk = Pubkey::from_str(addr).map_err(|e| RpcError {
         code: ErrorCode::InvalidParams.code(),
-        message: format!("invalid pubkey: {}", e),
+        message: format!("invalid pubkey: {e}"),
     })?;
 
     store
@@ -267,7 +267,7 @@ pub fn rpc_get_segment(store: &TapeStore, params: &Value) -> Result<Value, RpcEr
             },
             StoreError::SegmentNotFound(_, num) => RpcError {
                 code: ErrorCode::ServerError.code(),
-                message: format!("segment {} not found", num),
+                message: format!("segment {num} not found"),
             },
             other => RpcError {
                 code: ErrorCode::ServerError.code(),
@@ -301,7 +301,7 @@ pub fn rpc_get_tape(store: &TapeStore, params: &Value) -> Result<Value, RpcError
 
     let pk = Pubkey::from_str(addr).map_err(|e| RpcError {
         code: ErrorCode::InvalidParams.code(),
-        message: format!("invalid pubkey: {}", e),
+        message: format!("invalid pubkey: {e}"),
     })?;
 
     let segments = store.get_tape_segments(&pk).map_err(|e| match e {
@@ -369,7 +369,7 @@ pub fn rpc_get_slot(store: &TapeStore, params: &Value) -> Result<Value, RpcError
             },
             StoreError::SegmentNotFound(_, num) => RpcError {
                 code: ErrorCode::ServerError.code(),
-                message: format!("slot for segment {} not found", num),
+                message: format!("slot for segment {num} not found"),
             },
             other => RpcError {
                 code: ErrorCode::ServerError.code(),
@@ -411,7 +411,7 @@ pub fn rpc_get_segment_by_address(store: &TapeStore, params: &Value) -> Result<V
 
     let pk = Pubkey::from_str(addr).map_err(|e| RpcError {
         code: ErrorCode::InvalidParams.code(),
-        message: format!("invalid pubkey: {}", e),
+        message: format!("invalid pubkey: {e}"),
     })?;
 
     store
@@ -420,7 +420,7 @@ pub fn rpc_get_segment_by_address(store: &TapeStore, params: &Value) -> Result<V
         .map_err(|e| match e {
             StoreError::SegmentNotFoundForAddress(_, num) => RpcError {
                 code: ErrorCode::ServerError.code(),
-                message: format!("segment {} not found", num),
+                message: format!("segment {num} not found"),
             },
             other => RpcError {
                 code: ErrorCode::ServerError.code(),
@@ -462,7 +462,7 @@ pub fn rpc_get_slot_by_address(store: &TapeStore, params: &Value) -> Result<Valu
 
     let pk = Pubkey::from_str(addr).map_err(|e| RpcError {
         code: ErrorCode::InvalidParams.code(),
-        message: format!("invalid pubkey: {}", e),
+        message: format!("invalid pubkey: {e}"),
     })?;
 
     store
@@ -471,7 +471,7 @@ pub fn rpc_get_slot_by_address(store: &TapeStore, params: &Value) -> Result<Valu
         .map_err(|e| match e {
             StoreError::SegmentNotFoundForAddress(_, num) => RpcError {
                 code: ErrorCode::ServerError.code(),
-                message: format!("slot for segment {} not found", num),
+                message: format!("slot for segment {num} not found"),
             },
             other => RpcError {
                 code: ErrorCode::ServerError.code(),
@@ -511,7 +511,7 @@ async fn rpc_handler(
 
 
 pub fn run_refresh_store(store:&Arc<TapeStore>) {
-    let store = Arc::clone(&store);
+    let store = Arc::clone(store);
     tokio::spawn(async move {
         let interval = std::time::Duration::from_secs(15);
         loop {

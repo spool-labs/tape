@@ -59,7 +59,7 @@ fn run_integration() {
     let ata_balance = get_ata_balance(&svm, &ata);
     assert!(ata_balance > 0);
 
-    println!("ATA balance after claiming rewards: {}", ata_balance);
+    println!("ATA balance after claiming rewards: {ata_balance}");
 
     // Advance clock
     let mut initial_clock = svm.get_sysvar::<Clock>();
@@ -69,7 +69,7 @@ fn run_integration() {
     // Create tapes
     let tape_count = 5;
     for tape_idx in 1..tape_count {
-        create_and_verify_tape(&mut svm, &payer, ata, tape_idx as u64, &mut tape_db);
+        create_and_verify_tape(&mut svm, &payer, ata, tape_idx, &mut tape_db);
     }
 
     // Verify archive account after tape creation
@@ -169,7 +169,7 @@ fn do_mining_run(
 
         let (solution, recall_segment, merkle_proof) = 
             if tape.has_minimum_rent() {
-                compute_challenge_solution(stored_tape, &miner, &epoch, &block)
+                compute_challenge_solution(stored_tape, miner, epoch, block)
             } else {
 
                 let solution = solve_challenge(
@@ -183,7 +183,7 @@ fn do_mining_run(
 
         perform_mining(
             svm,
-            &payer,
+            payer,
             miner_address,
             stored_tape.pubkey,
             solution,
@@ -309,7 +309,7 @@ fn create_and_verify_tape(
     tape_db: &mut Vec<StoredTape>,
 ) {
     let payer_pk = payer.pubkey();
-    let tape_name = format!("tape-name-{}", tape_idx);
+    let tape_name = format!("tape-name-{tape_idx}");
 
     let (tape_address, _tape_bump) = tape_pda(payer_pk, &to_name(&tape_name));
     let (writer_address, _writer_bump) = writer_pda(tape_address);
@@ -350,7 +350,7 @@ fn create_and_verify_tape(
 
     subsidize_tape(
         svm, 
-        &payer, 
+        payer, 
         ata,
         tape_address, 
         min_rent,
@@ -422,7 +422,7 @@ fn write_tape(
     let mut total_size = 0;
 
     for write_index in 0..10u64 {
-        let data = format!("<segment_{}_data>", write_index).into_bytes();
+        let data = format!("<segment_{write_index}_data>").into_bytes();
         total_size += data.len() as u64;
 
         let blockhash = svm.latest_blockhash();
@@ -667,7 +667,7 @@ fn compute_challenge_solution(
 
     assert_eq!(leaves.len(), stored_tape.account.total_segments as usize);
 
-    println!("Recall segment: {}", segment_number);
+    println!("Recall segment: {segment_number}");
 
     let solution = solve_challenge(miner_challenge, &recall_segment, epoch.target_difficulty).unwrap();
     assert!(solution.is_valid(&miner_challenge, &recall_segment).is_ok());

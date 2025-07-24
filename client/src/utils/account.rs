@@ -21,7 +21,7 @@ pub async fn get_tape_account(client: &Arc<RpcClient>, tape_address: &Pubkey) ->
 
 pub async fn find_tape_account(client: &Arc<RpcClient>, number: u64) -> Result<Option<(Pubkey, Account)>> {
     let number_bytes = number.to_le_bytes();
-    let number_base64 = base64::encode(&number_bytes);
+    let number_base64 = base64::encode(number_bytes);
 
     let config = RpcProgramAccountsConfig {
         
