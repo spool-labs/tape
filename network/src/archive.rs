@@ -113,7 +113,6 @@ pub async fn archive_loop(
 
                             sync_segments_from_trusted_peer(store, &tape_address, peer_url).await?;
                         } else {
-
                             debug!("Syncing segments from Solana RPC");
                             sync_segments_from_solana(store, client, &tape_address).await?;
                         }

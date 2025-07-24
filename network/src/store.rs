@@ -93,7 +93,7 @@ pub enum StoreStaticKeys {
 }
 
 impl StoreStaticKeys {
-    fn as_bytes(self) -> &'static [u8] {
+    fn as_bytes(&self) -> &'static [u8] {
         match self {
             StoreStaticKeys::LastProcessedSlot => b"last_processed_slot",
             StoreStaticKeys::Drift => b"drift",
