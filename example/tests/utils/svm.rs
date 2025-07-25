@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 use tape_api::prelude::InstructionType;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
@@ -8,22 +8,23 @@ use pretty_hex::*;
 use bincode;
 
 pub fn program_bytes() -> Vec<u8> {
+    // Fetch the example program bytes from target
     let mut so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     so_path.push("../target/deploy/example.so");
     std::fs::read(so_path).unwrap()
 }
 
 pub fn tape_bytes() -> Vec<u8> {
+    // Fetch the tape program bytes from target
     let mut so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     so_path.push("../target/deploy/tape.so");
     std::fs::read(so_path).unwrap()
 }
 
 pub fn metadata_bytes() -> Vec<u8> {
-    // Fetch the metadata program bytes before running the test
-    // solana program dump --url mainnet-beta metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s metadata.so
+    // Fetch the metadata program bytes from elfs/ dir before running the test
     let mut so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    so_path.push("../target/deploy/metadata.so");
+    so_path.push("tests/elfs/metadata.so");
     std::fs::read(so_path).unwrap()
 }
 
