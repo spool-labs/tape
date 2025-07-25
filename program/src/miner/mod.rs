@@ -1,9 +1,9 @@
 pub mod register;
-pub mod close;
+pub mod unregister;
 pub mod mine;
 pub mod claim;
 
 pub use register::*;
-pub use close::*;
+pub use unregister::*;
 pub use mine::*;
 pub use claim::*;

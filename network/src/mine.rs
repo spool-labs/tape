@@ -157,7 +157,7 @@ fn compute_challenge_solution(
     segment_number: u64,
     segments: Vec<(u64, Vec<u8>)>,
     epoch_difficulty: u64,
-) -> Result<(Solution, [u8; SEGMENT_SIZE], [[u8; 32]; TREE_HEIGHT])> {
+) -> Result<(Solution, [u8; SEGMENT_SIZE], [[u8; 32]; SEGMENT_TREE_HEIGHT])> {
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];

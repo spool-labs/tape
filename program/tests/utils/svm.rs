@@ -1,5 +1,6 @@
+use steel::*;
+use tape_api::prelude::*;
 use std::path::PathBuf;
-use tape_api::prelude::InstructionType;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
 use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
@@ -75,7 +76,20 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
 
     for i in 0..tx.message.instructions.len() {
         let ix = &tx.message.instructions[i];
-        let ix_type = InstructionType::try_from(ix.data[0]).unwrap();
+
+        let discriminator = ix.data[0];
+        let ix_type = if let Ok(instruction) = ProgramInstruction::try_from_primitive(discriminator) {
+            format!("ProgramInstruction::{:?}", instruction)
+        } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
+            format!("TapeInstruction::{:?}", instruction)
+        } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
+            format!("MinerInstruction::{:?}", instruction)
+        } else if let Ok(instruction) = BinInstruction::try_from_primitive(discriminator) {
+            format!("BinInstruction::{:?}", instruction)
+        } else {
+            format!("Invalid (discriminator: {})", discriminator)
+        };
+
 
         println!("\nix:\t{:?} ({})", ix_type, ix.data[0]);
         println!("accounts:");

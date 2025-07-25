@@ -16,27 +16,38 @@ pub fn process_instruction(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    let (ix, data) = parse_instruction(&tape_api::ID, program_id, data)?;
+    let (discriminator, data) = parse_instruction(&tape_api::ID, program_id, data)?;
 
-    match ix {
-        // Program instructions
-        InstructionType::Initialize => process_initialize(accounts, data)?,
-
-        // Tape instructions
-        InstructionType::Create => process_create(accounts, data)?,
-        InstructionType::Write => process_write(accounts, data)?,
-        InstructionType::Update => process_update(accounts, data)?,
-        InstructionType::Finalize => process_finalize(accounts, data)?,
-        InstructionType::SetHeader => process_set_header(accounts, data)?,
-        InstructionType::Subsidize => process_subsidize_rent(accounts, data)?,
-
-        // Miner instructions
-        InstructionType::Register => process_register(accounts, data)?,
-        InstructionType::Close => process_close(accounts, data)?,
-        InstructionType::Mine => process_mine(accounts, data)?,
-        InstructionType::Claim => process_claim(accounts, data)?,
-
-        _ => { return Err(ProgramError::InvalidInstructionData); }
+    if let Ok(ix) = ProgramInstruction::try_from_primitive(discriminator) {
+        match ix {
+            ProgramInstruction::Initialize => process_initialize(accounts, data)?,
+            _ => return Err(ProgramError::InvalidInstructionData),
+        }
+    } else if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {
+        match ix {
+            TapeInstruction::Create => process_create(accounts, data)?,
+            TapeInstruction::Write => process_write(accounts, data)?,
+            TapeInstruction::Update => process_update(accounts, data)?,
+            TapeInstruction::Finalize => process_finalize(accounts, data)?,
+            TapeInstruction::SetHeader => process_set_header(accounts, data)?,
+            TapeInstruction::Subsidize => process_subsidize_rent(accounts, data)?,
+        }
+    } else if let Ok(ix) = MinerInstruction::try_from_primitive(discriminator) {
+        match ix {
+            MinerInstruction::Register => process_register(accounts, data)?,
+            MinerInstruction::Unregister => process_unregister(accounts, data)?,
+            MinerInstruction::Mine => process_mine(accounts, data)?,
+            MinerInstruction::Claim => process_claim(accounts, data)?,
+        }
+    // } else if let Ok(ix) = BinInstruction::try_from_primitive(discriminator) {
+    //     match ix {
+    //         BinInstruction::Create => process_bin_create(accounts, data)?,
+    //         BinInstruction::Destroy => process_bin_destroy(accounts, data)?,
+    //         BinInstruction::Pack => process_bin_pack(accounts, data)?,
+    //         BinInstruction::Unpack => process_bin_unpack(accounts, data)?,
+    //     }
+    } else {
+        return Err(ProgramError::InvalidInstructionData);
     }
 
     Ok(())

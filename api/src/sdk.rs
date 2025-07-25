@@ -225,7 +225,7 @@ pub fn build_close_ix(
             AccountMeta::new(miner, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
-        data: Close {}.to_bytes(),
+        data: Unregister {}.to_bytes(),
     }
 }
 
