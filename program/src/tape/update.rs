@@ -48,7 +48,7 @@ pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
 
     assert!(args.old_data.len() == SEGMENT_SIZE);
     assert!(args.new_data.len() == SEGMENT_SIZE);
-    assert!(merkle_proof.len() == PROOF_LEN);
+    assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
 
     let old_leaf = Leaf::new(&[
         segment_number.as_ref(), // u64_le_bytes

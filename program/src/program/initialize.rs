@@ -1,7 +1,8 @@
-use tape_api::prelude::*;
+use steel::*;
 use solana_program::{program_pack::Pack, program::{invoke, invoke_signed}};
 use spl_token::state::Mint;
-use steel::*;
+use tape_api::prelude::*;
+use crate::mine::get_base_rate;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [

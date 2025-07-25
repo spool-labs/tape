@@ -83,7 +83,7 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     tape.tail_slot         = current_slot;
 
     writer.tape            = *tape_info.key;
-    writer.state           = TapeTree::new(&[empty_seed.as_ref()]);
+    writer.state           = SegmentTree::new(&[empty_seed.as_ref()]);
 
     Ok(())
 }

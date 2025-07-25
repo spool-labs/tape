@@ -10,6 +10,7 @@ use solana_sdk::{
     clock::Clock,
 };
 
+use tape::miner::get_base_rate;
 use tape_api::prelude::*;
 use litesvm::LiteSVM;
 
@@ -325,7 +326,7 @@ fn create_and_verify_tape(
     );
 
     let tape_seed = &[stored_tape.account.merkle_seed.as_ref()];
-    let mut writer_tree = TapeTree::new(tape_seed);
+    let mut writer_tree = SegmentTree::new(tape_seed);
 
     write_tape(
         svm,
@@ -401,7 +402,7 @@ fn create_tape(
     let writer = Writer::unpack(&account.data).unwrap();
     assert_eq!(writer.tape, tape_address);
 
-    let writer_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
+    let writer_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
     assert_eq!(writer.state, writer_tree);
 
     StoredTape {
@@ -417,7 +418,7 @@ fn write_tape(
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
-    writer_tree: &mut TapeTree,
+    writer_tree: &mut SegmentTree,
 ) {
     let payer_pk = payer.pubkey();
     let mut total_size = 0;
@@ -472,7 +473,7 @@ fn update_tape(
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
-    writer_tree: &mut TapeTree,
+    writer_tree: &mut SegmentTree,
 ) {
     let payer_pk = payer.pubkey();
     let target_segment: u64 = 0;
@@ -490,7 +491,7 @@ fn update_tape(
 
     // Compute Merkle proof
     let merkle_proof_vec = writer_tree.get_merkle_proof(&leaves, target_segment as usize);
-    let merkle_proof: [[u8; 32]; PROOF_LEN] = merkle_proof_vec
+    let merkle_proof: [[u8; 32]; SEGMENT_PROOF_LEN] = merkle_proof_vec
         .iter()
         .map(|v| v.to_bytes())
         .collect::<Vec<_>>()
@@ -578,7 +579,7 @@ fn finalize_tape(
 
     let new_raw = b"<segment_0_updated>";
     let new_data_array = padded_array::<SEGMENT_SIZE>(new_raw);
-    let merkle_proof = [[0u8; 32]; PROOF_LEN]; // Stale proof, but should fail due to state
+    let merkle_proof = [[0u8; 32]; SEGMENT_PROOF_LEN]; // Stale proof, but should fail due to state
 
     let blockhash = svm.latest_blockhash();
     let ix = build_update_ix(
@@ -638,7 +639,7 @@ fn compute_challenge_solution(
     miner: &Miner,
     epoch: &Epoch,
     block: &Block,
-) -> (Solution, [u8; SEGMENT_SIZE], [[u8; 32]; PROOF_LEN]) {
+) -> (Solution, [u8; SEGMENT_SIZE], [[u8; 32]; SEGMENT_PROOF_LEN]) {
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -673,7 +674,7 @@ fn compute_challenge_solution(
     let solution = solve_challenge(miner_challenge, &recall_segment, epoch.target_difficulty).unwrap();
     assert!(solution.is_valid(&miner_challenge, &recall_segment).is_ok());
 
-    let merkle_tree = TapeTree::new(&[stored_tape.account.merkle_seed.as_ref()]);
+    let merkle_tree = SegmentTree::new(&[stored_tape.account.merkle_seed.as_ref()]);
     let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number);
     let merkle_proof = merkle_proof
         .iter()
@@ -692,7 +693,7 @@ fn perform_mining(
     tape_address: Pubkey,
     solution: Solution,
     recall_segment: [u8; SEGMENT_SIZE],
-    merkle_proof: [[u8; 32]; PROOF_LEN],
+    merkle_proof: [[u8; 32]; SEGMENT_PROOF_LEN],
 ) {
     let payer_pk = payer.pubkey();
 

@@ -20,7 +20,7 @@ pub async fn perform_mining(
     tape_address: Pubkey,
     solution: Solution,
     recall_segment: [u8; SEGMENT_SIZE],
-    merkle_proof: [[u8; 32]; TREE_HEIGHT],
+    merkle_proof: [[u8; 32]; SEGMENT_TREE_HEIGHT],
 ) -> Result<Signature> {
 
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(700_000);

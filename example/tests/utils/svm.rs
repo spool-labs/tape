@@ -1,5 +1,4 @@
 use std::{env, path::PathBuf};
-use tape_api::prelude::InstructionType;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
 use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
