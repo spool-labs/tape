@@ -6717,6 +6717,7 @@ dependencies = [
  "mpl-token-metadata",
  "pretty-hex",
  "rand 0.8.5",
+ "solana-client",
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
@@ -6724,6 +6725,7 @@ dependencies = [
  "spl-token 4.0.2",
  "steel",
  "tape-api",
+ "tokio",
 ]
 
 [[package]]
