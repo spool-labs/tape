@@ -26,10 +26,10 @@ struct StoredTape {
     account: Tape,
 }
 
-#[tokio::test]
-async fn run_integration() {
+#[test]
+fn run_integration() {
     // Setup environment
-    let (mut svm, payer) = setup_environment().await;
+    let (mut svm, payer) = setup_environment();
 
     // Initialize program
     initialize_program(&mut svm, &payer);
@@ -79,10 +79,8 @@ async fn run_integration() {
     do_mining_run(&mut svm, &payer, miner_address, &mut tape_db, 5);
 }
 
-async fn setup_environment() -> (LiteSVM, Keypair) {
-    let mut svm = setup_svm()
-        .await
-        .expect("Failed to set up SVM"); // Await and handle Result
+fn setup_environment() -> (LiteSVM, Keypair) {
+    let mut svm = setup_svm();
     let payer = create_payer(&mut svm);
     (svm, payer)
 }

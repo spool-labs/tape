@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::error::Error;
 use tape_api::prelude::InstructionType;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
@@ -16,22 +15,22 @@ pub fn program_bytes() -> Vec<u8> {
 
 pub fn metadata_bytes() -> Vec<u8> {
     // Fetch the metadata program bytes from elfs/ dir before running the test
+    // solana program dump --url mainnet-beta metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s metadata.so
     let mut so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     so_path.push("tests/elfs/metadata.so");
     std::fs::read(so_path).unwrap()
 }
 
-pub async fn setup_svm() -> Result<LiteSVM, Box<dyn Error>> {
+pub fn setup_svm() -> LiteSVM {
     let mut svm = LiteSVM::new().with_compute_budget(ComputeBudget {
         compute_unit_limit: 1_000_000,
         ..Default::default()
     });
 
-
     svm.add_program(mpl_token_metadata::ID, &metadata_bytes());
     svm.add_program(tape_api::ID, &program_bytes());
 
-    Ok(svm)
+    svm
 }
 
 pub fn send_tx(svm: &mut LiteSVM, tx: Transaction) -> TransactionResult {
