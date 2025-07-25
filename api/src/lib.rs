@@ -7,7 +7,6 @@ pub mod pda;
 pub mod utils;
 pub mod loaders;
 pub mod event;
-pub mod curve;
 pub mod rent;
 mod macros;
 
@@ -23,7 +22,6 @@ pub mod prelude {
     pub use crate::utils::*;
     pub use crate::event::*;
     pub use crate::loaders::*;
-    pub use crate::curve::*;
     pub use crate::rent::*;
 }
 
