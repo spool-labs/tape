@@ -119,10 +119,10 @@ pub const BLOCK_BUMP: u8 =
     ed25519::derive_program_address(&[BLOCK], &PROGRAM_ID).1;
 
 pub const MINT_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, &MINT_SEED], &PROGRAM_ID).0);
+    Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).0);
 
 pub const MINT_BUMP: u8 = 
-    ed25519::derive_program_address(&[MINT, &MINT_SEED], &PROGRAM_ID).1;
+    ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).1;
 
 pub const TREASURY_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);

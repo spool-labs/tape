@@ -94,7 +94,7 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
 
     for i in 0..tx.message.instructions.len() {
         let ix = &tx.message.instructions[i];
-        let ix_type = InstructionType::try_from(ix.data[0] as u8).unwrap();
+        let ix_type = InstructionType::try_from(ix.data[0]).unwrap();
 
         println!("\nix:\t{:?} ({})", ix_type, ix.data[0]);
         println!("accounts:");
@@ -107,12 +107,12 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
         println!("\n\n{}\n", pretty_hex(&ix.data))
     }
 
-    println!("");
+    println!();
     println!("size:\t{:?}", get_tx_size(&tx));
     println!("cu:\t{:?}", meta.compute_units_consumed);
     println!("logs:");
     for log in &meta.logs {
-        println!("\t{:?}", log);
+        println!("\t{log:?}");
     }
-    println!("");
+    println!();
 }

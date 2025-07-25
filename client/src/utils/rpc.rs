@@ -111,8 +111,7 @@ pub async fn send_with_retry(
                 let delay_ms = INITIAL_BACKOFF * (1 << attempts);
 
                 debug!(
-                    "send_with_retry attempt {}/{}, waiting {}ms: {}",
-                    attempts, max_retries, delay_ms, e
+                    "send_with_retry attempt {attempts}/{max_retries}, waiting {delay_ms}ms: {e}"
                 );
 
                 sleep(Duration::from_millis(delay_ms)).await;
@@ -143,8 +142,7 @@ pub async fn get_transaction_with_retry(
                 attempts += 1;
                 let delay_ms = INITIAL_BACKOFF * (1 << attempts);
                 debug!(
-                    "get_transaction_with_retry attempt {}/{}, waiting {}ms: {}",
-                    attempts, max_retries, delay_ms, e
+                    "get_transaction_with_retry attempt {attempts}/{max_retries}, waiting {delay_ms}ms: {e}"
                 );
                 sleep(Duration::from_millis(delay_ms)).await;
                 continue;

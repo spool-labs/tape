@@ -212,8 +212,7 @@ impl FromStr for Cluster {
             "t" => Ok(Cluster::Testnet),
             s if s.starts_with("http://") || s.starts_with("https://") => Ok(Cluster::Custom(s.to_string())),
             _ => Err(format!(
-                "Invalid cluster value: '{}'. Use l, m, d, t, or a valid RPC URL (http:// or https://)",
-                s
+                "Invalid cluster value: '{s}'. Use l, m, d, t, or a valid RPC URL (http:// or https://)"
             )),
         }
     }

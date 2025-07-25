@@ -24,12 +24,12 @@ pub fn create_ata(svm: &mut LiteSVM, payer_kp: &Keypair, mint_pk: &Pubkey, owner
 }
 
 pub fn get_ata_balance(svm: &LiteSVM, ata: &Pubkey) -> u64 {
-    let info : Account = get_spl_account(svm, &ata).unwrap();
+    let info : Account = get_spl_account(svm, ata).unwrap();
     info.amount
 }
 
 pub fn get_mint(svm: &LiteSVM, mint: &Pubkey) -> Mint {
-    get_spl_account(svm, &mint).unwrap()
+    get_spl_account(svm, mint).unwrap()
 }
 
 pub fn mint_to(svm: &mut LiteSVM,

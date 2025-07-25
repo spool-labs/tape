@@ -68,7 +68,7 @@ async fn handle_resync(client: &Arc<RpcClient>, tape: &str) -> Result<()> {
     let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
     let starting_slot = tape_account.tail_slot;
     let store: TapeStore = get_primary_store()?;
-    log::print_message(&format!("Re-syncing tape: {}, please wait", tape));
+    log::print_message(&format!("Re-syncing tape: {tape}, please wait"));
     sync_from_block(&store, client, &tape_pubkey, starting_slot).await?;
     log::print_message("Done");
     Ok(())
@@ -79,7 +79,7 @@ fn handle_create(output: Option<String>) -> Result<()> {
         output.unwrap_or_else(|| format!("snapshot_{}.tar.gz", Utc::now().timestamp()));
     let store: TapeStore = get_read_only_store()?;
     create_snapshot(&store.db, &snapshot_path)?;
-    log::print_message(&format!("Snapshot created at: {}", snapshot_path));
+    log::print_message(&format!("Snapshot created at: {snapshot_path}"));
     Ok(())
 }
 
@@ -108,8 +108,8 @@ async fn handle_get_tape(
                 let canonical_seg = padded_array::<SEGMENT_SIZE>(&seg);
                 data.extend_from_slice(&canonical_seg);
             }
-            Err(e) if matches!(e, StoreError::SegmentNotFoundForAddress(..)) => {
-                data.extend_from_slice(&vec![0u8; SEGMENT_SIZE]);
+            Err(StoreError::SegmentNotFoundForAddress(..)) => {
+                data.extend_from_slice(&[0u8; SEGMENT_SIZE]);
                 missing.push(seg_idx);
             }
             Err(e) => return Err(e.into()),
@@ -117,7 +117,7 @@ async fn handle_get_tape(
     }
 
     if !missing.is_empty() {
-        log::print_message(&format!("Missing segments: {:?}", missing));
+        log::print_message(&format!("Missing segments: {missing:?}"));
     }
 
     let mime_type = if raw {
@@ -131,7 +131,7 @@ async fn handle_get_tape(
         data
     } else {
         let header = TapeHeader::try_from_bytes(&tape_account.header)?;
-        decode_tape(data, &header)?
+        decode_tape(data, header)?
     };
 
     write_output(output, &data_to_write, mime_type)?;
@@ -158,7 +158,7 @@ async fn handle_get_segment(client: &Arc<RpcClient>, tape: &str, index: u32) -> 
             stdout.write_all(&data)?;
             stdout.flush()?;
         }
-        Err(e) if matches!(e, StoreError::SegmentNotFoundForAddress(..)) => {
+        Err(StoreError::SegmentNotFoundForAddress(..)) => {
             log::print_message("Segment not found in local store");
         }
         Err(e) => return Err(e.into()),

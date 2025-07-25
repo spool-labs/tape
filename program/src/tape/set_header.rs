@@ -6,6 +6,7 @@ pub fn process_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let [
         signer_info, 
         tape_info,
+        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

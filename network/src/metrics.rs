@@ -1,6 +1,5 @@
 use std::{
-    convert::Infallible, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, 
-    sync::Once, time::Instant
+    convert::Infallible, fmt::{self}, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, sync::Once, time::Instant
 };
 
 use hyper::{Request, Response};
@@ -47,7 +46,7 @@ fn metrics_handler() -> Result<Response<Full<Bytes>>, Infallible> {
     let metrics = TextEncoder::new()
         .encode_to_string(&REGISTRY.gather())
         .unwrap_or_else(|error| {
-            error!("could not encode custom metrics: {}", error);
+            error!("could not encode custom metrics: {error}");
             String::new()
         });
         
@@ -93,11 +92,11 @@ pub fn run_metrics_server() -> anyhow::Result<()> {
     tokio::spawn(async move {
         let listener = match TcpListener::bind(address).await {
             Ok(l) => {
-                info!("Prometheus server started at http://{}/metrics", address);
+                info!("Prometheus server started at http://{address}/metrics");
                 l
             },
             Err(e) => {
-                error!("Failed to bind Prometheus server: {:?}", e);
+                error!("Failed to bind Prometheus server: {e:?}");
                 return;
             }
         };
@@ -106,7 +105,7 @@ pub fn run_metrics_server() -> anyhow::Result<()> {
             let (stream, _) = match listener.accept().await {
                 Ok(pair) => pair,
                 Err(e) => {
-                    error!("Prometheus accept failed: {:?}", e);
+                    error!("Prometheus accept failed: {e:?}");
                     continue;
                 }
             };
@@ -121,7 +120,7 @@ pub fn run_metrics_server() -> anyhow::Result<()> {
                 let builder = auto::Builder::new(hyper_util::rt::TokioExecutor::new());
                 let conn = builder.serve_connection(io, service);
                 if let Err(e) = conn.await {
-                    error!("Prometheus connection failed: {:?}", e);
+                    error!("Prometheus connection failed: {e:?}");
                 }
             });
         }
@@ -130,16 +129,17 @@ pub fn run_metrics_server() -> anyhow::Result<()> {
     Ok(())
 }
 
+
 pub enum RpcRequestStatus<'a> {
     Ok,
     Error(&'a RpcError),
 }
 
-impl<'a> RpcRequestStatus<'a> {
-    pub fn to_string(&self) -> String {
+impl fmt::Display for RpcRequestStatus<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RpcRequestStatus::Ok => "OK".to_string(),
-            RpcRequestStatus::Error(e) => e.err_code().to_string(),
+            RpcRequestStatus::Ok => write!(f, "OK"),
+            RpcRequestStatus::Error(e) => write!(f, "{}", e.err_code()),
         }
     }
 }
@@ -163,11 +163,11 @@ where
     let start = Instant::now();
     let result = f();
     let elapsed = start.elapsed().as_secs_f64();
-    record_td_api_latency(&method, elapsed);
+    record_td_api_latency(method, elapsed);
     match &result {
-        Ok(_) => inc_td_api_status_total(&method, RpcRequestStatus::Ok),
+        Ok(_) => inc_td_api_status_total(method, RpcRequestStatus::Ok),
         Err(err) => {
-            inc_td_api_status_total(&method, RpcRequestStatus::Error(err));
+            inc_td_api_status_total(method, RpcRequestStatus::Error(err));
         }
     };
 

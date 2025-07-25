@@ -7,6 +7,7 @@ pub fn process_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         signer_info, 
         tape_info,
         writer_info,
+        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
