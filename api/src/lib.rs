@@ -1,13 +1,14 @@
 pub mod consts;
 pub mod error;
+pub mod event;
 pub mod instruction;
+pub mod loaders;
+pub mod pda;
+pub mod rent;
 pub mod sdk;
 pub mod state;
-pub mod pda;
+pub mod types;
 pub mod utils;
-pub mod loaders;
-pub mod event;
-pub mod rent;
 mod macros;
 
 pub use crate::consts::*;
@@ -15,14 +16,15 @@ pub use crate::consts::*;
 pub mod prelude {
     pub use crate::consts::*;
     pub use crate::error::*;
+    pub use crate::event::*;
     pub use crate::instruction::*;
+    pub use crate::loaders::*;
+    pub use crate::pda::*;
+    pub use crate::rent::*;
     pub use crate::sdk::*;
     pub use crate::state::*;
-    pub use crate::pda::*;
+    pub use crate::types::*;
     pub use crate::utils::*;
-    pub use crate::event::*;
-    pub use crate::loaders::*;
-    pub use crate::rent::*;
 }
 
 use steel::*;

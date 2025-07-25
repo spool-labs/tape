@@ -15,16 +15,7 @@ use solana_transaction_status::{
     UiTransactionStatusMeta,
     UiConfirmedBlock
 };
-use tape_api::prelude::{
-    SEGMENT_SIZE,
-    PROOF_LEN,
-    WriteEvent,
-    UpdateEvent,
-    FinalizeEvent,
-    InstructionType,
-    EventType,
-    Update,
-};
+use tape_api::prelude::*;
 
 #[derive(Error, Debug)]
 pub enum BlockError {
@@ -65,7 +56,7 @@ pub enum TapeInstruction {
       segment_number: u64,
       old_data: [u8; SEGMENT_SIZE],
       new_data: [u8; SEGMENT_SIZE],
-      proof: [[u8;32]; PROOF_LEN],
+      proof: [[u8;32]; SEGMENT_PROOF_LEN],
     },
     Finalize { address: Pubkey },
 }

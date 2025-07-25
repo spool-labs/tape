@@ -78,7 +78,7 @@ pub fn build_update_ix(
     segment_number: u64,
     old_data: [u8; SEGMENT_SIZE],
     new_data: [u8; SEGMENT_SIZE],
-    proof: [[u8;32]; PROOF_LEN],
+    proof: [[u8;32]; SEGMENT_PROOF_LEN],
 ) -> Instruction {
 
     let segment_number = segment_number.to_le_bytes();
@@ -169,7 +169,7 @@ pub fn build_mine_ix(
     tape: Pubkey,
     solution: Solution,
     recall_segment: [u8; SEGMENT_SIZE],
-    recall_proof: [[u8;32]; PROOF_LEN],
+    recall_proof: [[u8;32]; SEGMENT_PROOF_LEN],
 ) -> Instruction {
 
     Instruction {

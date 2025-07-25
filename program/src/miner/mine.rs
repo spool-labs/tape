@@ -194,7 +194,7 @@ fn check_poa(
             args.recall_segment.as_ref(),
         ]);
 
-        assert!(merkle_proof.len() == PROOF_LEN);
+        assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
 
         check_condition(
             verify(

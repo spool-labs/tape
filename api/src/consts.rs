@@ -29,18 +29,23 @@ pub const METADATA_URI:    &str = "https://tapedrive.io/metadata.json";
 // ====================================================================
 // Merkle Tree Configuration
 // ====================================================================
-/// Height of the Merkle tree (number of levels)
-pub const TREE_HEIGHT: usize = 18;
-/// Number of hashes in a Merkle proof (equal to TREE_HEIGHT)
-pub const PROOF_LEN: usize = TREE_HEIGHT;
+/// Height of the Merkle tree containing segments (number of levels)
+pub const SEGMENT_TREE_HEIGHT: usize = 18;
+/// Number of hashes in a Merkle proof for a segment tree
+pub const SEGMENT_PROOF_LEN: usize = SEGMENT_TREE_HEIGHT;
+
+/// Height of the Merkle tree containing tapes (number of levels)
+pub const TAPE_TREE_HEIGHT: usize = 10;
+/// Number of hashes in a Merkle proof for the tape tree
+pub const TAPE_PROOF_LEN: usize = TAPE_TREE_HEIGHT;
 
 // ====================================================================
 // Tape & Segment Sizing
 // ====================================================================
 /// Segment size in bytes
 pub const SEGMENT_SIZE: usize = 128;
-/// Maximum tape size in bytes = 2^TREE_HEIGHT segments
-pub const MAX_TAPE_SIZE: usize = (1 << TREE_HEIGHT) * SEGMENT_SIZE;
+/// Maximum tape size in bytes = 2^SEGMENT_TREE_HEIGHT segments
+pub const MAX_TAPE_SIZE: usize = (1 << SEGMENT_TREE_HEIGHT) * SEGMENT_SIZE;
 
 // ====================================================================
 // Token Economics
@@ -78,11 +83,11 @@ pub const ADJUSTMENT_INTERVAL: u64 = 50;
 // ====================================================================
 /// Rent charged per segment per block
 pub const RENT_PER_SEGMENT: u64 = 100; // TODO: adjust this value
-                                       ///
+
 /// Empty segment of SEGMENT_SIZE bytes for tapes that don't have minimum rent
 pub const EMPTY_SEGMENT: [u8; SEGMENT_SIZE] = [0; SEGMENT_SIZE];
 /// Empty Merkle proof for tapes that don't have minimum rent
-pub const EMPTY_PROOF: [[u8; 32]; PROOF_LEN] = [[0; 32]; PROOF_LEN];
+pub const EMPTY_PROOF: [[u8; 32]; SEGMENT_PROOF_LEN] = [[0; 32]; SEGMENT_PROOF_LEN];
 
 // ====================================================================
 // Miscellaneous

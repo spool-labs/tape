@@ -1,7 +1,7 @@
 use steel::*;
 use crate::consts::*;
 use crate::error::*;
-use crate::state::TapeTree;
+use crate::types::*;
 use brine_tree::Leaf;
 use solana_program::{
     keccak::hashv, 
@@ -70,7 +70,7 @@ pub fn compute_leaf(
 /// Helper: write segment to the Merkle tree
 #[inline(always)]
 pub fn write_segment(
-    tree: &mut TapeTree,
+    tree: &mut SegmentTree,
     segment_id: u64,
     segment: &[u8; SEGMENT_SIZE],
 ) -> ProgramResult {
@@ -90,11 +90,11 @@ pub fn write_segment(
 /// Helper: update segment in the Merkle tree
 #[inline(always)]
 pub fn update_segment(
-    tree: &mut TapeTree,
+    tree: &mut SegmentTree,
     segment_id: u64,
     old_segment: &[u8; SEGMENT_SIZE],
     new_segment: &[u8; SEGMENT_SIZE],
-    proof: &[[u8; 32]; PROOF_LEN],
+    proof: &[[u8; 32]; SEGMENT_PROOF_LEN],
 ) -> ProgramResult {
 
     let old_leaf = compute_leaf(
@@ -121,8 +121,6 @@ pub fn compute_next_challenge(
 ) -> [u8; 32] {
     let slothash = &slot_hashes_info.data.borrow()
         [0..core::mem::size_of::<SlotHash>()];
-
-    
 
     hashv(&[
         current_challenge,

@@ -161,7 +161,7 @@ fn compute_challenge_solution(
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
-    let mut merkle_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
+    let mut merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
 
     for (segment_id, segment_data) in segments.iter() {
         if *segment_id == segment_number {
