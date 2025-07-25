@@ -25,6 +25,12 @@ jobs:
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
 
+      - name: Cache Solana tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: ${{ runner.os }}-solana-anza-v1
+
       - name: Install Solana tools (cargo-build-sbf)
         run: |
           if [ ! -f "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
@@ -33,7 +39,7 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
       - name: Cache cargo registry and build artifacts
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -46,7 +52,10 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
-      - name: Build Solana SBF program
+      - name: Build Tape Solana SBF program
+        run: cargo build-sbf --manifest-path=program/Cargo.toml --verbose
+
+      - name: Build Example Solana SBF program
         run: cargo build-sbf --manifest-path=example/Cargo.toml --verbose
 
       - name: Run tests
