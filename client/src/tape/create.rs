@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use solana_sdk::{
     signature::{Keypair, Signer, Signature},
-    transaction::Transaction,
     pubkey::Pubkey,
 };
 use tape_api::prelude::*;
@@ -25,16 +24,12 @@ pub async fn create_tape(
         name, 
     );
 
-    let blockhash_bytes = get_latest_blockhash(client).await?;
-    let recent_blockhash = deserialize(&blockhash_bytes)?;
-    let create_tx = Transaction::new_signed_with_payer(
+    let signature = build_send_and_confirm_tx(
         &[create_ix],
-        Some(&signer.pubkey()),
-        &[signer],
-        recent_blockhash,
-    );
-
-    let signature = send_and_confirm(client, &create_tx).await?;
+        client,
+        signer.pubkey(),
+        &[signer]
+    ).await?;
 
     Ok((tape_address, writer_address, signature))
 }

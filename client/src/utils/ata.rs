@@ -17,7 +17,7 @@ pub async fn create_ata(
 ) -> Result<(Pubkey, Signature)> {
     let token_program_id = &spl_token::ID;
     let mint             = &tape_api::MINT_ADDRESS;
-    let payer_pk         = payer.pubkey();
+    let payer_pk          = payer.pubkey();
     let owner            = &payer_pk;
 
     let ata = spl_associated_token_account::get_associated_token_address_with_program_id(

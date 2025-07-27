@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     signature::{Keypair, Signer, Signature},
-    transaction::Transaction,
     pubkey::Pubkey,
 };
 use tape_api::prelude::*;
@@ -26,21 +25,15 @@ pub async fn subsidize_tape(
         tape_address,
         amount,
     );
-
-    let blockhash_bytes = get_latest_blockhash(client).await?;
-    let recent_blockhash = deserialize(&blockhash_bytes)?;
-    let tx = Transaction::new_signed_with_payer(
+  
+    let signature = build_send_and_confirm_tx(
         &[compute_budget_ix, subsidize_ix],
-        Some(&signer.pubkey()),
-        &[signer],
-        recent_blockhash,
-    );
-
-    let signature_bytes = send_and_confirm_transaction(client, &tx)
-        .await
-        .map_err(|e| anyhow!("Failed to subsidize tape: {}", e))?;
-
-    let signature: Signature = deserialize(&signature_bytes)?;
+        client,
+        signer.pubkey(),
+        &[signer]
+    )
+    .await
+    .map_err(|e| anyhow!("Failed to subsidize tape: {}", e))?;
 
     Ok(signature)
 }

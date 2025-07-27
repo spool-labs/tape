@@ -170,7 +170,7 @@ pub fn rpc_get_tape_address(store: &TapeStore, params: &Value) -> Result<Value, 
         })?;
 
     store
-        .get_tape_address(tn)
+        .read_tape_address(tn)
         .map(|pk| json!(pk.to_string()))
         .map_err(|e| match e {
             StoreError::TapeNotFound(n) => RpcError {
@@ -212,7 +212,7 @@ pub fn rpc_get_tape_number(store: &TapeStore, params: &Value) -> Result<Value, R
     })?;
 
     store
-        .get_tape_number(&pk)
+        .read_tape_number(&pk)
         .map(|num| json!(num))
         .map_err(|e| match e {
             StoreError::TapeNotFoundForAddress(_) => RpcError {
@@ -258,7 +258,7 @@ pub fn rpc_get_segment(store: &TapeStore, params: &Value) -> Result<Value, RpcEr
         })?;
 
     store
-        .get_segment(tn, sn)
+        .read_segment(tn, sn)
         .map(|data| json!(base64::encode(data)))
         .map_err(|e| match e {
             StoreError::TapeNotFound(_) => RpcError {
@@ -304,7 +304,7 @@ pub fn rpc_get_tape(store: &TapeStore, params: &Value) -> Result<Value, RpcError
         message: format!("invalid pubkey: {e}"),
     })?;
 
-    let segments = store.get_tape_segments(&pk).map_err(|e| match e {
+    let segments = store.read_tape_segments(&pk).map_err(|e| match e {
         StoreError::TapeNotFoundForAddress(_) => RpcError {
             code: ErrorCode::ServerError.code(),
             message: "tape not found".into(),
@@ -360,7 +360,7 @@ pub fn rpc_get_slot(store: &TapeStore, params: &Value) -> Result<Value, RpcError
         })?;
 
     store
-        .get_slot(tn, sn)
+        .read_slot(tn, sn)
         .map(|slot| json!(slot))
         .map_err(|e| match e {
             StoreError::TapeNotFound(_) => RpcError {
@@ -415,7 +415,7 @@ pub fn rpc_get_segment_by_address(store: &TapeStore, params: &Value) -> Result<V
     })?;
 
     store
-        .get_segment_by_address(&pk, sn)
+        .read_segment_by_address(&pk, sn)
         .map(|data| json!(base64::encode(data)))
         .map_err(|e| match e {
             StoreError::SegmentNotFoundForAddress(_, num) => RpcError {
@@ -466,7 +466,7 @@ pub fn rpc_get_slot_by_address(store: &TapeStore, params: &Value) -> Result<Valu
     })?;
 
     store
-        .get_slot_by_address(&pk, sn)
+        .read_slot_by_address(&pk, sn)
         .map(|slot| json!(slot))
         .map_err(|e| match e {
             StoreError::SegmentNotFoundForAddress(_, num) => RpcError {
