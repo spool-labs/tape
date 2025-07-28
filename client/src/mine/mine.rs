@@ -11,6 +11,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 
 use crankx::Solution;
 use tape_api::prelude::*;
+use tape_api::instruction::miner::build_mine_ix;
 use crate::utils::*;
 
 pub async fn perform_mining(

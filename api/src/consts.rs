@@ -9,6 +9,7 @@ pub const ARCHIVE:  &[u8] = b"archive";
 pub const BLOCK:    &[u8] = b"block";
 pub const EPOCH:    &[u8] = b"epoch";
 pub const MINER:    &[u8] = b"miner";
+pub const BIN:      &[u8] = b"bin";
 pub const WRITER:   &[u8] = b"writer";
 pub const TAPE:     &[u8] = b"tape";
 pub const TREASURY: &[u8] = b"treasury";

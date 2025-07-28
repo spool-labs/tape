@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::miner::Register;
 use steel::*;
 
 pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

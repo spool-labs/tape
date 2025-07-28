@@ -2,6 +2,7 @@ use crankx::Solution;
 use brine_tree::{Leaf, verify};
 use steel::*;
 use tape_api::prelude::*;
+use tape_api::instruction::miner::Mine;
 
 // Approximate epochs per year
 const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tape_api::prelude::*;
+use tape_api::instruction::tape::build_set_header_ix;
 use anyhow::{Result, anyhow, bail};
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};

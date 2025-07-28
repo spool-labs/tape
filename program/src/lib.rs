@@ -8,7 +8,12 @@ use tape::*;
 use miner::*;
 use program::*;
 
-use tape_api::instruction::*;
+use tape_api::instruction::{
+    tape::TapeInstruction,
+    miner::MinerInstruction,
+    program::ProgramInstruction,
+    //bin::BinInstruction,
+};
 use steel::*;
 
 pub fn process_instruction(

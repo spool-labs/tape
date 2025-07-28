@@ -1,5 +1,6 @@
 use brine_tree::Leaf;
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Update;
 use steel::*;
 
 pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

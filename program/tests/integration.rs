@@ -12,6 +12,7 @@ use solana_sdk::{
 
 use tape::miner::get_base_rate;
 use tape_api::prelude::*;
+use tape_api::instruction;
 use litesvm::LiteSVM;
 
 use crankx::equix::SolverMemory;
@@ -96,7 +97,7 @@ fn subsidize_tape(
     let payer_pk = payer.pubkey();
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_subsidize_ix(
+    let ix = instruction::tape::build_subsidize_ix(
         payer_pk, 
         ata, 
         tape_address, 
@@ -121,7 +122,7 @@ fn claim_rewards(
     let payer_pk = payer.pubkey();
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_claim_ix(
+    let ix = instruction::miner::build_claim_ix(
         payer_pk, 
         miner_address, 
         miner_ata, 
@@ -227,7 +228,7 @@ fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<Stor
 
 fn initialize_program(svm: &mut LiteSVM, payer: &Keypair) {
     let payer_pk = payer.pubkey();
-    let ix = build_initialize_ix(payer_pk);
+    let ix = instruction::program::build_initialize_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
@@ -381,7 +382,7 @@ fn create_tape(
 
     // Create tape
     let blockhash = svm.latest_blockhash();
-    let ix = build_create_ix(payer_pk, tape_name);
+    let ix = instruction::tape::build_create_ix(payer_pk, tape_name);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
@@ -428,7 +429,7 @@ fn write_tape(
         total_size += data.len() as u64;
 
         let blockhash = svm.latest_blockhash();
-        let ix = build_write_ix(payer_pk, tape_address, writer_address, &data);
+        let ix = instruction::tape::build_write_ix(payer_pk, tape_address, writer_address, &data);
         let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
         let res = send_tx(svm, tx);
         assert!(res.is_ok());
@@ -508,7 +509,7 @@ fn update_tape(
 
     // Send update transaction
     let blockhash = svm.latest_blockhash();
-    let ix = build_update_ix(
+    let ix = instruction::tape::build_update_ix(
         payer_pk,
         tape_address,
         writer_address,
@@ -564,7 +565,7 @@ fn finalize_tape(
 
     // Finalize tape
     let blockhash = svm.latest_blockhash();
-    let ix = build_finalize_ix(payer_pk, tape_address, writer_address);
+    let ix = instruction::tape::build_finalize_ix(payer_pk, tape_address, writer_address);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
@@ -582,7 +583,7 @@ fn finalize_tape(
     let merkle_proof = [[0u8; 32]; SEGMENT_PROOF_LEN]; // Stale proof, but should fail due to state
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_update_ix(
+    let ix = instruction::tape::build_update_ix(
         payer_pk,
         tape_address,
         writer_address,
@@ -614,7 +615,7 @@ fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubke
     let (miner_address, _miner_bump) = miner_pda(payer_pk, to_name(miner_name));
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_register_ix(payer_pk, miner_name);
+    let ix = instruction::miner::build_register_ix(payer_pk, miner_name);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
@@ -698,7 +699,7 @@ fn perform_mining(
     let payer_pk = payer.pubkey();
 
     let blockhash = svm.latest_blockhash();
-    let ix = build_mine_ix(
+    let ix = instruction::miner::build_mine_ix(
         payer_pk,
         miner_address,
         tape_address,

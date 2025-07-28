@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Finalize;
 use steel::*;
 
 pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

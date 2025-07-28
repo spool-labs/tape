@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::SetHeader;
 use steel::*;
 
 pub fn process_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

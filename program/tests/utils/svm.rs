@@ -1,5 +1,10 @@
 use steel::*;
-use tape_api::prelude::*;
+use tape_api::instruction::{
+    tape as tape_ix,
+    miner as miner_ix,
+    bin as bin_ix,
+    program as program_ix,
+};
 use std::path::PathBuf;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
@@ -78,13 +83,13 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
         let ix = &tx.message.instructions[i];
 
         let discriminator = ix.data[0];
-        let ix_type = if let Ok(instruction) = ProgramInstruction::try_from_primitive(discriminator) {
+        let ix_type = if let Ok(instruction) = program_ix::ProgramInstruction::try_from_primitive(discriminator) {
             format!("ProgramInstruction::{:?}", instruction)
-        } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
+        } else if let Ok(instruction) = tape_ix::TapeInstruction::try_from_primitive(discriminator) {
             format!("TapeInstruction::{:?}", instruction)
-        } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
+        } else if let Ok(instruction) = miner_ix::MinerInstruction::try_from_primitive(discriminator) {
             format!("MinerInstruction::{:?}", instruction)
-        } else if let Ok(instruction) = BinInstruction::try_from_primitive(discriminator) {
+        } else if let Ok(instruction) = bin_ix::BinInstruction::try_from_primitive(discriminator) {
             format!("BinInstruction::{:?}", instruction)
         } else {
             format!("Invalid (discriminator: {})", discriminator)

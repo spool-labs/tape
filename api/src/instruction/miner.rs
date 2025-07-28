@@ -1,5 +1,10 @@
 use steel::*;
-use crate::consts::*;
+use crankx::Solution;
+use crate::{
+    consts::*,
+    pda::*,
+    utils,
+};
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -39,4 +44,93 @@ pub struct Mine {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Claim {
     pub amount: [u8; 8],
+}
+
+
+pub fn build_register_ix(
+    signer: Pubkey, 
+    name: &str
+) -> Instruction {
+    let name = utils::to_name(name);
+    let (miner_address, _bump) = miner_pda(signer, name);
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(miner_address, false),
+            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+        ],
+        data: Register {
+            name,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_mine_ix(
+    signer: Pubkey,
+    miner: Pubkey,
+    tape: Pubkey,
+    solution: Solution,
+    recall_segment: [u8; SEGMENT_SIZE],
+    recall_proof: [[u8;32]; SEGMENT_PROOF_LEN],
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(EPOCH_ADDRESS, false),
+            AccountMeta::new(BLOCK_ADDRESS, false),
+            AccountMeta::new(miner, false),
+            AccountMeta::new(tape, false),
+            AccountMeta::new_readonly(ARCHIVE_ADDRESS, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+        ],
+        data: Mine {
+            digest: solution.d,
+            nonce: solution.n,
+            recall_segment,
+            recall_proof,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_claim_ix(
+    signer: Pubkey, 
+    miner: Pubkey,
+    beneficiary: Pubkey, 
+    amount: u64
+) -> Instruction {
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(beneficiary, false),
+            AccountMeta::new(miner, false),
+            AccountMeta::new_readonly(TREASURY_ADDRESS, false),
+            AccountMeta::new(TREASURY_ATA, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: Claim {
+            amount: amount.to_le_bytes(),
+        }.to_bytes(),
+    }
+}
+
+pub fn build_close_ix(
+    signer: Pubkey,
+    miner: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(miner, false),
+            AccountMeta::new_readonly(solana_program::system_program::ID, false),
+        ],
+        data: Unregister {}.to_bytes(),
+    }
 }

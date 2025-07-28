@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::miner::Claim;
 use steel::*;
 
 pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

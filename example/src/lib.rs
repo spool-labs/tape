@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 #![allow(unused)]
 
-use tape_api::prelude::*;
+use tape_api::instruction::tape::*;
 use steel::*;
 
 declare_id!("Gzuu6orA9tz2ifE7zyupNiuhogYkRBmbuQpWJme5dGhJ"); 

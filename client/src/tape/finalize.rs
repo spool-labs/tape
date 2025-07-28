@@ -6,7 +6,7 @@ use solana_sdk::{
     transaction::Transaction,
     pubkey::Pubkey,
 };
-use tape_api::prelude::*;
+use tape_api::instruction::tape::build_finalize_ix;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::utils::*;
 

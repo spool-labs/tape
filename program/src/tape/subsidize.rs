@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Subsidize;
 use steel::*;
 
 pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {

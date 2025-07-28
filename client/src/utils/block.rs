@@ -16,6 +16,7 @@ use solana_transaction_status::{
     UiConfirmedBlock
 };
 use tape_api::prelude::*;
+use tape_api::instruction::tape::{TapeInstruction, Update};
 
 #[derive(Error, Debug)]
 pub enum BlockError {

@@ -2,6 +2,12 @@ use steel::*;
 use solana_program::{program_pack::Pack, program::{invoke, invoke_signed}};
 use spl_token::state::Mint;
 use tape_api::prelude::*;
+use tape_api::instruction::tape::{
+    build_create_ix, 
+    build_write_ix, 
+    build_subsidize_ix, 
+    build_finalize_ix,
+};
 use crate::mine::get_base_rate;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
