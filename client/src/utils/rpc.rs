@@ -79,6 +79,29 @@ pub async fn send(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Signature
     deserialize(&signature_bytes)
 }
 
+
+// Build Tx from ixs , send and confirm
+pub async fn build_send_and_confirm_tx(
+    ixs: &[Instruction],
+    client: &Arc<RpcClient>,
+    payer: Pubkey,
+    signers : &[&Keypair]
+) -> Result<Signature> {
+
+    let blockhash_bytes = get_latest_blockhash(client).await?;
+    let recent_blockhash = deserialize(&blockhash_bytes)?;
+    let tx = Transaction::new_signed_with_payer(
+        ixs,
+        Some(&payer),
+        signers,
+        recent_blockhash,
+    );
+
+    let signature_bytes = send_and_confirm_transaction(client, &tx).await?;
+    deserialize(&signature_bytes)
+}
+
+
 /// Sends and confirms a transaction, returning its signature.
 pub async fn send_and_confirm(client: &Arc<RpcClient>, tx: &Transaction) -> Result<Signature> {
     let signature_bytes = send_and_confirm_transaction(client, tx).await?;

@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use log::{debug, error};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, pubkey::Pubkey};
@@ -44,6 +44,26 @@ pub async fn mine_loop(
     }
 }
 
+async fn get_mining_accounts(
+    client: &Arc<RpcClient>,
+    miner_address: &Pubkey
+) -> Result<(Epoch, Block, Miner)> {
+     
+    let (epoch_res, block_res, miner_res) = tokio::join!(
+        get_epoch_account(client),
+        get_block_account(client),
+        get_miner_account(client, miner_address),
+    );
+
+    let (epoch, block, miner) = (
+        epoch_res.map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0,
+        block_res.map_err(|e| anyhow!("Failed to get block account: {}", e))?.0,
+        miner_res.map_err(|e| anyhow!("Failed to get miner account: {}", e))?.0,
+    );
+
+    Ok((epoch, block, miner))
+}
+
 async fn try_mine_iteration(
     store: &TapeStore,
     client: &Arc<RpcClient>,
@@ -52,17 +72,8 @@ async fn try_mine_iteration(
 ) -> Result<()> {
     debug!("Starting mine process...");
 
-    let epoch = get_epoch_account(client)
-        .await
-        .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
-
-    let block = get_block_account(client)
-        .await
-        .map_err(|e| anyhow!("Failed to get block account: {}", e))?.0;
-
-    let miner = get_miner_account(client, miner_address)
-        .await
-        .map_err(|e| anyhow!("Failed to get miner account: {}", e))?.0;
+    // fetch epoch, block and miner accounts concurrently
+    let (epoch, block, miner) = get_mining_accounts(client, miner_address).await?;
 
     let miner_challenge = compute_challenge(
         &block.challenge,
@@ -76,7 +87,7 @@ async fn try_mine_iteration(
 
     debug!("Recall tape number: {tape_number:?}");
 
-    let tape_address = store.get_tape_address(tape_number);
+    let tape_address = store.read_tape_address(tape_number);
 
     if let Ok(tape_address) = tape_address {
 
@@ -87,15 +98,15 @@ async fn try_mine_iteration(
             .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
         
         let (solution, recall_segment, merkle_proof) = if tape.has_minimum_rent() {
-            // This tape has minimum rent, we can recall a segment
             
+            // This tape has minimum rent, we can recall a segment
             let segment_number = compute_recall_segment(
                 &miner_challenge,
                 tape.total_segments
             );
 
             // Get the entire tape
-            let segments = store.get_tape_segments(&tape_address)?;
+            let segments = store.read_tape_segments(&tape_address)?;
             if segments.len() != tape.total_segments as usize {
                 return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
                     tape_address, tape.total_segments, segments.len()));
@@ -113,6 +124,7 @@ async fn try_mine_iteration(
 
         // This tape does not have minimum rent, we use an empty segment
         } else {
+
             debug!("Tape {tape_address} does not have minimum rent, using empty segment");
 
             let solution = solve_challenge(
@@ -133,6 +145,7 @@ async fn try_mine_iteration(
             recall_segment, 
             merkle_proof,
         ).await?;
+
         debug!("Mining successful! Signature: {sig:?}");
 
         let (miner, _) = get_miner_account(client, miner_address)
@@ -146,6 +159,7 @@ async fn try_mine_iteration(
     }
 
     debug!("Catching up with primary...");
+
     store.catch_up_with_primary()?;
 
     Ok(())
@@ -170,7 +184,6 @@ fn compute_challenge_solution(
 
         // Create our canonical segment of exactly SEGMENT_SIZE bytes 
         // and compute the merkle leaf
-
         let data = padded_array::<SEGMENT_SIZE>(segment_data);
         let leaf = compute_leaf(
             *segment_id,
@@ -192,7 +205,7 @@ fn compute_challenge_solution(
         .map(|v| v.to_bytes())
         .collect::<Vec<_>>()
         .try_into()
-        .unwrap();
+        .map_err(|_|anyhow!("failed to get merkle proof"))?;
 
     if merkle_tree.get_root() != tape.merkle_root.into() {
         return Err(anyhow!("Merkle root mismatch"));
