@@ -422,11 +422,9 @@ fn write_tape(
     writer_tree: &mut SegmentTree,
 ) {
     let payer_pk = payer.pubkey();
-    let mut total_size = 0;
 
     for write_index in 0..10u64 {
         let data = format!("<segment_{write_index}_data>").into_bytes();
-        total_size += data.len() as u64;
 
         let blockhash = svm.latest_blockhash();
         let ix = instruction::tape::build_write_ix(payer_pk, tape_address, writer_address, &data);
@@ -458,7 +456,7 @@ fn write_tape(
         let account = svm.get_account(&tape_address).unwrap();
         let tape = Tape::unpack(&account.data).unwrap();
         assert_eq!(tape.total_segments, stored_tape.segments.len() as u64);
-        assert_eq!(tape.total_size, total_size);
+        assert_eq!(tape.total_size, tape.total_segments * 128);
         assert_eq!(tape.state, u64::from(TapeState::Writing));
         assert_eq!(tape.merkle_root, writer_tree.get_root().to_bytes());
         assert_eq!(tape.header, stored_tape.account.header);
@@ -544,7 +542,7 @@ fn update_tape(
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
     assert_eq!(tape.total_segments, 10);
-    assert_eq!(tape.total_size, stored_tape.account.total_size);
+    assert_eq!(tape.total_size, tape.total_segments * 128);
     assert_eq!(tape.state, u64::from(TapeState::Writing));
     assert_eq!(tape.merkle_root, writer_tree.get_root().to_bytes());
     assert_eq!(tape.header, stored_tape.account.header);
@@ -602,7 +600,7 @@ fn finalize_tape(
     assert_eq!(tape.state, u64::from(TapeState::Finalized));
     assert_eq!(tape.number, tape_idx + 1);
     assert_eq!(tape.total_segments, 10);
-    assert_eq!(tape.total_size, stored_tape.account.total_size);
+    assert_eq!(tape.total_size, tape.total_segments * 128);
     assert_eq!(tape.merkle_root, stored_tape.account.merkle_root);
 
     // Verify writer account is closed

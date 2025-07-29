@@ -11,6 +11,7 @@ use tape_api::instruction::tape::{
 use crate::mine::get_base_rate;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+    solana_program::msg!("num accounts: {}", accounts.len());
     let [
         signer_info, 
         archive_info, 
