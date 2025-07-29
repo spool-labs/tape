@@ -36,9 +36,26 @@ fn run_integration() {
     // Initialize program
     initialize_program(&mut svm, &payer);
 
+    // Register miner
+    let miner_name = "miner-name";
+    let miner_address = register_miner(&mut svm, &payer, miner_name);
+    let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
+
+    // Create spool
+    let spool_number = 1;
+    let spool_address = create_spool(&mut svm, &payer, miner_address, spool_number);
+
     // Fetch and store genesis tape
     let mut tape_db = vec![];
     fetch_genesis_tape(&mut svm, &payer, &mut tape_db);
+
+    spool_tape(
+        &mut svm, 
+        &payer, 
+        spool_address, 
+        tape_db[0].pubkey, 
+        [42; 32]
+    );
 
     // Verify initial accounts
     verify_archive_account(&svm, 1);
@@ -49,10 +66,6 @@ fn run_integration() {
     verify_metadata_account(&svm);
     verify_treasury_ata(&svm);
 
-    // Register miner
-    let miner_name = "miner-name";
-    let miner_address = register_miner(&mut svm, &payer, miner_name);
-    let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
 
     // Mine the genesis tape (to earn some tokens)
     do_mining_run(&mut svm, &payer, miner_address, &mut tape_db, 5);
@@ -631,6 +644,57 @@ fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubke
     assert_eq!(miner.total_rewards, 0);
 
     miner_address
+}
+
+fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, number: u64) -> Pubkey {
+    let payer_pk = payer.pubkey();
+    let (spool_address, _bump) = spool_pda(miner_address, number);
+
+    let blockhash = svm.latest_blockhash();
+    let ix = instruction::spool::build_create_ix(payer_pk, miner_address, number);
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    let account = svm.get_account(&spool_address).unwrap();
+    let spool = Spool::unpack(&account.data).unwrap();
+
+    assert_eq!(spool.authority, payer_pk);
+    assert_eq!(spool.number, number);
+    assert_eq!(spool.contains, [0; 32]);
+    assert_eq!(spool.total_tapes, 0);
+    assert_eq!(spool.last_proof_block, 0);
+    assert_eq!(spool.last_proof_at, 0);
+
+    spool_address
+}
+
+fn spool_tape(
+    svm: &mut LiteSVM, 
+    payer: &Keypair, 
+    spool_address: Pubkey, 
+    tape_address: Pubkey, 
+    value: [u8; 32]
+) -> Pubkey {
+
+    let payer_pk = payer.pubkey();
+
+    let account = svm.get_account(&spool_address).unwrap();
+    let spool = Spool::unpack(&account.data).unwrap();
+    let spool_count = spool.total_tapes;
+
+    let blockhash = svm.latest_blockhash();
+    let ix = instruction::spool::build_pack_ix(payer_pk, spool_address, tape_address, value);
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    let account = svm.get_account(&spool_address).unwrap();
+    let spool = Spool::unpack(&account.data).unwrap();
+
+    assert_eq!(spool.number, spool_count + 1);
+
+    spool_address
 }
 
 fn compute_challenge_solution(

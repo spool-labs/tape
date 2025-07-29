@@ -7,8 +7,8 @@ pub fn process_spool_pack(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let pack_args = Pack::try_from_bytes(data)?;
     let [
         signer_info, 
-        tape_info,
         spool_info,
+        tape_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

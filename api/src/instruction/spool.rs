@@ -69,6 +69,7 @@ pub fn build_create_ix(
             AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: Create {
             number: number.to_le_bytes(),
@@ -99,16 +100,16 @@ pub fn build_destroy_ix(
 
 pub fn build_pack_ix(
     signer: Pubkey, 
-    miner_address: Pubkey, 
     spool_address: Pubkey,
-    value: [u8; 32], // packed tape value to store
+    tape_address: Pubkey, 
+    value: [u8; 32],
 ) -> Instruction {
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
+            AccountMeta::new_readonly(tape_address, false),
         ],
         data: Pack {
             value,
