@@ -26,12 +26,14 @@ pub enum TapeError {
     #[error("The provided claim is too large")]
     ClaimTooLarge           = 0x24,
 
-    #[error("The provided bin is in an unexpected state")]
-    BinUnexpectedState      = 0x30,
     #[error("Faild to pack the tape into the bin")]
-    BinPackFailed           = 0x31,
+    BinPackFailed           = 0x30,
+    #[error("Failed to unpack the tape from the bin")]
+    BinUnpackFailed         = 0x31,
     #[error("Too many tapes in the bin")]
     BinTooManyTapes         = 0x32,
+    #[error("Bin commit failed")]
+    BinCommitFailed         = 0x33,
 }
 
 error!(TapeError);

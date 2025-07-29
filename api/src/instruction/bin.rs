@@ -43,12 +43,15 @@ pub struct Pack {
 pub struct Unpack {
     pub index: [u8; 8],
     pub proof: [[u8; 32]; TAPE_PROOF_LEN],
+    pub value: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Commit {
+    pub index: [u8; 8],
     pub proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    pub value: [u8; 32],
 }
 
 pub fn build_create_ix(
@@ -117,8 +120,9 @@ pub fn build_unpack_ix(
     signer: Pubkey, 
     miner_address: Pubkey, 
     bin_address: Pubkey,
-    index: [u8; 8],                    // index of the value to unpack
-    proof: [[u8; 32]; TAPE_PROOF_LEN], // proof of the value
+    index: u64,                           // index of the value to unpack
+    proof: [[u8; 32]; TAPE_PROOF_LEN],    // proof of the value
+    value: [u8; 32],                      // value to unpack
 ) -> Instruction {
     Instruction {
         program_id: crate::ID,
@@ -128,8 +132,9 @@ pub fn build_unpack_ix(
             AccountMeta::new(bin_address, false),
         ],
         data: Unpack {
-            index,
+            index: index.to_le_bytes(),
             proof,
+            value,
         }.to_bytes(),
     }
 }
@@ -138,7 +143,9 @@ pub fn build_commit_ix(
     signer: Pubkey, 
     miner_address: Pubkey, 
     bin_address: Pubkey,
-    proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    index: u64,                           // index of the value to commit
+    proof: [[u8; 32]; SEGMENT_PROOF_LEN], // proof of the value
+    value: [u8; 32],                      // value to commit
 ) -> Instruction {
     Instruction {
         program_id: crate::ID,
@@ -148,7 +155,9 @@ pub fn build_commit_ix(
             AccountMeta::new(bin_address, false),
         ],
         data: Commit {
+            index: index.to_le_bytes(),
             proof,
+            value,
         }.to_bytes(),
     }
 }

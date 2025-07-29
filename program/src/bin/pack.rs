@@ -1,5 +1,6 @@
 use tape_api::prelude::*;
 use tape_api::instruction::bin::Pack;
+use brine_tree::Leaf;
 use steel::*;
 
 pub fn process_bin_pack(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -37,12 +38,17 @@ pub fn process_bin_pack(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         TapeError::BinTooManyTapes,
     )?;
 
-    pack_tape(
-        &mut bin.state,
-        tape.number,
+    let tape_id = tape.number.to_le_bytes();
+    let leaf = Leaf::new(&[
+        tape_id.as_ref(), // u64 (8 bytes)
         &pack_args.value,
-    )?;
+    ]);
 
+    check_condition(
+        bin.state.try_add_leaf(leaf).is_ok(),
+        TapeError::BinPackFailed,
+    )?;
+    
     bin.total_tapes += 1;
 
     Ok(())
