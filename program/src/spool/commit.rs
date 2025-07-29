@@ -1,14 +1,14 @@
 use brine_tree::{Leaf, verify};
 use tape_api::prelude::*;
-use tape_api::instruction::bin::Unpack;
+use tape_api::instruction::spool::Unpack;
 use steel::*;
 
-pub fn process_bin_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_spool_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = Unpack::try_from_bytes(data)?;
     let [
         signer_info, 
         miner_info,
-        bin_info, 
+        spool_info, 
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -22,8 +22,8 @@ pub fn process_bin_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
             ProgramError::MissingRequiredSignature,
         )?;
 
-    let bin = bin_info
-        .as_account::<Bin>(&tape_api::ID)?
+    let spool = spool_info
+        .as_account::<Spool>(&tape_api::ID)?
         .assert_err(
             |p| p.authority == *signer_info.key,
             ProgramError::MissingRequiredSignature,
@@ -33,10 +33,10 @@ pub fn process_bin_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let merkle_root  = merkle_proof.last()
         .ok_or(ProgramError::InvalidArgument)?;
         
-    // Check that the bin has previously unpacked the tape we're trying to commit to
+    // Check that the spool has previously unpacked the tape we're trying to commit to
     check_condition(
-        bin.contains.eq(merkle_root),
-        TapeError::BinCommitFailed,
+        spool.contains.eq(merkle_root),
+        TapeError::SpoolCommitFailed,
     )?;
 
     let segment_id = args.index;
@@ -47,7 +47,7 @@ pub fn process_bin_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     check_condition(
         verify(*merkle_root, &merkle_proof, leaf),
-        TapeError::BinUnpackFailed,
+        TapeError::SpoolUnpackFailed,
     )?;
 
     miner.commitment = args.value;

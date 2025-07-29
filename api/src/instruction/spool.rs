@@ -6,19 +6,19 @@ use crate::{
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum BinInstruction {
-    Create = 0x40,   // Create a bin to store tapes
-    Destroy,         // Destroy a bin, returning the rent to the miner
-    Pack,            // Pack a tape into the bin
-    Unpack,          // Unpack a tape from the bin
+pub enum SpoolInstruction {
+    Create = 0x40,   // Create a spool to store tapes
+    Destroy,         // Destroy a spool, returning the rent to the miner
+    Pack,            // Pack a tape into the spool
+    Unpack,          // Unpack a tape from the spool
     Commit,          // Commit a solution for mining
 }
 
-instruction!(BinInstruction, Create);
-instruction!(BinInstruction, Destroy);
-instruction!(BinInstruction, Pack);
-instruction!(BinInstruction, Unpack);
-instruction!(BinInstruction, Commit);
+instruction!(SpoolInstruction, Create);
+instruction!(SpoolInstruction, Destroy);
+instruction!(SpoolInstruction, Pack);
+instruction!(SpoolInstruction, Unpack);
+instruction!(SpoolInstruction, Commit);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -59,14 +59,14 @@ pub fn build_create_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (bin_address, _bump) = bin_pda(miner_address, number);
+    let (spool_address, _bump) = spool_pda(miner_address, number);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(bin_address, false),
+            AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -81,14 +81,14 @@ pub fn build_destroy_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (bin_address, _bump) = bin_pda(miner_address, number);
+    let (spool_address, _bump) = spool_pda(miner_address, number);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(bin_address, false),
+            AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: Destroy {
@@ -100,7 +100,7 @@ pub fn build_destroy_ix(
 pub fn build_pack_ix(
     signer: Pubkey, 
     miner_address: Pubkey, 
-    bin_address: Pubkey,
+    spool_address: Pubkey,
     value: [u8; 32], // packed tape value to store
 ) -> Instruction {
     Instruction {
@@ -108,7 +108,7 @@ pub fn build_pack_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(bin_address, false),
+            AccountMeta::new(spool_address, false),
         ],
         data: Pack {
             value,
@@ -119,7 +119,7 @@ pub fn build_pack_ix(
 pub fn build_unpack_ix(
     signer: Pubkey, 
     miner_address: Pubkey, 
-    bin_address: Pubkey,
+    spool_address: Pubkey,
     index: u64,                           // index of the value to unpack
     proof: [[u8; 32]; TAPE_PROOF_LEN],    // proof of the value
     value: [u8; 32],                      // value to unpack
@@ -129,7 +129,7 @@ pub fn build_unpack_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(bin_address, false),
+            AccountMeta::new(spool_address, false),
         ],
         data: Unpack {
             index: index.to_le_bytes(),
@@ -142,7 +142,7 @@ pub fn build_unpack_ix(
 pub fn build_commit_ix(
     signer: Pubkey, 
     miner_address: Pubkey, 
-    bin_address: Pubkey,
+    spool_address: Pubkey,
     index: u64,                           // index of the value to commit
     proof: [[u8; 32]; SEGMENT_PROOF_LEN], // proof of the value
     value: [u8; 32],                      // value to commit
@@ -152,7 +152,7 @@ pub fn build_commit_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(bin_address, false),
+            AccountMeta::new(spool_address, false),
         ],
         data: Commit {
             index: index.to_le_bytes(),

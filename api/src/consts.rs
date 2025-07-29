@@ -9,7 +9,7 @@ pub const ARCHIVE:  &[u8] = b"archive";
 pub const BLOCK:    &[u8] = b"block";
 pub const EPOCH:    &[u8] = b"epoch";
 pub const MINER:    &[u8] = b"miner";
-pub const BIN:      &[u8] = b"bin";
+pub const SPOOL:    &[u8] = b"spool";
 pub const WRITER:   &[u8] = b"writer";
 pub const TAPE:     &[u8] = b"tape";
 pub const TREASURY: &[u8] = b"treasury";
@@ -46,9 +46,9 @@ pub const TAPE_PROOF_LEN: usize = TAPE_TREE_HEIGHT;
 /// Segment size in bytes
 pub const SEGMENT_SIZE: usize = 128;
 /// Maximum number of segments in a tape
-pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << SEGMENT_TREE_HEIGHT;
-/// Maximum number of tapes in a bin
-pub const MAX_TAPES_PER_BIN: usize = 1000;
+pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << SEGMENT_TREE_HEIGHT - 1;
+/// Maximum number of tapes in a spool
+pub const MAX_TAPES_PER_SPOOL: usize = 1 << TAPE_TREE_HEIGHT - 1;
 
 // ====================================================================
 // Token Economics

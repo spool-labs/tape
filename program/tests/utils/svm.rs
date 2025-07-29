@@ -2,7 +2,7 @@ use steel::*;
 use tape_api::instruction::{
     tape as tape_ix,
     miner as miner_ix,
-    bin as bin_ix,
+    spool as spool_ix,
     program as program_ix,
 };
 use std::path::PathBuf;
@@ -89,8 +89,8 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
             format!("TapeInstruction::{:?}", instruction)
         } else if let Ok(instruction) = miner_ix::MinerInstruction::try_from_primitive(discriminator) {
             format!("MinerInstruction::{:?}", instruction)
-        } else if let Ok(instruction) = bin_ix::BinInstruction::try_from_primitive(discriminator) {
-            format!("BinInstruction::{:?}", instruction)
+        } else if let Ok(instruction) = spool_ix::SpoolInstruction::try_from_primitive(discriminator) {
+            format!("SpoolInstruction::{:?}", instruction)
         } else {
             format!("Invalid (discriminator: {})", discriminator)
         };

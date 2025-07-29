@@ -48,7 +48,7 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let segment_count = segments.len() as u64;
 
     check_condition(
-        tape.total_size + segment_count < MAX_SEGMENTS_PER_TAPE as u64,
+        tape.total_size + segment_count <= MAX_SEGMENTS_PER_TAPE as u64,
         TapeError::TapeTooLong,
     )?;
 

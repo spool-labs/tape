@@ -5,7 +5,7 @@ use super::AccountType;
 
 #[repr(C)] 
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Bin {
+pub struct Spool {
     pub number: u64,
 
     pub authority: Pubkey,
@@ -18,4 +18,4 @@ pub struct Bin {
     pub last_proof_at: i64,
 }
 
-state!(AccountType, Bin);
+state!(AccountType, Spool);

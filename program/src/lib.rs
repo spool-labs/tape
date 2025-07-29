@@ -2,19 +2,19 @@
 
 pub mod tape;
 pub mod miner;
-pub mod bin;
+pub mod spool;
 pub mod program;
 
 use tape::*;
 use miner::*;
-use bin::*;
+use spool::*;
 use program::*;
 
 use tape_api::instruction::{
     tape::TapeInstruction,
     miner::MinerInstruction,
     program::ProgramInstruction,
-    bin::BinInstruction,
+    spool::SpoolInstruction,
 };
 use steel::*;
 
@@ -46,13 +46,13 @@ pub fn process_instruction(
             MinerInstruction::Mine => process_mine(accounts, data)?,
             MinerInstruction::Claim => process_claim(accounts, data)?,
         }
-     } else if let Ok(ix) = BinInstruction::try_from_primitive(discriminator) {
+     } else if let Ok(ix) = SpoolInstruction::try_from_primitive(discriminator) {
          match ix {
-             BinInstruction::Create => process_bin_create(accounts, data)?,
-             BinInstruction::Destroy => process_bin_destroy(accounts, data)?,
-             BinInstruction::Pack => process_bin_pack(accounts, data)?,
-             BinInstruction::Unpack => process_bin_unpack(accounts, data)?,
-             BinInstruction::Commit => process_bin_commit(accounts, data)?,
+            SpoolInstruction::Create => process_spool_create(accounts, data)?,
+            SpoolInstruction::Destroy => process_spool_destroy(accounts, data)?,
+            SpoolInstruction::Pack => process_spool_pack(accounts, data)?,
+            SpoolInstruction::Unpack => process_spool_unpack(accounts, data)?,
+            SpoolInstruction::Commit => process_spool_commit(accounts, data)?,
          }
     } else {
         return Err(ProgramError::InvalidInstructionData);
