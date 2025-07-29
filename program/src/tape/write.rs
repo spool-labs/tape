@@ -1,13 +1,12 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let current_slot = Clock::get()?.slot;
     let [
         signer_info, 
         tape_info,
         writer_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

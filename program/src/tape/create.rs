@@ -6,7 +6,7 @@ use solana_program::{
 };
 use steel::*;
 
-pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let current_slot = Clock::get()?.slot;
     let args = Create::try_from_bytes(data)?;
     let [
@@ -16,7 +16,6 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         system_program_info,
         rent_sysvar_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

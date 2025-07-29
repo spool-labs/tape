@@ -2,7 +2,7 @@ use tape_api::prelude::*;
 use tape_api::instruction::tape::Subsidize;
 use steel::*;
 
-pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = Subsidize::try_from_bytes(data)?;
     let [
         signer_info, 
@@ -10,7 +10,6 @@ pub fn process_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         tape_info,
         treasury_ata_info, 
         token_program_info, 
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

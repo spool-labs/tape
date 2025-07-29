@@ -23,13 +23,13 @@ instruction!(BinInstruction, Commit);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Create {
-    pub number: u64,
+    pub number: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Destroy {
-    pub number: u64,
+    pub number: [u8; 8],
 }
 
 #[repr(C)]
@@ -68,7 +68,7 @@ pub fn build_create_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: Create {
-            number
+            number: number.to_le_bytes(),
         }.to_bytes(),
     }
 }
@@ -89,7 +89,7 @@ pub fn build_destroy_ix(
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: Destroy {
-            number
+            number: number.to_le_bytes(),
         }.to_bytes(),
     }
 }

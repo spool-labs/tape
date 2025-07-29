@@ -3,7 +3,7 @@ use tape_api::prelude::*;
 use tape_api::instruction::tape::Update;
 use steel::*;
 
-pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let current_slot = Clock::get()?.slot;
     let args = Update::try_from_bytes(data)?;
 
@@ -11,7 +11,6 @@ pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         signer_info, 
         tape_info,
         writer_info, 
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

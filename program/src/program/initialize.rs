@@ -29,7 +29,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         metadata_program_info, 
         rent_sysvar_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

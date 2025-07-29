@@ -4,7 +4,6 @@ use steel::*;
 use tape_api::prelude::*;
 use tape_api::instruction::miner::Mine;
 
-// Approximate epochs per year
 const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
@@ -18,7 +17,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         tape_info,
         archive_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else { 
         return Err(ProgramError::NotEnoughAccountKeys);
     };

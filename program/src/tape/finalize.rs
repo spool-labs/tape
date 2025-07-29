@@ -2,7 +2,7 @@ use tape_api::prelude::*;
 use tape_api::instruction::tape::Finalize;
 use steel::*;
 
-pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = Finalize::try_from_bytes(data)?;
     let [
         signer_info, 
@@ -11,7 +11,6 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         archive_info,
         system_program_info,
         rent_sysvar_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

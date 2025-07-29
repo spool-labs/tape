@@ -6,7 +6,6 @@ pub fn process_unregister(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         signer_info, 
         miner_info, 
         system_program_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

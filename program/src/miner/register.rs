@@ -11,7 +11,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         system_program_info, 
         rent_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
