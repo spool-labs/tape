@@ -39,11 +39,6 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         TapeError::UnexpectedState,
     )?;
 
-    check_condition(
-        tape.total_size as usize + data.len() <= MAX_TAPE_SIZE,
-        TapeError::TapeTooLong,
-    )?;
-
     // Convert the data to a canonical segments of data 
     // and write them to the Merkle tree (all segments are 
     // written as SEGMENT_SIZE bytes, no matter the size 
@@ -51,6 +46,12 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     let segments = data.chunks(SEGMENT_SIZE);
     let segment_count = segments.len() as u64;
+
+    check_condition(
+        tape.total_size + segment_count < MAX_SEGMENTS_PER_TAPE as u64,
+        TapeError::TapeTooLong,
+    )?;
+
     for (segment_number, segment) in segments.enumerate() {
         let canonical_segment = padded_array::<SEGMENT_SIZE>(segment);
 
@@ -64,7 +65,7 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let prev_slot = tape.tail_slot;
 
     tape.total_segments   += segment_count;
-    tape.total_size       += data.len() as u64;
+    tape.total_size       += SEGMENT_SIZE as u64;
     tape.merkle_root       = writer.state.get_root().to_bytes();
     tape.state             = TapeState::Writing.into();
     tape.tail_slot         = current_slot;

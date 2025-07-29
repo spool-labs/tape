@@ -50,8 +50,9 @@ pub fn process_instruction(
          match ix {
              BinInstruction::Create => process_bin_create(accounts, data)?,
              BinInstruction::Destroy => process_bin_destroy(accounts, data)?,
-             //BinInstruction::Pack => process_bin_pack(accounts, data)?,
+             BinInstruction::Pack => process_bin_pack(accounts, data)?,
              //BinInstruction::Unpack => process_bin_unpack(accounts, data)?,
+             //BinInstruction::Commit => process_bin_commit(accounts, data)?,
          }
     } else {
         return Err(ProgramError::InvalidInstructionData);

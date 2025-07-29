@@ -170,3 +170,28 @@ pub fn compute_recall_segment(
 
     u64::from_le_bytes(challenge[8..16].try_into().unwrap()) % total_segments
 }
+
+
+/// Helper: pack a tape into a tape tree
+#[inline(always)]
+pub fn pack_tape(
+    tree: &mut TapeTree,
+    tape_number: u64,
+    root: &[u8; 32],
+) -> ProgramResult {
+
+    let tape_id = tape_number.to_le_bytes();
+    let leaf = Leaf::new(&[
+        tape_id.as_ref(), // u64 (8 bytes)
+        root.as_ref(),
+    ]);
+
+    check_condition(
+        tree.try_add_leaf(leaf).is_ok(),
+        TapeError::BinPackFailed,
+    )?;
+
+    Ok(())
+}
+
+

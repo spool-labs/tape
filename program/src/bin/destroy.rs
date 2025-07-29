@@ -12,6 +12,9 @@ pub fn process_bin_destroy(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Progra
 
     signer_info.is_signer()?;
 
+    system_program_info
+        .is_program(&system_program::ID)?;
+
     bin_info
         .is_writable()?
         .as_account::<Bin>(&tape_api::ID)?
@@ -19,9 +22,6 @@ pub fn process_bin_destroy(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Progra
             |p| p.authority == *signer_info.key,
             ProgramError::MissingRequiredSignature,
         )?;
-
-    system_program_info
-        .is_program(&system_program::ID)?;
 
     // Return rent to signer.
     bin_info.close(signer_info)?;

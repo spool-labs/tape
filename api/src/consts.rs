@@ -41,12 +41,14 @@ pub const TAPE_TREE_HEIGHT: usize = 10;
 pub const TAPE_PROOF_LEN: usize = TAPE_TREE_HEIGHT;
 
 // ====================================================================
-// Tape & Segment Sizing
+// Sizing
 // ====================================================================
 /// Segment size in bytes
 pub const SEGMENT_SIZE: usize = 128;
-/// Maximum tape size in bytes = 2^SEGMENT_TREE_HEIGHT segments
-pub const MAX_TAPE_SIZE: usize = (1 << SEGMENT_TREE_HEIGHT) * SEGMENT_SIZE;
+/// Maximum number of segments in a tape
+pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << SEGMENT_TREE_HEIGHT;
+/// Maximum number of tapes in a bin
+pub const MAX_TAPES_PER_BIN: usize = 1000;
 
 // ====================================================================
 // Token Economics
