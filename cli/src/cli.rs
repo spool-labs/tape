@@ -1,6 +1,12 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::signature::Keypair;
+use tape_network::store::{StoreError, TapeStore, TAPE_STORE_PRIMARY_DB, TAPE_STORE_SECONDARY_DB};
+use std::env;
 use std::str::FromStr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -217,3 +223,45 @@ impl FromStr for Cluster {
         }
     }
 }
+
+pub struct StoreContext(
+    TapeStore,
+    TapeStore,
+    TapeStore
+);
+
+impl StoreContext {
+    pub fn try_build() -> Result<Self> {
+        let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+        let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+        let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB);
+        std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
+        Ok(
+            Self
+                (
+                    TapeStore::new(&db_primary)?,
+                    TapeStore::new_secondary(&db_primary, &db_secondary)?,
+                    TapeStore::new_read_only(&db_primary)?
+                )
+        )
+    }
+
+    pub fn primary(&self) -> &TapeStore{
+        &self.0
+    }
+
+    pub fn secondary(&self) -> &TapeStore{
+        &self.1
+    }
+
+    pub fn read_only(&self) -> &TapeStore{
+        &self.2
+    }
+}
+
+pub struct Context {
+    rpc: Arc<RpcClient>,
+    store: StoreContext,
+    payer: Option<Keypair>
+}
+
