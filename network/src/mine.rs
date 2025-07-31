@@ -15,6 +15,8 @@ use crankx::{
     CrankXError
 };
 
+use crate::store::run_refresh_store;
+
 use super::store::TapeStore;
 
 use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
@@ -23,15 +25,21 @@ use std::thread::{self, JoinHandle};
 use num_cpus;
 
 pub async fn mine_loop(
-    store: &TapeStore, 
+    store: TapeStore, 
     client: &Arc<RpcClient>, 
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {
+    let store = Arc::new(store);
+
     let interval = Duration::from_secs(1);
 
+    let refresh_store_instance = store.clone();
+    
+    run_refresh_store(&refresh_store_instance);
+
     loop {
-        match try_mine_iteration(store, client, miner_address, signer).await {
+        match try_mine_iteration(&store, client, miner_address, signer).await {
             Ok(()) => debug!("Mining iteration completed successfully"),
             Err(e) => {
                 // Log the error (you can use a proper logger like `log::error!` if set up)
@@ -159,8 +167,6 @@ async fn try_mine_iteration(
     }
 
     debug!("Catching up with primary...");
-
-    store.catch_up_with_primary()?;
 
     Ok(())
 }

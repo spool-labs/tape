@@ -10,7 +10,8 @@ use tape_api::SEGMENT_SIZE;
 use thiserror::Error;
 
 pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";
-pub const TAPE_STORE_SECONDARY_DB: &str = "db_tapestore_read";
+pub const TAPE_STORE_SECONDARY_DB_MINE: &str = "db_tapestore_read_mine";
+pub const TAPE_STORE_SECONDARY_DB_WEB: &str = "db_tapestore_read_web";
 pub const TAPE_STORE_SLOTS_KEY_SIZE: usize = 40; // 40 bytes
 pub const TAPE_STORE_MAX_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 pub const TAPE_STORE_MAX_WRITE_BUFFERS: usize = 4; // This is related to concurrency
@@ -562,6 +563,17 @@ impl Drop for TapeStore {
     }
 }
 
+pub fn run_refresh_store(store: &Arc<TapeStore>) {
+    let store = Arc::clone(store);
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(15);
+        loop {
+            store.catch_up_with_primary().unwrap();
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
 fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     // Options for tape_by_number CF
     let mut cf_tape_by_number_opts = Options::default();
@@ -643,13 +655,22 @@ pub fn primary() -> Result<TapeStore, StoreError> {
     TapeStore::new(&db_primary)
 }
 
-pub fn secondary() -> Result<TapeStore, StoreError> {
+pub fn secondary_mine() -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;
     let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
-    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_MINE);
     std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
     TapeStore::new_secondary(&db_primary, &db_secondary)
 }
+
+pub fn secondary_web() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_WEB);
+    std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
+    TapeStore::new_secondary(&db_primary, &db_secondary)
+}
+
 
 pub fn read_only() -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;

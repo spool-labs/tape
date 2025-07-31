@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
 
 use crate::metrics::{record_metrics, run_metrics_server};
+use crate::store::run_refresh_store;
 
 use super::store::{StoreError, TapeStore};
 
@@ -510,16 +511,7 @@ async fn rpc_handler(
 }
 
 
-pub fn run_refresh_store(store:&Arc<TapeStore>) {
-    let store = Arc::clone(store);
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(15);
-        loop {
-            store.catch_up_with_primary().unwrap();
-            tokio::time::sleep(interval).await;
-        }
-    });
-}
+
 
 pub async fn web_loop(
     store: TapeStore,
@@ -531,7 +523,6 @@ pub async fn web_loop(
 
     let store = Arc::new(store);
 
-    // Refresh the store every 15 seconds
     run_refresh_store(&store);
 
     let app = Router::new()

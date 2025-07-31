@@ -263,8 +263,12 @@ impl Context{
         Ok(tape_network::store::primary()?)
     }
 
-    pub fn open_secondary_store_conn(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::secondary()?)
+    pub fn open_secondary_store_conn_mine(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::secondary_mine()?)
+    }
+
+    pub fn open_secondary_store_conn_web(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::secondary_web()?)
     }
 
     pub fn open_read_only_store_conn(&self) -> Result<TapeStore> {

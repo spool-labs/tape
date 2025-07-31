@@ -24,7 +24,7 @@ pub const MAX_CONCURRENCY: usize = 10;
 
 /// Archive loop that continuously fetches and processes blocks from the Solana network.
 pub async fn archive_loop(
-    store: &TapeStore,
+    store: TapeStore,
     client: &Arc<RpcClient>,
     miner_address: Option<Pubkey>,
     starting_slot: Option<u64>,
@@ -44,10 +44,10 @@ pub async fn archive_loop(
     
     if let Some(ref peer_url) = trusted_peer {
         debug!("Using trusted peer: {peer_url}");
-        sync_addresses_from_trusted_peer(store, client, peer_url).await?;
+        sync_addresses_from_trusted_peer(&store, client, peer_url).await?;
     } else {
         debug!("No trusted peer provided, syncing against Solana directly");
-        sync_addresses_from_solana(store, client).await?;
+        sync_addresses_from_solana(&store, client).await?;
     }
 
     let interval = Duration::from_secs(2);
@@ -117,10 +117,10 @@ pub async fn archive_loop(
                         if let Some(ref peer_url) = trusted_peer {
                             debug!("Syncing segments from trusted peer: {peer_url}");
 
-                            sync_segments_from_trusted_peer(store, &tape_address, peer_url).await?;
+                            sync_segments_from_trusted_peer(&store, &tape_address, peer_url).await?;
                         } else {
                             debug!("Syncing segments from Solana RPC");
-                            sync_segments_from_solana(store, client, &tape_address).await?;
+                            sync_segments_from_solana(&store, client, &tape_address).await?;
                         }
                     }
                 }
@@ -131,7 +131,7 @@ pub async fn archive_loop(
 
 
         match try_archive_iteration(
-            store,
+            &store,
             client,
             &mut latest_slot,
             &mut last_processed_slot,
@@ -143,7 +143,7 @@ pub async fn archive_loop(
 
         // TODO: this is actually not working as intended, we need to both track and handle the
         // drift properly
-        print_drift_status(store, latest_slot, last_processed_slot);
+        print_drift_status(&store, latest_slot, last_processed_slot);
 
         // TODO: The fixed interval for the next iteration is nonsensical
         sleep(interval).await;
@@ -360,14 +360,40 @@ async fn sync_addresses_from_trusted_peer(
     let total = archive.tapes_stored;
     let http = HttpClient::new();
 
+    let mut tasks = JoinSet::new();
+    let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
+
     for tape_number in 1..=total {
         if store.read_tape_address(tape_number).is_ok() {
             continue;
         }
 
-        let tape_address = fetch_tape_address(&http, trusted_peer_url, tape_number).await?;
-        store.write_tape(tape_number, &tape_address)?;
+        if tasks.len() >= MAX_CONCURRENCY{
+            if let Some(Ok(Ok((pubkey,number)))) = tasks.join_next().await {
+                tape_pubkeys_with_numbers.push((pubkey,number));
+            }
+        }
+
+        let trusted_peer_url = trusted_peer_url.to_string();
+
+        let http = http.clone();
+
+        tasks.spawn(async move {
+                let pubkey = fetch_tape_address(&http, &trusted_peer_url, tape_number).await?;
+                Ok((pubkey, tape_number))
+            }
+        );
     }
+
+    let results: Vec<Result<(Pubkey, u64), anyhow::Error>> = tasks.join_all().await;
+
+    let pairs: Vec<(Pubkey, u64)> = results.into_iter().filter_map(|r|r.ok()).collect();
+
+    tape_pubkeys_with_numbers.extend(pairs.into_iter());
+
+    let (pubkeys, tape_numbers): (Vec<Pubkey>, Vec<u64>) = tape_pubkeys_with_numbers.into_iter().unzip();
+
+    store.write_tapes_batch(&tape_numbers,&pubkeys,)?;
 
     Ok(())
 }
@@ -399,17 +425,41 @@ async fn sync_addresses_from_solana(
     let (archive, _) = get_archive_account(client).await?;
     let total = archive.tapes_stored;
 
+
+    let mut tasks = JoinSet::new();
+
+    let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
+
     for tape_number in 1..=total {
         // Skip if we already have this tape
         if store.read_tape_address(tape_number).is_ok() {
             continue;
         }
 
-        let some_acc = find_tape_account(client, tape_number).await?;
+        if tasks.len() >= MAX_CONCURRENCY{
+            if let Some(Ok(Ok((pubkey,number)))) = tasks.join_next().await {
+                tape_pubkeys_with_numbers.push((pubkey,number));
+            }
+        }
 
-        let (pubkey, _) = some_acc.ok_or(anyhow!("Tape account not found for number {}", tape_number))?;
-        store.write_tape(tape_number, &pubkey)?;
+        let client = client.clone();
+
+        tasks.spawn(async move {
+            let (pubkey,_) = find_tape_account(&client, tape_number).
+                await?.ok_or(anyhow!("Tape account not found for number {}", tape_number))?;
+            Ok((pubkey, tape_number))
+        });
     }
+
+    let results: Vec<Result<(Pubkey, u64), anyhow::Error>> = tasks.join_all().await;
+
+    let pairs: Vec<(Pubkey, u64)> = results.into_iter().filter_map(|r|r.ok()).collect();
+
+    tape_pubkeys_with_numbers.extend(pairs.into_iter());
+
+    let (pubkeys, tape_numbers): (Vec<Pubkey>, Vec<u64>) = tape_pubkeys_with_numbers.into_iter().unzip();
+
+    store.write_tapes_batch(&tape_numbers,&pubkeys,)?;
 
     Ok(())
 }
