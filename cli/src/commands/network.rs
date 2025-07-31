@@ -15,44 +15,43 @@ use tape_network::{
 
 const DEVNET: &str = "https://devnet.tapedrive.io/api";
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, Context};
 use crate::log;
 
-pub async fn handle_network_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
+pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
     log::print_divider();
 
     match cli.command {
         Commands::Web { port } => {
-            handle_web(port).await?;
+            handle_web(context, port).await?;
         }
         Commands::Archive { starting_slot, trusted_peer, miner_address } => {
-            handle_archive(&client, starting_slot, trusted_peer, miner_address).await?;
+            handle_archive(context, starting_slot, trusted_peer, miner_address).await?;
         }
         Commands::Mine { pubkey, name } => {
-            handle_mine(&client, &payer, pubkey, name).await?;
+            handle_mine(context, pubkey, name).await?;
         }
         Commands::Register { name } => {
-            handle_register(&client, &payer, name).await?;
+            handle_register(context, name).await?;
         }
         _ => {}
     }
     Ok(())
 }
 
-pub async fn handle_web(port: Option<u16>) -> Result<()> {
+pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
     let port = port.unwrap_or(3000);
 
     log::print_info("Starting web RPC service...");
     log::print_message(format!("Listening on port {port}").as_str());
-
-    let secondary_store = tape_network::store::secondary()?;
-    web_loop(secondary_store, port).await?;
+    let store = context.open_secondary_store_conn()?;
+    web_loop(store, port).await?;
     Ok(())
 }
 
-pub async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>, trusted_peer: Option<String>, miner_address: Option<String>) -> Result<()> {
+pub async fn handle_archive(context: Context, starting_slot: Option<u64>, trusted_peer: Option<String>, miner_address: Option<String>) -> Result<()> {
     // Use the public devnet peer if none is provided
-    let trusted_peer = match client.url() {
+    let trusted_peer = match context.rpc().url() {
         url if url.contains("devnet") => {
             Some(trusted_peer.unwrap_or(DEVNET.to_string()))
         }
@@ -61,30 +60,30 @@ pub async fn handle_archive(client: &Arc<RpcClient>, starting_slot: Option<u64>,
 
     let miner_address = miner_address.map(|addr| Pubkey::from_str(&addr).unwrap());
 
-    let primary_store = tape_network::store::primary()?;
+    let store = context.open_primary_store_conn()?;
 
     log::print_info("Starting archive service...");
-    archive_loop(&primary_store, client, miner_address, starting_slot, trusted_peer).await?;
+    archive_loop(&store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
 
     Ok(())
 }
 
-pub async fn handle_mine(client: &Arc<RpcClient>, payer: &Keypair, pubkey: Option<String>, name: Option<String>) -> Result<()> {
+pub async fn handle_mine(context: Context, pubkey: Option<String>, name: Option<String>) -> Result<()> {
     log::print_info("Starting mining service...");
 
-    let miner_address = resolve_miner(client, payer, pubkey, name, true).await?;
+    let miner_address = resolve_miner(context.rpc(), context.payer(), pubkey, name, true).await?;
 
     log::print_message(&format!("Using miner address: {miner_address}"));
 
-    let secondary_store = tape_network::store::secondary()?;
-    mine_loop(&secondary_store, client, &miner_address, payer).await?;
+    let store = context.open_secondary_store_conn()?;
+    mine_loop(&store, context.rpc(), &miner_address, context.payer()).await?;
     Ok(())
 }
 
-pub async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: String) -> Result<()> {
+pub async fn handle_register(context: Context, name: String) -> Result<()> {
     log::print_info("Registering miner...");
 
-    let (miner_address, _) = miner_pda(payer.pubkey(), to_name(&name));
+    let (miner_address, _) = miner_pda(context.payer().pubkey(), to_name(&name));
 
     let proceed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("→ Are you sure?")
@@ -96,7 +95,7 @@ pub async fn handle_register(client: &Arc<RpcClient>, payer: &Keypair, name: Str
         return Ok(());
     }
 
-    register_miner(client, payer, &name).await?;
+    register_miner(context.rpc(), context.payer(), &name).await?;
 
     log::print_section_header("Miner Registered");
     log::print_message(&format!("Name: {name}"));
