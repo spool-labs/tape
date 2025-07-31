@@ -22,6 +22,7 @@ pub fn process_spool_unpack(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         )?;
 
     let merkle_proof = args.proof;
+    assert!(merkle_proof.len() == TAPE_PROOF_LEN);
 
     let tape_id = args.index;
     let leaf = Leaf::new(&[

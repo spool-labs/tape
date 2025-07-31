@@ -30,6 +30,8 @@ pub fn process_spool_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         )?;
 
     let merkle_proof = args.proof;
+    assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
+
     let merkle_root  = merkle_proof.last()
         .ok_or(ProgramError::InvalidArgument)?;
         

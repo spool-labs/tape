@@ -70,6 +70,13 @@ fn run_integration() {
     // Pack the tape into a miner specific representation
     pack_tape(&mut svm, &payer, &genesis_tape, &mut stored_spool);
 
+    unpack_tape(
+        &mut svm, 
+        &payer, 
+        &stored_spool, 
+        0
+    );
+
     // Verify initial accounts
     verify_archive_account(&svm, 1);
     verify_epoch_account(&svm);
@@ -97,7 +104,7 @@ fn run_integration() {
     let tape_count = 5;
     for tape_index in 1..tape_count {
         let stored_tape = create_and_verify_tape(&mut svm, &payer, ata, tape_index);
-        pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
+        let _packed_tape = pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
     }
 
     // Verify archive account after tape creation
@@ -242,7 +249,7 @@ fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
     let segments = vec![genesis_segment];
 
     let stored_genesis = StoredTape {
-        number: 0,
+        number: tape.number,
         address: genesis_pubkey,
         segments,
         account: *tape,
@@ -740,23 +747,57 @@ fn get_packed_tape(
     };
 }
 
-// fn unpack_tape(
-//     svm: &mut LiteSVM,
-//     payer: &Keypair,
-//     miner_address: Pubkey,
-//     spool_address: Pubkey,
-//     stored_tape: &mut StoredTape, 
-//     index: u64,
-// ) {
-//     // signer: Pubkey, 
-//     // miner_address: Pubkey, 
-//     // spool_address: Pubkey,
-//     // index: u64,                           // index of the value to unpack
-//     // proof: [[u8; 32]; TAPE_PROOF_LEN],    // proof of the value
-//     // value: [u8; 32],                      // value to unpack
-//
-//     let merkle_tree = get_packed_tree(stored_tape);
-// }
+fn unpack_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    stored_spool: &StoredSpool,
+    index: u64,
+) {
+    let packed_tape = stored_spool.tapes
+        .get(index as usize)
+        .expect("Tape index out of bounds");
+    let tape_root = packed_tape.tree.get_root();
+
+    let leaves = stored_spool.tapes.iter()
+        .map(|tape| {
+            Leaf::new(&[
+                tape.number.to_le_bytes().as_ref(),
+                tape.tree.get_root().as_ref(),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    let merkle_proof = stored_spool.tree.get_merkle_proof(
+        &leaves,
+        index as usize
+    );
+    let merkle_proof = merkle_proof
+        .iter()
+        .map(|v| v.to_bytes())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    let payer_pk = payer.pubkey();
+    let blockhash = svm.latest_blockhash();
+    let ix = instruction::spool::build_unpack_ix(
+        payer_pk,
+        stored_spool.address,
+        packed_tape.number,
+        merkle_proof,
+        tape_root.to_bytes(),
+    );
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    // Check spool state after unpacking, the tape root should be in the contains field
+    let spool_account = svm.get_account(&stored_spool.address)
+        .expect("Failed to get spool account");
+    let spool = Spool::unpack(&spool_account.data)
+        .expect("Failed to unpack spool account");
+    assert_eq!(spool.contains, tape_root.to_bytes());
+}
 
 fn pack_tape(
     svm: &mut LiteSVM,
@@ -785,6 +826,13 @@ fn pack_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+
+    stored_spool.tree.try_add_leaf(
+        Leaf::new(&[
+            stored_tape.number.to_le_bytes().as_ref(),
+            packed_tape.tree.get_root().as_ref(),
+        ])
+    ).expect("Failed to add leaf to spool tree");
 
     stored_spool.tapes.push(packed_tape);
 }

@@ -119,7 +119,6 @@ pub fn build_pack_ix(
 
 pub fn build_unpack_ix(
     signer: Pubkey, 
-    miner_address: Pubkey, 
     spool_address: Pubkey,
     index: u64,                           // index of the value to unpack
     proof: [[u8; 32]; TAPE_PROOF_LEN],    // proof of the value
@@ -129,7 +128,6 @@ pub fn build_unpack_ix(
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
         ],
         data: Unpack {
