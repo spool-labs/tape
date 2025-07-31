@@ -63,6 +63,7 @@ pub fn process_spool_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     spool.authority         = *signer_info.key;
     spool.last_proof_at     = current_time;
     spool.last_proof_block  = 0;
+    spool.seed              = empty_seed.to_bytes();
     spool.state             = TapeTree::new(&[empty_seed.as_ref()]);
     spool.contains          = [0; 32];
     spool.total_tapes       = 0;

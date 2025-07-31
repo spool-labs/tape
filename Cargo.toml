@@ -90,3 +90,9 @@ overflow-checks = true
 
 [profile.dev]
 overflow-checks = true
+opt-level = 3
+debug = false
+
+[profile.test]
+opt-level = 3
+debug = false
