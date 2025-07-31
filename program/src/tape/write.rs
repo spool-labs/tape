@@ -48,7 +48,7 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let segment_count = segments.len() as u64;
 
     check_condition(
-        tape.total_size + segment_count <= MAX_SEGMENTS_PER_TAPE as u64,
+        tape.total_segments + segment_count <= MAX_SEGMENTS_PER_TAPE as u64,
         TapeError::TapeTooLong,
     )?;
 
@@ -65,7 +65,6 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let prev_slot = tape.tail_slot;
 
     tape.total_segments   += segment_count;
-    tape.total_size       += SEGMENT_SIZE as u64;
     tape.merkle_root       = writer.state.get_root().to_bytes();
     tape.state             = TapeState::Writing.into();
     tape.tail_slot         = current_slot;

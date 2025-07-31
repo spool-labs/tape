@@ -3221,6 +3221,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "packx"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773ed10033f4cd1d96db17a05693e588a59a20c0dcf3c54a53c85928d279899e"
+dependencies = [
+ "bytemuck",
+ "sha3",
+ "solana-program",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6715,6 +6726,7 @@ dependencies = [
  "litesvm",
  "litesvm-token",
  "mpl-token-metadata",
+ "packx",
  "pretty-hex",
  "rand 0.8.5",
  "solana-client",

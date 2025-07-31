@@ -60,8 +60,10 @@ pub const ONE_TAPE: u64 = 10u64.pow(TOKEN_DECIMALS as u32);
 /// Maximum total TAPE supply
 pub const MAX_SUPPLY: u64 = 7_000_000 * ONE_TAPE;
 
-/// Minimum PoW solution difficulty
-pub const MIN_DIFFICULTY: u64              = 1;
+/// Minimum mining difficulty
+pub const MIN_MINING_DIFFICULTY: u64       = 1;
+/// Minimum packing difficulty
+pub const MIN_PACKING_DIFFICULTY: u64      = 0;
 /// Minimum block participation required to solve a block
 pub const MIN_PARTICIPATION_TARGET: u64    = 1;
 /// Maximum block participation required to solve a block

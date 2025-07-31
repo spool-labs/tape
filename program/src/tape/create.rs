@@ -75,7 +75,6 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     tape.name              = args.name;
     tape.state             = TapeState::Created.into();
     tape.total_segments    = 0;
-    tape.total_size        = 0;
     tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
     tape.header            = [0; HEADER_SIZE];

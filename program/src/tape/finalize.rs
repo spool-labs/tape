@@ -59,8 +59,8 @@ pub fn process_tape_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         TapeError::InsufficientRent,
     )?;
 
-    archive.tapes_stored = archive.tapes_stored.saturating_add(1);
-    archive.bytes_stored = archive.bytes_stored.saturating_add(tape.total_size);
+    archive.tapes_stored    = archive.tapes_stored.saturating_add(1);
+    archive.segments_stored = archive.segments_stored.saturating_add(tape.total_segments);
 
     tape.number            = archive.tapes_stored;
     tape.state             = TapeState::Finalized.into();

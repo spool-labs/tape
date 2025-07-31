@@ -10,11 +10,13 @@ use solana_sdk::{
     clock::Clock,
 };
 
+use brine_tree::Leaf;
 use tape::miner::get_base_rate;
 use tape_api::prelude::*;
 use tape_api::instruction;
 use litesvm::LiteSVM;
 
+use packx;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -24,7 +26,8 @@ use crankx::{
 
 struct StoredTape {
     pubkey: Pubkey,
-    segments: Vec<Vec<u8>>,  // (segment_data, slot_number)
+    segments: Vec<Vec<u8>>,
+    packed: Vec<Vec<u8>>,
     account: Tape,
 }
 
@@ -39,23 +42,15 @@ fn run_integration() {
     // Register miner
     let miner_name = "miner-name";
     let miner_address = register_miner(&mut svm, &payer, miner_name);
+    let spool_address = create_spool(&mut svm, &payer, miner_address, 1);
     let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
-
-    // Create spool
-    let spool_number = 1;
-    let spool_address = create_spool(&mut svm, &payer, miner_address, spool_number);
 
     // Fetch and store genesis tape
     let mut tape_db = vec![];
     fetch_genesis_tape(&mut svm, &payer, &mut tape_db);
 
-    spool_tape(
-        &mut svm, 
-        &payer, 
-        spool_address, 
-        tape_db[0].pubkey, 
-        [42; 32]
-    );
+    // Pack the tape into a miner specific representation
+    pack_tape(&mut svm, &payer, miner_address, spool_address, &mut tape_db[0]);
 
     // Verify initial accounts
     verify_archive_account(&svm, 1);
@@ -84,7 +79,7 @@ fn run_integration() {
     // Create tapes
     let tape_count = 5;
     for tape_idx in 1..tape_count {
-        create_and_verify_tape(&mut svm, &payer, ata, tape_idx, &mut tape_db);
+        create_and_verify_tape(&mut svm, &payer, ata, miner_address, spool_address, tape_idx, &mut tape_db);
     }
 
     // Verify archive account after tape creation
@@ -196,7 +191,7 @@ fn do_mining_run(
                 let solution = solve_challenge(
                     miner_challenge, 
                     &EMPTY_SEGMENT, 
-                    epoch.target_difficulty
+                    epoch.mining_difficulty
                 ).unwrap();
 
                 (solution, EMPTY_SEGMENT, EMPTY_PROOF)
@@ -232,10 +227,12 @@ fn fetch_genesis_tape(svm: &mut LiteSVM, payer: &Keypair, tape_db: &mut Vec<Stor
     let stored_genesis = StoredTape {
         pubkey: genesis_pubkey,
         segments,
+        packed: vec![],
         account: *tape,
     };
 
     tape_db.push(stored_genesis);
+
 }
 
 
@@ -265,7 +262,8 @@ fn verify_epoch_account(svm: &LiteSVM) {
     let epoch = Epoch::unpack(&account.data).expect("Failed to unpack Epoch account");
     assert_eq!(epoch.number, 1);
     assert_eq!(epoch.progress, 0);
-    assert_eq!(epoch.target_difficulty, MIN_DIFFICULTY);
+    assert_eq!(epoch.mining_difficulty, MIN_MINING_DIFFICULTY);
+    assert_eq!(epoch.packing_difficulty, MIN_PACKING_DIFFICULTY);
     assert_eq!(epoch.target_participation, MIN_PARTICIPATION_TARGET);
     assert_eq!(epoch.reward_rate, get_base_rate(1));
     assert_eq!(epoch.duplicates, 0);
@@ -321,6 +319,8 @@ fn create_and_verify_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
     ata: Pubkey,
+    miner_address: Pubkey,
+    spool_address: Pubkey,
     tape_idx: u64,
     tape_db: &mut Vec<StoredTape>,
 ) {
@@ -381,6 +381,8 @@ fn create_and_verify_tape(
         tape_idx,
     );
 
+    pack_tape(svm, &payer, miner_address, spool_address, &mut stored_tape);
+
     tape_db.push(stored_tape);
 }
 
@@ -422,6 +424,7 @@ fn create_tape(
     StoredTape {
         pubkey: tape_address,
         segments: vec![],
+        packed: vec![],
         account: *tape,
     }
 }
@@ -436,7 +439,7 @@ fn write_tape(
 ) {
     let payer_pk = payer.pubkey();
 
-    for write_index in 0..10u64 {
+    for write_index in 0..5u64 {
         let data = format!("<segment_{write_index}_data>").into_bytes();
 
         let blockhash = svm.latest_blockhash();
@@ -469,7 +472,6 @@ fn write_tape(
         let account = svm.get_account(&tape_address).unwrap();
         let tape = Tape::unpack(&account.data).unwrap();
         assert_eq!(tape.total_segments, stored_tape.segments.len() as u64);
-        assert_eq!(tape.total_size, tape.total_segments * 128);
         assert_eq!(tape.state, u64::from(TapeState::Writing));
         assert_eq!(tape.merkle_root, writer_tree.get_root().to_bytes());
         assert_eq!(tape.header, stored_tape.account.header);
@@ -555,7 +557,6 @@ fn update_tape(
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
     assert_eq!(tape.total_segments, 10);
-    assert_eq!(tape.total_size, tape.total_segments * 128);
     assert_eq!(tape.state, u64::from(TapeState::Writing));
     assert_eq!(tape.merkle_root, writer_tree.get_root().to_bytes());
     assert_eq!(tape.header, stored_tape.account.header);
@@ -613,7 +614,6 @@ fn finalize_tape(
     assert_eq!(tape.state, u64::from(TapeState::Finalized));
     assert_eq!(tape.number, tape_idx + 1);
     assert_eq!(tape.total_segments, 10);
-    assert_eq!(tape.total_size, tape.total_segments * 128);
     assert_eq!(tape.merkle_root, stored_tape.account.merkle_root);
 
     // Verify writer account is closed
@@ -669,32 +669,55 @@ fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, numbe
     spool_address
 }
 
-fn spool_tape(
-    svm: &mut LiteSVM, 
-    payer: &Keypair, 
-    spool_address: Pubkey, 
-    tape_address: Pubkey, 
-    value: [u8; 32]
-) -> Pubkey {
+fn pack_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    miner_address: Pubkey,
+    spool_address: Pubkey,
+    stored_tape: &mut StoredTape, 
+) {
+    let (epoch_address, _) = epoch_pda();
+    let account = svm
+        .get_account(&epoch_address)
+        .expect("Epoch account should exist");
+    let epoch = Epoch::unpack(&account.data)
+        .expect("Failed to unpack Epoch account");
+
+    // Pack segments into miner specific data
+    stored_tape.packed.clear();
+    for segment_data in &stored_tape.segments {
+        let solution = packx::solve(
+            &miner_address.to_bytes(),
+            &padded_array::<SEGMENT_SIZE>(segment_data),
+            epoch.packing_difficulty as u32
+        ).expect("Failed to pack segment data");
+
+        stored_tape.packed.push(solution.to_bytes().to_vec());
+    }
+
+    // Commit to the packed tape (so we can mine against this later)
+    let mut merkle_tree = SegmentTree::new(&[stored_tape.account.merkle_seed.as_ref()]);
+    for (segment_number, packed_data) in stored_tape.packed.iter().enumerate() {
+        let segment_id = segment_number.to_le_bytes();
+        let leaf = Leaf::new(&[
+            segment_id.as_ref(),
+            &packed_data,
+        ]);
+        
+        merkle_tree.try_add_leaf(leaf)
+            .expect("Failed to add leaf to Merkle tree");
+    }
+
+    let value = merkle_tree.get_root().to_bytes();
+    let tape_address = stored_tape.pubkey;
 
     let payer_pk = payer.pubkey();
-
-    let account = svm.get_account(&spool_address).unwrap();
-    let spool = Spool::unpack(&account.data).unwrap();
-    let spool_count = spool.total_tapes;
-
     let blockhash = svm.latest_blockhash();
     let ix = instruction::spool::build_pack_ix(payer_pk, spool_address, tape_address, value);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
+
     assert!(res.is_ok());
-
-    let account = svm.get_account(&spool_address).unwrap();
-    let spool = Spool::unpack(&account.data).unwrap();
-
-    assert_eq!(spool.number, spool_count + 1);
-
-    spool_address
 }
 
 fn compute_challenge_solution(
@@ -703,6 +726,11 @@ fn compute_challenge_solution(
     epoch: &Epoch,
     block: &Block,
 ) -> (Solution, [u8; SEGMENT_SIZE], [[u8; 32]; SEGMENT_PROOF_LEN]) {
+    let (miner_address, _) = miner_pda(
+        miner.authority, 
+        miner.name
+    );
+
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -716,15 +744,19 @@ fn compute_challenge_solution(
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
 
-    for (segment_id, segment_data) in stored_tape.segments.iter().enumerate() {
+    for (segment_id, packed_data) in stored_tape.packed.iter().enumerate() {
+        let mut data = [0u8; 152];
+        data.copy_from_slice(&packed_data[..152]);
+        let solution = packx::Solution::from_bytes(&data);
+
+        let packed_data = solution.unpack(&miner_address.to_bytes());
         if segment_id == segment_number {
-            recall_segment.copy_from_slice(segment_data);
+            recall_segment.copy_from_slice(&packed_data);
         }
 
-        let data = padded_array::<SEGMENT_SIZE>(segment_data);
         let leaf = compute_leaf(
             segment_id as u64,
-            &data,
+            &packed_data,
         );
 
         leaves.push(leaf);
@@ -734,7 +766,7 @@ fn compute_challenge_solution(
 
     println!("Recall segment: {segment_number}");
 
-    let solution = solve_challenge(miner_challenge, &recall_segment, epoch.target_difficulty).unwrap();
+    let solution = solve_challenge(miner_challenge, &recall_segment, epoch.mining_difficulty).unwrap();
     assert!(solution.is_valid(&miner_challenge, &recall_segment).is_ok());
 
     let merkle_tree = SegmentTree::new(&[stored_tape.account.merkle_seed.as_ref()]);

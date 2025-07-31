@@ -82,7 +82,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let difficulty = solution.difficulty() as u64;
 
     check_condition(
-        difficulty >= epoch.target_difficulty,
+        difficulty >= epoch.mining_difficulty,
         TapeError::SolutionTooEasy,
     )?;
 
@@ -356,7 +356,7 @@ fn advance_epoch(
     adjust_difficulty(epoch, current_time);
 
     epoch.number                = epoch.number.saturating_add(1);
-    epoch.target_difficulty     = epoch.target_difficulty.max(MIN_DIFFICULTY);
+    epoch.mining_difficulty     = epoch.mining_difficulty.max(MIN_MINING_DIFFICULTY);
     epoch.target_participation  = epoch.target_participation.max(MIN_PARTICIPATION_TARGET);
     epoch.progress              = 0;
     epoch.duplicates            = 0;
@@ -380,14 +380,14 @@ fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 
     // If blocks were solved faster than 1 minute, increase difficulty
     if average_time_per_block < BLOCK_DURATION_SECONDS as i64 {
-        epoch.target_difficulty = epoch.target_difficulty
+        epoch.mining_difficulty = epoch.mining_difficulty
             .saturating_add(1)
 
     // If they were slower, decrease difficulty
     } else {
-        epoch.target_difficulty = epoch.target_difficulty
+        epoch.mining_difficulty = epoch.mining_difficulty
             .saturating_sub(1)
-            .max(MIN_DIFFICULTY);
+            .max(MIN_MINING_DIFFICULTY);
     }
 }
 
