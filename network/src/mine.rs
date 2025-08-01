@@ -108,7 +108,7 @@ async fn try_mine_iteration(
                 &miner_challenge,
                 segment_number,
                 segments,
-                epoch.target_difficulty,
+                epoch.mining_difficulty,
             )?
 
         // This tape does not have minimum rent, we use an empty segment
@@ -118,7 +118,7 @@ async fn try_mine_iteration(
             let solution = solve_challenge(
                 miner_challenge,
                 &EMPTY_SEGMENT,
-                epoch.target_difficulty,
+                epoch.mining_difficulty,
             )?;
 
             (solution, EMPTY_SEGMENT, EMPTY_PROOF)
