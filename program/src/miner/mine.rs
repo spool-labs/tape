@@ -204,10 +204,15 @@ fn verify_solution(
             recall_segment.as_ref(),
         ]);
 
-        //check_condition(
-        //    miner_commitment.eq(&leaf.to_bytes()),
-        //    TapeError::CommitmentMismatch,
-        //)?;
+        let packed_leaf = Leaf::new(&[
+            segment_number.to_le_bytes().as_ref(),
+            poa_solution.to_bytes().as_ref(),
+        ]);
+
+        check_condition(
+            miner_commitment.eq(&packed_leaf.to_bytes()),
+            TapeError::CommitmentMismatch,
+        )?;
 
         check_condition(
             verify(

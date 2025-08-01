@@ -175,6 +175,10 @@ fn do_mining_run(
     num_iterations: u64,
 ) {
     for _ in 0..num_iterations {
+        // We need to expire the blockhash because we're not checking if the mining commitment
+        // needs to change (when it doesn't, we get a AlreadyProcessed error). Todo, check before
+        // submitting the transaction if the commitment is still valid.
+
         let mut current_clock = svm.get_sysvar::<Clock>();
         current_clock.slot = current_clock.slot + 10;
         svm.set_sysvar::<Clock>(&current_clock);
