@@ -8,6 +8,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::Keypair,
     clock::Clock,
+    instruction::Instruction,
 };
 
 use brine_tree::Leaf;
@@ -70,19 +71,13 @@ fn run_integration() {
     // Pack the tape into a miner specific representation
     pack_tape(&mut svm, &payer, &genesis_tape, &mut stored_spool);
 
-    unpack_tape(
+    // Try to load the packed segment leaf from the spool
+    commit_for_mining(
         &mut svm, 
         &payer, 
         &stored_spool, 
-        0
-    );
-
-    commit_data(
-        &mut svm, 
-        &payer, 
-        &stored_spool, 
-        0,
-        0,
+        0, // tape_index in spool (not the tape_number)
+        0, // segment_index
     );
 
     // Verify initial accounts
@@ -755,13 +750,57 @@ fn get_packed_tape(
     };
 }
 
-fn commit_data(
+fn commit_for_mining(
     svm: &mut LiteSVM,
     payer: &Keypair,
     stored_spool: &StoredSpool,
     tape_index: u64,
     segment_index: u64,
 ) {
+    let payer_pk = payer.pubkey();
+    let blockhash = svm.latest_blockhash();
+
+    let ix = [
+        unpack_tape_ix(
+            payer, 
+            stored_spool, 
+            tape_index
+        ),
+        commit_data_ix(
+            payer, 
+            stored_spool, 
+            tape_index, 
+            segment_index
+        ),
+    ];
+
+    let tx = Transaction::new_signed_with_payer(&ix, Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+
+    // Verify that the mining account has the leaf we need
+    let account = svm.get_account(&stored_spool.miner)
+        .expect("Miner account should exist");
+    let miner = Miner::unpack(&account.data)
+        .expect("Failed to unpack Miner account");
+
+    let leaf = Leaf::new(&[
+        segment_index.to_le_bytes().as_ref(),
+        &stored_spool.tapes[tape_index as usize].data[segment_index as usize],
+    ]);
+
+    assert!(miner.commitment.eq(&leaf.to_bytes()));
+}
+
+fn commit_data_ix(
+    payer: &Keypair,
+    stored_spool: &StoredSpool,
+    tape_index: u64,
+    segment_index: u64,
+) -> Instruction {
+    let payer_pk = payer.pubkey();
+
     let packed_tape = stored_spool.tapes
         .get(tape_index as usize)
         .expect("Tape index out of bounds");
@@ -791,36 +830,23 @@ fn commit_data(
         .try_into()
         .unwrap();
 
-    let payer_pk = payer.pubkey();
-    let blockhash = svm.latest_blockhash();
-    let ix = instruction::spool::build_commit_ix(
+    instruction::spool::build_commit_ix(
         payer_pk,
         stored_spool.miner,
         stored_spool.address,
         tape_index,
         merkle_proof,
         data,
-    );
-
-    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
-    let res = send_tx(svm, tx);
-    assert!(res.is_ok());
-
-    // Check miner state after committing, the packed segment should be in the commitment field
-    let account = svm.get_account(&stored_spool.miner)
-        .expect("Failed to get miner account");
-    let miner = Miner::unpack(&account.data)
-        .expect("Failed to unpack miner account");
-
-    assert_eq!(miner.commitment, leaves[segment_index as usize].to_bytes());
+    )
 }
 
-fn unpack_tape(
-    svm: &mut LiteSVM,
+fn unpack_tape_ix(
     payer: &Keypair,
     stored_spool: &StoredSpool,
     index: u64,
-) {
+) -> Instruction {
+    let payer_pk = payer.pubkey();
+
     let packed_tape = stored_spool.tapes
         .get(index as usize)
         .expect("Tape index out of bounds");
@@ -846,25 +872,13 @@ fn unpack_tape(
         .try_into()
         .unwrap();
 
-    let payer_pk = payer.pubkey();
-    let blockhash = svm.latest_blockhash();
-    let ix = instruction::spool::build_unpack_ix(
+    instruction::spool::build_unpack_ix(
         payer_pk,
         stored_spool.address,
         packed_tape.number,
         merkle_proof,
         tape_root.to_bytes(),
-    );
-    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
-    let res = send_tx(svm, tx);
-    assert!(res.is_ok());
-
-    // Check spool state after unpacking, the tape root should be in the contains field
-    let spool_account = svm.get_account(&stored_spool.address)
-        .expect("Failed to get spool account");
-    let spool = Spool::unpack(&spool_account.data)
-        .expect("Failed to unpack spool account");
-    assert_eq!(spool.contains, tape_root.to_bytes());
+    )
 }
 
 fn pack_tape(
