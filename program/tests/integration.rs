@@ -77,6 +77,14 @@ fn run_integration() {
         0
     );
 
+    commit_data(
+        &mut svm, 
+        &payer, 
+        &stored_spool, 
+        0,
+        0,
+    );
+
     // Verify initial accounts
     verify_archive_account(&svm, 1);
     verify_epoch_account(&svm);
@@ -745,6 +753,66 @@ fn get_packed_tape(
         tree: merkle_tree,
         data: packed_segments,
     };
+}
+
+fn commit_data(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    stored_spool: &StoredSpool,
+    tape_index: u64,
+    segment_index: u64,
+) {
+    let packed_tape = stored_spool.tapes
+        .get(tape_index as usize)
+        .expect("Tape index out of bounds");
+
+    let leaves = packed_tape.data.iter().enumerate()
+        .map(|(segment_id, packed_data)| {
+            Leaf::new(&[
+                segment_id.to_le_bytes().as_ref(),
+                packed_data.as_ref(),
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    //let data = packed_tape.data[segment_index as usize].clone();
+
+    let data = leaves[segment_index as usize]
+        .to_bytes();
+
+    let merkle_proof = packed_tape.tree.get_merkle_proof(
+        &leaves,
+        segment_index as usize
+    );
+    let merkle_proof = merkle_proof
+        .iter()
+        .map(|v| v.to_bytes())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+
+    let payer_pk = payer.pubkey();
+    let blockhash = svm.latest_blockhash();
+    let ix = instruction::spool::build_commit_ix(
+        payer_pk,
+        stored_spool.miner,
+        stored_spool.address,
+        tape_index,
+        merkle_proof,
+        data,
+    );
+
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+
+    // Check miner state after committing, the packed segment should be in the commitment field
+    let account = svm.get_account(&stored_spool.miner)
+        .expect("Failed to get miner account");
+    let miner = Miner::unpack(&account.data)
+        .expect("Failed to unpack miner account");
+
+    assert_eq!(miner.commitment, leaves[segment_index as usize].to_bytes());
 }
 
 fn unpack_tape(

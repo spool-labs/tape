@@ -151,7 +151,7 @@ pub fn build_commit_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
-            AccountMeta::new(spool_address, false),
+            AccountMeta::new_readonly(spool_address, false),
         ],
         data: Commit {
             index: index.to_le_bytes(),
