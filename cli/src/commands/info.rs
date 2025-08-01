@@ -1,9 +1,7 @@
-use std::sync::Arc;
 
 use anyhow::Result;
-use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair};
-use crate::cli::{Cli, Commands, InfoCommands};
+use solana_sdk::pubkey::Pubkey;
+use crate::cli::{Cli, Commands, Context, InfoCommands};
 use crate::log;
 use tape_client as tapedrive;
 use tape_api::utils::from_name;
@@ -11,18 +9,18 @@ use tape_client::TapeHeader;
 
 use super::network::resolve_miner;
 
-pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
+pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Info(info) = cli.command {
         match info {
             InfoCommands::Archive {} => {
-                let (archive, _address) = tapedrive::get_archive_account(&client).await?;
+                let (archive, _address) = tapedrive::get_archive_account(context.rpc()).await?;
                 log::print_section_header("Archive Account");
                 log::print_message(&format!("Tapes: {}", archive.tapes_stored));
                 log::print_message(&format!("Segments: {}", archive.segments_stored));
                 log::print_message(&format!("Bytes: {}", archive.bytes_stored));
             }
             InfoCommands::Epoch {} => {
-                let (epoch, _address) = tapedrive::get_epoch_account(&client).await?;
+                let (epoch, _address) = tapedrive::get_epoch_account(context.rpc()).await?;
                 log::print_section_header("Epoch Account");
                 log::print_message(&format!("Current Epoch: {}", epoch.number));
                 log::print_message(&format!("Progress: {}", epoch.progress));
@@ -33,7 +31,7 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
                 log::print_message(&format!("Last Epoch At: {}", epoch.last_epoch_at));
             }
             InfoCommands::Block {} => {
-                let (block, _address) = tapedrive::get_block_account(&client).await?;
+                let (block, _address) = tapedrive::get_block_account(context.rpc()).await?;
                 log::print_section_header("Block Account");
                 log::print_message(&format!("Current Block: {}", block.number));
                 log::print_message(&format!("Progress: {}", block.progress));
@@ -43,7 +41,7 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
                 log::print_message(&format!("Last Block At: {}", block.last_block_at));
             }
             InfoCommands::FindTape { number } => {
-                let res = tapedrive::find_tape_account(&client, number).await?;
+                let res = tapedrive::find_tape_account(context.rpc(), number).await?;
                 match res {
                     Some((tape_address, _tape_account)) => {
                         log::print_section_header("Tape Address");
@@ -59,7 +57,7 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
             }
             InfoCommands::Tape { pubkey } => {
                 let tape_address: Pubkey = pubkey.parse()?;
-                let (tape, _) = tapedrive::get_tape_account(&client, &tape_address).await?;
+                let (tape, _) = tapedrive::get_tape_account(context.rpc(), &tape_address).await?;
 
                 log::print_section_header("Tape Account");
                 log::print_message(&format!("Id: {}", tape.number));
@@ -84,8 +82,8 @@ pub async fn handle_info_commands(cli: Cli, client: Arc<RpcClient>, payer: Keypa
             }
 
             InfoCommands::Miner { pubkey, name } => {
-                let miner_address = resolve_miner(&client, &payer, pubkey, name, false).await?;
-                let (miner, _) = tapedrive::get_miner_account(&client, &miner_address).await?;
+                let miner_address = resolve_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
+                let (miner, _) = tapedrive::get_miner_account(context.rpc(), &miner_address).await?;
                 log::print_section_header("Miner Account");
                 log::print_message(&format!("Name: {}", from_name(&miner.name)));
                 log::print_message(&format!("Address: {miner_address}"));

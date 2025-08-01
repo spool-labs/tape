@@ -135,6 +135,11 @@ impl TapeStore {
         Ok(Self { db })
     }
 
+    pub fn try_init_store() -> Result<(), StoreError> {
+        self::primary()?;
+        Ok(())
+    }
+
     pub fn get_cf_handle(&self, column_family:ColumnFamily) -> Result<Arc<BoundColumnFamily<'_>>,StoreError> {
         self
             .db
@@ -146,9 +151,8 @@ impl TapeStore {
         let path = path.as_ref();
 
         let cfs = create_cf_descriptors();
-
-        let db_opts = Options::default();
-
+        
+        let db_opts= Options::default();
         let db = DB::open_cf_descriptors_read_only(&db_opts, path, cfs, false)?;
 
         Ok(Self { db })
@@ -163,7 +167,12 @@ impl TapeStore {
 
         let cfs = create_cf_descriptors();
 
-        let db_opts = Options::default();
+        let mut db_opts= Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_write_buffer_size(TAPE_STORE_MAX_WRITE_BUFFER_SIZE);
+        db_opts.set_max_write_buffer_number(TAPE_STORE_MAX_WRITE_BUFFERS as i32);
+        db_opts.increase_parallelism(num_cpus::get() as i32);
 
         let db = DB::open_cf_descriptors_as_secondary(
             &db_opts,
