@@ -7,7 +7,7 @@ use solana_sdk::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 
-use tape_api::prelude::*;
+use tape_api::instruction::program::build_initialize_ix;
 use crate::utils::*;
 
 pub async fn initialize(client: &Arc<RpcClient>, signer: &Keypair) -> Result<Signature> {

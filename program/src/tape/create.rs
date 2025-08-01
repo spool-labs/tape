@@ -1,11 +1,12 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Create;
 use solana_program::{
     keccak::hashv,
     slot_hashes::SlotHash,
 };
 use steel::*;
 
-pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let current_slot = Clock::get()?.slot;
     let args = Create::try_from_bytes(data)?;
     let [
@@ -15,7 +16,6 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         system_program_info,
         rent_sysvar_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -75,7 +75,6 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     tape.name              = args.name;
     tape.state             = TapeState::Created.into();
     tape.total_segments    = 0;
-    tape.total_size        = 0;
     tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
     tape.header            = [0; HEADER_SIZE];
@@ -83,7 +82,7 @@ pub fn process_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     tape.tail_slot         = current_slot;
 
     writer.tape            = *tape_info.key;
-    writer.state           = TapeTree::new(&[empty_seed.as_ref()]);
+    writer.state           = SegmentTree::new(&[empty_seed.as_ref()]);
 
     Ok(())
 }

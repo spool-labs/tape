@@ -23,7 +23,6 @@ pub struct Tape {
     pub last_rent_block: u64,
 
     pub total_segments: u64,
-    pub total_size: u64,
 }
 
 #[repr(u64)]

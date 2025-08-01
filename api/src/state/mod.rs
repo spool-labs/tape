@@ -5,6 +5,7 @@ mod tape;
 mod treasury;
 mod writer;
 mod miner;
+mod spool;
 
 pub use archive::*;
 pub use epoch::*;
@@ -13,6 +14,7 @@ pub use tape::*;
 pub use treasury::*;
 pub use writer::*;
 pub use miner::*;
+pub use spool::*;
 
 use steel::*;
 
@@ -21,6 +23,7 @@ use steel::*;
 pub enum AccountType {
     Unknown = 0,
     Archive,
+    Spool,
     Writer,
     Tape,
     Miner,

@@ -12,6 +12,8 @@ pub struct Miner {
     pub unclaimed_rewards: u64,
 
     pub challenge: [u8; 32],
+    pub commitment: [u8; 32],
+
     pub multiplier: u64,
 
     pub last_proof_block: u64,

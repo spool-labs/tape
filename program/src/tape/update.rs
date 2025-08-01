@@ -1,8 +1,9 @@
 use brine_tree::Leaf;
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Update;
 use steel::*;
 
-pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let current_slot = Clock::get()?.slot;
     let args = Update::try_from_bytes(data)?;
 
@@ -10,7 +11,6 @@ pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         signer_info, 
         tape_info,
         writer_info, 
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -48,7 +48,7 @@ pub fn process_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
 
     assert!(args.old_data.len() == SEGMENT_SIZE);
     assert!(args.new_data.len() == SEGMENT_SIZE);
-    assert!(merkle_proof.len() == PROOF_LEN);
+    assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
 
     let old_leaf = Leaf::new(&[
         segment_number.as_ref(), // u64_le_bytes

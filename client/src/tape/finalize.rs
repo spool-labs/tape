@@ -5,7 +5,7 @@ use solana_sdk::{
     signature::{Keypair, Signer},
     pubkey::Pubkey,
 };
-use tape_api::prelude::*;
+use tape_api::instruction::tape::build_finalize_ix;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::utils::*;
 

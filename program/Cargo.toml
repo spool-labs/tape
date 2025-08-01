@@ -20,6 +20,8 @@ default = []
 
 [dependencies]
 crankx.workspace = true
+packx.workspace = true
+
 mpl-token-metadata.workspace = true
 tape-api.workspace = true
 solana-program.workspace = true

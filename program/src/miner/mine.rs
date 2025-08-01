@@ -1,7 +1,9 @@
-use crankx::Solution;
 use brine_tree::{Leaf, verify};
 use steel::*;
 use tape_api::prelude::*;
+use tape_api::instruction::miner::Mine;
+
+const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     let current_time = Clock::get()?.unix_timestamp;
@@ -14,7 +16,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         tape_info,
         archive_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else { 
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -55,9 +56,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     check_submission(miner, block, epoch, current_time)?;
 
-    // Compute the miner's challenge based on the current block 
-    // and unique miner challenge values.
-
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -68,27 +66,19 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         block.challenge_set,
     );
 
-    solana_program::msg!("expected tape: {}", tape_number);
-    solana_program::msg!("actual tape: {}", tape.number);
-
     check_condition(
         tape.number == tape_number,
         TapeError::UnexpectedTape,
     )?;
 
-    let solution = Solution::new(args.digest, args.nonce);
-    let difficulty = solution.difficulty() as u64;
-
-    check_condition(
-        difficulty >= epoch.target_difficulty,
-        TapeError::SolutionTooEasy,
-    )?;
-
-    check_poa(
+    verify_solution(
+        epoch,
         tape,
-        args,
+        &miner_address,
         &miner_challenge,
-        &solution,
+        &miner.commitment,
+        args.pow,
+        args.poa,
     )?;
 
     // Update miner
@@ -168,30 +158,61 @@ fn check_submission(
     }
 }
 
-fn check_poa(
+fn verify_solution(
+    epoch: &Epoch,
     tape: &Tape,
-    args: &Mine,
+    miner_address: &Pubkey,
     miner_challenge: &[u8; 32],
-    solution: &Solution,
+    miner_commitment: &[u8; 32],
+    pow: PoW,
+    poa: PoA,
 ) -> ProgramResult {
+
+    let pow_solution = pow.as_solution();
+    let poa_solution = poa.as_solution();
+
+    let pow_difficulty = pow_solution.difficulty() as u64;
+    let poa_difficulty = poa_solution.difficulty() as u64;
+
+    check_condition(
+        pow_difficulty >= epoch.mining_difficulty,
+        TapeError::SolutionTooEasy,
+    )?;
+
+    check_condition(
+        poa_difficulty >= epoch.packing_difficulty,
+        TapeError::SolutionTooEasy,
+    )?;
 
     // Check if the tape can be mined.
     if tape.has_minimum_rent() {
-        solana_program::msg!("minable tape");
+        solana_program::msg!("tape has minimum rent for mining");
 
         let segment_number = compute_recall_segment(
             miner_challenge, 
             tape.total_segments
         );
 
-        let merkle_root = tape.merkle_root;
-        let merkle_proof = &args.recall_proof;
+        let merkle_proof   = &poa.path;
+        let merkle_root    = tape.merkle_root;
+        let recall_segment = poa_solution.unpack(&miner_address.to_bytes());
+
+        assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
+
         let leaf = Leaf::new(&[
-            { segment_number }.to_le_bytes().as_ref(),
-            args.recall_segment.as_ref(),
+            segment_number.to_le_bytes().as_ref(),
+            recall_segment.as_ref(),
         ]);
 
-        assert!(merkle_proof.len() == PROOF_LEN);
+        let packed_leaf = Leaf::new(&[
+            segment_number.to_le_bytes().as_ref(),
+            poa_solution.to_bytes().as_ref(),
+        ]);
+
+        check_condition(
+            miner_commitment.eq(&packed_leaf.to_bytes()),
+            TapeError::CommitmentMismatch,
+        )?;
 
         check_condition(
             verify(
@@ -204,25 +225,19 @@ fn check_poa(
 
         // Verify PoW using the actual recalled segment
         check_condition(
-            solution.is_valid(miner_challenge, &args.recall_segment).is_ok(),
+            pow_solution.is_valid(miner_challenge, &recall_segment).is_ok(),
             TapeError::SolutionInvalid,
         )?;
 
     // For expired tapes, enforce use of the fixed segment (no storage needed)
     } else {
-        solana_program::msg!("not minable tape");
-
-        check_condition(
-            args.recall_segment == EMPTY_SEGMENT,
-            TapeError::SolutionInvalid,
-        )?;
+        solana_program::msg!("tape rent has expired, checking against fixed/empty segment");
 
         // Verify PoW using the fixed segment
         check_condition(
-            solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
+            pow_solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
             TapeError::SolutionInvalid,
         )?;
-
     }
 
     Ok(())
@@ -354,7 +369,7 @@ fn advance_epoch(
     adjust_difficulty(epoch, current_time);
 
     epoch.number                = epoch.number.saturating_add(1);
-    epoch.target_difficulty     = epoch.target_difficulty.max(MIN_DIFFICULTY);
+    epoch.mining_difficulty     = epoch.mining_difficulty.max(MIN_MINING_DIFFICULTY);
     epoch.target_participation  = epoch.target_participation.max(MIN_PARTICIPATION_TARGET);
     epoch.progress              = 0;
     epoch.duplicates            = 0;
@@ -378,14 +393,14 @@ fn adjust_difficulty(epoch: &mut Epoch, current_time: i64) {
 
     // If blocks were solved faster than 1 minute, increase difficulty
     if average_time_per_block < BLOCK_DURATION_SECONDS as i64 {
-        epoch.target_difficulty = epoch.target_difficulty
+        epoch.mining_difficulty = epoch.mining_difficulty
             .saturating_add(1)
 
     // If they were slower, decrease difficulty
     } else {
-        epoch.target_difficulty = epoch.target_difficulty
+        epoch.mining_difficulty = epoch.mining_difficulty
             .saturating_sub(1)
-            .max(MIN_DIFFICULTY);
+            .max(MIN_MINING_DIFFICULTY);
     }
 }
 
@@ -414,5 +429,41 @@ fn adjust_participation(epoch: &mut Epoch) {
         epoch.target_participation = epoch.target_participation
             .saturating_sub(1)
             .max(MIN_PARTICIPATION_TARGET);
+    }
+}
+
+/// Pre-computed base rate based on current epoch number. After which, the archive
+/// storage fees would take over, with no further inflation.
+///
+/// The hard-coded values avoid CU overhead.
+#[inline(always)]
+pub fn get_base_rate(current_epoch: u64) -> u64 {
+    match current_epoch {
+        n if n < 1 * EPOCHS_PER_YEAR   => 10000000000, // Year ~1,  about 1.00 TAPE/min
+        n if n < 2 * EPOCHS_PER_YEAR   => 7500000000,  // Year ~2,  about 0.75 TAPE/min
+        n if n < 3 * EPOCHS_PER_YEAR   => 5625000000,  // Year ~3,  about 0.56 TAPE/min
+        n if n < 4 * EPOCHS_PER_YEAR   => 4218750000,  // Year ~4,  about 0.42 TAPE/min
+        n if n < 5 * EPOCHS_PER_YEAR   => 3164062500,  // Year ~5,  about 0.32 TAPE/min
+        n if n < 6 * EPOCHS_PER_YEAR   => 2373046875,  // Year ~6,  about 0.24 TAPE/min
+        n if n < 7 * EPOCHS_PER_YEAR   => 1779785156,  // Year ~7,  about 0.18 TAPE/min
+        n if n < 8 * EPOCHS_PER_YEAR   => 1334838867,  // Year ~8,  about 0.13 TAPE/min
+        n if n < 9 * EPOCHS_PER_YEAR   => 1001129150,  // Year ~9,  about 0.10 TAPE/min
+        n if n < 10 * EPOCHS_PER_YEAR  => 750846862,   // Year ~10, about 0.08 TAPE/min
+        n if n < 11 * EPOCHS_PER_YEAR  => 563135147,   // Year ~11, about 0.06 TAPE/min
+        n if n < 12 * EPOCHS_PER_YEAR  => 422351360,   // Year ~12, about 0.04 TAPE/min
+        n if n < 13 * EPOCHS_PER_YEAR  => 316763520,   // Year ~13, about 0.03 TAPE/min
+        n if n < 14 * EPOCHS_PER_YEAR  => 237572640,   // Year ~14, about 0.02 TAPE/min
+        n if n < 15 * EPOCHS_PER_YEAR  => 178179480,   // Year ~15, about 0.02 TAPE/min
+        n if n < 16 * EPOCHS_PER_YEAR  => 133634610,   // Year ~16, about 0.01 TAPE/min
+        n if n < 17 * EPOCHS_PER_YEAR  => 100225957,   // Year ~17, about 0.01 TAPE/min
+        n if n < 18 * EPOCHS_PER_YEAR  => 75169468,    // Year ~18, about 0.01 TAPE/min
+        n if n < 19 * EPOCHS_PER_YEAR  => 56377101,    // Year ~19, about 0.01 TAPE/min
+        n if n < 20 * EPOCHS_PER_YEAR  => 42282825,    // Year ~20, about 0.00 TAPE/min
+        n if n < 21 * EPOCHS_PER_YEAR  => 31712119,    // Year ~21, about 0.00 TAPE/min
+        n if n < 22 * EPOCHS_PER_YEAR  => 23784089,    // Year ~22, about 0.00 TAPE/min
+        n if n < 23 * EPOCHS_PER_YEAR  => 17838067,    // Year ~23, about 0.00 TAPE/min
+        n if n < 24 * EPOCHS_PER_YEAR  => 13378550,    // Year ~24, about 0.00 TAPE/min
+        n if n < 25 * EPOCHS_PER_YEAR  => 10033913,    // Year ~25, about 0.00 TAPE/min
+        _ => 0,
     }
 }

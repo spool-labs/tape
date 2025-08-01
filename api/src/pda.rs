@@ -54,6 +54,12 @@ pub fn miner_pda(authority: Pubkey, name: [u8; NAME_LEN]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[MINER, authority.as_ref(), name.as_ref()], &crate::id())
 }
 
+pub fn spool_pda(miner: Pubkey, number: u64) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[SPOOL, miner.as_ref(), number.to_le_bytes().as_ref()], &crate::id()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

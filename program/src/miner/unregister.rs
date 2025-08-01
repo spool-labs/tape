@@ -1,12 +1,11 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_close(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+pub fn process_unregister(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
         signer_info, 
         miner_info, 
         system_program_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

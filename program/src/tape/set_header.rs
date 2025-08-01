@@ -1,12 +1,12 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::SetHeader;
 use steel::*;
 
-pub fn process_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetHeader::try_from_bytes(data)?;
     let [
         signer_info, 
         tape_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
