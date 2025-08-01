@@ -19,7 +19,7 @@ tape-network = { version = "0.2.0", path = "./network" }
 tape-program = { version = "0.2.0", path = "./program" }
 
 crankx = { version = "0.2.2", features = ["solana"] }
-packx = { version = "0.2.2", features = ["solana"] }
+packx = { version = "0.2.5", features = ["solana"] }
 
 # program dependencies
 bytemuck = "1.14.3"

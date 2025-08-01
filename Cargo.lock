@@ -3222,9 +3222,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "packx"
-version = "0.2.2"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "773ed10033f4cd1d96db17a05693e588a59a20c0dcf3c54a53c85928d279899e"
+checksum = "232f2167e6a2d118a0ab59f4f85e987f8c0616c9a09eefcd8e22733b723ab001"
 dependencies = [
  "bytemuck",
  "sha3",
@@ -6614,6 +6614,7 @@ dependencies = [
  "crankx",
  "mpl-token-metadata",
  "num_enum",
+ "packx",
  "solana-program",
  "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",

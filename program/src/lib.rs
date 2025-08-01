@@ -25,6 +25,20 @@ pub fn process_instruction(
 ) -> ProgramResult {
     let (discriminator, data) = parse_instruction(&tape_api::ID, program_id, data)?;
 
+    let ix_type = if let Ok(instruction) = ProgramInstruction::try_from_primitive(discriminator) {
+        format!("ProgramInstruction::{:?}", instruction)
+    } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
+        format!("TapeInstruction::{:?}", instruction)
+    } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
+        format!("MinerInstruction::{:?}", instruction)
+    } else if let Ok(instruction) = SpoolInstruction::try_from_primitive(discriminator) {
+        format!("SpoolInstruction::{:?}", instruction)
+    } else {
+        format!("Invalid (discriminator: {})", discriminator)
+    };
+
+    solana_program::msg!("Instruction: {}", ix_type);
+
     if let Ok(ix) = ProgramInstruction::try_from_primitive(discriminator) {
         match ix {
             ProgramInstruction::Initialize => process_initialize(accounts, data)?,

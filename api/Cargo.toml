@@ -14,6 +14,7 @@ documentation = "https://docs.rs/tape-api"
 [dependencies]
 steel.workspace = true
 crankx.workspace = true
+packx.workspace = true
 
 bytemuck.workspace = true
 num_enum.workspace = true

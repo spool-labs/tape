@@ -1,8 +1,8 @@
 use steel::*;
-use crankx::Solution;
 use crate::{
     consts::*,
     pda::*,
+    types::*,
     utils,
 };
 
@@ -34,10 +34,8 @@ pub struct Unregister {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Mine {
-    pub digest: [u8; 16],
-    pub nonce: [u8; 8],
-    pub recall_segment: [u8; SEGMENT_SIZE],
-    pub recall_proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    pub pow: PoW,
+    pub poa: PoA,
 }
 
 #[repr(C)]
@@ -73,9 +71,8 @@ pub fn build_mine_ix(
     signer: Pubkey,
     miner: Pubkey,
     tape: Pubkey,
-    solution: Solution,
-    recall_segment: [u8; SEGMENT_SIZE],
-    recall_proof: [[u8;32]; SEGMENT_PROOF_LEN],
+    pow: PoW,
+    poa: PoA,
 ) -> Instruction {
 
     Instruction {
@@ -90,10 +87,8 @@ pub fn build_mine_ix(
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: Mine {
-            digest: solution.d,
-            nonce: solution.n,
-            recall_segment,
-            recall_proof,
+            pow,
+            poa,
         }.to_bytes(),
     }
 }

@@ -1,4 +1,3 @@
-use crankx::Solution;
 use brine_tree::{Leaf, verify};
 use steel::*;
 use tape_api::prelude::*;
@@ -57,9 +56,6 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
 
     check_submission(miner, block, epoch, current_time)?;
 
-    // Compute the miner's challenge based on the current block 
-    // and unique miner challenge values.
-
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
@@ -70,27 +66,19 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         block.challenge_set,
     );
 
-    solana_program::msg!("expected tape: {}", tape_number);
-    solana_program::msg!("actual tape: {}", tape.number);
-
     check_condition(
         tape.number == tape_number,
         TapeError::UnexpectedTape,
     )?;
 
-    let solution = Solution::new(args.digest, args.nonce);
-    let difficulty = solution.difficulty() as u64;
-
-    check_condition(
-        difficulty >= epoch.mining_difficulty,
-        TapeError::SolutionTooEasy,
-    )?;
-
-    check_poa(
+    verify_solution(
+        epoch,
         tape,
-        args,
+        &miner_address,
         &miner_challenge,
-        &solution,
+        &miner.commitment,
+        args.pow,
+        args.poa,
     )?;
 
     // Update miner
@@ -170,30 +158,56 @@ fn check_submission(
     }
 }
 
-fn check_poa(
+fn verify_solution(
+    epoch: &Epoch,
     tape: &Tape,
-    args: &Mine,
+    miner_address: &Pubkey,
     miner_challenge: &[u8; 32],
-    solution: &Solution,
+    miner_commitment: &[u8; 32],
+    pow: PoW,
+    poa: PoA,
 ) -> ProgramResult {
+
+    let pow_solution = pow.as_solution();
+    let poa_solution = poa.as_solution();
+
+    let pow_difficulty = pow_solution.difficulty() as u64;
+    let poa_difficulty = poa_solution.difficulty() as u64;
+
+    check_condition(
+        pow_difficulty >= epoch.mining_difficulty,
+        TapeError::SolutionTooEasy,
+    )?;
+
+    check_condition(
+        poa_difficulty >= epoch.packing_difficulty,
+        TapeError::SolutionTooEasy,
+    )?;
 
     // Check if the tape can be mined.
     if tape.has_minimum_rent() {
-        solana_program::msg!("minable tape");
+        solana_program::msg!("tape has minimum rent for mining");
 
         let segment_number = compute_recall_segment(
             miner_challenge, 
             tape.total_segments
         );
 
-        let merkle_root = tape.merkle_root;
-        let merkle_proof = &args.recall_proof;
-        let leaf = Leaf::new(&[
-            { segment_number }.to_le_bytes().as_ref(),
-            args.recall_segment.as_ref(),
-        ]);
+        let merkle_proof   = &poa.path;
+        let merkle_root    = tape.merkle_root;
+        let recall_segment = poa_solution.unpack(&miner_address.to_bytes());
 
         assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
+
+        let leaf = Leaf::new(&[
+            segment_number.to_le_bytes().as_ref(),
+            recall_segment.as_ref(),
+        ]);
+
+        check_condition(
+            miner_commitment.eq(&leaf.to_bytes()),
+            TapeError::CommitmentMismatch,
+        )?;
 
         check_condition(
             verify(
@@ -206,25 +220,19 @@ fn check_poa(
 
         // Verify PoW using the actual recalled segment
         check_condition(
-            solution.is_valid(miner_challenge, &args.recall_segment).is_ok(),
+            pow_solution.is_valid(miner_challenge, &recall_segment).is_ok(),
             TapeError::SolutionInvalid,
         )?;
 
     // For expired tapes, enforce use of the fixed segment (no storage needed)
     } else {
-        solana_program::msg!("not minable tape");
-
-        check_condition(
-            args.recall_segment == EMPTY_SEGMENT,
-            TapeError::SolutionInvalid,
-        )?;
+        solana_program::msg!("tape rent has expired, checking against fixed/empty segment");
 
         // Verify PoW using the fixed segment
         check_condition(
-            solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
+            pow_solution.is_valid(miner_challenge, &EMPTY_SEGMENT).is_ok(),
             TapeError::SolutionInvalid,
         )?;
-
     }
 
     Ok(())

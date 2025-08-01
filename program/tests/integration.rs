@@ -71,15 +71,6 @@ fn run_integration() {
     // Pack the tape into a miner specific representation
     pack_tape(&mut svm, &payer, &genesis_tape, &mut stored_spool);
 
-    // Try to load the packed segment leaf from the spool
-    commit_for_mining(
-        &mut svm, 
-        &payer, 
-        &stored_spool, 
-        0, // tape_index in spool (not the tape_number)
-        0, // segment_index
-    );
-
     // Verify initial accounts
     verify_archive_account(&svm, 1);
     verify_epoch_account(&svm);
@@ -206,9 +197,11 @@ fn do_mining_run(
         );
 
         // Compute challenge solution
-        let packed_tape = &stored_spool.tapes[(recall_tape - 1) as usize];
+        let tape_index = recall_tape - 1; // index in spool (not the tape_number)
+        let packed_tape = &stored_spool.tapes[tape_index as usize];
         let tape_account = svm.get_account(&packed_tape.address).unwrap();
         let tape = Tape::unpack(&tape_account.data).unwrap();
+
 
         let (solution, recall_segment, merkle_proof) = 
             if tape.has_minimum_rent() {
@@ -223,6 +216,9 @@ fn do_mining_run(
 
                 (solution, EMPTY_SEGMENT, EMPTY_PROOF)
             };
+
+        if tape.has_minimum_rent() {
+        }
 
         perform_mining(
             svm,
@@ -921,6 +917,7 @@ fn pack_tape(
 
 fn compute_challenge_solution(
     svm: &mut LiteSVM,
+    stored_spool: &StoredSpool,
     packed_tape: &PackedTape,
     miner: &Miner,
     epoch: &Epoch,
@@ -944,6 +941,15 @@ fn compute_challenge_solution(
         &miner_challenge, 
         tape.total_segments
     ) as usize;
+
+    // Prove that we have packed this segment into a spool before
+    commit_for_mining(
+        svm, 
+        &payer, 
+        &stored_spool, 
+        tape_index, 
+        segment_number
+    );
 
     let mut leaves = Vec::new();
     let mut recall_segment = [0; SEGMENT_SIZE];
