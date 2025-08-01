@@ -44,7 +44,7 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
 
     log::print_info("Starting web RPC service...");
     log::print_message(format!("Listening on port {port}").as_str());
-    let store = context.open_secondary_store_conn()?;
+    let store = context.open_secondary_store_conn_web()?;
     web_loop(store, port).await?;
     Ok(())
 }
@@ -63,7 +63,7 @@ pub async fn handle_archive(context: Context, starting_slot: Option<u64>, truste
     let store = context.open_primary_store_conn()?;
 
     log::print_info("Starting archive service...");
-    archive_loop(&store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
+    archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
 
     Ok(())
 }
@@ -75,8 +75,8 @@ pub async fn handle_mine(context: Context, pubkey: Option<String>, name: Option<
 
     log::print_message(&format!("Using miner address: {miner_address}"));
 
-    let store = context.open_secondary_store_conn()?;
-    mine_loop(&store, context.rpc(), &miner_address, context.payer()).await?;
+    let store = context.open_secondary_store_conn_mine()?;
+    mine_loop(store, context.rpc(), &miner_address, context.payer()).await?;
     Ok(())
 }
 

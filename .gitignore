@@ -5,9 +5,13 @@
 /test-ledger
 /db_tapestore
 /db_tapestore_read
+/db_tapestore_read_mine
+/db_tapestore_read_web
 
 */**/db_tapestore
 */**/db_tapestore_read
+*/**/db_tapestore_read_mine
+*/**/db_tapestore_read_web
 /*.json
 
 .DS_Store
