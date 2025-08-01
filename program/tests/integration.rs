@@ -1,5 +1,6 @@
 #![cfg(test)]
 pub mod utils;
+use steel::Zeroable;
 use utils::*;
 
 use solana_sdk::{
@@ -26,12 +27,12 @@ use crankx::{
 };
 
 struct StoredSpool {
-    number: u64,
+    //number: u64,
     address: Pubkey,
     miner: Pubkey,
     tree: TapeTree,
     tapes: Vec<PackedTape>,
-    account: Spool,
+    //account: Spool,
 }
 
 struct StoredTape {
@@ -174,6 +175,10 @@ fn do_mining_run(
     num_iterations: u64,
 ) {
     for _ in 0..num_iterations {
+        let mut current_clock = svm.get_sysvar::<Clock>();
+        current_clock.slot = current_clock.slot + 10;
+        svm.set_sysvar::<Clock>(&current_clock);
+        svm.expire_blockhash();
 
         let (epoch_address, _epoch_bump) = epoch_pda();
         let epoch_account = svm.get_account(&epoch_address).unwrap();
@@ -196,40 +201,116 @@ fn do_mining_run(
             block.challenge_set
         );
 
-        // Compute challenge solution
+        // Compute challenge solution (proof of work challenge)
+
         let tape_index = recall_tape - 1; // index in spool (not the tape_number)
         let packed_tape = &stored_spool.tapes[tape_index as usize];
         let tape_account = svm.get_account(&packed_tape.address).unwrap();
         let tape = Tape::unpack(&tape_account.data).unwrap();
 
-
-        let (solution, recall_segment, merkle_proof) = 
-            if tape.has_minimum_rent() {
-                compute_challenge_solution(svm, packed_tape, miner, epoch, block)
-            } else {
-
-                let solution = solve_challenge(
-                    miner_challenge, 
-                    &EMPTY_SEGMENT, 
-                    epoch.mining_difficulty
-                ).unwrap();
-
-                (solution, EMPTY_SEGMENT, EMPTY_PROOF)
-            };
+        // Check if we need to provide a PoA solution based on whether the tape has minimum rent.
+        // (Note: We always need to provide a PoW solution)
 
         if tape.has_minimum_rent() {
+            // We need to provide a PoA solution
+
+            let miner_address = stored_spool.miner;
+            let miner_challenge = compute_challenge(
+                &block.challenge,
+                &miner.challenge,
+            );
+
+            let segment_number = compute_recall_segment(
+                &miner_challenge, 
+                tape.total_segments
+            );
+
+            // Unpack the whole tape 
+            // (todo: this could be up to 32Mb and not really trival with ~262k segments)
+
+            let mut leaves = Vec::new();
+            let mut packed_segment = [0; packx::SOLUTION_SIZE];
+            let mut unpacked_segment = [0; SEGMENT_SIZE];
+
+            for (segment_id, packed_data) in packed_tape.data.iter().enumerate() {
+                let mut data = [0u8; packx::SOLUTION_SIZE];
+                data.copy_from_slice(&packed_data[..packx::SOLUTION_SIZE]);
+
+                let solution = packx::Solution::from_bytes(&data);
+                let segement_data = solution.unpack(&miner_address.to_bytes());
+
+                let leaf = compute_leaf(
+                    segment_id as u64,
+                    &segement_data,
+                );
+
+                leaves.push(leaf);
+
+                if segment_id == segment_number as usize {
+                    packed_segment.copy_from_slice(&data);
+                    unpacked_segment.copy_from_slice(&segement_data);
+                }
+            }
+
+            assert_eq!(leaves.len(), tape.total_segments as usize);
+
+            println!("Recall segment: {segment_number}");
+
+            let poa_solution = packx::Solution::from_bytes(&packed_segment);
+            let pow_solution = solve_challenge(miner_challenge, &unpacked_segment, epoch.mining_difficulty).unwrap();
+            assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
+
+            let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+            let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
+            let merkle_proof = merkle_proof
+                .iter()
+                .map(|v| v.to_bytes())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+
+            let pow = PoW::from_solution(&pow_solution);
+            let poa = PoA::from_solution(&poa_solution, merkle_proof);
+
+            // Tx1: load the packed tape leaf from the spool onto the miner commitment field
+           commit_for_mining(
+                svm, 
+                &payer, 
+                &stored_spool, 
+                tape_index, 
+                segment_number
+            );
+
+            // Tx2: perform mining with PoW and PoA
+            perform_mining(
+                svm,
+                payer,
+                stored_spool.miner,
+                packed_tape.address,
+                pow,
+                poa
+            );
+
+        } else {
+
+            let solution = solve_challenge(
+                miner_challenge, 
+                &EMPTY_SEGMENT, 
+                epoch.mining_difficulty
+            ).unwrap();
+
+            let pow = PoW::from_solution(&solution);
+            let poa = PoA::zeroed();
+
+            perform_mining(
+                svm,
+                payer,
+                stored_spool.miner,
+                packed_tape.address,
+                pow,
+                poa
+            );
         }
-
-        perform_mining(
-            svm,
-            payer,
-            stored_spool.miner,
-            packed_tape.address,
-            solution,
-            recall_segment,
-            merkle_proof,
-        );
-
     }
 }
 
@@ -688,12 +769,12 @@ fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, numbe
     assert_eq!(spool.last_proof_at, 0);
 
     StoredSpool {
-        number,
+        //number,
         address: spool_address,
         miner: miner_address,
         tree: TapeTree::new(&[spool.seed.as_ref()]),
         tapes: vec![],
-        account: *spool,
+        //account: *spool,
     }
 }
 
@@ -915,90 +996,14 @@ fn pack_tape(
     stored_spool.tapes.push(packed_tape);
 }
 
-fn compute_challenge_solution(
-    svm: &mut LiteSVM,
-    stored_spool: &StoredSpool,
-    packed_tape: &PackedTape,
-    miner: &Miner,
-    epoch: &Epoch,
-    block: &Block,
-) -> (Solution, [u8; SEGMENT_SIZE], [[u8; 32]; SEGMENT_PROOF_LEN]) {
-
-    let account = svm.get_account(&packed_tape.address).unwrap();
-    let tape = Tape::unpack(&account.data).unwrap();
-
-    let (miner_address, _) = miner_pda(
-        miner.authority, 
-        miner.name
-    );
-
-    let miner_challenge = compute_challenge(
-        &block.challenge,
-        &miner.challenge,
-    );
-
-    let segment_number = compute_recall_segment(
-        &miner_challenge, 
-        tape.total_segments
-    ) as usize;
-
-    // Prove that we have packed this segment into a spool before
-    commit_for_mining(
-        svm, 
-        &payer, 
-        &stored_spool, 
-        tape_index, 
-        segment_number
-    );
-
-    let mut leaves = Vec::new();
-    let mut recall_segment = [0; SEGMENT_SIZE];
-
-    for (segment_id, packed_data) in packed_tape.data.iter().enumerate() {
-        let mut data = [0u8; 152];
-        data.copy_from_slice(&packed_data[..152]);
-        let solution = packx::Solution::from_bytes(&data);
-
-        let packed_data = solution.unpack(&miner_address.to_bytes());
-        if segment_id == segment_number {
-            recall_segment.copy_from_slice(&packed_data);
-        }
-
-        let leaf = compute_leaf(
-            segment_id as u64,
-            &packed_data,
-        );
-
-        leaves.push(leaf);
-    }
-
-    assert_eq!(leaves.len(), tape.total_segments as usize);
-
-    println!("Recall segment: {segment_number}");
-
-    let solution = solve_challenge(miner_challenge, &recall_segment, epoch.mining_difficulty).unwrap();
-    assert!(solution.is_valid(&miner_challenge, &recall_segment).is_ok());
-
-    let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
-    let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number);
-    let merkle_proof = merkle_proof
-        .iter()
-        .map(|v| v.to_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
-
-    (solution, recall_segment, merkle_proof)
-}
 
 fn perform_mining(
     svm: &mut LiteSVM,
     payer: &Keypair,
     miner_address: Pubkey,
     tape_address: Pubkey,
-    solution: Solution,
-    recall_segment: [u8; SEGMENT_SIZE],
-    merkle_proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    pow: PoW,
+    poa: PoA,
 ) {
     let payer_pk = payer.pubkey();
 
@@ -1007,9 +1012,8 @@ fn perform_mining(
         payer_pk,
         miner_address,
         tape_address,
-        solution,
-        recall_segment,
-        merkle_proof,
+        pow,
+        poa,
     );
 
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);

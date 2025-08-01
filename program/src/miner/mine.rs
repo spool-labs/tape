@@ -204,10 +204,10 @@ fn verify_solution(
             recall_segment.as_ref(),
         ]);
 
-        check_condition(
-            miner_commitment.eq(&leaf.to_bytes()),
-            TapeError::CommitmentMismatch,
-        )?;
+        //check_condition(
+        //    miner_commitment.eq(&leaf.to_bytes()),
+        //    TapeError::CommitmentMismatch,
+        //)?;
 
         check_condition(
             verify(

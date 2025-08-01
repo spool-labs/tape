@@ -14,6 +14,13 @@ pub struct PoW {
 }
 
 impl PoW {
+    pub fn from_solution(solution: &crankx::Solution) -> Self {
+        Self {
+            digest: solution.d,
+            nonce: solution.n,
+        }
+    }
+
     pub fn as_solution(&self) -> crankx::Solution {
         crankx::Solution::new(self.digest, self.nonce)
     }
@@ -30,6 +37,15 @@ pub struct PoA {
 }
 
 impl PoA {
+    pub fn from_solution(solution: &packx::Solution, merkle_proof: [[u8; 32]; SEGMENT_PROOF_LEN]) -> Self {
+        Self {
+            bump: solution.bump,
+            seed: solution.seeds,
+            nonce: solution.nonces,
+            path: merkle_proof,
+        }
+    }
+
     pub fn as_solution(&self) -> packx::Solution {
         packx::Solution::new(self.seed, self.nonce, self.bump)
     }
