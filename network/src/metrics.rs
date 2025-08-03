@@ -12,8 +12,8 @@ use http_body_util::Full;
 use tokio::net::TcpListener;
 
 use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec,
-    Opts, Registry, TextEncoder,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, 
+    IntGauge, Opts, Registry, TextEncoder
 };
 
 use log::{error, info};
@@ -23,14 +23,19 @@ use crate::web::{RpcError, RpcMethod};
 lazy_static::lazy_static! {
     static ref REGISTRY: Registry = Registry::new();
 
-    static ref TAPE_RPC_REQUESTS_TOTAL:IntCounterVec = IntCounterVec::new(
-        Opts::new("TAPE_RPC_requests_total", "Total number of Tape RPC calls, labelled by method and status"),
+    // Total number of rpc requests
+    static ref TAPE_RPC_REQUESTS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "tape_rpc_requests_total",
+            "Total number of Tape RPC calls, labelled by method and status"
+        ),
         &["method", "status"]
     ).unwrap();
 
-    pub static ref TAPE_RPC_REQUEST_DURATION_SECONDS:HistogramVec = HistogramVec::new(
+    // RPC request duration on seconds
+    pub static ref TAPE_RPC_REQUEST_DURATION_SECONDS: HistogramVec = HistogramVec::new(
         HistogramOpts::new(
-            "TAPE_RPC_request_duration_seconds",
+            "tape_rpc_request_duration_seconds",
             "RPC request latency in seconds, labeled by method."
         )
         .buckets(vec![
@@ -40,6 +45,49 @@ lazy_static::lazy_static! {
         &["method"],
     )
     .unwrap();
+
+    // Total number of challenges solved
+    pub static ref TAPE_MINING_CHALLENGES_SOLVED_TOTAL: IntCounter = IntCounter::new(
+        "tape_mining_challenges_solved_total",
+        "Total number of mining challenges solved successfully"
+    ).unwrap();
+
+    // Total number of mining attempts
+    pub static ref TAPE_MINING_ATTEMPTS_TOTAL: IntCounter = IntCounter::new(
+        "tape_mining_attempts_total",
+        "Total number of mining attempts"
+    ).unwrap();
+
+    // Time taken to successfully mine a tape
+    pub static ref TAPE_MINING_DURATION_SECONDS: Histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            "tape_mining_iteration_duration_seconds",
+            "Time taken per mining iteration in seconds"
+        ).buckets(vec![
+            0.001, 0.005, 0.010, 0.025, 0.050, 0.100, 0.250, 0.500,
+            1.000, 2.500, 5.000, 10.000, 30.000, 60.000
+        ]),
+    ).unwrap();
+
+    // Current Mining Iteration
+    pub static ref TAPE_CURRENT_MINING_ITERTION: IntGauge = IntGauge::new(
+        "tape_current_mining_iteration",
+        "Current mining iteration"
+    ).unwrap();
+
+    // Total Tapes Written
+    pub static ref TAPE_TOTAL_TAPES_WRITTEN: IntCounter = IntCounter::new(
+        "tape_total_tapes_written",
+        "Tape total tapes written"
+    ).unwrap();
+
+    // Total Segments Written
+    pub static ref TAPE_TOTAL_SEGMENTS_WRITTEN: IntCounter = IntCounter::new(
+        "tape_total_segments_written",
+        "Tape total segments written"
+    ).unwrap();
+
+    
 }
 
 fn metrics_handler() -> Result<Response<Full<Bytes>>, Infallible> {
@@ -72,7 +120,25 @@ fn not_found_handler() -> Response<Full<Bytes>> {
 }
 
 
-pub fn run_metrics_server() -> anyhow::Result<()> {
+
+pub enum Process {
+    Mine,
+    Archive,
+    Web
+}
+
+impl Process {
+    fn metrics_port(&self) -> u16 {
+        match self {
+            Process::Archive => 8875,
+            Process::Mine => 8874,
+            Process::Web => 8873
+        }
+    }
+}
+
+
+pub fn run_metrics_server(process: Process) -> anyhow::Result<()> {
     // Register once
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
@@ -83,11 +149,26 @@ pub fn run_metrics_server() -> anyhow::Result<()> {
                     .expect("collector can't be registered");
             };
         }
-        register!(TAPE_RPC_REQUESTS_TOTAL);
-        register!(TAPE_RPC_REQUEST_DURATION_SECONDS);
+
+        match process { 
+            Process::Archive => {
+                register!(TAPE_TOTAL_TAPES_WRITTEN);
+                register!(TAPE_TOTAL_SEGMENTS_WRITTEN);
+            },
+            Process::Mine => {
+                register!(TAPE_MINING_ATTEMPTS_TOTAL);
+                register!(TAPE_MINING_CHALLENGES_SOLVED_TOTAL);
+                register!(TAPE_MINING_DURATION_SECONDS);
+                register!(TAPE_CURRENT_MINING_ITERTION);
+            },
+            Process::Web => {
+                register!(TAPE_RPC_REQUESTS_TOTAL);
+                register!(TAPE_RPC_REQUEST_DURATION_SECONDS);
+            }
+        }
     });
-    // endpoint = http://0.0.0.0:8875
-    let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8875));
+
+    let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), process.metrics_port()));
 
     tokio::spawn(async move {
         let listener = match TcpListener::bind(address).await {
@@ -154,6 +235,39 @@ pub fn record_td_api_latency(method: &RpcMethod, time_elapsed: f64) {
     TAPE_RPC_REQUEST_DURATION_SECONDS
         .with_label_values(&[method.as_str()])
         .observe(time_elapsed);
+}
+
+pub fn inc_tape_mining_challenges_solved_total() {
+    TAPE_MINING_CHALLENGES_SOLVED_TOTAL.inc();
+}
+
+pub fn inc_tape_mining_attempts_total() {
+    TAPE_MINING_ATTEMPTS_TOTAL.inc();
+}
+
+pub fn observe_tape_mining_duration(duration_secs: f64) {
+    TAPE_MINING_DURATION_SECONDS
+        .observe(duration_secs);
+}
+
+pub fn set_current_mining_iteration(current_iteration: u64) {
+    TAPE_CURRENT_MINING_ITERTION.set(current_iteration as i64);
+}
+
+pub fn inc_total_tapes_written() {
+    TAPE_TOTAL_TAPES_WRITTEN.inc();
+}
+
+pub fn inc_total_tapes_written_batch(n: u64) {
+    TAPE_TOTAL_TAPES_WRITTEN.inc_by(n);
+}
+
+pub fn inc_total_segments_written() {
+    TAPE_TOTAL_SEGMENTS_WRITTEN.inc();
+}
+
+pub fn inc_total_segments_written_batch(n: u64) {
+    TAPE_TOTAL_SEGMENTS_WRITTEN.inc_by(n);
 }
 
 pub fn record_metrics<T, F>(method: &RpcMethod, f: F) -> Result<T, RpcError>

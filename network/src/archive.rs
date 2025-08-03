@@ -18,6 +18,8 @@ use serde_json::json;
 use base64::decode;
 use tape_api::prelude::*;
 
+use crate::metrics::{run_metrics_server, Process};
+
 use super::store::TapeStore;
 
 pub const MAX_CONCURRENCY: usize = 10;
@@ -31,6 +33,8 @@ pub async fn archive_loop(
     trusted_peer: Option<String>,
 ) -> Result<()> {
     // Initialize archive parameters
+    run_metrics_server(Process::Archive)?;
+
     let (mut latest_slot, mut last_processed_slot, mut iteration_count) =
         initialize_archive(&store, client, starting_slot, miner_address).await?;
 

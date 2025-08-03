@@ -14,6 +14,7 @@ use crankx::{
     CrankXError
 };
 
+use crate::metrics::{inc_tape_mining_attempts_total, inc_tape_mining_challenges_solved_total, observe_tape_mining_duration, run_metrics_server, set_current_mining_iteration, Process};
 use crate::store::run_refresh_store;
 use super::store::TapeStore;
 
@@ -21,6 +22,7 @@ use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
+use std::time::Instant;
 use tape_client::utils::*;
 use tape_api::prelude::*;
 
@@ -30,6 +32,10 @@ pub async fn mine_loop(
     miner_address: &Pubkey,
     signer: &Keypair,
 ) -> Result<()> {
+
+    // run metrics server
+    run_metrics_server(Process::Mine)?;
+
     let store = Arc::new(store);
 
     let interval = Duration::from_secs(1);
@@ -38,7 +44,10 @@ pub async fn mine_loop(
     
     run_refresh_store(&refresh_store_instance);
 
+    let mut iteration = 0;
+
     loop {
+        set_current_mining_iteration(iteration);
         match try_mine_iteration(&store, client, miner_address, signer).await {
             Ok(()) => debug!("Mining iteration completed successfully"),
             Err(e) => {
@@ -49,6 +58,7 @@ pub async fn mine_loop(
 
         debug!("Waiting for next interval...");
         sleep(interval).await;
+        iteration += 1;
     }
 }
 
@@ -232,6 +242,7 @@ fn solve_challenge<const N: usize>(
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(num_threads);
 
     for i in 0..num_threads {
+
         let tx_clone = tx.clone();
         let found_clone = found.clone();
         let challenge_clone = challenge_arc.clone();
@@ -240,7 +251,7 @@ fn solve_challenge<const N: usize>(
         let handle = thread::spawn(move || {
             let mut memory = SolverMemory::new();
             let mut nonce: u64 = i as u64;
-
+            let start = Instant::now();
             loop {
                 if found_clone.load(Ordering::Relaxed) {
                     break;
@@ -253,7 +264,10 @@ fn solve_challenge<const N: usize>(
                     &nonce.to_le_bytes(),
                 ) {
                     if solution.difficulty() >= difficulty as u32 {
+                        let elapsed = start.elapsed();
+                        observe_tape_mining_duration(elapsed.as_secs_f64());
                         found_clone.store(true, Ordering::Relaxed);
+                        inc_tape_mining_challenges_solved_total();
                         let _ = tx_clone.send(solution);
                         break;
                     }
@@ -265,6 +279,7 @@ fn solve_challenge<const N: usize>(
         });
 
         handles.push(handle);
+        inc_tape_mining_attempts_total();
     }
 
     let solution = rx.recv().map_err(|_| CrankXError::EquiXFailure)?;
