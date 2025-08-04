@@ -17,6 +17,8 @@ pub struct Spool {
 
     pub last_proof_block: u64,
     pub last_proof_at: i64,
+
+    pub pda_bump: u64,
 }
 
 state!(AccountType, Spool);

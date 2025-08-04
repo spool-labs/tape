@@ -67,8 +67,8 @@ pub fn build_create_ix(
 ) -> Instruction {
     let name = utils::to_name(name);
 
-    let (tape_address, _tape_bump) = tape_pda(signer, &name);
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(signer, &name);
+    let (writer_address, _writer_bump) = writer_find_pda(tape_address);
 
     Instruction {
         program_id: crate::ID,
@@ -77,7 +77,6 @@ pub fn build_create_ix(
             AccountMeta::new(tape_address, false),
             AccountMeta::new(writer_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: Create {
@@ -142,6 +141,7 @@ pub fn build_update_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(tape, false),
             AccountMeta::new(writer, false),
+            AccountMeta::new_readonly(sysvar::clock::ID, false)
         ],
         data: Update {
             segment_number,
@@ -165,8 +165,6 @@ pub fn build_finalize_ix(
             AccountMeta::new(tape, false),
             AccountMeta::new(writer, false),
             AccountMeta::new(ARCHIVE_ADDRESS, false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: Finalize {}.to_bytes(),
     }

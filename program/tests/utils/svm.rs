@@ -12,30 +12,43 @@ use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
 use pretty_hex::*;
 use bincode;
 
-pub struct ComputeUnitsTracker(HashMap<String,u64>);
+use crate::setup_environment;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum ProgramIx {
+    InitProgram
+}
+
+pub struct ComputeUnitsTracker(HashMap<ProgramIx, u64>);
 
 impl ComputeUnitsTracker {
     pub fn new() -> Self {
         ComputeUnitsTracker(HashMap::new())
     }
 
-    pub fn track_cus(&mut self, ix: &str, cus: u64){
-        let ix = self.0.entry(ix.to_string()).or_default();
-        *ix = cus;
+    pub fn track_cus(&mut self, ix: ProgramIx, cus: u64){
+        let ix = self.0.entry(ix).or_default();
+        *ix  += cus;
     }
 }
 
-pub struct ProgramTest{
+pub struct SvmWithCUTracker{
     pub svm: LiteSVM,
-    pub cu_tracker: ComputeUnitsTracker
+    pub cu_tracker: ComputeUnitsTracker,
+    pub payer: Keypair
 }
 
-impl ProgramTest{
-    pub fn from_svm(svm: LiteSVM) -> Self {
-        Self { svm, cu_tracker: ComputeUnitsTracker::new() }
+impl SvmWithCUTracker{
+    pub fn new() -> Self {
+        let (svm, payer) = setup_environment();
+        Self { svm, cu_tracker: ComputeUnitsTracker::new(), payer }
     }
 
-    pub fn track_cus_consumed(&mut self, ix: &str, cus: u64){
+    pub fn payer(&self) -> &Keypair {
+        &self.payer
+    }
+
+    pub fn track_cus_consumed(&mut self, ix: ProgramIx, cus: u64){
         self.cu_tracker.track_cus(ix, cus);
     }
 

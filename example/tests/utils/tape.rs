@@ -29,8 +29,8 @@ pub fn init_tape_program(svm: &mut LiteSVM, payer: &Keypair) {
 
 pub fn create_tape(svm: &mut LiteSVM, payer: &Keypair, tape_name: &str) -> (Pubkey, Pubkey) {
     let payer_pk = payer.pubkey();
-    let (tape_address, _) = tape_pda(payer_pk, &to_name(tape_name));
-    let (writer_address, _) = writer_pda(tape_address);
+    let (tape_address, _) = tape_find_pda(payer_pk, &to_name(tape_name));
+    let (writer_address, _) = writer_find_pda(tape_address);
 
     let blockhash = svm.latest_blockhash();
     let ix = build_create_ix(payer_pk, tape_name);
