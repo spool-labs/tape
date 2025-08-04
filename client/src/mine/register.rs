@@ -7,7 +7,7 @@ use solana_sdk::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 
-use tape_api::prelude::*;
+use tape_api::instruction::miner::build_register_ix;
 use crate::utils::*;
 
 pub async fn register_miner(

@@ -5,8 +5,10 @@ use litesvm_token::{
     CreateMint, 
     MintTo, 
     spl_token::state::{Account, Mint}, 
-    get_spl_account
+    get_spl_account,
 };
+use spl_associated_token_account::get_associated_token_address;
+
 
 pub fn create_mint(svm: &mut LiteSVM, payer_kp: &Keypair, owner_pk: &Pubkey, decimals: u8) -> Pubkey {
     CreateMint::new(svm, payer_kp)
@@ -21,6 +23,10 @@ pub fn create_ata(svm: &mut LiteSVM, payer_kp: &Keypair, mint_pk: &Pubkey, owner
         .owner(owner_pk)
         .send()
         .unwrap()
+}
+
+pub fn get_ata_address(mint_pk: &Pubkey, owner_pk: &Pubkey) -> Pubkey {
+    get_associated_token_address(owner_pk, mint_pk)
 }
 
 pub fn get_ata_balance(svm: &LiteSVM, ata: &Pubkey) -> u64 {

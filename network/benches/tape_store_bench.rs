@@ -23,7 +23,7 @@ fn bench_add_segments(c: &mut Criterion) {
     group.bench_function("write_segment", |b| {
         let tape_address = Pubkey::new_unique();
         let segment_number = 0;
-        let data = generate_random_data(SEGMENT_SIZE);
+        let data = generate_random_data(PACKED_SEGMENT_SIZE);
 
         b.iter(|| {
             store
@@ -48,7 +48,7 @@ fn bench_add_segments_batch(c: &mut Criterion) {
         let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
         let segment_numbers = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
         let segment_data = (0..SEGMENTS_PER_TAPE)
-            .map(|_| generate_random_data(SEGMENT_SIZE))
+            .map(|_| generate_random_data(PACKED_SEGMENT_SIZE))
             .collect::<Vec<_>>();
 
         b.iter(|| {
@@ -64,55 +64,6 @@ fn bench_add_segments_batch(c: &mut Criterion) {
     group.finish();
 }
 
-
-fn bench_add_slots(c: &mut Criterion) {
-    let temp_dir = TempDir::new("bench_add_slots").unwrap();
-    let store = TapeStore::new(temp_dir.path()).unwrap();
-
-    let mut group = c.benchmark_group("add_slots");
-    group.bench_function("write_slot", |b| {
-        let tape_address = Pubkey::new_unique();
-        let segment_number = 0;
-        let slot = 12345;
-
-        b.iter(|| {
-            store
-                .write_slot(
-                    black_box(&tape_address),
-                    black_box(segment_number),
-                    black_box(slot),
-                )
-                .unwrap();
-        })
-    });
-    group.finish();
-}
-
-fn bench_add_slots_batch(c: &mut Criterion) {
-    let temp_dir = TempDir::new("bench_add_slots_batch").unwrap();
-    let store = TapeStore::new(temp_dir.path()).unwrap();
-
-    let mut group = c.benchmark_group("write_slots_batch");
-    group.bench_function("batch", |b| {
-        let tape_address = Pubkey::new_unique();
-        let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
-        let segment_numbers = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
-        let slot_values = (0..SEGMENTS_PER_TAPE).collect::<Vec<_>>();
-
-        b.iter(|| {
-            store
-                .write_slots_batch(
-                    black_box(&segment_addresses),
-                    black_box(&segment_numbers),
-                    black_box(&slot_values),
-                )
-                .unwrap();
-        });
-    });
-    group.finish();
-}
-
-
 fn bench_add_tape(c: &mut Criterion) {
     let mut group = c.benchmark_group("write_tape");
 
@@ -124,12 +75,9 @@ fn bench_add_tape(c: &mut Criterion) {
             let tape_number = 1;
 
             for segment_number in 0..SEGMENTS_PER_TAPE {
-                let data = generate_random_data(SEGMENT_SIZE);
+                let data = generate_random_data(PACKED_SEGMENT_SIZE);
                 store
                     .write_segment(&tape_address, segment_number, data)
-                    .unwrap();
-                store
-                    .write_slot(&tape_address, segment_number, segment_number)
                     .unwrap();
             }
 
@@ -154,12 +102,9 @@ fn bench_add_many_tapes(c: &mut Criterion) {
                 let tape_number = (tape_idx + 1) as u64;
 
                 for segment_number in 0..SEGMENTS_PER_TAPE {
-                    let data = generate_random_data(SEGMENT_SIZE);
+                    let data = generate_random_data(PACKED_SEGMENT_SIZE);
                     store
                         .write_segment(&tape_address, segment_number, data)
-                        .unwrap();
-                    store
-                        .write_slot(&tape_address, segment_number, segment_number)
                         .unwrap();
                 }
 
@@ -202,12 +147,9 @@ fn bench_get_segment(c: &mut Criterion) {
         tape_numbers.push(tape_number);
 
         for segment_number in 0..SEGMENTS_PER_TAPE {
-            let data = generate_random_data(SEGMENT_SIZE);
+            let data = generate_random_data(PACKED_SEGMENT_SIZE);
             store
                 .write_segment(&tape_address, segment_number, data)
-                .unwrap();
-            store
-                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
         store.write_tape(tape_number, &tape_address).unwrap();
@@ -237,12 +179,9 @@ fn bench_get_segment_by_address(c: &mut Criterion) {
         tape_addresses.push(tape_address);
 
         for segment_number in 0..SEGMENTS_PER_TAPE {
-            let data = generate_random_data(SEGMENT_SIZE);
+            let data = generate_random_data(PACKED_SEGMENT_SIZE);
             store
                 .write_segment(&tape_address, segment_number, data)
-                .unwrap();
-            store
-                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
     }
@@ -272,12 +211,9 @@ fn bench_get_tape_segments(c: &mut Criterion) {
         tape_addresses.push(tape_address);
 
         for segment_number in 0..SEGMENTS_PER_TAPE {
-            let data = generate_random_data(SEGMENT_SIZE);
+            let data = generate_random_data(PACKED_SEGMENT_SIZE);
             store
                 .write_segment(&tape_address, segment_number, data)
-                .unwrap();
-            store
-                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
         store.write_tape(tape_number, &tape_address).unwrap();
@@ -294,76 +230,6 @@ fn bench_get_tape_segments(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_get_slot(c: &mut Criterion) {
-    let temp_dir = TempDir::new("bench_get_slot").unwrap();
-    let store = TapeStore::new(temp_dir.path()).unwrap();
-
-    let mut tape_numbers = Vec::with_capacity(NUM_TAPES);
-    for tape_idx in 0..NUM_TAPES {
-        let tape_address = Pubkey::new_unique();
-        let tape_number = (tape_idx + 1) as u64;
-        tape_numbers.push(tape_number);
-
-        for segment_number in 0..SEGMENTS_PER_TAPE {
-            let data = generate_random_data(SEGMENT_SIZE);
-            store
-                .write_segment(&tape_address, segment_number, data)
-                .unwrap();
-            store
-                .write_slot(&tape_address, segment_number, segment_number)
-                .unwrap();
-        }
-        store.write_tape(tape_number, &tape_address).unwrap();
-    }
-
-    let mut group = c.benchmark_group("read_slot");
-    group.bench_function("get_slot_many_tapes", |b| {
-        let tape_number = tape_numbers[NUM_TAPES / 2];
-        let segment_number = SEGMENTS_PER_TAPE / 2;
-
-        b.iter(|| {
-            store
-                .read_slot(black_box(tape_number), black_box(segment_number))
-                .unwrap();
-        })
-    });
-    group.finish();
-}
-
-fn bench_get_slot_by_address(c: &mut Criterion) {
-    let temp_dir = TempDir::new("bench_get_slot_by_address").unwrap();
-    let store = TapeStore::new(temp_dir.path()).unwrap();
-
-    let mut tape_addresses = Vec::with_capacity(NUM_TAPES);
-    for _tape_idx in 0..NUM_TAPES {
-        let tape_address = Pubkey::new_unique();
-        tape_addresses.push(tape_address);
-
-        for segment_number in 0..SEGMENTS_PER_TAPE {
-            let data = generate_random_data(SEGMENT_SIZE);
-            store
-                .write_segment(&tape_address, segment_number, data)
-                .unwrap();
-            store
-                .write_slot(&tape_address, segment_number, segment_number)
-                .unwrap();
-        }
-    }
-
-    let mut group = c.benchmark_group("read_slot_by_address");
-    group.bench_function("get_slot_by_address_many_tapes", |b| {
-        let tape_address = tape_addresses[NUM_TAPES / 2];
-        let segment_number = SEGMENTS_PER_TAPE / 2;
-
-        b.iter(|| {
-            store
-                .read_slot_by_address(black_box(&tape_address), black_box(segment_number))
-                .unwrap();
-        })
-    });
-    group.finish();
-}
-
 fn customized_criterion() -> Criterion {
     Criterion::default().sample_size(20)
 }
@@ -374,16 +240,12 @@ criterion_group! {
     targets = 
         bench_add_segments,
         bench_add_segments_batch,
-        bench_add_slots,
-        bench_add_slots_batch,
         bench_add_tape,
         bench_add_many_tapes,
         bench_add_tapes_batch,
         bench_get_segment,
         bench_get_tape_segments,
-        bench_get_slot,
         bench_get_segment_by_address,
-        bench_get_slot_by_address
 }
 
 criterion_main!(benches);

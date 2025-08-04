@@ -39,3 +39,4 @@ solana-sdk.workspace = true
 solana-transaction-status.workspace = true
 solana-account-decoder.workspace = true
 solana-transaction-status-client-types.workspace = true
+solana-program.workspace = true

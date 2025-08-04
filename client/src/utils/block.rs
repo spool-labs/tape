@@ -15,16 +15,8 @@ use solana_transaction_status::{
     UiTransactionStatusMeta,
     UiConfirmedBlock
 };
-use tape_api::prelude::{
-    SEGMENT_SIZE,
-    PROOF_LEN,
-    WriteEvent,
-    UpdateEvent,
-    FinalizeEvent,
-    InstructionType,
-    EventType,
-    Update,
-};
+use tape_api::prelude::*;
+use tape_api::instruction::tape::{TapeInstruction, Update};
 
 #[derive(Error, Debug)]
 pub enum BlockError {
@@ -47,33 +39,31 @@ pub struct SegmentKey {
     pub prev_slot: u64,
 }
 
-// Pulled out of logs
 #[derive(Debug)]
-pub enum TapeEvent {
+pub enum EventData {
     Write(WriteEvent),
     Update(UpdateEvent),
     Finalize(FinalizeEvent),
 }
 
-// Pulled out of instruction data
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub enum TapeInstruction {
+pub enum InstructionData {
     Write { address: Pubkey, data: Vec<u8> },
     Update {
       address: Pubkey,
       segment_number: u64,
       old_data: [u8; SEGMENT_SIZE],
       new_data: [u8; SEGMENT_SIZE],
-      proof: [[u8;32]; PROOF_LEN],
+      proof: [[u8;32]; SEGMENT_PROOF_LEN],
     },
     Finalize { address: Pubkey },
 }
 
 #[derive(Debug, Default)]
 pub struct TapeBlock {
-    pub events: Vec<TapeEvent>,
-    pub instructions: Vec<TapeInstruction>,
+    pub events: Vec<EventData>,
+    pub instructions: Vec<InstructionData>,
 }
 
 #[derive(Debug, Default)]
@@ -111,18 +101,18 @@ fn verify_counts(tape_block: &TapeBlock) -> Result<(), BlockError> {
     let (mut write_events, mut update_events, mut finalize_events) = (0, 0, 0);
     for event in &tape_block.events {
         match event {
-            TapeEvent::Write(_) => write_events += 1,
-            TapeEvent::Update(_) => update_events += 1,
-            TapeEvent::Finalize(_) => finalize_events += 1,
+            EventData::Write(_) => write_events += 1,
+            EventData::Update(_) => update_events += 1,
+            EventData::Finalize(_) => finalize_events += 1,
         }
     }
 
     let (mut write_ix, mut update_ix, mut finalize_ix) = (0, 0, 0);
     for ix in &tape_block.instructions {
         match ix {
-            TapeInstruction::Write { .. } => write_ix += 1,
-            TapeInstruction::Update { .. } => update_ix += 1,
-            TapeInstruction::Finalize { .. } => finalize_ix += 1,
+            InstructionData::Write { .. } => write_ix += 1,
+            InstructionData::Update { .. } => update_ix += 1,
+            InstructionData::Finalize { .. } => finalize_ix += 1,
         }
     }
 
@@ -161,15 +151,15 @@ fn merge_events_and_instructions(
     // Iterate over events and instructions in parallel
     for (event, instruction) in tape_block.events.iter().zip(&tape_block.instructions) {
         match (event, instruction) {
-            (TapeEvent::Write(write_event), TapeInstruction::Write { address, data }) => {
+            (EventData::Write(write_event), InstructionData::Write { address, data }) => {
                 merge_write(write_event, address, data, &mut merged)?;
             }
 
-            (TapeEvent::Update(update_event), TapeInstruction::Update { address, segment_number, new_data, .. }) => {
+            (EventData::Update(update_event), InstructionData::Update { address, segment_number, new_data, .. }) => {
                 merge_update(update_event, address, *segment_number, new_data, &mut merged)?;
             }
 
-            (TapeEvent::Finalize(finalize_event), TapeInstruction::Finalize { address }) => {
+            (EventData::Finalize(finalize_event), InstructionData::Finalize { address }) => {
                 merge_finalize(finalize_event, address, &mut merged)?;
             }
 
@@ -326,17 +316,17 @@ fn process_log_messages(
                 EventType::WriteEvent => {
                     let event = WriteEvent::try_from_bytes(&event_data)
                         .map_err(|e| BlockError::Deserialization(e.to_string()))?;
-                    events.push(TapeEvent::Write(*event));
+                    events.push(EventData::Write(*event));
                 }
                 EventType::UpdateEvent => {
                   let event = UpdateEvent::try_from_bytes(&event_data)
                       .map_err(|e| BlockError::Deserialization(e.to_string()))?;
-                  events.push(TapeEvent::Update(*event));
+                  events.push(EventData::Update(*event));
                 }
                 EventType::FinalizeEvent => {
                     let event = FinalizeEvent::try_from_bytes(&event_data)
                         .map_err(|e| BlockError::Deserialization(e.to_string()))?;
-                    events.push(TapeEvent::Finalize(*event));
+                    events.push(EventData::Finalize(*event));
                 }
                 _ => {}
             }
@@ -411,7 +401,7 @@ fn process_inner_instructions(
 fn process_instruction(
     ix: &UiCompiledInstruction,
     account_keys: &[String],
-) -> Result<Option<TapeInstruction>, BlockError> {
+) -> Result<Option<InstructionData>, BlockError> {
     let tape_index = *ix
         .accounts
         .get(1)
@@ -433,18 +423,20 @@ fn process_instruction(
         return Ok(None);
     }
 
-    let ix_type = InstructionType::try_from(ix_data[0])
-        .map_err(|_| BlockError::InvalidData("Invalid instruction type"))?;
+    let ix_type = TapeInstruction::try_from(ix_data[0]);
+    if ix_type.is_err() {
+        return Ok(None);
+    }
 
-    match ix_type {
-        InstructionType::Write => Ok(Some(TapeInstruction::Write {
+    match ix_type.unwrap() {
+        TapeInstruction::Write => Ok(Some(InstructionData::Write {
             address: tape_address,
             data: ix_data[1..].to_vec(),
         })),
-        InstructionType::Update => {
+        TapeInstruction::Update => {
             Update::try_from_bytes(&ix_data[1..])
                 .map_err(|e| BlockError::Deserialization(e.to_string()))
-                .map(|update| Some(TapeInstruction::Update {
+                .map(|update| Some(InstructionData::Update {
                     address: tape_address,
                     segment_number: u64::from_le_bytes(update.segment_number),
                     old_data: update.old_data,
@@ -452,7 +444,7 @@ fn process_instruction(
                     proof: update.proof,
                 }))
         }
-        InstructionType::Finalize => Ok(Some(TapeInstruction::Finalize {
+        TapeInstruction::Finalize => Ok(Some(InstructionData::Finalize {
             address: tape_address,
         })),
         _ => Ok(None),

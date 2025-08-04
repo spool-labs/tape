@@ -6,6 +6,7 @@ use solana_sdk::{
     pubkey::Pubkey,
 };
 use tape_api::prelude::*;
+use tape_api::instruction::tape::build_create_ix;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::utils::*;
 

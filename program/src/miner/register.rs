@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::instruction::miner::Register;
 use steel::*;
 
 pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -10,7 +11,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         system_program_info, 
         rent_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };

@@ -8,7 +8,7 @@ use solana_sdk::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 
-use tape_api::prelude::*;
+use tape_api::instruction::miner::build_claim_ix;
 use crate::utils::*;
 
 pub async fn claim_rewards(

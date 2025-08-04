@@ -1,9 +1,17 @@
-use tape_api::prelude::*;
+use steel::*;
 use solana_program::{program_pack::Pack, program::{invoke, invoke_signed}};
 use spl_token::state::Mint;
-use steel::*;
+use tape_api::prelude::*;
+use tape_api::instruction::tape::{
+    build_create_ix, 
+    build_write_ix, 
+    build_subsidize_ix, 
+    build_finalize_ix,
+};
+use crate::mine::get_base_rate;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+    solana_program::msg!("num accounts: {}", accounts.len());
     let [
         signer_info, 
         archive_info, 
@@ -22,7 +30,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         metadata_program_info, 
         rent_sysvar_info,
         slot_hashes_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -98,7 +105,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.number               = 1;
     epoch.progress             = 0;
     epoch.target_participation = MIN_PARTICIPATION_TARGET;
-    epoch.target_difficulty    = MIN_DIFFICULTY;
+    epoch.mining_difficulty    = MIN_MINING_DIFFICULTY;
+    epoch.packing_difficulty   = MIN_PACKING_DIFFICULTY;
     epoch.reward_rate          = get_base_rate(1);
     epoch.duplicates           = 0;
     epoch.last_epoch_at        = 0;
@@ -138,8 +146,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
 
-    archive.tapes_stored = 0;
-    archive.bytes_stored = 0;
+    archive.tapes_stored      = 0;
+    archive.segments_stored   = 0;
 
     // Initialize treasury.
     create_program_account::<Treasury>(

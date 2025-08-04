@@ -49,7 +49,13 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_archive(context: Context, starting_slot: Option<u64>, trusted_peer: Option<String>, miner_address: Option<String>) -> Result<()> {
+pub async fn handle_archive(
+    context: Context,
+    starting_slot: Option<u64>,
+    trusted_peer: Option<String>,
+    miner_address: Option<String>
+) -> Result<()> {
+
     // Use the public devnet peer if none is provided
     let trusted_peer = match context.rpc().url() {
         url if url.contains("devnet") => {
@@ -58,29 +64,47 @@ pub async fn handle_archive(context: Context, starting_slot: Option<u64>, truste
         _ => trusted_peer
     };
 
-    let miner_address = miner_address.map(|addr| Pubkey::from_str(&addr).unwrap());
+    let miner_address = get_or_create_miner(
+        context.rpc(), context.payer(), miner_address, None, true).await?;
+
+    log::print_message(&format!("Using miner address: {miner_address}"));
 
     let store = context.open_primary_store_conn()?;
 
     log::print_info("Starting archive service...");
+
     archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
 
     Ok(())
 }
 
-pub async fn handle_mine(context: Context, pubkey: Option<String>, name: Option<String>) -> Result<()> {
+pub async fn handle_mine(
+    context: Context,
+    miner_address: Option<String>,
+    miner_name: Option<String>
+) -> Result<()> {
+
     log::print_info("Starting mining service...");
 
-    let miner_address = resolve_miner(context.rpc(), context.payer(), pubkey, name, true).await?;
+    let miner_address = get_or_create_miner(
+        context.rpc(), context.payer(), miner_address, miner_name, true).await?;
 
     log::print_message(&format!("Using miner address: {miner_address}"));
 
-    let store = context.open_secondary_store_conn_mine()?;
+    let store = context.open_secondary_store_conn_mine()
+        .map_err(|e| anyhow::anyhow!("Failed to open archive db: {}, are you running the archive service?", e))?;
+
+    log::print_info("Starting mine service...");
+
     mine_loop(store, context.rpc(), &miner_address, context.payer()).await?;
     Ok(())
 }
 
-pub async fn handle_register(context: Context, name: String) -> Result<()> {
+pub async fn handle_register(
+    context: Context,
+    name: String
+) -> Result<()> {
+
     log::print_info("Registering miner...");
 
     let (miner_address, _) = miner_pda(context.payer().pubkey(), to_name(&name));
@@ -108,7 +132,7 @@ pub async fn handle_register(context: Context, name: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn resolve_miner(
+pub async fn get_or_create_miner(
     client: &Arc<RpcClient>,
     payer: &Keypair,
     pubkey_opt: Option<String>,

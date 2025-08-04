@@ -3221,6 +3221,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "packx"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "232f2167e6a2d118a0ab59f4f85e987f8c0616c9a09eefcd8e22733b723ab001"
+dependencies = [
+ "bytemuck",
+ "sha3",
+ "solana-program",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6594,7 +6605,7 @@ dependencies = [
 
 [[package]]
 name = "tape-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "array-const-fn-init",
  "brine-tree",
@@ -6603,6 +6614,7 @@ dependencies = [
  "crankx",
  "mpl-token-metadata",
  "num_enum",
+ "packx",
  "solana-program",
  "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
@@ -6611,7 +6623,7 @@ dependencies = [
 
 [[package]]
 name = "tape-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64 0.13.1",
@@ -6628,6 +6640,7 @@ dependencies = [
  "sha3",
  "solana-account-decoder",
  "solana-client",
+ "solana-program",
  "solana-sdk",
  "solana-transaction-status",
  "solana-transaction-status-client-types",
@@ -6641,7 +6654,7 @@ dependencies = [
 
 [[package]]
 name = "tape-example"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bincode",
  "brine-tree",
@@ -6664,7 +6677,7 @@ dependencies = [
 
 [[package]]
 name = "tape-network"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -6683,6 +6696,7 @@ dependencies = [
  "log",
  "num_cpus",
  "num_enum",
+ "packx",
  "prometheus",
  "rand 0.8.5",
  "reqwest 0.12.15",
@@ -6705,7 +6719,7 @@ dependencies = [
 
 [[package]]
 name = "tape-program"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bincode",
  "brine-tree",
@@ -6715,6 +6729,7 @@ dependencies = [
  "litesvm",
  "litesvm-token",
  "mpl-token-metadata",
+ "packx",
  "pretty-hex",
  "rand 0.8.5",
  "solana-client",
@@ -6730,7 +6745,7 @@ dependencies = [
 
 [[package]]
 name = "tapedrive-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",

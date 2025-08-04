@@ -25,6 +25,17 @@ pub enum TapeError {
     SolutionTooEarly        = 0x23,
     #[error("The provided claim is too large")]
     ClaimTooLarge           = 0x24,
+    #[error("Computed commitment does not match the miner commitment")]
+    CommitmentMismatch      = 0x25,
+
+    #[error("Faild to pack the tape into the spool")]
+    SpoolPackFailed         = 0x30,
+    #[error("Failed to unpack the tape from the spool")]
+    SpoolUnpackFailed       = 0x31,
+    #[error("Too many tapes in the spool")]
+    SpoolTooManyTapes       = 0x32,
+    #[error("Spool commit failed")]
+    SpoolCommitFailed       = 0x33,
 }
 
 error!(TapeError);

@@ -1,12 +1,11 @@
+use num_cpus;
 use anyhow::{anyhow, Result};
+use bytemuck::Zeroable;
 use log::{debug, error};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, pubkey::Pubkey};
 use tape_client::mine::mine::perform_mining;
 use tokio::time::{sleep, Duration};
-
-use tape_client::utils::*;
-use tape_api::prelude::*;
 
 use crankx::equix::SolverMemory;
 use crankx::{
@@ -16,13 +15,14 @@ use crankx::{
 };
 
 use crate::store::run_refresh_store;
-
 use super::store::TapeStore;
 
 use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use num_cpus;
+
+use tape_client::utils::*;
+use tape_api::prelude::*;
 
 pub async fn mine_loop(
     store: TapeStore, 
@@ -80,7 +80,6 @@ async fn try_mine_iteration(
 ) -> Result<()> {
     debug!("Starting mine process...");
 
-    // fetch epoch, block and miner accounts concurrently
     let (epoch, block, miner) = get_mining_accounts(client, miner_address).await?;
 
     let miner_challenge = compute_challenge(
@@ -93,146 +92,131 @@ async fn try_mine_iteration(
         block.challenge_set
     );
 
-    debug!("Recall tape number: {tape_number:?}");
-
-    let tape_address = store.read_tape_address(tape_number);
-
-    if let Ok(tape_address) = tape_address {
-
-        debug!("Tape address: {tape_address:?}");
-
-        let tape = get_tape_account(client, &tape_address)
-            .await
-            .map_err(|e| anyhow!("Failed to get tape account: {}", e))?.0;
-        
-        let (solution, recall_segment, merkle_proof) = if tape.has_minimum_rent() {
-            
-            // This tape has minimum rent, we can recall a segment
-            let segment_number = compute_recall_segment(
-                &miner_challenge,
-                tape.total_segments
-            );
-
-            // Get the entire tape
-            let segments = store.read_tape_segments(&tape_address)?;
-            if segments.len() != tape.total_segments as usize {
-                return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
-                    tape_address, tape.total_segments, segments.len()));
-            }
-
-            debug!("Recall tape {tape_number}, segment {segment_number}");
-
-            compute_challenge_solution(
-                &tape,
-                &miner_challenge,
-                segment_number,
-                segments,
-                epoch.target_difficulty,
-            )?
-
-        // This tape does not have minimum rent, we use an empty segment
-        } else {
-
-            debug!("Tape {tape_address} does not have minimum rent, using empty segment");
-
-            let solution = solve_challenge(
-                miner_challenge,
-                &EMPTY_SEGMENT,
-                epoch.target_difficulty,
-            )?;
-
-            (solution, EMPTY_SEGMENT, EMPTY_PROOF)
-        };
-
-        let sig = perform_mining(
-            client, 
-            signer, 
-            *miner_address, 
-            tape_address, 
-            solution, 
-            recall_segment, 
-            merkle_proof,
-        ).await?;
-
-        debug!("Mining successful! Signature: {sig:?}");
-
-        let (miner, _) = get_miner_account(client, miner_address)
-            .await
-            .map_err(|e| anyhow!("Failed to get miner account after mining: {}", e))?;
-
-        debug!("Miner {} has unclaimed rewards: {}", miner_address, miner.unclaimed_rewards);
-
-    } else {
-        debug!("Tape not found, continuing...");
+    let res = store.read_tape_address(tape_number);
+    if res.is_err() {
+        debug!("Tape address not found in local db, nothing to do for now...");
+        return Ok(());
     }
 
-    debug!("Catching up with primary...");
+    let tape_address = res.unwrap();
+    debug!("Tape address: {tape_address:?}");
 
-    Ok(())
-}
+    let (tape, _) = get_tape_account(client, &tape_address)
+        .await
+        .map_err(|e| anyhow!("Failed to get tape account: {}", e))?;
 
-fn compute_challenge_solution(
-    tape: &Tape,
-    miner_challenge: &[u8; 32],
-    segment_number: u64,
-    segments: Vec<(u64, Vec<u8>)>,
-    epoch_difficulty: u64,
-) -> Result<(Solution, [u8; SEGMENT_SIZE], [[u8; 32]; TREE_HEIGHT])> {
 
-    let mut leaves = Vec::new();
-    let mut recall_segment = [0; SEGMENT_SIZE];
-    let mut merkle_tree = TapeTree::new(&[tape.merkle_seed.as_ref()]);
+    if tape.has_minimum_rent() {
+        // We need to provide a PoA solution
 
-    for (segment_id, segment_data) in segments.iter() {
-        if *segment_id == segment_number {
-            recall_segment.copy_from_slice(segment_data);
-        }
-
-        // Create our canonical segment of exactly SEGMENT_SIZE bytes 
-        // and compute the merkle leaf
-        let data = padded_array::<SEGMENT_SIZE>(segment_data);
-        let leaf = compute_leaf(
-            *segment_id,
-            &data,
+        let segment_number = compute_recall_segment(
+            &miner_challenge, 
+            tape.total_segments
         );
 
-        leaves.push(leaf);
+        // Unpack the whole tape (temporary code for now...)
+        // (todo: this could be up to 32Mb and not really trival with ~262k segments)
 
-        // TODO: we don't actually need to do this, this is just for 
-        // debugging and making sure the local root matches the tape root
-        merkle_tree.try_add_leaf(leaf).map_err(|e| {
-            anyhow!("Failed to add leaf to Merkle tree: {:?}", e)
-        })?;
-    }
+        let segments = store.read_tape_segments(&tape_address)?;
+        if segments.len() != tape.total_segments as usize {
+            // TODO: we need to refetch the tape segments from the network
+            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
+                tape_address, tape.total_segments, segments.len()));
+        }
 
-    let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
-    let merkle_proof = merkle_proof
-        .iter()
-        .map(|v| v.to_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .map_err(|_|anyhow!("failed to get merkle proof"))?;
+        let mut leaves = Vec::new();
+        let mut packed_segment = [0; PACKED_SEGMENT_SIZE];
+        let mut unpacked_segment = [0; SEGMENT_SIZE];
 
-    if merkle_tree.get_root() != tape.merkle_root.into() {
-        return Err(anyhow!("Merkle root mismatch"));
+        for (segment_id, packed_data) in segments.iter() {
+            let mut data = [0u8; PACKED_SEGMENT_SIZE];
+            data.copy_from_slice(&packed_data[..PACKED_SEGMENT_SIZE]);
+
+            let solution = packx::Solution::from_bytes(&data);
+            let segement_data = solution.unpack(&miner_address.to_bytes());
+
+            let leaf = compute_leaf(
+                *segment_id as u64,
+                &segement_data,
+            );
+
+            leaves.push(leaf);
+
+            if *segment_id == segment_number {
+                packed_segment.copy_from_slice(&data);
+                unpacked_segment.copy_from_slice(&segement_data);
+            }
+        }
+
+        if packed_segment == [0; PACKED_SEGMENT_SIZE] {
+            return Err(anyhow!("Segment number {} not found in tape {}", segment_number, tape_address));
+        }
+
+        let poa_solution = packx::Solution::from_bytes(&packed_segment);
+        let pow_solution = solve_challenge(
+            miner_challenge,
+            &unpacked_segment, 
+            epoch.mining_difficulty
+        ).unwrap();
+
+        debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
+
+        let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+        let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
+        let merkle_proof = merkle_proof
+            .iter()
+            .map(|v| v.to_bytes())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+
+        let pow = PoW::from_solution(&pow_solution);
+        let poa = PoA::from_solution(&poa_solution, merkle_proof);
+
+        // Tx1: load the packed tape leaf from the spool onto the miner commitment field
+        // TODO: leaving this out for now, as it requries managing miner spools
+
+        //commit_for_mining(
+        //    svm, 
+        //    &payer, 
+        //    &stored_spool, 
+        //    tape_index, 
+        //    segment_number
+        //);
+
+        // Tx2: perform mining with PoW and PoA
+        perform_mining(
+            client,
+            signer,
+            *miner_address,
+            tape_address,
+            pow,
+            poa
+        ).await?;
+
+
     } else {
-        debug!("Merkle root matches tape root!");
+
+        let solution = solve_challenge(
+            miner_challenge, 
+            &EMPTY_SEGMENT, 
+            epoch.mining_difficulty
+        ).unwrap();
+
+        let pow = PoW::from_solution(&solution);
+        let poa = PoA::zeroed();
+
+        perform_mining(
+            client,
+            signer,
+            *miner_address,
+            tape_address,
+            pow,
+            poa
+        ).await?;
     }
 
-    let solution = solve_challenge(
-        *miner_challenge, 
-        &recall_segment, 
-        epoch_difficulty
-    )?;
-
-    debug!("Solution difficulty: {:?}", solution.difficulty());
-
-    solution.is_valid(miner_challenge, &recall_segment)
-        .map_err(|_| anyhow!("Invalid solution"))?;
-
-    debug!("Solution is valid!");
-
-    Ok((solution, recall_segment, merkle_proof))
+    Ok(())
 }
 
 fn solve_challenge<const N: usize>(

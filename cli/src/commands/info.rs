@@ -7,7 +7,7 @@ use tape_client as tapedrive;
 use tape_api::utils::from_name;
 use tape_client::TapeHeader;
 
-use super::network::resolve_miner;
+use super::network::get_or_create_miner;
 
 pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Info(info) = cli.command {
@@ -17,14 +17,15 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
                 log::print_section_header("Archive Account");
                 log::print_message(&format!("Tapes: {}", archive.tapes_stored));
                 log::print_message(&format!("Segments: {}", archive.segments_stored));
-                log::print_message(&format!("Bytes: {}", archive.bytes_stored));
+                log::print_message(&format!("Bytes: {}", archive.segments_stored as usize * tape_api::SEGMENT_SIZE));
             }
             InfoCommands::Epoch {} => {
                 let (epoch, _address) = tapedrive::get_epoch_account(context.rpc()).await?;
                 log::print_section_header("Epoch Account");
                 log::print_message(&format!("Current Epoch: {}", epoch.number));
                 log::print_message(&format!("Progress: {}", epoch.progress));
-                log::print_message(&format!("Target Difficulty: {}", epoch.target_difficulty));
+                log::print_message(&format!("Mining Difficulty: {}", epoch.mining_difficulty));
+                log::print_message(&format!("Packing Difficulty: {}", epoch.packing_difficulty));
                 log::print_message(&format!("Target Participation: {}", epoch.target_participation));
                 log::print_message(&format!("Reward Rate: {}", epoch.reward_rate));
                 log::print_message(&format!("Duplicates: {}", epoch.duplicates));
@@ -71,7 +72,6 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
                 log::print_message(&format!("Balance: {}", tape.balance));
                 log::print_message(&format!("Last Rent Block: {}", tape.last_rent_block));
                 log::print_message(&format!("Total Segments: {}", tape.total_segments));
-                log::print_message(&format!("Total Size: {} bytes", tape.total_size));
                 log::print_message(&format!("State: {}", tape.state));
 
                 if let Ok(header) = TapeHeader::try_from_bytes(&tape.header) {
@@ -82,7 +82,7 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
             }
 
             InfoCommands::Miner { pubkey, name } => {
-                let miner_address = resolve_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
+                let miner_address = get_or_create_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
                 let (miner, _) = tapedrive::get_miner_account(context.rpc(), &miner_address).await?;
                 log::print_section_header("Miner Account");
                 log::print_message(&format!("Name: {}", from_name(&miner.name)));

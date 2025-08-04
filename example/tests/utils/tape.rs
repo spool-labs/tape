@@ -7,7 +7,14 @@ use solana_sdk::{
 
 use super::send_tx;
 use litesvm::LiteSVM;
+
 use tape_api::prelude::*;
+use tape_api::instruction::program::{
+    build_initialize_ix,
+};
+use tape_api::instruction::tape::{
+    build_create_ix,
+};
 
 pub fn init_tape_program(svm: &mut LiteSVM, payer: &Keypair) {
     let payer_pk = payer.pubkey();

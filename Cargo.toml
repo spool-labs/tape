@@ -3,7 +3,7 @@ resolver = "2"
 members = [ "api", "client", "cli", "network", "program", "example" ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0"
 homepage = "https://tapedrive.io"
@@ -13,10 +13,13 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "mining"]
 
 [workspace.dependencies]
-tape-api = { version = "0.2.0", path = "./api" }
-tape-client = { version = "0.2.0", path = "./client" }
-tape-network = { version = "0.2.0", path = "./network" }
-tape-program = { version = "0.2.0", path = "./program" }
+tape-api = { version = "0.2.1", path = "./api" }
+tape-client = { version = "0.2.1", path = "./client" }
+tape-network = { version = "0.2.1", path = "./network" }
+tape-program = { version = "0.2.1", path = "./program" }
+
+crankx = { version = "0.2.2", features = ["solana"] }
+packx = { version = "0.2.5", features = ["solana"] }
 
 # program dependencies
 bytemuck = "1.14.3"
@@ -25,7 +28,6 @@ num_enum = "0.7.2"
 brine-tree = { version = "0.5.4", features = ["solana"] }
 array-const-fn-init = "0.1.1"
 const-crypto = "0.3.0"
-crankx = { version = "0.2.2", features = ["solana"] }
 
 # solana-specific
 solana-client = "=2.1"
@@ -88,3 +90,9 @@ overflow-checks = true
 
 [profile.dev]
 overflow-checks = true
+opt-level = 3
+debug = false
+
+[profile.test]
+opt-level = 3
+debug = false

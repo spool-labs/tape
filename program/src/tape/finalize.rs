@@ -1,7 +1,8 @@
 use tape_api::prelude::*;
+use tape_api::instruction::tape::Finalize;
 use steel::*;
 
-pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_tape_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = Finalize::try_from_bytes(data)?;
     let [
         signer_info, 
@@ -10,7 +11,6 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         archive_info,
         system_program_info,
         rent_sysvar_info,
-        _rest@..
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -59,8 +59,8 @@ pub fn process_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         TapeError::InsufficientRent,
     )?;
 
-    archive.tapes_stored = archive.tapes_stored.saturating_add(1);
-    archive.bytes_stored = archive.bytes_stored.saturating_add(tape.total_size);
+    archive.tapes_stored    = archive.tapes_stored.saturating_add(1);
+    archive.segments_stored = archive.segments_stored.saturating_add(tape.total_segments);
 
     tape.number            = archive.tapes_stored;
     tape.state             = TapeState::Finalized.into();

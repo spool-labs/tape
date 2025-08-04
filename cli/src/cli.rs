@@ -115,6 +115,11 @@ pub enum Commands {
     #[command(hide = true)]
     Init {},
 
+    Airdrop {
+        #[arg(help = "Amount of tokens to airdrop")]
+        amount: u64,
+    },
+
     // Store Management Commands
 
     #[command(subcommand)]
