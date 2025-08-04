@@ -8,38 +8,30 @@ use solana_sdk::{
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 
-use tape_api::prelude::*;
-use tape_api::instruction::miner::build_mine_ix;
+use tape_api::instruction::spool::build_commit_ix;
+use tape_api::consts::SEGMENT_PROOF_LEN;
 use crate::utils::*;
 
-pub async fn perform_mining(
+pub async fn commit_solution(
     client: &Arc<RpcClient>,
     signer: &Keypair,
     miner_address: Pubkey,
-    tape_address: Pubkey,
-    pow: PoW,
-    poa: PoA,
+    spool_address: Pubkey,
+    index: u64,
+    proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    value: [u8; 32],
 ) -> Result<Signature> {
-
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(700_000);
-    let mine_ix = build_mine_ix(
-        signer.pubkey(),
-        miner_address,
-        tape_address,
-        pow,
-        poa,
-    );
+    let commit_ix = build_commit_ix(signer.pubkey(), miner_address, spool_address, index, proof, value);
 
     let signature = build_send_and_confirm_tx(
-        &[compute_budget_ix, mine_ix],
+        &[compute_budget_ix, commit_ix],
         client,
         signer.pubkey(),
-        &[signer]
+        &[signer],
     )
     .await
-    .map_err(|e| anyhow!("Failed to mine: {}", e))?;
+    .map_err(|e| anyhow!("Failed to commit solution: {}", e))?;
 
     Ok(signature)
 }
-
-
