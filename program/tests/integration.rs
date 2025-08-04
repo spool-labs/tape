@@ -231,7 +231,7 @@ fn do_mining_run(
             let mut packed_segment = [0; packx::SOLUTION_SIZE];
             let mut unpacked_segment = [0; SEGMENT_SIZE];
 
-d           for (segment_id, packed_data) in packed_tape.data.iter().enumerate() {
+            for (segment_id, packed_data) in packed_tape.data.iter().enumerate() {
                 let mut data = [0u8; packx::SOLUTION_SIZE];
                 data.copy_from_slice(&packed_data[..packx::SOLUTION_SIZE]);
 
