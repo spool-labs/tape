@@ -5,15 +5,11 @@ pub fn process_spool_destroy(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Prog
     let [
         signer_info, 
         spool_info, 
-        system_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
     signer_info.is_signer()?;
-
-    system_program_info
-        .is_program(&system_program::ID)?;
 
     spool_info
         .is_writable()?

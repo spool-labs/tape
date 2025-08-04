@@ -1,16 +1,12 @@
 use tape_api::prelude::*;
-use tape_api::instruction::tape::Finalize;
 use steel::*;
 
-pub fn process_tape_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = Finalize::try_from_bytes(data)?;
+pub fn process_tape_finalize(accounts: &[AccountInfo<'_>]) -> ProgramResult {
     let [
         signer_info, 
         tape_info,
         writer_info, 
         archive_info,
-        system_program_info,
-        rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -35,17 +31,11 @@ pub fn process_tape_finalize(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_archive()?
         .as_account_mut::<Archive>(&tape_api::ID)?;
 
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &tape.name);
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let tape_address = tape_derive_pda(*signer_info.key, &tape.name, tape.pda_bump as u8);
+    let writer_address = writer_derive_pda(tape_address, writer.pda_bump as u8);
 
     tape_info.has_address(&tape_address)?;
     writer_info.has_address(&writer_address)?;
-
-    system_program_info
-        .is_program(&system_program::ID)?;
-
-    rent_sysvar_info
-        .is_sysvar(&sysvar::rent::ID)?;
 
     // Can't finalize if the tape with no data on it.
     check_condition(

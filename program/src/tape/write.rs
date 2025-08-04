@@ -27,8 +27,8 @@ pub fn process_tape_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
             ProgramError::InvalidAccountData,
         )?;
 
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &tape.name);
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let tape_address = tape_derive_pda(*signer_info.key, &tape.name, tape.pda_bump as u8);
+    let writer_address = writer_derive_pda(tape_address, writer.pda_bump as u8);
 
     tape_info.has_address(&tape_address)?;
     writer_info.has_address(&writer_address)?;

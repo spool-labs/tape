@@ -49,11 +49,12 @@ struct PackedTape {
     data: Vec<Vec<u8>>,
 }
 
+
+
 #[test]
 fn run_integration() {
     // Setup environment
     let (mut svm, payer) = setup_environment();
-
     // Initialize program
     initialize_program(&mut svm, &payer);
 
@@ -316,7 +317,7 @@ fn do_mining_run(
 fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
     let genesis_name = "genesis".to_string();
     let genesis_name_bytes = to_name(&genesis_name);
-    let (genesis_pubkey, _) = tape_pda(payer.pubkey(), &genesis_name_bytes);
+    let (genesis_pubkey, _) = tape_find_pda(payer.pubkey(), &genesis_name_bytes);
 
     let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
     let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
@@ -402,7 +403,7 @@ fn verify_mint_account(svm: &LiteSVM) {
 
 fn verify_metadata_account(svm: &LiteSVM) {
     let (mint_address, _mint_bump) = mint_pda();
-    let (metadata_address, _metadata_bump) = metadata_pda(mint_address);
+    let (metadata_address, _metadata_bump) = metadata_find_pda(mint_address);
     let account = svm
         .get_account(&metadata_address)
         .expect("Metadata account should exist");
@@ -426,8 +427,8 @@ fn create_and_verify_tape(
     let payer_pk = payer.pubkey();
     let tape_name = format!("tape-name-{tape_index}");
 
-    let (tape_address, _tape_bump) = tape_pda(payer_pk, &to_name(&tape_name));
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(payer_pk, &to_name(&tape_name));
+    let (writer_address, _writer_bump) = writer_find_pda(tape_address);
 
     // Create tape and verify initial state
     let mut stored_tape = create_tape(
@@ -723,7 +724,7 @@ fn finalize_tape(
 
 fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubkey {
     let payer_pk = payer.pubkey();
-    let (miner_address, _miner_bump) = miner_pda(payer_pk, to_name(miner_name));
+    let (miner_address, _miner_bump) = miner_find_pda(payer_pk, to_name(miner_name));
 
     let blockhash = svm.latest_blockhash();
     let ix = instruction::miner::build_register_ix(payer_pk, miner_name);
@@ -748,7 +749,7 @@ fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubke
 
 fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, number: u64) -> StoredSpool {
     let payer_pk = payer.pubkey();
-    let (spool_address, _bump) = spool_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(miner_address, number);
 
     let blockhash = svm.latest_blockhash();
     let ix = instruction::spool::build_create_ix(payer_pk, miner_address, number);

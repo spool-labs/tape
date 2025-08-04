@@ -5,12 +5,43 @@ use tape_api::instruction::{
     spool as spool_ix,
     program as program_ix,
 };
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
 use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
 use pretty_hex::*;
 use bincode;
+
+pub struct ComputeUnitsTracker(HashMap<String,u64>);
+
+impl ComputeUnitsTracker {
+    pub fn new() -> Self {
+        ComputeUnitsTracker(HashMap::new())
+    }
+
+    pub fn track_cus(&mut self, ix: &str, cus: u64){
+        let ix = self.0.entry(ix.to_string()).or_default();
+        *ix = cus;
+    }
+}
+
+pub struct ProgramTest{
+    pub svm: LiteSVM,
+    pub cu_tracker: ComputeUnitsTracker
+}
+
+impl ProgramTest{
+    pub fn from_svm(svm: LiteSVM) -> Self {
+        Self { svm, cu_tracker: ComputeUnitsTracker::new() }
+    }
+
+    pub fn track_cus_consumed(&mut self, ix: &str, cus: u64){
+        self.cu_tracker.track_cus(ix, cus);
+    }
+
+
+}
+
 
 pub fn program_bytes() -> Vec<u8> {
    // Fetch the tape program bytes from target

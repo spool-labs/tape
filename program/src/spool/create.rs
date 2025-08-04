@@ -7,27 +7,27 @@ use solana_program::{
 use steel::*;
 
 pub fn process_spool_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let current_time = Clock::get()?.unix_timestamp;
+ 
     let args = Create::try_from_bytes(data)?;
     let [
         signer_info,
         miner_info,
         spool_info,
         system_program_info, 
-        rent_info,
         slot_hashes_info,
+        clock_info
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    let current_time = Clock::from_account_info(clock_info)?.unix_timestamp;
+
     signer_info.is_signer()?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
 
     let spool_number = u64::from_le_bytes(args.number);
-    let (spool_pda, _bump) = spool_pda(*miner_info.key, spool_number);
+    let (spool_pda, bump) = spool_find_pda(*miner_info.key, spool_number);
 
     spool_info
         .is_empty()?
@@ -67,6 +67,7 @@ pub fn process_spool_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     spool.state             = TapeTree::new(&[empty_seed.as_ref()]);
     spool.contains          = [0; 32];
     spool.total_tapes       = 0;
+    spool.pda_bump          = bump as u64;
 
     Ok(())
 }

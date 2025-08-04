@@ -10,8 +10,7 @@ use tape_api::instruction::tape::{
 };
 use crate::mine::get_base_rate;
 
-pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
-    solana_program::msg!("num accounts: {}", accounts.len());
+pub fn process_initialize(accounts: &[AccountInfo<'_>]) -> ProgramResult {
     let [
         signer_info, 
         archive_info, 
@@ -23,13 +22,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         treasury_ata_info, 
         tape_info,
         writer_info,
-        tape_program_info,
+        _tape_program,
         system_program_info, 
         token_program_info, 
         associated_token_program_info, 
         metadata_program_info, 
-        rent_sysvar_info,
         slot_hashes_info,
+        rent_sysvar_info
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -52,7 +51,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Check mint, metadata, treasury
     let (mint_address, mint_bump) = mint_pda();
     let (treasury_address, treasury_bump) = treasury_pda();
-    let (metadata_address, _metadata_bump) = metadata_pda(mint_address);
+    let (metadata_address, _metadata_bump) = metadata_find_pda(mint_address);
 
     assert_eq!(mint_bump, MINT_BUMP);
     assert_eq!(treasury_bump, TREASURY_BUMP);
@@ -75,21 +74,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     treasury_ata_info
         .is_empty()?
         .is_writable()?;
-
-    // Check programs and sysvars.
-    tape_program_info
-        .is_program(&tape_api::ID)?;
-    system_program_info
-        .is_program(&system_program::ID)?;
-    token_program_info
-        .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
-
-    metadata_program_info
-        .is_program(&mpl_token_metadata::ID)?;
-    rent_sysvar_info
-        .is_sysvar(&sysvar::rent::ID)?;
 
     // Initialize epoch.
     create_program_account::<Epoch>(
@@ -168,6 +152,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[MINT, MINT_SEED],
         MINT_BUMP,
     )?;
+
     initialize_mint_signed_with_bump(
         mint_info,
         treasury_info,
@@ -227,10 +212,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     )?;
 
     // Create the genesis tape
-
     let name = "genesis";
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &to_name(name));
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(*signer_info.key, &to_name(name));
+    let (writer_address, _writer_bump) = writer_find_pda(tape_address);
 
     // Create the tape
     invoke(
