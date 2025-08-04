@@ -49,6 +49,8 @@ pub const SEGMENT_SIZE: usize = 128;
 pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << SEGMENT_TREE_HEIGHT - 1;
 /// Maximum number of tapes in a spool
 pub const MAX_TAPES_PER_SPOOL: usize = 1 << TAPE_TREE_HEIGHT - 1;
+/// Packed Segment size in bytes
+pub const PACKED_SEGMENT_SIZE: usize = packx::SOLUTION_SIZE;
 
 // ====================================================================
 // Token Economics
