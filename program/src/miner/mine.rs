@@ -209,10 +209,11 @@ fn verify_solution(
             poa_solution.to_bytes().as_ref(),
         ]);
 
-        check_condition(
-            miner_commitment.eq(&packed_leaf.to_bytes()),
-            TapeError::CommitmentMismatch,
-        )?;
+        // TODO: enable this check once spool managment is live in the protocol
+        //check_condition(
+        //    miner_commitment.eq(&packed_leaf.to_bytes()),
+        //    TapeError::CommitmentMismatch,
+        //)?;
 
         check_condition(
             verify(
