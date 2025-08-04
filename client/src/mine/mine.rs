@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use solana_sdk::{
     compute_budget::ComputeBudgetInstruction,
     signature::{Keypair, Signature, Signer},
-    transaction::Transaction,
     pubkey::Pubkey,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -34,20 +33,14 @@ pub async fn perform_mining(
         merkle_proof,
     );
 
-    let blockhash_bytes = get_latest_blockhash(client).await?;
-    let recent_blockhash = deserialize(&blockhash_bytes)?;
-    let tx = Transaction::new_signed_with_payer(
+    let signature = build_send_and_confirm_tx(
         &[compute_budget_ix, mine_ix],
-        Some(&signer.pubkey()),
-        &[signer],
-        recent_blockhash,
-    );
-
-    let signature_bytes = send_and_confirm_transaction(client, &tx)
-        .await
-        .map_err(|e| anyhow!("Failed to mine: {}", e))?;
-
-    let signature: Signature = deserialize(&signature_bytes)?;
+        client,
+        signer.pubkey(),
+        &[signer]
+    )
+    .await
+    .map_err(|e| anyhow!("Failed to mine: {}", e))?;
 
     Ok(signature)
 }

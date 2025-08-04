@@ -20,14 +20,14 @@ fn bench_add_segments(c: &mut Criterion) {
     let store = TapeStore::new(temp_dir.path()).unwrap();
 
     let mut group = c.benchmark_group("add_segments");
-    group.bench_function("add_segment", |b| {
+    group.bench_function("write_segment", |b| {
         let tape_address = Pubkey::new_unique();
         let segment_number = 0;
         let data = generate_random_data(SEGMENT_SIZE);
 
         b.iter(|| {
             store
-                .add_segment(
+                .write_segment(
                     black_box(&tape_address),
                     black_box(segment_number),
                     black_box(data.clone()),
@@ -42,7 +42,7 @@ fn bench_add_segments_batch(c: &mut Criterion) {
     let temp_dir = TempDir::new("bench_add_segments_batch").unwrap();
     let store = TapeStore::new(temp_dir.path()).unwrap();
 
-    let mut group = c.benchmark_group("add_segments_batch");
+    let mut group = c.benchmark_group("write_segments_batch");
     group.bench_function("batch", |b| {
         let tape_address = Pubkey::new_unique();
         let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
@@ -53,7 +53,7 @@ fn bench_add_segments_batch(c: &mut Criterion) {
 
         b.iter(|| {
             store
-                .add_segments_batch(
+                .write_segments_batch(
                     black_box(&segment_addresses),
                     black_box(&segment_numbers),
                     black_box(segment_data.clone()),
@@ -70,14 +70,14 @@ fn bench_add_slots(c: &mut Criterion) {
     let store = TapeStore::new(temp_dir.path()).unwrap();
 
     let mut group = c.benchmark_group("add_slots");
-    group.bench_function("add_slot", |b| {
+    group.bench_function("write_slot", |b| {
         let tape_address = Pubkey::new_unique();
         let segment_number = 0;
         let slot = 12345;
 
         b.iter(|| {
             store
-                .add_slot(
+                .write_slot(
                     black_box(&tape_address),
                     black_box(segment_number),
                     black_box(slot),
@@ -92,7 +92,7 @@ fn bench_add_slots_batch(c: &mut Criterion) {
     let temp_dir = TempDir::new("bench_add_slots_batch").unwrap();
     let store = TapeStore::new(temp_dir.path()).unwrap();
 
-    let mut group = c.benchmark_group("add_slots_batch");
+    let mut group = c.benchmark_group("write_slots_batch");
     group.bench_function("batch", |b| {
         let tape_address = Pubkey::new_unique();
         let segment_addresses = vec![tape_address; SEGMENTS_PER_TAPE as usize];
@@ -101,7 +101,7 @@ fn bench_add_slots_batch(c: &mut Criterion) {
 
         b.iter(|| {
             store
-                .add_slots_batch(
+                .write_slots_batch(
                     black_box(&segment_addresses),
                     black_box(&segment_numbers),
                     black_box(&slot_values),
@@ -114,7 +114,7 @@ fn bench_add_slots_batch(c: &mut Criterion) {
 
 
 fn bench_add_tape(c: &mut Criterion) {
-    let mut group = c.benchmark_group("add_tape");
+    let mut group = c.benchmark_group("write_tape");
 
     group.bench_function("add_tape_with_segments", |b| {
         b.iter(|| {
@@ -126,15 +126,15 @@ fn bench_add_tape(c: &mut Criterion) {
             for segment_number in 0..SEGMENTS_PER_TAPE {
                 let data = generate_random_data(SEGMENT_SIZE);
                 store
-                    .add_segment(&tape_address, segment_number, data)
+                    .write_segment(&tape_address, segment_number, data)
                     .unwrap();
                 store
-                    .add_slot(&tape_address, segment_number, segment_number)
+                    .write_slot(&tape_address, segment_number, segment_number)
                     .unwrap();
             }
 
             store
-                .add_tape(black_box(tape_number), black_box(&tape_address))
+                .write_tape(black_box(tape_number), black_box(&tape_address))
                 .unwrap();
         })
     });
@@ -156,15 +156,15 @@ fn bench_add_many_tapes(c: &mut Criterion) {
                 for segment_number in 0..SEGMENTS_PER_TAPE {
                     let data = generate_random_data(SEGMENT_SIZE);
                     store
-                        .add_segment(&tape_address, segment_number, data)
+                        .write_segment(&tape_address, segment_number, data)
                         .unwrap();
                     store
-                        .add_slot(&tape_address, segment_number, segment_number)
+                        .write_slot(&tape_address, segment_number, segment_number)
                         .unwrap();
                 }
 
                 store
-                    .add_tape(black_box(tape_number), black_box(&tape_address))
+                    .write_tape(black_box(tape_number), black_box(&tape_address))
                     .unwrap();
             }
         })
@@ -176,14 +176,14 @@ fn bench_add_tapes_batch(c: &mut Criterion) {
     let temp_dir = TempDir::new("bench_add_tapes_batch").unwrap();
     let store = TapeStore::new(temp_dir.path()).unwrap();
 
-    let mut group = c.benchmark_group("add_tapes_batch");
+    let mut group = c.benchmark_group("write_tapes_batch");
     group.bench_function("batch", |b| {
         let tape_addresses = (0..NUM_TAPES).map(|_| Pubkey::new_unique()).collect::<Vec<_>>();
         let tape_numbers = (1..=NUM_TAPES as u64).collect::<Vec<_>>();
 
         b.iter(|| {
             store
-                .add_tapes_batch(black_box(&tape_numbers), black_box(&tape_addresses))
+                .write_tapes_batch(black_box(&tape_numbers), black_box(&tape_addresses))
                 .unwrap();
         });
     });
@@ -204,23 +204,23 @@ fn bench_get_segment(c: &mut Criterion) {
         for segment_number in 0..SEGMENTS_PER_TAPE {
             let data = generate_random_data(SEGMENT_SIZE);
             store
-                .add_segment(&tape_address, segment_number, data)
+                .write_segment(&tape_address, segment_number, data)
                 .unwrap();
             store
-                .add_slot(&tape_address, segment_number, segment_number)
+                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
-        store.add_tape(tape_number, &tape_address).unwrap();
+        store.write_tape(tape_number, &tape_address).unwrap();
     }
 
-    let mut group = c.benchmark_group("get_segment");
+    let mut group = c.benchmark_group("read_segment");
     group.bench_function("get_segment_many_tapes", |b| {
         let tape_number = tape_numbers[NUM_TAPES / 2];
         let segment_number = SEGMENTS_PER_TAPE / 2;
 
         b.iter(|| {
             store
-                .get_segment(black_box(tape_number), black_box(segment_number))
+                .read_segment(black_box(tape_number), black_box(segment_number))
                 .unwrap();
         })
     });
@@ -239,22 +239,22 @@ fn bench_get_segment_by_address(c: &mut Criterion) {
         for segment_number in 0..SEGMENTS_PER_TAPE {
             let data = generate_random_data(SEGMENT_SIZE);
             store
-                .add_segment(&tape_address, segment_number, data)
+                .write_segment(&tape_address, segment_number, data)
                 .unwrap();
             store
-                .add_slot(&tape_address, segment_number, segment_number)
+                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
     }
 
-    let mut group = c.benchmark_group("get_segment_by_address");
+    let mut group = c.benchmark_group("read_segment_by_address");
     group.bench_function("get_segment_by_address_many_tapes", |b| {
         let tape_address = tape_addresses[NUM_TAPES / 2];
         let segment_number = SEGMENTS_PER_TAPE / 2;
 
         b.iter(|| {
             store
-                .get_segment_by_address(black_box(&tape_address), black_box(segment_number))
+                .read_segment_by_address(black_box(&tape_address), black_box(segment_number))
                 .unwrap();
         })
     });
@@ -274,21 +274,21 @@ fn bench_get_tape_segments(c: &mut Criterion) {
         for segment_number in 0..SEGMENTS_PER_TAPE {
             let data = generate_random_data(SEGMENT_SIZE);
             store
-                .add_segment(&tape_address, segment_number, data)
+                .write_segment(&tape_address, segment_number, data)
                 .unwrap();
             store
-                .add_slot(&tape_address, segment_number, segment_number)
+                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
-        store.add_tape(tape_number, &tape_address).unwrap();
+        store.write_tape(tape_number, &tape_address).unwrap();
     }
 
-    let mut group = c.benchmark_group("get_tape_segments");
+    let mut group = c.benchmark_group("read_tape_segments");
     group.bench_function("get_tape_segments_many_tapes", |b| {
         let tape_address = &tape_addresses[NUM_TAPES / 2];
 
         b.iter(|| {
-            store.get_tape_segments(black_box(tape_address)).unwrap();
+            store.read_tape_segments(black_box(tape_address)).unwrap();
         })
     });
     group.finish();
@@ -307,23 +307,23 @@ fn bench_get_slot(c: &mut Criterion) {
         for segment_number in 0..SEGMENTS_PER_TAPE {
             let data = generate_random_data(SEGMENT_SIZE);
             store
-                .add_segment(&tape_address, segment_number, data)
+                .write_segment(&tape_address, segment_number, data)
                 .unwrap();
             store
-                .add_slot(&tape_address, segment_number, segment_number)
+                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
-        store.add_tape(tape_number, &tape_address).unwrap();
+        store.write_tape(tape_number, &tape_address).unwrap();
     }
 
-    let mut group = c.benchmark_group("get_slot");
+    let mut group = c.benchmark_group("read_slot");
     group.bench_function("get_slot_many_tapes", |b| {
         let tape_number = tape_numbers[NUM_TAPES / 2];
         let segment_number = SEGMENTS_PER_TAPE / 2;
 
         b.iter(|| {
             store
-                .get_slot(black_box(tape_number), black_box(segment_number))
+                .read_slot(black_box(tape_number), black_box(segment_number))
                 .unwrap();
         })
     });
@@ -342,22 +342,22 @@ fn bench_get_slot_by_address(c: &mut Criterion) {
         for segment_number in 0..SEGMENTS_PER_TAPE {
             let data = generate_random_data(SEGMENT_SIZE);
             store
-                .add_segment(&tape_address, segment_number, data)
+                .write_segment(&tape_address, segment_number, data)
                 .unwrap();
             store
-                .add_slot(&tape_address, segment_number, segment_number)
+                .write_slot(&tape_address, segment_number, segment_number)
                 .unwrap();
         }
     }
 
-    let mut group = c.benchmark_group("get_slot_by_address");
+    let mut group = c.benchmark_group("read_slot_by_address");
     group.bench_function("get_slot_by_address_many_tapes", |b| {
         let tape_address = tape_addresses[NUM_TAPES / 2];
         let segment_number = SEGMENTS_PER_TAPE / 2;
 
         b.iter(|| {
             store
-                .get_slot_by_address(black_box(&tape_address), black_box(segment_number))
+                .read_slot_by_address(black_box(&tape_address), black_box(segment_number))
                 .unwrap();
         })
     });

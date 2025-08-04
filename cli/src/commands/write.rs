@@ -21,6 +21,7 @@ use tape_client::{
     TapeFlags, TapeHeader,
 };
 
+use crate::cli::Context;
 use crate::cli::{Cli, Commands};
 use crate::log;
 use crate::utils::{mime_to_type, default_octet};
@@ -29,7 +30,7 @@ const SEGMENTS_PER_TX: usize = 7; // 7 x 128 = 896 bytes
 const SAFE_SIZE: usize = SEGMENT_SIZE * SEGMENTS_PER_TX;
 const MAX_CONCURRENT: usize = 10;
 
-pub async fn handle_write_command(cli: Cli, client: Arc<RpcClient>, payer: Keypair) -> Result<()> {
+pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Write {
         ref filename,
         ref message,
@@ -73,20 +74,25 @@ pub async fn handle_write_command(cli: Cli, client: Arc<RpcClient>, payer: Keypa
 
         let pb = setup_progress_bar(chunks_len as u64);
 
-        let client = Arc::new(client);
+        let Context{
+            rpc,
+            payer,
+            ..
+        } = context;
+
         let payer = Arc::new(payer);
 
         pb.set_message("Creating new tape (please wait)...");
         let (tape_address, writer_address, _sig) =
-            create_tape(&client, &payer, &tape_name).await?;
+            create_tape(&rpc, &payer, &tape_name).await?;
 
-        write_chunks(&client, &payer, tape_address, writer_address, chunks, &pb).await?;
+        write_chunks(&rpc, &payer, tape_address, writer_address, chunks, &pb).await?;
 
         pb.set_message("finalizing tape...");
         tokio::time::sleep(Duration::from_secs(32)).await;
 
-        set_header(&client, &payer, tape_address, header).await?;
-        finalize_tape(&client, &payer, tape_address, writer_address).await?;
+        set_header(&rpc, &payer, tape_address, header).await?;
+        finalize_tape(&rpc, &payer, tape_address, writer_address).await?;
 
         pb.finish_with_message("");
 

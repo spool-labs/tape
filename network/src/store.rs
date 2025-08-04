@@ -10,7 +10,8 @@ use tape_api::SEGMENT_SIZE;
 use thiserror::Error;
 
 pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";
-pub const TAPE_STORE_SECONDARY_DB: &str = "db_tapestore_read";
+pub const TAPE_STORE_SECONDARY_DB_MINE: &str = "db_tapestore_read_mine";
+pub const TAPE_STORE_SECONDARY_DB_WEB: &str = "db_tapestore_read_web";
 pub const TAPE_STORE_SLOTS_KEY_SIZE: usize = 40; // 40 bytes
 pub const TAPE_STORE_MAX_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 pub const TAPE_STORE_MAX_WRITE_BUFFERS: usize = 4; // This is related to concurrency
@@ -135,6 +136,11 @@ impl TapeStore {
         Ok(Self { db })
     }
 
+    pub fn try_init_store() -> Result<(), StoreError> {
+        self::primary()?;
+        Ok(())
+    }
+
     pub fn get_cf_handle(&self, column_family:ColumnFamily) -> Result<Arc<BoundColumnFamily<'_>>,StoreError> {
         self
             .db
@@ -146,9 +152,8 @@ impl TapeStore {
         let path = path.as_ref();
 
         let cfs = create_cf_descriptors();
-
-        let db_opts = Options::default();
-
+        
+        let db_opts= Options::default();
         let db = DB::open_cf_descriptors_read_only(&db_opts, path, cfs, false)?;
 
         Ok(Self { db })
@@ -163,7 +168,12 @@ impl TapeStore {
 
         let cfs = create_cf_descriptors();
 
-        let db_opts = Options::default();
+        let mut db_opts= Options::default();
+        db_opts.create_if_missing(true);
+        db_opts.create_missing_column_families(true);
+        db_opts.set_write_buffer_size(TAPE_STORE_MAX_WRITE_BUFFER_SIZE);
+        db_opts.set_max_write_buffer_number(TAPE_STORE_MAX_WRITE_BUFFERS as i32);
+        db_opts.increase_parallelism(num_cpus::get() as i32);
 
         let db = DB::open_cf_descriptors_as_secondary(
             &db_opts,
@@ -212,7 +222,7 @@ impl TapeStore {
         Ok((height, drift))
     }
 
-    pub fn add_tape(&self, tape_number: u64, address: &Pubkey) -> Result<(), StoreError> {
+    pub fn write_tape(&self, tape_number: u64, address: &Pubkey) -> Result<(), StoreError> {
         let cf_tape_by_number = self.get_cf_handle(ColumnFamily::TapeByNumber)?;
 
         let cf_tape_by_address = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
@@ -228,7 +238,7 @@ impl TapeStore {
         Ok(())
     }
 
-    pub fn add_tapes_batch(
+    pub fn write_tapes_batch(
         &self,
         tape_number_vec: &[u64],
         address_vec: &[Pubkey],
@@ -256,7 +266,7 @@ impl TapeStore {
     }
     
 
-    pub fn add_segment(
+    pub fn write_segment(
         &self,
         tape_address: &Pubkey,
         segment_number: u64,
@@ -277,7 +287,7 @@ impl TapeStore {
         Ok(())
     }
 
-    pub fn add_segments_batch(
+    pub fn write_segments_batch(
         &self,
         tape_address_vec: &[Pubkey],
         segment_number_vec: &[u64],
@@ -310,7 +320,7 @@ impl TapeStore {
 
     }
 
-    pub fn add_slot(
+    pub fn write_slot(
         &self,
         tape_address: &Pubkey,
         segment_number: u64,
@@ -327,7 +337,7 @@ impl TapeStore {
         Ok(())
     }
 
-    pub fn add_slots_batch(
+    pub fn write_slots_batch(
         &self,
         tape_address_vec: &[Pubkey],
         segment_number_vec: &[u64],
@@ -355,7 +365,7 @@ impl TapeStore {
     }
     
 
-    pub fn get_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
+    pub fn read_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
 
         let key = address.to_bytes().to_vec();
@@ -371,7 +381,7 @@ impl TapeStore {
         ))
     }
 
-    pub fn get_tape_address(&self, tape_number: u64) -> Result<Pubkey, StoreError> {
+    pub fn read_tape_address(&self, tape_number: u64) -> Result<Pubkey, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::TapeByNumber)?;
 
         let key = tape_number.to_be_bytes().to_vec();
@@ -384,7 +394,7 @@ impl TapeStore {
             .map_err(|e| StoreError::InvalidPubkey(e.to_string()))
     }
 
-    pub fn get_segment_count(
+    pub fn read_segment_count(
         &self,
         tape_address: &Pubkey,
     ) -> Result<usize, StoreError> {
@@ -400,7 +410,7 @@ impl TapeStore {
         Ok(count)
     }
 
-    pub fn get_tape_segments(
+    pub fn read_tape_segments(
         &self,
         tape_address: &Pubkey,
     ) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
@@ -432,7 +442,7 @@ impl TapeStore {
         Ok(segments)
     }
 
-    pub fn get_segment_by_address(
+    pub fn read_segment_by_address(
         &self,
         tape_address: &Pubkey,
         segment_number: u64,
@@ -451,14 +461,14 @@ impl TapeStore {
         Ok(segment_data)
     }
 
-    pub fn get_segment(
+    pub fn read_segment(
         &self,
         tape_number: u64,
         segment_number: u64,
     ) -> Result<Vec<u8>, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::Segments)?;
 
-        let address = self.get_tape_address(tape_number)?;
+        let address = self.read_tape_address(tape_number)?;
 
         let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
         key.extend_from_slice(&address.to_bytes());
@@ -472,14 +482,14 @@ impl TapeStore {
         Ok(segment_data)
     }
 
-    pub fn get_slot(
+    pub fn read_slot(
         &self,
         tape_number: u64,
         segment_number: u64,
     ) -> Result<u64, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::Slots)?;
 
-        let address = self.get_tape_address(tape_number)?;
+        let address = self.read_tape_address(tape_number)?;
 
         let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
         key.extend_from_slice(&address.to_bytes());
@@ -495,7 +505,7 @@ impl TapeStore {
         ))
     }
 
-    pub fn get_slot_by_address(
+    pub fn read_slot_by_address(
         &self,
         tape_address: &Pubkey,
         segment_number: u64,
@@ -516,7 +526,7 @@ impl TapeStore {
         ))
     }
 
-    pub fn get_local_stats(&self) -> Result<LocalStats, StoreError> {
+    pub fn read_local_stats(&self) -> Result<LocalStats, StoreError> {
         let tapes = self.count_tapes()?;
         let segments = self.count_segments()?;
         let size_bytes = self.db_size()?;
@@ -551,6 +561,17 @@ impl Drop for TapeStore {
     fn drop(&mut self) {
         // RocksDB handles cleanup automatically
     }
+}
+
+pub fn run_refresh_store(store: &Arc<TapeStore>) {
+    let store = Arc::clone(store);
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(15);
+        loop {
+            store.catch_up_with_primary().unwrap();
+            tokio::time::sleep(interval).await;
+        }
+    });
 }
 
 fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
@@ -634,13 +655,22 @@ pub fn primary() -> Result<TapeStore, StoreError> {
     TapeStore::new(&db_primary)
 }
 
-pub fn secondary() -> Result<TapeStore, StoreError> {
+pub fn secondary_mine() -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;
     let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
-    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_MINE);
     std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
     TapeStore::new_secondary(&db_primary, &db_secondary)
 }
+
+pub fn secondary_web() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_WEB);
+    std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
+    TapeStore::new_secondary(&db_primary, &db_secondary)
+}
+
 
 pub fn read_only() -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;
@@ -666,10 +696,10 @@ mod tests {
         let tape_number = 1;
         let address = Pubkey::new_unique();
 
-        store.add_tape(tape_number, &address)?;
-        let retrieved_number = store.get_tape_number(&address)?;
+        store.write_tape(tape_number, &address)?;
+        let retrieved_number = store.read_tape_number(&address)?;
         assert_eq!(retrieved_number, tape_number);
-        let retrieved_address = store.get_tape_address(tape_number)?;
+        let retrieved_address = store.read_tape_address(tape_number)?;
         assert_eq!(retrieved_address, address);
 
         Ok(())
@@ -684,13 +714,13 @@ mod tests {
         let data = vec![1, 2, 3];
         let slot = 100;
 
-        store.add_tape(tape_number, &address)?;
-        store.add_segment(&address, segment_number, data.clone())?;
-        store.add_slot(&address, segment_number, slot)?;
+        store.write_tape(tape_number, &address)?;
+        store.write_segment(&address, segment_number, data.clone())?;
+        store.write_slot(&address, segment_number, slot)?;
 
-        let retrieved_data = store.get_segment(tape_number, segment_number)?;
+        let retrieved_data = store.read_segment(tape_number, segment_number)?;
         assert_eq!(retrieved_data, data);
-        let retrieved_slot = store.get_slot(tape_number, segment_number)?;
+        let retrieved_slot = store.read_slot(tape_number, segment_number)?;
         assert_eq!(retrieved_slot, slot);
 
         Ok(())
@@ -707,25 +737,25 @@ mod tests {
         let slot_1 = 100;
         let slot_2 = 101;
 
-        store.add_segment(&address, 1, segment_data_2.clone())?;
-        store.add_slot(&address, 1, slot_2)?;
-        store.add_segment(&address, 0, segment_data_1.clone())?;
-        store.add_slot(&address, 0, slot_1)?;
+        store.write_segment(&address, 1, segment_data_2.clone())?;
+        store.write_slot(&address, 1, slot_2)?;
+        store.write_segment(&address, 0, segment_data_1.clone())?;
+        store.write_slot(&address, 0, slot_1)?;
 
-        store.add_tape(tape_number, &address)?;
+        store.write_tape(tape_number, &address)?;
 
-        let segments = store.get_tape_segments(&address)?;
+        let segments = store.read_tape_segments(&address)?;
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0], (0, segment_data_1));
         assert_eq!(segments[1], (1, segment_data_2));
 
-        let slot_retrieved_0 = store.get_slot(tape_number, 0)?;
+        let slot_retrieved_0 = store.read_slot(tape_number, 0)?;
         assert_eq!(slot_retrieved_0, slot_1);
-        let slot_retrieved_1 = store.get_slot(tape_number, 1)?;
+        let slot_retrieved_1 = store.read_slot(tape_number, 1)?;
         assert_eq!(slot_retrieved_1, slot_2);
 
         let non_address = Pubkey::new_unique();
-        let segments = store.get_tape_segments(&non_address)?;
+        let segments = store.read_tape_segments(&non_address)?;
         assert_eq!(segments.len(), 0);
 
         Ok(())
@@ -739,12 +769,12 @@ mod tests {
         let data = vec![1, 2, 3];
         let slot = 100;
 
-        store.add_segment(&address, segment_number, data.clone())?;
-        store.add_slot(&address, segment_number, slot)?;
+        store.write_segment(&address, segment_number, data.clone())?;
+        store.write_slot(&address, segment_number, slot)?;
 
-        let retrieved_data = store.get_segment_by_address(&address, segment_number)?;
+        let retrieved_data = store.read_segment_by_address(&address, segment_number)?;
         assert_eq!(retrieved_data, data);
-        let retrieved_slot = store.get_slot_by_address(&address, segment_number)?;
+        let retrieved_slot = store.read_slot_by_address(&address, segment_number)?;
         assert_eq!(retrieved_slot, slot);
 
         Ok(())
@@ -756,7 +786,7 @@ mod tests {
         let address = Pubkey::new_unique();
 
         let oversized_data = vec![0; SEGMENT_SIZE + 1];
-        let result = store.add_segment(&address, 0, oversized_data);
+        let result = store.write_segment(&address, 0, oversized_data);
         assert!(matches!(result, Err(StoreError::SegmentSizeExceeded(_))));
 
         Ok(())
@@ -767,10 +797,10 @@ mod tests {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
 
-        let result = store.get_tape_number(&address);
+        let result = store.read_tape_number(&address);
         assert!(matches!(result, Err(StoreError::TapeNotFoundForAddress(_))));
 
-        let result = store.get_tape_address(1);
+        let result = store.read_tape_address(1);
         assert!(matches!(result, Err(StoreError::TapeNotFound(1))));
 
         Ok(())
@@ -785,23 +815,23 @@ mod tests {
         let tape2_number = 2;
         let tape2_address = Pubkey::new_unique();
 
-        store.add_segment(&tape1_address, 0, vec![1, 2, 3])?;
-        store.add_slot(&tape1_address, 0, 100)?;
-        store.add_tape(tape1_number, &tape1_address)?;
+        store.write_segment(&tape1_address, 0, vec![1, 2, 3])?;
+        store.write_slot(&tape1_address, 0, 100)?;
+        store.write_tape(tape1_number, &tape1_address)?;
 
-        store.add_segment(&tape2_address, 0, vec![4, 5, 6])?;
-        store.add_slot(&tape2_address, 0, 101)?;
-        store.add_tape(tape2_number, &tape2_address)?;
+        store.write_segment(&tape2_address, 0, vec![4, 5, 6])?;
+        store.write_slot(&tape2_address, 0, 101)?;
+        store.write_tape(tape2_number, &tape2_address)?;
 
-        assert_eq!(store.get_tape_number(&tape1_address)?, tape1_number);
-        assert_eq!(store.get_tape_address(tape1_number)?, tape1_address);
-        let tape1_segments = store.get_tape_segments(&tape1_address)?;
+        assert_eq!(store.read_tape_number(&tape1_address)?, tape1_number);
+        assert_eq!(store.read_tape_address(tape1_number)?, tape1_address);
+        let tape1_segments = store.read_tape_segments(&tape1_address)?;
         assert_eq!(tape1_segments.len(), 1);
         assert_eq!(tape1_segments[0], (0, vec![1, 2, 3]));
 
-        assert_eq!(store.get_tape_number(&tape2_address)?, tape2_number);
-        assert_eq!(store.get_tape_address(tape2_number)?, tape2_address);
-        let tape2_segments = store.get_tape_segments(&tape2_address)?;
+        assert_eq!(store.read_tape_number(&tape2_address)?, tape2_number);
+        assert_eq!(store.read_tape_address(tape2_number)?, tape2_address);
+        let tape2_segments = store.read_tape_segments(&tape2_address)?;
         assert_eq!(tape2_segments.len(), 1);
         assert_eq!(tape2_segments[0], (0, vec![4, 5, 6]));
 
@@ -816,11 +846,11 @@ mod tests {
         let address = Pubkey::new_unique();
         let segment_data = vec![1, 2, 3];
 
-        store.add_segment(&address, segment_number, segment_data.clone())?;
-        store.add_slot(&address, segment_number, 100)?;
-        store.add_tape(tape_number, &address)?;
+        store.write_segment(&address, segment_number, segment_data.clone())?;
+        store.write_slot(&address, segment_number, 100)?;
+        store.write_tape(tape_number, &address)?;
 
-        let retrieved_data = store.get_segment(tape_number, segment_number)?;
+        let retrieved_data = store.read_segment(tape_number, segment_number)?;
         assert_eq!(retrieved_data, segment_data);
 
         Ok(())
@@ -833,9 +863,9 @@ mod tests {
         let segment_number = 0;
         let address = Pubkey::new_unique();
 
-        store.add_tape(tape_number, &address)?;
+        store.write_tape(tape_number, &address)?;
 
-        let result = store.get_segment(tape_number, segment_number);
+        let result = store.read_segment(tape_number, segment_number);
         assert!(matches!(result, Err(StoreError::SegmentNotFound(_, s)) if s == segment_number));
 
         Ok(())
@@ -849,16 +879,16 @@ mod tests {
         let segment_data_1 = vec![1, 2, 3];
         let segment_data_2 = vec![4, 5, 6];
 
-        store.add_segment(&address, 0, segment_data_1.clone())?;
-        store.add_slot(&address, 0, 100)?;
-        store.add_segment(&address, 1, segment_data_2.clone())?;
-        store.add_slot(&address, 1, 101)?;
-        store.add_tape(tape_number, &address)?;
+        store.write_segment(&address, 0, segment_data_1.clone())?;
+        store.write_slot(&address, 0, 100)?;
+        store.write_segment(&address, 1, segment_data_2.clone())?;
+        store.write_slot(&address, 1, 101)?;
+        store.write_tape(tape_number, &address)?;
 
-        let retrieved_data_1 = store.get_segment(tape_number, 0)?;
+        let retrieved_data_1 = store.read_segment(tape_number, 0)?;
         assert_eq!(retrieved_data_1, segment_data_1);
 
-        let retrieved_data_2 = store.get_segment(tape_number, 1)?;
+        let retrieved_data_2 = store.read_segment(tape_number, 1)?;
         assert_eq!(retrieved_data_2, segment_data_2);
 
         Ok(())
@@ -867,17 +897,17 @@ mod tests {
     #[test]
     fn test_get_local_stats() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
-        let stats = store.get_local_stats()?;
+        let stats = store.read_local_stats()?;
         assert_eq!(stats.tapes, 0);
         assert_eq!(stats.segments, 0);
 
         let tape_number = 1;
         let address = Pubkey::new_unique();
-        store.add_tape(tape_number, &address)?;
-        store.add_segment(&address, 0, vec![1, 2, 3])?;
-        store.add_segment(&address, 1, vec![4, 5, 6])?;
+        store.write_tape(tape_number, &address)?;
+        store.write_segment(&address, 0, vec![1, 2, 3])?;
+        store.write_segment(&address, 1, vec![4, 5, 6])?;
 
-        let stats = store.get_local_stats()?;
+        let stats = store.read_local_stats()?;
         assert_eq!(stats.tapes, 1);
         assert_eq!(stats.segments, 2);
         assert!(stats.size_bytes > 0);

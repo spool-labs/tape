@@ -6,7 +6,6 @@ use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use solana_sdk::{
     signature::{Keypair, Signer, Signature},
-    transaction::Transaction,
     pubkey::Pubkey,
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -235,16 +234,12 @@ pub async fn set_header(
         header_data
     );
 
-    let blockhash_bytes = get_latest_blockhash(client).await?;
-    let recent_blockhash = deserialize(&blockhash_bytes)?;
-    let create_tx = Transaction::new_signed_with_payer(
+    let signature = build_send_and_confirm_tx(
         &[set_header_ix],
-        Some(&signer.pubkey()),
-        &[signer],
-        recent_blockhash,
-    );
-
-    let signature = send_and_confirm(client, &create_tx).await?;
+        client,
+        signer.pubkey(),
+        &[signer]
+    ).await?;
 
     Ok((tape_address, signature))
 }

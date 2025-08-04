@@ -1,12 +1,10 @@
 use std::env;
 use std::io::{self, Write};
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
 use num_enum::TryFromPrimitive;
-use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 
 use tape_client as tapedrive;
@@ -14,38 +12,33 @@ use tape_api::SEGMENT_SIZE;
 use tape_api::utils::padded_array;
 use tape_network::archive::sync_from_block;
 use tape_network::snapshot::{create_snapshot, load_from_snapshot};
-use tape_network::store::{
-    primary as get_primary_store, 
-    read_only as get_read_only_store, 
-    StoreError,
-    TapeStore,
-};
+use tape_network::store::StoreError;
 use tapedrive::{decode_tape, MimeType, TapeHeader};
 
-use crate::cli::{Cli, Commands, SnapshotCommands};
+use crate::cli::{Cli, Commands, Context, SnapshotCommands};
 use crate::log;
 use crate::utils::write_output;
 
-pub async fn handle_snapshot_commands(cli: Cli, client: Arc<RpcClient>,) -> Result<()> {
+pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Snapshot(snapshot) = cli.command {
         match snapshot {
             SnapshotCommands::Stats {} => {
-                handle_stats()?
+                handle_stats(context)?
             }
             SnapshotCommands::Resync { tape } => {
-                handle_resync(&client, &tape).await?
+                handle_resync(context, &tape).await?
             }
             SnapshotCommands::Create { output } => {
-                handle_create(output)?
+                handle_create(context, output)?
             }
             SnapshotCommands::Load { input } => {
                 handle_load(&input)?
             }
             SnapshotCommands::GetTape { tape, output, raw } => {
-                handle_get_tape(&client, &tape, output, raw).await?
+                handle_get_tape(context, &tape, output, raw).await?
             }
             SnapshotCommands::GetSegment { tape, index } => {
-                handle_get_segment(&client, &tape, index).await?
+                handle_get_segment(context, &tape, index).await?
             }
         }
     }
@@ -53,9 +46,9 @@ pub async fn handle_snapshot_commands(cli: Cli, client: Arc<RpcClient>,) -> Resu
     Ok(())
 }
 
-fn handle_stats() -> Result<()> {
-    let store: TapeStore = get_read_only_store()?;
-    let stats = store.get_local_stats()?;
+fn handle_stats(context: Context) -> Result<()> {
+    let store = context.open_read_only_store_conn()?;
+    let stats = store.read_local_stats()?;
     log::print_section_header("Local Store Stats");
     log::print_message(&format!("Number of Tapes: {}", stats.tapes));
     log::print_message(&format!("Number of Segments: {}", stats.segments));
@@ -63,21 +56,21 @@ fn handle_stats() -> Result<()> {
     Ok(())
 }
 
-async fn handle_resync(client: &Arc<RpcClient>, tape: &str) -> Result<()> {
+async fn handle_resync(context: Context, tape: &str) -> Result<()> {
     let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
-    let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
+    let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
     let starting_slot = tape_account.tail_slot;
-    let store: TapeStore = get_primary_store()?;
+    let store = context.open_primary_store_conn()?;
     log::print_message(&format!("Re-syncing tape: {tape}, please wait"));
-    sync_from_block(&store, client, &tape_pubkey, starting_slot).await?;
+    sync_from_block(&store, context.rpc(), &tape_pubkey, starting_slot).await?;
     log::print_message("Done");
     Ok(())
 }
 
-fn handle_create(output: Option<String>) -> Result<()> {
+fn handle_create(context: Context, output: Option<String>) -> Result<()> {
     let snapshot_path =
         output.unwrap_or_else(|| format!("snapshot_{}.tar.gz", Utc::now().timestamp()));
-    let store: TapeStore = get_read_only_store()?;
+    let store = context.open_read_only_store_conn()?;
     create_snapshot(&store.db, &snapshot_path)?;
     log::print_message(&format!("Snapshot created at: {snapshot_path}"));
     Ok(())
@@ -91,19 +84,19 @@ fn handle_load(input: &str) -> Result<()> {
 }
 
 async fn handle_get_tape(
-    client: &Arc<RpcClient>,
+    context: Context,
     tape: &str,
     output: Option<String>,
     raw: bool,
 ) -> Result<()> {
     let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
-    let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
+    let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
     let total_segments = tape_account.total_segments;
-    let store: TapeStore = get_read_only_store()?;
+    let store = context.open_read_only_store_conn()?;
     let mut data: Vec<u8> = Vec::with_capacity((total_segments as usize) * SEGMENT_SIZE);
     let mut missing: Vec<u64> = Vec::new();
     for seg_idx in 0..total_segments {
-        match store.get_segment_by_address(&tape_pubkey, seg_idx) {
+        match store.read_segment_by_address(&tape_pubkey, seg_idx) {
             Ok(seg) => {
                 let canonical_seg = padded_array::<SEGMENT_SIZE>(&seg);
                 data.extend_from_slice(&canonical_seg);
@@ -139,9 +132,9 @@ async fn handle_get_tape(
     Ok(())
 }
 
-async fn handle_get_segment(client: &Arc<RpcClient>, tape: &str, index: u32) -> Result<()> {
+async fn handle_get_segment(context: Context, tape: &str, index: u32) -> Result<()> {
     let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
-    let (tape_account, _) = tapedrive::get_tape_account(client, &tape_pubkey).await?;
+    let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
     if (index as u64) >= tape_account.total_segments {
         anyhow::bail!(
             "Invalid segment index: {} (tape has {} segments)",
@@ -150,9 +143,9 @@ async fn handle_get_segment(client: &Arc<RpcClient>, tape: &str, index: u32) -> 
         );
     }
 
-    let store: TapeStore = get_read_only_store()?;
+    let store = context.open_read_only_store_conn()?;
 
-    match store.get_segment_by_address(&tape_pubkey, index as u64) {
+    match store.read_segment_by_address(&tape_pubkey, index as u64) {
         Ok(data) => {
             let mut stdout = io::stdout();
             stdout.write_all(&data)?;

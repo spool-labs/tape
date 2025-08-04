@@ -15,7 +15,7 @@ pub fn create_snapshot(db: &DB, archive_path: impl AsRef<Path>) -> Result<(), St
     let checkpoint = Checkpoint::new(db)?;
     let temp_dir = TempDir::new("tapestore")?;
     let checkpoint_dir = temp_dir.path().join("checkpoint");
-    checkpoint.create_checkpoint(checkpoint_dir.to_str().unwrap())?;
+    checkpoint.create_checkpoint(checkpoint_dir.to_str().ok_or(StoreError::InvalidPath)?)?;
 
     let file = File::create(archive_path)?;
     let enc = GzEncoder::new(file, Compression::default());

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use solana_sdk::{
     signature::{Keypair, Signer},
-    transaction::Transaction,
     pubkey::Pubkey,
 };
 use tape_api::instruction::tape::build_finalize_ix;
@@ -24,16 +23,12 @@ pub async fn finalize_tape(
         writer_address,
     );
 
-    let blockhash_bytes = get_latest_blockhash(client).await?;
-    let recent_blockhash = deserialize(&blockhash_bytes)?;
-    let finalize_tx = Transaction::new_signed_with_payer(
+    build_send_and_confirm_tx(
         &[finalize_ix],
-        Some(&signer.pubkey()),
-        &[signer],
-        recent_blockhash,
-    );
-
-    send(client, &finalize_tx).await?;
+        client,
+        signer.pubkey(),
+        &[signer]
+    ).await?;
 
     Ok(())
 }

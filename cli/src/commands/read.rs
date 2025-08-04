@@ -1,13 +1,11 @@
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use num_enum::TryFromPrimitive;
-use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-use std::sync::Arc;
 use tokio::{task, time::Duration};
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Context, Commands};
 use crate::log;
 use crate::utils::write_output;
 
@@ -16,7 +14,7 @@ use tape_client::{
     TapeHeader,
 };
 
-pub async fn handle_read_command(cli: Cli, client: Arc<RpcClient>) -> Result<()> {
+pub async fn handle_read_command(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Read { tape, output } = cli.command {
         let tape_address = Pubkey::from_str(&tape)
             .map_err(|_| anyhow::anyhow!("Invalid tape address: {}", tape))?;
@@ -27,7 +25,7 @@ pub async fn handle_read_command(cli: Cli, client: Arc<RpcClient>) -> Result<()>
         let pb = setup_progress_bar();
 
         pb.set_message("Fetching tape metadata...");
-        let (tape, _) = get_tape_account(&client, &tape_address).await?;
+        let (tape, _) = get_tape_account(context.rpc(), &tape_address).await?;
         let header = TapeHeader::try_from_bytes(&tape.header)?;
 
         pb.set_style(
@@ -41,7 +39,7 @@ pub async fn handle_read_command(cli: Cli, client: Arc<RpcClient>) -> Result<()>
 
         let mut state = init_read(tape.tail_slot);
 
-        while process_next_block(&client, &tape_address, &mut state).await? {
+        while process_next_block(context.rpc(), &tape_address, &mut state).await? {
             pb.set_position(state.segments_len() as u64);
         }
 

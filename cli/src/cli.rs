@@ -1,6 +1,15 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::signature::Keypair;
+use tape_network::store::TapeStore;
+use std::env;
 use std::str::FromStr;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::keypair::{get_keypair_path, get_payer};
 
 #[derive(Parser)]
 #[command(
@@ -216,4 +225,59 @@ impl FromStr for Cluster {
             )),
         }
     }
+}
+
+pub struct Context {
+    pub rpc: Arc<RpcClient>,
+    pub keypair_path: PathBuf,
+    pub payer: Keypair
+}
+
+impl Context{
+    pub fn try_build(cli:&Cli) -> Result<Self> {
+        let rpc_url = cli.cluster.rpc_url();
+        let rpc = Arc::new(
+            RpcClient::new_with_commitment(rpc_url.clone(),
+            CommitmentConfig::finalized())
+        );
+        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+        let payer = get_payer(keypair_path.clone())?;
+        
+        Ok(Self {
+             rpc,
+             keypair_path,
+             payer
+        })
+
+    }
+
+    pub fn keyapir_path(&self) -> &PathBuf{
+        &self.keypair_path
+    }
+
+    pub fn rpc(&self) -> &Arc<RpcClient>{
+        &self.rpc
+    }
+
+    pub fn open_primary_store_conn(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::primary()?)
+    }
+
+    pub fn open_secondary_store_conn_mine(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::secondary_mine()?)
+    }
+
+    pub fn open_secondary_store_conn_web(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::secondary_web()?)
+    }
+
+    pub fn open_read_only_store_conn(&self) -> Result<TapeStore> {
+        Ok(tape_network::store::read_only()?)
+    }
+
+
+    pub fn payer(&self) -> &Keypair{
+        &self.payer
+    }
+
 }

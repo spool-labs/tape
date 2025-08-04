@@ -4,16 +4,15 @@ mod log;
 mod commands;
 mod utils;
 
-use std::sync::Arc;
 
 use anyhow::{Ok, Result};
 use clap::Parser;
-use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use cli::{Cli, Commands};
-use keypair::{ get_payer, get_keypair_path };
 use commands::{admin, read, write, info, snapshot, network, claim};
 use env_logger::{self, Env};
+use tape_network::store::TapeStore;
+
+use crate::cli::Context;
 
 
 fn main() -> Result<()>{
@@ -38,9 +37,9 @@ async fn run_tape_cli() -> Result<()> {
     log::print_title(format!("⊙⊙ TAPEDRIVE {}", env!("CARGO_PKG_VERSION")).as_str());
 
     let cli = Cli::parse();
-    let rpc_url = cli.cluster.rpc_url();
-    let rpc_client = Arc::new(RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::finalized()));
-    let keypair_path = get_keypair_path(cli.keypair_path.clone());
+  
+
+    let context = Context::try_build(&cli)?;
 
     match cli.command {
         Commands::Init {} |
@@ -50,37 +49,36 @@ async fn run_tape_cli() -> Result<()> {
         => {
             log::print_message(&format!(
                 "Using keypair from {}",
-                keypair_path.display()
+                context.keyapir_path().display()
+                
             ));
         }
         _ => {}
     }
 
-    log::print_message(&format!("Connected to: {rpc_url}"));
+    log::print_message(&format!("Connected to: {}", context.rpc().url()));
 
     match cli.command {
         // Admin Commands
 
         Commands::Init { .. } => {
-            let payer = get_payer(keypair_path)?;
-            admin::handle_admin_commands(cli, rpc_client, payer).await?;
+            TapeStore::try_init_store()?;
+            admin::handle_admin_commands(cli, context).await?;
         }
 
         // Tape Commands
 
         Commands::Read { .. } => {
-            read::handle_read_command(cli, rpc_client).await?;
+            read::handle_read_command(cli, context).await?;
         }
         Commands::Write { .. } => {
-            let payer = get_payer(keypair_path)?;
-            write::handle_write_command(cli, rpc_client, payer).await?;
+            write::handle_write_command(cli, context).await?;
         }
 
         // Miner Commands
 
         Commands::Claim { .. } => {
-            let payer = get_payer(keypair_path)?;
-            claim::handle_claim_command(cli, rpc_client, payer).await?;
+            claim::handle_claim_command(cli, context).await?;
         }
 
         // Network Commands
@@ -89,19 +87,17 @@ async fn run_tape_cli() -> Result<()> {
         Commands::Web { .. } |
         Commands::Archive { .. } |
         Commands::Mine { .. } => {
-            let payer = get_payer(keypair_path)?;
-            network::handle_network_commands(cli, rpc_client, payer).await?;
+            network::handle_network_commands(cli, context).await?;
         }
 
         // Info Commands
         Commands::Info(_) => {
-            let payer = get_payer(keypair_path)?;
-            info::handle_info_commands(cli, rpc_client, payer).await?;
+            info::handle_info_commands(cli, context).await?;
         }
 
         // Store Commands
         Commands::Snapshot(_) => {
-            snapshot::handle_snapshot_commands(cli, rpc_client).await?;
+            snapshot::handle_snapshot_commands(cli, context).await?;
         }
     }
 
