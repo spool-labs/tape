@@ -17,6 +17,7 @@ name = "tape"
 
 [features]
 default = []
+airdrop = []
 
 [dependencies]
 crankx.workspace = true

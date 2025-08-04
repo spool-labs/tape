@@ -9,16 +9,22 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum ProgramInstruction {
     Unknown = 0,
-    Initialize,     // Initialize the program, setting up necessary accounts
+    Initialize, // Initialize the program, setting up necessary accounts
+    Airdrop,    // Airdrop tokens to the fee payer (devnet/localnet only)
 }
 
 instruction!(ProgramInstruction, Initialize);
-
+instruction!(ProgramInstruction, Airdrop);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Initialize {}
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Airdrop {
+    pub amount: [u8; 8],
+}
 
 pub fn build_initialize_ix(
     signer: Pubkey
@@ -65,5 +71,28 @@ pub fn build_initialize_ix(
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: Initialize {}.to_bytes(),
+    }
+}
+
+pub fn build_airdrop_ix(
+    signer: Pubkey,
+    beneficiary: Pubkey, 
+    amount: u64
+) -> Instruction {
+    let (mint_pda, _mint_bump) = mint_pda();
+    let (treasury_pda, _treasury_bump) = treasury_pda();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(beneficiary, false),
+            AccountMeta::new(mint_pda, false),
+            AccountMeta::new(treasury_pda, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: Airdrop {
+            amount: amount.to_le_bytes(),
+        }.to_bytes(),
     }
 }

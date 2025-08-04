@@ -1,8 +1,8 @@
 #![cfg(test)]
 pub mod utils;
-use steel::Zeroable;
 use utils::*;
 
+use steel::Zeroable;
 use solana_sdk::{
     signer::Signer,
     transaction::Transaction,
