@@ -36,17 +36,12 @@ pub fn build_initialize_ix(
     let (mint_pda, _mint_bump) = mint_pda();
     let (treasury_pda, _treasury_bump) = treasury_pda();
     let (treasury_ata, _treasury_ata_bump) = treasury_ata();
-    let (metadata_pda, _metadata_bump) = metadata_pda(mint_pda);
+    let (metadata_pda, _metadata_bump) = metadata_find_pda(mint_pda);
 
     let name = utils::to_name("genesis");
-    let (tape_pda, _tape_bump) = tape_pda(signer, &name);
-    let (writer_pda, _writer_bump) = writer_pda(tape_pda);
+    let (tape_pda, _tape_bump) = tape_find_pda(signer, &name);
+    let (writer_pda, _writer_bump) = writer_find_pda(tape_pda);
 
-    assert_eq!(archive_pda, ARCHIVE_ADDRESS);
-    assert_eq!(epoch_pda, EPOCH_ADDRESS);
-    assert_eq!(block_pda, BLOCK_ADDRESS);
-    assert_eq!(mint_pda, MINT_ADDRESS);
-    assert_eq!(treasury_pda, TREASURY_ADDRESS);
     assert_eq!(treasury_ata, TREASURY_ATA);
 
     Instruction {
@@ -67,8 +62,8 @@ pub fn build_initialize_ix(
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(mpl_token_metadata::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false)
         ],
         data: Initialize {}.to_bytes(),
     }

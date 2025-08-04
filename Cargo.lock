@@ -6616,6 +6616,7 @@ dependencies = [
  "num_enum",
  "packx",
  "solana-program",
+ "solana-sha256-hasher",
  "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
  "steel",

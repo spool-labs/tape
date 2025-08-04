@@ -8,6 +8,7 @@ use super::AccountType;
 pub struct Writer {
     pub tape: Pubkey,
     pub state: SegmentTree, 
+    pub pda_bump: u64,
 }
 
 state!(AccountType, Writer);

@@ -12,6 +12,50 @@ use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
 use pretty_hex::*;
 use bincode;
 
+use crate::setup_environment;
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum ProgramIx {
+    InitProgram
+}
+
+pub struct ComputeUnitsTracker(HashMap<ProgramIx, u64>);
+
+impl ComputeUnitsTracker {
+    pub fn new() -> Self {
+        ComputeUnitsTracker(HashMap::new())
+    }
+
+    pub fn track_cus(&mut self, ix: ProgramIx, cus: u64){
+        let ix = self.0.entry(ix).or_default();
+        *ix  += cus;
+    }
+}
+
+pub struct SvmWithCUTracker{
+    pub svm: LiteSVM,
+    pub cu_tracker: ComputeUnitsTracker,
+    pub payer: Keypair
+}
+
+impl SvmWithCUTracker{
+    pub fn new() -> Self {
+        let (svm, payer) = setup_environment();
+        Self { svm, cu_tracker: ComputeUnitsTracker::new(), payer }
+    }
+
+    pub fn payer(&self) -> &Keypair {
+        &self.payer
+    }
+
+    pub fn track_cus_consumed(&mut self, ix: ProgramIx, cus: u64){
+        self.cu_tracker.track_cus(ix, cus);
+    }
+
+
+}
+
+
 pub fn program_bytes() -> Vec<u8> {
    // Fetch the tape program bytes from target
    let mut so_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

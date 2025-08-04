@@ -36,6 +36,7 @@ solana-sdk = "=2.1"
 solana-transaction-status = "=2.1"
 solana-account-decoder = "=2.1"
 solana-transaction-status-client-types = "=2.1"
+solana-sha256-hasher = "=2.1"
 
 steel = { version="4.0.0", features = ["spl"] }
 litesvm = "0.5.0"
