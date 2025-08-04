@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use log::{debug, error};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status_client_types::TransactionDetails;
@@ -37,6 +38,8 @@ pub async fn process_next_block(
         if !state.visited.insert(current_slot) {
             return Ok(!state.queue.is_empty());
         }
+
+        debug!("Processing slot: {}", current_slot);
 
         let block = get_block_by_number(client, current_slot, TransactionDetails::Full).await?;
         let processed = process_block(block, current_slot)?;

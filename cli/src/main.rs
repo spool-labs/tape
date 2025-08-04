@@ -62,7 +62,6 @@ async fn run_tape_cli() -> Result<()> {
         // Admin Commands
 
         Commands::Init { .. } => {
-            TapeStore::try_init_store()?;
             admin::handle_admin_commands(cli, context).await?;
         }
 
@@ -87,6 +86,7 @@ async fn run_tape_cli() -> Result<()> {
         Commands::Web { .. } |
         Commands::Archive { .. } |
         Commands::Mine { .. } => {
+            TapeStore::try_init_store()?;
             network::handle_network_commands(cli, context).await?;
         }
 

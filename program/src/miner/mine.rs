@@ -2,12 +2,15 @@ use brine_tree::{Leaf, verify};
 use steel::*;
 use tape_api::prelude::*;
 use tape_api::instruction::miner::Mine;
+use solana_program::msg;
 
 const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    msg!("Starting mine instruction processing");
     let current_time = Clock::get()?.unix_timestamp;
     let args = Mine::try_from_bytes(data)?;
+
     let [
         signer_info, 
         epoch_info, 
@@ -21,55 +24,69 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     };
 
     signer_info.is_signer()?;
+    msg!("Verified signer");
 
     let archive = archive_info
         .is_archive()?
         .as_account_mut::<Archive>(&tape_api::ID)?;
+    msg!("Loaded archive account");
 
     let epoch = epoch_info
         .is_epoch()?
         .as_account_mut::<Epoch>(&tape_api::ID)?;
+    msg!("Loaded epoch account");
 
     let block = block_info
         .is_block()?
         .as_account_mut::<Block>(&tape_api::ID)?;
+    msg!("Loaded block account");
 
     let tape = tape_info
         .as_account_mut::<Tape>(&tape_api::ID)?;
+    msg!("Loaded tape account");
 
     let miner = miner_info
         .as_account_mut::<Miner>(&tape_api::ID)?;
+    msg!("Loaded miner account");
 
     let (miner_address, _miner_bump) = miner_pda(miner.authority, miner.name);
+    msg!("Computed miner PDA: {}", miner_address);
 
     check_condition(
         miner_info.key.eq(&miner_address),
         ProgramError::InvalidSeeds
     )?;
+    msg!("Verified miner PDA");
 
     check_condition(
         signer_info.key.eq(&miner.authority),
         ProgramError::InvalidAccountOwner,
     )?;
+    msg!("Verified signer is miner authority");
 
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
+    msg!("Verified slot hashes sysvar");
 
     check_submission(miner, block, epoch, current_time)?;
+    msg!("Submission checks passed");
 
     let miner_challenge = compute_challenge(
         &block.challenge,
         &miner.challenge,
     );
+    msg!("Computed miner challenge");
 
     let tape_number = compute_recall_tape(
         &miner_challenge,
         block.challenge_set,
     );
+    msg!("Computed recall tape number: {}", tape_number);
 
     check_condition(
         tape.number == tape_number,
         TapeError::UnexpectedTape,
     )?;
+    msg!("Verified tape number");
 
     verify_solution(
         epoch,
@@ -80,20 +97,24 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         args.pow,
         args.poa,
     )?;
+    msg!("Verified solution");
 
     // Update miner
-
     update_multiplier(miner, block);
+    msg!("Updated miner multiplier");
 
     let next_challenge = compute_next_challenge(
         &miner.challenge,
         slot_hashes_info
     );
+    msg!("Computed next miner challenge");
 
     let reward = calculate_reward(
         epoch,
         tape,
-        miner.multiplier);
+        miner.multiplier
+    );
+    msg!("Calculated reward: {}", reward);
 
     update_miner_state(
         miner,
@@ -102,30 +123,36 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         current_time,
         next_challenge,
     );
+    msg!("Updated miner state");
 
     // Update tape
-
     update_tape_balance(tape, block.number);
+    msg!("Updated tape balance for block: {}", block.number);
 
     // Update block
-
     block.progress = block.progress
         .saturating_add(1);
+    msg!("Incremented block progress: {}", block.progress);
 
     if block.progress >= epoch.target_participation {
         advance_block(block, current_time)?;
+        msg!("Advanced block due to sufficient progress");
 
         let next_block_challenge = compute_next_challenge(
             &block.challenge,
             slot_hashes_info
         );
+        msg!("Computed next block challenge");
 
         block.challenge = next_block_challenge;
         block.challenge_set = archive.tapes_stored;
+        msg!("Updated block challenge and challenge set");
     }
 
     update_epoch(epoch, archive, current_time)?;
+    msg!("Updated epoch state");
 
+    msg!("Mine instruction processed successfully");
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 use num_cpus;
+use log::debug;
 use std::{env, sync::Arc};
 use std::path::Path;
 use std::fs;
@@ -121,7 +122,10 @@ impl TapeStore {
     }
 
     pub fn try_init_store() -> Result<(), StoreError> {
-        self::primary()?;
+        if let Ok(_store) = primary() {
+            debug!("Primary store initialized successfully");
+        }
+
         Ok(())
     }
 

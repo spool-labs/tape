@@ -142,6 +142,7 @@ async fn process_miner(
                     sync_segments_from_solana(
                         store, client, &tape_address, &miner_address, epoch.packing_difficulty
                     ).await?;
+                    debug!("Segments synced from Solana RPC");
                 }
             }
         }

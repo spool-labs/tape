@@ -7,7 +7,7 @@ use tape_client as tapedrive;
 use tape_api::utils::from_name;
 use tape_client::TapeHeader;
 
-use super::network::resolve_miner;
+use super::network::get_or_create_miner;
 
 pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Info(info) = cli.command {
@@ -82,7 +82,7 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
             }
 
             InfoCommands::Miner { pubkey, name } => {
-                let miner_address = resolve_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
+                let miner_address = get_or_create_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
                 let (miner, _) = tapedrive::get_miner_account(context.rpc(), &miner_address).await?;
                 log::print_section_header("Miner Account");
                 log::print_message(&format!("Name: {}", from_name(&miner.name)));

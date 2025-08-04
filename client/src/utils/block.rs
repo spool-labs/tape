@@ -423,10 +423,12 @@ fn process_instruction(
         return Ok(None);
     }
 
-    let ix_type = TapeInstruction::try_from(ix_data[0])
-        .map_err(|_| BlockError::InvalidData("Invalid instruction type"))?;
+    let ix_type = TapeInstruction::try_from(ix_data[0]);
+    if ix_type.is_err() {
+        return Ok(None);
+    }
 
-    match ix_type {
+    match ix_type.unwrap() {
         TapeInstruction::Write => Ok(Some(InstructionData::Write {
             address: tape_address,
             data: ix_data[1..].to_vec(),
