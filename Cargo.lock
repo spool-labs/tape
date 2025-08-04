@@ -6695,6 +6695,7 @@ dependencies = [
  "log",
  "num_cpus",
  "num_enum",
+ "packx",
  "prometheus",
  "rand 0.8.5",
  "reqwest 0.12.15",

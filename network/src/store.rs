@@ -7,13 +7,12 @@ use rocksdb::{
     PlainTableFactoryOptions, SliceTransform, WriteBatch, DB
 };
 use solana_sdk::pubkey::Pubkey;
-use tape_api::{SEGMENT_SIZE, PACKED_SEGMENT_SIZE};
+use tape_api::PACKED_SEGMENT_SIZE;
 use thiserror::Error;
 
 pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";
 pub const TAPE_STORE_SECONDARY_DB_MINE: &str = "db_tapestore_read_mine";
 pub const TAPE_STORE_SECONDARY_DB_WEB: &str = "db_tapestore_read_web";
-pub const TAPE_STORE_SLOTS_KEY_SIZE: usize = 40; // 40 bytes
 pub const TAPE_STORE_PACKED_TAPE_KEY_SIZE: usize = 10; // u64 (8 bytes) + u16 (2 bytes)
 pub const TAPE_STORE_MAX_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 pub const TAPE_STORE_MAX_WRITE_BUFFERS: usize = 4; // This is related to concurrency
@@ -32,10 +31,6 @@ pub enum StoreError {
     TapeByAddressCfNotFound,
     #[error("Segments column family not found")]
     SegmentsCfNotFound,
-    #[error("Slots column family not found")]
-    SlotsCfNotFound,
-    #[error("PackedSegments column family not found")]
-    PackedSegmentsCfNotFound,
     #[error("PackedTape column family not found")]
     PackedTapeCfNotFound,
     #[error("Tape not found: number {0}")]
@@ -46,16 +41,12 @@ pub enum StoreError {
     TapeNotFoundForAddress(String),
     #[error("Segment not found for address {0}, segment {1}")]
     SegmentNotFoundForAddress(String, u64),
-    #[error("Packed segment not found for address {0}, segment {1}")]
-    PackedSegmentNotFoundForAddress(String, u64),
     #[error("Packed tape not found for spool number {0}, index {1}")]
     PackedTapeNotFound(u64, u16),
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
     #[error("Segment data exceeds maximum size of {0} bytes")]
     SegmentSizeExceeded(usize),
-    #[error("Packed segment data must be exactly {0} bytes")]
-    PackedSegmentSizeInvalid(usize),
     #[error("Packed tape data must be exactly {0} bytes")]
     PackedTapeSizeInvalid(usize),
     #[error("Invalid segment key format")]
@@ -75,8 +66,6 @@ impl From<&ColumnFamily> for StoreError {
             ColumnFamily::TapeByAddress => StoreError::TapeByAddressCfNotFound,
             ColumnFamily::Segments => StoreError::SegmentsCfNotFound,
             ColumnFamily::Health => StoreError::HealthCfNotFound,
-            ColumnFamily::Slots => StoreError::SlotsCfNotFound,
-            ColumnFamily::PackedSegments => StoreError::PackedSegmentsCfNotFound,
             ColumnFamily::PackedTape => StoreError::PackedTapeCfNotFound,
         }
     }
@@ -88,8 +77,6 @@ pub enum ColumnFamily {
     TapeByAddress,
     Segments,
     Health,
-    Slots,
-    PackedSegments,
     PackedTape,
 }
 
@@ -100,8 +87,6 @@ impl ColumnFamily {
             ColumnFamily::TapeByAddress => "tape_by_address",
             ColumnFamily::Segments => "segments",
             ColumnFamily::Health => "health",
-            ColumnFamily::Slots => "slots",
-            ColumnFamily::PackedSegments => "packed_segments",
             ColumnFamily::PackedTape => "packed_tape",
         }
     }
@@ -129,7 +114,6 @@ pub struct TapeStore {
 pub struct LocalStats {
     pub tapes: usize,
     pub segments: usize,
-    pub packed_segments: usize,
     pub packed_tapes: usize,
     pub size_bytes: u64,
 }
@@ -277,13 +261,13 @@ impl TapeStore {
         segment_number: u64,
         data: Vec<u8>,
     ) -> Result<(), StoreError> {
-        if data.len() > SEGMENT_SIZE {
-            return Err(StoreError::SegmentSizeExceeded(SEGMENT_SIZE));
+        if data.len() != PACKED_SEGMENT_SIZE {
+            return Err(StoreError::SegmentSizeExceeded(PACKED_SEGMENT_SIZE));
         }
 
         let cf = self.get_cf_handle(ColumnFamily::Segments)?;
 
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
+        let mut key = Vec::with_capacity(40);
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
@@ -299,8 +283,8 @@ impl TapeStore {
         data_vec: Vec<Vec<u8>>,
     ) -> Result<(), StoreError> {
         for d in data_vec.iter() {
-            if d.len() > SEGMENT_SIZE {
-                return Err(StoreError::SegmentSizeExceeded(SEGMENT_SIZE));
+            if d.len() != PACKED_SEGMENT_SIZE {
+                return Err(StoreError::SegmentSizeExceeded(PACKED_SEGMENT_SIZE));
             }
         }
 
@@ -313,60 +297,7 @@ impl TapeStore {
         let mut batch = WriteBatch::default();
 
         for (i, d) in data_vec.into_iter().enumerate() {
-            let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-            key.extend_from_slice(&tape_address_vec[i].to_bytes());
-            key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
-            batch.put_cf(&cf, key, d);
-        }
-
-        self.db.write(batch)?;
-
-        Ok(())
-    }
-
-    pub fn write_packed_segment(
-        &self,
-        tape_address: &Pubkey,
-        segment_number: u64,
-        data: Vec<u8>,
-    ) -> Result<(), StoreError> {
-        if data.len() != PACKED_SEGMENT_SIZE {
-            return Err(StoreError::PackedSegmentSizeInvalid(PACKED_SEGMENT_SIZE));
-        }
-
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
-
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&segment_number.to_be_bytes());
-
-        self.db.put_cf(&cf, &key, &data)?;
-
-        Ok(())
-    }
-
-    pub fn write_packed_segments_batch(
-        &self,
-        tape_address_vec: &[Pubkey],
-        segment_number_vec: &[u64],
-        data_vec: Vec<Vec<u8>>,
-    ) -> Result<(), StoreError> {
-        for d in data_vec.iter() {
-            if d.len() != PACKED_SEGMENT_SIZE {
-                return Err(StoreError::PackedSegmentSizeInvalid(PACKED_SEGMENT_SIZE));
-            }
-        }
-
-        if tape_address_vec.len() != segment_number_vec.len() || data_vec.len() != segment_number_vec.len() {
-            return Err(StoreError::InvalidKeyValuePairLen);
-        }
-
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
-
-        let mut batch = WriteBatch::default();
-
-        for (i, d) in data_vec.into_iter().enumerate() {
-            let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
+            let mut key = Vec::with_capacity(40);
             key.extend_from_slice(&tape_address_vec[i].to_bytes());
             key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
             batch.put_cf(&cf, key, d);
@@ -430,50 +361,6 @@ impl TapeStore {
         Ok(())
     }
 
-    pub fn write_slot(
-        &self,
-        tape_address: &Pubkey,
-        segment_number: u64,
-        slot: u64,
-    ) -> Result<(), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Slots)?;
-
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&segment_number.to_be_bytes());
-
-        self.db.put_cf(&cf, &key, slot.to_be_bytes())?;
-
-        Ok(())
-    }
-
-    pub fn write_slots_batch(
-        &self,
-        tape_address_vec: &[Pubkey],
-        segment_number_vec: &[u64],
-        slot_vec: &[u64],
-    ) -> Result<(), StoreError> {
-        if tape_address_vec.len() != segment_number_vec.len() || slot_vec.len() != segment_number_vec.len() {
-            return Err(StoreError::InvalidKeyValuePairLen);
-        }
-
-        let cf = self.get_cf_handle(ColumnFamily::Slots)?;
-
-        let mut batch = WriteBatch::default();
-
-        for i in 0..slot_vec.len() {
-            let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-            key.extend_from_slice(&tape_address_vec[i].to_bytes());
-            key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
-
-            batch.put_cf(&cf, key, slot_vec[i].to_be_bytes());
-        }
-
-        self.db.write(batch)?;
-
-        Ok(())
-    }
-
     pub fn read_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
 
@@ -513,16 +400,6 @@ impl TapeStore {
         Ok(count)
     }
 
-    pub fn read_packed_segment_count(&self, tape_address: &Pubkey) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
-
-        let prefix = tape_address.to_bytes().to_vec();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        let count = iter.count();
-
-        Ok(count)
-    }
-
     pub fn read_packed_tape_count(&self, spool_number: u64) -> Result<usize, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::PackedTape)?;
 
@@ -542,7 +419,7 @@ impl TapeStore {
         let iter = self.db.prefix_iterator_cf(&cf, &prefix);
         for item in iter {
             let (key, value) = item?;
-            if key.len() != TAPE_STORE_SLOTS_KEY_SIZE {
+            if key.len() != 40 {
                 continue;
             }
             if !key.starts_with(&prefix) {
@@ -550,35 +427,7 @@ impl TapeStore {
             }
 
             let segment_number = u64::from_be_bytes(
-                key[32..TAPE_STORE_SLOTS_KEY_SIZE]
-                    .try_into()
-                    .map_err(|_| StoreError::InvalidSegmentKey)?,
-            );
-
-            segments.push((segment_number, value.to_vec()));
-        }
-
-        Ok(segments)
-    }
-
-    pub fn read_packed_segments(&self, tape_address: &Pubkey) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
-
-        let prefix = tape_address.to_bytes().to_vec();
-
-        let mut segments = Vec::new();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        for item in iter {
-            let (key, value) = item?;
-            if key.len() != TAPE_STORE_SLOTS_KEY_SIZE {
-                continue;
-            }
-            if !key.starts_with(&prefix) {
-                continue;
-            }
-
-            let segment_number = u64::from_be_bytes(
-                key[32..TAPE_STORE_SLOTS_KEY_SIZE]
+                key[32..40]
                     .try_into()
                     .map_err(|_| StoreError::InvalidSegmentKey)?,
             );
@@ -624,7 +473,7 @@ impl TapeStore {
     ) -> Result<Vec<u8>, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::Segments)?;
 
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
+        let mut key = Vec::with_capacity(40);
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
@@ -632,25 +481,6 @@ impl TapeStore {
             .db
             .get_cf(&cf, &key)?
             .ok_or(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), segment_number))?;
-
-        Ok(segment_data)
-    }
-
-    pub fn read_packed_segment_by_address(
-        &self,
-        tape_address: &Pubkey,
-        segment_number: u64,
-    ) -> Result<Vec<u8>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
-
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&segment_number.to_be_bytes());
-
-        let segment_data = self
-            .db
-            .get_cf(&cf, &key)?
-            .ok_or(StoreError::PackedSegmentNotFoundForAddress(tape_address.to_string(), segment_number))?;
 
         Ok(segment_data)
     }
@@ -683,7 +513,7 @@ impl TapeStore {
 
         let address = self.read_tape_address(tape_number)?;
 
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
+        let mut key = Vec::with_capacity(40);
         key.extend_from_slice(&address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
 
@@ -695,69 +525,14 @@ impl TapeStore {
         Ok(segment_data)
     }
 
-    pub fn read_packed_segment(
-        &self,
-        tape_number: u64,
-        segment_number: u64,
-    ) -> Result<Vec<u8>, StoreError> {
-        let address = self.read_tape_address(tape_number)?;
-        self.read_packed_segment_by_address(&address, segment_number)
-    }
-
-    pub fn read_slot(
-        &self,
-        tape_number: u64,
-        segment_number: u64,
-    ) -> Result<u64, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Slots)?;
-
-        let address = self.read_tape_address(tape_number)?;
-
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&address.to_bytes());
-        key.extend_from_slice(&segment_number.to_be_bytes());
-
-        let slot_bytes = self
-            .db
-            .get_cf(&cf, &key)?
-            .ok_or(StoreError::SegmentNotFound(tape_number, segment_number))?;
-
-        Ok(u64::from_be_bytes(
-            slot_bytes.try_into().map_err(|_| StoreError::InvalidSegmentKey)?,
-        ))
-    }
-
-    pub fn read_slot_by_address(
-        &self,
-        tape_address: &Pubkey,
-        segment_number: u64,
-    ) -> Result<u64, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Slots)?;
-
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&segment_number.to_be_bytes());
-
-        let slot_bytes = self
-            .db
-            .get_cf(&cf, &key)?
-            .ok_or(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), segment_number))?;
-
-        Ok(u64::from_be_bytes(
-            slot_bytes.try_into().map_err(|_| StoreError::InvalidSegmentKey)?,
-        ))
-    }
-
     pub fn read_local_stats(&self) -> Result<LocalStats, StoreError> {
         let tapes = self.count_tapes()?;
         let segments = self.count_segments()?;
-        let packed_segments = self.count_packed_segments()?;
         let packed_tapes = self.count_packed_tapes()?;
         let size_bytes = self.db_size()?;
         Ok(LocalStats {
             tapes,
             segments,
-            packed_segments,
             packed_tapes,
             size_bytes,
         })
@@ -771,12 +546,6 @@ impl TapeStore {
 
     fn count_segments(&self) -> Result<usize, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::Segments)?;
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        Ok(iter.count())
-    }
-
-    fn count_packed_segments(&self) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::PackedSegments)?;
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         Ok(iter.count())
     }
@@ -856,15 +625,6 @@ fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     cf_segments_opts.set_block_based_table_factory(&bbt_segments);
     cf_segments_opts.set_compression_type(DBCompressionType::None);
 
-    // Options for packed_segments CF
-    let mut cf_packed_segments_opts = Options::default();
-    cf_packed_segments_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
-    let mut bbt_packed_segments = BlockBasedOptions::default();
-    bbt_packed_segments.set_bloom_filter(10.0, false);
-    bbt_packed_segments.set_block_size(256);
-    cf_packed_segments_opts.set_block_based_table_factory(&bbt_packed_segments);
-    cf_packed_segments_opts.set_compression_type(DBCompressionType::None);
-
     // Options for packed_tape CF
     let mut cf_packed_tape_opts = Options::default();
     cf_packed_tape_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
@@ -880,21 +640,6 @@ fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     });
     cf_packed_tape_opts.set_compression_type(DBCompressionType::None);
 
-    // Options for slots CF
-    let mut cf_slots_opts = Options::default();
-    cf_slots_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
-    cf_slots_opts.set_plain_table_factory(&PlainTableFactoryOptions {
-        user_key_length: 40,
-        bloom_bits_per_key: 10,
-        hash_table_ratio: 0.75,
-        index_sparseness: 16,
-        huge_page_tlb_size: 0,
-        encoding_type: rocksdb::KeyEncodingType::Prefix,
-        full_scan_mode: false,
-        store_index_in_file: false,
-    });
-    cf_slots_opts.set_compression_type(DBCompressionType::None);
-
     // Options for health CF
     let mut cf_health_opts = Options::default();
     cf_health_opts.set_compression_type(DBCompressionType::None);
@@ -902,18 +647,14 @@ fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     let cf_tape_by_number = ColumnFamilyDescriptor::new(ColumnFamily::TapeByNumber.into_cf_descriptor(), cf_tape_by_number_opts);
     let cf_tape_by_address = ColumnFamilyDescriptor::new(ColumnFamily::TapeByAddress.into_cf_descriptor(), cf_tape_by_address_opts);
     let cf_segments = ColumnFamilyDescriptor::new(ColumnFamily::Segments.into_cf_descriptor(), cf_segments_opts);
-    let cf_packed_segments = ColumnFamilyDescriptor::new(ColumnFamily::PackedSegments.into_cf_descriptor(), cf_packed_segments_opts);
     let cf_packed_tape = ColumnFamilyDescriptor::new(ColumnFamily::PackedTape.into_cf_descriptor(), cf_packed_tape_opts);
-    let cf_slots = ColumnFamilyDescriptor::new(ColumnFamily::Slots.into_cf_descriptor(), cf_slots_opts);
     let cf_health = ColumnFamilyDescriptor::new(ColumnFamily::Health.into_cf_descriptor(), cf_health_opts);
 
     vec![
         cf_tape_by_number,
         cf_tape_by_address,
         cf_segments,
-        cf_packed_segments,
         cf_packed_tape,
-        cf_slots,
         cf_health,
     ]
 }
@@ -975,42 +716,18 @@ mod tests {
     }
 
     #[test]
-    fn test_add_segment_and_slot() -> Result<(), StoreError> {
+    fn test_add_segment() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let tape_number = 1;
         let segment_number = 0;
         let address = Pubkey::new_unique();
         let data = vec![1, 2, 3];
-        let slot = 100;
 
         store.write_tape(tape_number, &address)?;
         store.write_segment(&address, segment_number, data.clone())?;
-        store.write_slot(&address, segment_number, slot)?;
 
         let retrieved_data = store.read_segment(tape_number, segment_number)?;
         assert_eq!(retrieved_data, data);
-        let retrieved_slot = store.read_slot(tape_number, segment_number)?;
-        assert_eq!(retrieved_slot, slot);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_add_packed_segment() -> Result<(), StoreError> {
-        let (store, _temp_dir) = setup_store()?;
-        let tape_number = 1;
-        let segment_number = 0;
-        let address = Pubkey::new_unique();
-        let data = vec![0u8; PACKED_SEGMENT_SIZE];
-
-        store.write_tape(tape_number, &address)?;
-        store.write_packed_segment(&address, segment_number, data.clone())?;
-
-        let retrieved_data = store.read_packed_segment(tape_number, segment_number)?;
-        assert_eq!(retrieved_data, data);
-
-        let retrieved_data_by_address = store.read_packed_segment_by_address(&address, segment_number)?;
-        assert_eq!(retrieved_data_by_address, data);
 
         Ok(())
     }
@@ -1038,13 +755,9 @@ mod tests {
 
         let segment_data_1 = vec![1, 2, 3];
         let segment_data_2 = vec![4, 5, 6];
-        let slot_1 = 100;
-        let slot_2 = 101;
 
         store.write_segment(&address, 1, segment_data_2.clone())?;
-        store.write_slot(&address, 1, slot_2)?;
         store.write_segment(&address, 0, segment_data_1.clone())?;
-        store.write_slot(&address, 0, slot_1)?;
         store.write_tape(tape_number, &address)?;
 
         let segments = store.read_tape_segments(&address)?;
@@ -1052,47 +765,8 @@ mod tests {
         assert_eq!(segments[0], (0, segment_data_1));
         assert_eq!(segments[1], (1, segment_data_2));
 
-        let slot_retrieved_0 = store.read_slot(tape_number, 0)?;
-        assert_eq!(slot_retrieved_0, slot_1);
-        let slot_retrieved_1 = store.read_slot(tape_number, 1)?;
-        assert_eq!(slot_retrieved_1, slot_2);
-
         let non_address = Pubkey::new_unique();
         let segments = store.read_tape_segments(&non_address)?;
-        assert_eq!(segments.len(), 0);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_add_and_get_packed_segments() -> Result<(), StoreError> {
-        let (store, _temp_dir) = setup_store()?;
-        let tape_number = 1;
-        let address = Pubkey::new_unique();
-
-        let segment_data_1 = vec![1u8; PACKED_SEGMENT_SIZE];
-        let segment_data_2 = vec![2u8; PACKED_SEGMENT_SIZE];
-        let slot_1 = 100;
-        let slot_2 = 101;
-
-        store.write_packed_segment(&address, 1, segment_data_2.clone())?;
-        store.write_slot(&address, 1, slot_2)?;
-        store.write_packed_segment(&address, 0, segment_data_1.clone())?;
-        store.write_slot(&address, 0, slot_1)?;
-        store.write_tape(tape_number, &address)?;
-
-        let segments = store.read_packed_segments(&address)?;
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0], (0, segment_data_1));
-        assert_eq!(segments[1], (1, segment_data_2));
-
-        let slot_retrieved_0 = store.read_slot(tape_number, 0)?;
-        assert_eq!(slot_retrieved_0, slot_1);
-        let slot_retrieved_1 = store.read_slot(tape_number, 1)?;
-        assert_eq!(slot_retrieved_1, slot_2);
-
-        let non_address = Pubkey::new_unique();
-        let segments = store.read_packed_segments(&non_address)?;
         assert_eq!(segments.len(), 0);
 
         Ok(())
@@ -1127,15 +801,11 @@ mod tests {
         let address = Pubkey::new_unique();
         let segment_number = 0;
         let data = vec![1, 2, 3];
-        let slot = 100;
 
         store.write_segment(&address, segment_number, data.clone())?;
-        store.write_slot(&address, segment_number, slot)?;
 
         let retrieved_data = store.read_segment_by_address(&address, segment_number)?;
         assert_eq!(retrieved_data, data);
-        let retrieved_slot = store.read_slot_by_address(&address, segment_number)?;
-        assert_eq!(retrieved_slot, slot);
 
         Ok(())
     }
@@ -1145,22 +815,9 @@ mod tests {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
 
-        let oversized_data = vec![0; SEGMENT_SIZE + 1];
+        let oversized_data = vec![0; PACKED_SEGMENT_SIZE + 1];
         let result = store.write_segment(&address, 0, oversized_data);
         assert!(matches!(result, Err(StoreError::SegmentSizeExceeded(_))));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_packed_segment_size_validation() -> Result<(), StoreError> {
-        let (store, _temp_dir) = setup_store()?;
-        let address = Pubkey::new_unique();
-        let segment_number = 0;
-
-        let invalid_data = vec![0u8; PACKED_SEGMENT_SIZE - 1];
-        let result = store.write_packed_segment(&address, segment_number, invalid_data);
-        assert!(matches!(result, Err(StoreError::PackedSegmentSizeInvalid(_))));
 
         Ok(())
     }
@@ -1171,7 +828,7 @@ mod tests {
         let spool_number = 1;
         let index = 0u16;
 
-        let invalid_data = vec![0u8; 32 - 1];
+        let invalid_data = vec![0u8; 31];
         let result = store.write_packed_tape(spool_number, index, invalid_data);
         assert!(matches!(result, Err(StoreError::PackedTapeSizeInvalid(_))));
 
@@ -1191,9 +848,6 @@ mod tests {
         let result = store.read_tape_address(1);
         assert!(matches!(result, Err(StoreError::TapeNotFound(1))));
 
-        let result = store.read_packed_segment_by_address(&address, 0);
-        assert!(matches!(result, Err(StoreError::PackedSegmentNotFoundForAddress(_, _))));
-
         let result = store.read_packed_tape(spool_number, index);
         assert!(matches!(result, Err(StoreError::PackedTapeNotFound(_, _))));
 
@@ -1210,11 +864,9 @@ mod tests {
         let tape2_address = Pubkey::new_unique();
 
         store.write_segment(&tape1_address, 0, vec![1, 2, 3])?;
-        store.write_slot(&tape1_address, 0, 100)?;
         store.write_tape(tape1_number, &tape1_address)?;
 
         store.write_segment(&tape2_address, 0, vec![4, 5, 6])?;
-        store.write_slot(&tape2_address, 0, 101)?;
         store.write_tape(tape2_number, &tape2_address)?;
 
         assert_eq!(store.read_tape_number(&tape1_address)?, tape1_number);
@@ -1241,7 +893,6 @@ mod tests {
         let segment_data = vec![1, 2, 3];
 
         store.write_segment(&address, segment_number, segment_data.clone())?;
-        store.write_slot(&address, segment_number, 100)?;
         store.write_tape(tape_number, &address)?;
 
         let retrieved_data = store.read_segment(tape_number, segment_number)?;
@@ -1274,36 +925,13 @@ mod tests {
         let segment_data_2 = vec![4, 5, 6];
 
         store.write_segment(&address, 0, segment_data_1.clone())?;
-        store.write_slot(&address, 0, 100)?;
         store.write_segment(&address, 1, segment_data_2.clone())?;
-        store.write_slot(&address, 1, 101)?;
         store.write_tape(tape_number, &address)?;
 
         let retrieved_data_1 = store.read_segment(tape_number, 0)?;
         assert_eq!(retrieved_data_1, segment_data_1);
 
         let retrieved_data_2 = store.read_segment(tape_number, 1)?;
-        assert_eq!(retrieved_data_2, segment_data_2);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_multiple_packed_segments() -> Result<(), StoreError> {
-        let (store, _temp_dir) = setup_store()?;
-        let tape_number = 1;
-        let address = Pubkey::new_unique();
-        let segment_data_1 = vec![1u8; PACKED_SEGMENT_SIZE];
-        let segment_data_2 = vec![2u8; PACKED_SEGMENT_SIZE];
-
-        store.write_packed_segment(&address, 0, segment_data_1.clone())?;
-        store.write_packed_segment(&address, 1, segment_data_2.clone())?;
-        store.write_tape(tape_number, &address)?;
-
-        let retrieved_data_1 = store.read_packed_segment(tape_number, 0)?;
-        assert_eq!(retrieved_data_1, segment_data_1);
-
-        let retrieved_data_2 = store.read_packed_segment(tape_number, 1)?;
         assert_eq!(retrieved_data_2, segment_data_2);
 
         Ok(())
@@ -1334,7 +962,6 @@ mod tests {
         let stats = store.read_local_stats()?;
         assert_eq!(stats.tapes, 0);
         assert_eq!(stats.segments, 0);
-        assert_eq!(stats.packed_segments, 0);
         assert_eq!(stats.packed_tapes, 0);
 
         let tape_number = 1;
@@ -1344,15 +971,12 @@ mod tests {
         store.write_tape(tape_number, &address)?;
         store.write_segment(&address, 0, vec![1, 2, 3])?;
         store.write_segment(&address, 1, vec![4, 5, 6])?;
-        store.write_packed_segment(&address, 0, vec![1u8; PACKED_SEGMENT_SIZE])?;
-        store.write_packed_segment(&address, 1, vec![2u8; PACKED_SEGMENT_SIZE])?;
         store.write_packed_tape(spool_number, 0, vec![1u8; 32])?;
         store.write_packed_tape(spool_number, 1, vec![2u8; 32])?;
 
         let stats = store.read_local_stats()?;
         assert_eq!(stats.tapes, 1);
         assert_eq!(stats.segments, 2);
-        assert_eq!(stats.packed_segments, 2);
         assert_eq!(stats.packed_tapes, 2);
         assert!(stats.size_bytes > 0);
 
@@ -1366,29 +990,19 @@ mod tests {
         let addresses = vec![Pubkey::new_unique(), Pubkey::new_unique()];
         let segment_numbers = vec![0, 1];
         let segment_data = vec![vec![1, 2, 3], vec![4, 5, 6]];
-        let packed_segment_data = vec![vec![1u8; PACKED_SEGMENT_SIZE], vec![2u8; PACKED_SEGMENT_SIZE]];
-        let slots = vec![100, 101];
         let spool_numbers = vec![1, 1];
         let indices = vec![0u16, 1u16];
         let packed_tape_data = vec![vec![1u8; 32], vec![2u8; 32]];
 
         store.write_tapes_batch(&tape_numbers, &addresses)?;
         store.write_segments_batch(&addresses, &segment_numbers, segment_data.clone())?;
-        store.write_packed_segments_batch(&addresses, &segment_numbers, packed_segment_data.clone())?;
-        store.write_slots_batch(&addresses, &segment_numbers, &slots)?;
         store.write_packed_tapes_batch(&spool_numbers, &indices, packed_tape_data.clone())?;
 
         let retrieved_segment_1 = store.read_segment(tape_numbers[0], segment_numbers[0])?;
         assert_eq!(retrieved_segment_1, segment_data[0]);
 
-        let retrieved_packed_segment_1 = store.read_packed_segment(tape_numbers[0], segment_numbers[0])?;
-        assert_eq!(retrieved_packed_segment_1, packed_segment_data[0]);
-
         let retrieved_packed_tape_1 = store.read_packed_tape(spool_numbers[0], indices[0])?;
         assert_eq!(retrieved_packed_tape_1, packed_tape_data[0]);
-
-        let retrieved_slot_1 = store.read_slot(tape_numbers[0], segment_numbers[0])?;
-        assert_eq!(retrieved_slot_1, slots[0]);
 
         Ok(())
     }

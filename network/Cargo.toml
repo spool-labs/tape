@@ -15,6 +15,7 @@ documentation = "https://docs.rs/tape-network"
 tape-api.workspace = true
 tape-client.workspace = true
 crankx.workspace = true
+packx.workspace = true
 brine-tree.workspace = true
 reqwest.workspace = true
 
