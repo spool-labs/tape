@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::{debug, error};
+use log::debug;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status_client_types::TransactionDetails;

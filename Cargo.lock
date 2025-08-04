@@ -6640,6 +6640,7 @@ dependencies = [
  "sha3",
  "solana-account-decoder",
  "solana-client",
+ "solana-program",
  "solana-sdk",
  "solana-transaction-status",
  "solana-transaction-status-client-types",

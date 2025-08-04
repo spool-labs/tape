@@ -61,7 +61,9 @@ async fn run_tape_cli() -> Result<()> {
     match cli.command {
         // Admin Commands
 
-        Commands::Init { .. } => {
+        Commands::Init { .. } |
+        Commands::Airdrop { .. } 
+        => {
             admin::handle_admin_commands(cli, context).await?;
         }
 

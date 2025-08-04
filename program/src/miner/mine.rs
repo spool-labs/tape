@@ -190,7 +190,7 @@ fn verify_solution(
     tape: &Tape,
     miner_address: &Pubkey,
     miner_challenge: &[u8; 32],
-    miner_commitment: &[u8; 32],
+    _miner_commitment: &[u8; 32],
     pow: PoW,
     poa: PoA,
 ) -> ProgramResult {
@@ -231,7 +231,7 @@ fn verify_solution(
             recall_segment.as_ref(),
         ]);
 
-        let packed_leaf = Leaf::new(&[
+        let _packed_leaf = Leaf::new(&[
             segment_number.to_le_bytes().as_ref(),
             poa_solution.to_bytes().as_ref(),
         ]);

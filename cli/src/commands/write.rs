@@ -6,10 +6,13 @@ use mime_guess::Mime;
 use mime_guess::MimeGuess;
 use reqwest;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::signer::Signer;
 use solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signature},
 };
+use tape_client::subsidize_tape;
+use tape_client::{get_ata_address, get_token_balance};
 use std::io::Read;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -49,6 +52,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         let mut header = TapeHeader::new(mime_type, compression_algo, encryption_algo, flags);
 
         let encoded = encode_tape(&data, &mut header)?;
+        let num_segments = (encoded.len() + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
         let chunks: Vec<_> = encoded.chunks(SAFE_SIZE).map(|c| c.to_vec()).collect();
         let chunks_len = chunks.len();
 
@@ -72,7 +76,6 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
             return Ok(());
         }
 
-        let pb = setup_progress_bar(chunks_len as u64);
 
         let Context{
             rpc,
@@ -81,6 +84,18 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         } = context;
 
         let payer = Arc::new(payer);
+        let payer_pk = payer.try_pubkey()
+            .expect("Failed to get payer pubkey");
+
+        let payer_ata = get_ata_address(&payer_pk);
+        let required_rent = min_finalization_rent(num_segments as u64);
+
+        if get_token_balance(&rpc, &payer_ata).await? < required_rent {
+            log::print_error("Insufficient TAPE tokens in payer's ATA to pay for rent.");
+            return Ok(());
+        }
+
+        let pb = setup_progress_bar(chunks_len as u64);
 
         pb.set_message("Creating new tape (please wait)...");
         let (tape_address, writer_address, _sig) =
@@ -92,6 +107,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         tokio::time::sleep(Duration::from_secs(32)).await;
 
         set_header(&rpc, &payer, tape_address, header).await?;
+        subsidize_tape(&rpc, &payer, tape_address, payer_ata, required_rent).await?;
         finalize_tape(&rpc, &payer, tape_address, writer_address).await?;
 
         pb.finish_with_message("");

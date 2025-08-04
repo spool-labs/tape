@@ -153,8 +153,7 @@ pub fn compute_recall_tape(
 
     // Compute the tape number from the challenge, tape 0 
     // is invalid and reprseents no tape
-    (u64::from_le_bytes(challenge[0..8].try_into().unwrap()) % total_tapes)
-        .max(1)
+    u64::from_le_bytes(challenge[0..8].try_into().unwrap()) % total_tapes + 1
 }
 
 /// Helper: compute the recall segment number from a given challenge

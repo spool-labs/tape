@@ -1,4 +1,4 @@
-.PHONY: clean build validator local test example metadata docs release
+.PHONY: clean build-dev validator local test example metadata docs release
 
 clean:
 	@rm -rf test-ledger
@@ -7,14 +7,14 @@ metadata:
 	@mkdir -p target/deploy
 	@solana program dump --url mainnet-beta metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s metadata.so && mv metadata.so target/deploy/metadata.so
 
-build: metadata
-	@cd program && cargo build-sbf
+build-dev: metadata
+	@cd program && cargo build-sbf --features airdrop
 
 test: metadata
-	@cd program && cargo test-sbf
+	@cd program && cargo test-sbf --features airdrop
 
-example: build
-	@cd example && cargo test-sbf
+example: build-dev
+	@cd example && cargo test-sbf --features airdrop
 
 docs:
 	cargo doc --workspace --no-deps --open
@@ -32,4 +32,4 @@ validator:
 	  target/deploy/tape.so \
 	  --url https://api.mainnet-beta.solana.com
 
-local: clean build validator
+local: clean build-dev validator

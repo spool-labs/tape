@@ -8,6 +8,8 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use spl_associated_token_account::instruction::create_associated_token_account;
+use spl_token::state::Account as TokenAccount;
+use solana_program::program_pack::Pack;
 
 use crate::utils::{deserialize, get_latest_blockhash, send_and_confirm_transaction};
 
@@ -20,11 +22,7 @@ pub async fn create_ata(
     let payer_pk          = payer.pubkey();
     let owner            = &payer_pk;
 
-    let ata = spl_associated_token_account::get_associated_token_address_with_program_id(
-        owner,
-        mint,
-        token_program_id,
-    );
+    let ata = get_ata_address(owner);
 
     // Check if ATA already exists
     match client.get_account(&ata).await {
@@ -81,4 +79,34 @@ pub async fn create_ata(
     let signature: Signature = deserialize(&signature_bytes)?;
 
     Ok((ata, signature))
+}
+
+pub fn get_ata_address(owner: &Pubkey) -> Pubkey {
+    let mint = &tape_api::MINT_ADDRESS;
+    spl_associated_token_account::get_associated_token_address(owner, mint)
+}
+
+pub async fn get_token_balance(
+    client: &Arc<RpcClient>,
+    ata: &Pubkey,
+) -> Result<u64> {
+    let account = client.get_account(ata).await
+        .map_err(|e| {
+            let error_msg = format!("Failed to fetch ATA {}: {}", ata, e);
+            eprintln!("{error_msg}");
+            anyhow!(error_msg)
+        })?;
+
+    if account.owner != spl_token::ID {
+        return Err(anyhow!("Account {} is not a valid token account, owned by {}", ata, account.owner));
+    }
+
+    let token_account = TokenAccount::unpack_from_slice(&account.data)
+        .map_err(|e| {
+            let error_msg = format!("Failed to deserialize token account {}: {}", ata, e);
+            eprintln!("{error_msg}");
+            anyhow!(error_msg)
+        })?;
+
+    Ok(token_account.amount)
 }
