@@ -11,6 +11,11 @@ use solana_sdk::pubkey::Pubkey;
 use tape_api::PACKED_SEGMENT_SIZE;
 use thiserror::Error;
 
+use crate::metrics::{
+    inc_total_segments_written, inc_total_segments_written_batch,
+    inc_total_tapes_written, inc_total_tapes_written_batch
+};
+
 pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";
 pub const TAPE_STORE_SECONDARY_DB_MINE: &str = "db_tapestore_read_mine";
 pub const TAPE_STORE_SECONDARY_DB_WEB: &str = "db_tapestore_read_web";
@@ -198,6 +203,7 @@ impl TapeStore {
         batch.put_cf(&cf_tape_by_number, &tape_number_key, address.to_bytes());
         batch.put_cf(&cf_tape_by_address, &address_key, tape_number.to_be_bytes());
         self.db.write(batch)?;
+        inc_total_tapes_written();
         Ok(())
     }
 
@@ -219,6 +225,7 @@ impl TapeStore {
             batch.put_cf(&cf_tape_by_address, address_bytes, number_bytes);
         }
         self.db.write(batch)?;
+        inc_total_tapes_written_batch(tape_number_vec.len() as u64);
         Ok(())
     }
 
@@ -236,6 +243,7 @@ impl TapeStore {
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&segment_number.to_be_bytes());
         self.db.put_cf(&cf, &key, &data)?;
+        inc_total_segments_written();
         Ok(())
     }
 
@@ -261,8 +269,12 @@ impl TapeStore {
             key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
             batch.put_cf(&cf, key, d);
         }
+
         self.db.write(batch)?;
+        inc_total_segments_written_batch(segment_number_vec.len() as u64);
+   
         Ok(())
+
     }
 
     pub fn read_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
