@@ -1,3 +1,5 @@
+use chrono::Local;
+use serde::{Deserialize, Serialize};
 use steel::*;
 use tape_api::instruction::{
     tape as tape_ix,
@@ -6,6 +8,9 @@ use tape_api::instruction::{
     program as program_ix,
 };
 use std::{collections::HashMap, path::PathBuf};
+use std::fs::{read_to_string, write};
+use std::path::Path;
+use sha2::{Sha256, Digest};
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
 use litesvm::{types::{TransactionMetadata, TransactionResult}, LiteSVM};
@@ -14,12 +19,83 @@ use bincode;
 
 use crate::setup_environment;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ProgramIx {
-    InitProgram
+    ProgramInitialize,
+    #[cfg(feature = "airdrop")]
+    Airdrop,
+    // Tape instructions
+    TapeCreate,
+    TapeWrite,
+    TapeUpdate,
+    TapeFinalize,
+    TapeSetHeader,
+    TapeSubsidize,
+    // Miner instructions
+    MinerRegister,
+    MinerUnregister,
+    MinerMine,
+    MinerClaim,
+    // Spool instructions
+    SpoolCreate,
+    SpoolDestroy,
+    SpoolPack,
+    SpoolUnpack,
+    SpoolCommit,
+}
+
+impl ToString for ProgramIx {
+    fn to_string(&self) -> String {
+        match self {
+            ProgramIx::ProgramInitialize => "ProgramInitialize",
+            #[cfg(feature = "airdrop")]
+            ProgramIx::Airdrop => "Airdrop",
+            
+            // Tape instructions
+            ProgramIx::TapeCreate => "TapeCreate",
+            ProgramIx::TapeWrite => "TapeWrite",
+            ProgramIx::TapeUpdate => "TapeUpdate",
+            ProgramIx::TapeFinalize => "TapeFinalize",
+            ProgramIx::TapeSetHeader => "TapeSetHeader",
+            ProgramIx::TapeSubsidize => "TapeSubsidize",
+            
+            // Miner instructions
+            ProgramIx::MinerRegister => "MinerRegister",
+            ProgramIx::MinerUnregister => "MinerUnregister",
+            ProgramIx::MinerMine => "MinerMine",
+            ProgramIx::MinerClaim => "MinerClaim",
+            
+            // Spool instructions
+            ProgramIx::SpoolCreate => "SpoolCreate",
+            ProgramIx::SpoolDestroy => "SpoolDestroy",
+            ProgramIx::SpoolPack => "SpoolPack",
+            ProgramIx::SpoolUnpack => "SpoolUnpack",
+            ProgramIx::SpoolCommit => "SpoolCommit",
+        }.to_string()
+    }
 }
 
 pub struct ComputeUnitsTracker(HashMap<ProgramIx, u64>);
+
+#[derive(Serialize, Deserialize)]
+struct CuLog {
+    timestamp: String,
+    entries: HashMap<String, CuEntry>,
+    checksum: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct CuEntry {
+    value: u64,
+    diff: i64
+}
+
+impl Default for CuEntry{
+    fn default() -> Self {
+        CuEntry { value: 0, diff: 0 }
+    }
+}
+
 
 impl ComputeUnitsTracker {
     pub fn new() -> Self {
@@ -30,6 +106,86 @@ impl ComputeUnitsTracker {
         let ix = self.0.entry(ix).or_default();
         *ix  += cus;
     }
+
+    fn hash_cu_log_entries(logs: &HashMap<ProgramIx, u64>) -> String {
+        let mut entries: Vec<_> = logs.iter().collect();
+        entries.sort_by_key(|(ix, _)| ix.to_string()); // deterministic order
+
+        let mut hasher = Sha256::new();
+        for (ix, cu) in entries {
+            hasher.update(format!("{}-{}", ix.to_string(), cu));
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+
+    pub fn commit_to_change_log(&self) {
+        let path = Path::new("cu_logs.json");
+        let logs_hash = Self::hash_cu_log_entries(&self.0);
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let mut previous_entries: Option<HashMap<String, CuEntry>> = None;
+        let mut all_logs: Vec<CuLog> = Vec::new();
+
+        // Load existing JSON array
+        if path.exists() {
+            if let Ok(data) = read_to_string(path) {
+                if let Ok(logs) = serde_json::from_str::<Vec<CuLog>>(&data) {
+                    if let Some(last) = logs.first() {
+                        let prev_map = last.entries.iter()
+                            .map(|(k, v)| (k.clone(), *v))
+                            .collect();
+                        previous_entries = Some(prev_map);
+                    }
+                    all_logs = logs;
+                }
+            }
+        }
+
+        // Skip if checksum already exists
+        if all_logs.iter().any(|entry| entry.checksum == logs_hash) {
+            return;
+        }
+
+        // Calculate diffs
+        let mut entries = HashMap::new();
+        for (ix, cu) in &self.0 {
+            let name = ix.to_string();
+            let old = previous_entries
+                .as_ref()
+                .and_then(|prev| prev.get(&name))
+                .cloned()
+                .unwrap_or(CuEntry::default());
+            let diff = if old.value > 0 {
+                *cu as i64 - old.value as i64
+            } else {
+                0
+            };
+
+            entries.insert(name, CuEntry { 
+                value: *cu, 
+                diff,
+            });
+        }
+
+        // Prepend new log entry
+        let new_log = CuLog {
+            timestamp,
+            checksum: logs_hash,
+            entries,
+        };
+        all_logs.insert(0, new_log);
+
+        // Truncate to max 5 entries
+        if all_logs.len() > 5 {
+            all_logs.truncate(5);
+        }
+
+        // Write full array back to file
+        let output = serde_json::to_string_pretty(&all_logs).expect("serialization failed");
+        write(path, output).expect("write failed");
+    }
+
 }
 
 pub struct SvmWithCUTracker{
@@ -52,6 +208,9 @@ impl SvmWithCUTracker{
         self.cu_tracker.track_cus(ix, cus);
     }
 
+    pub fn commit_cus_change_log(&self) {
+        self.cu_tracker.commit_to_change_log();
+    }
 
 }
 

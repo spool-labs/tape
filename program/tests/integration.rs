@@ -53,25 +53,27 @@ struct PackedTape {
 
 #[test]
 fn run_integration() {
-    // Setup environment
-    let (mut svm, payer) = setup_environment();
-    // Initialize program
-    initialize_program(&mut svm, &payer);
 
+    let mut svm = SvmWithCUTracker::new();
+
+    // Initialize program
+    initialize_program(&mut svm);
+
+    let owner_pk = svm.payer.pubkey();
     // Register miner
     let miner_name = "miner-name";
-    let miner_address = register_miner(&mut svm, &payer, miner_name);
-    let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
+    let miner_address = register_miner(&mut svm, miner_name);
+    let ata = create_ata(&mut svm, &MINT_ADDRESS, &owner_pk);
 
     // Create a miner spool
     let spool_number = 1;
-    let mut stored_spool = create_spool(&mut svm, &payer, miner_address, spool_number);
+    let mut stored_spool = create_spool(&mut svm, miner_address, spool_number);
 
     // Fetch and store genesis tape
-    let genesis_tape = get_genesis_tape(&mut svm, &payer);
+    let genesis_tape = get_genesis_tape(&mut svm);
 
     // Pack the tape into a miner specific representation
-    pack_tape(&mut svm, &payer, &genesis_tape, &mut stored_spool);
+    pack_tape(&mut svm, &genesis_tape, &mut stored_spool);
 
     // Verify initial accounts
     verify_archive_account(&svm, 1);
@@ -83,8 +85,8 @@ fn run_integration() {
     verify_treasury_ata(&svm);
 
     // Mine the genesis tape (to earn some tokens)
-    do_mining_run(&mut svm, &payer, &stored_spool, 5);
-    claim_rewards(&mut svm, &payer, miner_address, ata);
+    do_mining_run(&mut svm, &stored_spool, 5);
+    claim_rewards(&mut svm, miner_address, ata);
 
     let ata_balance = get_ata_balance(&svm, &ata);
     assert!(ata_balance > 0);
@@ -92,22 +94,24 @@ fn run_integration() {
     println!("ATA balance after claiming rewards: {ata_balance}");
 
     // Advance clock
-    let mut initial_clock = svm.get_sysvar::<Clock>();
+    let mut initial_clock = svm.svm.get_sysvar::<Clock>();
     initial_clock.slot = 10;
-    svm.set_sysvar::<Clock>(&initial_clock);
+    svm.svm.set_sysvar::<Clock>(&initial_clock);
 
     // Create tapes
     let tape_count = 5;
     for tape_index in 1..tape_count {
-        let stored_tape = create_and_verify_tape(&mut svm, &payer, ata, tape_index);
-        let _packed_tape = pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
+        let stored_tape = create_and_verify_tape(&mut svm, ata, tape_index);
+        let _packed_tape = pack_tape(&mut svm, &stored_tape, &mut stored_spool);
     }
 
     // Verify archive account after tape creation
     verify_archive_account(&svm, tape_count);
 
     // Mine again with more tapes this time
-    do_mining_run(&mut svm, &payer, &stored_spool, 5);
+    do_mining_run(&mut svm, &stored_spool, 5);
+
+    svm.commit_cus_change_log();
 }
 
 fn setup_environment() -> (LiteSVM, Keypair) {
@@ -119,6 +123,7 @@ fn setup_environment() -> (LiteSVM, Keypair) {
 fn subsidize_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     ata: Pubkey,
     tape_address: Pubkey,
     amount: u64,
@@ -136,6 +141,7 @@ fn subsidize_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::TapeSubsidize,res.unwrap().compute_units_consumed);
 
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
@@ -143,11 +149,11 @@ fn subsidize_tape(
 }
 
 fn claim_rewards(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
+    svm: &mut SvmWithCUTracker,
     miner_address: Pubkey,
     miner_ata: Pubkey,
 ) {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     let payer_pk = payer.pubkey();
 
     let blockhash = svm.latest_blockhash();
@@ -161,6 +167,7 @@ fn claim_rewards(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::MinerClaim, res.unwrap().compute_units_consumed);
 
     // Verify miner account after claiming rewards
     let account = svm.get_account(&miner_address).unwrap();
@@ -170,11 +177,11 @@ fn claim_rewards(
 }
 
 fn do_mining_run(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
+    svm: &mut SvmWithCUTracker,
     stored_spool: &StoredSpool,
     num_iterations: u64,
 ) {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     for _ in 0..num_iterations {
         // We need to expire the blockhash because we're not checking if the mining commitment
         // needs to change (when it doesn't, we get a AlreadyProcessed error). Todo, check before
@@ -276,6 +283,7 @@ fn do_mining_run(
             commit_for_mining(
                 svm, 
                 &payer, 
+                cu_tracker,
                 &stored_spool, 
                 tape_index, 
                 segment_number
@@ -285,6 +293,7 @@ fn do_mining_run(
             perform_mining(
                 svm,
                 payer,
+                cu_tracker,
                 stored_spool.miner,
                 packed_tape.address,
                 pow,
@@ -305,6 +314,7 @@ fn do_mining_run(
             perform_mining(
                 svm,
                 payer,
+                cu_tracker,
                 stored_spool.miner,
                 packed_tape.address,
                 pow,
@@ -314,7 +324,8 @@ fn do_mining_run(
     }
 }
 
-fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
+fn get_genesis_tape(svm: &mut SvmWithCUTracker) -> StoredTape {
+    let SvmWithCUTracker { svm, cu_tracker:_, payer } = svm;
     let genesis_name = "genesis".to_string();
     let genesis_name_bytes = to_name(&genesis_name);
     let (genesis_pubkey, _) = tape_find_pda(payer.pubkey(), &genesis_name_bytes);
@@ -339,16 +350,20 @@ fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
 }
 
 
-fn initialize_program(svm: &mut LiteSVM, payer: &Keypair) {
+fn initialize_program(svm: &mut SvmWithCUTracker) {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     let payer_pk = payer.pubkey();
     let ix = instruction::program::build_initialize_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::ProgramInitialize, res.unwrap().compute_units_consumed);
 }
 
-fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
+fn verify_archive_account(svm: &SvmWithCUTracker, expected_tapes_stored: u64) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (archive_address, _archive_bump) = archive_pda();
     let account = svm
         .get_account(&archive_address)
@@ -357,7 +372,9 @@ fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
     assert_eq!(archive.tapes_stored, expected_tapes_stored);
 }
 
-fn verify_epoch_account(svm: &LiteSVM) {
+fn verify_epoch_account(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (epoch_address, _epoch_bump) = epoch_pda();
     let account = svm
         .get_account(&epoch_address)
@@ -373,7 +390,9 @@ fn verify_epoch_account(svm: &LiteSVM) {
     assert_eq!(epoch.last_epoch_at, 0);
 }
 
-fn verify_block_account(svm: &LiteSVM) {
+fn verify_block_account(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (block_address, _block_bump) = block_pda();
     let account = svm
         .get_account(&block_address)
@@ -387,21 +406,27 @@ fn verify_block_account(svm: &LiteSVM) {
     assert!(block.challenge.ne(&[0u8; 32]));
 }
 
-fn verify_treasury_account(svm: &LiteSVM) {
+fn verify_treasury_account(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (treasury_address, _treasury_bump) = treasury_pda();
     let _treasury_account = svm
         .get_account(&treasury_address)
         .expect("Treasury account should exist");
 }
 
-fn verify_mint_account(svm: &LiteSVM) {
+fn verify_mint_account(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (mint_address, _mint_bump) = mint_pda();
     let mint = get_mint(svm, &mint_address);
     assert_eq!(mint.supply, MAX_SUPPLY);
     assert_eq!(mint.decimals, TOKEN_DECIMALS);
 }
 
-fn verify_metadata_account(svm: &LiteSVM) {
+fn verify_metadata_account(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (mint_address, _mint_bump) = mint_pda();
     let (metadata_address, _metadata_bump) = metadata_find_pda(mint_address);
     let account = svm
@@ -410,7 +435,9 @@ fn verify_metadata_account(svm: &LiteSVM) {
     assert!(!account.data.is_empty());
 }
 
-fn verify_treasury_ata(svm: &LiteSVM) {
+fn verify_treasury_ata(svm: &SvmWithCUTracker) {
+    let SvmWithCUTracker {svm,..} = svm;
+
     let (treasury_ata_address, _ata_bump) = treasury_ata();
     let account = svm
         .get_account(&treasury_ata_address)
@@ -418,12 +445,13 @@ fn verify_treasury_ata(svm: &LiteSVM) {
     assert!(!account.data.is_empty());
 }
 
+
 fn create_and_verify_tape(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
+    svm: &mut SvmWithCUTracker,
     ata: Pubkey,
     tape_index: u64,
 ) -> StoredTape {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     let payer_pk = payer.pubkey();
     let tape_name = format!("tape-name-{tape_index}");
 
@@ -434,6 +462,7 @@ fn create_and_verify_tape(
     let mut stored_tape = create_tape(
         svm, 
         payer, 
+        cu_tracker,
         &tape_name, 
         tape_address, 
         writer_address
@@ -445,6 +474,7 @@ fn create_and_verify_tape(
     write_tape(
         svm,
         payer,
+        cu_tracker,
         tape_address,
         writer_address,
         &mut stored_tape,
@@ -454,6 +484,7 @@ fn create_and_verify_tape(
     update_tape(
         svm,
         payer,
+        cu_tracker,
         tape_address,
         writer_address,
         &mut stored_tape,
@@ -467,6 +498,7 @@ fn create_and_verify_tape(
     subsidize_tape(
         svm, 
         payer, 
+        cu_tracker,
         ata,
         tape_address, 
         min_rent,
@@ -475,6 +507,7 @@ fn create_and_verify_tape(
     finalize_tape(
         svm,
         payer,
+        cu_tracker,
         tape_address,
         writer_address,
         &mut stored_tape,
@@ -487,6 +520,7 @@ fn create_and_verify_tape(
 fn create_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     tape_name: &str,
     tape_address: Pubkey,
     writer_address: Pubkey,
@@ -499,6 +533,7 @@ fn create_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::TapeCreate,res.unwrap().compute_units_consumed);
 
     // Verify tape account
     let account = svm.get_account(&tape_address).unwrap();
@@ -530,6 +565,7 @@ fn create_tape(
 fn write_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
@@ -545,6 +581,7 @@ fn write_tape(
         let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
         let res = send_tx(svm, tx);
         assert!(res.is_ok());
+        cu_tracker.track_cus(ProgramIx::TapeWrite,res.unwrap().compute_units_consumed);
 
         // Update local state
         let segments = data.chunks(SEGMENT_SIZE);
@@ -582,6 +619,7 @@ fn write_tape(
 fn update_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
@@ -632,6 +670,7 @@ fn update_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::TapeUpdate,res.unwrap().compute_units_consumed);
 
     // Update local tree
     assert!(update_segment(
@@ -666,6 +705,7 @@ fn update_tape(
 fn finalize_tape(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     tape_address: Pubkey,
     writer_address: Pubkey,
     stored_tape: &mut StoredTape,
@@ -679,7 +719,7 @@ fn finalize_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
-
+    cu_tracker.track_cus(ProgramIx::TapeFinalize,res.unwrap().compute_units_consumed);
     // Verify update fails after finalization
     let target_segment: u64 = 0;
 
@@ -722,7 +762,8 @@ fn finalize_tape(
     stored_tape.number = tape_index + 1;
 }
 
-fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubkey {
+fn register_miner(svm: &mut SvmWithCUTracker, miner_name: &str) -> Pubkey {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     let payer_pk = payer.pubkey();
     let (miner_address, _miner_bump) = miner_find_pda(payer_pk, to_name(miner_name));
 
@@ -731,6 +772,7 @@ fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubke
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::MinerRegister, res.unwrap().compute_units_consumed);
 
     let account = svm.get_account(&miner_address).unwrap();
     let miner = Miner::unpack(&account.data).unwrap();
@@ -747,7 +789,9 @@ fn register_miner(svm: &mut LiteSVM, payer: &Keypair, miner_name: &str) -> Pubke
     miner_address
 }
 
-fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, number: u64) -> StoredSpool {
+fn create_spool(svm: &mut SvmWithCUTracker, miner_address: Pubkey, number: u64) -> StoredSpool {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
+
     let payer_pk = payer.pubkey();
     let (spool_address, _bump) = spool_find_pda(miner_address, number);
 
@@ -756,6 +800,7 @@ fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, numbe
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::SpoolCreate, res.unwrap().compute_units_consumed);
 
     let account = svm.get_account(&spool_address).unwrap();
     let spool = Spool::unpack(&account.data).unwrap();
@@ -830,6 +875,7 @@ fn get_packed_tape(
 fn commit_for_mining(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     stored_spool: &StoredSpool,
     tape_index: u64,
     segment_index: u64,
@@ -837,7 +883,7 @@ fn commit_for_mining(
     let payer_pk = payer.pubkey();
     let blockhash = svm.latest_blockhash();
 
-    let ix = [
+    let [unpack_ix,commit_ix] = [
         unpack_tape_ix(
             payer, 
             stored_spool, 
@@ -851,10 +897,15 @@ fn commit_for_mining(
         ),
     ];
 
-    let tx = Transaction::new_signed_with_payer(&ix, Some(&payer_pk), &[&payer], blockhash);
+    let tx = Transaction::new_signed_with_payer(&[unpack_ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
-
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::SpoolUnpack, res.unwrap().compute_units_consumed);
+
+    let tx = Transaction::new_signed_with_payer(&[commit_ix], Some(&payer_pk), &[&payer], blockhash);
+    let res = send_tx(svm, tx);
+    assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::SpoolCommit, res.unwrap().compute_units_consumed);
 
     // Verify that the mining account has the leaf we need
     let account = svm.get_account(&stored_spool.miner)
@@ -959,11 +1010,11 @@ fn unpack_tape_ix(
 }
 
 fn pack_tape(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
+    svm: &mut SvmWithCUTracker,
     stored_tape: &StoredTape, 
     stored_spool: &mut StoredSpool,
 ) {
+    let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     // Get the required difficulty for packing
     let (epoch_address, _epoch_bump) = epoch_pda();
     let epoch_account = svm.get_account(&epoch_address).unwrap();
@@ -985,6 +1036,7 @@ fn pack_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::SpoolPack, res.unwrap().compute_units_consumed);
 
     stored_spool.tree.try_add_leaf(
         Leaf::new(&[
@@ -1000,6 +1052,7 @@ fn pack_tape(
 fn perform_mining(
     svm: &mut LiteSVM,
     payer: &Keypair,
+    cu_tracker: &mut ComputeUnitsTracker,
     miner_address: Pubkey,
     tape_address: Pubkey,
     pow: PoW,
@@ -1019,6 +1072,7 @@ fn perform_mining(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+    cu_tracker.track_cus(ProgramIx::MinerMine, res.unwrap().compute_units_consumed);
 
     let account = svm.get_account(&miner_address).unwrap();
     let miner = Miner::unpack(&account.data).unwrap();
