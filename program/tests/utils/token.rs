@@ -9,8 +9,11 @@ use litesvm_token::{
 };
 use spl_associated_token_account::get_associated_token_address;
 
+use crate::utils::SvmWithCUTracker;
 
-pub fn create_mint(svm: &mut LiteSVM, payer_kp: &Keypair, owner_pk: &Pubkey, decimals: u8) -> Pubkey {
+
+pub fn create_mint(svm: &mut SvmWithCUTracker, payer_kp: &Keypair, owner_pk: &Pubkey, decimals: u8) -> Pubkey {
+    let SvmWithCUTracker { svm, cu_tracker:_, payer:_ } = svm;
     CreateMint::new(svm, payer_kp)
         .authority(owner_pk)
         .decimals(decimals)
@@ -18,8 +21,9 @@ pub fn create_mint(svm: &mut LiteSVM, payer_kp: &Keypair, owner_pk: &Pubkey, dec
         .unwrap()
 }
 
-pub fn create_ata(svm: &mut LiteSVM, payer_kp: &Keypair, mint_pk: &Pubkey, owner_pk: &Pubkey) -> Pubkey {
-    CreateAssociatedTokenAccount::new(svm, payer_kp, mint_pk)
+pub fn create_ata(svm: &mut SvmWithCUTracker, mint_pk: &Pubkey, owner_pk: &Pubkey) -> Pubkey {
+    let SvmWithCUTracker { svm, cu_tracker:_, payer } = svm;
+    CreateAssociatedTokenAccount::new(svm, payer, mint_pk)
         .owner(owner_pk)
         .send()
         .unwrap()
@@ -29,8 +33,8 @@ pub fn get_ata_address(mint_pk: &Pubkey, owner_pk: &Pubkey) -> Pubkey {
     get_associated_token_address(owner_pk, mint_pk)
 }
 
-pub fn get_ata_balance(svm: &LiteSVM, ata: &Pubkey) -> u64 {
-    let info : Account = get_spl_account(svm, ata).unwrap();
+pub fn get_ata_balance(svm: &SvmWithCUTracker, ata: &Pubkey) -> u64 {
+    let info : Account = get_spl_account(&svm.svm, ata).unwrap();
     info.amount
 }
 
