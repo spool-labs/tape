@@ -34,13 +34,41 @@ tapedrive write -m "hello, world"
 tapedrive read <id>
 ```
 
-## Install Latest
+## Easy Install (version 1)
 
 We have an easy installer if you prefer not to build from source (**recommended**):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/spool-labs/deploy/refs/heads/main/scripts/install.sh | bash
 ```
+
+## Run Latest (from source)
+
+If you'd like to try out the latest version, you'll need to build from source. This will require that you have [Rust](https://www.rust-lang.org/tools/install) and [Solana](https://solana.com/docs/intro/installation) tooling installed.
+
+From there, build the tapedrive binary by navigating to `./cli` directory and running the following.
+
+```
+cargo install --path .
+```
+
+If all goes well, you should now have a `tapedrive` binary.
+
+The latest version may be ahead of the currently deployed solana program, so it is recommended that you run a local validator. This is just one command from the root directory of this repository.
+
+```
+make local
+```
+
+Keep that running and then run the following tapedrive commands.
+
+```
+tapedrive init
+tapedrive airdrop 10
+```
+
+At this point you're setup.
+
 
 ## How It Works
 
