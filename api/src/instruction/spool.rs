@@ -1,6 +1,7 @@
 use steel::*;
 use crate::{
-    consts::*, pda::spool_find_pda,
+    consts::*,
+    pda::*
 };
 
 #[repr(u8)]
@@ -85,6 +86,7 @@ pub fn build_destroy_ix(
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
+            AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],

@@ -6654,29 +6654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-example"
-version = "0.2.1"
-dependencies = [
- "bincode",
- "brine-tree",
- "bytemuck_derive",
- "half",
- "litesvm",
- "litesvm-token",
- "mpl-token-metadata",
- "pretty-hex",
- "rand 0.8.5",
- "solana-compute-budget",
- "solana-program",
- "solana-sdk",
- "spl-associated-token-account 6.0.0",
- "spl-token 4.0.2",
- "steel",
- "tape-api",
- "tape-program",
-]
-
-[[package]]
 name = "tape-network"
 version = "0.2.1"
 dependencies = [

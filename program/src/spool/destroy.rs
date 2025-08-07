@@ -1,7 +1,7 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_spool_destroy(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+pub fn process_spool_destroy(accounts: &[AccountInfo<'_>]) -> ProgramResult {
     let [
         signer_info, 
         spool_info, 

@@ -33,6 +33,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>]) -> ProgramResult {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
+
     archive_info
         .is_empty()?
         .is_writable()?

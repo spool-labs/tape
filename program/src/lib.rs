@@ -65,7 +65,7 @@ pub fn process_instruction(
      } else if let Ok(ix) = SpoolInstruction::try_from_primitive(discriminator) {
          match ix {
             SpoolInstruction::Create => process_spool_create(accounts, data)?,
-            SpoolInstruction::Destroy => process_spool_destroy(accounts, data)?,
+            SpoolInstruction::Destroy => process_spool_destroy(accounts)?,
             SpoolInstruction::Pack => process_spool_pack(accounts, data)?,
             SpoolInstruction::Unpack => process_spool_unpack(accounts, data)?,
             SpoolInstruction::Commit => process_spool_commit(accounts, data)?,

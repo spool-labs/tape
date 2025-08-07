@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use solana_sdk::pubkey::Pubkey;
 
-use crate::metrics::{record_metrics, run_metrics_server};
+use crate::metrics::{record_metrics, run_metrics_server, Process};
 use crate::store::run_refresh_store;
 
 use super::store::{StoreError, TapeStore};
@@ -412,7 +412,7 @@ pub async fn web_loop(
 ) -> anyhow::Result<()> {
 
     // Run metrics server 
-    run_metrics_server()?;
+    run_metrics_server(Process::Web)?;
 
     let store = Arc::new(store);
 

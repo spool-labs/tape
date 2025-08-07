@@ -110,6 +110,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         &miner.challenge,
         slot_hashes_info
     );
+
     msg!("Computed next miner challenge");
 
     let reward = calculate_reward(
@@ -145,6 +146,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
             &block.challenge,
             slot_hashes_info
         );
+
         msg!("Computed next block challenge");
 
         block.challenge = next_block_challenge;

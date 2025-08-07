@@ -50,7 +50,6 @@ struct PackedTape {
 }
 
 
-
 #[test]
 fn run_integration() {
 
@@ -59,10 +58,12 @@ fn run_integration() {
     // Initialize program
     initialize_program(&mut svm);
 
-    let owner_pk = svm.payer.pubkey();
     // Register miner
     let miner_name = "miner-name";
     let miner_address = register_miner(&mut svm, miner_name);
+
+    let owner_pk = svm.payer.pubkey();
+
     let ata = create_ata(&mut svm, &MINT_ADDRESS, &owner_pk);
 
     // Create a miner spool

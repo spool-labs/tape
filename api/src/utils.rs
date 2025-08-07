@@ -1,3 +1,4 @@
+
 use steel::*;
 use crate::consts::*;
 use crate::error::*;
@@ -119,6 +120,7 @@ pub fn compute_next_challenge(
     current_challenge: &[u8; 32],
     slot_hashes_info: &AccountInfo,
 ) -> [u8; 32] {
+
     let slothash = &slot_hashes_info.data.borrow()
         [0..core::mem::size_of::<SlotHash>()];
 

@@ -42,6 +42,11 @@ pub fn build_initialize_ix(
     let (tape_pda, _tape_bump) = tape_find_pda(signer, &name);
     let (writer_pda, _writer_bump) = writer_find_pda(tape_pda);
 
+    assert_eq!(archive_pda, ARCHIVE_ADDRESS);
+    assert_eq!(epoch_pda, EPOCH_ADDRESS);
+    assert_eq!(block_pda, BLOCK_ADDRESS);
+    assert_eq!(mint_pda, MINT_ADDRESS);
+    assert_eq!(treasury_pda, TREASURY_ADDRESS);
     assert_eq!(treasury_ata, TREASURY_ATA);
 
     Instruction {
