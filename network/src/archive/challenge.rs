@@ -1,11 +1,11 @@
-use anyhow::anyhow;
 use std::sync::Arc;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use tokio::task::JoinSet;
+use reqwest::Client as HttpClient;
+
 use tape_client::{
-    get_archive_account, get_block_account, get_miner_account, get_epoch_account,
-    get_tape_account, find_tape_account, init_read, process_next_block,
+    get_block_account, get_miner_account, get_epoch_account,
+    get_tape_account, init_read, process_next_block,
 };
 use tape_api::prelude::*;
 
@@ -13,7 +13,14 @@ use crate::store::TapeStore;
 use super::queue::{Tx, SegmentJob};
 
 /// Spawn task B – periodic miner-challenge sync.
-pub async fn run(rpc: Arc<RpcClient>, store: Arc<TapeStore>, miner_address: Pubkey, tx: Tx) -> anyhow::Result<()> {
+pub async fn run(
+    rpc: Arc<RpcClient>,
+    store: Arc<TapeStore>,
+    miner_address: Pubkey,
+    trusted_peer: Option<String>,
+    tx: Tx,
+) -> anyhow::Result<()> {
+
     loop {
         // Fetch miner, block, and epoch accounts
         let block_with_miner = tokio::join!(
@@ -33,59 +40,47 @@ pub async fn run(rpc: Arc<RpcClient>, store: Arc<TapeStore>, miner_address: Pubk
 
         log::debug!("Miner needs tape number: {}", tape_number);
 
-        // Sync tape addresses if needed
-        if store.read_tape_address(tape_number).is_err() {
-            sync_tape_addresses(&store, &rpc).await?;
-        }
+        // Get tape address (assumed to be synced during initialization)
+        if let Ok(tape_address) = store.read_tape_address(tape_number) {
+            let tape = get_tape_account(&rpc, &tape_address).await?.0;
 
-        let tape_address = store.read_tape_address(tape_number)?;
-        let tape = get_tape_account(&rpc, &tape_address).await?.0;
-
-        // Check and sync segments
-        let segment_count = store.read_segment_count(&tape_address).unwrap_or(0);
-        if segment_count as u64 != tape.total_segments {
-            log::debug!("Syncing segments for tape {} ({} of {})", tape_address, segment_count, tape.total_segments);
-            sync_segments_from_solana(&store, &rpc, &tape_address, &miner_address, epoch.packing_difficulty, &tx).await?;
+            // Check and sync segments
+            let segment_count = store.read_segment_count(&tape_address).unwrap_or(0);
+            if segment_count as u64 != tape.total_segments {
+                log::debug!(
+                    "Syncing segments for tape {} ({} of {})",
+                    tape_address,
+                    segment_count,
+                    tape.total_segments
+                );
+                if let Some(peer_url) = &trusted_peer {
+                    sync_segments_from_trusted_peer(
+                        &store,
+                        &tape_address,
+                        peer_url,
+                        &miner_address,
+                        epoch.packing_difficulty,
+                        &tx,
+                    )
+                    .await?;
+                } else {
+                    sync_segments_from_solana(
+                        &store,
+                        &rpc,
+                        &tape_address,
+                        &miner_address,
+                        epoch.packing_difficulty,
+                        &tx,
+                    )
+                    .await?;
+                }
+            }
+        } else {
+            log::error!("Tape address not found for tape number {}", tape_number);
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     }
-}
-
-async fn sync_tape_addresses(store: &TapeStore, client: &Arc<RpcClient>) -> anyhow::Result<()> {
-    let (archive, _) = get_archive_account(client).await?;
-    let total = archive.tapes_stored;
-    let mut tasks = JoinSet::new();
-    let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
-
-    for tape_number in 1..=total {
-        if store.read_tape_address(tape_number).is_ok() {
-            continue;
-        }
-
-        if tasks.len() >= 10 {
-            if let Some(Ok(Ok((pubkey, number)))) = tasks.join_next().await {
-                tape_pubkeys_with_numbers.push((pubkey, number));
-            }
-        }
-
-        let client = client.clone();
-        tasks.spawn(async move {
-            let (pubkey, _) = find_tape_account(&client, tape_number)
-                .await?
-                .ok_or(anyhow!("Tape account not found for number {}", tape_number))?;
-            Ok((pubkey, tape_number))
-        });
-    }
-
-    let results: Vec<anyhow::Result<(Pubkey, u64)>> = tasks.join_all().await;
-    let pairs: Vec<(Pubkey, u64)> = results.into_iter().filter_map(|r| r.ok()).collect();
-    tape_pubkeys_with_numbers.extend(pairs.into_iter());
-
-    let (pubkeys, tape_numbers): (Vec<Pubkey>, Vec<u64>) = tape_pubkeys_with_numbers.into_iter().unzip();
-    store.write_tapes_batch(&tape_numbers, &pubkeys)?;
-
-    Ok(())
 }
 
 async fn sync_segments_from_solana(
@@ -108,14 +103,43 @@ async fn sync_segments_from_solana(
             continue;
         }
 
-        let data = state.segments.remove(&seg_num).ok_or_else(|| anyhow!("Segment data missing"))?;
+        let data = state.segments.remove(&seg_num).ok_or_else(|| anyhow::anyhow!("Segment data missing"))?;
         let job = SegmentJob {
             tape: *tape_address,
             seg_no: seg_num,
             data,
         };
         if tx.send(job).await.is_err() {
-            return Err(anyhow!("Channel closed"));
+            return Err(anyhow::anyhow!("Channel closed"));
+        }
+    }
+
+    Ok(())
+}
+
+async fn sync_segments_from_trusted_peer(
+    store: &TapeStore,
+    tape_address: &Pubkey,
+    trusted_peer_url: &str,
+    _miner_address: &Pubkey,
+    _packing_difficulty: u64,
+    tx: &Tx,
+) -> anyhow::Result<()> {
+    let http = HttpClient::new();
+    let segments = crate::utils::peer::fetch_tape_segments(&http, trusted_peer_url, tape_address).await?;
+
+    for (seg_num, data) in segments {
+        if store.read_segment_by_address(tape_address, seg_num).is_ok() {
+            continue;
+        }
+
+        let job = SegmentJob {
+            tape: *tape_address,
+            seg_no: seg_num,
+            data,
+        };
+        if tx.send(job).await.is_err() {
+            return Err(anyhow::anyhow!("Channel closed"));
         }
     }
 

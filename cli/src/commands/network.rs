@@ -26,8 +26,8 @@ pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
         Commands::Web { port } => {
             handle_web(context, port).await?;
         }
-        Commands::Archive { starting_slot, trusted_peer, miner_address } => {
-            handle_archive(context, starting_slot, trusted_peer, miner_address).await?;
+        Commands::Archive { trusted_peer, miner_address } => {
+            handle_archive(context, trusted_peer, miner_address).await?;
         }
         Commands::Mine { pubkey, name } => {
             handle_mine(context, pubkey, name).await?;
@@ -52,20 +52,18 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
 
 pub async fn handle_archive(
     context: Context,
-    _starting_slot: Option<u64>,
-    _trusted_peer: Option<String>,
+    trusted_peer: Option<String>,
     miner_address: Option<String>
 ) -> Result<()> {
-
     log::print_info("Starting archive service...");
 
     // Use the public devnet peer if none is provided
-    //let trusted_peer = match context.rpc().url() {
-    //    url if url.contains("devnet") => {
-    //        Some(trusted_peer.unwrap_or(DEVNET.to_string()))
-    //    }
-    //    _ => trusted_peer
-    //};
+    let trusted_peer = match context.rpc().url() {
+        url if url.contains("devnet") => {
+            Some(trusted_peer.unwrap_or(DEVNET.to_string()))
+        }
+        _ => trusted_peer
+    };
 
     let miner = get_or_create_miner(
         context.rpc(), 
@@ -80,9 +78,7 @@ pub async fn handle_archive(
     let rpc_client = context.rpc().clone();
     let store      = Arc::new(context.open_primary_store_conn()?);
 
-    //archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
-
-    archive::orchestrator::run(miner, store, rpc_client).await?;
+    archive::orchestrator::run(miner, store, rpc_client, trusted_peer).await?;
 
     Ok(())
 }
