@@ -3,6 +3,7 @@ mod keypair;
 mod log;
 mod commands;
 mod utils;
+mod config;
 
 
 use anyhow::{Ok, Result};
@@ -13,6 +14,7 @@ use env_logger::{self, Env};
 use tape_network::store::TapeStore;
 
 use crate::cli::Context;
+use crate::config::TapeConfig;
 
 
 fn main() -> Result<()>{
@@ -38,8 +40,12 @@ async fn run_tape_cli() -> Result<()> {
 
     let cli = Cli::parse();
   
+    let config = TapeConfig::load().unwrap_or_else(|_| {
+        log::print_info("tape.toml not found, creating default configuration");
+        TapeConfig::create_default().expect("Failed to create default config")
+    });
 
-    let context = Context::try_build(&cli)?;
+    let context = Context::try_build(&cli, &config)?;
 
     match cli.command {
         Commands::Init {} |
