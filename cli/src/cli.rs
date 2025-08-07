@@ -1,15 +1,16 @@
+use std::env;
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
-use tape_network::store::TapeStore;
-use std::env;
-use std::str::FromStr;
-use std::path::PathBuf;
-use std::sync::Arc;
 
-use crate::keypair::{get_keypair_path, get_payer};
+use crate::keypair::{get_keypair_path, load_keypair};
+use tape_network::store::TapeStore;
 
 #[derive(Parser)]
 #[command(
@@ -26,23 +27,26 @@ pub struct Cli {
     pub keypair_path: Option<PathBuf>,
 
     #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
+        short = 'u',
+        long = "cluster",
+        default_value = "l",
         global = true,
         help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
     )]
     pub cluster: Cluster,
 
-    #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        help = "Print verbose output",
+        global = true
+    )]
     pub verbose: bool,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-
     // Tape Commands
-
     Read {
         #[arg(help = "Tape account to read")]
         tape: String,
@@ -65,13 +69,15 @@ pub enum Commands {
         #[arg(short = 'r', long = "remote", conflicts_with_all = ["filename", "message"])]
         remote: Option<String>,
 
-        #[arg(short = 'n', long = "tape-name", help = "Custom name for the tape (defaults to timestamp)")]
+        #[arg(
+            short = 'n',
+            long = "tape-name",
+            help = "Custom name for the tape (defaults to timestamp)"
+        )]
         tape_name: Option<String>,
     },
 
-
     // Miner Commands
-
     #[command(hide = true)]
     Register {
         #[arg(help = "The name of the miner you're registering")]
@@ -87,9 +93,12 @@ pub enum Commands {
     },
 
     // Node Commands
-
     Archive {
-        #[arg(help = "Starting slot to archive from, defaults to the latest slot", short = 's', long = "starting-slot")]
+        #[arg(
+            help = "Starting slot to archive from, defaults to the latest slot",
+            short = 's',
+            long = "starting-slot"
+        )]
         starting_slot: Option<u64>,
 
         #[arg(help = "Trusted peer to connect to", short = 'p', long = "peer")]
@@ -102,7 +111,12 @@ pub enum Commands {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
 
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
+        #[arg(
+            help = "Name of the miner you're mining with",
+            conflicts_with = "pubkey",
+            short = 'n',
+            long = "name"
+        )]
         name: Option<String>,
     },
     Web {
@@ -111,7 +125,6 @@ pub enum Commands {
     },
 
     // Admin Commands
-
     #[command(hide = true)]
     Init {},
 
@@ -121,15 +134,12 @@ pub enum Commands {
     },
 
     // Store Management Commands
-
     #[command(subcommand)]
     Snapshot(SnapshotCommands),
 
     // Info Commands
-
     #[command(subcommand)]
     Info(InfoCommands),
-
 }
 
 #[derive(Subcommand)]
@@ -142,7 +152,9 @@ pub enum SnapshotCommands {
     },
 
     Create {
-        #[arg(help = "Output path for the snapshot file (defaults to a timestamped file in current directory)")]
+        #[arg(
+            help = "Output path for the snapshot file (defaults to a timestamped file in current directory)"
+        )]
         output: Option<String>,
     },
 
@@ -158,7 +170,11 @@ pub enum SnapshotCommands {
         #[arg(short = 'o', long = "output", help = "Output file")]
         output: Option<String>,
 
-        #[arg(short = 'r', long = "raw", help = "Output raw segments instead of decoded tape")]
+        #[arg(
+            short = 'r',
+            long = "raw",
+            help = "Output raw segments instead of decoded tape"
+        )]
         raw: bool,
     },
 
@@ -185,7 +201,12 @@ pub enum InfoCommands {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
 
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
+        #[arg(
+            help = "Name of the miner you're mining with",
+            conflicts_with = "pubkey",
+            short = 'n',
+            long = "name"
+        )]
         name: Option<String>,
     },
 
@@ -235,32 +256,31 @@ impl FromStr for Cluster {
 pub struct Context {
     pub rpc: Arc<RpcClient>,
     pub keypair_path: PathBuf,
-    pub payer: Keypair
+    pub payer: Keypair,
 }
 
-impl Context{
-    pub fn try_build(cli:&Cli) -> Result<Self> {
+impl Context {
+    pub fn try_build(cli: &Cli) -> Result<Self> {
         let rpc_url = cli.cluster.rpc_url();
-        let rpc = Arc::new(
-            RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
-        );
+        let rpc = Arc::new(RpcClient::new_with_commitment(
+            rpc_url.clone(),
+            CommitmentConfig::finalized(),
+        ));
         let keypair_path = get_keypair_path(cli.keypair_path.clone());
-        let payer = get_payer(keypair_path.clone())?;
-        
-        Ok(Self {
-             rpc,
-             keypair_path,
-             payer
-        })
+        let payer = load_keypair(keypair_path.clone())?;
 
+        Ok(Self {
+            rpc,
+            keypair_path,
+            payer,
+        })
     }
 
-    pub fn keyapir_path(&self) -> &PathBuf{
+    pub fn keyapir_path(&self) -> &PathBuf {
         &self.keypair_path
     }
 
-    pub fn rpc(&self) -> &Arc<RpcClient>{
+    pub fn rpc(&self) -> &Arc<RpcClient> {
         &self.rpc
     }
 
@@ -280,9 +300,7 @@ impl Context{
         Ok(tape_network::store::read_only()?)
     }
 
-
-    pub fn payer(&self) -> &Keypair{
+    pub fn payer(&self) -> &Keypair {
         &self.payer
     }
-
 }
