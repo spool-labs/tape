@@ -33,7 +33,7 @@ pub async fn run(
     tasks.spawn(challenge::run(rpc.clone(), store.clone(), miner, trusted_peer, tx));
 
     // C – pack segments
-    tasks.spawn(pack::run(rx, miner, store));
+    tasks.spawn(pack::run(rpc.clone(), rx, miner, store));
 
     wait_for_shutdown(tasks).await
 }

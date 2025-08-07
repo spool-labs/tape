@@ -1,16 +1,16 @@
 use std::sync::Arc;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
-use reqwest::Client as HttpClient;
 
-use tape_client::{
-    get_block_account, get_miner_account, get_epoch_account,
-    get_tape_account, init_read, process_next_block,
-};
 use tape_api::prelude::*;
-
+use tape_client::{
+    get_block_account, get_miner_account, get_epoch_account, get_tape_account
+};
 use crate::store::TapeStore;
-use super::queue::{Tx, SegmentJob};
+use super::queue::Tx;
+use super::sync::{
+    sync_segments_from_solana, sync_segments_from_trusted_peer
+};
 
 /// Spawn task B – periodic miner-challenge sync.
 pub async fn run(
@@ -20,7 +20,6 @@ pub async fn run(
     trusted_peer: Option<String>,
     tx: Tx,
 ) -> anyhow::Result<()> {
-
     loop {
         // Fetch miner, block, and epoch accounts
         let block_with_miner = tokio::join!(
@@ -29,7 +28,7 @@ pub async fn run(
             get_epoch_account(&rpc)
         );
 
-        let (block, miner, epoch) = (
+        let (block, miner, _epoch) = (
             block_with_miner.0?.0,
             block_with_miner.1?.0,
             block_with_miner.2?.0,
@@ -54,25 +53,9 @@ pub async fn run(
                     tape.total_segments
                 );
                 if let Some(peer_url) = &trusted_peer {
-                    sync_segments_from_trusted_peer(
-                        &store,
-                        &tape_address,
-                        peer_url,
-                        &miner_address,
-                        epoch.packing_difficulty,
-                        &tx,
-                    )
-                    .await?;
+                    sync_segments_from_trusted_peer(&store, &tape_address, peer_url, &tx).await?;
                 } else {
-                    sync_segments_from_solana(
-                        &store,
-                        &rpc,
-                        &tape_address,
-                        &miner_address,
-                        epoch.packing_difficulty,
-                        &tx,
-                    )
-                    .await?;
+                    sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
                 }
             }
         } else {
@@ -81,67 +64,4 @@ pub async fn run(
 
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     }
-}
-
-async fn sync_segments_from_solana(
-    store: &TapeStore,
-    client: &Arc<RpcClient>,
-    tape_address: &Pubkey,
-    _miner_address: &Pubkey,
-    _packing_difficulty: u64,
-    tx: &Tx,
-) -> anyhow::Result<()> {
-    let (tape, _) = get_tape_account(client, tape_address).await?;
-    let mut state = init_read(tape.tail_slot);
-    while process_next_block(client, tape_address, &mut state).await? {}
-
-    let mut keys: Vec<u64> = state.segments.keys().cloned().collect();
-    keys.sort();
-
-    for seg_num in keys {
-        if store.read_segment_by_address(tape_address, seg_num).is_ok() {
-            continue;
-        }
-
-        let data = state.segments.remove(&seg_num).ok_or_else(|| anyhow::anyhow!("Segment data missing"))?;
-        let job = SegmentJob {
-            tape: *tape_address,
-            seg_no: seg_num,
-            data,
-        };
-        if tx.send(job).await.is_err() {
-            return Err(anyhow::anyhow!("Channel closed"));
-        }
-    }
-
-    Ok(())
-}
-
-async fn sync_segments_from_trusted_peer(
-    store: &TapeStore,
-    tape_address: &Pubkey,
-    trusted_peer_url: &str,
-    _miner_address: &Pubkey,
-    _packing_difficulty: u64,
-    tx: &Tx,
-) -> anyhow::Result<()> {
-    let http = HttpClient::new();
-    let segments = crate::utils::peer::fetch_tape_segments(&http, trusted_peer_url, tape_address).await?;
-
-    for (seg_num, data) in segments {
-        if store.read_segment_by_address(tape_address, seg_num).is_ok() {
-            continue;
-        }
-
-        let job = SegmentJob {
-            tape: *tape_address,
-            seg_no: seg_num,
-            data,
-        };
-        if tx.send(job).await.is_err() {
-            return Err(anyhow::anyhow!("Channel closed"));
-        }
-    }
-
-    Ok(())
 }
