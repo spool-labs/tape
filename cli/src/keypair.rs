@@ -1,42 +1,46 @@
-use solana_sdk::signature::Keypair;
-use std::path::PathBuf;
-use anyhow::{Result, anyhow};
-use std::fs;
+use std::path::{Path, PathBuf};
 
-pub fn create_keypair(path: &PathBuf) -> Result<Keypair> {
+use anyhow::{anyhow, Result};
+use solana_sdk::{signature::Keypair, signer::EncodableKey};
+
+/// Returns the keypair path. If `keypair_path` is `None`, defaults to `~/.config/solana/id.json`.
+pub fn get_keypair_path<F: AsRef<Path>>(keypair_path: Option<F>) -> PathBuf {
+    keypair_path
+        .map(|p| p.as_ref().to_path_buf())
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("Could not find home directory")
+                .join(".config/solana/id.json")
+        })
+}
+
+/// Generates a new random `Keypair` and writes it to the given file path.
+fn generate_keypair<F: AsRef<Path>>(path: F) -> Result<Keypair> {
     let keypair = Keypair::new();
-    let bytes = keypair.to_bytes().to_vec();
-    let json = serde_json::to_string(&bytes)
-        .map_err(|e| anyhow!("Failed to serialize keypair to JSON: {}", e))?;
-    fs::write(path, json)
-        .map_err(|e| anyhow!("Failed to write keypair file {}: {}", path.display(), e))?;
+    let _ = keypair.write_to_file(&path).map_err(|e| {
+        anyhow!(
+            "Failed to write new keypair to {}: {}",
+            path.as_ref().display(),
+            e
+        )
+    })?;
+
     Ok(keypair)
 }
 
-pub fn load_keypair(path: &PathBuf) -> Result<Keypair> {
-    let data = fs::read_to_string(path)
-        .map_err(|e| anyhow!("Failed to read keypair file {}: {}", path.display(), e))?;
-    let bytes: Vec<u8> = serde_json::from_str(&data)
-        .map_err(|e| anyhow!("Failed to parse keypair JSON: {}", e))?;
-    Keypair::from_bytes(&bytes)
-        .map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
-}
+/// Loads a `Keypair` from the given path.
+///
+/// - If the file does **not exist**, a new keypair is generated and written to the path.
+/// - If the file exists but is **malformed** or **unreadable**, returns a detailed error.
+pub fn load_keypair<F: AsRef<Path>>(path: F) -> Result<Keypair> {
+    let path = path.as_ref();
 
-/// Loads the keypair from a specified path or the default Solana keypair location.
-pub fn get_keypair_path(keypair_path: Option<PathBuf>) -> PathBuf {
-    keypair_path.unwrap_or_else(|| {
-        dirs::home_dir()
-            .expect("Could not find home directory")
-            .join(".config/solana/id.json")
-    })
-}
+    if path.exists() {
+        // Try to read keypair from file
+        return Keypair::read_from_file(path)
+            .map_err(|e| anyhow!("Failed to read keypair from {}: {}", path.display(), e));
+    }
 
-pub fn get_payer(keypair_path: PathBuf) -> Result<Keypair> {
-    let payer = match load_keypair(&keypair_path) {
-        Ok(payer) => payer,
-        Err(_) => {
-            create_keypair(&keypair_path)?
-        }
-    };
-    Ok(payer)
+    // File does not exist — generate and save new keypair
+    generate_keypair(path)
 }
