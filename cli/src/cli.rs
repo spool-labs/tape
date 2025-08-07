@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::keypair::{get_keypair_path, get_payer};
+use crate::config::TapeConfig;
 
 #[derive(Parser)]
 #[command(
@@ -28,11 +29,10 @@ pub struct Cli {
     #[arg(
         short = 'u', 
         long = "cluster", 
-        default_value = "l", 
         global = true,
         help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
     )]
-    pub cluster: Cluster,
+    pub cluster: Option<Cluster>,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -239,8 +239,12 @@ pub struct Context {
 }
 
 impl Context{
-    pub fn try_build(cli:&Cli) -> Result<Self> {
-        let rpc_url = cli.cluster.rpc_url();
+    pub fn try_build(cli:&Cli, config: &TapeConfig) -> Result<Self> {
+        let rpc_url = if let Some(cluster) = &cli.cluster {
+            cluster.rpc_url()
+        } else {
+            config.solana.rpc_url.to_string()
+        };
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
             CommitmentConfig::finalized())
