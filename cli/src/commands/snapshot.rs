@@ -10,7 +10,7 @@ use solana_sdk::pubkey::Pubkey;
 use tape_client as tapedrive;
 use tape_api::SEGMENT_SIZE;
 use tape_api::utils::padded_array;
-use tape_network::archive::sync_from_block;
+//use tape_network::archive::sync_from_block;
 use tape_network::snapshot::{create_snapshot, load_from_snapshot};
 use tape_network::store::StoreError;
 use tapedrive::{decode_tape, MimeType, TapeHeader};
@@ -62,7 +62,7 @@ async fn handle_resync(context: Context, tape: &str) -> Result<()> {
     let starting_slot = tape_account.tail_slot;
     let store = context.open_primary_store_conn()?;
     log::print_message(&format!("Re-syncing tape: {tape}, please wait"));
-    sync_from_block(&store, context.rpc(), &tape_pubkey, starting_slot).await?;
+    // sync_from_block(&store, context.rpc(), &tape_pubkey, starting_slot).await?;
     log::print_message("Done");
     Ok(())
 }

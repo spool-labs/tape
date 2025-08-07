@@ -8,7 +8,8 @@ use solana_sdk::{signature::Keypair, signer::Signer, pubkey::Pubkey};
 use tape_api::prelude::*;
 use tape_client::{register::register_miner, get_miner_account};
 use tape_network::{
-    archive::archive_loop,
+    //archive::archive_loop,
+    archive,
     mine::mine_loop,
     web::web_loop,
 };
@@ -51,29 +52,37 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
 
 pub async fn handle_archive(
     context: Context,
-    starting_slot: Option<u64>,
-    trusted_peer: Option<String>,
+    _starting_slot: Option<u64>,
+    _trusted_peer: Option<String>,
     miner_address: Option<String>
 ) -> Result<()> {
 
-    // Use the public devnet peer if none is provided
-    let trusted_peer = match context.rpc().url() {
-        url if url.contains("devnet") => {
-            Some(trusted_peer.unwrap_or(DEVNET.to_string()))
-        }
-        _ => trusted_peer
-    };
-
-    let miner_address = get_or_create_miner(
-        context.rpc(), context.payer(), miner_address, None, true).await?;
-
-    log::print_message(&format!("Using miner address: {miner_address}"));
-
-    let store = context.open_primary_store_conn()?;
-
     log::print_info("Starting archive service...");
 
-    archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
+    // Use the public devnet peer if none is provided
+    //let trusted_peer = match context.rpc().url() {
+    //    url if url.contains("devnet") => {
+    //        Some(trusted_peer.unwrap_or(DEVNET.to_string()))
+    //    }
+    //    _ => trusted_peer
+    //};
+
+    let miner = get_or_create_miner(
+        context.rpc(), 
+        context.payer(), 
+        miner_address, 
+        None, 
+        true
+    ).await?;
+
+    log::print_message(&format!("Using miner address: {miner}"));
+
+    let rpc_client = context.rpc().clone();
+    let store      = Arc::new(context.open_primary_store_conn()?);
+
+    //archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
+
+    archive::orchestrator::run(miner, store, rpc_client).await?;
 
     Ok(())
 }
