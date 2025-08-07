@@ -269,7 +269,6 @@ impl TapeStore {
             key.extend_from_slice(&segment_number_vec[i].to_be_bytes());
             batch.put_cf(&cf, key, d);
         }
-
         self.db.write(batch)?;
         inc_total_segments_written_batch(segment_number_vec.len() as u64);
    

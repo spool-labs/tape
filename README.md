@@ -1,10 +1,10 @@
 # TAPEDRIVE
+
 [![crates.io](https://img.shields.io/crates/v/tapedrive-cli.svg?style=flat)](https://crates.io/crates/tapedrive-cli)
 
 **Your data, permanently recorded** — uncensorable, ~~un~~editable (if you want), and here for good.
 
 ![image](https://github.com/user-attachments/assets/bf674eb1-512d-47e7-a9c5-e0d0e44c6edb)
-
 
 TAPEDRIVE makes it easy to read and write data on Solana. It's over 1,400x cheaper than using an account. It works by compressing your data into tiny on-chain proofs. A network of miners then solve challenges in parallel to secure your data. It's entirely on Solana, so there's no need for side-chains or consensus overhead.
 
@@ -30,6 +30,7 @@ tapedrive write -m "hello, world"
 ```
 
 #### Read
+
 ```
 tapedrive read <id>
 ```
@@ -76,11 +77,11 @@ Whether you're writing a message, a file, or something else, tapedrive compresse
 
 When you want to retrieve your data, tapedrive reads the tape sequentially from the tape network or blockchain to reassemble the original data.
 
-----------------------
+---
 
 ## TAPENET
 
-Beyond reading and writing, users can participate in the tape network. There are 3 primary functions, all can run on the same machine. 
+Beyond reading and writing, users can participate in the tape network. There are 3 primary functions, all can run on the same machine.
 
 <img width="958" alt="image" src="https://github.com/user-attachments/assets/edd81c05-9a23-4d04-9433-602053ed12d5" />
 
@@ -90,7 +91,6 @@ At minimum, each node must run the [archive](#archiving), but from there you can
 
 > [!Important]
 > We have an easy install script for running a **full node**, learn more [here](https://github.com/tapedrive-io/deploy).
-
 
 ## Archiving
 
@@ -124,13 +124,14 @@ The web service allows users to fetch data using a JSON RPC protocol similar to 
 
 The following methods currently exist.
 
-
 ### getHealth
+
 Retrieves the last persisted block height and drift.
 
 **Parameters**: None (empty object `{}`)
 
 **Returns**:
+
 ```text
 {
   "last_processed_slot": <number>,
@@ -139,6 +140,7 @@ Retrieves the last persisted block height and drift.
 ```
 
 **Example**:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api \
   -H 'Content-Type: application/json' \
@@ -146,6 +148,7 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 **Response**:
+
 ```text
 {
   "jsonrpc": "2.0",
@@ -158,9 +161,11 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 ### getTapeAddress
+
 Retrieves the Solana pubkey (tape address) for a given tape number.
 
 **Parameters**:
+
 ```text
 {
   "tape_number": <number>
@@ -170,6 +175,7 @@ Retrieves the Solana pubkey (tape address) for a given tape number.
 **Returns**: Base-58-encoded Solana pubkey as a string.
 
 **Example**:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api \
   -H 'Content-Type: application/json' \
@@ -177,6 +183,7 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 **Response**:
+
 ```text
 {
   "jsonrpc": "2.0",
@@ -186,9 +193,11 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 ### getTapeNumber
+
 Retrieves the numeric tape ID for a given Solana pubkey (tape address).
 
 **Parameters**:
+
 ```text
 {
   "tape_address": <string>
@@ -198,6 +207,7 @@ Retrieves the numeric tape ID for a given Solana pubkey (tape address).
 **Returns**: Tape number as a number.
 
 **Example**:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api \
   -H 'Content-Type: application/json' \
@@ -205,6 +215,7 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 **Response**:
+
 ```text
 {
   "jsonrpc": "2.0",
@@ -214,9 +225,11 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 ### getSegment
+
 Fetches a single segment’s data by tape address and segment number.
 
 **Parameters**:
+
 ```text
 {
   "tape_address": <string>,
@@ -227,6 +240,7 @@ Fetches a single segment’s data by tape address and segment number.
 **Returns**: Base64-encoded string of the segment’s raw bytes.
 
 **Example**:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api \
   -H 'Content-Type: application/json' \
@@ -234,6 +248,7 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 **Response**:
+
 ```text
 {
   "jsonrpc": "2.0",
@@ -243,9 +258,11 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 ### getTape
+
 Retrieves all segments and their data for a given tape address.
 
 **Parameters**:
+
 ```text
 {
   "tape_address": <string>
@@ -253,6 +270,7 @@ Retrieves all segments and their data for a given tape address.
 ```
 
 **Returns**: Array of objects, each containing:
+
 ```text
 [
   {
@@ -263,6 +281,7 @@ Retrieves all segments and their data for a given tape address.
 ```
 
 **Example**:
+
 ```bash
 curl -X POST http://127.0.0.1:3000/api \
   -H 'Content-Type: application/json' \
@@ -270,6 +289,7 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 **Response**:
+
 ```text
 {
   "jsonrpc": "2.0",
@@ -288,7 +308,9 @@ curl -X POST http://127.0.0.1:3000/api \
 ```
 
 ## Contributing
+
 Fork, PR, or suggest:
+
 - Faster writes/reads (turbo mode).
 - Encryption.
 

@@ -23,6 +23,8 @@ pub struct Tape {
     pub last_rent_block: u64,
 
     pub total_segments: u64,
+
+    pub pda_bump: u64,
 }
 
 #[repr(u64)]
