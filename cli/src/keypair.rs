@@ -14,6 +14,20 @@ pub fn get_keypair_path<F: AsRef<Path>>(keypair_path: Option<F>) -> PathBuf {
         })
 }
 
+/// Generates a new random `Keypair` and writes it to the given file path.
+fn generate_keypair<F: AsRef<Path>>(path: F) -> Result<Keypair> {
+    let keypair = Keypair::new();
+    let _ = keypair.write_to_file(&path).map_err(|e| {
+        anyhow!(
+            "Failed to write new keypair to {}: {}",
+            path.as_ref().display(),
+            e
+        )
+    })?;
+
+    Ok(keypair)
+}
+
 /// Loads a `Keypair` from the given path.
 ///
 /// - If the file does **not exist**, a new keypair is generated and written to the path.
@@ -28,10 +42,5 @@ pub fn load_keypair<F: AsRef<Path>>(path: F) -> Result<Keypair> {
     }
 
     // File does not exist — generate and save new keypair
-    let keypair = Keypair::new();
-    keypair
-        .write_to_file(path)
-        .map_err(|e| anyhow!("Failed to write new keypair to {}: {}", path.display(), e))?;
-
-    Ok(keypair)
+    generate_keypair(path)
 }
