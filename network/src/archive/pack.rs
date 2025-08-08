@@ -23,7 +23,7 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
             log::info!("packx: tape={} seg={} size={}", job.tape, job.seg_no, job.data.len());
 
             let solved = process_segment(&miner, &job.data, packing_difficulty)?;
-            store.write_segment(&job.tape, job.seg_no, solved)?;
+            store.put_segment(&job.tape, job.seg_no, solved)?;
             Ok(())
         })
         .await??;
