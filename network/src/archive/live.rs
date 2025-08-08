@@ -5,16 +5,20 @@ use solana_transaction_status_client_types::TransactionDetails;
 use tape_client::utils::process_block;
 use tape_client::{get_block_by_number, get_slot};
 
+use crate::store::TapeStore;
 use super::queue::{Tx, SegmentJob};
 
 /// Spawn task A – stream live blocks and push raw segments into `tx`.
-pub async fn run(rpc: Arc<RpcClient>, tx: Tx) -> Result<()> {
+pub async fn run(
+    rpc: Arc<RpcClient>,
+    store: Arc<TapeStore>,
+    tx: Tx
+) -> Result<()> {
     let mut latest_slot = get_slot(&rpc).await?;
     let mut last_processed_slot = latest_slot;
 
     loop {
 
-        // Refresh slot tip every 10 iterations
         if last_processed_slot % 10 == 0 {
             latest_slot = get_slot(&rpc).await?;
 
@@ -41,8 +45,6 @@ pub async fn run(rpc: Arc<RpcClient>, tx: Tx) -> Result<()> {
                     data,
                 };
 
-                // tx.send(job).await?;// back-pressure if queue full
-
                 if tx.send(job).await.is_err() {
                     log::error!("Failed to send segment job for tape {} seg {}", key.address, key.segment_number);
                     return Err(anyhow!("Channel closed"));
@@ -51,7 +53,7 @@ pub async fn run(rpc: Arc<RpcClient>, tx: Tx) -> Result<()> {
 
             // Store finalized tapes
             for (address, number) in processed.finalized_tapes {
-                // Assuming TapeStore is accessible via orchestrator; for now, log
+                store.put_tape(number, &address)?;
                 log::debug!("Finalized tape {} with number {}", address, number);
             }
 

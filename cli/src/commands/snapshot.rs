@@ -9,7 +9,6 @@ use solana_sdk::pubkey::Pubkey;
 
 use tape_client as tapedrive;
 use tape_api::SEGMENT_SIZE;
-use tape_api::utils::padded_array;
 use tape_network::archive::sync::sync_from_block;
 use tape_network::snapshot::{create_snapshot, load_from_snapshot};
 use tape_network::store::StoreError;
@@ -48,10 +47,9 @@ pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> 
 
 fn handle_stats(context: Context) -> Result<()> {
     let store = context.open_read_only_store_conn()?;
-    let stats = store.read_local_stats()?;
+    let stats = store.get_local_stats()?;
     log::print_section_header("Local Store Stats");
     log::print_message(&format!("Number of Tapes: {}", stats.tapes));
-    log::print_message(&format!("Number of Segments: {}", stats.segments));
     log::print_message(&format!("Size: {} bytes", stats.size_bytes));
     Ok(())
 }
@@ -96,10 +94,9 @@ async fn handle_get_tape(
     let mut data: Vec<u8> = Vec::with_capacity((total_segments as usize) * SEGMENT_SIZE);
     let mut missing: Vec<u64> = Vec::new();
     for seg_idx in 0..total_segments {
-        match store.read_segment_by_address(&tape_pubkey, seg_idx) {
+        match store.get_segment(&tape_pubkey, seg_idx) {
             Ok(seg) => {
-                let canonical_seg = padded_array::<SEGMENT_SIZE>(&seg);
-                data.extend_from_slice(&canonical_seg);
+                data.extend_from_slice(&seg);
             }
             Err(StoreError::SegmentNotFoundForAddress(..)) => {
                 data.extend_from_slice(&[0u8; SEGMENT_SIZE]);
@@ -145,7 +142,7 @@ async fn handle_get_segment(context: Context, tape: &str, index: u32) -> Result<
 
     let store = context.open_read_only_store_conn()?;
 
-    match store.read_segment_by_address(&tape_pubkey, index as u64) {
+    match store.get_segment(&tape_pubkey, index as u64) {
         Ok(data) => {
             let mut stdout = io::stdout();
             stdout.write_all(&data)?;
