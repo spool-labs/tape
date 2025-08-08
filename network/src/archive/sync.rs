@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use reqwest::Client as HttpClient;
+//use reqwest::Client as HttpClient;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_transaction_status_client_types::TransactionDetails;
 use solana_sdk::pubkey::Pubkey;

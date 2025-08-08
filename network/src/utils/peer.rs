@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use solana_sdk::pubkey::Pubkey;
 use reqwest::Client as HttpClient;
 use serde_json::json;
-use base64::decode;
+//use base64::decode;
 
 /// Fetches the Pubkey address for a given tape number from the trusted peer.
 pub async fn fetch_tape_address(

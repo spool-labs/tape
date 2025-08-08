@@ -6,6 +6,7 @@ use tape_api::prelude::*;
 use tape_client::{
     get_block_account, get_miner_account, get_epoch_account, get_tape_account
 };
+
 use crate::store::TapeStore;
 use super::queue::Tx;
 use super::sync::sync_segments_from_solana;
