@@ -24,6 +24,7 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
 
             let solved = process_segment(&miner, &job.data, packing_difficulty)?;
             store.put_segment(&job.tape, job.seg_no, solved)?;
+
             Ok(())
         })
         .await??;

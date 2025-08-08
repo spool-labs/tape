@@ -44,6 +44,7 @@ pub async fn run(
 
             // Check and sync segments
             let segment_count = store.get_segment_count(&tape_address).unwrap_or(0);
+
             if segment_count as u64 != tape.total_segments {
                 log::debug!(
                     "Syncing segments for tape {} ({} of {})",
@@ -62,6 +63,7 @@ pub async fn run(
                 // yet. Need to implement a way to fetch entire sectors from a trusted peer.
 
                 sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
+
             }
         } else {
             log::error!("Tape address not found for tape number {}", tape_number);

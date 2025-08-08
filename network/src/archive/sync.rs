@@ -112,6 +112,7 @@ pub async fn sync_addresses_from_trusted_peer(
     let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
 
     for tape_number in 1..=total {
+
         if store.get_tape_address(tape_number).is_ok() {
             continue;
         }
@@ -137,7 +138,6 @@ pub async fn sync_addresses_from_trusted_peer(
     for (pubkey, number) in tape_pubkeys_with_numbers {
         store.put_tape(number, &pubkey)?;
     }
-
 
     Ok(())
 }
