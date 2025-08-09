@@ -2,11 +2,11 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::{distributions::Alphanumeric, Rng};
 use solana_sdk::pubkey::Pubkey;
 use tape_api::prelude::*;
-use tape_network::store::TapeStore;
+use tape_network::store::*;
 use tempdir::TempDir;
 
 const SEGMENTS_PER_TAPE: u64 = 1000;
-const NUM_TAPES: usize = 1000;
+const NUM_TAPES: usize = 10;
 
 fn generate_random_data(size: usize) -> Vec<u8> {
     rand::thread_rng()

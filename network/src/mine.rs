@@ -124,7 +124,7 @@ async fn try_mine_iteration(
     if tape.has_minimum_rent() {
         // We need to provide a PoA solution
 
-        let _segment_number = compute_recall_segment(
+        let segment_number = compute_recall_segment(
             &miner_challenge, 
             tape.total_segments
         );
@@ -132,82 +132,82 @@ async fn try_mine_iteration(
         // Unpack the whole tape (temporary code for now...)
         // (todo: this could be up to 32Mb and not really trival with ~262k segments)
 
-        //let segments = store.read_tape_segments(&tape_address)?;
-        //if segments.len() != tape.total_segments as usize {
-        //    // TODO: we need to refetch the tape segments from the network
-        //    return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
-        //        tape_address, tape.total_segments, segments.len()));
-        //}
-        //
-        //let mut leaves = Vec::new();
-        //let mut packed_segment = [0; PACKED_SEGMENT_SIZE];
-        //let mut unpacked_segment = [0; SEGMENT_SIZE];
-        //
-        //for (segment_id, packed_data) in segments.iter() {
-        //    let mut data = [0u8; PACKED_SEGMENT_SIZE];
-        //    data.copy_from_slice(&packed_data[..PACKED_SEGMENT_SIZE]);
-        //
-        //    let solution = packx::Solution::from_bytes(&data);
-        //    let segement_data = solution.unpack(&miner_address.to_bytes());
-        //
-        //    let leaf = compute_leaf(
-        //        *segment_id as u64,
-        //        &segement_data,
-        //    );
-        //
-        //    leaves.push(leaf);
-        //
-        //    if *segment_id == segment_number {
-        //        packed_segment.copy_from_slice(&data);
-        //        unpacked_segment.copy_from_slice(&segement_data);
-        //    }
-        //}
-        //
-        //if packed_segment == [0; PACKED_SEGMENT_SIZE] {
-        //    return Err(anyhow!("Segment number {} not found in tape {}", segment_number, tape_address));
-        //}
-        //
-        //let poa_solution = packx::Solution::from_bytes(&packed_segment);
-        //let pow_solution = solve_challenge(
-        //    miner_challenge,
-        //    &unpacked_segment, 
-        //    epoch.mining_difficulty
-        //).unwrap();
-        //
-        //debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
-        //
-        //let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
-        //let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
-        //let merkle_proof = merkle_proof
-        //    .iter()
-        //    .map(|v| v.to_bytes())
-        //    .collect::<Vec<_>>()
-        //    .try_into()
-        //    .unwrap();
-        //
-        //let pow = PoW::from_solution(&pow_solution);
-        //let poa = PoA::from_solution(&poa_solution, merkle_proof);
-        //
-        //// Tx1: load the packed tape leaf from the spool onto the miner commitment field
-        //// TODO: leaving this out for now, as it requries managing miner spools
-        //
-        ////commit_for_mining(
-        ////    svm, 
-        ////    &payer, 
-        ////    &stored_spool, 
-        ////    tape_index, 
-        ////    segment_number
-        ////);
-        //
-        //// Tx2: perform mining with PoW and PoA
-        //perform_mining(
-        //    client,
-        //    signer,
-        //    *miner_address,
-        //    tape_address,
-        //    pow,
-        //    poa
-        //).await?;
+        let segments = store.get_tape_segments(&tape_address)?;
+        if segments.len() != tape.total_segments as usize {
+            // TODO: we need to refetch the tape segments from the network
+            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
+                tape_address, tape.total_segments, segments.len()));
+        }
+
+        let mut leaves = Vec::new();
+        let mut packed_segment = [0; PACKED_SEGMENT_SIZE];
+        let mut unpacked_segment = [0; SEGMENT_SIZE];
+
+        for (segment_id, packed_data) in segments.iter() {
+            let mut data = [0u8; PACKED_SEGMENT_SIZE];
+            data.copy_from_slice(&packed_data[..PACKED_SEGMENT_SIZE]);
+
+            let solution = packx::Solution::from_bytes(&data);
+            let segement_data = solution.unpack(&miner_address.to_bytes());
+
+            let leaf = compute_leaf(
+                *segment_id as u64,
+                &segement_data,
+            );
+
+            leaves.push(leaf);
+
+            if *segment_id == segment_number {
+                packed_segment.copy_from_slice(&data);
+                unpacked_segment.copy_from_slice(&segement_data);
+            }
+        }
+
+        if packed_segment == [0; PACKED_SEGMENT_SIZE] {
+            return Err(anyhow!("Segment number {} not found in tape {}", segment_number, tape_address));
+        }
+
+        let poa_solution = packx::Solution::from_bytes(&packed_segment);
+        let pow_solution = solve_challenge(
+            miner_challenge,
+            &unpacked_segment, 
+            epoch.mining_difficulty
+        ).unwrap();
+
+        debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
+
+        let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+        let proof_nodes: Vec<[u8; 32]> = merkle_tree
+            .get_merkle_proof(&leaves, segment_number as usize)
+            .into_iter()
+            .map(|h| h.to_bytes())
+            .collect();
+
+        let proof_path = ProofPath::from_slice(&proof_nodes).unwrap();
+
+        let pow = PoW::from_solution(&pow_solution);
+        let poa = PoA::from_solution(&poa_solution, proof_path);
+
+        // Tx1: load the packed tape leaf from the spool onto the miner commitment field
+        // TODO: leaving this out for now, as it requries managing miner spools
+
+        //commit_for_mining(
+        //    svm, 
+        //    &payer, 
+        //    &stored_spool, 
+        //    tape_index, 
+        //    segment_number
+        //);
+
+        // Tx2: perform mining with PoW and PoA
+        perform_mining(
+            client,
+            signer,
+            *miner_address,
+            tape_address,
+            pow,
+            poa
+        ).await?;
 
 
     } else {

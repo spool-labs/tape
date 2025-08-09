@@ -31,7 +31,7 @@ pub const METADATA_URI:    &str = "https://tapedrive.io/metadata.json";
 // Merkle Tree Configuration
 // ====================================================================
 /// Height of the Merkle tree containing segments (number of levels)
-pub const SEGMENT_TREE_HEIGHT: usize = 33; // 1TiB of data
+pub const SEGMENT_TREE_HEIGHT: usize = 18;
 /// Number of hashes in a Merkle proof for a segment tree
 pub const SEGMENT_PROOF_LEN: usize = SEGMENT_TREE_HEIGHT;
 
