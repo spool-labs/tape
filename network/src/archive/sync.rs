@@ -15,7 +15,7 @@ use tape_client::utils::{process_block, ProcessedBlock};
 
 use crate::store::TapeStore;
 use crate::utils::peer;
-use super::process::process_segment;
+use super::pack::pack_segment;
 use super::queue::{Tx, SegmentJob};
 
 /// Syncs missing tape addresses from either a trusted peer or Solana RPC.
@@ -241,7 +241,7 @@ pub async fn sync_from_block(
             if key.address != *tape_address {
                 continue;
             }
-            let processed_segment = process_segment(&key.address, &data, packing_difficulty)?;
+            let processed_segment = pack_segment(&key.address, &data, packing_difficulty)?;
             store.put_segment(&key.address, key.segment_number, processed_segment)?;
         }
 

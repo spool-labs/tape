@@ -1,7 +1,7 @@
 use tape_api::prelude::*;
 use tape_api::instruction::spool::Create;
 use solana_program::{
-    keccak::hashv,
+    blake3::hashv,
     slot_hashes::SlotHash,
 };
 use steel::*;

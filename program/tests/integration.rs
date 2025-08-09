@@ -261,7 +261,7 @@ fn do_mining_run(
 
             let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
             let proof_nodes: Vec<[u8; 32]> = merkle_tree
-                .get_merkle_proof(&leaves, segment_number as usize)
+                .get_proof(&leaves, segment_number as usize)
                 .into_iter()
                 .map(|h| h.to_bytes())
                 .collect();
@@ -603,7 +603,7 @@ fn update_tape(
 
     // Compute Merkle proof
     let proof_nodes: Vec<[u8; 32]> = writer_tree
-        .get_merkle_proof(&leaves, target_segment as usize)
+        .get_proof(&leaves, target_segment as usize)
         .into_iter()
         .map(|h| h.to_bytes())
         .collect();
@@ -898,7 +898,7 @@ fn commit_data_ix(
         .to_bytes();
 
     let proof_nodes: Vec<[u8; 32]> = packed_tape.tree
-        .get_merkle_proof(&leaves, segment_index as usize)
+        .get_proof(&leaves, segment_index as usize)
         .into_iter()
         .map(|h| h.to_bytes())
         .collect();
@@ -937,10 +937,9 @@ fn unpack_tape_ix(
         })
         .collect::<Vec<_>>();
 
-    let merkle_proof = stored_spool.tree.get_merkle_proof(
-        &leaves,
-        index as usize
-    );
+    let merkle_proof = stored_spool.tree
+        .get_proof(&leaves, index as usize);
+
     let merkle_proof = merkle_proof
         .iter()
         .map(|v| v.to_bytes())

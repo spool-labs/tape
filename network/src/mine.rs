@@ -178,7 +178,7 @@ async fn try_mine_iteration(
 
         let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
         let proof_nodes: Vec<[u8; 32]> = merkle_tree
-            .get_merkle_proof(&leaves, segment_number as usize)
+            .get_proof(&leaves, segment_number as usize)
             .into_iter()
             .map(|h| h.to_bytes())
             .collect();

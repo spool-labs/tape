@@ -11,7 +11,7 @@ use crate::store::TapeStore;
 use super::queue::Tx;
 use super::sync::sync_segments_from_solana;
 
-/// Spawn task B – periodic miner-challenge sync.
+/// Orchestrator Task B – periodic miner-challenge sync.
 pub async fn run(
     rpc: Arc<RpcClient>,
     store: Arc<TapeStore>,

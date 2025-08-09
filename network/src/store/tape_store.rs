@@ -132,8 +132,8 @@ impl TapeStore {
     }
 
     pub fn put_segment(&self, tape: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError> {
-        if seg.len() > PACKED_SEGMENT_SIZE {
-            return Err(StoreError::SegmentSizeExceeded(PACKED_SEGMENT_SIZE));
+        if seg.len() != PACKED_SEGMENT_SIZE {
+            return Err(StoreError::InvalidSegmentSize(seg.len()));
         }
         
         let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
@@ -213,24 +213,46 @@ impl TapeStore {
         Ok(())
     }
 
-    pub fn get_l13(&self, tape: &Pubkey) -> Result<Vec<u8>, StoreError> {
+    pub fn get_m13(&self, tape: &Pubkey) -> Result<Vec<u8>, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::MerkleLayers)?;
         let mut key = Vec::with_capacity(36);
         key.extend_from_slice(&tape.to_bytes());
         key.push(13); // layer_id
-        key.extend_from_slice(&[0; 3]); // padding
+        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
         
         self.db
             .get_cf(&cf, &key)?
             .ok_or_else(|| StoreError::TapeNotFoundForAddress(tape.to_string()))
     }
 
-    pub fn put_l13(&self, tape: &Pubkey, l13: &[u8]) -> Result<(), StoreError> {
+    pub fn put_m13(&self, tape: &Pubkey, l13: &[u8]) -> Result<(), StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::MerkleLayers)?;
         let mut key = Vec::with_capacity(36);
         key.extend_from_slice(&tape.to_bytes());
         key.push(13); // layer_id
-        key.extend_from_slice(&[0; 3]); // padding
+        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
+        self.db.put_cf(&cf, &key, l13)?;
+        Ok(())
+    }
+
+    pub fn get_t13(&self, tape: &Pubkey) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleLayers)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
+        
+        self.db
+            .get_cf(&cf, &key)?
+            .ok_or_else(|| StoreError::TapeNotFoundForAddress(tape.to_string()))
+    }
+
+    pub fn put_t13(&self, tape: &Pubkey, l13: &[u8]) -> Result<(), StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleLayers)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
         self.db.put_cf(&cf, &key, l13)?;
         Ok(())
     }
@@ -283,7 +305,7 @@ impl TapeStore {
             let sector_number = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
 
             if sector.len() < SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
-                continue; // Or Err(...) if you want strict checking
+                continue;
             }
 
             let bitmap = &sector[..bitmap_len];
@@ -371,6 +393,20 @@ mod tests {
         Ok((store, temp_dir))
     }
 
+    // Helper function to generate a segment with a specific pattern. It creates a deterministic
+    // test segment where the first 8 bytes store the big-endian segment index so it’s easy to
+    // identify in debugging, and the remaining bytes are filled with a repeatable rolling pattern
+    // based on that index.
+    #[inline]
+    fn seg_with_pattern(i: u64) -> Vec<u8> {
+        let mut v = vec![0u8; PACKED_SEGMENT_SIZE];
+        v[..8].copy_from_slice(&i.to_be_bytes());
+        for (j, b) in v[8..].iter_mut().enumerate() {
+            *b = ((i as usize + j) & 0xFF) as u8;
+        }
+        v
+    }
+
     #[test]
     fn test_put_tape() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
@@ -423,11 +459,22 @@ mod tests {
     fn test_put_l13() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
-        let l13_data = vec![0u8; L13_NODES_PER_TAPE * 32];
+        let t13_data = vec![1u8; L13_NODES_PER_TAPE * 32];
 
-        store.put_l13(&address, &l13_data)?;
-        let retrieved_data = store.get_l13(&address)?;
-        assert_eq!(retrieved_data, l13_data);
+        store.put_t13(&address, &t13_data)?;
+        let retrieved_data = store.get_t13(&address)?;
+        assert_eq!(retrieved_data, t13_data);
+
+        // Test that m13 is not found
+        let retrieved_m13 = store.get_m13(&address);
+        assert!(retrieved_m13.is_err());
+
+        // Test that m13 doesn't overwrite t13
+        let m13_data = vec![2u8; L13_NODES_PER_TAPE * 32];
+        store.put_m13(&address, &m13_data)?;
+
+        let retrieved_m13 = store.get_m13(&address)?;
+        assert_eq!(retrieved_m13, m13_data);
         Ok(())
     }
 
@@ -448,20 +495,6 @@ mod tests {
         assert_eq!(stats.sectors, 1);
         assert!(stats.size_bytes > 0);
         Ok(())
-    }
-
-    #[inline]
-    // Helper function to generate a segment with a specific pattern. It creates a deterministic
-    // test segment where the first 8 bytes store the big-endian segment index so it’s easy to
-    // identify in debugging, and the remaining bytes are filled with a repeatable rolling pattern
-    // based on that index.
-    fn seg_with_pattern(i: u64) -> Vec<u8> {
-        let mut v = vec![0u8; PACKED_SEGMENT_SIZE];
-        v[..8].copy_from_slice(&i.to_be_bytes());
-        for (j, b) in v[8..].iter_mut().enumerate() {
-            *b = ((i as usize + j) & 0xFF) as u8;
-        }
-        v
     }
 
     #[test]

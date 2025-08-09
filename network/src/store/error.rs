@@ -29,8 +29,8 @@ pub enum StoreError {
     SegmentNotFoundForAddress(String, u64),
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
-    #[error("Segment data exceeds maximum size of {0} bytes")]
-    SegmentSizeExceeded(usize),
+    #[error("Invalid segment size, {0} bytes")]
+    InvalidSegmentSize(usize),
     #[error("Invalid segment key format")]
     InvalidSegmentKey,
     #[error("Invalid path")]

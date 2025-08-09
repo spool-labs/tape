@@ -135,7 +135,7 @@ fn bench_get_l13(c: &mut Criterion) {
         tape_addresses.push(tape_address);
 
         let l13_data = generate_random_data(L13_NODES_PER_TAPE * 32);
-        store.put_l13(&tape_address, &l13_data).unwrap();
+        store.put_t13(&tape_address, &l13_data).unwrap();
         store.put_tape(tape_number, &tape_address).unwrap();
     }
 
@@ -144,7 +144,7 @@ fn bench_get_l13(c: &mut Criterion) {
         let tape_address = tape_addresses[NUM_TAPES / 2];
 
         b.iter(|| {
-            store.get_l13(black_box(&tape_address)).unwrap();
+            store.get_t13(black_box(&tape_address)).unwrap();
         })
     });
     group.finish();
