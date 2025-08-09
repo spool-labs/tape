@@ -6,18 +6,17 @@ use tape_api::prelude::*;
 use tape_client::{
     get_block_account, get_miner_account, get_epoch_account, get_tape_account
 };
+
 use crate::store::TapeStore;
 use super::queue::Tx;
-use super::sync::{
-    sync_segments_from_solana, sync_segments_from_trusted_peer
-};
+use super::sync::sync_segments_from_solana;
 
 /// Spawn task B – periodic miner-challenge sync.
 pub async fn run(
     rpc: Arc<RpcClient>,
     store: Arc<TapeStore>,
     miner_address: Pubkey,
-    trusted_peer: Option<String>,
+    _trusted_peer: Option<String>,
     tx: Tx,
 ) -> anyhow::Result<()> {
     loop {
@@ -40,11 +39,12 @@ pub async fn run(
         log::debug!("Miner needs tape number: {}", tape_number);
 
         // Get tape address (assumed to be synced during initialization)
-        if let Ok(tape_address) = store.read_tape_address(tape_number) {
+        if let Ok(tape_address) = store.get_tape_address(tape_number) {
             let tape = get_tape_account(&rpc, &tape_address).await?.0;
 
             // Check and sync segments
-            let segment_count = store.read_segment_count(&tape_address).unwrap_or(0);
+            let segment_count = store.get_segment_count(&tape_address).unwrap_or(0);
+
             if segment_count as u64 != tape.total_segments {
                 log::debug!(
                     "Syncing segments for tape {} ({} of {})",
@@ -52,11 +52,18 @@ pub async fn run(
                     segment_count,
                     tape.total_segments
                 );
-                if let Some(peer_url) = &trusted_peer {
-                    sync_segments_from_trusted_peer(&store, &tape_address, peer_url, &tx).await?;
-                } else {
-                    sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
-                }
+
+                //if let Some(peer_url) = &trusted_peer {
+                //    sync_segments_from_trusted_peer(&store, &tape_address, peer_url, &tx).await?;
+                //} else {
+                //    sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
+                //}
+
+                // TODO: For now, always sync from Solana, as trusted peer logic is not implemented
+                // yet. Need to implement a way to fetch entire sectors from a trusted peer.
+
+                sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
+
             }
         } else {
             log::error!("Tape address not found for tape number {}", tape_number);

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use reqwest::Client as HttpClient;
+//use reqwest::Client as HttpClient;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_transaction_status_client_types::TransactionDetails;
 use solana_sdk::pubkey::Pubkey;
@@ -53,7 +53,7 @@ pub async fn sync_segments_from_solana(
     keys.sort();
 
     for seg_num in keys {
-        if store.read_segment_by_address(tape_address, seg_num).is_ok() {
+        if store.get_segment(tape_address, seg_num).is_ok() {
             continue;
         }
 
@@ -71,33 +71,33 @@ pub async fn sync_segments_from_solana(
     Ok(())
 }
 
-/// Syncs segments from a trusted peer.
-pub async fn sync_segments_from_trusted_peer(
-    store: &TapeStore,
-    tape_address: &Pubkey,
-    trusted_peer_url: &str,
-    tx: &Tx,
-) -> anyhow::Result<()> {
-    let http = HttpClient::new();
-    let segments = crate::utils::peer::fetch_tape_segments(&http, trusted_peer_url, tape_address).await?;
-
-    for (seg_num, data) in segments {
-        if store.read_segment_by_address(tape_address, seg_num).is_ok() {
-            continue;
-        }
-
-        let job = SegmentJob {
-            tape: *tape_address,
-            seg_no: seg_num,
-            data,
-        };
-        if tx.send(job).await.is_err() {
-            return Err(anyhow::anyhow!("Channel closed"));
-        }
-    }
-
-    Ok(())
-}
+///// Syncs segments from a trusted peer.
+//pub async fn sync_segments_from_trusted_peer(
+//    store: &TapeStore,
+//    tape_address: &Pubkey,
+//    trusted_peer_url: &str,
+//    tx: &Tx,
+//) -> anyhow::Result<()> {
+//    let http = HttpClient::new();
+//    let segments = crate::utils::peer::fetch_tape_segments(&http, trusted_peer_url, tape_address).await?;
+//
+//    for (seg_num, data) in segments {
+//        if store.get_segment(tape_address, seg_num).is_ok() {
+//            continue;
+//        }
+//
+//        let job = SegmentJob {
+//            tape: *tape_address,
+//            seg_no: seg_num,
+//            data,
+//        };
+//        if tx.send(job).await.is_err() {
+//            return Err(anyhow::anyhow!("Channel closed"));
+//        }
+//    }
+//
+//    Ok(())
+//}
 
 /// Syncs tape addresses from a trusted peer.
 pub async fn sync_addresses_from_trusted_peer(
@@ -112,7 +112,8 @@ pub async fn sync_addresses_from_trusted_peer(
     let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
 
     for tape_number in 1..=total {
-        if store.read_tape_address(tape_number).is_ok() {
+
+        if store.get_tape_address(tape_number).is_ok() {
             continue;
         }
 
@@ -134,8 +135,9 @@ pub async fn sync_addresses_from_trusted_peer(
     let pairs: Vec<(Pubkey, u64)> = results.into_iter().filter_map(|r| r.ok()).collect();
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
-    let (pubkeys, tape_numbers): (Vec<Pubkey>, Vec<u64>) = tape_pubkeys_with_numbers.into_iter().unzip();
-    store.write_tapes_batch(&tape_numbers, &pubkeys)?;
+    for (pubkey, number) in tape_pubkeys_with_numbers {
+        store.put_tape(number, &pubkey)?;
+    }
 
     Ok(())
 }
@@ -151,7 +153,7 @@ pub async fn sync_addresses_from_solana(
     let mut tape_pubkeys_with_numbers = Vec::with_capacity(total as usize);
 
     for tape_number in 1..=total {
-        if store.read_tape_address(tape_number).is_ok() {
+        if store.get_tape_address(tape_number).is_ok() {
             continue;
         }
 
@@ -174,8 +176,9 @@ pub async fn sync_addresses_from_solana(
     let pairs: Vec<(Pubkey, u64)> = results.into_iter().filter_map(|r| r.ok()).collect();
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
-    let (pubkeys, tape_numbers): (Vec<Pubkey>, Vec<u64>) = tape_pubkeys_with_numbers.into_iter().unzip();
-    store.write_tapes_batch(&tape_numbers, &pubkeys)?;
+    for (pubkey, number) in tape_pubkeys_with_numbers {
+        store.put_tape(number, &pubkey)?;
+    }
 
     Ok(())
 }
@@ -208,17 +211,9 @@ pub async fn sync_from_block(
             continue; // Skip empty blocks
         }
 
-        let (tape_number_vec, address_vec): (Vec<_>, Vec<_>) = finalized_tapes
-            .into_iter()
-            .filter_map(|(addr, num)| {
-                if addr == *tape_address {
-                    Some((num, addr))
-                } else {
-                    None
-                }
-            })
-            .unzip();
-        store.write_tapes_batch(&tape_number_vec, &address_vec)?;
+        for (pubkey, number) in finalized_tapes {
+            store.put_tape(number, &pubkey)?;
+        }
 
         let mut parents: HashSet<u64> = HashSet::new();
 
@@ -247,7 +242,7 @@ pub async fn sync_from_block(
                 continue;
             }
             let processed_segment = process_segment(&key.address, &data, packing_difficulty)?;
-            store.write_segment(&key.address, key.segment_number, processed_segment)?;
+            store.put_segment(&key.address, key.segment_number, processed_segment)?;
         }
 
         for parent in parents {

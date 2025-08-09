@@ -20,10 +20,14 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
         let store = store.clone();
         let miner = miner.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            log::info!("packx: tape={} seg={} size={}", job.tape, job.seg_no, job.data.len());
 
+            let start = std::time::Instant::now();
             let solved = process_segment(&miner, &job.data, packing_difficulty)?;
-            store.write_segment(&job.tape, job.seg_no, solved)?;
+            let duration = start.elapsed();
+            log::info!("packx: tape={} seg={} time={}ms", job.tape, job.seg_no, duration.as_millis());
+
+            store.put_segment(&job.tape, job.seg_no, solved)?;
+
             Ok(())
         })
         .await??;

@@ -1,7 +1,8 @@
 use steel::*;
 use crate::{
     consts::*,
-    pda::*
+    pda::*,
+    types::*,
 };
 
 #[repr(u8)]
@@ -50,7 +51,7 @@ pub struct Unpack {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Commit {
     pub index: [u8; 8],
-    pub proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    pub proof: ProofPath,
     pub value: [u8; 32],
 }
 
@@ -143,7 +144,7 @@ pub fn build_commit_ix(
     miner_address: Pubkey, 
     spool_address: Pubkey,
     index: u64,                           // index of the value to commit
-    proof: [[u8; 32]; SEGMENT_PROOF_LEN], // proof of the value
+    proof: ProofPath,                     // proof of the value
     value: [u8; 32],                      // value to commit
 ) -> Instruction {
     Instruction {

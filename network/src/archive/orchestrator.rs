@@ -27,7 +27,7 @@ pub async fn run(
     let mut tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
 
     // A – live updates
-    tasks.spawn(live::run(rpc.clone(), tx.clone()));
+    tasks.spawn(live::run(rpc.clone(), store.clone(), tx.clone()));
 
     // B – miner challenge / tape sync
     tasks.spawn(challenge::run(rpc.clone(), store.clone(), miner, trusted_peer, tx));

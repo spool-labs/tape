@@ -220,7 +220,7 @@ fn verify_solution(
             tape.total_segments
         );
 
-        let merkle_proof   = &poa.path;
+        let merkle_proof   = poa.path.as_ref();
         let merkle_root    = tape.merkle_root;
         let recall_segment = poa_solution.unpack(&miner_address.to_bytes());
 

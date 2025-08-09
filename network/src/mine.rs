@@ -14,7 +14,14 @@ use crankx::{
     CrankXError
 };
 
-use crate::metrics::{inc_tape_mining_attempts_total, inc_tape_mining_challenges_solved_total, observe_tape_mining_duration, run_metrics_server, set_current_mining_iteration, Process};
+use crate::metrics::{
+    inc_tape_mining_attempts_total, 
+    inc_tape_mining_challenges_solved_total, 
+    observe_tape_mining_duration, 
+    run_metrics_server, 
+    set_current_mining_iteration, 
+    Process
+};
 use crate::store::run_refresh_store;
 use super::store::TapeStore;
 
@@ -37,9 +44,7 @@ pub async fn mine_loop(
     run_metrics_server(Process::Mine)?;
 
     let store = Arc::new(store);
-
     let interval = Duration::from_secs(1);
-
     let refresh_store_instance = store.clone();
     
     run_refresh_store(&refresh_store_instance);
@@ -102,7 +107,7 @@ async fn try_mine_iteration(
         block.challenge_set
     );
 
-    let res = store.read_tape_address(tape_number);
+    let res = store.get_tape_address(tape_number);
     if res.is_err() {
         debug!("Tape address not found in local db, nothing to do for now...");
         return Ok(());
@@ -127,7 +132,7 @@ async fn try_mine_iteration(
         // Unpack the whole tape (temporary code for now...)
         // (todo: this could be up to 32Mb and not really trival with ~262k segments)
 
-        let segments = store.read_tape_segments(&tape_address)?;
+        let segments = store.get_tape_segments(&tape_address)?;
         if segments.len() != tape.total_segments as usize {
             // TODO: we need to refetch the tape segments from the network
             return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
@@ -172,16 +177,16 @@ async fn try_mine_iteration(
         debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
 
         let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
-        let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
-        let merkle_proof = merkle_proof
-            .iter()
-            .map(|v| v.to_bytes())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap();
+        let proof_nodes: Vec<[u8; 32]> = merkle_tree
+            .get_merkle_proof(&leaves, segment_number as usize)
+            .into_iter()
+            .map(|h| h.to_bytes())
+            .collect();
+
+        let proof_path = ProofPath::from_slice(&proof_nodes).unwrap();
 
         let pow = PoW::from_solution(&pow_solution);
-        let poa = PoA::from_solution(&poa_solution, merkle_proof);
+        let poa = PoA::from_solution(&poa_solution, proof_path);
 
         // Tx1: load the packed tape leaf from the spool onto the miner commitment field
         // TODO: leaving this out for now, as it requries managing miner spools
