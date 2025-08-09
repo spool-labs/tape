@@ -14,7 +14,14 @@ use crankx::{
     CrankXError
 };
 
-use crate::metrics::{inc_tape_mining_attempts_total, inc_tape_mining_challenges_solved_total, observe_tape_mining_duration, run_metrics_server, set_current_mining_iteration, Process};
+use crate::metrics::{
+    inc_tape_mining_attempts_total, 
+    inc_tape_mining_challenges_solved_total, 
+    observe_tape_mining_duration, 
+    run_metrics_server, 
+    set_current_mining_iteration, 
+    Process
+};
 use crate::store::run_refresh_store;
 use super::store::TapeStore;
 
@@ -37,9 +44,7 @@ pub async fn mine_loop(
     run_metrics_server(Process::Mine)?;
 
     let store = Arc::new(store);
-
     let interval = Duration::from_secs(1);
-
     let refresh_store_instance = store.clone();
     
     run_refresh_store(&refresh_store_instance);
