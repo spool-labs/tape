@@ -5,6 +5,7 @@ use solana_transaction_status_client_types::TransactionDetails;
 use tape_client::utils::process_block;
 use tape_client::{get_block_by_number, get_slot};
 
+
 use crate::store::TapeStore;
 use super::queue::{Tx, SegmentJob};
 
@@ -14,6 +15,7 @@ pub async fn run(
     store: Arc<TapeStore>,
     tx: Tx
 ) -> Result<()> {
+
     let mut latest_slot = get_slot(&rpc).await?;
     let mut last_processed_slot = latest_slot;
 
@@ -54,6 +56,7 @@ pub async fn run(
             // Store finalized tapes
             for (address, number) in processed.finalized_tapes {
                 store.put_tape(number, &address)?;
+
                 log::debug!("Finalized tape {} with number {}", address, number);
             }
 

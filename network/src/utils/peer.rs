@@ -33,6 +33,7 @@ pub async fn fetch_tape_address(
     addr_str.parse().map_err(|_| anyhow!("Invalid Pubkey: {}", addr_str))
 }
 
+
 ///// Fetches all segments for a tape from the trusted peer.
 //pub async fn fetch_tape_segments(
 //    http: &HttpClient,
@@ -75,4 +76,5 @@ pub async fn fetch_tape_address(
 //
 //    Ok(result)
 //}
+
 
