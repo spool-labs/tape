@@ -100,6 +100,27 @@ impl Sector {
         let bitmap_len = SECTOR_LEAVES / 8;
         self.0[..bitmap_len].iter().map(|byte| byte.count_ones() as usize).sum()
     }
+
+    pub fn get_last_index(&self) -> usize {
+        let bitmap_len = SECTOR_LEAVES / 8;
+
+        // Iterate over bitmap bytes from right to left
+        for byte_idx in (0..bitmap_len).rev() {
+            let byte = self.0[byte_idx];
+            if byte != 0 {
+                // Find the highest set bit in this byte
+                for bit_pos in (0..8).rev() {
+                    if (byte & (1 << bit_pos)) != 0 {
+                        let segment_idx = byte_idx * 8 + bit_pos;
+                        if segment_idx < SECTOR_LEAVES {
+                            return segment_idx;
+                        }
+                    }
+                }
+            }
+        }
+        0
+    }
 }
 
 #[cfg(test)]
@@ -118,278 +139,178 @@ mod tests {
         vec![marker; PACKED_SEGMENT_SIZE]
     }
 
-    #[test]
-    fn test_sector_set_segment_success() {
+    fn setup_sector(indices: &[usize]) -> Sector {
         let mut sector = Sector::new();
-        let data = vec![1u8; PACKED_SEGMENT_SIZE];
-        let local_seg_idx = 0;
+        let data = make_data(1);
+        for &idx in indices {
+            sector.set_segment(idx, &data);
+        }
+        sector
+    }
 
-        let is_new = sector.set_segment(local_seg_idx, &data);
-        assert!(is_new);
+    #[test]
+    fn sector_set_segment() {
+        let mut sector = Sector::new();
+        let data = make_data(1);
+        assert!(sector.set_segment(0, &data));
+        assert_eq!(sector.get_segment(0), Some(data.as_slice()));
+        assert_eq!(sector.count_segments(), 1);
 
-        let retrieved = sector.get_segment(local_seg_idx).expect("Failed to get segment");
-        assert_eq!(retrieved, data.as_slice());
+        // Invalid index
+        assert!(!sector.set_segment(SECTOR_LEAVES, &data));
+        assert_eq!(sector.count_segments(), 1);
+
+        // Invalid data size
+        let invalid_data = vec![1; PACKED_SEGMENT_SIZE + 1];
+        assert!(!sector.set_segment(1, &invalid_data));
         assert_eq!(sector.count_segments(), 1);
     }
 
     #[test]
-    fn test_sector_set_segment_invalid_index() {
-        let mut sector = Sector::new();
-        let data = vec![1u8; PACKED_SEGMENT_SIZE];
-        let invalid_idx = SECTOR_LEAVES;
-
-        let is_new = sector.set_segment(invalid_idx, &data);
-        assert!(!is_new);
-        assert_eq!(sector.count_segments(), 0);
+    fn sector_get_segment() {
+        let sector = setup_sector(&[0, 2]);
+        assert_eq!(sector.get_segment(0), Some(make_data(1).as_slice()));
+        assert_eq!(sector.get_segment(1), None); // Not set
+        assert_eq!(sector.get_segment(SECTOR_LEAVES), None); // Invalid index
     }
 
     #[test]
-    fn test_sector_set_segment_invalid_data_size() {
-        let mut sector = Sector::new();
-        let data = vec![1u8; PACKED_SEGMENT_SIZE + 1]; // Invalid size
-        let local_seg_idx = 0;
-
-        let is_new = sector.set_segment(local_seg_idx, &data);
-        assert!(!is_new);
-        assert_eq!(sector.count_segments(), 0);
-    }
-
-    #[test]
-    fn test_sector_get_segment_not_set() {
-        let sector = Sector::new();
-        let local_seg_idx = 0;
-
-        let result = sector.get_segment(local_seg_idx);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_sector_get_segment_invalid_index() {
-        let sector = Sector::new();
-        let invalid_idx = SECTOR_LEAVES;
-
-        let result = sector.get_segment(invalid_idx);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_sector_count_segments() {
-        let mut sector = Sector::new();
-        let data = vec![1u8; PACKED_SEGMENT_SIZE];
-
-        // Set multiple segments
-        sector.set_segment(0, &data);
-        sector.set_segment(1, &data);
-        sector.set_segment(8, &data); // Different bitmap byte
-
+    fn sector_count_segments() {
+        let sector = setup_sector(&[0, 1, 8]);
         assert_eq!(sector.count_segments(), 3);
+        let empty_sector = Sector::new();
+        assert_eq!(empty_sector.count_segments(), 0);
     }
 
     #[test]
-    fn test_sector_default_and_new() {
-        let default_sector = Sector::default();
-        let new_sector = Sector::new();
+    fn sector_rightmost_index() {
+        let empty_sector = Sector::new();
+        assert_eq!(empty_sector.get_last_index(), 0);
 
-        assert_eq!(default_sector.0, new_sector.0);
-        assert_eq!(default_sector.count_segments(), 0);
-        assert_eq!(new_sector.count_segments(), 0);
+        let single = setup_sector(&[5]);
+        assert_eq!(single.get_last_index(), 5);
+
+        let multiple = setup_sector(&[0, 2, 5, 8]);
+        assert_eq!(multiple.get_last_index(), 8);
+
+        let last = setup_sector(&[SECTOR_LEAVES - 1]);
+        assert_eq!(last.get_last_index(), SECTOR_LEAVES - 1);
+
+        let sparse = setup_sector(&[0, SECTOR_LEAVES / 2, SECTOR_LEAVES - 2]);
+        assert_eq!(sparse.get_last_index(), SECTOR_LEAVES - 2);
     }
 
     #[test]
-    fn test_get_sector_success() -> Result<(), StoreError> {
-        let (tape_store, _temp_dir) = setup_store()?;
-        let tape_address = Pubkey::new_unique();
-        let sector_number = 0u64;
-        let mut sector = Sector::new();
-        
-        // Set a segment to ensure the sector has valid data
-        let data = vec![1u8; PACKED_SEGMENT_SIZE];
-        sector.set_segment(0, &data);
-        
-        // Store the sector
-        tape_store
-            .put_sector(&tape_address, sector_number, &sector)
-            .expect("Failed to put sector");
+    fn sector_default() {
+        let sector = Sector::default();
+        assert_eq!(sector.0, Sector::new().0);
+        assert_eq!(sector.count_segments(), 0);
+        assert_eq!(sector.get_last_index(), 0);
+    }
 
-        // Retrieve and verify the sector
-        let retrieved_sector = tape_store
-            .get_sector(&tape_address, sector_number)
-            .expect("Failed to get sector");
+    #[test]
+    fn get_sector() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let sector_num = 0u64;
+        let sector = setup_sector(&[0]);
 
-        assert_eq!(retrieved_sector.0, sector.0);
+        store.put_sector(&address, sector_num, &sector)?;
+        let retrieved = store.get_sector(&address, sector_num)?;
+        assert_eq!(retrieved.0, sector.0);
+
+        let result = store.get_sector(&address, 1);
+        assert!(matches!(result, Err(StoreError::SegmentNotFoundForAddress(_, 1))));
 
         Ok(())
     }
 
     #[test]
-    fn test_get_sector_not_found() -> Result<(), StoreError> {
-        let (tape_store, _temp_dir) = setup_store()?;
-        let tape_address = Pubkey::new_unique();
-        let sector_number = 0u64;
-
-        let result = tape_store.get_sector(&tape_address, sector_number);
-        assert!(matches!(
-            result,
-            Err(StoreError::SegmentNotFoundForAddress(_, n)) if n == sector_number
-        ));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_sector_invalid_size() -> Result<(), StoreError> {
-        let (tape_store, _temp_dir) = setup_store()?;
-        let tape_address = Pubkey::new_unique();
-        let sector_number = 0u64;
-
-        // Manually insert invalid data (wrong size)
-        let cf = tape_store
-            .get_cf_handle(ColumnFamily::Sectors)
-            .expect("Failed to get column family");
+    fn get_sector_invalid_size() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let sector_num = 0u64;
+        let cf = store.get_cf_handle(ColumnFamily::Sectors)?;
         let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        tape_store
-            .db
-            .put_cf(&cf, &key, vec![0u8; 10]) // Invalid size
-            .expect("Failed to put invalid data");
+        key.extend_from_slice(&address.to_bytes());
+        key.extend_from_slice(&sector_num.to_be_bytes());
+        store.db.put_cf(&cf, &key, vec![0; 10])?;
 
-        let result = tape_store.get_sector(&tape_address, sector_number);
+        let result = store.get_sector(&address, sector_num);
         assert!(matches!(result, Err(StoreError::InvalidSectorSize(10))));
 
         Ok(())
     }
 
     #[test]
-    fn test_put_sector_success() -> Result<(), StoreError> {
-        let (tape_store, _temp_dir) = setup_store()?;
-        let tape_address = Pubkey::new_unique();
-        let sector_number = 0u64;
-        let sector = Sector::new();
+    fn put_sector() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let sector_num = 0u64;
+        let sector = setup_sector(&[0]);
 
-        let result = tape_store.put_sector(&tape_address, sector_number, &sector);
-        assert!(result.is_ok());
-
-        // Verify the sector was stored
-        let retrieved_sector = tape_store
-            .get_sector(&tape_address, sector_number)
-            .expect("Failed to get sector");
-        assert_eq!(retrieved_sector.0, sector.0);
+        store.put_sector(&address, sector_num, &sector)?;
+        let retrieved = store.get_sector(&address, sector_num)?;
+        assert_eq!(retrieved.0, sector.0);
 
         Ok(())
     }
 
     #[test]
-    fn test_fill_sector() -> Result<(), StoreError> {
-        let (store, _tmp) = setup_store()?;
+    fn fill_sector() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
 
-        // Fill exactly one full sector: indices [0, SECTOR_LEAVES)
         for i in 0..SECTOR_LEAVES as u64 {
-            let data = make_data(i as u8);
-            store.put_segment(&address, i, data)?;
+            store.put_segment(&address, i, make_data(i as u8))?;
         }
 
-        // Sector count should be 1
         assert_eq!(store.get_sector_count(&address)?, 1);
-
-        // Segment count should equal SECTOR_LEAVES
         assert_eq!(store.get_segment_count(&address)?, SECTOR_LEAVES as u64);
 
-        // Verify bitmap is all 1s for the first sector
-        let sector0 = store.get_sector(&address, 0)?;
+        let sector = store.get_sector(&address, 0)?;
         let bitmap_len = SECTOR_LEAVES / 8;
-        for byte in &sector0.0[..bitmap_len] {
-            assert_eq!(*byte, 0xFF);
-        }
-
-        // Spot-check a few reads across the sector
-        for &idx in &[0u64, (SECTOR_LEAVES as u64) / 2, (SECTOR_LEAVES as u64) - 1] {
-            let got = store.get_segment(&address, idx)?;
-            assert_eq!(got, make_data(idx as u8));
-        }
+        assert!(sector.0[..bitmap_len].iter().all(|&b| b == 0xFF));
+        assert_eq!(sector.get_segment(0).unwrap(), make_data(0));
+        assert_eq!(sector.get_segment(SECTOR_LEAVES - 1).unwrap(), make_data((SECTOR_LEAVES - 1) as u8));
 
         Ok(())
     }
 
     #[test]
-    fn test_sector_boundary() -> Result<(), StoreError> {
-        let (store, _tmp) = setup_store()?;
+    fn sector_boundary() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
+        let last_s0 = (SECTOR_LEAVES - 1) as u64;
+        let first_s1 = SECTOR_LEAVES as u64;
 
-        let last_in_s0 = (SECTOR_LEAVES as u64) - 1;
-        let first_in_s1 = SECTOR_LEAVES as u64;
+        store.put_segment(&address, last_s0, make_data(1))?;
+        store.put_segment(&address, first_s1, make_data(2))?;
 
-        store.put_segment(&address, last_in_s0, make_data(1))?;
-        store.put_segment(&address, first_in_s1, make_data(2))?;
-
-        // Two sectors should exist because we touched indices in both
         assert_eq!(store.get_sector_count(&address)?, 2);
-
-        // Segment count is 2 (distinct indices)
         assert_eq!(store.get_segment_count(&address)?, 2);
+        assert_eq!(store.get_segment(&address, last_s0)?, make_data(1));
+        assert_eq!(store.get_segment(&address, first_s1)?, make_data(2));
 
-        // Reads back
-        assert_eq!(store.get_segment(&address, last_in_s0)?, make_data(1));
-        assert_eq!(store.get_segment(&address, first_in_s1)?, make_data(2));
-
-        // Bitmap spot check
         let s0 = store.get_sector(&address, 0)?;
         let s1 = store.get_sector(&address, 1)?;
-
-        // sector 0: last_in_s0 => byte = (SECTOR_LEAVES-1)/8, bit = 7
-        let byte_idx0 = (SECTOR_LEAVES - 1) / 8;
-        assert_eq!(s0.0[byte_idx0] & (1 << 7), 1 << 7);
-
-        // sector 1: first_in_s1 local idx = 0 => byte 0 bit 0
+        assert_eq!(s0.0[(SECTOR_LEAVES - 1) / 8] & (1 << 7), 1 << 7);
         assert_eq!(s1.0[0] & 0x01, 0x01);
 
         Ok(())
     }
 
     #[test]
-    fn test_two_full_sectors() -> Result<(), StoreError> {
-        let (store, _tmp) = setup_store()?;
+    fn multi_sectors() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
-
-        let total = (SECTOR_LEAVES as u64) * 2;
-        for i in 0..total {
-            store.put_segment(&address, i, make_data(i as u8))?;
-        }
-
-        // Should have 2 sectors and full segment count
-        assert_eq!(store.get_sector_count(&address)?, 2);
-        assert_eq!(store.get_segment_count(&address)?, total);
-
-        // Verify both sector bitmaps are all 1s
-        let s0 = store.get_sector(&address, 0)?;
-        let s1 = store.get_sector(&address, 1)?;
-        let bitmap_len = SECTOR_LEAVES / 8;
-        for b in s0.0[..bitmap_len].iter() { assert_eq!(*b, 0xFF); }
-        for b in s1.0[..bitmap_len].iter() { assert_eq!(*b, 0xFF); }
-
-        // Spot-check edges
-        assert_eq!(store.get_segment(&address, 0)?, make_data(0));
-        assert_eq!(store.get_segment(&address, (SECTOR_LEAVES as u64) - 1)?, make_data(((SECTOR_LEAVES as u64) - 1) as u8));
-        assert_eq!(store.get_segment(&address, SECTOR_LEAVES as u64)?, make_data((SECTOR_LEAVES as u64) as u8));
-        assert_eq!(store.get_segment(&address, total - 1)?, make_data((total - 1) as u8));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_many_sectors() -> Result<(), StoreError> {
-        let (store, _tmp) = setup_store()?;
-        let address = Pubkey::new_unique();
-
-        // Touch 5 sectors sparsely: indices spaced by SECTOR_LEAVES / 3 within each sector
-        let sectors = 5u64;
+        let sectors = 100u64;
         let stride = (SECTOR_LEAVES / 3).max(1) as u64;
-
         let mut written = 0u64;
+
         for s in 0..sectors {
-            let base = s * (SECTOR_LEAVES as u64);
-            for k in 0..3u64 {
+            let base = s * SECTOR_LEAVES as u64;
+            for k in 0..3 {
                 let idx = base + k * stride;
                 store.put_segment(&address, idx, make_data(idx as u8))?;
                 written += 1;
@@ -399,13 +320,11 @@ mod tests {
         assert_eq!(store.get_sector_count(&address)?, sectors as usize);
         assert_eq!(store.get_segment_count(&address)?, written);
 
-        // Verify a couple of bit positions within random sectors
         for s in 0..sectors {
             let sector = store.get_sector(&address, s)?;
-            for k in 0..3usize {
-                let li = k * (stride as usize);
-                let b = sector.0[li / 8] & (1 << (li % 8));
-                assert!(b != 0, "bitmap not set for sector {}, local {}", s, li);
+            for k in 0..3 {
+                let li = (k * stride) as usize;
+                assert_ne!(sector.0[li / 8] & (1 << (li % 8)), 0);
             }
         }
 
