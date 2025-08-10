@@ -8,7 +8,8 @@ use solana_sdk::{signature::Keypair, signer::Signer, pubkey::Pubkey};
 use tape_api::prelude::*;
 use tape_client::{register::register_miner, get_miner_account};
 use tape_network::{
-    archive::archive_loop,
+    //archive::archive_loop,
+    archive,
     mine::mine_loop,
     web::web_loop,
 };
@@ -25,8 +26,8 @@ pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
         Commands::Web { port } => {
             handle_web(context, port).await?;
         }
-        Commands::Archive { starting_slot, trusted_peer, miner_address } => {
-            handle_archive(context, starting_slot, trusted_peer, miner_address).await?;
+        Commands::Archive { trusted_peer, miner_address } => {
+            handle_archive(context, trusted_peer, miner_address).await?;
         }
         Commands::Mine { pubkey, name } => {
             handle_mine(context, pubkey, name).await?;
@@ -51,10 +52,10 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
 
 pub async fn handle_archive(
     context: Context,
-    starting_slot: Option<u64>,
     trusted_peer: Option<String>,
     miner_address: Option<String>
 ) -> Result<()> {
+    log::print_info("Starting archive service...");
 
     // Use the public devnet peer if none is provided
     let trusted_peer = match context.rpc().url() {
@@ -64,16 +65,20 @@ pub async fn handle_archive(
         _ => trusted_peer
     };
 
-    let miner_address = get_or_create_miner(
-        context.rpc(), context.payer(), miner_address, None, true).await?;
+    let miner = get_or_create_miner(
+        context.rpc(), 
+        context.payer(), 
+        miner_address, 
+        None, 
+        true
+    ).await?;
 
-    log::print_message(&format!("Using miner address: {miner_address}"));
+    log::print_message(&format!("Using miner address: {miner}"));
 
-    let store = context.open_primary_store_conn()?;
+    let rpc_client = context.rpc().clone();
+    let store      = Arc::new(context.open_primary_store_conn()?);
 
-    log::print_info("Starting archive service...");
-
-    archive_loop(store, context.rpc(), miner_address, starting_slot, trusted_peer).await?;
+    archive::orchestrator::run(miner, store, rpc_client, trusted_peer).await?;
 
     Ok(())
 }

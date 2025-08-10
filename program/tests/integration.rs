@@ -269,16 +269,17 @@ fn do_mining_run(
             assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
 
             let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
-            let merkle_proof = merkle_tree.get_merkle_proof(&leaves, segment_number as usize);
-            let merkle_proof = merkle_proof
-                .iter()
-                .map(|v| v.to_bytes())
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
+            let proof_nodes: Vec<[u8; 32]> = merkle_tree
+                .get_proof(&leaves, segment_number as usize)
+                .into_iter()
+                .map(|h| h.to_bytes())
+                .collect();
+
+            let proof_path = ProofPath::from_slice(&proof_nodes)
+                .expect("merkle proof must be exactly SEGMENT_PROOF_LEN long");
 
             let pow = PoW::from_solution(&pow_solution);
-            let poa = PoA::from_solution(&poa_solution, merkle_proof);
+            let poa = PoA::from_solution(&poa_solution, proof_path);
 
             // Tx1: load the packed tape leaf from the spool onto the miner commitment field
             commit_for_mining(
@@ -641,13 +642,14 @@ fn update_tape(
     }
 
     // Compute Merkle proof
-    let merkle_proof_vec = writer_tree.get_merkle_proof(&leaves, target_segment as usize);
-    let merkle_proof: [[u8; 32]; SEGMENT_PROOF_LEN] = merkle_proof_vec
-        .iter()
-        .map(|v| v.to_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
+    let proof_nodes: Vec<[u8; 32]> = writer_tree
+        .get_proof(&leaves, target_segment as usize)
+        .into_iter()
+        .map(|h| h.to_bytes())
+        .collect();
+
+    let proof_path = ProofPath::from_slice(&proof_nodes)
+        .expect("merkle proof must be exactly SEGMENT_PROOF_LEN long");
 
     // Prepare data
     let old_data_array: [u8; SEGMENT_SIZE] = stored_tape.segments[target_segment as usize]
@@ -666,7 +668,7 @@ fn update_tape(
         target_segment,
         old_data_array,
         new_data_array,
-        merkle_proof,
+        proof_path,
     );
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
@@ -679,7 +681,7 @@ fn update_tape(
         target_segment,
         &old_data_array,
         &new_data_array,
-        &merkle_proof,
+        &proof_path,
     )
     .is_ok());
 
@@ -731,7 +733,7 @@ fn finalize_tape(
 
     let new_raw = b"<segment_0_updated>";
     let new_data_array = padded_array::<SEGMENT_SIZE>(new_raw);
-    let merkle_proof = [[0u8; 32]; SEGMENT_PROOF_LEN]; // Stale proof, but should fail due to state
+    let proof_path = ProofPath::default(); // Empty proof path, should fail due to state
 
     let blockhash = svm.latest_blockhash();
     let ix = instruction::tape::build_update_ix(
@@ -741,7 +743,7 @@ fn finalize_tape(
         target_segment,
         old_data_array,
         new_data_array,
-        merkle_proof,
+        proof_path,
     );
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
@@ -948,23 +950,21 @@ fn commit_data_ix(
     let data = leaves[segment_index as usize]
         .to_bytes();
 
-    let merkle_proof = packed_tape.tree.get_merkle_proof(
-        &leaves,
-        segment_index as usize
-    );
-    let merkle_proof = merkle_proof
-        .iter()
-        .map(|v| v.to_bytes())
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
+    let proof_nodes: Vec<[u8; 32]> = packed_tape.tree
+        .get_proof(&leaves, segment_index as usize)
+        .into_iter()
+        .map(|h| h.to_bytes())
+        .collect();
+
+    let proof_path = ProofPath::from_slice(&proof_nodes)
+        .expect("merkle proof must be exactly SEGMENT_PROOF_LEN long");
 
     instruction::spool::build_commit_ix(
         payer_pk,
         stored_spool.miner,
         stored_spool.address,
         tape_index,
-        merkle_proof,
+        proof_path,
         data,
     )
 }
@@ -990,10 +990,9 @@ fn unpack_tape_ix(
         })
         .collect::<Vec<_>>();
 
-    let merkle_proof = stored_spool.tree.get_merkle_proof(
-        &leaves,
-        index as usize
-    );
+    let merkle_proof = stored_spool.tree
+        .get_proof(&leaves, index as usize);
+
     let merkle_proof = merkle_proof
         .iter()
         .map(|v| v.to_bytes())

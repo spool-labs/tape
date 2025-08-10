@@ -441,7 +441,7 @@ fn process_instruction(
                     segment_number: u64::from_le_bytes(update.segment_number),
                     old_data: update.old_data,
                     new_data: update.new_data,
-                    proof: update.proof,
+                    proof: *update.proof,
                 }))
         }
         TapeInstruction::Finalize => Ok(Some(InstructionData::Finalize {

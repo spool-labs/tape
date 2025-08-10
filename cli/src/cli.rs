@@ -89,9 +89,6 @@ pub enum Commands {
     // Node Commands
 
     Archive {
-        #[arg(help = "Starting slot to archive from, defaults to the latest slot", short = 's', long = "starting-slot")]
-        starting_slot: Option<u64>,
-
         #[arg(help = "Trusted peer to connect to", short = 'p', long = "peer")]
         trusted_peer: Option<String>,
 
