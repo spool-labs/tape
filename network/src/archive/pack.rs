@@ -20,7 +20,6 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
 
     while let Some(job) = rx.recv().await {
         let store = store.clone();
-        let miner = miner;
         let _rpc = rpc.clone();
 
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -116,10 +115,10 @@ pub fn update_tree(
         })?;
 
     let mut leaves = vec![empty; SECTOR_LEAVES];
-    for i in 0..SECTOR_LEAVES {
+    for (i, leaf) in leaves.iter_mut().enumerate() {
         if let Some(segment) = sector.get_segment(i) {
             let segment_id = (sector_number * SECTOR_LEAVES as u64) + i as u64;
-            leaves[i] = Leaf::new(&[&segment_id.to_le_bytes(), segment]);
+            *leaf = Leaf::new(&[&segment_id.to_le_bytes(), segment]);
         }
     }
 
