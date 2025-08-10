@@ -30,7 +30,7 @@ pub fn process_spool_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         )?;
 
     let merkle_root = &spool.contains;
-    let merkle_proof = args.proof;
+    let merkle_proof = args.proof.as_ref();
     assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
 
     // let segment_id = args.index;
@@ -42,7 +42,7 @@ pub fn process_spool_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let leaf = Leaf::from(args.value);
 
     check_condition(
-        verify(*merkle_root, &merkle_proof, leaf),
+        verify(*merkle_root, merkle_proof, leaf),
         TapeError::SpoolCommitFailed,
     )?;
 

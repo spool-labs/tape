@@ -9,7 +9,7 @@ use solana_sdk::{
 use solana_client::nonblocking::rpc_client::RpcClient;
 
 use tape_api::instruction::spool::build_commit_ix;
-use tape_api::consts::SEGMENT_PROOF_LEN;
+use tape_api::types::*;
 use crate::utils::*;
 
 pub async fn commit_solution(
@@ -18,7 +18,7 @@ pub async fn commit_solution(
     miner_address: Pubkey,
     spool_address: Pubkey,
     index: u64,
-    proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    proof: ProofPath,
     value: [u8; 32],
 ) -> Result<Signature> {
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(700_000);
