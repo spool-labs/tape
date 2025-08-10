@@ -18,7 +18,7 @@ impl MerkleOps for TapeStore {
         let data = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::HashNotFound)?;
+            .ok_or(StoreError::HashNotFound)?;
 
         let mut result = vec![];
         for chunk in data.chunks_exact(32) {
