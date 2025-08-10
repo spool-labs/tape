@@ -13,7 +13,7 @@ use tape_client::{
 };
 use tape_client::utils::{process_block, ProcessedBlock};
 
-use crate::store::TapeStore;
+use crate::store::*;
 use crate::utils::peer;
 use super::pack::pack_segment;
 use super::queue::{Tx, SegmentJob};

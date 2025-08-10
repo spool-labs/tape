@@ -1,42 +1,14 @@
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use rocksdb::{BoundColumnFamily, DB, Options, WriteBatch};
-use solana_sdk::pubkey::Pubkey;
-use bytemuck::try_from_bytes;
-
-use tape_api::consts::*;
-use crate::metrics::{inc_total_segments_written, inc_total_tapes_written};
+use rocksdb::{BoundColumnFamily, DB, Options};
 use super::{
     consts::*,
     layout::{ColumnFamily, create_cf_descriptors},
     error::StoreError,
-    sector::Sector,
 };
-
-pub enum StoreStaticKeys {
-    LastProcessedSlot,
-    Drift,
-}
-
-impl StoreStaticKeys {
-    fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            StoreStaticKeys::LastProcessedSlot => b"last_processed_slot",
-            StoreStaticKeys::Drift => b"drift",
-        }
-    }
-}
 
 pub struct TapeStore {
     pub db: DB,
-}
-
-#[derive(Debug)]
-pub struct LocalStats {
-    pub tapes: usize,
-    pub sectors: usize,
-    pub size_bytes: u64,
 }
 
 impl TapeStore {
@@ -95,278 +67,6 @@ impl TapeStore {
         self.db.try_catch_up_with_primary()?;
         Ok(())
     }
-
-    pub fn update_health(&self, last_processed_slot: u64, drift: u64) -> Result<(), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Health)?;
-        let mut batch = WriteBatch::default();
-        batch.put_cf(&cf, StoreStaticKeys::LastProcessedSlot.as_bytes(), last_processed_slot.to_be_bytes());
-        batch.put_cf(&cf, StoreStaticKeys::Drift.as_bytes(), drift.to_be_bytes());
-        self.db.write(batch)?;
-        Ok(())
-    }
-
-    pub fn get_health(&self) -> Result<(u64, u64), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Health)?;
-        let bh = self
-            .db
-            .get_cf(&cf, StoreStaticKeys::LastProcessedSlot.as_bytes())?
-            .ok_or(StoreError::HealthCfNotFound)?;
-        let dr = self
-            .db
-            .get_cf(&cf, StoreStaticKeys::Drift.as_bytes())?
-            .ok_or(StoreError::HealthCfNotFound)?;
-        let height = u64::from_be_bytes(bh[..].try_into().unwrap());
-        let drift = u64::from_be_bytes(dr[..].try_into().unwrap());
-        Ok((height, drift))
-    }
-
-    pub fn put_tape_address(&self, tape_number: u64, address: &Pubkey) -> Result<(), StoreError> {
-        let cf_tape_by_number = self.get_cf_handle(ColumnFamily::TapeByNumber)?;
-        let cf_tape_by_address = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
-        let tape_number_key = tape_number.to_be_bytes().to_vec();
-        let address_key = address.to_bytes().to_vec();
-        let mut batch = WriteBatch::default();
-        batch.put_cf(&cf_tape_by_number, &tape_number_key, address.to_bytes());
-        batch.put_cf(&cf_tape_by_address, &address_key, tape_number.to_be_bytes());
-        self.db.write(batch)?;
-        inc_total_tapes_written();
-        Ok(())
-    }
-
-    pub fn get_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
-        let key = address.to_bytes().to_vec();
-        let tape_number_bytes = self
-            .db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))?;
-        Ok(u64::from_be_bytes(
-            tape_number_bytes
-                .try_into()
-                .map_err(|_| StoreError::InvalidSegmentKey)?,
-        ))
-    }
-
-    pub fn get_tape_address(&self, tape_number: u64) -> Result<Pubkey, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::TapeByNumber)?;
-        let key = tape_number.to_be_bytes().to_vec();
-        let address_bytes = self
-            .db
-            .get_cf(&cf, &key)?
-            .ok_or(StoreError::TapeNotFound(tape_number))?;
-
-        Pubkey::try_from(address_bytes.as_slice())
-            .map_err(|e| StoreError::InvalidPubkey(e.to_string()))
-    }
-
-    pub fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError> {
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let sector = self.get_sector(tape_address, sector_number)?;
-        
-        // Check bitmap
-        let bitmap_idx = local_seg_idx / 8;
-        let bit_pos = local_seg_idx % 8;
-        if (sector.0[bitmap_idx] & (1 << bit_pos)) == 0 {
-            return Err(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), global_seg_idx));
-        }
-        
-        let seg_start = SECTOR_HEADER_BYTES + local_seg_idx * PACKED_SEGMENT_SIZE;
-        Ok(sector.0[seg_start..seg_start + PACKED_SEGMENT_SIZE].to_vec())
-    }
-
-    pub fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError> {
-        if seg.len() != PACKED_SEGMENT_SIZE {
-            return Err(StoreError::InvalidSegmentSize(seg.len()));
-        }
-        
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let cf_sectors = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let cf_tape_segments = self.get_cf_handle(ColumnFamily::TapeSegments)?;
-        
-        let mut sector = self.get_sector(tape_address, sector_number).unwrap_or_else(|_| Sector::new());
-        let is_new_segment = sector.set_segment(local_seg_idx, &seg);
-        
-        let mut batch = WriteBatch::default();
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        batch.put_cf(&cf_sectors, &key, bytemuck::bytes_of(&sector));
-        
-        if is_new_segment {
-            let current_count = self.get_segment_count(tape_address).unwrap_or(0);
-            batch.put_cf(&cf_tape_segments, tape_address.to_bytes(), (current_count + 1).to_be_bytes());
-        }
-        
-        self.db.write(batch)?;
-        inc_total_segments_written();
-        Ok(())
-    }
-
-    pub fn get_sector(&self, tape_address: &Pubkey, sector_number: u64) -> Result<Sector, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::SegmentNotFoundForAddress(tape_address.to_string(), sector_number))?;
-        
-        if data.len() != SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
-            return Err(StoreError::InvalidSectorSize(data.len()));
-        }
-        
-        Ok(*try_from_bytes(&data).map_err(|_| StoreError::InvalidSectorSize(data.len()))?)
-    }
-
-    pub fn put_sector(&self, tape_address: &Pubkey, sector_number: u64, sector: &Sector) -> Result<(), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        
-        self.db.put_cf(&cf, &key, bytemuck::bytes_of(sector))?;
-        Ok(())
-    }
-
-    pub fn get_tape_segments(
-        &self,
-        tape_address: &Pubkey,
-    ) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let prefix = tape_address.to_bytes().to_vec();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        let mut segments = Vec::new();
-
-        for item in iter {
-            let (key, data) = item?;
-            if key.len() < TAPE_STORE_SLOTS_KEY_SIZE {
-                continue;
-            }
-            let sector_number = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
-            
-            let sector: Sector = *try_from_bytes(&data)
-                .map_err(|_| StoreError::InvalidSectorSize(data.len()))?;
-            
-            for local_idx in 0..SECTOR_LEAVES {
-                if let Some(segment_data) = sector.get_segment(local_idx) {
-                    let global_index = sector_number * SECTOR_LEAVES as u64 + local_idx as u64;
-                    segments.push((global_index, segment_data.to_vec()));
-                }
-            }
-        }
-
-        segments.sort_by_key(|(idx, _)| *idx);
-        Ok(segments)
-    }
-
-    fn build_key(address: &Pubkey, layer_type: u8, layer_id: u8) -> Vec<u8> {
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&address.to_bytes());
-        key.extend_from_slice(&[layer_type, 0, 0]);
-        key.push(layer_id);
-        key
-    }
-
-    fn get_hashes(&self, address: &Pubkey, layer_type: u8, layer_id: u8) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let key = Self::build_key(address, layer_type, layer_id);
-
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))?;
-
-        let mut result = vec![];
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
-    }
-
-    fn put_hashes(&self, address: &Pubkey, hashes: &[[u8; 32]], layer_type: u8, layer_id: u8) -> Result<(), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let key = Self::build_key(address, layer_type, layer_id);
-
-        let data = hashes.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
-    }
-
-    pub fn get_zeros(&self, address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        self.get_hashes(address, MERKLE_ZEROS, 0)
-    }
-
-    pub fn put_zeros(&self, address: &Pubkey, seeds: &[[u8; 32]]) -> Result<(), StoreError> {
-        self.put_hashes(address, seeds, MERKLE_ZEROS, 0)
-    }
-
-    pub fn get_l13m(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        self.get_hashes(tape_address, MINER_LAYER, 13)
-    }
-
-    pub fn put_l13m(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        self.put_hashes(tape_address, l13, MINER_LAYER, 13)
-    }
-
-    pub fn get_l13t(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        self.get_hashes(tape_address, TAPE_LAYER, 13)
-    }
-
-    pub fn put_l13t(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        self.put_hashes(tape_address, l13, TAPE_LAYER, 13)
-    }
-
-    pub fn get_segment_count(&self, tape: &Pubkey) -> Result<u64, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::TapeSegments)?;
-        let count_bytes = self
-            .db
-            .get_cf(&cf, tape.to_bytes())?
-            .unwrap_or_else(|| vec![0; 8]);
-        Ok(u64::from_be_bytes(count_bytes[..].try_into().unwrap()))
-    }
-
-    pub fn get_sector_count(&self, tape_address: &Pubkey) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let prefix = tape_address.to_bytes().to_vec();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        Ok(iter.count())
-    }
-
-    pub fn get_local_stats(&self) -> Result<LocalStats, StoreError> {
-        let tapes = self.count_tapes()?;
-        let sectors = self.count_sectors()?;
-        let size_bytes = self.db_size()?;
-        Ok(LocalStats { tapes, sectors, size_bytes })
-    }
-
-    fn count_tapes(&self) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::TapeByNumber)?;
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        Ok(iter.count())
-    }
-
-    fn count_sectors(&self) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        Ok(iter.count())
-    }
-
-    fn db_size(&self) -> Result<u64, StoreError> {
-        let mut size = 0u64;
-        for entry in fs::read_dir(self.db.path())? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                size += entry.metadata()?.len();
-            }
-        }
-        Ok(size)
-    }
 }
 
 impl Drop for TapeStore {
@@ -380,6 +80,14 @@ mod tests {
     use super::*;
     use solana_sdk::pubkey::Pubkey;
     use tempdir::TempDir;
+    use tape_api::consts::*;
+    use crate::store::{
+        tape::TapeOps,
+        segment::SegmentOps,
+        sector::SectorOps,
+        merkle::MerkleOps,
+        stats::StatsOps,
+    };
 
     fn setup_store() -> Result<(TapeStore, TempDir), StoreError> {
         let temp_dir = TempDir::new("rocksdb_test").map_err(StoreError::IoError)?;

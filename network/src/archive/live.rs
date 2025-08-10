@@ -5,7 +5,7 @@ use solana_transaction_status_client_types::TransactionDetails;
 use tape_client::utils::process_block;
 use tape_client::{get_block_by_number, get_slot};
 
-use crate::store::TapeStore;
+use crate::store::*;
 use super::queue::{Tx, SegmentJob};
 
 /// Orchestrator Task A – stream live blocks and push raw segments into `tx`.

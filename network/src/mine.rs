@@ -22,8 +22,7 @@ use crate::metrics::{
     set_current_mining_iteration, 
     Process
 };
-use crate::store::run_refresh_store;
-use super::store::TapeStore;
+use crate::store::*;
 
 use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
 use std::sync::atomic::{AtomicBool, Ordering};
