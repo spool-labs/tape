@@ -10,6 +10,12 @@ pub struct Sector(pub [u8; SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_
 unsafe impl Zeroable for Sector {}
 unsafe impl Pod for Sector {}
 
+impl Default for Sector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sector {
     pub fn new() -> Self {
         Self::zeroed()

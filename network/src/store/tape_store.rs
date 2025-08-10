@@ -347,13 +347,11 @@ mod tests {
         let segments = store.get_tape_segments(&address)?;
 
         // We expect exactly 5 entries in ascending global index order
-        let expected_indices = vec![
-            idx_sector0_a,
+        let expected_indices = [idx_sector0_a,
             idx_sector0_b,
             idx_sector1_a,
             idx_sector1_b,
-            idx_sector2_a,
-        ];
+            idx_sector2_a];
         assert_eq!(segments.len(), expected_indices.len());
         for (i, (idx, data)) in segments.iter().enumerate() {
             assert_eq!(*idx, expected_indices[i], "segment index mismatch");

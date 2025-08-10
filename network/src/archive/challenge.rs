@@ -45,7 +45,7 @@ pub async fn run(
             // Check and sync segments
             let segment_count = store.get_segment_count(&tape_address).unwrap_or(0);
 
-            if segment_count as u64 != tape.total_segments {
+            if segment_count != tape.total_segments {
                 log::debug!(
                     "Syncing segments for tape {} ({} of {})",
                     tape_address,

@@ -150,7 +150,7 @@ async fn try_mine_iteration(
             let segement_data = solution.unpack(&miner_address.to_bytes());
 
             let leaf = compute_leaf(
-                *segment_id as u64,
+                *segment_id,
                 &segement_data,
             );
 
