@@ -12,7 +12,7 @@ use tape_api::SEGMENT_SIZE;
 
 use tape_network::archive::sync::sync_from_block;
 use tape_network::snapshot::{create_snapshot, load_from_snapshot};
-use tape_network::store::StoreError;
+use tape_network::store::{StoreError, StatsOps, SegmentOps};
 use tapedrive::{decode_tape, MimeType, TapeHeader};
 
 use crate::cli::{Cli, Commands, Context, SnapshotCommands};

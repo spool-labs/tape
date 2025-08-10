@@ -604,9 +604,9 @@ dependencies = [
 
 [[package]]
 name = "blake3"
-version = "1.8.1"
+version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389a099b34312839e16420d499a9cad9650541715937ffbdd40d36f49e77eeb3"
+checksum = "3888aaa89e4b2a40fca9848e400f6a658a5a3978de7be858e209cafa8be9a4a0"
 dependencies = [
  "arrayref",
  "arrayvec",
@@ -704,12 +704,12 @@ dependencies = [
 
 [[package]]
 name = "brine-tree"
-version = "0.5.4"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b1edc699dff283cdda4f59a74aedc5aa24cbdb84482e264c5778e4cd8665ca4"
+checksum = "e5b11ad9401f6073412a81574e1aec09faa1104ce9de2767d2eb4a011d055099"
 dependencies = [
+ "blake3",
  "bytemuck",
- "sha3",
  "solana-program",
 ]
 
@@ -6628,6 +6628,7 @@ dependencies = [
  "anyhow",
  "base64 0.13.1",
  "bincode",
+ "blake3",
  "bytemuck",
  "chrono",
  "crankx",
@@ -6637,7 +6638,6 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
- "sha3",
  "solana-account-decoder",
  "solana-client",
  "solana-program",
@@ -6683,6 +6683,7 @@ dependencies = [
  "axum",
  "base64 0.13.1",
  "bincode",
+ "blake3",
  "brine-tree",
  "bytemuck",
  "chrono",
@@ -6703,7 +6704,6 @@ dependencies = [
  "rocksdb",
  "serde",
  "serde_json",
- "sha3",
  "solana-account-decoder",
  "solana-client",
  "solana-sdk",

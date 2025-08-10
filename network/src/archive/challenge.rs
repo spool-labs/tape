@@ -7,11 +7,11 @@ use tape_client::{
     get_block_account, get_miner_account, get_epoch_account, get_tape_account
 };
 
-use crate::store::TapeStore;
+use crate::store::*;
 use super::queue::Tx;
 use super::sync::sync_segments_from_solana;
 
-/// Spawn task B – periodic miner-challenge sync.
+/// Orchestrator Task B – periodic miner-challenge sync.
 pub async fn run(
     rpc: Arc<RpcClient>,
     store: Arc<TapeStore>,
@@ -45,7 +45,7 @@ pub async fn run(
             // Check and sync segments
             let segment_count = store.get_segment_count(&tape_address).unwrap_or(0);
 
-            if segment_count as u64 != tape.total_segments {
+            if segment_count != tape.total_segments {
                 log::debug!(
                     "Syncing segments for tape {} ({} of {})",
                     tape_address,

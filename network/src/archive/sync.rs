@@ -13,9 +13,9 @@ use tape_client::{
 };
 use tape_client::utils::{process_block, ProcessedBlock};
 
-use crate::store::TapeStore;
+use crate::store::*;
 use crate::utils::peer;
-use super::process::process_segment;
+use super::pack::pack_segment;
 use super::queue::{Tx, SegmentJob};
 
 /// Syncs missing tape addresses from either a trusted peer or Solana RPC.
@@ -136,7 +136,7 @@ pub async fn sync_addresses_from_trusted_peer(
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
     for (pubkey, number) in tape_pubkeys_with_numbers {
-        store.put_tape(number, &pubkey)?;
+        store.put_tape_address(number, &pubkey)?;
     }
 
     Ok(())
@@ -177,7 +177,7 @@ pub async fn sync_addresses_from_solana(
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
     for (pubkey, number) in tape_pubkeys_with_numbers {
-        store.put_tape(number, &pubkey)?;
+        store.put_tape_address(number, &pubkey)?;
     }
 
     Ok(())
@@ -212,7 +212,7 @@ pub async fn sync_from_block(
         }
 
         for (pubkey, number) in finalized_tapes {
-            store.put_tape(number, &pubkey)?;
+            store.put_tape_address(number, &pubkey)?;
         }
 
         let mut parents: HashSet<u64> = HashSet::new();
@@ -241,7 +241,7 @@ pub async fn sync_from_block(
             if key.address != *tape_address {
                 continue;
             }
-            let processed_segment = process_segment(&key.address, &data, packing_difficulty)?;
+            let processed_segment = pack_segment(&key.address, &data, packing_difficulty)?;
             store.put_segment(&key.address, key.segment_number, processed_segment)?;
         }
 

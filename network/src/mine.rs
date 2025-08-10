@@ -22,8 +22,7 @@ use crate::metrics::{
     set_current_mining_iteration, 
     Process
 };
-use crate::store::run_refresh_store;
-use super::store::TapeStore;
+use crate::store::*;
 
 use std::sync::{Arc, mpsc::{channel, Sender, Receiver}};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -151,7 +150,7 @@ async fn try_mine_iteration(
             let segement_data = solution.unpack(&miner_address.to_bytes());
 
             let leaf = compute_leaf(
-                *segment_id as u64,
+                *segment_id,
                 &segement_data,
             );
 
@@ -178,7 +177,7 @@ async fn try_mine_iteration(
 
         let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
         let proof_nodes: Vec<[u8; 32]> = merkle_tree
-            .get_merkle_proof(&leaves, segment_number as usize)
+            .get_proof(&leaves, segment_number as usize)
             .into_iter()
             .map(|h| h.to_bytes())
             .collect();

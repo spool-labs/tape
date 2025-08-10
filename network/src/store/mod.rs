@@ -1,13 +1,15 @@
 pub mod consts;
 pub mod error;
-pub mod column_family;
-mod cf_layout;
-mod tape_store;
+mod layout;
+mod store;
 mod helpers;
+mod column;
 
 pub use consts::*;
+pub use column::*;
 pub use error::StoreError;
-pub use tape_store::TapeStore;
+pub use store::TapeStore;
+pub use layout::ColumnFamily;
 pub use helpers::{
     primary,
     secondary_mine,

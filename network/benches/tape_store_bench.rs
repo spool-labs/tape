@@ -56,7 +56,7 @@ fn bench_put_tape(c: &mut Criterion) {
             }
 
             store
-                .put_tape(black_box(tape_number), black_box(&tape_address))
+                .put_tape_address(black_box(tape_number), black_box(&tape_address))
                 .unwrap();
         })
     });
@@ -83,7 +83,7 @@ fn bench_put_many_tapes(c: &mut Criterion) {
                 }
 
                 store
-                    .put_tape(black_box(tape_number), black_box(&tape_address))
+                    .put_tape_address(black_box(tape_number), black_box(&tape_address))
                     .unwrap();
             }
         })
@@ -107,7 +107,7 @@ fn bench_get_segment(c: &mut Criterion) {
                 .put_segment(&tape_address, global_seg_idx, data)
                 .unwrap();
         }
-        store.put_tape(tape_number, &tape_address).unwrap();
+        store.put_tape_address(tape_number, &tape_address).unwrap();
     }
 
     let mut group = c.benchmark_group("get_segment");
@@ -124,31 +124,6 @@ fn bench_get_segment(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_get_l13(c: &mut Criterion) {
-    let temp_dir = TempDir::new("bench_get_l13").unwrap();
-    let store = TapeStore::new(temp_dir.path()).unwrap();
-
-    let mut tape_addresses = Vec::with_capacity(NUM_TAPES);
-    for tape_idx in 0..NUM_TAPES {
-        let tape_address = Pubkey::new_unique();
-        let tape_number = (tape_idx + 1) as u64;
-        tape_addresses.push(tape_address);
-
-        let l13_data = generate_random_data(L13_NODES_PER_TAPE * 32);
-        store.put_l13(&tape_address, &l13_data).unwrap();
-        store.put_tape(tape_number, &tape_address).unwrap();
-    }
-
-    let mut group = c.benchmark_group("get_l13");
-    group.bench_function("get_l13_many_tapes", |b| {
-        let tape_address = tape_addresses[NUM_TAPES / 2];
-
-        b.iter(|| {
-            store.get_l13(black_box(&tape_address)).unwrap();
-        })
-    });
-    group.finish();
-}
 
 fn customized_criterion() -> Criterion {
     Criterion::default().sample_size(20)
@@ -162,7 +137,6 @@ criterion_group! {
         bench_put_tape,
         bench_put_many_tapes,
         bench_get_segment,
-        bench_get_l13,
 }
 
 criterion_main!(benches);
