@@ -6,7 +6,6 @@ use super::consts::*;
 #[derive(Clone, Copy, Debug)]
 pub struct Sector(pub [u8; SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE]);
 
-// Safe: transparent wrapper over a byte array
 unsafe impl Zeroable for Sector {}
 unsafe impl Pod for Sector {}
 

@@ -5,7 +5,7 @@ use rocksdb::{BoundColumnFamily, DB, Options, WriteBatch};
 use solana_sdk::pubkey::Pubkey;
 use bytemuck::try_from_bytes;
 
-use tape_api::prelude::PACKED_SEGMENT_SIZE;
+use tape_api::consts::*;
 use crate::metrics::{inc_total_segments_written, inc_total_tapes_written};
 use super::{
     consts::*,
@@ -264,22 +264,23 @@ impl TapeStore {
         Ok(segments)
     }
 
-    pub fn get_seeds(&self, address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+    fn build_key(address: &Pubkey, layer_type: u8, layer_id: u8) -> Vec<u8> {
         let mut key = Vec::with_capacity(36);
         key.extend_from_slice(&address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
-        
+        key.extend_from_slice(&[layer_type, 0, 0]);
+        key.push(layer_id);
+        key
+    }
+
+    fn get_hashes(&self, address: &Pubkey, layer_type: u8, layer_id: u8) -> Result<Vec<[u8; 32]>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let key = Self::build_key(address, layer_type, layer_id);
+
         let data = self.db
             .get_cf(&cf, &key)?
             .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
+
+        let mut result = vec![];
         for chunk in data.chunks_exact(32) {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(chunk);
@@ -288,100 +289,37 @@ impl TapeStore {
         Ok(result)
     }
 
-    pub fn put_seeds(&self, address: &Pubkey, seeds: &[[u8; 32]]) -> Result<(), StoreError> {
-        if seeds.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(seeds.len() * 32));
-        }
-        
+    fn put_hashes(&self, address: &Pubkey, hashes: &[[u8; 32]], layer_type: u8, layer_id: u8) -> Result<(), StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
-        
-        let data = seeds.iter().flatten().copied().collect::<Vec<u8>>();
+        let key = Self::build_key(address, layer_type, layer_id);
+
+        let data = hashes.iter().flatten().copied().collect::<Vec<u8>>();
         self.db.put_cf(&cf, &key, &data)?;
         Ok(())
+    }
+
+    pub fn get_zeros(&self, address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
+        self.get_hashes(address, MERKLE_ZEROS, 0)
+    }
+
+    pub fn put_zeros(&self, address: &Pubkey, seeds: &[[u8; 32]]) -> Result<(), StoreError> {
+        self.put_hashes(address, seeds, MERKLE_ZEROS, 0)
     }
 
     pub fn get_l13m(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
+        self.get_hashes(tape_address, MINER_LAYER, 13)
     }
 
     pub fn put_l13m(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        if l13.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(l13.len() * 32));
-        }
-        
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
-        
-        let data = l13.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
+        self.put_hashes(tape_address, l13, MINER_LAYER, 13)
     }
 
     pub fn get_l13t(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
+        self.get_hashes(tape_address, TAPE_LAYER, 13)
     }
 
     pub fn put_l13t(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        if l13.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(l13.len() * 32));
-        }
-        
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
-        
-        let data = l13.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
+        self.put_hashes(tape_address, l13, TAPE_LAYER, 13)
     }
 
     pub fn get_segment_count(&self, tape: &Pubkey) -> Result<u64, StoreError> {

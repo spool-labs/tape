@@ -1,10 +1,10 @@
 pub const SECTOR_LEAVES: usize = 1 << 10;
 pub const SECTOR_BITMAP_BYTES: usize = SECTOR_LEAVES / 8;
 pub const SECTOR_HEADER_BYTES: usize = SECTOR_BITMAP_BYTES + 32;
-pub const L13_NODES_PER_TAPE: usize = 1 << 13; // layer 13 (8192 nodes)
+pub const L13_NODES_PER_TAPE: usize = 1 << 10; // layer 13 (8192 nodes)
 
-pub const L13_TAPE_LAYER: u8 = 1;
-pub const L13_MINER_LAYER: u8 = 2;
+pub const TAPE_LAYER: u8 = 1;
+pub const MINER_LAYER: u8 = 2;
 pub const MERKLE_ZEROS: u8 = 3;
 
 pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";

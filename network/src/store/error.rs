@@ -23,12 +23,14 @@ pub enum StoreError {
     TapeNotFound(u64),
     #[error("Segment not found for tape number {0}, segment {1}")]
     SegmentNotFound(u64, u64),
-    #[error("Tape not found for address: {0}")]
+    #[error("Value not found for address: {0}")]
     ValueNotFoundForAddress(String),
     #[error("Segment not found for address {0}, segment {1}")]
     SegmentNotFoundForAddress(String, u64),
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
+    #[error("Invalid hash size: {0}")]
+    InvalidHashSize(usize),
     #[error("Invalid sector size, expected {0} bytes")]
     InvalidSectorSize(usize),
     #[error("Invalid segment size, {0} bytes")]
