@@ -202,7 +202,7 @@ pub fn rpc_get_tape_number(store: &TapeStore, params: &Value) -> Result<Value, R
         .get_tape_number(&pk)
         .map(|num| json!(num))
         .map_err(|e| match e {
-            StoreError::ValueNotFoundForAddress(_) => RpcError {
+            StoreError::TapeNotFoundForAddress(_) => RpcError {
                 code: ErrorCode::ServerError.code(),
                 message: "tape not found for address".into(),
             },

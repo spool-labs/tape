@@ -2,13 +2,7 @@ use solana_sdk::pubkey::Pubkey;
 use rocksdb::WriteBatch;
 use bytemuck::bytes_of;
 use tape_api::consts::PACKED_SEGMENT_SIZE;
-use super::{
-    consts::*, 
-    sector::*,
-    TapeStore,
-    error::StoreError, 
-    layout::ColumnFamily, 
-};
+use crate::store::*;
 use crate::metrics::inc_total_segments_written;
 
 pub trait SegmentOps {
@@ -101,5 +95,98 @@ impl SegmentOps for TapeStore {
             .get_cf(&cf, tape.to_bytes())?
             .unwrap_or_else(|| vec![0; 8]);
         Ok(u64::from_be_bytes(count_bytes[..].try_into().unwrap()))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::pubkey::Pubkey;
+    use tempdir::TempDir;
+
+    fn setup_store() -> Result<(TapeStore, TempDir), StoreError> {
+        let temp_dir = TempDir::new("rocksdb_test").map_err(StoreError::IoError)?;
+        let store = TapeStore::new(temp_dir.path())?;
+        Ok((store, temp_dir))
+    }
+
+    fn make_data(marker: u8) -> Vec<u8> {
+        vec![marker; PACKED_SEGMENT_SIZE]
+    }
+
+    #[test]
+    fn test_put_segment() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let global_seg_idx = 0;
+        let data = make_data(42);
+
+        store.put_segment(&address, global_seg_idx, data.clone())?;
+        let retrieved_data = store.get_segment(&address, global_seg_idx)?;
+        assert_eq!(retrieved_data, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_put_segment_count() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let data = make_data(42);
+
+        // Write two new segments
+        store.put_segment(&address, 0, data.clone())?;
+        store.put_segment(&address, 1, data.clone())?;
+        assert_eq!(store.get_segment_count(&address)?, 2);
+
+        // Overwrite existing segment (should not increment count)
+        store.put_segment(&address, 0, data.clone())?;
+        assert_eq!(store.get_segment_count(&address)?, 2);
+
+        // Write new segment
+        store.put_segment(&address, 2, data)?;
+        assert_eq!(store.get_segment_count(&address)?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_tape_segments() -> Result<(), StoreError> {
+        let (store, _tmp) = setup_store()?;
+        let address = Pubkey::new_unique();
+
+        // Pick a few scattered indices across 3 sectors
+        let idx_sector0_a = 0u64;
+        let idx_sector0_b = 5u64;
+        let idx_sector1_a = SECTOR_LEAVES as u64; // first in sector 1
+        let idx_sector1_b = SECTOR_LEAVES as u64 + 10;
+        let idx_sector2_a = SECTOR_LEAVES as u64 * 2; // first in sector 2
+
+        // Write them
+        store.put_segment(&address, idx_sector0_a, make_data(10))?;
+        store.put_segment(&address, idx_sector0_b, make_data(20))?;
+        store.put_segment(&address, idx_sector1_a, make_data(30))?;
+        store.put_segment(&address, idx_sector1_b, make_data(40))?;
+        store.put_segment(&address, idx_sector2_a, make_data(50))?;
+
+        // Read back
+        let segments = store.get_tape_segments(&address)?;
+
+        // We expect exactly 5 entries in ascending global index order
+        let expected_indices = [idx_sector0_a,
+            idx_sector0_b,
+            idx_sector1_a,
+            idx_sector1_b,
+            idx_sector2_a];
+        assert_eq!(segments.len(), expected_indices.len());
+        for (i, (idx, data)) in segments.iter().enumerate() {
+            assert_eq!(*idx, expected_indices[i], "segment index mismatch");
+            assert_eq!(data[0], (i as u8 + 1) * 10, "segment data mismatch at index {}", idx);
+            assert_eq!(data.len(), PACKED_SEGMENT_SIZE);
+        }
+
+        // Check that sector count is 3
+        assert_eq!(store.get_sector_count(&address)?, 3);
+
+        Ok(())
     }
 }

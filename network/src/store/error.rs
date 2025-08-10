@@ -21,10 +21,10 @@ pub enum StoreError {
     MerkleHashesCfNotFound,
     #[error("Tape not found: number {0}")]
     TapeNotFound(u64),
+    #[error("Tape not found for address: {0}")]
+    TapeNotFoundForAddress(String),
     #[error("Segment not found for tape number {0}, segment {1}")]
     SegmentNotFound(u64, u64),
-    #[error("Value not found for address: {0}")]
-    ValueNotFoundForAddress(String),
     #[error("Segment not found for address {0}, segment {1}")]
     SegmentNotFoundForAddress(String, u64),
     #[error("Invalid pubkey: {0}")]
@@ -35,6 +35,8 @@ pub enum StoreError {
     InvalidSectorSize(usize),
     #[error("Invalid segment size, {0} bytes")]
     InvalidSegmentSize(usize),
+    #[error("Hash not found")]
+    HashNotFound,
     #[error("Invalid segment key format")]
     InvalidSegmentKey,
     #[error("Invalid path")]

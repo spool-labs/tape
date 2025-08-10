@@ -1,6 +1,4 @@
-use std::fs;
-use solana_sdk::pubkey::Pubkey;
-use super::{TapeStore, error::StoreError, layout::ColumnFamily};
+use crate::store::*;
 
 #[derive(Debug)]
 pub struct LocalStats {
@@ -11,7 +9,6 @@ pub struct LocalStats {
 
 pub trait StatsOps {
     fn get_local_stats(&self) -> Result<LocalStats, StoreError>;
-    fn get_sector_count(&self, tape_address: &Pubkey) -> Result<usize, StoreError>;
 }
 
 impl StatsOps for TapeStore {
@@ -22,12 +19,6 @@ impl StatsOps for TapeStore {
         Ok(LocalStats { tapes, sectors, size_bytes })
     }
 
-    fn get_sector_count(&self, tape_address: &Pubkey) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let prefix = tape_address.to_bytes().to_vec();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        Ok(iter.count())
-    }
 }
 
 impl TapeStore {
@@ -45,12 +36,49 @@ impl TapeStore {
 
     fn db_size(&self) -> Result<u64, StoreError> {
         let mut size = 0u64;
-        for entry in fs::read_dir(self.db.path())? {
+        for entry in std::fs::read_dir(self.db.path())? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
                 size += entry.metadata()?.len();
             }
         }
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::pubkey::Pubkey;
+    use tempdir::TempDir;
+    use tape_api::PACKED_SEGMENT_SIZE;
+
+    fn setup_store() -> Result<(TapeStore, TempDir), StoreError> {
+        let temp_dir = TempDir::new("rocksdb_test").map_err(StoreError::IoError)?;
+        let store = TapeStore::new(temp_dir.path())?;
+        Ok((store, temp_dir))
+    }
+
+    fn make_data(marker: u8) -> Vec<u8> {
+        vec![marker; PACKED_SEGMENT_SIZE]
+    }
+
+    #[test]
+    fn test_get_local_stats() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let stats = store.get_local_stats()?;
+        assert_eq!(stats.tapes, 0);
+        assert_eq!(stats.sectors, 0);
+
+        let tape_number = 1;
+        let address = Pubkey::new_unique();
+        store.put_tape_address(tape_number, &address)?;
+        store.put_segment(&address, 0, make_data(42))?;
+
+        let stats = store.get_local_stats()?;
+        assert_eq!(stats.tapes, 1);
+        assert_eq!(stats.sectors, 1);
+        assert!(stats.size_bytes > 0);
+        Ok(())
     }
 }

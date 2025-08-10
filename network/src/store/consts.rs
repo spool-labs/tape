@@ -1,7 +1,6 @@
 pub const SECTOR_LEAVES: usize = 1 << 10;
 pub const SECTOR_BITMAP_BYTES: usize = SECTOR_LEAVES / 8;
 pub const SECTOR_HEADER_BYTES: usize = SECTOR_BITMAP_BYTES + 32;
-pub const L13_NODES_PER_TAPE: usize = 1 << 10; // layer 13 (8192 nodes)
 
 pub const TAPE_LAYER: u8 = 1;
 pub const MINER_LAYER: u8 = 2;

@@ -1,6 +1,6 @@
 use rocksdb::{
-    BlockBasedOptions, ColumnFamilyDescriptor, DBCompressionType, Options, PlainTableFactoryOptions,
-    SliceTransform,
+    BlockBasedOptions, ColumnFamilyDescriptor, DBCompressionType, Options,
+    PlainTableFactoryOptions, SliceTransform,
 };
 
 #[derive(Clone, Copy, Debug)]

@@ -1,5 +1,5 @@
 use rocksdb::WriteBatch;
-use super::{TapeStore, error::StoreError, layout::ColumnFamily};
+use crate::store::*;
 
 pub enum StoreStaticKeys {
     LastProcessedSlot,
@@ -14,7 +14,6 @@ impl StoreStaticKeys {
         }
     }
 }
-
 
 pub trait HealthOps {
     fn update_health(&self, last_processed_slot: u64, drift: u64) -> Result<(), StoreError>;
@@ -46,3 +45,4 @@ impl HealthOps for TapeStore {
         Ok((height, drift))
     }
 }
+

@@ -2,7 +2,7 @@ use log::info;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use solana_sdk::pubkey::Pubkey;
-use brine_tree::{Leaf, Hash, MerkleTree};
+use brine_tree::{Leaf, Hash};
 use tape_api::prelude::*;
 use tape_client::{get_epoch_account, get_tape_account};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -64,7 +64,7 @@ pub fn update_tree(
     let sector_number = segment_number / SECTOR_LEAVES as u64;
 
     // Initialize zero values if not present
-    let seeds = match store.get_zeros(tape_address) {
+    let seeds = match store.get_zero_values(tape_address) {
         Ok(seeds) => seeds,
         Err(_) => {
             info!("Updating zeros tape {} segment {}", tape_address, segment_number);
@@ -81,7 +81,7 @@ pub fn update_tree(
             let seeds = tree.zero_values;
             let seeds_bytes = seeds.into_iter().map(|h| h.to_bytes()).collect::<Vec<_>>();
 
-            store.put_zeros(tape_address, &seeds_bytes)?;
+            store.put_zero_values(tape_address, &seeds_bytes)?;
             seeds_bytes
         }
     };
@@ -124,7 +124,7 @@ pub fn update_tree(
 
     info!("Leaves: {:?}", leaves.len());
 
-    let tree = MerkleTree::<H>::from_zeros(seeds_arr);
+    let tree = SegmentTree::from_zeros(seeds_arr);
     let root = tree.get_layer_nodes(&leaves, 2);
 
     info!("Tree node: {:?}", root.len());

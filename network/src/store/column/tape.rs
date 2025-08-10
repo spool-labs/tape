@@ -1,6 +1,6 @@
 use solana_sdk::pubkey::Pubkey;
 use rocksdb::WriteBatch;
-use super::{ TapeStore, error::StoreError, layout::ColumnFamily};
+use crate::store::*;
 use crate::metrics::inc_total_tapes_written;
 
 pub trait TapeOps {
@@ -29,7 +29,7 @@ impl TapeOps for TapeStore {
         let tape_number_bytes = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))?;
+            .ok_or_else(|| StoreError::TapeNotFoundForAddress(address.to_string()))?;
         Ok(u64::from_be_bytes(
             tape_number_bytes
                 .try_into()
@@ -47,5 +47,32 @@ impl TapeOps for TapeStore {
 
         Pubkey::try_from(address_bytes.as_slice())
             .map_err(|e| StoreError::InvalidPubkey(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::pubkey::Pubkey;
+    use tempdir::TempDir;
+
+    fn setup_store() -> Result<(TapeStore, TempDir), StoreError> {
+        let temp_dir = TempDir::new("rocksdb_test").map_err(StoreError::IoError)?;
+        let store = TapeStore::new(temp_dir.path())?;
+        Ok((store, temp_dir))
+    }
+
+    #[test]
+    fn test_put_tape_address() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let tape_number = 1;
+        let address = Pubkey::new_unique();
+
+        store.put_tape_address(tape_number, &address)?;
+        let retrieved_number = store.get_tape_number(&address)?;
+        assert_eq!(retrieved_number, tape_number);
+        let retrieved_address = store.get_tape_address(tape_number)?;
+        assert_eq!(retrieved_address, address);
+        Ok(())
     }
 }
