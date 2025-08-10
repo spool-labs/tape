@@ -136,7 +136,7 @@ pub async fn sync_addresses_from_trusted_peer(
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
     for (pubkey, number) in tape_pubkeys_with_numbers {
-        store.put_tape(number, &pubkey)?;
+        store.put_tape_address(number, &pubkey)?;
     }
 
     Ok(())
@@ -177,7 +177,7 @@ pub async fn sync_addresses_from_solana(
     tape_pubkeys_with_numbers.extend(pairs.into_iter());
 
     for (pubkey, number) in tape_pubkeys_with_numbers {
-        store.put_tape(number, &pubkey)?;
+        store.put_tape_address(number, &pubkey)?;
     }
 
     Ok(())
@@ -212,7 +212,7 @@ pub async fn sync_from_block(
         }
 
         for (pubkey, number) in finalized_tapes {
-            store.put_tape(number, &pubkey)?;
+            store.put_tape_address(number, &pubkey)?;
         }
 
         let mut parents: HashSet<u64> = HashSet::new();

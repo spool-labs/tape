@@ -54,7 +54,7 @@ pub async fn run(
 
             // Store finalized tapes
             for (address, number) in processed.finalized_tapes {
-                store.put_tape(number, &address)?;
+                store.put_tape_address(number, &address)?;
 
                 log::debug!("Finalized tape {} with number {}", address, number);
             }

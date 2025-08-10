@@ -25,7 +25,7 @@ packx = { version = "0.2.5", features = ["solana"] }
 bytemuck = "1.14.3"
 bytemuck_derive = "1.7.0"
 num_enum = "0.7.2"
-brine-tree = { version = "0.6.0", features = ["solana"] }
+brine-tree = { version = "0.6.2", features = ["solana"] }
 array-const-fn-init = "0.1.1"
 const-crypto = "0.3.0"
 

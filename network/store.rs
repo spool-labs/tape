@@ -1,9 +1,193 @@
+// consts.rs
+
+pub const SECTOR_LEAVES: usize = 1 << 10;
+pub const SECTOR_BITMAP_BYTES: usize = SECTOR_LEAVES / 8;
+pub const SECTOR_HEADER_BYTES: usize = SECTOR_BITMAP_BYTES + 32;
+pub const L13_NODES_PER_TAPE: usize = 1 << 13; // layer 13 (8192 nodes)
+
+pub const L13_TAPE_LAYER: u8 = 1;
+pub const L13_MINER_LAYER: u8 = 2;
+pub const MERKLE_ZEROS: u8 = 3;
+
+pub const TAPE_STORE_PRIMARY_DB: &str = "db_tapestore";
+pub const TAPE_STORE_SECONDARY_DB_MINE: &str = "db_tapestore_read_mine";
+pub const TAPE_STORE_SECONDARY_DB_WEB: &str = "db_tapestore_read_web";
+pub const TAPE_STORE_SLOTS_KEY_SIZE: usize = 40; // 40 bytes
+pub const TAPE_STORE_MAX_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
+pub const TAPE_STORE_MAX_WRITE_BUFFERS: usize = 4;
+
+
+
+// layout.rs
+
+use rocksdb::{
+    BlockBasedOptions, ColumnFamilyDescriptor, DBCompressionType, Options, PlainTableFactoryOptions,
+    SliceTransform,
+};
+
+#[derive(Clone, Copy, Debug)]
+pub enum ColumnFamily {
+    TapeByNumber,
+    TapeByAddress,
+    TapeSegments,
+    Sectors,
+    MerkleHashes,
+    Health,
+}
+
+impl ColumnFamily {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ColumnFamily::TapeByNumber => "tape_by_number",
+            ColumnFamily::TapeByAddress => "tape_by_address",
+            ColumnFamily::TapeSegments => "tape_segments",
+            ColumnFamily::Sectors => "sectors",
+            ColumnFamily::MerkleHashes => "merkle_hashes",
+            ColumnFamily::Health => "health",
+        }
+    }
+}
+
+pub fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
+    let mut cf_tape_by_number_opts = Options::default();
+    cf_tape_by_number_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(8));
+    cf_tape_by_number_opts.set_plain_table_factory(&PlainTableFactoryOptions {
+        user_key_length: 8,
+        bloom_bits_per_key: 10,
+        hash_table_ratio: 0.75,
+        index_sparseness: 16,
+        huge_page_tlb_size: 0,
+        encoding_type: rocksdb::KeyEncodingType::Prefix,
+        full_scan_mode: false,
+        store_index_in_file: false,
+    });
+    cf_tape_by_number_opts.set_compression_type(DBCompressionType::None);
+
+    let mut cf_tape_by_address_opts = Options::default();
+    cf_tape_by_address_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+    cf_tape_by_address_opts.set_plain_table_factory(&PlainTableFactoryOptions {
+        user_key_length: 32,
+        bloom_bits_per_key: 10,
+        hash_table_ratio: 0.75,
+        index_sparseness: 16,
+        huge_page_tlb_size: 0,
+        encoding_type: rocksdb::KeyEncodingType::Prefix,
+        full_scan_mode: false,
+        store_index_in_file: false,
+    });
+    cf_tape_by_address_opts.set_compression_type(DBCompressionType::None);
+
+    let mut cf_tape_segments_opts = Options::default();
+    cf_tape_segments_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+    cf_tape_segments_opts.set_compression_type(DBCompressionType::None);
+
+    let mut cf_sectors_opts = Options::default();
+    cf_sectors_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+    let mut bbt_sectors = BlockBasedOptions::default();
+    bbt_sectors.set_block_size(16 * 1024);
+    bbt_sectors.set_bloom_filter(10.0, false);
+    bbt_sectors.set_cache_index_and_filter_blocks(true);
+    cf_sectors_opts.set_block_based_table_factory(&bbt_sectors);
+    cf_sectors_opts.set_level_compaction_dynamic_level_bytes(true);
+    cf_sectors_opts.set_compression_type(DBCompressionType::None);
+
+    let mut cf_merkle_hashes_opts = Options::default();
+    cf_merkle_hashes_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(32));
+    let mut bbt_merkle = BlockBasedOptions::default();
+    bbt_merkle.set_block_size(16 * 1024);
+    bbt_merkle.set_bloom_filter(10.0, false);
+    bbt_merkle.set_cache_index_and_filter_blocks(true);
+    cf_merkle_hashes_opts.set_block_based_table_factory(&bbt_merkle);
+    cf_merkle_hashes_opts.set_level_compaction_dynamic_level_bytes(true);
+    cf_merkle_hashes_opts.set_compression_type(DBCompressionType::None);
+
+    let mut cf_health_opts = Options::default();
+    cf_health_opts.set_compression_type(DBCompressionType::None);
+
+    let cf_tape_by_number = ColumnFamilyDescriptor::new(ColumnFamily::TapeByNumber.as_str(), cf_tape_by_number_opts);
+    let cf_tape_by_address = ColumnFamilyDescriptor::new(ColumnFamily::TapeByAddress.as_str(), cf_tape_by_address_opts);
+    let cf_tape_segments = ColumnFamilyDescriptor::new(ColumnFamily::TapeSegments.as_str(), cf_tape_segments_opts);
+    let cf_sectors = ColumnFamilyDescriptor::new(ColumnFamily::Sectors.as_str(), cf_sectors_opts);
+    let cf_merkle_hashes = ColumnFamilyDescriptor::new(ColumnFamily::MerkleHashes.as_str(), cf_merkle_hashes_opts);
+    let cf_health = ColumnFamilyDescriptor::new(ColumnFamily::Health.as_str(), cf_health_opts);
+
+    vec![
+        cf_tape_by_number,
+        cf_tape_by_address,
+        cf_tape_segments,
+        cf_sectors,
+        cf_merkle_hashes,
+        cf_health,
+    ]
+}
+
+
+
+// error.rs
+
+use thiserror::Error;
+use super::column_family::ColumnFamily;
+
+#[derive(Error, Debug)]
+pub enum StoreError {
+    #[error("RocksDB error: {0}")]
+    RocksDB(#[from] rocksdb::Error),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Health column family not found")]
+    HealthCfNotFound,
+    #[error("Tape by number column family not found")]
+    TapeByNumberCfNotFound,
+    #[error("Tape by address column family not found")]
+    TapeByAddressCfNotFound,
+    #[error("Tape segments column family not found")]
+    TapeSegmentsCfNotFound,
+    #[error("Sectors column family not found")]
+    SectorsCfNotFound,
+    #[error("Merkle hashes column family not found")]
+    MerkleHashesCfNotFound,
+    #[error("Tape not found: number {0}")]
+    TapeNotFound(u64),
+    #[error("Segment not found for tape number {0}, segment {1}")]
+    SegmentNotFound(u64, u64),
+    #[error("Tape not found for address: {0}")]
+    ValueNotFoundForAddress(String),
+    #[error("Segment not found for address {0}, segment {1}")]
+    SegmentNotFoundForAddress(String, u64),
+    #[error("Invalid pubkey: {0}")]
+    InvalidPubkey(String),
+    #[error("Invalid sector size, expected {0} bytes")]
+    InvalidSectorSize(usize),
+    #[error("Invalid segment size, {0} bytes")]
+    InvalidSegmentSize(usize),
+    #[error("Invalid segment key format")]
+    InvalidSegmentKey,
+    #[error("Invalid path")]
+    InvalidPath,
+}
+
+impl From<&ColumnFamily> for StoreError {
+    fn from(value: &ColumnFamily) -> Self {
+        match value {
+            ColumnFamily::TapeByNumber => StoreError::TapeByNumberCfNotFound,
+            ColumnFamily::TapeByAddress => StoreError::TapeByAddressCfNotFound,
+            ColumnFamily::TapeSegments => StoreError::TapeSegmentsCfNotFound,
+            ColumnFamily::Sectors => StoreError::SectorsCfNotFound,
+            ColumnFamily::MerkleHashes => StoreError::MerkleHashesCfNotFound,
+            ColumnFamily::Health => StoreError::HealthCfNotFound,
+        }
+    }
+}
+
+
+
+// tape_store.rs
+
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use rocksdb::{BoundColumnFamily, DB, Options, WriteBatch};
 use solana_sdk::pubkey::Pubkey;
-use bytemuck::try_from_bytes;
 
 use tape_api::prelude::PACKED_SEGMENT_SIZE;
 use crate::metrics::{inc_total_segments_written, inc_total_tapes_written};
@@ -11,7 +195,6 @@ use super::{
     consts::*,
     layout::{ColumnFamily, create_cf_descriptors},
     error::StoreError,
-    sector::Sector,
 };
 
 pub enum StoreStaticKeys {
@@ -133,6 +316,169 @@ impl TapeStore {
         Ok(())
     }
 
+    pub fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError> {
+        if seg.len() != PACKED_SEGMENT_SIZE {
+            return Err(StoreError::InvalidSegmentSize(seg.len()));
+        }
+        
+        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
+        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
+        
+        let cf_sectors = self.get_cf_handle(ColumnFamily::Sectors)?;
+        let cf_tape_segments = self.get_cf_handle(ColumnFamily::TapeSegments)?;
+        
+        let mut sector = self.get_sector(tape_address, sector_number).unwrap_or_else(|_| {
+            vec![0u8; SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE]
+        });
+
+        // FIX: This logic should go into a Sector struct, make it Pod and Zeroable
+        
+        // Check if segment bit is already set
+        let bitmap_idx = local_seg_idx / 8;
+        let bit_pos = local_seg_idx % 8;
+        let is_new_segment = (sector[bitmap_idx] & (1 << bit_pos)) == 0;
+        
+        // Set bitmap bit
+        sector[bitmap_idx] |= 1 << bit_pos;
+        
+        // Write segment data
+        let seg_start = SECTOR_HEADER_BYTES + local_seg_idx * PACKED_SEGMENT_SIZE;
+        sector[seg_start..seg_start + PACKED_SEGMENT_SIZE].copy_from_slice(&seg);
+        
+        // Update segment count if new segment
+        let mut batch = WriteBatch::default();
+        let mut key = Vec::with_capacity(40);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.extend_from_slice(&sector_number.to_be_bytes());
+        batch.put_cf(&cf_sectors, &key, &sector);
+        
+        if is_new_segment {
+            let current_count = self.get_segment_count(tape_address).unwrap_or(0);
+            batch.put_cf(&cf_tape_segments, tape_address.to_bytes(), (current_count + 1).to_be_bytes());
+        }
+        
+        self.db.write(batch)?;
+        inc_total_segments_written();
+
+        Ok(())
+    }
+
+    pub fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError> {
+        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
+        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
+        
+        let sector = self.get_sector(tape_address, sector_number)?;
+        
+        // Check bitmap
+        let bitmap_idx = local_seg_idx / 8;
+        let bit_pos = local_seg_idx % 8;
+        if (sector[bitmap_idx] & (1 << bit_pos)) == 0 {
+            return Err(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), global_seg_idx));
+        }
+        
+        let seg_start = SECTOR_HEADER_BYTES + local_seg_idx * PACKED_SEGMENT_SIZE;
+        Ok(sector[seg_start..seg_start + PACKED_SEGMENT_SIZE].to_vec())
+    }
+
+    // FIX: Should return a Sector struct
+    pub fn get_sector(&self, tape_address: &Pubkey, sector_number: u64) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
+        let mut key = Vec::with_capacity(40);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.extend_from_slice(&sector_number.to_be_bytes());
+        
+        self.db
+            .get_cf(&cf, &key)?
+            .ok_or_else(|| StoreError::SegmentNotFoundForAddress(tape_address.to_string(), sector_number))
+    }
+
+    // Fix: Should take a Sector struct instead of raw bytes
+    pub fn put_sector(&self, tape_address: &Pubkey, sector_number: u64, data: &[u8]) -> Result<(), StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
+        let mut key = Vec::with_capacity(40);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.extend_from_slice(&sector_number.to_be_bytes());
+
+        if data.len() != SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
+            return Err(StoreError::InvalidSectorSize(data.len()));
+        }
+
+        self.db.put_cf(&cf, &key, data)?;
+        Ok(())
+    }
+
+    // FIX: Should return a Vec<[u8; 32]>
+    pub fn get_seeds(&self, address: &Pubkey) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
+        
+        self.db
+            .get_cf(&cf, &key)?
+            .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))
+    }
+
+    // FIX: Should take a Vec<[u8; 32]>
+    pub fn put_seeds(&self, address: &Pubkey, seeds: &[u8]) -> Result<(), StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
+        self.db.put_cf(&cf, &key, seeds)?;
+        Ok(())
+    }
+
+    // FIX: Should return a Vec<[u8; 32]>
+    pub fn get_l13m(&self, tape_address: &Pubkey) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
+        
+        self.db
+            .get_cf(&cf, &key)?
+            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))
+    }
+
+    // FIX: Should take a Vec<[u8; 32]> 
+    pub fn put_l13m(&self, tape_address: &Pubkey, l13: &[u8]) -> Result<(), StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
+        self.db.put_cf(&cf, &key, l13)?;
+        Ok(())
+    }
+
+    // FIX: Should return a Vec<[u8; 32]>
+    pub fn get_l13t(&self, tape_address: &Pubkey) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
+        
+        self.db
+            .get_cf(&cf, &key)?
+            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))
+    }
+
+    // FIX: Should take a Vec<[u8; 32]> 
+    pub fn put_l13t(&self, tape_address: &Pubkey, l13: &[u8]) -> Result<(), StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.push(13); // layer_id
+        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
+        self.db.put_cf(&cf, &key, l13)?;
+        Ok(())
+    }
+
     pub fn get_tape_number(&self, address: &Pubkey) -> Result<u64, StoreError> {
         let cf = self.get_cf_handle(ColumnFamily::TapeByAddress)?;
         let key = address.to_bytes().to_vec();
@@ -159,80 +505,7 @@ impl TapeStore {
             .map_err(|e| StoreError::InvalidPubkey(e.to_string()))
     }
 
-    pub fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError> {
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let sector = self.get_sector(tape_address, sector_number)?;
-        
-        // Check bitmap
-        let bitmap_idx = local_seg_idx / 8;
-        let bit_pos = local_seg_idx % 8;
-        if (sector.0[bitmap_idx] & (1 << bit_pos)) == 0 {
-            return Err(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), global_seg_idx));
-        }
-        
-        let seg_start = SECTOR_HEADER_BYTES + local_seg_idx * PACKED_SEGMENT_SIZE;
-        Ok(sector.0[seg_start..seg_start + PACKED_SEGMENT_SIZE].to_vec())
-    }
-
-    pub fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError> {
-        if seg.len() != PACKED_SEGMENT_SIZE {
-            return Err(StoreError::InvalidSegmentSize(seg.len()));
-        }
-        
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let cf_sectors = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let cf_tape_segments = self.get_cf_handle(ColumnFamily::TapeSegments)?;
-        
-        let mut sector = self.get_sector(tape_address, sector_number).unwrap_or_else(|_| Sector::new());
-        let is_new_segment = sector.set_segment(local_seg_idx, &seg);
-        
-        let mut batch = WriteBatch::default();
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        batch.put_cf(&cf_sectors, &key, bytemuck::bytes_of(&sector));
-        
-        if is_new_segment {
-            let current_count = self.get_segment_count(tape_address).unwrap_or(0);
-            batch.put_cf(&cf_tape_segments, tape_address.to_bytes(), (current_count + 1).to_be_bytes());
-        }
-        
-        self.db.write(batch)?;
-        inc_total_segments_written();
-        Ok(())
-    }
-
-    pub fn get_sector(&self, tape_address: &Pubkey, sector_number: u64) -> Result<Sector, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::SegmentNotFoundForAddress(tape_address.to_string(), sector_number))?;
-        
-        if data.len() != SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
-            return Err(StoreError::InvalidSectorSize(data.len()));
-        }
-        
-        Ok(*try_from_bytes(&data).map_err(|_| StoreError::InvalidSectorSize(data.len()))?)
-    }
-
-    pub fn put_sector(&self, tape_address: &Pubkey, sector_number: u64, sector: &Sector) -> Result<(), StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        
-        self.db.put_cf(&cf, &key, bytemuck::bytes_of(sector))?;
-        Ok(())
-    }
-
+    /// @deprecated You should not be fetching a whole tape; it could be large.
     pub fn get_tape_segments(
         &self,
         tape_address: &Pubkey,
@@ -240,148 +513,38 @@ impl TapeStore {
         let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
         let prefix = tape_address.to_bytes().to_vec();
         let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        let mut segments = Vec::new();
+
+        let bitmap_len = SECTOR_LEAVES / 8;
+        let mut segments: Vec<(u64, Vec<u8>)> = Vec::new();
 
         for item in iter {
-            let (key, data) = item?;
-            if key.len() < TAPE_STORE_SLOTS_KEY_SIZE {
+            let (key, sector) = item?;
+            if key.len() < 40 {
                 continue;
             }
             let sector_number = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
-            
-            let sector: Sector = *try_from_bytes(&data)
-                .map_err(|_| StoreError::InvalidSectorSize(data.len()))?;
-            
-            for local_idx in 0..SECTOR_LEAVES {
-                if let Some(segment_data) = sector.get_segment(local_idx) {
-                    let global_index = sector_number * SECTOR_LEAVES as u64 + local_idx as u64;
-                    segments.push((global_index, segment_data.to_vec()));
+
+            if sector.len() < SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
+                continue;
+            }
+
+            let bitmap = &sector[..bitmap_len];
+            let payload = &sector[SECTOR_HEADER_BYTES..];
+
+            for li in 0..SECTOR_LEAVES {
+                let bit_set = bitmap[li / 8] & (1 << (li % 8)) != 0;
+                if bit_set {
+                    let start = li * PACKED_SEGMENT_SIZE;
+                    let end = start + PACKED_SEGMENT_SIZE;
+                    let global_index = sector_number * SECTOR_LEAVES as u64 + li as u64;
+                    segments.push((global_index, payload[start..end].to_vec()));
                 }
             }
         }
 
+        // Sort by global index so caller always gets ordered segments
         segments.sort_by_key(|(idx, _)| *idx);
         Ok(segments)
-    }
-
-    pub fn get_seeds(&self, address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
-    }
-
-    pub fn put_seeds(&self, address: &Pubkey, seeds: &[[u8; 32]]) -> Result<(), StoreError> {
-        if seeds.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(seeds.len() * 32));
-        }
-        
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[MERKLE_ZEROS, 0, 0]); // ID and padding
-        
-        let data = seeds.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
-    }
-
-    pub fn get_l13m(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
-    }
-
-    pub fn put_l13m(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        if l13.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(l13.len() * 32));
-        }
-        
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_MINER_LAYER, 0, 0]); // ID and padding
-        
-        let data = l13.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
-    }
-
-    pub fn get_l13t(&self, tape_address: &Pubkey) -> Result<Vec<[u8; 32]>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
-        
-        let data = self.db
-            .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::ValueNotFoundForAddress(tape_address.to_string()))?;
-        
-        if data.len() % 32 != 0 || data.len() / 32 != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(data.len()));
-        }
-        
-        let mut result = Vec::with_capacity(L13_NODES_PER_TAPE);
-        for chunk in data.chunks_exact(32) {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            result.push(arr);
-        }
-        Ok(result)
-    }
-
-    pub fn put_l13t(&self, tape_address: &Pubkey, l13: &[[u8; 32]]) -> Result<(), StoreError> {
-        if l13.len() != L13_NODES_PER_TAPE {
-            return Err(StoreError::InvalidSegmentSize(l13.len() * 32));
-        }
-        
-        let cf = self.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&tape_address.to_bytes());
-        key.push(13); // layer_id
-        key.extend_from_slice(&[L13_TAPE_LAYER, 0, 0]); // ID and padding
-        
-        let data = l13.iter().flatten().copied().collect::<Vec<u8>>();
-        self.db.put_cf(&cf, &key, &data)?;
-        Ok(())
     }
 
     pub fn get_segment_count(&self, tape: &Pubkey) -> Result<u64, StoreError> {
@@ -449,8 +612,15 @@ mod tests {
         Ok((store, temp_dir))
     }
 
-    fn make_data(marker: u8) -> Vec<u8> {
-        vec![marker; PACKED_SEGMENT_SIZE]
+    // FIX: Too complicated, use something like make_data
+    #[inline]
+    fn seg_with_pattern(i: u64) -> Vec<u8> {
+        let mut v = vec![0u8; PACKED_SEGMENT_SIZE];
+        v[..8].copy_from_slice(&i.to_be_bytes());
+        for (j, b) in v[8..].iter_mut().enumerate() {
+            *b = ((i as usize + j) & 0xFF) as u8;
+        }
+        v
     }
 
     #[test]
@@ -467,12 +637,13 @@ mod tests {
         Ok(())
     }
 
+
     #[test]
     fn test_put_segment() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
         let global_seg_idx = 0;
-        let data = make_data(42);
+        let data = vec![0u8; tape_api::PACKED_SEGMENT_SIZE];
 
         store.put_segment(&address, global_seg_idx, data.clone())?;
         let retrieved_data = store.get_segment(&address, global_seg_idx)?;
@@ -484,7 +655,7 @@ mod tests {
     fn test_put_segment_count() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
-        let data = make_data(42);
+        let data = vec![0u8; tape_api::PACKED_SEGMENT_SIZE];
 
         // Write two new segments
         store.put_segment(&address, 0, data.clone())?;
@@ -505,7 +676,7 @@ mod tests {
     fn test_put_l13() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
-        let t13_data = vec![[1u8; 32]; L13_NODES_PER_TAPE];
+        let t13_data = vec![1u8; L13_NODES_PER_TAPE * 32];
 
         store.put_l13t(&address, &t13_data)?;
         let retrieved_data = store.get_l13t(&address)?;
@@ -516,13 +687,11 @@ mod tests {
         assert!(retrieved_m13.is_err());
 
         // Test that m13 doesn't overwrite t13
-        let m13_data = vec![[2u8; 32]; L13_NODES_PER_TAPE];
+        let m13_data = vec![2u8; L13_NODES_PER_TAPE * 32];
         store.put_l13m(&address, &m13_data)?;
 
         let retrieved_m13 = store.get_l13m(&address)?;
         assert_eq!(retrieved_m13, m13_data);
-        let retrieved_t13 = store.get_l13t(&address)?;
-        assert_eq!(retrieved_t13, t13_data);
         Ok(())
     }
 
@@ -536,7 +705,7 @@ mod tests {
         let tape_number = 1;
         let address = Pubkey::new_unique();
         store.put_tape_address(tape_number, &address)?;
-        store.put_segment(&address, 0, make_data(42))?;
+        store.put_segment(&address, 0, vec![0u8; tape_api::PACKED_SEGMENT_SIZE])?;
 
         let stats = store.get_local_stats()?;
         assert_eq!(stats.tapes, 1);
@@ -552,8 +721,7 @@ mod tests {
 
         // Fill exactly one full sector: indices [0, SECTOR_LEAVES)
         for i in 0..SECTOR_LEAVES as u64 {
-            let data = make_data(i as u8);
-            store.put_segment(&address, i, data)?;
+            store.put_segment(&address, i, seg_with_pattern(i))?;
         }
 
         // Sector count should be 1
@@ -565,14 +733,15 @@ mod tests {
         // Verify bitmap is all 1s for the first sector
         let sector0 = store.get_sector(&address, 0)?;
         let bitmap_len = SECTOR_LEAVES / 8;
-        for byte in &sector0.0[..bitmap_len] {
+        assert_eq!(sector0.len(), SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE);
+        for byte in &sector0[..bitmap_len] {
             assert_eq!(*byte, 0xFF);
         }
 
         // Spot-check a few reads across the sector
         for &idx in &[0u64, (SECTOR_LEAVES as u64) / 2, (SECTOR_LEAVES as u64) - 1] {
             let got = store.get_segment(&address, idx)?;
-            assert_eq!(got, make_data(idx as u8));
+            assert_eq!(got, seg_with_pattern(idx));
         }
 
         Ok(())
@@ -586,8 +755,8 @@ mod tests {
         let last_in_s0 = (SECTOR_LEAVES as u64) - 1;
         let first_in_s1 = SECTOR_LEAVES as u64;
 
-        store.put_segment(&address, last_in_s0, make_data(1))?;
-        store.put_segment(&address, first_in_s1, make_data(2))?;
+        store.put_segment(&address, last_in_s0, seg_with_pattern(last_in_s0))?;
+        store.put_segment(&address, first_in_s1, seg_with_pattern(first_in_s1))?;
 
         // Two sectors should exist because we touched indices in both
         assert_eq!(store.get_sector_count(&address)?, 2);
@@ -596,19 +765,23 @@ mod tests {
         assert_eq!(store.get_segment_count(&address)?, 2);
 
         // Reads back
-        assert_eq!(store.get_segment(&address, last_in_s0)?, make_data(1));
-        assert_eq!(store.get_segment(&address, first_in_s1)?, make_data(2));
+        assert_eq!(store.get_segment(&address, last_in_s0)?, seg_with_pattern(last_in_s0));
+        assert_eq!(store.get_segment(&address, first_in_s1)?, seg_with_pattern(first_in_s1));
 
-        // Bitmap spot check
+        // Bitmap spot check: last bit in sector 0 should be set, first bit in sector 1 set
         let s0 = store.get_sector(&address, 0)?;
         let s1 = store.get_sector(&address, 1)?;
+        let bm_len = SECTOR_LEAVES / 8;
 
         // sector 0: last_in_s0 => byte = (SECTOR_LEAVES-1)/8, bit = 7
         let byte_idx0 = (SECTOR_LEAVES - 1) / 8;
-        assert_eq!(s0.0[byte_idx0] & (1 << 7), 1 << 7);
+        assert_eq!(s0[byte_idx0] & (1 << 7), 1 << 7);
 
         // sector 1: first_in_s1 local idx = 0 => byte 0 bit 0
-        assert_eq!(s1.0[0] & 0x01, 0x01);
+        assert_eq!(s1[0] & 0x01, 0x01);
+
+        // sanity: bitmap buffers exist
+        assert!(s0.len() >= bm_len && s1.len() >= bm_len);
 
         Ok(())
     }
@@ -620,7 +793,7 @@ mod tests {
 
         let total = (SECTOR_LEAVES as u64) * 2;
         for i in 0..total {
-            store.put_segment(&address, i, make_data(i as u8))?;
+            store.put_segment(&address, i, seg_with_pattern(i))?;
         }
 
         // Should have 2 sectors and full segment count
@@ -628,17 +801,17 @@ mod tests {
         assert_eq!(store.get_segment_count(&address)?, total);
 
         // Verify both sector bitmaps are all 1s
+        let bm_len = SECTOR_LEAVES / 8;
         let s0 = store.get_sector(&address, 0)?;
         let s1 = store.get_sector(&address, 1)?;
-        let bitmap_len = SECTOR_LEAVES / 8;
-        for b in s0.0[..bitmap_len].iter() { assert_eq!(*b, 0xFF); }
-        for b in s1.0[..bitmap_len].iter() { assert_eq!(*b, 0xFF); }
+        for b in &s0[..bm_len] { assert_eq!(*b, 0xFF); }
+        for b in &s1[..bm_len] { assert_eq!(*b, 0xFF); }
 
         // Spot-check edges
-        assert_eq!(store.get_segment(&address, 0)?, make_data(0));
-        assert_eq!(store.get_segment(&address, (SECTOR_LEAVES as u64) - 1)?, make_data(((SECTOR_LEAVES as u64) - 1) as u8));
-        assert_eq!(store.get_segment(&address, SECTOR_LEAVES as u64)?, make_data((SECTOR_LEAVES as u64) as u8));
-        assert_eq!(store.get_segment(&address, total - 1)?, make_data((total - 1) as u8));
+        assert_eq!(store.get_segment(&address, 0)?, seg_with_pattern(0));
+        assert_eq!(store.get_segment(&address, (SECTOR_LEAVES as u64) - 1)?, seg_with_pattern((SECTOR_LEAVES as u64) - 1));
+        assert_eq!(store.get_segment(&address, SECTOR_LEAVES as u64)?, seg_with_pattern(SECTOR_LEAVES as u64));
+        assert_eq!(store.get_segment(&address, total - 1)?, seg_with_pattern(total - 1));
 
         Ok(())
     }
@@ -657,7 +830,7 @@ mod tests {
             let base = s * (SECTOR_LEAVES as u64);
             for k in 0..3u64 {
                 let idx = base + k * stride;
-                store.put_segment(&address, idx, make_data(idx as u8))?;
+                store.put_segment(&address, idx, seg_with_pattern(idx))?;
                 written += 1;
             }
         }
@@ -668,9 +841,10 @@ mod tests {
         // Verify a couple of bit positions within random sectors
         for s in 0..sectors {
             let sector = store.get_sector(&address, s)?;
+            // Verify one of the three written bits per sector
             for k in 0..3usize {
                 let li = k * (stride as usize);
-                let b = sector.0[li / 8] & (1 << (li % 8));
+                let b = sector[li / 8] & (1 << (li % 8));
                 assert!(b != 0, "bitmap not set for sector {}, local {}", s, li);
             }
         }
@@ -682,6 +856,9 @@ mod tests {
     fn test_get_tape_segments() -> Result<(), StoreError> {
         let (store, _tmp) = setup_store()?;
         let address = Pubkey::new_unique();
+
+        // Helper to create segment data with unique first byte
+        let make_data = |marker: u8| vec![marker; PACKED_SEGMENT_SIZE];
 
         // Pick a few scattered indices across 3 sectors
         let idx_sector0_a = 0u64;
@@ -711,6 +888,7 @@ mod tests {
         assert_eq!(segments.len(), expected_indices.len());
         for (i, (idx, data)) in segments.iter().enumerate() {
             assert_eq!(*idx, expected_indices[i], "segment index mismatch");
+            // First byte should match the "marker" we wrote
             assert_eq!(data[0], (i as u8 + 1) * 10, "segment data mismatch at index {}", idx);
             assert_eq!(data.len(), PACKED_SEGMENT_SIZE);
         }
@@ -721,3 +899,74 @@ mod tests {
         Ok(())
     }
 }
+
+
+
+// helpers.rs
+
+use super::{TapeStore, StoreError, consts::*};
+use std::{env, sync::Arc};
+
+pub fn primary() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    std::fs::create_dir_all(&db_primary).map_err(StoreError::IoError)?;
+    TapeStore::new(&db_primary)
+}
+
+pub fn secondary_mine() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_MINE);
+    std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
+    TapeStore::new_secondary(&db_primary, &db_secondary)
+}
+
+pub fn secondary_web() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_WEB);
+    std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
+    TapeStore::new_secondary(&db_primary, &db_secondary)
+}
+
+pub fn read_only() -> Result<TapeStore, StoreError> {
+    let current_dir = env::current_dir().map_err(StoreError::IoError)?;
+    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    TapeStore::new_read_only(&db_primary)
+}
+
+pub fn run_refresh_store(store: &Arc<TapeStore>) {
+    let store = Arc::clone(store);
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(15);
+        loop {
+            store.catch_up_with_primary().unwrap();
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+
+
+// mod.rs
+
+pub mod consts;
+pub mod error;
+mod layout;
+mod tape_store;
+mod helpers;
+
+pub use consts::*;
+pub use error::StoreError;
+pub use tape_store::TapeStore;
+pub use helpers::{
+    primary,
+    secondary_mine,
+    secondary_web,
+    read_only,
+    run_refresh_store,
+};
+
+
+

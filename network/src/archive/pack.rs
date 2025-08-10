@@ -47,4 +47,3 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
     let segment_bytes = solution.to_bytes();
     Ok(segment_bytes.to_vec())
 }
-

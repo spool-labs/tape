@@ -56,7 +56,6 @@ impl PoA {
 #[derive(Clone, Copy, Debug)]
 pub struct ProofPath(pub [[u8; 32]; SEGMENT_PROOF_LEN]);
 
-// Safe: transparent wrapper over a byte-array-of-arrays.
 unsafe impl Zeroable for ProofPath {}
 unsafe impl Pod for ProofPath {}
 

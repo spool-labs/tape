@@ -1,7 +1,7 @@
 pub mod consts;
 pub mod error;
-pub mod column_family;
-mod cf_layout;
+mod sector;
+mod layout;
 mod tape_store;
 mod helpers;
 
