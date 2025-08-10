@@ -54,7 +54,7 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
     Ok(segment_bytes.to_vec())
 }
 
-
+// TODO: this is a work in progress still... 
 pub fn update_tree(
     store: &Arc<TapeStore>,
     rpc: &Arc<RpcClient>,
