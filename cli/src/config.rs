@@ -71,8 +71,30 @@ impl TapeConfig {
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let contents = fs::read_to_string(path)?;
         let config: TapeConfig = toml::from_str(&contents)?;
-        //config.validate()?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// validate values in tape.toml
+    fn validate(&self) -> anyhow::Result<()> {
+        // commitment level
+        match self.solana.commitment.as_str() {
+            "processed" | "confirmed" | "finalized" => {},
+            _ => return Err(anyhow::anyhow!("Invalid commitment level: {}", self.solana.commitment)),
+        }
+
+        // log level
+        match self.logging.log_level.as_str() {
+            "error" | "warn" | "info" | "debug" | "trace" => {},
+            _ => return Err(anyhow::anyhow!("Invalid log level: {}", self.logging.log_level)),
+        }
+
+        // keypair path 
+        if !Path::new(&self.identity.keypair_path).exists() {
+            return Err(anyhow::anyhow!("Keypair file not found: {}", self.identity.keypair_path));
+        }
+
+        Ok(())
     }
 
     /// Create default configuration and save to file
@@ -90,10 +112,36 @@ impl TapeConfig {
 impl Default for TapeConfig {
     fn default() -> Self {
         Self {
+            transaction: TransactionConfig {
+                priority_fee: 1000,
+                tx_retries: 3,
+            },
+            performance: PerformanceConfig {
+                num_cores: num_cpus::get(),
+                max_memory_mb: 2048,
+                rocksdb_conn_pool_size: 10,
+            },
+            identity: IdentityConfig {
+                keypair_path: "~/.config/solana/id.json".to_string(),
+            },
             solana: SolanaConfig {
                 rpc_url: "https://api.devnet.solana.com".to_string(),
                 ws_url: Some("wss://api.devnet.solana.com/".to_string()),
                 commitment: "confirmed".to_string(),
+            },
+            storage: StorageConfig {
+                rocksdb_primary_path: "./db_tapestore".to_string(),
+                rocksdb_secondary_path: Some("./db_tapestore_secondary".to_string()),
+                rocksdb_cache_size_mb: 512,
+            },
+            network: NetworkConfig {
+                bind_address: "127.0.0.1:8080".to_string(),
+                metrics_endpoint: "127.0.0.1:9090".to_string(),
+            },
+            logging: LoggingConfig {
+                log_level: "info".to_string(),
+                log_path: Some("./logs/tape.log".to_string()),
+                metrics_interval: 30,
             },
         }
     }
