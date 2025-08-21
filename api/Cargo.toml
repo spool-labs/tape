@@ -25,3 +25,4 @@ spl-associated-token-account.workspace = true
 brine-tree.workspace = true
 array-const-fn-init.workspace = true
 const-crypto.workspace = true
+solana-sha256-hasher.workspace = true

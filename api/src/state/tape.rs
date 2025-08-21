@@ -18,11 +18,11 @@ pub struct Tape {
 
     pub first_slot:      u64,
     pub tail_slot:       u64,
+
     pub balance:         u64,
     pub last_rent_block: u64,
     pub total_segments:  u64,
-
-    // +Phantom Vec<Hash> for merkle subtree nodes (up to 4096).
+    pub pda_bump: u64,
 }
 
 #[repr(u64)]
