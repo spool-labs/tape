@@ -44,7 +44,7 @@ pub fn process_tape_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     )?;
 
     let segment_number = args.segment_number;
-    let merkle_proof   = args.proof;
+    let merkle_proof   = args.proof.as_ref();
 
     assert!(args.old_data.len() == SEGMENT_SIZE);
     assert!(args.new_data.len() == SEGMENT_SIZE);
@@ -61,7 +61,7 @@ pub fn process_tape_update(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     ]);
 
     writer.state.try_replace_leaf(
-        &merkle_proof,
+        merkle_proof,
         old_leaf, 
         new_leaf
     )

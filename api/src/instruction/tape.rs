@@ -2,6 +2,7 @@ use steel::*;
 use crate::{
     consts::*,
     pda::*,
+    types::*,
     utils,
 };
 
@@ -41,7 +42,7 @@ pub struct Update {
     pub segment_number: [u8; 8],
     pub old_data: [u8; SEGMENT_SIZE],
     pub new_data: [u8; SEGMENT_SIZE],
-    pub proof: [[u8; 32]; SEGMENT_PROOF_LEN],
+    pub proof: ProofPath,
 }
 
 #[repr(C)]
@@ -131,7 +132,7 @@ pub fn build_update_ix(
     segment_number: u64,
     old_data: [u8; SEGMENT_SIZE],
     new_data: [u8; SEGMENT_SIZE],
-    proof: [[u8;32]; SEGMENT_PROOF_LEN],
+    proof: ProofPath,
 ) -> Instruction {
 
     let segment_number = segment_number.to_le_bytes();

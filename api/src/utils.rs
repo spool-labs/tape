@@ -4,7 +4,7 @@ use crate::error::*;
 use crate::types::*;
 use brine_tree::Leaf;
 use solana_program::{
-    keccak::hashv, 
+    blake3::hashv, 
     slot_hashes::SlotHash
 };
 
