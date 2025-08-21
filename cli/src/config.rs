@@ -4,7 +4,31 @@ use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
+    pub transaction: TransactionConfig,
+    pub performance: PerformanceConfig,
+    pub identity: IdentityConfig,
     pub solana: SolanaConfig,
+    pub storage: StorageConfig,
+    pub network: NetworkConfig,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TransactionConfig {
+    pub priority_fee: u64,
+    pub tx_retries: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PerformanceConfig {
+    pub num_cores: usize,
+    pub max_memory_mb: u64,
+    pub rocksdb_conn_pool_size: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IdentityConfig {
+    pub keypair_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -12,6 +36,26 @@ pub struct SolanaConfig {
     pub rpc_url: String,
     pub ws_url: Option<String>,
     pub commitment: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StorageConfig {
+    pub rocksdb_primary_path: String,
+    pub rocksdb_secondary_path: Option<String>,
+    pub rocksdb_cache_size_mb: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NetworkConfig {
+    pub bind_address: String,
+    pub metrics_endpoint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LoggingConfig {
+    pub log_level: String,
+    pub log_path: Option<String>,
+    pub metrics_interval: u64,
 }
 
 impl TapeConfig {
