@@ -5,7 +5,6 @@ use std::path::Path;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
     pub transaction: TransactionConfig,
-    pub performance: PerformanceConfig,
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
@@ -15,15 +14,8 @@ pub struct TapeConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionConfig {
-    pub priority_fee: u64,
-    pub tx_retries: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PerformanceConfig {
-    pub num_cores: usize,
-    pub max_memory_mb: u64,
-    pub rocksdb_conn_pool_size: u32,
+    pub priority_fee_lamports: u64,
+    pub max_tx_retries: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -113,13 +105,8 @@ impl Default for TapeConfig {
     fn default() -> Self {
         Self {
             transaction: TransactionConfig {
-                priority_fee: 1000,
-                tx_retries: 3,
-            },
-            performance: PerformanceConfig {
-                num_cores: num_cpus::get(),
-                max_memory_mb: 2048,
-                rocksdb_conn_pool_size: 10,
+                priority_fee_lamports: 1000,
+                max_tx_retries: 3,
             },
             identity: IdentityConfig {
                 keypair_path: "~/.config/solana/id.json".to_string(),

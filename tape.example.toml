@@ -1,11 +1,6 @@
 [transaction]
-priority_fee = 1000
-tx_retries = 3
-
-[performance]
-num_cores = 8
-max_memory_mb = 2048
-rocksdb_conn_pool_size = 10
+priority_fee_lamports = 1000
+max_tx_retries = 3
 
 [identity]
 keypair_path = "~/.config/solana/id.json"
