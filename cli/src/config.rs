@@ -89,7 +89,7 @@ impl TapeConfig {
         Ok(())
     }
 
-    /// Create default configuration and save to file
+    /// create default configuration and save to file
     pub fn create_default() -> anyhow::Result<Self> {
         let config = Self::default();
         let toml_string = toml::to_string_pretty(&config)?;
@@ -131,5 +131,58 @@ impl Default for TapeConfig {
                 metrics_interval: 30,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toml_parsing_works_properly() {
+        let toml_content = r#"
+[transaction]
+priority_fee_lamports = 2000
+max_tx_retries = 5
+
+[identity]
+keypair_path = "~/.config/solana/id.json"
+
+[solana]
+rpc_url = "https://api.mainnet-beta.solana.com"
+ws_url = "wss://api.mainnet-beta.solana.com/"
+commitment = "finalized"
+
+[storage]
+rocksdb_primary_path = "./test_db"
+rocksdb_secondary_path = "./test_db_secondary"
+rocksdb_cache_size_mb = 1024
+
+[network]
+bind_address = "0.0.0.0:8081"
+metrics_endpoint = "0.0.0.0:9091"
+
+[logging]
+log_level = "debug"
+log_path = "./test.log"
+metrics_interval = 60
+"#;
+
+        let config: TapeConfig = toml::from_str(toml_content).unwrap();
+        
+        assert_eq!(config.transaction.priority_fee_lamports, 2000);
+        assert_eq!(config.transaction.max_tx_retries, 5);
+        assert_eq!(config.identity.keypair_path, "~/.config/solana/id.json");
+        assert_eq!(config.solana.rpc_url, "https://api.mainnet-beta.solana.com");
+        assert_eq!(config.solana.ws_url, Some("wss://api.mainnet-beta.solana.com/".to_string()));
+        assert_eq!(config.solana.commitment, "finalized");
+        assert_eq!(config.storage.rocksdb_primary_path, "./test_db");
+        assert_eq!(config.storage.rocksdb_secondary_path, Some("./test_db_secondary".to_string()));
+        assert_eq!(config.storage.rocksdb_cache_size_mb, 1024);
+        assert_eq!(config.network.bind_address, "0.0.0.0:8081");
+        assert_eq!(config.network.metrics_endpoint, "0.0.0.0:9091");
+        assert_eq!(config.logging.log_level, "debug");
+        assert_eq!(config.logging.log_path, Some("./test.log".to_string()));
+        assert_eq!(config.logging.metrics_interval, 60);
     }
 }
