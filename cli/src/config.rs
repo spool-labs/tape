@@ -4,7 +4,6 @@ use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
-    pub transaction: TransactionConfig,
     pub performance: PerformanceConfig,
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
@@ -13,11 +12,6 @@ pub struct TapeConfig {
     pub logging: LoggingConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TransactionConfig {
-    pub priority_fee_lamports: u64,
-    pub max_tx_retries: u32,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PerformanceConfig {
@@ -35,6 +29,8 @@ pub struct SolanaConfig {
     pub rpc_url: String,
     pub ws_url: Option<String>,
     pub commitment: String,
+    pub priority_fee_lamports: u64,
+    pub max_tx_retries: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -121,10 +117,6 @@ impl TapeConfig {
 impl Default for TapeConfig {
     fn default() -> Self {
         Self {
-            transaction: TransactionConfig {
-                priority_fee_lamports: 1000,
-                max_tx_retries: 3,
-            },
             performance: PerformanceConfig{
                 num_cores: num_cpus::get(),
                 max_memory_mb: 16384
@@ -136,6 +128,8 @@ impl Default for TapeConfig {
                 rpc_url: "https://api.devnet.solana.com".to_string(),
                 ws_url: Some("wss://api.devnet.solana.com/".to_string()),
                 commitment: "confirmed".to_string(),
+                priority_fee_lamports: 1000,
+                max_tx_retries: 3,
             },
             storage: StorageConfig {
                 rocksdb_primary_path: "./db_tapestore".to_string(),
@@ -161,10 +155,6 @@ mod tests {
     #[test]
     fn test_toml_parsing_works_properly() {
         let toml_content = r#"
-[transaction]
-priority_fee_lamports = 2000
-max_tx_retries = 5
-
 [performance]
 num_cores = 4                    
 max_memory_mb = 16384            
@@ -176,6 +166,8 @@ keypair_path = "~/.config/solana/id.json"
 rpc_url = "https://api.mainnet-beta.solana.com"
 ws_url = "wss://api.mainnet-beta.solana.com/"
 commitment = "finalized"
+priority_fee_lamports = 2000
+max_tx_retries = 5
 
 [storage]
 rocksdb_primary_path = "./test_db"
@@ -193,12 +185,12 @@ log_path = "./test.log"
 
         let config: TapeConfig = toml::from_str(toml_content).unwrap();
         
-        assert_eq!(config.transaction.priority_fee_lamports, 2000);
-        assert_eq!(config.transaction.max_tx_retries, 5);
         assert_eq!(config.identity.keypair_path, "~/.config/solana/id.json");
         assert_eq!(config.solana.rpc_url, "https://api.mainnet-beta.solana.com");
         assert_eq!(config.solana.ws_url, Some("wss://api.mainnet-beta.solana.com/".to_string()));
         assert_eq!(config.solana.commitment, "finalized");
+        assert_eq!(config.solana.priority_fee_lamports, 2000);
+        assert_eq!(config.solana.max_tx_retries, 5);
         assert_eq!(config.storage.rocksdb_primary_path, "./test_db");
         assert_eq!(config.storage.rocksdb_secondary_path, Some("./test_db_secondary".to_string()));
         assert_eq!(config.storage.rocksdb_cache_size_mb, 1024);
