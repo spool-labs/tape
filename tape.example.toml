@@ -13,10 +13,6 @@ rocksdb_primary_path = "./db_tapestore"
 rocksdb_secondary_path = "./db_tapestore_secondary"
 rocksdb_cache_size_mb = 512
 
-[network]
-bind_address = "127.0.0.1:8080"
-metrics_endpoint = "127.0.0.1:9090"
-
 [logging]
 log_level = "info"
 log_path = "./logs/tape.log"
