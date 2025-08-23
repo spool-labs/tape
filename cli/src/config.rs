@@ -39,15 +39,24 @@ pub struct StorageConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NetworkConfig {
-    pub bind_address: String,
+    pub rpc_server_endpoint: String,
     pub metrics_endpoint: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LoggingConfig {
-    pub log_level: String,
+    pub log_level: LogLevel,
     pub log_path: Option<String>,
-    pub metrics_interval: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
 }
 
 impl TapeConfig {
@@ -72,13 +81,7 @@ impl TapeConfig {
         // commitment level
         match self.solana.commitment.as_str() {
             "processed" | "confirmed" | "finalized" => {},
-            _ => return Err(anyhow::anyhow!("Invalid commitment level: {}", self.solana.commitment)),
-        }
-
-        // log level
-        match self.logging.log_level.as_str() {
-            "error" | "warn" | "info" | "debug" | "trace" => {},
-            _ => return Err(anyhow::anyhow!("Invalid log level: {}", self.logging.log_level)),
+            _ => return Err(anyhow::anyhow!("invalid commitment level: {}", self.solana.commitment)),
         }
 
         // keypair path 
@@ -122,13 +125,12 @@ impl Default for TapeConfig {
                 rocksdb_cache_size_mb: 512,
             },
             network: NetworkConfig {
-                bind_address: "127.0.0.1:8080".to_string(),
+                rpc_server_endpoint: "127.0.0.1:8080".to_string(),
                 metrics_endpoint: "127.0.0.1:9090".to_string(),
             },
             logging: LoggingConfig {
-                log_level: "info".to_string(),
+                log_level: LogLevel::Info,
                 log_path: Some("./logs/tape.log".to_string()),
-                metrics_interval: 30,
             },
         }
     }
@@ -159,13 +161,12 @@ rocksdb_secondary_path = "./test_db_secondary"
 rocksdb_cache_size_mb = 1024
 
 [network]
-bind_address = "0.0.0.0:8081"
+rpc_server_endpoint = "0.0.0.0:8081"
 metrics_endpoint = "0.0.0.0:9091"
 
 [logging]
 log_level = "debug"
 log_path = "./test.log"
-metrics_interval = 60
 "#;
 
         let config: TapeConfig = toml::from_str(toml_content).unwrap();
@@ -179,10 +180,9 @@ metrics_interval = 60
         assert_eq!(config.storage.rocksdb_primary_path, "./test_db");
         assert_eq!(config.storage.rocksdb_secondary_path, Some("./test_db_secondary".to_string()));
         assert_eq!(config.storage.rocksdb_cache_size_mb, 1024);
-        assert_eq!(config.network.bind_address, "0.0.0.0:8081");
+        assert_eq!(config.network.rpc_server_endpoint, "0.0.0.0:8081");
         assert_eq!(config.network.metrics_endpoint, "0.0.0.0:9091");
-        assert_eq!(config.logging.log_level, "debug");
+        assert_eq!(config.logging.log_level, LogLevel::Debug);  
         assert_eq!(config.logging.log_path, Some("./test.log".to_string()));
-        assert_eq!(config.logging.metrics_interval, 60);
     }
 }
