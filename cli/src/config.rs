@@ -5,6 +5,7 @@ use std::path::Path;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
     pub transaction: TransactionConfig,
+    pub performance: PerformanceConfig,
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
@@ -16,6 +17,12 @@ pub struct TapeConfig {
 pub struct TransactionConfig {
     pub priority_fee_lamports: u64,
     pub max_tx_retries: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PerformanceConfig {
+    pub num_cores: usize,
+    pub max_memory_mb: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -61,10 +68,14 @@ pub enum LogLevel {
 
 impl TapeConfig {
     /// load configuration from ~/tape.toml file
+    // TOFIX: catches all error including validation error and treats them as "config not found",
+    // so do proper error handling for config validation and tape.toml creation
     pub fn load() -> anyhow::Result<Self> {
         let home_dir = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
         let config_path = home_dir.join("tape.toml");
+
+        // CHECK tape.toml exist or not else return file not found error
         Self::load_from_path(config_path)
     }
 
@@ -72,11 +83,13 @@ impl TapeConfig {
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let contents = fs::read_to_string(path)?;
         let config: TapeConfig = toml::from_str(&contents)?;
+        // ADD validation check
         config.validate()?;
         Ok(config)
     }
 
     /// validate values in tape.toml
+    /// check all the fields
     fn validate(&self) -> anyhow::Result<()> {
         // commitment level
         match self.solana.commitment.as_str() {
@@ -84,10 +97,11 @@ impl TapeConfig {
             _ => return Err(anyhow::anyhow!("invalid commitment level: {}", self.solana.commitment)),
         }
 
-        // keypair path 
-        if !Path::new(&self.identity.keypair_path).exists() {
-            return Err(anyhow::anyhow!("Keypair file not found: {}", self.identity.keypair_path));
-        }
+        // TODO: this is giving out some error thats why tape.toml is getting rewritten
+        //// keypair path 
+        //if !Path::new(&self.identity.keypair_path).exists() {
+        //    return Err(anyhow::anyhow!("Keypair file not found: {}", self.identity.keypair_path));
+        //}
 
         Ok(())
     }
@@ -110,6 +124,10 @@ impl Default for TapeConfig {
             transaction: TransactionConfig {
                 priority_fee_lamports: 1000,
                 max_tx_retries: 3,
+            },
+            performance: PerformanceConfig{
+                num_cores: num_cpus::get(),
+                max_memory_mb: 16384
             },
             identity: IdentityConfig {
                 keypair_path: "~/.config/solana/id.json".to_string(),
@@ -146,6 +164,10 @@ mod tests {
 [transaction]
 priority_fee_lamports = 2000
 max_tx_retries = 5
+
+[performance]
+num_cores = 4                    
+max_memory_mb = 16384            
 
 [identity]
 keypair_path = "~/.config/solana/id.json"

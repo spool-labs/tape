@@ -1,7 +1,3 @@
-[transaction]
-priority_fee_lamports = 1000
-max_tx_retries = 3
-
 [identity]
 keypair_path = "~/.config/solana/id.json"
 
@@ -9,6 +5,8 @@ keypair_path = "~/.config/solana/id.json"
 rpc_url = "https://api.devnet.solana.com"
 ws_url = "wss://api.devnet.solana.com/"
 commitment = "confirmed"
+priority_fee_lamports = 1000
+max_tx_retries = 3
 
 [storage]
 rocksdb_primary_path = "./db_tapestore"
