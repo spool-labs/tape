@@ -29,10 +29,11 @@ pub struct Cli {
     #[arg(
         short = 'u', 
         long = "cluster", 
+        default_value = "l", 
         global = true,
         help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
     )]
-    pub cluster: Option<Cluster>,
+    pub cluster: Cluster,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -237,11 +238,7 @@ pub struct Context {
 
 impl Context{
     pub fn try_build(cli:&Cli, config: &TapeConfig) -> Result<Self> {
-        let rpc_url = if let Some(cluster) = &cli.cluster {
-            cluster.rpc_url()
-        } else {
-            config.solana.rpc_url.to_string()
-        };
+        let rpc_url = config.solana.rpc_url.to_string();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
             CommitmentConfig::finalized())
