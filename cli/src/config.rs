@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use solana_sdk::commitment_config::CommitmentConfig;
+use crate::log::print_error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
@@ -99,6 +100,10 @@ impl TapeConfig {
 
     // TODO: load configuration from specified path
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(anyhow::anyhow!("Configuration file not found"));
+        }
         let contents = fs::read_to_string(path)?;
         let config: TapeConfig = toml::from_str(&contents)?;
         // ADD validation check
@@ -113,9 +118,10 @@ impl TapeConfig {
 
         // TODO: this is giving out some error thats why tape.toml is getting rewritten
         //// keypair path 
-        //if !Path::new(&self.identity.keypair_path).exists() {
-        //    return Err(anyhow::anyhow!("Keypair file not found: {}", self.identity.keypair_path));
-        //}
+        if !Path::new(&self.identity.keypair_path).exists() {
+            print_error("Keypair not found, please check you tape.toml/keypair path");
+            std::process::exit(1);
+        }
 
         Ok(())
     }
