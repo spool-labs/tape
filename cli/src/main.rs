@@ -40,6 +40,7 @@ async fn run_tape_cli() -> Result<()> {
 
     let cli = Cli::parse();
   
+    // TOFIX: catches all error including validation error and treats them as "config not found"
     let config = TapeConfig::load().unwrap_or_else(|_| {
         log::print_info("tape.toml not found, creating default configuration");
         TapeConfig::create_default().expect("Failed to create default config")
