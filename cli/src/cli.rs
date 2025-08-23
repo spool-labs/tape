@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
@@ -239,9 +238,10 @@ pub struct Context {
 impl Context{
     pub fn try_build(cli:&Cli, config: &TapeConfig) -> Result<Self> {
         let rpc_url = config.solana.rpc_url.to_string();
+        let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            commitment_level)
         );
         let keypair_path = get_keypair_path(cli.keypair_path.clone());
         let payer = get_payer(keypair_path.clone())?;
