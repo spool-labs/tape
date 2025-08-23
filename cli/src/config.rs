@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use solana_sdk::commitment_config::CommitmentConfig;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
@@ -27,7 +28,7 @@ pub struct IdentityConfig {
 pub struct SolanaConfig {
     pub rpc_url: String,
     pub ws_url: Option<String>,
-    pub commitment: String,
+    pub commitment: CommitmentLevel,
     pub priority_fee_lamports: u64,
     pub max_tx_retries: u32,
 }
@@ -55,6 +56,34 @@ pub enum LogLevel {
     Trace,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitmentLevel {
+    Processed,
+    Confirmed, 
+    Finalized,
+}
+
+impl ToString for CommitmentLevel {
+    fn to_string(&self) -> String {
+        match self {
+            CommitmentLevel::Processed => "processed".to_string(),
+            CommitmentLevel::Confirmed => "confirmed".to_string(),
+            CommitmentLevel::Finalized => "finalized".to_string(),
+        }
+    }
+}
+
+impl CommitmentLevel {
+    pub fn to_commitment_config(&self) -> CommitmentConfig {
+        match self {
+            CommitmentLevel::Processed => CommitmentConfig::processed(),
+            CommitmentLevel::Confirmed => CommitmentConfig::confirmed(),
+            CommitmentLevel::Finalized => CommitmentConfig::finalized(),
+        }
+    }
+}
+
 impl TapeConfig {
     /// load configuration from ~/tape.toml file
     // TOFIX: catches all error including validation error and treats them as "config not found",
@@ -80,11 +109,7 @@ impl TapeConfig {
     /// validate values in tape.toml
     /// check all the fields
     fn validate(&self) -> anyhow::Result<()> {
-        // commitment level
-        match self.solana.commitment.as_str() {
-            "processed" | "confirmed" | "finalized" => {},
-            _ => return Err(anyhow::anyhow!("invalid commitment level: {}", self.solana.commitment)),
-        }
+        // TODO: add url validation 
 
         // TODO: this is giving out some error thats why tape.toml is getting rewritten
         //// keypair path 
@@ -120,7 +145,7 @@ impl Default for TapeConfig {
             solana: SolanaConfig {
                 rpc_url: "https://api.devnet.solana.com".to_string(),
                 ws_url: Some("wss://api.devnet.solana.com/".to_string()),
-                commitment: "confirmed".to_string(),
+                commitment: CommitmentLevel::Confirmed,
                 priority_fee_lamports: 1000,
                 max_tx_retries: 3,
             },
