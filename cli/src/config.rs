@@ -8,7 +8,6 @@ pub struct TapeConfig {
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
-    pub network: NetworkConfig,
     pub logging: LoggingConfig,
 }
 
@@ -38,12 +37,6 @@ pub struct StorageConfig {
     pub rocksdb_primary_path: String,
     pub rocksdb_secondary_path: Option<String>,
     pub rocksdb_cache_size_mb: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NetworkConfig {
-    pub rpc_server_endpoint: String,
-    pub metrics_endpoint: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -136,10 +129,6 @@ impl Default for TapeConfig {
                 rocksdb_secondary_path: Some("./db_tapestore_secondary".to_string()),
                 rocksdb_cache_size_mb: 512,
             },
-            network: NetworkConfig {
-                rpc_server_endpoint: "127.0.0.1:8080".to_string(),
-                metrics_endpoint: "127.0.0.1:9090".to_string(),
-            },
             logging: LoggingConfig {
                 log_level: LogLevel::Info,
                 log_path: Some("./logs/tape.log".to_string()),
@@ -174,10 +163,6 @@ rocksdb_primary_path = "./test_db"
 rocksdb_secondary_path = "./test_db_secondary"
 rocksdb_cache_size_mb = 1024
 
-[network]
-rpc_server_endpoint = "0.0.0.0:8081"
-metrics_endpoint = "0.0.0.0:9091"
-
 [logging]
 log_level = "debug"
 log_path = "./test.log"
@@ -194,8 +179,6 @@ log_path = "./test.log"
         assert_eq!(config.storage.rocksdb_primary_path, "./test_db");
         assert_eq!(config.storage.rocksdb_secondary_path, Some("./test_db_secondary".to_string()));
         assert_eq!(config.storage.rocksdb_cache_size_mb, 1024);
-        assert_eq!(config.network.rpc_server_endpoint, "0.0.0.0:8081");
-        assert_eq!(config.network.metrics_endpoint, "0.0.0.0:9091");
         assert_eq!(config.logging.log_level, LogLevel::Debug);  
         assert_eq!(config.logging.log_path, Some("./test.log".to_string()));
     }
