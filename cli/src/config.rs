@@ -116,27 +116,13 @@ impl TapeConfig {
     fn validate(&self) -> anyhow::Result<()> {
         // TODO: add url validation 
 
-        let keypair_path = self.expand_tilde_path(&self.identity.keypair_path)?;
+        let keypair_path = &*shellexpand::tilde(&self.identity.keypair_path);
         if !Path::new(&keypair_path).exists() {
             print_error("Keypair not found, please check you tape.toml/keypair path");
             std::process::exit(1);
         }
 
         Ok(())
-    }
-
-    // helper function to handle path starts with ~ (tilde)
-    fn expand_tilde_path(&self, path: &str) -> anyhow::Result<PathBuf> {
-        if path.starts_with("~/") {
-            let home_dir = dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-            Ok(home_dir.join(&path[2..]))  
-        } else if path == "~" {
-            dirs::home_dir()
-                .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))
-        } else {
-            Ok(PathBuf::from(path))
-        }
     }
 
     /// create default configuration and save to file
