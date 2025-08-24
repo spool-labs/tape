@@ -25,15 +25,6 @@ pub struct Cli {
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
 
-    #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
-        global = true,
-        help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
-    )]
-    pub cluster: Cluster,
-
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
 }
@@ -236,14 +227,14 @@ pub struct Context {
 }
 
 impl Context{
-    pub fn try_build(cli:&Cli, config: &TapeConfig) -> Result<Self> {
+    pub fn try_build(_cli:&Cli, config: &TapeConfig) -> Result<Self> {
         let rpc_url = config.solana.rpc_url.to_string();
         let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
             commitment_level)
         );
-        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+        let keypair_path = get_keypair_path(Some(PathBuf::from(&*shellexpand::tilde(&config.identity.keypair_path))));
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
