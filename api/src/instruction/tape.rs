@@ -79,7 +79,6 @@ pub fn build_create_ix(
             AccountMeta::new(writer_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
-            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: Create {
             name,
