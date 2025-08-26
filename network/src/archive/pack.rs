@@ -1,10 +1,9 @@
-use log::info;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use solana_sdk::pubkey::Pubkey;
 use brine_tree::{Leaf, Hash};
 use tape_api::prelude::*;
-use tape_client::{get_epoch_account, get_tape_account};
+use tape_client::get_epoch_account;
 use solana_client::nonblocking::rpc_client::RpcClient;
 
 use crate::store::*;
@@ -58,12 +57,11 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
 /// Updates the Merkle subtree for a given sector number.
 pub async fn update_sector_root(
     store: &Arc<TapeStore>,
-    rpc: &Arc<RpcClient>,
     tape_address: &Pubkey,
     sector_number: u64,
 ) -> Result<()> {
 
-    let empty_hashes = get_or_create_empty_hashes(store, rpc, tape_address).await?;
+    let empty_hashes = get_or_create_empty_hashes(store, tape_address).await?;
     let empty_leaf = empty_hashes.first().unwrap().as_leaf();
 
     let leaves = compute_sector_leaves(store, tape_address, sector_number, empty_leaf)?;
@@ -153,7 +151,6 @@ pub fn update_layer(
 /// are calculated from the tape's merkle seed
 pub async fn get_or_create_empty_hashes(
     store: &Arc<TapeStore>,
-    rpc: &Arc<RpcClient>,
     tape_address: &Pubkey,
 ) -> Result<Vec<Hash>> {
     const H: usize = SEGMENT_TREE_HEIGHT;
@@ -161,16 +158,8 @@ pub async fn get_or_create_empty_hashes(
     let empty_values = match store.get_zero_values(tape_address) {
         Ok(empty_values) => empty_values,
         Err(_) => {
-            info!("Updating zeros tape {}", tape_address);
-            let tape = get_tape_account(rpc, tape_address).await?.0;
-
-            // Just in case we don't have the tape number mapped, store it now
-            if tape.number != 0 {
-                store.put_tape_address(tape.number, tape_address)?;
-            }
-
             // Create an empty SegmentTree to get the zero values
-            let tree = SegmentTree::new(&[&tape.merkle_seed]);
+            let tree = SegmentTree::new(&[&tape_address.as_ref()]);
             let empty_values = tree.zero_values;
             let seeds_bytes = empty_values
                 .into_iter()

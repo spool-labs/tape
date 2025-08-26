@@ -175,7 +175,7 @@ async fn try_mine_iteration(
 
         debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
 
-        let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+        let merkle_tree = SegmentTree::new(&[tape_address.as_ref()]);
         let proof_nodes: Vec<[u8; 32]> = merkle_tree
             .get_proof(&leaves, segment_number as usize)
             .into_iter()

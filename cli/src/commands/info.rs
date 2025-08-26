@@ -65,7 +65,6 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
                 log::print_message(&format!("Name: {}", from_name(&tape.name)));
                 log::print_message(&format!("Address: {tape_address}"));
                 log::print_message(&format!("Authority: {}", tape.authority));
-                log::print_message(&format!("Merkle Seed: {:?}", tape.merkle_seed));
                 log::print_message(&format!("Merkle Root: {:?}", tape.merkle_root));
                 log::print_message(&format!("First Slot: {}", tape.first_slot));
                 log::print_message(&format!("Tail Slot: {}", tape.tail_slot));
