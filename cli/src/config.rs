@@ -124,14 +124,39 @@ impl TapeConfig {
         Ok(config)
     }
 
-    /// validate values in tape.toml
-    /// check all the fields
     fn validate(&self) -> anyhow::Result<()> {
-        // TODO: add url validation 
+        // solana rpc and websocket url
+        self.validate_url(&self.solana.rpc_url, "Solana RPC URL", &["http://", "https://"])?;
+        if let Some(ref ws_url) = self.solana.ws_url {
+            self.validate_url(ws_url, "Solana WebSocket URL", &["ws://", "wss://"])?;
+        }
 
+        // keypair
         let keypair_path = &*shellexpand::tilde(&self.identity.keypair_path);
         if !Path::new(&keypair_path).exists() {
             print_error("Keypair not found, please check you tape.toml/keypair path");
+            std::process::exit(1);
+        }
+
+        Ok(())
+    }
+
+    fn validate_url(&self, url: &str, field_name: &str, valid_schemes: &[&str]) -> anyhow::Result<()> {
+        let has_valid_scheme = valid_schemes.iter().any(|scheme| url.starts_with(scheme));
+        
+        if !has_valid_scheme {
+            print_error(&format!("{} must start with one of {:?}. Found: '{}'", 
+                field_name, valid_schemes, url));
+            std::process::exit(1);
+        }
+
+        if url.contains(' ') {
+            print_error(&format!("{} cannot contain spaces. Found: '{}'", field_name, url));
+            std::process::exit(1);
+        }
+
+        if url.trim().is_empty() {
+            print_error(&format!("{} cannot be empty", field_name));
             std::process::exit(1);
         }
 
