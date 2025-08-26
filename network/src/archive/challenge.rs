@@ -10,6 +10,7 @@ use tape_client::{
 use crate::store::*;
 use super::queue::Tx;
 use super::sync::sync_segments_from_solana;
+use super::helpers;
 
 /// Orchestrator Task B – periodic miner-challenge sync.
 pub async fn run(
@@ -42,15 +43,10 @@ pub async fn run(
         if let Ok(tape_address) = store.get_tape_address(tape_number) {
             let tape = get_tape_account(&rpc, &tape_address).await?.0;
 
-            // Check and sync segments
-            let segment_count = store.get_segment_count(&tape_address).unwrap_or(0);
-
-            if segment_count != tape.total_segments {
+            if helpers::sync_needed(&store, &tape_address, tape.total_segments)? {
                 log::debug!(
-                    "Syncing segments for tape {} ({} of {})",
-                    tape_address,
-                    segment_count,
-                    tape.total_segments
+                    "Syncing segments for tape: {}",
+                    tape_address
                 );
 
                 //if let Some(peer_url) = &trusted_peer {
@@ -63,8 +59,8 @@ pub async fn run(
                 // yet. Need to implement a way to fetch entire sectors from a trusted peer.
 
                 sync_segments_from_solana(&store, &rpc, &tape_address, &tx).await?;
-
             }
+
         } else {
             log::error!("Tape address not found for tape number {}", tape_number);
         }
