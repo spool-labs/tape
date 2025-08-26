@@ -34,11 +34,24 @@ pub struct SolanaConfig {
     pub max_tx_retries: u32,
 }
 
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StorageConfig {
-    pub rocksdb_primary_path: String,
-    pub rocksdb_secondary_path: Option<String>,
-    pub rocksdb_cache_size_mb: u64,
+    pub backend: StorageBackend,
+    pub rocksdb: Option<RocksDbConfig>, 
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RocksDbConfig {
+    pub primary_path: String,
+    pub secondary_path: Option<String>,
+    pub cache_size_mb: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum StorageBackend {
+    RocksDb,
+    PostgreSQL
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -155,9 +168,12 @@ impl Default for TapeConfig {
                 max_tx_retries: 3,
             },
             storage: StorageConfig {
-                rocksdb_primary_path: "./db_tapestore".to_string(),
-                rocksdb_secondary_path: Some("./db_tapestore_secondary".to_string()),
-                rocksdb_cache_size_mb: 512,
+                backend: StorageBackend::RocksDb,
+                rocksdb: Some(RocksDbConfig{
+                primary_path: "./db_tapestore".to_string(),
+                secondary_path: Some("./db_tapestore_secondary".to_string()),
+                cache_size_mb: 512,
+                })
             },
             logging: LoggingConfig {
                 log_level: LogLevel::Info,
@@ -189,9 +205,12 @@ priority_fee_lamports = 2000
 max_tx_retries = 5
 
 [storage]
-rocksdb_primary_path = "./test_db"
-rocksdb_secondary_path = "./test_db_secondary"
-rocksdb_cache_size_mb = 1024
+backend = "rocksdb"
+
+[storage.rocksdb]
+primary_path = "./data/primary"
+secondary_path = "./data/secondary"
+cache_size_mb = 512
 
 [logging]
 log_level = "debug"
@@ -203,12 +222,17 @@ log_path = "./test.log"
         assert_eq!(config.identity.keypair_path, "~/.config/solana/id.json");
         assert_eq!(config.solana.rpc_url, "https://api.mainnet-beta.solana.com");
         assert_eq!(config.solana.ws_url, Some("wss://api.mainnet-beta.solana.com/".to_string()));
-        assert_eq!(config.solana.commitment, "finalized");
+        assert_eq!(config.solana.commitment, CommitmentLevel::Finalized);
         assert_eq!(config.solana.priority_fee_lamports, 2000);
         assert_eq!(config.solana.max_tx_retries, 5);
-        assert_eq!(config.storage.rocksdb_primary_path, "./test_db");
-        assert_eq!(config.storage.rocksdb_secondary_path, Some("./test_db_secondary".to_string()));
-        assert_eq!(config.storage.rocksdb_cache_size_mb, 1024);
+
+        assert_eq!(config.storage.backend, StorageBackend::RocksDb);  
+        let rocksdb_config = config.storage.rocksdb.as_ref().unwrap();
+        assert_eq!(rocksdb_config.primary_path, "./data/primary");
+        assert_eq!(rocksdb_config.secondary_path, Some("./data/secondary".to_string()));
+        assert_eq!(rocksdb_config.cache_size_mb, 512);
+
+
         assert_eq!(config.logging.log_level, LogLevel::Debug);  
         assert_eq!(config.logging.log_path, Some("./test.log".to_string()));
     }
