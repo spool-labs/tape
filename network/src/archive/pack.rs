@@ -210,11 +210,16 @@ mod tests {
         Ok((store, temp_dir))
     }
 
-    fn create_segment_data(marker: u8) -> Vec<u8> {
-        let data = vec![marker; SEGMENT_SIZE];
-        // Packx is really slow in tests, using this to create fake packed data
-        let mock_packed_seg = padded_array::<PACKED_SEGMENT_SIZE>(&data);
-        mock_packed_seg.to_vec()
+    fn create_segment_data(marker: u8, miner: &Pubkey) -> Vec<u8> {
+        let data = &[marker; SEGMENT_SIZE];
+        let canonical_segment = padded_array::<SEGMENT_SIZE>(data);
+        let solution = packx::solve(
+            &miner.to_bytes(), 
+            &canonical_segment,
+            0
+            ).expect("Failed to pack segment");
+
+        solution.to_bytes().to_vec()
     }
 
     fn create_empty_hashes(seed: &[u8]) -> Vec<Hash> {
@@ -227,6 +232,7 @@ mod tests {
         // Setup store and tape address
         let (store, _temp_dir) = setup_store()?;
         let tape_address = Pubkey::new_unique();
+        let miner_address = Pubkey::new_unique();
 
         // Create empty hashes and store them
         let seed = b"test_seed";
@@ -242,7 +248,7 @@ mod tests {
 
         for i in 0..leaf_count {
             let segment_id = i as u64;
-            let segment_data = create_segment_data(1);
+            let segment_data = create_segment_data(1, &miner_address);
             let leaf = Leaf::new(&[
                 &segment_id.to_le_bytes(),
                 &segment_data
@@ -270,7 +276,7 @@ mod tests {
         // Add a new leaf and test subtree update
         let segment_number = leaves.len() as u64;
         let sector_number = segment_number / SECTOR_LEAVES as u64;
-        let segment_data = create_segment_data(42);
+        let segment_data = create_segment_data(42, &miner_address);
         let new_leaf = Leaf::new(&[
             &segment_number.to_le_bytes(),
             &segment_data

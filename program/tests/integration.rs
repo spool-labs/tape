@@ -1,6 +1,7 @@
 #![cfg(test)]
 pub mod utils;
 use utils::*;
+use steel::Discriminator;
 
 use steel::Zeroable;
 use solana_sdk::{
@@ -80,6 +81,9 @@ fn run_integration() {
     verify_mint_account(&svm);
     verify_metadata_account(&svm);
     verify_treasury_ata(&svm);
+
+    // Override difficulty (packx is too slow for debug mode)
+    override_epoch_difficulty(&mut svm, 0);
 
     // Mine the genesis tape (to earn some tokens)
     do_mining_run(&mut svm, &payer, &stored_spool, 5);
@@ -346,6 +350,26 @@ fn initialize_program(svm: &mut LiteSVM, payer: &Keypair) {
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+}
+
+fn override_epoch_difficulty(svm: &mut LiteSVM, difficulty: u64) {
+    let (epoch_address, _epoch_bump) = epoch_pda();
+    let mut account = svm
+        .get_account(&epoch_address)
+        .expect("Epoch account should exist");
+    let mut epoch = Epoch::unpack(&account.data)
+        .expect("Failed to unpack Epoch account")
+        .clone();
+
+    epoch.packing_difficulty = difficulty;
+
+    let mut discriminator = [0u8; 8];
+    discriminator[0] = Epoch::discriminator();
+    let data = [&discriminator, epoch.to_bytes()].concat();
+    account.data = data.to_vec();
+
+    svm.set_account(epoch_address, account)
+        .expect("failed to override difficulty")
 }
 
 fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
