@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use solana_sdk::commitment_config::CommitmentConfig;
-use crate::log::print_error;
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
@@ -101,78 +101,84 @@ impl CommitmentLevel {
 }
 
 impl TapeConfig {
+
     /// load configuration from ~/tape.toml file
-    // TOFIX: catches all error including validation error and treats them as "config not found",
-    // so do proper error handling for config validation and tape.toml creation
-    pub fn load() -> anyhow::Result<Self> {
+    pub fn load() -> Result<Self, TapeConfigError> {
         let home_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+            .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
         let config_path = home_dir.join("tape.toml");
 
-        // CHECK tape.toml exist or not else return file not found error
         Self::load_from_path(config_path)
     }
 
     // TODO: load configuration from specified path
-    pub fn load_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self, TapeConfigError> {
         let path = path.as_ref();
         if !path.exists() {
-            return Err(anyhow::anyhow!("tape.toml config file not found"));
+            return Err(TapeConfigError::ConfigFileNotFound);
         }
-        let contents = fs::read_to_string(path)?;
-        let config: TapeConfig = toml::from_str(&contents)?;
-        // ADD validation check
+        
+        let contents = fs::read_to_string(path)
+            .map_err(TapeConfigError::FileReadError)?;
+        let config: TapeConfig = toml::from_str(&contents)
+            .map_err(TapeConfigError::ParseError)?;
         config.validate()?;
         Ok(config)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
-        // solana rpc and websocket url
+    fn validate(&self) -> Result<(), TapeConfigError> {
+        // solana rpc and websocket url validation
         self.validate_url(&self.solana.rpc_url, "Solana RPC URL", &["http://", "https://"])?;
         if let Some(ref ws_url) = self.solana.ws_url {
             self.validate_url(ws_url, "Solana WebSocket URL", &["ws://", "wss://"])?;
         }
 
-        // keypair
+        // keypair validation
         let keypair_path = &*shellexpand::tilde(&self.identity.keypair_path);
         if !Path::new(&keypair_path).exists() {
-            print_error("Keypair not found, please check you tape.toml/keypair path");
-            std::process::exit(1);
+            return Err(TapeConfigError::KeypairNotFound(keypair_path.to_string()));
         }
 
         Ok(())
     }
 
-    fn validate_url(&self, url: &str, field_name: &str, valid_schemes: &[&str]) -> anyhow::Result<()> {
+    fn validate_url(&self, url: &str, field_name: &str, valid_schemes: &[&str]) -> Result<(), TapeConfigError> {
         let has_valid_scheme = valid_schemes.iter().any(|scheme| url.starts_with(scheme));
         
         if !has_valid_scheme {
-            print_error(&format!("{} must start with one of {:?}. Found: '{}'", 
-                field_name, valid_schemes, url));
-            std::process::exit(1);
+            return Err(TapeConfigError::InvalidUrl(
+                format!("{} must start with one of {:?}, found: '{}'", field_name, valid_schemes, url)
+            ));
         }
 
         if url.contains(' ') {
-            print_error(&format!("{} cannot contain spaces. Found: '{}'", field_name, url));
-            std::process::exit(1);
+            return Err(TapeConfigError::InvalidUrl(
+                format!("{} cannot contain spaces, found: '{}'", field_name, url)
+            ));
         }
 
         if url.trim().is_empty() {
-            print_error(&format!("{} cannot be empty", field_name));
-            std::process::exit(1);
+            return Err(TapeConfigError::InvalidUrl(
+                format!("{} cannot be empty", field_name)
+            ));
         }
 
         Ok(())
     }
 
     /// create default configuration and save to file
-    pub fn create_default() -> anyhow::Result<Self> {
+    pub fn create_default() -> Result<Self, TapeConfigError> {
         let config = Self::default();
-        let toml_string = toml::to_string_pretty(&config)?;
+        let toml_string = toml::to_string_pretty(&config)
+            .map_err(|e| TapeConfigError::DefaultConfigCreationFailed(format!("Serialization failed: {}", e)))?;
+            
         let home_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+            .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
         let config_path = home_dir.join("tape.toml");
-        fs::write(config_path, toml_string)?;
+        
+        fs::write(config_path, toml_string)
+            .map_err(|e| TapeConfigError::DefaultConfigCreationFailed(format!("Write failed: {}", e)))?;
+            
         Ok(config)
     }
 }
@@ -269,3 +275,30 @@ log_path = "./test.log"
         assert_eq!(config.logging.log_path, Some("./test.log".to_string()));
     }
 }
+
+#[derive(Debug)]
+pub enum TapeConfigError {
+    ConfigFileNotFound,
+    InvalidUrl(String), 
+    KeypairNotFound(String), 
+    HomeDirectoryNotFound,
+    FileReadError(std::io::Error),
+    ParseError(toml::de::Error),
+    DefaultConfigCreationFailed(String),
+}
+
+impl fmt::Display for TapeConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TapeConfigError::ConfigFileNotFound => write!(f, "Configuration file not found"),
+            TapeConfigError::InvalidUrl(msg) => write!(f, "Invalid URL configuration: {}", msg),
+            TapeConfigError::KeypairNotFound(path) => write!(f, "Keypair not found at path: {}", path),
+            TapeConfigError::HomeDirectoryNotFound => write!(f, "Home directory not found"),
+            TapeConfigError::FileReadError(e) => write!(f, "Failed to read config file: {}", e),
+            TapeConfigError::ParseError(e) => write!(f, "Failed to parse config file: {}", e),
+            TapeConfigError::DefaultConfigCreationFailed(msg) => write!(f, "Failed to create default config: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for TapeConfigError {}
