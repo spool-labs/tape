@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use solana_sdk::commitment_config::CommitmentConfig;
 use std::fmt;
 
@@ -102,20 +102,27 @@ impl CommitmentLevel {
 
 impl TapeConfig {
 
-    /// load configuration from ~/tape.toml file
-    pub fn load() -> Result<Self, TapeConfigError> {
-        let home_dir = dirs::home_dir()
-            .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
-        let config_path = home_dir.join("tape.devnet.toml");
-
-        Self::load_from_path(config_path)
+   pub fn load_with_path(config_path: &Option<PathBuf>) -> Result<Self, TapeConfigError> {
+        match config_path {
+            Some(path) => {
+                let expanded_path = expand_path(path);
+                if !expanded_path.exists() {
+                    return Err(TapeConfigError::CustomConfigFileNotFound(
+                        expanded_path.display().to_string()
+                    ));
+                }
+                Self::load_from_path(expanded_path)
+            },
+            None => {
+                let default_path = get_default_config_path()?;
+                Self::load_from_path(default_path)
+            }
+        }
     }
 
-    // TODO: load configuration from specified path
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self, TapeConfigError> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
-        let expanded = shellexpand::tilde(&path_str);
-        let path = Path::new(expanded.as_ref());
+        let path = path.as_ref();
+        
         if !path.exists() {
             return Err(TapeConfigError::ConfigFileNotFound);
         }
@@ -184,6 +191,18 @@ impl TapeConfig {
         Ok(config)
     }
 }
+
+pub fn get_default_config_path() -> Result<PathBuf, TapeConfigError> {
+    let home_dir = dirs::home_dir()
+        .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
+    Ok(home_dir.join("tape.devnet.toml"))
+}
+
+    pub fn expand_path<P: AsRef<Path>>(path: P) -> PathBuf {
+        let path_str = path.as_ref().to_string_lossy();
+        let expanded = shellexpand::tilde(&path_str);
+        PathBuf::from(expanded.as_ref())
+    }
 
 impl Default for TapeConfig {
     fn default() -> Self {
@@ -281,6 +300,7 @@ log_path = "./test.log"
 #[derive(Debug)]
 pub enum TapeConfigError {
     ConfigFileNotFound,
+    CustomConfigFileNotFound(String),
     InvalidUrl(String), 
     KeypairNotFound(String), 
     HomeDirectoryNotFound,
@@ -293,6 +313,7 @@ impl fmt::Display for TapeConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TapeConfigError::ConfigFileNotFound => write!(f, "Configuration file not found"),
+            TapeConfigError::CustomConfigFileNotFound(path) => write!(f, "Configuration file not found at path: {}", path),
             TapeConfigError::InvalidUrl(msg) => write!(f, "Invalid URL configuration: {}", msg),
             TapeConfigError::KeypairNotFound(path) => write!(f, "Keypair not found at path: {}", path),
             TapeConfigError::HomeDirectoryNotFound => write!(f, "Home directory not found"),

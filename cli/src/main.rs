@@ -40,13 +40,7 @@ async fn run_tape_cli() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let config = match if let Some(ref path) = cli.config_path {
-        let lossy = path.to_string_lossy().to_string();
-        let expanded = shellexpand::tilde(&lossy);
-        TapeConfig::load_from_path(expanded.to_string())
-    } else {
-        TapeConfig::load()
-    } {
+    let config = match TapeConfig::load_with_path(&cli.config_path) {
         Ok(config) => config,
         Err(e) => match e {
             TapeConfigError::ConfigFileNotFound => {
@@ -62,6 +56,13 @@ async fn run_tape_cli() -> Result<()> {
                     }
                 }
             },
+
+            TapeConfigError::CustomConfigFileNotFound(path) => {
+            // This happens when user explicitly provided a path that doesn't exist
+            log::print_error(&format!("Custom config file not found: {}", path));
+            log::print_info("Please check the path and try again.");
+            std::process::exit(1);
+        },
             
             TapeConfigError::InvalidUrl(msg) => {
                 log::print_error(&format!("URL Configuration Error: {}", msg));
