@@ -6,7 +6,7 @@ use crate::log::print_error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
-    pub performance: PerformanceConfig,
+    pub mining_config: MiningConfig,
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
@@ -15,9 +15,11 @@ pub struct TapeConfig {
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PerformanceConfig {
+pub struct MiningConfig {
     pub num_cores: usize,
     pub max_memory_mb: u64,
+    pub max_poa_threads: u64,
+    pub max_pow_threads: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -31,7 +33,7 @@ pub struct SolanaConfig {
     pub ws_url: Option<String>,
     pub commitment: CommitmentLevel,
     pub priority_fee_lamports: u64,
-    pub max_tx_retries: u32,
+    pub max_transaction_retries: u32,
 }
 
 
@@ -51,7 +53,7 @@ pub struct RocksDbConfig {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum StorageBackend {
     RocksDb,
-    PostgreSQL
+    Postgres
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -115,7 +117,7 @@ impl TapeConfig {
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
-            return Err(anyhow::anyhow!("Configuration file not found"));
+            return Err(anyhow::anyhow!("tape.toml config file not found"));
         }
         let contents = fs::read_to_string(path)?;
         let config: TapeConfig = toml::from_str(&contents)?;
@@ -178,9 +180,11 @@ impl TapeConfig {
 impl Default for TapeConfig {
     fn default() -> Self {
         Self {
-            performance: PerformanceConfig{
+            mining_config: MiningConfig{
                 num_cores: num_cpus::get(),
-                max_memory_mb: 16384
+                max_memory_mb: 16384,
+                max_poa_threads: 4,
+                max_pow_threads: 4
             },
             identity: IdentityConfig {
                 keypair_path: "~/.config/solana/id.json".to_string(),
@@ -190,7 +194,7 @@ impl Default for TapeConfig {
                 ws_url: Some("wss://api.devnet.solana.com/".to_string()),
                 commitment: CommitmentLevel::Confirmed,
                 priority_fee_lamports: 1000,
-                max_tx_retries: 3,
+                max_transaction_retries: 3,
             },
             storage: StorageConfig {
                 backend: StorageBackend::RocksDb,
@@ -215,9 +219,11 @@ mod tests {
     #[test]
     fn test_toml_parsing_works_properly() {
         let toml_content = r#"
-[performance]
+[mining_config]
 num_cores = 4                    
 max_memory_mb = 16384            
+max_poa_threads = 4
+max_pow_threads = 4
 
 [identity]
 keypair_path = "~/.config/solana/id.json"
@@ -227,7 +233,7 @@ rpc_url = "https://api.mainnet-beta.solana.com"
 ws_url = "wss://api.mainnet-beta.solana.com/"
 commitment = "finalized"
 priority_fee_lamports = 2000
-max_tx_retries = 5
+max_transaction_retries = 5
 
 [storage]
 backend = "rocksdb"
@@ -243,13 +249,14 @@ log_path = "./test.log"
 "#;
 
         let config: TapeConfig = toml::from_str(toml_content).unwrap();
+
         
         assert_eq!(config.identity.keypair_path, "~/.config/solana/id.json");
         assert_eq!(config.solana.rpc_url, "https://api.mainnet-beta.solana.com");
         assert_eq!(config.solana.ws_url, Some("wss://api.mainnet-beta.solana.com/".to_string()));
         assert_eq!(config.solana.commitment, CommitmentLevel::Finalized);
         assert_eq!(config.solana.priority_fee_lamports, 2000);
-        assert_eq!(config.solana.max_tx_retries, 5);
+        assert_eq!(config.solana.max_transaction_retries, 5);
 
         assert_eq!(config.storage.backend, StorageBackend::RocksDb);  
         let rocksdb_config = config.storage.rocksdb.as_ref().unwrap();
