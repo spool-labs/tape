@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use solana_sdk::commitment_config::CommitmentConfig;
 use std::fmt;
 
@@ -113,7 +113,9 @@ impl TapeConfig {
 
     // TODO: load configuration from specified path
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self, TapeConfigError> {
-        let path = path.as_ref();
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let expanded = shellexpand::tilde(&path_str);
+        let path = Path::new(expanded.as_ref());
         if !path.exists() {
             return Err(TapeConfigError::ConfigFileNotFound);
         }

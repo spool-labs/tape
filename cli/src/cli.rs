@@ -22,6 +22,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
+    #[arg(short = 'c', long = "config", help = "Path to config file (overrides default)", global = true)]
+    pub config_path: Option<PathBuf>,
+
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
 
