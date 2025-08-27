@@ -1,15 +1,13 @@
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use solana_sdk::pubkey::Pubkey;
-use brine_tree::{Leaf, Hash};
+use brine_tree::{Leaf, Hash, MerkleTree};
 use tape_api::prelude::*;
 use tape_client::get_epoch_account;
 use solana_client::nonblocking::rpc_client::RpcClient;
 
 use crate::store::*;
 use super::queue::Rx;
-
-const LAYER_NUMBER: u8 = 10;
 
 /// Orchestrator Task C – CPU-heavy preprocessing (packx)
 pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<TapeStore>) -> Result<()> {
@@ -39,6 +37,8 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
     Ok(())
 }
 
+/// Packs a segment using the packx algorithm.
+/// Can be quite CPU intensive if the difficulty is high.
 pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: u64) -> Result<Vec<u8>> {
     let miner_address: [u8; 32] = miner_address.to_bytes();
     let canonical_segment = padded_array::<SEGMENT_SIZE>(segment);
@@ -54,22 +54,72 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
     Ok(segment_bytes.to_vec())
 }
 
+/// Computes the Merkle root for the entire tape by using a cached canopy of sector roots.
+pub fn get_tape_root(
+    store: &Arc<TapeStore>,
+    tape_address: &Pubkey,
+) -> Result<Hash> {
+    // canopy height = number of levels above the sector layer up to the root
+    const CANOPY_HEIGHT: usize = SEGMENT_TREE_HEIGHT - SECTOR_TREE_HEIGHT;
+
+    // All zero values for the full-height segment tree
+    let zeros_full = get_or_create_empty_hashes(store, tape_address)?;
+    if zeros_full.len() != SEGMENT_TREE_HEIGHT {
+        return Err(anyhow!(
+            "Invalid zero_values len: expected {}, got {}",
+            SEGMENT_TREE_HEIGHT,
+            zeros_full.len()
+        ));
+    }
+
+    // Zero values for the canopy tree (start at the sector layer)
+    let canopy_zeros: [Hash; CANOPY_HEIGHT] = zeros_full
+        [SECTOR_TREE_HEIGHT .. SEGMENT_TREE_HEIGHT]
+        .try_into()
+        .map_err(|_| anyhow!(
+            "Invalid canopy zeros slice: expected {}, got {}",
+            CANOPY_HEIGHT,
+            zeros_full.len().saturating_sub(SECTOR_TREE_HEIGHT)
+        ))?;
+
+    // Build canopy over sector roots
+    type CanopyTree = MerkleTree<{ SEGMENT_TREE_HEIGHT - SECTOR_TREE_HEIGHT }>;
+    let mut canopy = CanopyTree::from_zeros(canopy_zeros);
+
+    // Load sector roots cached at the sector layer
+    let sector_roots = store.get_layer(tape_address, SECTOR_TREE_HEIGHT as u8)?;
+    for root_bytes in sector_roots.iter() {
+        let leaf = Leaf::from(*root_bytes);
+        canopy.try_add_leaf(leaf).expect("Failed to add sector root");
+    }
+
+    Ok(canopy.get_root())
+}
+
+/// Updates the Merkle subtree for a given segment number.
+pub fn update_segment_root(
+    store: &Arc<TapeStore>,
+    tape_address: &Pubkey,
+    segment_number: u64,
+) -> Result<()> {
+    let sector_number = segment_number / SECTOR_LEAVES as u64;
+    update_sector_root(store, tape_address, sector_number)
+}
+
 /// Updates the Merkle subtree for a given sector number.
-pub async fn update_sector_root(
+pub fn update_sector_root(
     store: &Arc<TapeStore>,
     tape_address: &Pubkey,
     sector_number: u64,
 ) -> Result<()> {
 
-    let empty_hashes = get_or_create_empty_hashes(store, tape_address).await?;
+    let empty_hashes = get_or_create_empty_hashes(store, tape_address)?;
     let empty_leaf = empty_hashes.first().unwrap().as_leaf();
 
     let leaves = compute_sector_leaves(store, tape_address, sector_number, empty_leaf)?;
-    let root = compute_sector_root(&leaves, &empty_hashes, LAYER_NUMBER)?;
+    let root = compute_sector_root(&leaves, &empty_hashes)?;
 
-    update_layer(store, tape_address, LAYER_NUMBER, sector_number, root)?;
-
-    Ok(())
+    update_sector_canopy(store, tape_address, sector_number, root)
 }
 
 /// Computes leaves for a sector from the store, filling with empty_leaf as needed.
@@ -98,7 +148,6 @@ pub fn compute_sector_leaves(
 pub fn compute_sector_root(
     leaves: &[Leaf],
     empty_hashes: &[Hash],
-    layer_number: u8,
 ) -> Result<Hash> {
     let mut tree = SegmentTree::from_zeros(
         empty_hashes
@@ -113,7 +162,7 @@ pub fn compute_sector_root(
 
     tree.next_index = leaves.len() as u64;
 
-    let layer_nodes = tree.get_layer_nodes(leaves, layer_number as usize);
+    let layer_nodes = tree.get_layer_nodes(leaves, SECTOR_TREE_HEIGHT);
     if layer_nodes.len() != 1 {
         return Err(anyhow!(
             "Invalid layer nodes length: expected 1, got {}",
@@ -124,15 +173,15 @@ pub fn compute_sector_root(
     Ok(*layer_nodes.first().unwrap())
 }
 
-/// Updates the layer in the store with the new sector root.
-pub fn update_layer(
+/// Updates the layer in the store with the new sector root. 
+pub fn update_sector_canopy(
     store: &TapeStore,
     tape_address: &Pubkey,
-    layer_number: u8,
     sector_number: u64,
     root: Hash,
 ) -> Result<()> {
-    let mut layer = match store.get_layer(tape_address, layer_number) {
+
+    let mut layer = match store.get_layer(tape_address, SECTOR_TREE_HEIGHT as u8) {
         Ok(layer) => layer,
         Err(_) => vec![[0u8; 32]; (sector_number + 1) as usize],
     };
@@ -142,18 +191,16 @@ pub fn update_layer(
     }
 
     layer[sector_number as usize] = root.to_bytes();
-    store.put_layer(tape_address, layer_number, &layer)?;
+    store.put_layer(tape_address, SECTOR_TREE_HEIGHT as u8, &layer)?;
+
     Ok(())
 }
 
 /// Helper to create or init the zero values for a tape
-/// Note: This only needs to be done once per tape, the zero values are the height of the tree and
-/// are calculated from the tape's merkle seed
-pub async fn get_or_create_empty_hashes(
+pub fn get_or_create_empty_hashes(
     store: &Arc<TapeStore>,
     tape_address: &Pubkey,
 ) -> Result<Vec<Hash>> {
-    const H: usize = SEGMENT_TREE_HEIGHT;
 
     let empty_values = match store.get_zero_values(tape_address) {
         Ok(empty_values) => empty_values,
@@ -172,8 +219,12 @@ pub async fn get_or_create_empty_hashes(
         }
     };
 
-    if empty_values.len() != H {
-        return Err(anyhow!("Invalid number of zero values: expected {}, got {}", H, empty_values.len()));
+    if empty_values.len() != SEGMENT_TREE_HEIGHT {
+        return Err(
+            anyhow!("Invalid number of zero values: expected {}, got {}", 
+                SEGMENT_TREE_HEIGHT,
+                empty_values.len()
+            ));
     }
 
     // Convert empty values to Hash type
@@ -191,12 +242,12 @@ mod tests {
     use super::*;
     use solana_sdk::pubkey::Pubkey;
     use tempdir::TempDir;
-    use brine_tree::{Leaf, Hash};
+    use brine_tree::{Leaf, get_cached_merkle_proof};
 
-    fn setup_store() -> Result<(TapeStore, TempDir), StoreError> {
+    fn setup_store() -> Result<(Arc<TapeStore>, TempDir), StoreError> {
         let temp_dir = TempDir::new("rocksdb_test").map_err(StoreError::IoError)?;
         let store = TapeStore::new(temp_dir.path())?;
-        Ok((store, temp_dir))
+        Ok((Arc::new(store), temp_dir))
     }
 
     fn create_segment_data(marker: u8, miner: &Pubkey) -> Vec<u8> {
@@ -211,30 +262,24 @@ mod tests {
         solution.to_bytes().to_vec()
     }
 
-    fn create_empty_hashes(seed: &[u8]) -> Vec<Hash> {
-        let tree = SegmentTree::new(&[seed]);
-        tree.zero_values.iter().copied().collect()
-    }
-
     #[test]
     fn test_subtree_update() -> Result<()> {
         // Setup store and tape address
         let (store, _temp_dir) = setup_store()?;
-        let tape_address = Pubkey::new_unique();
+
+        // Setup our tape and miner
         let miner_address = Pubkey::new_unique();
-
-        // Create empty hashes and store them
-        let seed = b"test_seed";
-        let empty_hashes = create_empty_hashes(seed);
-        let empty_hashes_bytes = empty_hashes.iter().map(|h| h.to_bytes()).collect::<Vec<_>>();
-        store.put_zero_values(&tape_address, &empty_hashes_bytes)?;
-        let empty_leaf = empty_hashes.first().unwrap().as_leaf();
-
-        // Create a bunch of leaves (fill 2.5 sectors)
-        let leaf_count = (SECTOR_LEAVES as f64 * 2.5) as usize;
-        let mut tree = SegmentTree::new(&[seed]);
+        let tape_address = Pubkey::new_unique();
+        let mut tape_tree = SegmentTree::new(&[tape_address.as_ref()]);
         let mut leaves = vec![];
 
+        let empty_values = get_or_create_empty_hashes(&store, &tape_address)?;
+        let empty_leaf = empty_values[0].as_leaf();
+        assert_eq!(empty_values.len(), SEGMENT_TREE_HEIGHT);
+        assert_eq!(empty_values, empty_values);
+
+        // Fill the tape with some segments (2.5 sectors worth)
+        let leaf_count = (SECTOR_LEAVES as f64 * 2.5) as usize;
         for i in 0..leaf_count {
             let segment_id = i as u64;
             let segment_data = create_segment_data(1, &miner_address);
@@ -243,71 +288,65 @@ mod tests {
                 &segment_data
             ]);
 
-            // Add leaf to the tree
-            tree.try_add_leaf(leaf).expect("Failed to add leaf");
-
-            // Store the segment in a sector
-            let sector_number = segment_id / SECTOR_LEAVES as u64;
-            let local_seg_idx = (segment_id % SECTOR_LEAVES as u64) as usize;
-            let mut sector = store
-                .get_sector(&tape_address, sector_number)
-                .unwrap_or_else(|_| Sector::new());
-            sector.set_segment(local_seg_idx, &segment_data);
-            store.put_sector(&tape_address, sector_number, &sector)?;
-
-            // Collect leaves so we can verify later
+            tape_tree.try_add_leaf(leaf).expect("Failed to add leaf");
+            store.put_segment(&tape_address, segment_id, segment_data)?;
             leaves.push(leaf);
         }
 
-        // Verify sector count
-        assert_eq!(store.get_sector_count(&tape_address)?, 3);
+        let expected_vals = tape_tree.get_layer_nodes(&leaves, SECTOR_TREE_HEIGHT);
+        let expected_canopy = expected_vals
+            .iter()
+            .map(|h| h.to_bytes())
+            .collect::<Vec<_>>();
 
-        // Add a new leaf and test subtree update
-        let segment_number = leaves.len() as u64;
-        let sector_number = segment_number / SECTOR_LEAVES as u64;
-        let segment_data = create_segment_data(42, &miner_address);
-        let new_leaf = Leaf::new(&[
-            &segment_number.to_le_bytes(),
-            &segment_data
-        ]);
+        // Calculate sector roots and update the stored canopy values
+        update_sector_root(&store, &tape_address, 0)?;
+        update_sector_root(&store, &tape_address, 1)?;
+        update_sector_root(&store, &tape_address, 2)?;
 
-        tree.try_add_leaf(new_leaf).expect("Failed to add new leaf");
-        leaves.push(new_leaf);
+        let actual_canopy = store.get_layer(&tape_address, SECTOR_TREE_HEIGHT as u8)?;
+        assert_eq!(expected_canopy.len(), actual_canopy.len());
+        assert_eq!(expected_canopy, actual_canopy);
 
-        // Store the leaf so that compute_sector_leaves can find it
-        let mut sector = store
-            .get_sector(&tape_address, sector_number)
-            .unwrap_or_else(|_| Sector::new());
-        let local_seg_idx = (segment_number % SECTOR_LEAVES as u64) as usize;
-        sector.set_segment(local_seg_idx, &segment_data);
-        store.put_sector(&tape_address, sector_number, &sector)?;
+        // Lets try a Merkle proof for a segment
+        let segment_number : usize = 1234;
+        let sector_number = (segment_number as u64) / SECTOR_LEAVES as u64;
+        let sector = store.get_sector(&tape_address, sector_number)?;
 
-        // Compute leaves for the sector
-        let sector_leaves = compute_sector_leaves(&store, &tape_address, sector_number, empty_leaf)?;
+        let expected_proof = tape_tree.get_proof(&leaves, segment_number); // <- Requires all leaves in memory (bad)
+        let actual_proof = get_cached_merkle_proof(                        // <- Only one sector in memory     (good)
+            &tape_tree,
+            segment_number,
+            SECTOR_TREE_HEIGHT,
+            &expected_vals,
+            |i| { 
+                let local_idx = i % SECTOR_LEAVES;
+                match sector.get_segment(local_idx) { // <- Look ma, no store access here!
+                    Some(data) => Some(
+                        Leaf::new(&[
+                            &(i as u64).to_le_bytes(),
+                            &data
+                        ])),
+                    None => Some(empty_leaf),
+                }
 
-        assert_eq!(sector_leaves.len(), SECTOR_LEAVES, "Incorrect number of leaves");
-        assert_eq!(sector_leaves[local_seg_idx], new_leaf);
+                // Same as above, but with store access (slower)
+                // match store.get_segment(&tape_address, i as u64) {
+                //     Ok(data) => Some(
+                //         Leaf::new(&[
+                //             &(i as u64).to_le_bytes(),
+                //             &data
+                //         ])),
+                //     Err(_) => Some(empty_leaf),
+                // }
+            }
+        );
 
-        // Compute the sector root
-        let root = compute_sector_root(&sector_leaves, &empty_hashes, 10)?;
+        assert_eq!(expected_proof, actual_proof);
 
-        // Verify root using the existing tree
-        let layer_nodes = tree.get_layer_nodes(&leaves, 10);
-
-        assert_eq!(layer_nodes.len(), 3);
-        assert_eq!(root, layer_nodes[sector_number as usize]);
-
-        // Update the layer
-        update_layer(&store, &tape_address, 10, sector_number, root)?;
-
-        // Verify the layer
-        let layer = store.get_layer(&tape_address, 10)?;
-        assert_eq!(layer.len(), sector_number as usize + 1);
-
-        // The first two will be empty because we never called update_layer for them
-        assert_eq!(layer[0], [0u8; 32]);
-        assert_eq!(layer[1], [0u8; 32]);
-        assert_eq!(layer[sector_number as usize], root.to_bytes());
+        //Verify the tape root matches our computed root
+        let computed_root = get_tape_root(&store, &tape_address)?;
+        assert_eq!(computed_root, tape_tree.get_root());
 
         Ok(())
     }
