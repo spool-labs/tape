@@ -26,8 +26,7 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
 
             // TODO: need a way to check if we need to update the sector root
 
-            // let handle = tokio::runtime::Handle::current();
-            // handle.block_on(update_sector_root(&store, &rpc, &job.tape, job.seg_no))?;
+            update_sector_root(&store, &job.tape, job.seg_no)?;
 
             Ok(())
         })
@@ -113,7 +112,13 @@ pub fn get_tape_root(
     let mut canopy = CanopyTree::from_zeros(canopy_zeros);
 
     // Load sector roots cached at the sector layer
-    let sector_roots = store.get_layer(tape_address, SECTOR_TREE_HEIGHT as u8)?;
+    let sector_roots = store.get_merkle_cache(
+        &MerkleCacheKey::UnpackedTapeLayer {
+            address: *tape_address,
+            layer: SECTOR_TREE_HEIGHT as u8
+        }
+    )?;
+
     for root_bytes in sector_roots.iter() {
         let leaf = Leaf::from(*root_bytes);
         canopy.try_add_leaf(leaf).expect("Failed to add sector root");
@@ -181,7 +186,12 @@ pub fn update_sector_canopy(
     root: Hash,
 ) -> Result<()> {
 
-    let mut layer = match store.get_layer(tape_address, SECTOR_TREE_HEIGHT as u8) {
+    let key = MerkleCacheKey::UnpackedTapeLayer { 
+        address: *tape_address,
+        layer: SECTOR_TREE_HEIGHT as u8 
+    };
+
+    let mut layer = match store.get_merkle_cache(&key) {
         Ok(layer) => layer,
         Err(_) => vec![[0u8; 32]; (sector_number + 1) as usize],
     };
@@ -191,7 +201,7 @@ pub fn update_sector_canopy(
     }
 
     layer[sector_number as usize] = root.to_bytes();
-    store.put_layer(tape_address, SECTOR_TREE_HEIGHT as u8, &layer)?;
+    store.put_merkle_cache(&key, &layer)?;
 
     Ok(())
 }
@@ -202,11 +212,15 @@ pub fn get_or_create_empty_hashes(
     tape_address: &Pubkey,
 ) -> Result<Vec<Hash>> {
 
-    let empty_values = match store.get_zero_values(tape_address) {
+    let empty_values = match store.get_merkle_cache(
+        &MerkleCacheKey::ZeroValues { 
+            address: *tape_address 
+        }
+    ) {
         Ok(empty_values) => empty_values,
         Err(_) => {
             // Create an empty SegmentTree to get the zero values
-            let tree = SegmentTree::new(&[&tape_address.as_ref()]);
+            let tree = SegmentTree::new(&[tape_address.as_ref()]);
             let empty_values = tree.zero_values;
             let seeds_bytes = empty_values
                 .into_iter()
@@ -214,7 +228,10 @@ pub fn get_or_create_empty_hashes(
                 .collect::<Vec<_>>();
 
             // Throw the empty_values into the store for future use
-            store.put_zero_values(tape_address, &seeds_bytes)?;
+            store.put_merkle_cache(
+                &MerkleCacheKey::ZeroValues { address: *tape_address },
+                &seeds_bytes
+            )?;
             seeds_bytes
         }
     };
@@ -304,7 +321,13 @@ mod tests {
         update_sector_root(&store, &tape_address, 1)?;
         update_sector_root(&store, &tape_address, 2)?;
 
-        let actual_canopy = store.get_layer(&tape_address, SECTOR_TREE_HEIGHT as u8)?;
+        let actual_canopy = store.get_merkle_cache(
+            &MerkleCacheKey::UnpackedTapeLayer {
+                address: tape_address,
+                layer: SECTOR_TREE_HEIGHT as u8 
+            }
+        )?;
+
         assert_eq!(expected_canopy.len(), actual_canopy.len());
         assert_eq!(expected_canopy, actual_canopy);
 
@@ -325,7 +348,7 @@ mod tests {
                     Some(data) => Some(
                         Leaf::new(&[
                             &(i as u64).to_le_bytes(),
-                            &data
+                            data
                         ])),
                     None => Some(empty_leaf),
                 }
