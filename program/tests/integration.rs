@@ -1,6 +1,7 @@
 #![cfg(test)]
 pub mod utils;
 use utils::*;
+use steel::Discriminator;
 
 use steel::Zeroable;
 use solana_sdk::{
@@ -80,6 +81,9 @@ fn run_integration() {
     verify_mint_account(&svm);
     verify_metadata_account(&svm);
     verify_treasury_ata(&svm);
+
+    // Override difficulty (packx is too slow for debug mode)
+    override_epoch_difficulty(&mut svm, 0);
 
     // Mine the genesis tape (to earn some tokens)
     do_mining_run(&mut svm, &payer, &stored_spool, 5);
@@ -209,7 +213,8 @@ fn do_mining_run(
 
         let tape_index = recall_tape - 1; // index in spool (not the tape_number)
         let packed_tape = &stored_spool.tapes[tape_index as usize];
-        let tape_account = svm.get_account(&packed_tape.address).unwrap();
+        let tape_address = packed_tape.address;
+        let tape_account = svm.get_account(&tape_address).unwrap();
         let tape = Tape::unpack(&tape_account.data).unwrap();
 
         // Check if we need to provide a PoA solution based on whether the tape has minimum rent.
@@ -259,7 +264,7 @@ fn do_mining_run(
             let pow_solution = solve_challenge(miner_challenge, &unpacked_segment, epoch.mining_difficulty).unwrap();
             assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
 
-            let merkle_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+            let merkle_tree = SegmentTree::new(&[tape_address.as_ref()]);
             let proof_nodes: Vec<[u8; 32]> = merkle_tree
                 .get_proof(&leaves, segment_number as usize)
                 .into_iter()
@@ -346,6 +351,26 @@ fn initialize_program(svm: &mut LiteSVM, payer: &Keypair) {
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
+}
+
+fn override_epoch_difficulty(svm: &mut LiteSVM, difficulty: u64) {
+    let (epoch_address, _epoch_bump) = epoch_pda();
+    let mut account = svm
+        .get_account(&epoch_address)
+        .expect("Epoch account should exist");
+    let mut epoch = Epoch::unpack(&account.data)
+        .expect("Failed to unpack Epoch account")
+        .clone();
+
+    epoch.packing_difficulty = difficulty;
+
+    let mut discriminator = [0u8; 8];
+    discriminator[0] = Epoch::discriminator();
+    let data = [&discriminator, epoch.to_bytes()].concat();
+    account.data = data.to_vec();
+
+    svm.set_account(epoch_address, account)
+        .expect("failed to override difficulty")
 }
 
 fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
@@ -439,8 +464,7 @@ fn create_and_verify_tape(
         writer_address
     );
 
-    let tape_seed = &[stored_tape.account.merkle_seed.as_ref()];
-    let mut writer_tree = SegmentTree::new(tape_seed);
+    let mut writer_tree = SegmentTree::new(&[tape_address.as_ref()]);
 
     write_tape(
         svm,
@@ -506,7 +530,6 @@ fn create_tape(
     assert_eq!(tape.authority, payer_pk);
     assert_eq!(tape.name, to_name(tape_name));
     assert_eq!(tape.state, u64::from(TapeState::Created));
-    assert_ne!(tape.merkle_seed, [0; 32]);
     assert_eq!(tape.merkle_root, [0; 32]);
     assert_eq!(tape.header, [0; HEADER_SIZE]);
     assert_eq!(tape.number, 0);
@@ -516,7 +539,7 @@ fn create_tape(
     let writer = Writer::unpack(&account.data).unwrap();
     assert_eq!(writer.tape, tape_address);
 
-    let writer_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]);
+    let writer_tree = SegmentTree::new(&[tape_address.as_ref()]);
     assert_eq!(writer.state, writer_tree);
 
     StoredTape {
@@ -763,7 +786,6 @@ fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, numbe
 
     assert_eq!(spool.authority, payer_pk);
     assert_eq!(spool.number, number);
-    assert_ne!(spool.seed, [0; 32]);
     assert_eq!(spool.contains, [0; 32]);
     assert_eq!(spool.total_tapes, 0);
     assert_eq!(spool.last_proof_block, 0);
@@ -773,7 +795,7 @@ fn create_spool(svm: &mut LiteSVM, payer: &Keypair, miner_address: Pubkey, numbe
         //number,
         address: spool_address,
         miner: miner_address,
-        tree: TapeTree::new(&[spool.seed.as_ref()]),
+        tree: TapeTree::new(&[spool_address.as_ref()]),
         tapes: vec![],
         //account: *spool,
     }
@@ -808,7 +830,7 @@ fn get_packed_tape(
 
     let packed_segments = get_packed_segments(miner_address, stored_tape, difficulty);
 
-    let mut merkle_tree = SegmentTree::new(&[stored_tape.account.merkle_seed.as_ref()]);
+    let mut merkle_tree = SegmentTree::new(&[stored_tape.address.as_ref()]);
     for (segment_number, packed_data) in packed_segments.iter().enumerate() {
         let segment_id = segment_number.to_le_bytes();
         let leaf = Leaf::new(&[

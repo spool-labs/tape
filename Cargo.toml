@@ -19,7 +19,7 @@ tape-network = { version = "0.2.1", path = "./network" }
 tape-program = { version = "0.2.1", path = "./program" }
 
 crankx = { version = "0.2.2", features = ["solana"] }
-packx = { version = "0.2.5", features = ["solana"] }
+packx = { version = "0.3.1", features = ["solana"] }
 
 # program dependencies
 bytemuck = "1.14.3"
@@ -89,12 +89,3 @@ toml = "0.9.5"
 
 [profile.release]
 overflow-checks = true
-
-[profile.dev]
-overflow-checks = true
-opt-level = 3
-debug = false
-
-[profile.test]
-opt-level = 3
-debug = false

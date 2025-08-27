@@ -9,7 +9,6 @@ pub trait SegmentOps {
     fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError>;
     fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError>;
     fn get_tape_segments(&self, tape_address: &Pubkey) -> Result<Vec<(u64, Vec<u8>)>, StoreError>;
-    fn get_segment_count(&self, tape: &Pubkey) -> Result<u64, StoreError>;
 }
 
 impl SegmentOps for TapeStore {
@@ -39,21 +38,15 @@ impl SegmentOps for TapeStore {
         let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
         
         let cf_sectors = self.get_cf_handle(ColumnFamily::Sectors)?;
-        let cf_tape_segments = self.get_cf_handle(ColumnFamily::TapeSegments)?;
         
         let mut sector = self.get_sector(tape_address, sector_number).unwrap_or_else(|_| Sector::new());
-        let is_new_segment = sector.set_segment(local_seg_idx, &seg);
+        sector.set_segment(local_seg_idx, &seg);
         
         let mut batch = WriteBatch::default();
         let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
         key.extend_from_slice(&tape_address.to_bytes());
         key.extend_from_slice(&sector_number.to_be_bytes());
         batch.put_cf(&cf_sectors, &key, bytes_of(&sector));
-        
-        if is_new_segment {
-            let current_count = self.get_segment_count(tape_address).unwrap_or(0);
-            batch.put_cf(&cf_tape_segments, tape_address.to_bytes(), (current_count + 1).to_be_bytes());
-        }
         
         self.db.write(batch)?;
         inc_total_segments_written();
@@ -87,17 +80,7 @@ impl SegmentOps for TapeStore {
         segments.sort_by_key(|(idx, _)| *idx);
         Ok(segments)
     }
-
-    fn get_segment_count(&self, tape: &Pubkey) -> Result<u64, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::TapeSegments)?;
-        let count_bytes = self
-            .db
-            .get_cf(&cf, tape.to_bytes())?
-            .unwrap_or_else(|| vec![0; 8]);
-        Ok(u64::from_be_bytes(count_bytes[..].try_into().unwrap()))
-    }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -134,18 +117,18 @@ mod tests {
         let address = Pubkey::new_unique();
         let data = make_data(42);
 
-        // Write two new segments
+        // Write two new segments in the same sector
         store.put_segment(&address, 0, data.clone())?;
         store.put_segment(&address, 1, data.clone())?;
-        assert_eq!(store.get_segment_count(&address)?, 2);
+        assert_eq!(store.get_sector_count(&address)?, 1);
 
-        // Overwrite existing segment (should not increment count)
+        // Overwrite existing segment (should not change sector count)
         store.put_segment(&address, 0, data.clone())?;
-        assert_eq!(store.get_segment_count(&address)?, 2);
+        assert_eq!(store.get_sector_count(&address)?, 1);
 
-        // Write new segment
-        store.put_segment(&address, 2, data)?;
-        assert_eq!(store.get_segment_count(&address)?, 3);
+        // Write new segment in a new sector
+        store.put_segment(&address, SECTOR_LEAVES as u64, data)?;
+        assert_eq!(store.get_sector_count(&address)?, 2);
         Ok(())
     }
 
@@ -172,11 +155,13 @@ mod tests {
         let segments = store.get_tape_segments(&address)?;
 
         // We expect exactly 5 entries in ascending global index order
-        let expected_indices = [idx_sector0_a,
+        let expected_indices = [
+            idx_sector0_a,
             idx_sector0_b,
             idx_sector1_a,
             idx_sector1_b,
-            idx_sector2_a];
+            idx_sector2_a,
+        ];
         assert_eq!(segments.len(), expected_indices.len());
         for (i, (idx, data)) in segments.iter().enumerate() {
             assert_eq!(*idx, expected_indices[i], "segment index mismatch");

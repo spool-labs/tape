@@ -1,9 +1,5 @@
 use tape_api::prelude::*;
 use tape_api::instruction::tape::Create;
-use solana_program::{
-    blake3::hashv,
-    slot_hashes::SlotHash,
-};
 use steel::*;
 
 pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -15,7 +11,6 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         writer_info, 
         system_program_info,
         rent_sysvar_info,
-        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -41,9 +36,6 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    slot_hashes_info
-        .is_sysvar(&sysvar::slot_hashes::ID)?;
-
     create_program_account::<Tape>(
         tape_info,
         system_program_info,
@@ -63,26 +55,18 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let tape = tape_info.as_account_mut::<Tape>(&tape_api::ID)?;
     let writer = writer_info.as_account_mut::<Writer>(&tape_api::ID)?;
 
-    let empty_seed = hashv(&[
-        tape_info.key.as_ref(),
-        &slot_hashes_info.data.borrow()[
-            0..core::mem::size_of::<SlotHash>()
-        ],
-    ]);
-
     tape.number            = 0; // (tapes get a number when finalized)
     tape.authority         = *signer_info.key;
     tape.name              = args.name;
     tape.state             = TapeState::Created.into();
     tape.total_segments    = 0;
-    tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
     tape.header            = [0; HEADER_SIZE];
     tape.first_slot        = current_slot; 
     tape.tail_slot         = current_slot;
 
     writer.tape            = *tape_info.key;
-    writer.state           = SegmentTree::new(&[empty_seed.as_ref()]);
+    writer.state           = SegmentTree::new(&[tape_info.key.as_ref()]);
 
     Ok(())
 }

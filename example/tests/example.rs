@@ -48,7 +48,7 @@ fn run_integration() {
     let account = svm.get_account(&tape_address).unwrap();
     let tape = Tape::unpack(&account.data).unwrap();
 
-    let mut local_tree = SegmentTree::new(&[tape.merkle_seed.as_ref()]); 
+    let mut local_tree = SegmentTree::new(&[tape_address.as_ref()]); 
 
     let data = vec![42; 1024];
 

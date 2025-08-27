@@ -19,7 +19,7 @@ impl SectorOps for TapeStore {
         let data = self
             .db
             .get_cf(&cf, &key)?
-            .ok_or_else(|| StoreError::SegmentNotFoundForAddress(tape_address.to_string(), sector_number))?;
+            .ok_or_else(|| StoreError::SectorNotFoundForAddress(tape_address.to_string(), sector_number))?;
         
         if data.len() != SECTOR_HEADER_BYTES + SECTOR_LEAVES * PACKED_SEGMENT_SIZE {
             return Err(StoreError::InvalidSectorSize(data.len()));
@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(retrieved.0, sector.0);
 
         let result = store.get_sector(&address, 1);
-        assert!(matches!(result, Err(StoreError::SegmentNotFoundForAddress(_, 1))));
+        assert!(matches!(result, Err(StoreError::SectorNotFoundForAddress(_, 1))));
 
         Ok(())
     }
@@ -266,7 +266,6 @@ mod tests {
         }
 
         assert_eq!(store.get_sector_count(&address)?, 1);
-        assert_eq!(store.get_segment_count(&address)?, SECTOR_LEAVES as u64);
 
         let sector = store.get_sector(&address, 0)?;
         let bitmap_len = SECTOR_LEAVES / 8;
@@ -288,7 +287,6 @@ mod tests {
         store.put_segment(&address, first_s1, make_data(2))?;
 
         assert_eq!(store.get_sector_count(&address)?, 2);
-        assert_eq!(store.get_segment_count(&address)?, 2);
         assert_eq!(store.get_segment(&address, last_s0)?, make_data(1));
         assert_eq!(store.get_segment(&address, first_s1)?, make_data(2));
 
@@ -306,19 +304,16 @@ mod tests {
         let address = Pubkey::new_unique();
         let sectors = 100u64;
         let stride = (SECTOR_LEAVES / 3).max(1) as u64;
-        let mut written = 0u64;
 
         for s in 0..sectors {
             let base = s * SECTOR_LEAVES as u64;
             for k in 0..3 {
                 let idx = base + k * stride;
                 store.put_segment(&address, idx, make_data(idx as u8))?;
-                written += 1;
             }
         }
 
         assert_eq!(store.get_sector_count(&address)?, sectors as usize);
-        assert_eq!(store.get_segment_count(&address)?, written);
 
         for s in 0..sectors {
             let sector = store.get_sector(&address, s)?;
