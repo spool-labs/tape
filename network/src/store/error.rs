@@ -13,8 +13,6 @@ pub enum StoreError {
     TapeByNumberCfNotFound,
     #[error("Tape by address column family not found")]
     TapeByAddressCfNotFound,
-    #[error("Tape segments column family not found")]
-    TapeSegmentsCfNotFound,
     #[error("Sectors column family not found")]
     SectorsCfNotFound,
     #[error("Merkle hashes column family not found")]
@@ -27,6 +25,8 @@ pub enum StoreError {
     SegmentNotFound(u64, u64),
     #[error("Segment not found for address {0}, segment {1}")]
     SegmentNotFoundForAddress(String, u64),
+    #[error("Sector not found for address {0}, sector {1}")]
+    SectorNotFoundForAddress(String, u64),
     #[error("Invalid pubkey: {0}")]
     InvalidPubkey(String),
     #[error("Invalid hash size: {0}")]
@@ -48,7 +48,6 @@ impl From<&ColumnFamily> for StoreError {
         match value {
             ColumnFamily::TapeByNumber => StoreError::TapeByNumberCfNotFound,
             ColumnFamily::TapeByAddress => StoreError::TapeByAddressCfNotFound,
-            ColumnFamily::TapeSegments => StoreError::TapeSegmentsCfNotFound,
             ColumnFamily::Sectors => StoreError::SectorsCfNotFound,
             ColumnFamily::MerkleHashes => StoreError::MerkleHashesCfNotFound,
             ColumnFamily::Health => StoreError::HealthCfNotFound,

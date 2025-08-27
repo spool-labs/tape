@@ -7,7 +7,6 @@ use rocksdb::{
 pub enum ColumnFamily {
     TapeByNumber,
     TapeByAddress,
-    TapeSegments,
     Sectors,
     MerkleHashes,
     Health,
@@ -18,7 +17,6 @@ impl ColumnFamily {
         match self {
             ColumnFamily::TapeByNumber => "tape_by_number",
             ColumnFamily::TapeByAddress => "tape_by_address",
-            ColumnFamily::TapeSegments => "tape_segments",
             ColumnFamily::Sectors => "sectors",
             ColumnFamily::MerkleHashes => "merkle_hashes",
             ColumnFamily::Health => "health",
@@ -57,7 +55,6 @@ pub fn create_cf_descriptors() -> Vec<ColumnFamilyDescriptor> {
     let column_families = [
         (ColumnFamily::TapeByNumber, 8, Some(plain_table_options(8)), None),
         (ColumnFamily::TapeByAddress, 32, Some(plain_table_options(32)), None),
-        (ColumnFamily::TapeSegments, 32, None, None),
         (ColumnFamily::Sectors, 32, None, Some(block_based_options())),
         (ColumnFamily::MerkleHashes, 32, None, Some(block_based_options())),
         (ColumnFamily::Health, 0, None, None),
