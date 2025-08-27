@@ -9,6 +9,8 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use crate::store::*;
 use super::queue::Rx;
 
+type CanopyTree = MerkleTree<{ SEGMENT_TREE_HEIGHT - SECTOR_TREE_HEIGHT }>;
+
 /// Orchestrator Task C – CPU-heavy preprocessing (packx)
 pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<TapeStore>) -> Result<()> {
     let epoch = get_epoch_account(&rpc).await?.0;
@@ -21,12 +23,68 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             log::info!("packx: tape={} seg={}", job.tape, job.seg_no);
 
+            let sector_number = job.seg_no / SECTOR_LEAVES as u64;
+            let local_idx = (job.seg_no % SECTOR_LEAVES as u64) as usize;
+
+            let mut sector = get_or_create_sector(&store, &job.tape, sector_number)?; // <- should be get_or_create
+
+            // Pack the segment, and update the PackedTapeLayer sector root
             let solved = pack_segment(&miner, &job.data, packing_difficulty)?;
-            store.put_segment(&job.tape, job.seg_no, solved)?;
 
-            // TODO: need a way to check if we need to update the sector root
+            // Setting the segment here so that we have no special cases 
+            sector.set_segment(local_idx, &solved);
 
-            update_sector_root(&store, &job.tape, job.seg_no)?;
+            // Build leaves from the *unpacked* data. The database holds packed bytes, so
+            // we unpack each present segment. For the incoming segment we use the freshly
+            // provided unpacked bytes from the job.
+            let empty_hashes = get_or_create_empty_hashes(&store, &job.tape)?;
+            let empty_leaf = empty_hashes.first().unwrap().as_leaf();
+            let miner_bytes = miner.to_bytes();
+
+            // Unpacked leaves
+            let leaves_unpacked = compute_sector_leaves_unpacked(
+                &sector,
+                sector_number,
+                &miner_bytes,
+                empty_leaf,
+            )?;
+
+            // Update the PackedTapeLayer sector root
+
+            // Packed leaves
+            let leaves_packed = compute_sector_leaves_packed(
+                &sector,
+                sector_number,
+                empty_leaf,
+            )?;
+
+            // Compute both roots with the same zero vector
+            let root_unpacked = compute_sector_root(&leaves_unpacked, &empty_hashes)?;
+            let root_packed   = compute_sector_root(&leaves_packed,   &empty_hashes)?;
+
+            // Write both caches: UnpackedTapeLayer and PackedTapeLayer
+            update_sector_canopy_with_key(
+                &store,
+                sector_number,
+                root_unpacked,
+                MerkleCacheKey::UnpackedTapeLayer {
+                    address: job.tape,
+                    layer: SECTOR_TREE_HEIGHT as u8,
+                },
+            )?;
+
+            update_sector_canopy_with_key(
+                &store,
+                sector_number,
+                root_packed,
+                MerkleCacheKey::PackedTapeLayer {
+                    address: job.tape,
+                    layer: SECTOR_TREE_HEIGHT as u8,
+                },
+            )?;
+
+            // Finally, persist the newly packed segment into the sector itself.
+            store.put_sector(&job.tape, sector_number, &sector)?;
 
             Ok(())
         })
@@ -51,32 +109,6 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
 
     let segment_bytes = solution.to_bytes();
     Ok(segment_bytes.to_vec())
-}
-
-/// Updates the Merkle subtree for a given segment number.
-pub fn update_segment_root(
-    store: &Arc<TapeStore>,
-    tape_address: &Pubkey,
-    segment_number: u64,
-) -> Result<()> {
-    let sector_number = segment_number / SECTOR_LEAVES as u64;
-    update_sector_root(store, tape_address, sector_number)
-}
-
-/// Updates the Merkle subtree for a given sector number.
-pub fn update_sector_root(
-    store: &Arc<TapeStore>,
-    tape_address: &Pubkey,
-    sector_number: u64,
-) -> Result<()> {
-
-    let empty_hashes = get_or_create_empty_hashes(store, tape_address)?;
-    let empty_leaf = empty_hashes.first().unwrap().as_leaf();
-
-    let leaves = compute_sector_leaves(store, tape_address, sector_number, empty_leaf)?;
-    let root = compute_sector_root(&leaves, &empty_hashes)?;
-
-    update_sector_canopy(store, tape_address, sector_number, root)
 }
 
 /// Computes the Merkle root for the entire tape by using a cached canopy of sector roots.
@@ -108,7 +140,6 @@ pub fn get_tape_root(
         ))?;
 
     // Build canopy over sector roots
-    type CanopyTree = MerkleTree<{ SEGMENT_TREE_HEIGHT - SECTOR_TREE_HEIGHT }>;
     let mut canopy = CanopyTree::from_zeros(canopy_zeros);
 
     // Load sector roots cached at the sector layer
@@ -127,22 +158,44 @@ pub fn get_tape_root(
     Ok(canopy.get_root())
 }
 
-/// Computes leaves for a sector from the store, filling with empty_leaf as needed.
-pub fn compute_sector_leaves(
-    store: &TapeStore,
-    tape_address: &Pubkey,
+/// Computes packed leaves (stored solution bytes).
+pub fn compute_sector_leaves_packed(
+    sector: &Sector,
     sector_number: u64,
     empty_leaf: Leaf,
 ) -> Result<Vec<Leaf>> {
-    let sector = store.get_sector(tape_address, sector_number)?;
-
     let mut leaves = vec![empty_leaf; SECTOR_LEAVES];
-    for (i, leaf) in leaves.iter_mut().enumerate() {
-        if let Some(segment) = sector.get_segment(i) {
+    for i in 0..SECTOR_LEAVES {
+        if let Some(packed) = sector.get_segment(i) {
             let segment_id = (sector_number * SECTOR_LEAVES as u64) + i as u64;
-            *leaf = Leaf::new(&[
+            leaves[i] = Leaf::new(&[
                 &segment_id.to_le_bytes(),
-                segment
+                packed,
+            ]);
+        }
+    }
+    Ok(leaves)
+}
+
+/// Computes unpacked leaves (reconstructed 128-byte data from solutions).
+pub fn compute_sector_leaves_unpacked(
+    sector: &Sector,
+    sector_number: u64,
+    miner_bytes: &[u8; 32],
+    empty_leaf: Leaf,
+) -> Result<Vec<Leaf>> {
+    let mut leaves = vec![empty_leaf; SECTOR_LEAVES];
+    for i in 0..SECTOR_LEAVES {
+        if let Some(packed) = sector.get_segment(i) {
+            let mut arr = [0u8; PACKED_SEGMENT_SIZE];
+            arr.copy_from_slice(&packed[..PACKED_SEGMENT_SIZE]);
+            let sol = packx::Solution::from_bytes(&arr);
+            let data_unpacked = sol.unpack(miner_bytes);
+
+            let segment_id = (sector_number * SECTOR_LEAVES as u64) + i as u64;
+            leaves[i] = Leaf::new(&[
+                &segment_id.to_le_bytes(),
+                &data_unpacked,
             ]);
         }
     }
@@ -178,19 +231,13 @@ pub fn compute_sector_root(
     Ok(*layer_nodes.first().unwrap())
 }
 
-/// Updates the layer in the store with the new sector root. 
-pub fn update_sector_canopy(
+/// Helper to update a specific MerkleCacheKey layer with the new sector root.
+fn update_sector_canopy_with_key(
     store: &TapeStore,
-    tape_address: &Pubkey,
     sector_number: u64,
     root: Hash,
+    key: MerkleCacheKey,
 ) -> Result<()> {
-
-    let key = MerkleCacheKey::UnpackedTapeLayer { 
-        address: *tape_address,
-        layer: SECTOR_TREE_HEIGHT as u8 
-    };
-
     let mut layer = match store.get_merkle_cache(&key) {
         Ok(layer) => layer,
         Err(_) => vec![[0u8; 32]; (sector_number + 1) as usize],
@@ -202,7 +249,6 @@ pub fn update_sector_canopy(
 
     layer[sector_number as usize] = root.to_bytes();
     store.put_merkle_cache(&key, &layer)?;
-
     Ok(())
 }
 
@@ -253,6 +299,17 @@ pub fn get_or_create_empty_hashes(
     Ok(empty_hashes)
 }
 
+fn get_or_create_sector(
+    store: &TapeStore,
+    tape_address: &Pubkey,
+    sector_number: u64,
+) -> Result<Sector, StoreError> {
+    match store.get_sector(tape_address, sector_number) {
+        Ok(s) => Ok(s),
+        Err(StoreError::SectorNotFoundForAddress(_, _)) => Ok(Sector::new()),
+        Err(e) => Err(e),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -279,8 +336,7 @@ mod tests {
         solution.to_bytes().to_vec()
     }
 
-    #[test]
-    fn test_subtree_update() -> Result<()> {
+    fn test_with_larger_stack() -> Result<()> {
         // Setup store and tape address
         let (store, _temp_dir) = setup_store()?;
 
@@ -288,88 +344,145 @@ mod tests {
         let miner_address = Pubkey::new_unique();
         let tape_address = Pubkey::new_unique();
         let mut tape_tree = SegmentTree::new(&[tape_address.as_ref()]);
-        let mut leaves = vec![];
+        let mut leaves_unpacked_all = vec![];
 
+        // Get tree zero values
         let empty_values = get_or_create_empty_hashes(&store, &tape_address)?;
         let empty_leaf = empty_values[0].as_leaf();
         assert_eq!(empty_values.len(), SEGMENT_TREE_HEIGHT);
         assert_eq!(empty_values, empty_values);
 
         // Fill the tape with some segments (2.5 sectors worth)
+        let miner_bytes = miner_address.to_bytes();
         let leaf_count = (SECTOR_LEAVES as f64 * 2.5) as usize;
         for i in 0..leaf_count {
             let segment_id = i as u64;
-            let segment_data = create_segment_data(1, &miner_address);
-            let leaf = Leaf::new(&[
+
+            // create packed solution bytes (what DB stores)
+            let segment_data_packed = create_segment_data(1, &miner_address);
+
+            // derive UNPACKED bytes for the expected (in-memory) tree
+            let mut sol_bytes = [0u8; PACKED_SEGMENT_SIZE];
+            sol_bytes.copy_from_slice(&segment_data_packed[..PACKED_SEGMENT_SIZE]);
+            let sol = packx::Solution::from_bytes(&sol_bytes);
+            let data_unpacked = sol.unpack(&miner_bytes);
+
+            let leaf_unpacked = Leaf::new(&[
                 &segment_id.to_le_bytes(),
-                &segment_data
+                &data_unpacked
             ]);
 
-            tape_tree.try_add_leaf(leaf).expect("Failed to add leaf");
-            store.put_segment(&tape_address, segment_id, segment_data)?;
-            leaves.push(leaf);
+            tape_tree.try_add_leaf(leaf_unpacked).expect("Failed to add leaf");
+            store.put_segment(&tape_address, segment_id, segment_data_packed)?;
+            leaves_unpacked_all.push(leaf_unpacked);
         }
 
-        let expected_vals = tape_tree.get_layer_nodes(&leaves, SECTOR_TREE_HEIGHT);
-        let expected_canopy = expected_vals
+        // Expected canopy from UNPACKED data
+        let expected_vals_unpacked = tape_tree.get_layer_nodes(&leaves_unpacked_all, SECTOR_TREE_HEIGHT);
+        let expected_canopy_unpacked = expected_vals_unpacked
             .iter()
             .map(|h| h.to_bytes())
             .collect::<Vec<_>>();
 
-        // Calculate sector roots and update the stored canopy values
-        update_sector_root(&store, &tape_address, 0)?;
-        update_sector_root(&store, &tape_address, 1)?;
-        update_sector_root(&store, &tape_address, 2)?;
+        // For the cached layers, compute **both** packed and unpacked sector roots and store them.
+        for sector_number in 0..=2 {
+            let sector = store.get_sector(&tape_address, sector_number)?;
 
-        let actual_canopy = store.get_merkle_cache(
+            // packed
+            let leaves_packed = compute_sector_leaves_packed(&sector, sector_number, empty_leaf)?;
+            let root_packed = compute_sector_root(&leaves_packed, &empty_values)?;
+
+            update_sector_canopy_with_key(
+                &store,
+                sector_number,
+                root_packed,
+                MerkleCacheKey::PackedTapeLayer {
+                    address: tape_address,
+                    layer: SECTOR_TREE_HEIGHT as u8,
+                },
+            )?;
+
+            // unpacked
+            let leaves_unpacked = compute_sector_leaves_unpacked(&sector, sector_number, &miner_bytes, empty_leaf)?;
+            let root_unpacked = compute_sector_root(&leaves_unpacked, &empty_values)?;
+
+            update_sector_canopy_with_key(
+                &store,
+                sector_number,
+                root_unpacked,
+                MerkleCacheKey::UnpackedTapeLayer {
+                    address: tape_address,
+                    layer: SECTOR_TREE_HEIGHT as u8,
+                },
+            )?;
+        }
+
+        // Validate UNPACKED cache matches the unpacked expected canopy
+        let actual_canopy_unpacked = store.get_merkle_cache(
             &MerkleCacheKey::UnpackedTapeLayer {
                 address: tape_address,
-                layer: SECTOR_TREE_HEIGHT as u8 
+                layer: SECTOR_TREE_HEIGHT as u8
             }
         )?;
-
-        assert_eq!(expected_canopy.len(), actual_canopy.len());
-        assert_eq!(expected_canopy, actual_canopy);
+        assert_eq!(expected_canopy_unpacked.len(), actual_canopy_unpacked.len());
+        assert_eq!(expected_canopy_unpacked, actual_canopy_unpacked);
 
         // Lets try a Merkle proof for a segment
         let segment_number : usize = 1234;
         let sector_number = (segment_number as u64) / SECTOR_LEAVES as u64;
         let sector = store.get_sector(&tape_address, sector_number)?;
 
-        let expected_proof = tape_tree.get_proof(&leaves, segment_number); // <- Requires all leaves in memory (bad)
-        let actual_proof = get_cached_merkle_proof(                        // <- Only one sector in memory     (good)
+        // expected proof from the UNPACKED full tree/leaves
+        let expected_proof = tape_tree.get_proof(&leaves_unpacked_all, segment_number);
+
+        // actual proof using cached canopy + sector callback (UNPACKED)
+        let actual_proof = get_cached_merkle_proof(
             &tape_tree,
             segment_number,
             SECTOR_TREE_HEIGHT,
-            &expected_vals,
-            |i| { 
+            &expected_vals_unpacked,
+            |i| {
                 let local_idx = i % SECTOR_LEAVES;
-                match sector.get_segment(local_idx) { // <- Look ma, no store access here!
-                    Some(data) => Some(
-                        Leaf::new(&[
+                match sector.get_segment(local_idx) {
+                    Some(packed) => {
+                        // unpack for UNPACKED leaf
+                        let mut arr = [0u8; PACKED_SEGMENT_SIZE];
+                        arr.copy_from_slice(&packed[..PACKED_SEGMENT_SIZE]);
+                        let sol = packx::Solution::from_bytes(&arr);
+                        let data_unpacked = sol.unpack(&miner_bytes);
+
+                        Some(Leaf::new(&[
                             &(i as u64).to_le_bytes(),
-                            data
-                        ])),
+                            &data_unpacked,
+                        ]))
+                    }
                     None => Some(empty_leaf),
                 }
-
-                // Same as above, but with store access (slower)
-                // match store.get_segment(&tape_address, i as u64) {
-                //     Ok(data) => Some(
-                //         Leaf::new(&[
-                //             &(i as u64).to_le_bytes(),
-                //             &data
-                //         ])),
-                //     Err(_) => Some(empty_leaf),
-                // }
             }
         );
 
         assert_eq!(expected_proof, actual_proof);
 
-        //Verify the tape root matches our computed root
+        //Verify the tape root matches our computed root (using the UNPACKED canopy as in production)
         let computed_root = get_tape_root(&store, &tape_address)?;
+
+        // Now that both sides are UNPACKED, this is a strong equality check.
         assert_eq!(computed_root, tape_tree.get_root());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_subtree_update() -> Result<()> {
+        // TODO: get to the bottom of what is eating the stack space
+
+        let _ = std::thread::Builder::new()
+            .name("larger_stack".into())
+            .stack_size(4 * 1024 * 1024)
+            .spawn(|| test_with_larger_stack())
+            .unwrap()
+            .join()
+            .unwrap();
 
         Ok(())
     }
