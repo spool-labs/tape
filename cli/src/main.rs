@@ -39,8 +39,14 @@ async fn run_tape_cli() -> Result<()> {
     log::print_title(format!("⊙⊙ TAPEDRIVE {}", env!("CARGO_PKG_VERSION")).as_str());
 
     let cli = Cli::parse();
-  
-    let config = match TapeConfig::load() {
+
+    let config = match if let Some(ref path) = cli.config_path {
+        let lossy = path.to_string_lossy().to_string();
+        let expanded = shellexpand::tilde(&lossy);
+        TapeConfig::load_from_path(expanded.to_string())
+    } else {
+        TapeConfig::load()
+    } {
         Ok(config) => config,
         Err(e) => match e {
             TapeConfigError::ConfigFileNotFound => {
