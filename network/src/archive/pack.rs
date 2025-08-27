@@ -54,6 +54,32 @@ pub fn pack_segment(miner_address: &Pubkey, segment: &[u8], packing_difficulty: 
     Ok(segment_bytes.to_vec())
 }
 
+/// Updates the Merkle subtree for a given segment number.
+pub fn update_segment_root(
+    store: &Arc<TapeStore>,
+    tape_address: &Pubkey,
+    segment_number: u64,
+) -> Result<()> {
+    let sector_number = segment_number / SECTOR_LEAVES as u64;
+    update_sector_root(store, tape_address, sector_number)
+}
+
+/// Updates the Merkle subtree for a given sector number.
+pub fn update_sector_root(
+    store: &Arc<TapeStore>,
+    tape_address: &Pubkey,
+    sector_number: u64,
+) -> Result<()> {
+
+    let empty_hashes = get_or_create_empty_hashes(store, tape_address)?;
+    let empty_leaf = empty_hashes.first().unwrap().as_leaf();
+
+    let leaves = compute_sector_leaves(store, tape_address, sector_number, empty_leaf)?;
+    let root = compute_sector_root(&leaves, &empty_hashes)?;
+
+    update_sector_canopy(store, tape_address, sector_number, root)
+}
+
 /// Computes the Merkle root for the entire tape by using a cached canopy of sector roots.
 pub fn get_tape_root(
     store: &Arc<TapeStore>,
@@ -94,32 +120,6 @@ pub fn get_tape_root(
     }
 
     Ok(canopy.get_root())
-}
-
-/// Updates the Merkle subtree for a given segment number.
-pub fn update_segment_root(
-    store: &Arc<TapeStore>,
-    tape_address: &Pubkey,
-    segment_number: u64,
-) -> Result<()> {
-    let sector_number = segment_number / SECTOR_LEAVES as u64;
-    update_sector_root(store, tape_address, sector_number)
-}
-
-/// Updates the Merkle subtree for a given sector number.
-pub fn update_sector_root(
-    store: &Arc<TapeStore>,
-    tape_address: &Pubkey,
-    sector_number: u64,
-) -> Result<()> {
-
-    let empty_hashes = get_or_create_empty_hashes(store, tape_address)?;
-    let empty_leaf = empty_hashes.first().unwrap().as_leaf();
-
-    let leaves = compute_sector_leaves(store, tape_address, sector_number, empty_leaf)?;
-    let root = compute_sector_root(&leaves, &empty_hashes)?;
-
-    update_sector_canopy(store, tape_address, sector_number, root)
 }
 
 /// Computes leaves for a sector from the store, filling with empty_leaf as needed.
