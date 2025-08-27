@@ -106,7 +106,7 @@ impl TapeConfig {
     pub fn load() -> Result<Self, TapeConfigError> {
         let home_dir = dirs::home_dir()
             .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
-        let config_path = home_dir.join("tape.toml");
+        let config_path = home_dir.join("tape.devnet.toml");
 
         Self::load_from_path(config_path)
     }
@@ -174,7 +174,7 @@ impl TapeConfig {
             
         let home_dir = dirs::home_dir()
             .ok_or(TapeConfigError::HomeDirectoryNotFound)?;
-        let config_path = home_dir.join("tape.toml");
+        let config_path = home_dir.join("tape.devnet.toml");
         
         fs::write(config_path, toml_string)
             .map_err(|e| TapeConfigError::DefaultConfigCreationFailed(format!("Write failed: {}", e)))?;
