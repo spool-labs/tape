@@ -1,19 +1,27 @@
+[mining_config]
+num_cores = 4                    
+max_memory_mb = 16384            
+max_poa_threads = 4
+max_pow_threads = 4
+
 [identity]
 keypair_path = "~/.config/solana/id.json"
 
 [solana]
-rpc_url = "https://api.devnet.solana.com"
-ws_url = "wss://api.devnet.solana.com/"
-commitment = "confirmed"
-priority_fee_lamports = 1000
-max_tx_retries = 3
+rpc_url = "https://api.mainnet-beta.solana.com"
+ws_url = "wss://api.mainnet-beta.solana.com/"
+commitment = "finalized"
+priority_fee_lamports = 2000
+max_transaction_retries = 5
 
 [storage]
-rocksdb_primary_path = "./db_tapestore"
-rocksdb_secondary_path = "./db_tapestore_secondary"
-rocksdb_cache_size_mb = 512
+backend = "rocksdb"
+
+[storage.rocksdb]
+primary_path = "./data/primary"
+secondary_path = "./data/secondary"
+cache_size_mb = 512
 
 [logging]
-log_level = "info"
-log_path = "./logs/tape.log"
-metrics_interval = 30
+log_level = "debug"
+log_path = "./test.log"
