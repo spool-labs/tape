@@ -1,23 +1,18 @@
 # TAPEDRIVE
 [![crates.io](https://img.shields.io/crates/v/tapedrive-cli.svg?style=flat)](https://crates.io/crates/tapedrive-cli)
 
-**Your data, permanently recorded** — uncensorable, ~~un~~editable (if you want), and here for good.
+**Decentralized object storage** on Solana. It works by compressing your data into tiny on-chain proofs. A network of miners then solve challenges in parallel to secure your data. It's entirely on Solana, so there's no need for side-chains or consensus overhead.
 
 ![image](https://github.com/user-attachments/assets/bf674eb1-512d-47e7-a9c5-e0d0e44c6edb)
 
-
-TAPEDRIVE makes it easy to read and write data on Solana. It's over 1,400x cheaper than using an account. It works by compressing your data into tiny on-chain proofs. A network of miners then solve challenges in parallel to secure your data. It's entirely on Solana, so there's no need for side-chains or consensus overhead.
-
 > [!Important]
-> The program is deployed on the Solana `devnet`, but **not** on `mainnet` yet.
+> Tapedrive is very much still in development, it is **not deployed** to mainnet yet.
+> 
+> [Sign up](https://tapedrive.io/#sign-up) to receive updates on network milestones and product releases. Join us on [Discord](https://discord.gg/dVa9TWA45X) to engage with our devs.
 
 ## Quick Start
 
-You can build the CLI using Cargo:
-
-```bash
-cargo install tapedrive-cli
-```
+Tapedrive makes it easy to read and write data on Solana. Follow the install instructions below to get started.
 
 #### Write
 
@@ -29,20 +24,16 @@ tapedrive write <filepath>
 tapedrive write -m "hello, world"
 ```
 
+```
+tapedrive write -r https://example.com/path/to/a/remote/file
+```
+
 #### Read
 ```
 tapedrive read <id>
 ```
 
-## Easy Install (version 1)
-
-We have an easy installer if you prefer not to build from source (**recommended**):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/spool-labs/deploy/refs/heads/main/scripts/install.sh | bash
-```
-
-## Run Latest (from source)
+## Install (from source)
 
 If you'd like to try out the latest version, you'll need to build from source. This will require that you have [Rust](https://www.rust-lang.org/tools/install) and [Solana](https://solana.com/docs/intro/installation) tooling installed.
 
@@ -78,7 +69,7 @@ When you want to retrieve your data, tapedrive reads the tape sequentially from 
 
 ----------------------
 
-## TAPENET
+## Tape://Net
 
 Beyond reading and writing, users can participate in the tape network. There are 3 primary functions, all can run on the same machine. 
 
