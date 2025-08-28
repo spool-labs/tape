@@ -1,9 +1,5 @@
 use tape_api::prelude::*;
 use tape_api::instruction::tape::Create;
-use solana_program::{
-    blake3::hashv,
-    slot_hashes::SlotHash,
-};
 use steel::*;
 
 pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -56,19 +52,11 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let tape = tape_info.as_account_mut::<Tape>(&tape_api::ID)?;
     let writer = writer_info.as_account_mut::<Writer>(&tape_api::ID)?;
 
-    let empty_seed = hashv(&[
-        tape_info.key.as_ref(),
-        &slot_hashes_info.data.borrow()[
-            0..core::mem::size_of::<SlotHash>()
-        ],
-    ]);
-
     tape.number            = 0; // (tapes get a number when finalized)
     tape.authority         = *signer_info.key;
     tape.name              = args.name;
     tape.state             = TapeState::Created.into();
     tape.total_segments    = 0;
-    tape.merkle_seed       = empty_seed.to_bytes();
     tape.merkle_root       = [0; 32];
     tape.header            = [0; HEADER_SIZE];
     tape.first_slot        = current_slot; 
@@ -76,7 +64,7 @@ pub fn process_tape_create(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     tape.pda_bump          = tape_bump as u64;
 
     writer.tape            = *tape_info.key;
-    writer.state           = SegmentTree::new(&[empty_seed.as_ref()]);
+    writer.state           = SegmentTree::new(&[tape_info.key.as_ref()]);
     writer.pda_bump        = writer_bump as u64;
 
     Ok(())

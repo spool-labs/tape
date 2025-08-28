@@ -10,7 +10,6 @@ pub struct Spool {
 
     pub authority: Pubkey,
     pub state:     TapeTree, 
-    pub seed:      [u8; 32],
     pub contains:  [u8; 32], 
 
     pub total_tapes: u64,

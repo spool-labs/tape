@@ -3222,12 +3222,12 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "packx"
-version = "0.2.5"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "232f2167e6a2d118a0ab59f4f85e987f8c0616c9a09eefcd8e22733b723ab001"
+checksum = "47bfbeb8a641f959d048c4adf9d66d602e35791061ee003920b6b41e2253ecc1"
 dependencies = [
+ "blake3",
  "bytemuck",
- "sha3",
  "solana-program",
 ]
 
