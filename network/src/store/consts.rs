@@ -1,4 +1,5 @@
-pub const SECTOR_LEAVES: usize = 1 << 10;
+pub const SECTOR_TREE_HEIGHT: usize = 10;
+pub const SECTOR_LEAVES: usize = 1 << SECTOR_TREE_HEIGHT; // 1024 leaves
 pub const SECTOR_BITMAP_BYTES: usize = SECTOR_LEAVES / 8;
 pub const SECTOR_HEADER_BYTES: usize = SECTOR_BITMAP_BYTES + 32;
 
