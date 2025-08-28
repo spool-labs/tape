@@ -21,6 +21,8 @@ pub struct Miner {
 
     pub total_proofs: u64,
     pub total_rewards: u64,
+
+    pub pda_bump: u64
 }
 
 state!(AccountType, Miner);

@@ -16,25 +16,14 @@ pub fn process_airdrop(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResu
 
     // Verify signer
     signer_info.is_signer()?;
+    beneficiary_info.has_address(signer_info.key)?;
 
     // Verify accounts
     let (mint_address, _mint_bump) = mint_pda();
-    let (treasury_address, _treasury_bump) = treasury_pda();
 
     mint_info
         .is_writable()?
         .has_address(&mint_address)?;
-    treasury_info
-        .is_treasury()?
-        .has_address(&treasury_address)?;
-    token_program_info
-        .is_program(&spl_token::ID)?;
-
-    // Verify beneficiary is a valid ATA
-    beneficiary_info
-        .is_writable()?
-        .as_token_account()?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     // Parse amount
     let amount = u64::from_le_bytes(args.amount);

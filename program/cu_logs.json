@@ -1,0 +1,292 @@
+[
+  {
+    "timestamp": "2025-08-21 22:19:10",
+    "entries": {
+      "SpoolUnpack": {
+        "value": 44260,
+        "diff": 20
+      },
+      "MinerClaim": {
+        "value": 12652,
+        "diff": 0
+      },
+      "TapeCreate": {
+        "value": 100712,
+        "diff": 15000
+      },
+      "SpoolCreate": {
+        "value": 11676,
+        "diff": -9000
+      },
+      "TapeSubsidize": {
+        "value": 39028,
+        "diff": 0
+      },
+      "TapeFinalize": {
+        "value": 14852,
+        "diff": 0
+      },
+      "SpoolCommit": {
+        "value": 60814,
+        "diff": 140
+      },
+      "SpoolPack": {
+        "value": 23124,
+        "diff": 4
+      },
+      "MinerRegister": {
+        "value": 12316,
+        "diff": 3000
+      },
+      "MinerMine": {
+        "value": 5450328,
+        "diff": -2467
+      },
+      "ProgramInitialize": {
+        "value": 213433,
+        "diff": -23988
+      },
+      "TapeWrite": {
+        "value": 160232,
+        "diff": 68
+      },
+      "TapeUpdate": {
+        "value": 51772,
+        "diff": 32
+      }
+    },
+    "checksum": "3315ad2f406b7f170a7403f3a0aa5cc5d9cc150ea26b65900f931e421297dafc"
+  },
+  {
+    "timestamp": "2025-08-21 22:17:40",
+    "entries": {
+      "ProgramInitialize": {
+        "value": 237421,
+        "diff": 29988
+      },
+      "MinerClaim": {
+        "value": 12652,
+        "diff": 0
+      },
+      "TapeSubsidize": {
+        "value": 39028,
+        "diff": 0
+      },
+      "TapeUpdate": {
+        "value": 51740,
+        "diff": -64
+      },
+      "MinerRegister": {
+        "value": 9316,
+        "diff": -3000
+      },
+      "SpoolCommit": {
+        "value": 60674,
+        "diff": -96
+      },
+      "MinerMine": {
+        "value": 5452795,
+        "diff": -1631
+      },
+      "TapeFinalize": {
+        "value": 14852,
+        "diff": 0
+      },
+      "TapeCreate": {
+        "value": 85712,
+        "diff": -21000
+      },
+      "SpoolPack": {
+        "value": 23120,
+        "diff": 4
+      },
+      "SpoolUnpack": {
+        "value": 44240,
+        "diff": 12
+      },
+      "SpoolCreate": {
+        "value": 20676,
+        "diff": -6000
+      },
+      "TapeWrite": {
+        "value": 160164,
+        "diff": -124
+      }
+    },
+    "checksum": "4290d1423ddd96000fe0549430886f477a4606f636f9cb16db19992015c0e367"
+  },
+  {
+    "timestamp": "2025-08-21 22:17:28",
+    "entries": {
+      "SpoolCreate": {
+        "value": 26676,
+        "diff": 15000
+      },
+      "TapeSubsidize": {
+        "value": 39028,
+        "diff": 0
+      },
+      "SpoolPack": {
+        "value": 23116,
+        "diff": -4
+      },
+      "MinerRegister": {
+        "value": 12316,
+        "diff": -3000
+      },
+      "TapeCreate": {
+        "value": 106712,
+        "diff": -18000
+      },
+      "MinerClaim": {
+        "value": 12652,
+        "diff": 0
+      },
+      "TapeFinalize": {
+        "value": 14852,
+        "diff": 0
+      },
+      "SpoolCommit": {
+        "value": 60770,
+        "diff": 80
+      },
+      "MinerMine": {
+        "value": 5454426,
+        "diff": 3331
+      },
+      "SpoolUnpack": {
+        "value": 44228,
+        "diff": 36
+      },
+      "ProgramInitialize": {
+        "value": 207433,
+        "diff": -23992
+      },
+      "TapeWrite": {
+        "value": 160288,
+        "diff": 56
+      },
+      "TapeUpdate": {
+        "value": 51804,
+        "diff": 20
+      }
+    },
+    "checksum": "d1e1a63fa34b56270ba461332673ddea15b4e0dde564e346309c51381cbd7292"
+  },
+  {
+    "timestamp": "2025-08-21 22:17:12",
+    "entries": {
+      "MinerRegister": {
+        "value": 15316,
+        "diff": 6000
+      },
+      "MinerMine": {
+        "value": 5451095,
+        "diff": 6247
+      },
+      "MinerClaim": {
+        "value": 12652,
+        "diff": 0
+      },
+      "SpoolUnpack": {
+        "value": 44192,
+        "diff": 12
+      },
+      "SpoolCreate": {
+        "value": 11676,
+        "diff": -3000
+      },
+      "TapeCreate": {
+        "value": 124712,
+        "diff": 33000
+      },
+      "TapeFinalize": {
+        "value": 14852,
+        "diff": 0
+      },
+      "TapeSubsidize": {
+        "value": 39028,
+        "diff": 0
+      },
+      "TapeUpdate": {
+        "value": 51784,
+        "diff": -44
+      },
+      "SpoolPack": {
+        "value": 23120,
+        "diff": 4
+      },
+      "TapeWrite": {
+        "value": 160232,
+        "diff": 28
+      },
+      "ProgramInitialize": {
+        "value": 231425,
+        "diff": -4
+      },
+      "SpoolCommit": {
+        "value": 60690,
+        "diff": -256
+      }
+    },
+    "checksum": "2b9805b977b89f9d938ee8afcf91da4861f758250e4fdeb482f960fc5b29cf1c"
+  },
+  {
+    "timestamp": "2025-08-07 09:49:40",
+    "entries": {
+      "SpoolUnpack": {
+        "value": 44180,
+        "diff": 4
+      },
+      "MinerClaim": {
+        "value": 12652,
+        "diff": 0
+      },
+      "SpoolCreate": {
+        "value": 14676,
+        "diff": 0
+      },
+      "MinerRegister": {
+        "value": 9316,
+        "diff": -3000
+      },
+      "TapeSubsidize": {
+        "value": 39028,
+        "diff": 0
+      },
+      "SpoolPack": {
+        "value": 23116,
+        "diff": 20
+      },
+      "TapeWrite": {
+        "value": 160204,
+        "diff": 40
+      },
+      "MinerMine": {
+        "value": 5444848,
+        "diff": -8392
+      },
+      "TapeCreate": {
+        "value": 91712,
+        "diff": -15000
+      },
+      "ProgramInitialize": {
+        "value": 231429,
+        "diff": 24000
+      },
+      "SpoolCommit": {
+        "value": 60946,
+        "diff": 24
+      },
+      "TapeFinalize": {
+        "value": 14852,
+        "diff": 0
+      },
+      "TapeUpdate": {
+        "value": 51828,
+        "diff": 0
+      }
+    },
+    "checksum": "842699f3678d457ec8ad259095b07d0bf9303baa8d227a3fb8c540b865e3cc06"
+  }
+]

@@ -1,11 +1,10 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_unregister(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+pub fn process_unregister(accounts: &[AccountInfo<'_>]) -> ProgramResult {
     let [
         signer_info, 
         miner_info, 
-        system_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -20,9 +19,6 @@ pub fn process_unregister(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             ProgramError::MissingRequiredSignature,
         )?
         .assert(|p| p.unclaimed_rewards == 0)?;
-
-    system_program_info
-        .is_program(&system_program::ID)?;
 
     // Return rent to signer.
     miner_info.close(signer_info)?;
