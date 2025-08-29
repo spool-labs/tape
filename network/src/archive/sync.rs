@@ -9,13 +9,14 @@ use tokio::task::JoinSet;
 
 use tape_client::{
     get_block_by_number, get_archive_account, get_tape_account, find_tape_account, init_read,
-    process_next_block, get_epoch_account
+    process_next_block, 
+    //get_epoch_account
 };
 use tape_client::utils::{process_block, ProcessedBlock};
 
 use crate::store::*;
 use crate::utils::peer;
-use super::pack::pack_segment;
+//use super::pack::pack_segment;
 use super::queue::{Tx, SegmentJob};
 
 /// Syncs missing tape addresses from either a trusted peer or Solana RPC.
@@ -231,19 +232,20 @@ pub async fn sync_from_block(
         }
 
         // Fetch packing difficulty for the current slot
-        let epoch = get_epoch_account(client)
-            .await
-            .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
-
-        let packing_difficulty = epoch.packing_difficulty;
-
-        for (key, data) in segment_writes {
-            if key.address != *tape_address {
-                continue;
-            }
-            let processed_segment = pack_segment(&key.address, &data, packing_difficulty)?;
-            store.put_segment(&key.address, key.segment_number, processed_segment)?;
-        }
+        // let epoch = get_epoch_account(client)
+        //     .await
+        //     .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
+        //
+        // let packing_difficulty = epoch.packing_difficulty;
+        //
+        // for (key, data) in segment_writes {
+        //     if key.address != *tape_address {
+        //         continue;
+        //     }
+        //     // TODO: this is a bug, we need the mining address here.
+        //     let processed_segment = pack_segment(&key.address, &data, packing_difficulty)?;
+        //     store.put_segment(&key.address, key.segment_number, processed_segment)?;
+        // }
 
         for parent in parents {
             stack.push(parent);

@@ -1,84 +1,109 @@
 use solana_sdk::pubkey::Pubkey;
-use rocksdb::WriteBatch;
-use bytemuck::bytes_of;
 use tape_api::consts::PACKED_SEGMENT_SIZE;
 use crate::store::*;
 use crate::metrics::inc_total_segments_written;
 
 pub trait SegmentOps {
-    fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError>;
     fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError>;
+    fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError>;
+    fn get_segment_range(&self, tape_address: &Pubkey, start: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError>;
     fn get_tape_segments(&self, tape_address: &Pubkey) -> Result<Vec<(u64, Vec<u8>)>, StoreError>;
+    fn get_segment_count(&self, tape_address: &Pubkey) -> Result<usize, StoreError>;
 }
 
 impl SegmentOps for TapeStore {
-    fn get_segment(&self, tape_address: &Pubkey, global_seg_idx: u64) -> Result<Vec<u8>, StoreError> {
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let sector = self.get_sector(tape_address, sector_number)?;
-        
-        // Check bitmap
-        let bitmap_idx = local_seg_idx / 8;
-        let bit_pos = local_seg_idx % 8;
-        if (sector.0[bitmap_idx] & (1 << bit_pos)) == 0 {
-            return Err(StoreError::SegmentNotFoundForAddress(tape_address.to_string(), global_seg_idx));
-        }
-        
-        let seg_start = SECTOR_HEADER_BYTES + local_seg_idx * PACKED_SEGMENT_SIZE;
-        Ok(sector.0[seg_start..seg_start + PACKED_SEGMENT_SIZE].to_vec())
+    fn get_segment(&self, tape_address: &Pubkey, segment_number: u64) -> Result<Vec<u8>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
+        let mut key = Vec::with_capacity(40);
+        key.extend_from_slice(&tape_address.to_bytes());
+        key.extend_from_slice(&segment_number.to_be_bytes());
+        let segment_data = self
+            .db
+            .get_cf(&cf, &key)?
+            .ok_or(StoreError::SegmentNotFound(tape_address.to_string(), segment_number))?;
+        Ok(segment_data)
     }
 
-    fn put_segment(&self, tape_address: &Pubkey, global_seg_idx: u64, seg: Vec<u8>) -> Result<(), StoreError> {
-        if seg.len() != PACKED_SEGMENT_SIZE {
-            return Err(StoreError::InvalidSegmentSize(seg.len()));
+    fn put_segment(&self, tape_address: &Pubkey, segment_number: u64, data: Vec<u8>) -> Result<(), StoreError> {
+        if data.len() > PACKED_SEGMENT_SIZE {
+            return Err(StoreError::InvalidSegmentSize(PACKED_SEGMENT_SIZE));
         }
-        
-        let sector_number = global_seg_idx / SECTOR_LEAVES as u64;
-        let local_seg_idx = (global_seg_idx % SECTOR_LEAVES as u64) as usize;
-        
-        let cf_sectors = self.get_cf_handle(ColumnFamily::Sectors)?;
-        
-        let mut sector = self.get_sector(tape_address, sector_number).unwrap_or_else(|_| Sector::new());
-        sector.set_segment(local_seg_idx, &seg);
-        
-        let mut batch = WriteBatch::default();
-        let mut key = Vec::with_capacity(TAPE_STORE_SLOTS_KEY_SIZE);
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
+        let mut key = Vec::with_capacity(40);
         key.extend_from_slice(&tape_address.to_bytes());
-        key.extend_from_slice(&sector_number.to_be_bytes());
-        batch.put_cf(&cf_sectors, &key, bytes_of(&sector));
-        
-        self.db.write(batch)?;
+        key.extend_from_slice(&segment_number.to_be_bytes());
+        self.db.put_cf(&cf, &key, &data)?;
         inc_total_segments_written();
+
         Ok(())
     }
 
-    fn get_tape_segments(&self, tape_address: &Pubkey) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
+    fn get_segment_range(&self, tape_address: &Pubkey, start: u64, end: u64) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
         let prefix = tape_address.to_bytes().to_vec();
-        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
-        let mut segments = Vec::new();
 
+        let mut segments = Vec::new();
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
         for item in iter {
-            let (key, data) = item?;
-            if key.len() < TAPE_STORE_SLOTS_KEY_SIZE {
+            let (key, value) = item?;
+            if key.len() != 40 {
                 continue;
             }
-            let sector_number = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
-            
-            let sector: Sector = *bytemuck::try_from_bytes(&data)
-                .map_err(|_| StoreError::InvalidSectorSize(data.len()))?;
-            
-            for local_idx in 0..SECTOR_LEAVES {
-                if let Some(segment_data) = sector.get_segment(local_idx) {
-                    let global_index = sector_number * SECTOR_LEAVES as u64 + local_idx as u64;
-                    segments.push((global_index, segment_data.to_vec()));
-                }
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            let segment_number = u64::from_be_bytes(
+                key[32..TAPE_STORE_SLOTS_KEY_SIZE]
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidSegmentKey)?,
+            );
+            if segment_number >= start && segment_number < end {
+                segments.push((segment_number, value.to_vec()));
             }
         }
 
-        segments.sort_by_key(|(idx, _)| *idx);
+        // Since the iterator is sorted by key (and thus by segment_number), the segments are already in order
         Ok(segments)
+    }
+
+    fn get_tape_segments(&self, tape_address: &Pubkey) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
+        let prefix = tape_address.to_bytes().to_vec();
+
+        let mut segments = Vec::new();
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+        for item in iter {
+            let (key, value) = item?;
+            if key.len() != 40 {
+                continue;
+            }
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            let segment_number = u64::from_be_bytes(
+                key[32..TAPE_STORE_SLOTS_KEY_SIZE]
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidSegmentKey)?,
+            );
+            segments.push((segment_number, value.to_vec()));
+        }
+
+        // Since the iterator is sorted by key (and thus by segment_number), the segments are already in order
+        Ok(segments)
+    }
+
+    fn get_segment_count(
+        &self,
+        tape_address: &Pubkey,
+    ) -> Result<usize, StoreError> {
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
+        let prefix = tape_address.to_bytes().to_vec();
+        let iter = self.db.prefix_iterator_cf(&cf, &prefix);
+        let count = iter.count();
+        Ok(count)
     }
 }
 
@@ -112,65 +137,122 @@ mod tests {
     }
 
     #[test]
-    fn test_put_segment_count() -> Result<(), StoreError> {
+    fn test_get_segment_not_found() -> Result<(), StoreError> {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
-        let data = make_data(42);
+        let global_seg_idx = 0;
+        let result = store.get_segment(&address, global_seg_idx);
+        assert!(matches!(result, Err(StoreError::SegmentNotFound(_, _))));
+        Ok(())
+    }
 
-        // Write two new segments in the same sector
-        store.put_segment(&address, 0, data.clone())?;
-        store.put_segment(&address, 1, data.clone())?;
-        assert_eq!(store.get_sector_count(&address)?, 1);
-
-        // Overwrite existing segment (should not change sector count)
-        store.put_segment(&address, 0, data.clone())?;
-        assert_eq!(store.get_sector_count(&address)?, 1);
-
-        // Write new segment in a new sector
-        store.put_segment(&address, SECTOR_LEAVES as u64, data)?;
-        assert_eq!(store.get_sector_count(&address)?, 2);
+    #[test]
+    fn test_put_segment_too_large() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let global_seg_idx = 0;
+        let oversized_data = vec![42u8; (PACKED_SEGMENT_SIZE as usize) + 1];
+        let result = store.put_segment(&address, global_seg_idx, oversized_data);
+        assert!(matches!(result, Err(StoreError::InvalidSegmentSize(_))));
         Ok(())
     }
 
     #[test]
     fn test_get_tape_segments() -> Result<(), StoreError> {
-        let (store, _tmp) = setup_store()?;
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let data0 = make_data(0);
+        let data1 = make_data(1);
+        let data2 = make_data(2);
+
+        store.put_segment(&address, 0, data0.clone())?;
+        store.put_segment(&address, 1, data1.clone())?;
+        store.put_segment(&address, 2, data2.clone())?;
+
+        let segments = store.get_tape_segments(&address)?;
+        assert_eq!(segments.len(), 3);
+
+        let mut retrieved_segments = segments.clone();
+        retrieved_segments.sort_by_key(|(idx, _)| *idx);
+
+        assert_eq!(retrieved_segments[0].0, 0);
+        assert_eq!(retrieved_segments[0].1, data0);
+        assert_eq!(retrieved_segments[1].0, 1);
+        assert_eq!(retrieved_segments[1].1, data1);
+        assert_eq!(retrieved_segments[2].0, 2);
+        assert_eq!(retrieved_segments[2].1, data2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_segment_count() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
 
-        // Pick a few scattered indices across 3 sectors
-        let idx_sector0_a = 0u64;
-        let idx_sector0_b = 5u64;
-        let idx_sector1_a = SECTOR_LEAVES as u64; // first in sector 1
-        let idx_sector1_b = SECTOR_LEAVES as u64 + 10;
-        let idx_sector2_a = SECTOR_LEAVES as u64 * 2; // first in sector 2
+        // Initially empty
+        assert_eq!(store.get_segment_count(&address)?, 0);
 
-        // Write them
-        store.put_segment(&address, idx_sector0_a, make_data(10))?;
-        store.put_segment(&address, idx_sector0_b, make_data(20))?;
-        store.put_segment(&address, idx_sector1_a, make_data(30))?;
-        store.put_segment(&address, idx_sector1_b, make_data(40))?;
-        store.put_segment(&address, idx_sector2_a, make_data(50))?;
+        let data0 = make_data(0);
+        store.put_segment(&address, 0, data0.clone())?;
+        assert_eq!(store.get_segment_count(&address)?, 1);
 
-        // Read back
-        let segments = store.get_tape_segments(&address)?;
+        let data1 = make_data(1);
+        store.put_segment(&address, 1, data1.clone())?;
+        assert_eq!(store.get_segment_count(&address)?, 2);
 
-        // We expect exactly 5 entries in ascending global index order
-        let expected_indices = [
-            idx_sector0_a,
-            idx_sector0_b,
-            idx_sector1_a,
-            idx_sector1_b,
-            idx_sector2_a,
-        ];
-        assert_eq!(segments.len(), expected_indices.len());
-        for (i, (idx, data)) in segments.iter().enumerate() {
-            assert_eq!(*idx, expected_indices[i], "segment index mismatch");
-            assert_eq!(data[0], (i as u8 + 1) * 10, "segment data mismatch at index {}", idx);
-            assert_eq!(data.len(), PACKED_SEGMENT_SIZE);
-        }
+        let data2 = make_data(2);
+        store.put_segment(&address, 2, data2.clone())?;
+        assert_eq!(store.get_segment_count(&address)?, 3);
 
-        // Check that sector count is 3
-        assert_eq!(store.get_sector_count(&address)?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_segment_range() -> Result<(), StoreError> {
+        let (store, _temp_dir) = setup_store()?;
+        let address = Pubkey::new_unique();
+        let data0 = make_data(0);
+        let data1 = make_data(1);
+        let data2 = make_data(2);
+        let data3 = make_data(3);
+
+        store.put_segment(&address, 0, data0.clone())?;
+        store.put_segment(&address, 1, data1.clone())?;
+        store.put_segment(&address, 2, data2.clone())?;
+        store.put_segment(&address, 3, data3.clone())?;
+
+        // Test full range equivalent to get_tape_segments
+        let full_range = store.get_segment_range(&address, 0, 4)?;
+        assert_eq!(full_range.len(), 4);
+        let mut full_retrieved = full_range.clone();
+        full_retrieved.sort_by_key(|(idx, _)| *idx);
+        assert_eq!(full_retrieved[0].0, 0);
+        assert_eq!(full_retrieved[0].1, data0);
+        assert_eq!(full_retrieved[1].0, 1);
+        assert_eq!(full_retrieved[1].1, data1);
+        assert_eq!(full_retrieved[2].0, 2);
+        assert_eq!(full_retrieved[2].1, data2);
+        assert_eq!(full_retrieved[3].0, 3);
+        assert_eq!(full_retrieved[3].1, data3);
+
+        // Test partial range 1 to 3
+        let partial_range = store.get_segment_range(&address, 1, 3)?;
+        assert_eq!(partial_range.len(), 2);
+        let mut partial_retrieved = partial_range.clone();
+        partial_retrieved.sort_by_key(|(idx, _)| *idx);
+        assert_eq!(partial_retrieved[0].0, 1);
+        assert_eq!(partial_retrieved[0].1, data1);
+        assert_eq!(partial_retrieved[1].0, 2);
+        assert_eq!(partial_retrieved[1].1, data2);
+
+        // Test empty range start >= end
+        let empty_range = store.get_segment_range(&address, 2, 2)?;
+        assert_eq!(empty_range.len(), 0);
+
+        // Test range beyond existing segments
+        let beyond_range = store.get_segment_range(&address, 4, 5)?;
+        assert_eq!(beyond_range.len(), 0);
 
         Ok(())
     }
