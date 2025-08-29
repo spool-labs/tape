@@ -408,10 +408,10 @@ mod tests {
             let segment_data_packed = create_segment_data(1, &miner_address);
 
             // For the in-memory expected tree, use UNPACKED bytes
-            let mut sol_bytes = [0u8; PACKED_SEGMENT_SIZE];
-            sol_bytes.copy_from_slice(&segment_data_packed[..PACKED_SEGMENT_SIZE]);
-            let sol = packx::Solution::from_bytes(&sol_bytes);
-            let data_unpacked = sol.unpack(&miner_bytes);
+            let mut data = [0u8; PACKED_SEGMENT_SIZE];
+            data.copy_from_slice(&segment_data_packed[..PACKED_SEGMENT_SIZE]);
+            let solution = packx::Solution::from_bytes(&data);
+            let data_unpacked = solution.unpack(&miner_bytes);
 
             let leaf = Leaf::new(&[
                 &segment_id.to_le_bytes(),
@@ -455,10 +455,10 @@ mod tests {
             |i| { 
                 match store.get_segment(&tape_address, i as u64) {
                     Ok(packed) => {
-                        let mut arr = [0u8; PACKED_SEGMENT_SIZE];
-                        arr.copy_from_slice(&packed[..PACKED_SEGMENT_SIZE]);
-                        let sol = packx::Solution::from_bytes(&arr);
-                        let data_unpacked = sol.unpack(&miner_bytes);
+                        let mut data = [0u8; PACKED_SEGMENT_SIZE];
+                        data.copy_from_slice(&packed[..PACKED_SEGMENT_SIZE]);
+                        let solution = packx::Solution::from_bytes(&data);
+                        let data_unpacked = solution.unpack(&miner_bytes);
 
                         Some(Leaf::new(&[
                             &(i as u64).to_le_bytes(),

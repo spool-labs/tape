@@ -6,6 +6,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, pubkey::Pubkey};
 use tape_client::mine::mine::perform_mining;
 use tokio::time::{sleep, Duration};
+use brine_tree::{Hash, Leaf, get_cached_merkle_proof};
 
 use crankx::equix::SolverMemory;
 use crankx::{
@@ -128,43 +129,60 @@ async fn try_mine_iteration(
             tape.total_segments
         );
 
-        // Unpack the whole tape (temporary code for now...)
-        // (todo: this could be up to 32Mb and not really trival with ~262k segments)
-
-        let segments = store.get_tape_segments(&tape_address)?;
-        if segments.len() != tape.total_segments as usize {
-            // TODO: we need to refetch the tape segments from the network
-            return Err(anyhow!("Local store is missing some segments for tape number {}: expected {}, got {}", 
-                tape_address, tape.total_segments, segments.len()));
-        }
-
-        let mut leaves = Vec::new();
-        let mut packed_segment = [0; PACKED_SEGMENT_SIZE];
-        let mut unpacked_segment = [0; SEGMENT_SIZE];
-
-        for (segment_id, packed_data) in segments.iter() {
-            let mut data = [0u8; PACKED_SEGMENT_SIZE];
-            data.copy_from_slice(&packed_data[..PACKED_SEGMENT_SIZE]);
-
-            let solution = packx::Solution::from_bytes(&data);
-            let segement_data = solution.unpack(&miner_address.to_bytes());
-
-            let leaf = compute_leaf(
-                *segment_id,
-                &segement_data,
-            );
-
-            leaves.push(leaf);
-
-            if *segment_id == segment_number {
-                packed_segment.copy_from_slice(&data);
-                unpacked_segment.copy_from_slice(&segement_data);
+        let canopy_values = store.get_merkle_cache(
+            &MerkleCacheKey::UnpackedTapeLayer {
+                address: tape_address,
+                layer: SECTOR_TREE_HEIGHT as u8 
             }
-        }
+        )?;
 
-        if packed_segment == [0; PACKED_SEGMENT_SIZE] {
-            return Err(anyhow!("Segment number {} not found in tape {}", segment_number, tape_address));
-        }
+        let canopy_hashes: Vec<_> = canopy_values
+            .into_iter()
+            .map(Hash::from)
+            .collect();
+
+        let miner_bytes = miner_address.to_bytes();
+        let merkle_tree = SegmentTree::new(&[tape_address.as_ref()]);
+
+        // This only fetches 1024 segments max, which is fine for now (~150kb in total)
+        let get_leaf = |i| { 
+            match store.get_segment(&tape_address, i as u64) {
+                Ok(packed) => {
+                    let mut data = [0u8; PACKED_SEGMENT_SIZE];
+                    data.copy_from_slice(&packed[..PACKED_SEGMENT_SIZE]);
+                    let solution = packx::Solution::from_bytes(&data);
+                    let data_unpacked = solution.unpack(&miner_bytes);
+
+                    Some(Leaf::new(&[
+                        &(i as u64).to_le_bytes(),
+                        &data_unpacked
+                    ]))
+                }
+                _ => Some(merkle_tree.get_empty_leaf()),
+            }
+        };
+
+        // Get the Merkle proof for the segment (using a pre-cached canopy)
+        let proof_nodes = get_cached_merkle_proof(
+            &merkle_tree,
+            segment_number as usize,
+            SECTOR_TREE_HEIGHT,
+            &canopy_hashes,
+            get_leaf
+        );
+
+        let proof_nodes: Vec<[u8; 32]> = proof_nodes
+            .into_iter()
+            .map(|h| h.to_bytes())
+            .collect();
+
+        let proof_path = ProofPath::from_slice(&proof_nodes).unwrap();
+
+        let segment = store.get_segment(&tape_address, segment_number)?;
+        let mut packed_segment = [0; PACKED_SEGMENT_SIZE];
+        packed_segment.copy_from_slice(&segment[..PACKED_SEGMENT_SIZE]);
+        let solution = packx::Solution::from_bytes(&packed_segment);
+        let unpacked_segment = solution.unpack(&miner_address.to_bytes());
 
         let poa_solution = packx::Solution::from_bytes(&packed_segment);
         let pow_solution = solve_challenge(
@@ -174,15 +192,6 @@ async fn try_mine_iteration(
         ).unwrap();
 
         debug_assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
-
-        let merkle_tree = SegmentTree::new(&[tape_address.as_ref()]);
-        let proof_nodes: Vec<[u8; 32]> = merkle_tree
-            .get_proof(&leaves, segment_number as usize)
-            .into_iter()
-            .map(|h| h.to_bytes())
-            .collect();
-
-        let proof_path = ProofPath::from_slice(&proof_nodes).unwrap();
 
         let pow = PoW::from_solution(&pow_solution);
         let poa = PoA::from_solution(&poa_solution, proof_path);
