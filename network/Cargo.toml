@@ -60,3 +60,7 @@ rand = "0.8"
 [[bench]]
 name = "tape_store_bench"
 harness = false
+
+[[bench]]
+name = "disk_size_bench"
+harness = false
