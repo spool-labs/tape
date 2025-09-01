@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
@@ -10,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::keypair::{get_keypair_path, get_payer};
+use crate::config::TapeConfig;
 
 #[derive(Parser)]
 #[command(
@@ -22,17 +22,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
+    #[arg(short = 'c', long = "config", help = "Path to config file (overrides default)", global = true)]
+    pub config_path: Option<PathBuf>,
+
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
-
-    #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
-        global = true,
-        help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
-    )]
-    pub cluster: Cluster,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -245,13 +239,14 @@ pub struct Context {
 }
 
 impl Context{
-    pub fn try_build(cli:&Cli) -> Result<Self> {
-        let rpc_url = cli.cluster.rpc_url();
+    pub fn try_build(_cli:&Cli, config: &TapeConfig) -> Result<Self> {
+        let rpc_url = config.solana.rpc_url.to_string();
+        let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            commitment_level)
         );
-        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+        let keypair_path = get_keypair_path(Some(PathBuf::from(&*shellexpand::tilde(&config.identity.keypair_path))));
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
