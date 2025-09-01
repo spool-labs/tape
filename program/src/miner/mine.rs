@@ -9,6 +9,7 @@ const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     msg!("Starting mine instruction processing");
     let current_time = Clock::get()?.unix_timestamp;
+    msg!("data size: {}", data.len());
     let args = Mine::try_from_bytes(data)?;
 
     let [

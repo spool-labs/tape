@@ -5,6 +5,7 @@ use brine_tree::{Leaf, Hash, MerkleTree};
 use tape_api::prelude::*;
 use tape_client::get_epoch_account;
 use solana_client::nonblocking::rpc_client::RpcClient;
+use packx::{solve_with_memory, build_memory, SolverMemory};
 
 use crate::store::*;
 use super::queue::Rx;
@@ -15,15 +16,22 @@ type CanopyTree = MerkleTree<{ SEGMENT_TREE_HEIGHT - SECTOR_TREE_HEIGHT }>;
 pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<TapeStore>) -> Result<()> {
     let epoch = get_epoch_account(&rpc).await?.0;
     let packing_difficulty = epoch.packing_difficulty;
+    let miner_bytes = miner.to_bytes();
+    let mem = Arc::new(build_memory(&miner_bytes));
+
+    // TODO: scale the thread count based on job queue depth (but also don't get in the way of the
+    // miner threads)
 
     while let Some(job) = rx.recv().await {
         let store = store.clone();
+        let mem = mem.clone();
 
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            log::info!("packx: tape={} seg={}", job.tape, job.seg_no);
+            log::info!("packx: tape={} seg={} diff={}", job.tape, job.seg_no, packing_difficulty);
 
             pack_segment(
                 &store,
+                &mem,
                 &miner, 
                 &job.tape, 
                 job.data, 
@@ -51,6 +59,7 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
 /// Can be quite CPU intensive if the difficulty is high.
 pub fn pack_segment(
     store: &Arc<TapeStore>,
+    mem: &Arc<SolverMemory>,
     miner_address: &Pubkey,
     tape_address: &Pubkey,
     segment_data: Vec<u8>,
@@ -62,9 +71,9 @@ pub fn pack_segment(
     let segment_bytes = padded_array::<SEGMENT_SIZE>(&segment_data);
 
     // Pack the segment into a miner-specific solution
-    let solution = packx::solve(
-        &miner_bytes,
+    let solution = solve_with_memory(
         &segment_bytes, 
+        mem,
         difficulty as u32
     ).ok_or_else(|| anyhow!("Failed to find solution"))?;
 
