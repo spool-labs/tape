@@ -380,14 +380,14 @@ mod tests {
         Ok((Arc::new(store), temp_dir))
     }
 
-    fn create_segment_data(marker: u8, miner: &Pubkey) -> Vec<u8> {
+    fn create_segment_data(marker: u8, mem: &packx::SolverMemory) -> Vec<u8> {
         const TEST_DIFFICULTY: u32 = 0;
 
         let data = &[marker; SEGMENT_SIZE];
         let canonical_segment = padded_array::<SEGMENT_SIZE>(data);
-        let solution = packx::solve(
-            &miner.to_bytes(), 
+        let solution = packx::solve_with_memory(
             &canonical_segment,
+            mem,
             TEST_DIFFICULTY
         ).expect("Failed to pack segment");
 
@@ -401,6 +401,9 @@ mod tests {
         // Setup our tape and miner
         let miner_address = Pubkey::new_unique();
         let tape_address = Pubkey::new_unique();
+
+        let mem = packx::build_memory(&miner_address.to_bytes());
+
         let mut tape_tree = SegmentTree::new(&[tape_address.as_ref()]);
         let mut leaves = vec![];
 
@@ -414,7 +417,7 @@ mod tests {
         let leaf_count = (SECTOR_LEAVES as f64 * 2.5) as usize;
         for i in 0..leaf_count {
             let segment_id = i as u64;
-            let segment_data_packed = create_segment_data(1, &miner_address);
+            let segment_data_packed = create_segment_data(1, &mem);
 
             // For the in-memory expected tree, use UNPACKED bytes
             let mut data = [0u8; PACKED_SEGMENT_SIZE];
