@@ -23,22 +23,6 @@ pub struct MiningConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PerformanceConfig {
-    pub num_cores: usize,
-    pub max_memory_mb: u64,
-    pub max_poa_threads: u64,
-    pub max_pow_threads: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PerformanceConfig {
-    pub num_cores: usize,
-    pub max_memory_mb: u64,
-    pub max_poa_threads: u64,
-    pub max_pow_threads: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IdentityConfig {
     pub keypair_path: String,
 }
@@ -117,133 +101,6 @@ impl CommitmentLevel {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StorageConfig {
-    pub backend: StorageBackend,
-    pub rocksdb: Option<RocksDbConfig>, 
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RocksDbConfig {
-    pub primary_path: String,
-    pub secondary_path: Option<String>,
-    pub cache_size_mb: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum StorageBackend {
-    RocksDb,
-    Postgres
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LoggingConfig {
-    pub log_level: LogLevel,
-    pub log_path: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum CommitmentLevel {
-    Processed,
-    Confirmed, 
-    Finalized,
-}
-
-impl ToString for CommitmentLevel {
-    fn to_string(&self) -> String {
-        match self {
-            CommitmentLevel::Processed => "processed".to_string(),
-            CommitmentLevel::Confirmed => "confirmed".to_string(),
-            CommitmentLevel::Finalized => "finalized".to_string(),
-        }
-    }
-}
-
-impl CommitmentLevel {
-    pub fn to_commitment_config(&self) -> CommitmentConfig {
-        match self {
-            CommitmentLevel::Processed => CommitmentConfig::processed(),
-            CommitmentLevel::Confirmed => CommitmentConfig::confirmed(),
-            CommitmentLevel::Finalized => CommitmentConfig::finalized(),
-        }
-    }
-}
-
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StorageConfig {
-    pub backend: StorageBackend,
-    pub rocksdb: Option<RocksDbConfig>, 
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RocksDbConfig {
-    pub primary_path: String,
-    pub secondary_path: Option<String>,
-    pub cache_size_mb: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum StorageBackend {
-    RocksDb,
-    Postgres
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LoggingConfig {
-    pub log_level: LogLevel,
-    pub log_path: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum CommitmentLevel {
-    Processed,
-    Confirmed, 
-    Finalized,
-}
-
-impl ToString for CommitmentLevel {
-    fn to_string(&self) -> String {
-        match self {
-            CommitmentLevel::Processed => "processed".to_string(),
-            CommitmentLevel::Confirmed => "confirmed".to_string(),
-            CommitmentLevel::Finalized => "finalized".to_string(),
-        }
-    }
-}
-
-impl CommitmentLevel {
-    pub fn to_commitment_config(&self) -> CommitmentConfig {
-        match self {
-            CommitmentLevel::Processed => CommitmentConfig::processed(),
-            CommitmentLevel::Confirmed => CommitmentConfig::confirmed(),
-            CommitmentLevel::Finalized => CommitmentConfig::finalized(),
-        }
-    }
-}
-
 impl TapeConfig {
 
    pub fn load_with_path(config_path: &Option<PathBuf>) -> Result<Self, TapeConfigError> {
@@ -319,54 +176,6 @@ impl TapeConfig {
         Ok(())
     }
 
-    fn validate_url(&self, url: &str, field_name: &str, valid_schemes: &[&str]) -> Result<(), TapeConfigError> {
-        let has_valid_scheme = valid_schemes.iter().any(|scheme| url.starts_with(scheme));
-        
-        if !has_valid_scheme {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} must start with one of {:?}, found: '{}'", field_name, valid_schemes, url)
-            ));
-        }
-
-        if url.contains(' ') {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} cannot contain spaces, found: '{}'", field_name, url)
-            ));
-        }
-
-        if url.trim().is_empty() {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} cannot be empty", field_name)
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn validate_url(&self, url: &str, field_name: &str, valid_schemes: &[&str]) -> Result<(), TapeConfigError> {
-        let has_valid_scheme = valid_schemes.iter().any(|scheme| url.starts_with(scheme));
-        
-        if !has_valid_scheme {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} must start with one of {:?}, found: '{}'", field_name, valid_schemes, url)
-            ));
-        }
-
-        if url.contains(' ') {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} cannot contain spaces, found: '{}'", field_name, url)
-            ));
-        }
-
-        if url.trim().is_empty() {
-            return Err(TapeConfigError::InvalidUrl(
-                format!("{} cannot be empty", field_name)
-            ));
-        }
-
-        Ok(())
-    }
-
     /// create default configuration and save to file
     pub fn create_default() -> Result<Self, TapeConfigError> {
         let config = Self::default();
@@ -405,18 +214,6 @@ impl Default for TapeConfig {
                 max_poa_threads: 4,
                 max_pow_threads: 4
             },
-            performance: PerformanceConfig{
-                num_cores: num_cpus::get(),
-                max_memory_mb: 16384,
-                max_poa_threads: 4,
-                max_pow_threads: 4
-            },
-            performance: PerformanceConfig{
-                num_cores: num_cpus::get(),
-                max_memory_mb: 16384,
-                max_poa_threads: 4,
-                max_pow_threads: 4
-            },
             identity: IdentityConfig {
                 keypair_path: "~/.config/solana/id.json".to_string(),
             },
@@ -426,30 +223,6 @@ impl Default for TapeConfig {
                 commitment: CommitmentLevel::Confirmed,
                 priority_fee_lamports: 1000,
                 max_transaction_retries: 3,
-            },
-            storage: StorageConfig {
-                backend: StorageBackend::RocksDb,
-                rocksdb: Some(RocksDbConfig{
-                primary_path: "./db_tapestore".to_string(),
-                secondary_path: Some("./db_tapestore_secondary".to_string()),
-                cache_size_mb: 512,
-                })
-            },
-            logging: LoggingConfig {
-                log_level: LogLevel::Info,
-                log_path: Some("./logs/tape.log".to_string()),
-            },
-            storage: StorageConfig {
-                backend: StorageBackend::RocksDb,
-                rocksdb: Some(RocksDbConfig{
-                primary_path: "./db_tapestore".to_string(),
-                secondary_path: Some("./db_tapestore_secondary".to_string()),
-                cache_size_mb: 512,
-                })
-            },
-            logging: LoggingConfig {
-                log_level: LogLevel::Info,
-                log_path: Some("./logs/tape.log".to_string()),
             },
             storage: StorageConfig {
                 backend: StorageBackend::RocksDb,
