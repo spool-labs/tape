@@ -1,14 +1,12 @@
 use anyhow::{bail, Result};
 use std::str::FromStr;
 use std::sync::Arc;
-use dialoguer::{theme::ColorfulTheme, Confirm};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::Keypair, signer::Signer, pubkey::Pubkey};
 
 use tape_api::prelude::*;
 use tape_client::{register::register_miner, get_miner_account};
 use tape_network::{
-    //archive::archive_loop,
     archive,
     mine::mine_loop,
     web::web_loop,
@@ -113,16 +111,6 @@ pub async fn handle_register(
     log::print_info("Registering miner...");
 
     let (miner_address, _) = miner_pda(context.payer().pubkey(), to_name(&name));
-
-    let proceed = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("→ Are you sure?")
-        .default(false)
-        .interact()
-        .map_err(|e| anyhow::anyhow!("Failed to get user input: {}", e))?;
-    if !proceed {
-        log::print_error("Write operation cancelled");
-        return Ok(());
-    }
 
     register_miner(context.rpc(), context.payer(), &name).await?;
 

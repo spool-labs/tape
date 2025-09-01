@@ -135,7 +135,10 @@ pub enum SnapshotCommands {
 
     Resync {
         #[arg(help = "Tape account public key to re-sync")]
-        tape: String,
+        tape_address: String,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
 
     Create {
@@ -150,13 +153,16 @@ pub enum SnapshotCommands {
 
     GetTape {
         #[arg(help = "Tape account public key")]
-        tape: String,
+        tape_address: String,
 
         #[arg(short = 'o', long = "output", help = "Output file")]
         output: Option<String>,
 
         #[arg(short = 'r', long = "raw", help = "Output raw segments instead of decoded tape")]
         raw: bool,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
 
     GetSegment {

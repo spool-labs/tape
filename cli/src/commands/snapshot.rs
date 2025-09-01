@@ -1,6 +1,7 @@
 use std::env;
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -17,7 +18,9 @@ use tapedrive::{decode_tape, MimeType, TapeHeader};
 
 use crate::cli::{Cli, Commands, Context, SnapshotCommands};
 use crate::log;
+use crate::network::get_or_create_miner;
 use crate::utils::write_output;
+use packx;
 
 pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> {
     if let Commands::Snapshot(snapshot) = cli.command {
@@ -25,8 +28,8 @@ pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> 
             SnapshotCommands::Stats {} => {
                 handle_stats(context)?
             }
-            SnapshotCommands::Resync { tape } => {
-                handle_resync(context, &tape).await?
+            SnapshotCommands::Resync { tape_address, miner_address } => {
+                handle_resync(context, tape_address, miner_address).await?
             }
             SnapshotCommands::Create { output } => {
                 handle_create(context, output)?
@@ -34,8 +37,8 @@ pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> 
             SnapshotCommands::Load { input } => {
                 handle_load(&input)?
             }
-            SnapshotCommands::GetTape { tape, output, raw } => {
-                handle_get_tape(context, &tape, output, raw).await?
+            SnapshotCommands::GetTape { tape_address, miner_address, output, raw } => {
+                handle_get_tape(context, tape_address, miner_address, output, raw).await?
             }
             SnapshotCommands::GetSegment { tape, index } => {
                 handle_get_segment(context, &tape, index).await?
@@ -55,13 +58,36 @@ fn handle_stats(context: Context) -> Result<()> {
     Ok(())
 }
 
-async fn handle_resync(context: Context, tape: &str) -> Result<()> {
-    let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
+async fn handle_resync(
+    context: Context,
+    tape_address: String,
+    miner_address: Option<String>,
+    ) -> Result<()> {
+    let tape_pubkey: Pubkey = FromStr::from_str(&tape_address)?;
+
     let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
     let starting_slot = tape_account.tail_slot;
-    let store = context.open_primary_store_conn()?;
-    log::print_message(&format!("Re-syncing tape: {tape}, please wait"));
-    sync_from_block(&store, context.rpc(), &tape_pubkey, starting_slot).await?;
+    let store = Arc::new(context.open_primary_store_conn()?);
+
+    let miner_pubkey = get_or_create_miner(
+        context.rpc(), 
+        context.payer(), 
+        miner_address, 
+        None, 
+        false
+    ).await?;
+    log::print_message(&format!("Using miner address: {miner_pubkey}"));
+
+    log::print_message(&format!("Re-syncing tape: {tape_address}, please wait"));
+
+    sync_from_block(
+        &store,
+        context.rpc(),
+        &tape_pubkey, 
+        &miner_pubkey,
+        starting_slot
+    ).await?;
+
     log::print_message("Done");
     Ok(())
 }
@@ -84,20 +110,34 @@ fn handle_load(input: &str) -> Result<()> {
 
 async fn handle_get_tape(
     context: Context,
-    tape: &str,
+    tape_address: String,
+    miner_address: Option<String>,
     output: Option<String>,
     raw: bool,
 ) -> Result<()> {
-    let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
+    let tape_pubkey: Pubkey = FromStr::from_str(&tape_address)?;
     let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
+
     let total_segments = tape_account.total_segments;
     let store = context.open_read_only_store_conn()?;
+
+    let miner_pubkey = get_or_create_miner(
+        context.rpc(), 
+        context.payer(), 
+        miner_address, 
+        None, 
+        false
+    ).await?;
+    let miner_bytes = miner_pubkey.to_bytes();
+
     let mut data: Vec<u8> = Vec::with_capacity((total_segments as usize) * SEGMENT_SIZE);
     let mut missing: Vec<u64> = Vec::new();
     for seg_idx in 0..total_segments {
         match store.get_segment(&tape_pubkey, seg_idx) {
-            Ok(seg) => {
-                data.extend_from_slice(&seg);
+            Ok(segment_data) => {
+                let solution = packx::Solution::from_bytes(&segment_data.try_into().unwrap());
+                let segment = solution.unpack(&miner_bytes);
+                data.extend_from_slice(&segment);
             }
             Err(StoreError::SegmentNotFoundForAddress(..)) => {
                 data.extend_from_slice(&[0u8; SEGMENT_SIZE]);

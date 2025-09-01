@@ -6761,6 +6761,7 @@ dependencies = [
  "mime_guess",
  "num_cpus",
  "num_enum",
+ "packx",
  "reqwest 0.12.15",
  "serde_json",
  "solana-client",
