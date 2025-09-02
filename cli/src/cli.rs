@@ -167,10 +167,13 @@ pub enum SnapshotCommands {
 
     GetSegment {
         #[arg(help = "Tape account public key")]
-        tape: String,
+        tape_address: String,
 
         #[arg(help = "Segment index (0 to tape size - 1)")]
         index: u32,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
 }
 

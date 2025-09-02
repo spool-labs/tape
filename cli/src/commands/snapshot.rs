@@ -40,8 +40,8 @@ pub async fn handle_snapshot_commands(cli: Cli, context: Context) -> Result<()> 
             SnapshotCommands::GetTape { tape_address, miner_address, output, raw } => {
                 handle_get_tape(context, tape_address, miner_address, output, raw).await?
             }
-            SnapshotCommands::GetSegment { tape, index } => {
-                handle_get_segment(context, &tape, index).await?
+            SnapshotCommands::GetSegment { tape_address, miner_address, index } => {
+                handle_get_segment(context, tape_address, miner_address, index).await?
             }
         }
     }
@@ -170,8 +170,14 @@ async fn handle_get_tape(
     Ok(())
 }
 
-async fn handle_get_segment(context: Context, tape: &str, index: u32) -> Result<()> {
-    let tape_pubkey: Pubkey = FromStr::from_str(tape)?;
+async fn handle_get_segment(
+    context: Context,
+    tape_address: String,
+    miner_address: Option<String>,
+    index: u32
+) -> Result<()> {
+
+    let tape_pubkey: Pubkey = FromStr::from_str(&tape_address)?;
     let (tape_account, _) = tapedrive::get_tape_account(context.rpc(), &tape_pubkey).await?;
     if (index as u64) >= tape_account.total_segments {
         anyhow::bail!(
@@ -183,10 +189,22 @@ async fn handle_get_segment(context: Context, tape: &str, index: u32) -> Result<
 
     let store = context.open_read_only_store_conn()?;
 
+    let miner_pubkey = get_or_create_miner(
+        context.rpc(), 
+        context.payer(), 
+        miner_address, 
+        None, 
+        false
+    ).await?;
+    let miner_bytes = miner_pubkey.to_bytes();
+
     match store.get_segment(&tape_pubkey, index as u64) {
-        Ok(data) => {
+        Ok(segment_data) => {
+            let solution = packx::Solution::from_bytes(&segment_data.try_into().unwrap());
+            let segment = solution.unpack(&miner_bytes);
+
             let mut stdout = io::stdout();
-            stdout.write_all(&data)?;
+            stdout.write_all(&segment)?;
             stdout.flush()?;
         }
         Err(StoreError::SegmentNotFoundForAddress(..)) => {
