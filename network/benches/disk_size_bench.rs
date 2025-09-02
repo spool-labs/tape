@@ -138,7 +138,7 @@ fn main() {
                     let mut key = Vec::with_capacity(40);
                     key.extend_from_slice(&hash);
                     key.extend_from_slice(&suffix);
-                    store.db.put_cf(&cf_handle, &key, &value).expect("Put failed");
+                    store.db.put_cf(&cf_handle, &key, value).expect("Put failed");
                 }
             }
         } else {
@@ -146,7 +146,7 @@ fn main() {
                 let key: [u8; 8] = rng.gen(); 
                 let mut value = [0u8; SEGMENT_SIZE];
                 rng.fill_bytes(&mut value); 
-                store.db.put_cf(&cf_handle, &key, &value).expect("Put failed");
+                store.db.put_cf(&cf_handle, key, value).expect("Put failed");
             }
         }
 

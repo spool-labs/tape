@@ -3222,9 +3222,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "packx"
-version = "0.3.1"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47bfbeb8a641f959d048c4adf9d66d602e35791061ee003920b6b41e2253ecc1"
+checksum = "542e591f348a33c1b32aa12ad32f4f132d1e0045bf8ccec285d4a61d0861b39b"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -6761,6 +6761,7 @@ dependencies = [
  "mime_guess",
  "num_cpus",
  "num_enum",
+ "packx",
  "reqwest 0.12.15",
  "serde_json",
  "solana-client",

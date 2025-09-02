@@ -208,7 +208,7 @@ mod tests {
 
         // Manually write an invalid-length value (not a multiple of 32)
         let cf = store.get_cf_handle(ColumnFamily::MerkleHashes)?;
-        store.db.put_cf(&cf, &key_vec, &[0u8; 5])?;
+        store.db.put_cf(&cf, &key_vec, [0u8; 5])?;
 
         let res = store.get_merkle_cache(
             &MerkleCacheKey::UnpackedTapeLayer { address: addr, layer: 3 },

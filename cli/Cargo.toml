@@ -19,6 +19,7 @@ path = "src/main.rs"
 tape-api.workspace = true
 tape-client.workspace = true
 tape-network.workspace = true
+packx.workspace = true
 
 anyhow.workspace = true
 chrono.workspace = true

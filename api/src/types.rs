@@ -31,7 +31,7 @@ impl PoW {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 /// Proof-of-access solution for the tape segment, cryptographically tied to the miner using PackX.
 pub struct PoA {
-    pub bump: [u8; 8],
+    pub bump: u8,
     pub seed: [u8; 16],
     pub nonce: [u8; 128],
     pub path: ProofPath,
@@ -48,7 +48,7 @@ impl PoA {
     }
 
     pub fn as_solution(&self) -> packx::Solution {
-        packx::Solution::new(self.seed, self.nonce, self.bump)
+        packx::Solution::new(self.bump, self.seed, self.nonce)
     }
 }
 

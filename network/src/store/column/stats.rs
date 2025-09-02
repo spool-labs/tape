@@ -29,7 +29,7 @@ impl TapeStore {
     }
 
     fn count_sectors(&self) -> Result<usize, StoreError> {
-        let cf = self.get_cf_handle(ColumnFamily::Sectors)?;
+        let cf = self.get_cf_handle(ColumnFamily::Segments)?;
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         Ok(iter.count())
     }

@@ -1,7 +1,6 @@
 #![cfg(test)]
 pub mod utils;
 use utils::*;
-use steel::Discriminator;
 
 use steel::Zeroable;
 use solana_sdk::{
@@ -19,7 +18,6 @@ use tape_api::prelude::*;
 use tape_api::instruction;
 use litesvm::LiteSVM;
 
-use packx;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -82,9 +80,6 @@ fn run_integration() {
     verify_metadata_account(&svm);
     verify_treasury_ata(&svm);
 
-    // Override difficulty (packx is too slow for debug mode)
-    override_epoch_difficulty(&mut svm, 0);
-
     // Mine the genesis tape (to earn some tokens)
     do_mining_run(&mut svm, &payer, &stored_spool, 5);
     claim_rewards(&mut svm, &payer, miner_address, ata);
@@ -103,7 +98,7 @@ fn run_integration() {
     let tape_count = 5;
     for tape_index in 1..tape_count {
         let stored_tape = create_and_verify_tape(&mut svm, &payer, ata, tape_index);
-        let _packed_tape = pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
+        pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
     }
 
     // Verify archive account after tape creation
@@ -184,7 +179,7 @@ fn do_mining_run(
         // submitting the transaction if the commitment is still valid.
 
         let mut current_clock = svm.get_sysvar::<Clock>();
-        current_clock.slot = current_clock.slot + 10;
+        current_clock.slot += 10;
         svm.set_sysvar::<Clock>(&current_clock);
         svm.expire_blockhash();
 
@@ -213,8 +208,7 @@ fn do_mining_run(
 
         let tape_index = recall_tape - 1; // index in spool (not the tape_number)
         let packed_tape = &stored_spool.tapes[tape_index as usize];
-        let tape_address = packed_tape.address;
-        let tape_account = svm.get_account(&tape_address).unwrap();
+        let tape_account = svm.get_account(&packed_tape.address).unwrap();
         let tape = Tape::unpack(&tape_account.data).unwrap();
 
         // Check if we need to provide a PoA solution based on whether the tape has minimum rent.
@@ -264,7 +258,7 @@ fn do_mining_run(
             let pow_solution = solve_challenge(miner_challenge, &unpacked_segment, epoch.mining_difficulty).unwrap();
             assert!(pow_solution.is_valid(&miner_challenge, &unpacked_segment).is_ok());
 
-            let merkle_tree = SegmentTree::new(&[tape_address.as_ref()]);
+            let merkle_tree = SegmentTree::new(&[packed_tape.address.as_ref()]);
             let proof_nodes: Vec<[u8; 32]> = merkle_tree
                 .get_proof(&leaves, segment_number as usize)
                 .into_iter()
@@ -280,8 +274,8 @@ fn do_mining_run(
             // Tx1: load the packed tape leaf from the spool onto the miner commitment field
             commit_for_mining(
                 svm, 
-                &payer, 
-                &stored_spool, 
+                payer, 
+                stored_spool, 
                 tape_index, 
                 segment_number
             );
@@ -333,14 +327,14 @@ fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
     let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
     let segments = vec![genesis_segment];
 
-    let stored_genesis = StoredTape {
+    
+
+    StoredTape {
         number: tape.number,
         address: genesis_pubkey,
         segments,
         account: *tape,
-    };
-
-    stored_genesis
+    }
 }
 
 
@@ -351,26 +345,6 @@ fn initialize_program(svm: &mut LiteSVM, payer: &Keypair) {
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[&payer], blockhash);
     let res = send_tx(svm, tx);
     assert!(res.is_ok());
-}
-
-fn override_epoch_difficulty(svm: &mut LiteSVM, difficulty: u64) {
-    let (epoch_address, _epoch_bump) = epoch_pda();
-    let mut account = svm
-        .get_account(&epoch_address)
-        .expect("Epoch account should exist");
-    let mut epoch = Epoch::unpack(&account.data)
-        .expect("Failed to unpack Epoch account")
-        .clone();
-
-    epoch.packing_difficulty = difficulty;
-
-    let mut discriminator = [0u8; 8];
-    discriminator[0] = Epoch::discriminator();
-    let data = [&discriminator, epoch.to_bytes()].concat();
-    account.data = data.to_vec();
-
-    svm.set_account(epoch_address, account)
-        .expect("failed to override difficulty")
 }
 
 fn verify_archive_account(svm: &LiteSVM, expected_tapes_stored: u64) {
@@ -464,7 +438,8 @@ fn create_and_verify_tape(
         writer_address
     );
 
-    let mut writer_tree = SegmentTree::new(&[tape_address.as_ref()]);
+    let tape_seed = &[stored_tape.address.as_ref()];
+    let mut writer_tree = SegmentTree::new(tape_seed);
 
     write_tape(
         svm,
@@ -806,13 +781,15 @@ fn get_packed_segments(
     stored_tape: &StoredTape,
     difficulty: u32,
 ) -> Vec<Vec<u8>> {
+    let miner_bytes = miner_address.to_bytes();
+    let mem = packx::build_memory(&miner_bytes);
 
     let mut packed_segments: Vec<Vec<u8>> = vec![];
     for segment_data in &stored_tape.segments {
         let canonical_segment = padded_array::<SEGMENT_SIZE>(segment_data);
-        let solution = packx::solve(
-            &miner_address.to_bytes(),
+        let solution = packx::solve_with_memory(
             &canonical_segment,
+            &mem,
             difficulty
         ).expect("Failed to pack segment data");
 
@@ -835,19 +812,19 @@ fn get_packed_tape(
         let segment_id = segment_number.to_le_bytes();
         let leaf = Leaf::new(&[
             segment_id.as_ref(),
-            &packed_data,
+            packed_data,
         ]);
         
         merkle_tree.try_add_leaf(leaf)
             .expect("Failed to add leaf to Merkle tree");
     }
 
-    return PackedTape {
+    PackedTape {
         number: stored_tape.number,
         address: stored_tape.address,
         tree: merkle_tree,
         data: packed_segments,
-    };
+    }
 }
 
 fn commit_for_mining(

@@ -228,6 +228,9 @@ pub fn rpc_get_tape_number(store: &TapeStore, params: &Value) -> Result<Value, R
 ///      -d '{"jsonrpc":"2.0","id":3,"method":"getSegment","params":{"tape_address":<PUBKEY>,"segment_number":3}}'
 /// ```
 pub fn rpc_get_segment(store: &TapeStore, params: &Value) -> Result<Value, RpcError> {
+    // TODO: this will return a packed segment; we probably want the unpacked data (which requires
+    // the miner pubkey)
+
     let addr = params
         .get("tape_address")
         .and_then(Value::as_str)
@@ -296,7 +299,6 @@ async fn rpc_handler(
 
     make_response(id, outcome)
 }
-
 
 
 

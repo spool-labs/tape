@@ -46,12 +46,12 @@ pub const TAPE_PROOF_LEN: usize = TAPE_TREE_HEIGHT;
 /// Segment size in bytes
 pub const SEGMENT_SIZE: usize = 128;
 /// Packed Segment size in bytes
-pub const PACKED_SEGMENT_SIZE: usize = 152; // packx::SOLUTION_SIZE
+pub const PACKED_SEGMENT_SIZE: usize = 145; // packx::SOLUTION_SIZE
 
 /// Maximum number of segments in a tape
-pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << SEGMENT_TREE_HEIGHT - 1;
+pub const MAX_SEGMENTS_PER_TAPE: usize = 1 << (SEGMENT_TREE_HEIGHT - 1);
 /// Maximum number of tapes in a spool
-pub const MAX_TAPES_PER_SPOOL: usize = 1 << TAPE_TREE_HEIGHT - 1;
+pub const MAX_TAPES_PER_SPOOL: usize = 1 << (TAPE_TREE_HEIGHT - 1);
 
 // ====================================================================
 // Token Economics

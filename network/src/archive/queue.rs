@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use solana_sdk::pubkey::Pubkey;
 
-pub const QUEUE_CAP: usize = 1_000;
+pub const QUEUE_CAP: usize = 10_000;
 
 #[derive(Debug)]
 pub struct SegmentJob {

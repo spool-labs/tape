@@ -150,6 +150,7 @@ fn merge_events_and_instructions(
 
     // Iterate over events and instructions in parallel
     for (event, instruction) in tape_block.events.iter().zip(&tape_block.instructions) {
+
         match (event, instruction) {
             (EventData::Write(write_event), InstructionData::Write { address, data }) => {
                 merge_write(write_event, address, data, &mut merged)?;
@@ -160,6 +161,7 @@ fn merge_events_and_instructions(
             }
 
             (EventData::Finalize(finalize_event), InstructionData::Finalize { address }) => {
+        log::debug!("Merging event: {:?} with instruction: {:?}", event, instruction);
                 merge_finalize(finalize_event, address, &mut merged)?;
             }
 

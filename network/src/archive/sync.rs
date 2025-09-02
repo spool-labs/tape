@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-//use reqwest::Client as HttpClient;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_transaction_status_client_types::TransactionDetails;
 use solana_sdk::pubkey::Pubkey;
@@ -7,6 +6,7 @@ use std::sync::Arc;
 use std::collections::HashSet;
 use tokio::task::JoinSet;
 
+use tape_api::{SEGMENT_SIZE, state::TapeState};
 use tape_client::{
     get_block_by_number, get_archive_account, get_tape_account, find_tape_account, init_read,
     process_next_block, get_epoch_account
@@ -185,13 +185,20 @@ pub async fn sync_addresses_from_solana(
 
 /// Syncs block data for a specific tape address starting from a given slot.
 pub async fn sync_from_block(
-    store: &TapeStore,
+    store: &Arc<TapeStore>,
     client: &Arc<RpcClient>,
     tape_address: &Pubkey,
+    miner_address: &Pubkey,
     starting_slot: u64,
 ) -> Result<()> {
     let mut visited: HashSet<u64> = HashSet::new();
     let mut stack: Vec<u64> = Vec::new();
+
+    // Ensure the tape address is stored if finalized
+    let (tape, _) = get_tape_account(client, tape_address).await?;
+    if tape.state == u64::from(TapeState::Finalized) {
+        store.put_tape_address(tape.number, tape_address)?;
+    }
 
     stack.push(starting_slot);
 
@@ -200,12 +207,26 @@ pub async fn sync_from_block(
             continue; // Skip if already visited
         }
 
+        log::debug!("Processing slot: {}", current_slot);
+
         let block = get_block_by_number(client, current_slot, TransactionDetails::Full).await?;
         let ProcessedBlock {
             segment_writes,
             slot,
             finalized_tapes,
         } = process_block(block, current_slot)?;
+
+        log::debug!(
+            "Slot: {}, Finalized Tapes: {}, Segment Writes: {} ({} bytes)",
+            slot,
+            finalized_tapes.len(),
+            segment_writes.len(),
+            SEGMENT_SIZE * segment_writes.len()
+        );
+
+        // Note: we won't usually hit this during a manual re-sync, the tail_slot in the tape
+        // account doesn't include the finalized slot. This is here to catch any other tape
+        // finalizations that may have occurred (not for the current tape)
 
         if finalized_tapes.is_empty() && segment_writes.is_empty() {
             continue; // Skip empty blocks
@@ -235,14 +256,23 @@ pub async fn sync_from_block(
             .await
             .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
 
-        let packing_difficulty = epoch.packing_difficulty;
+        let miner_bytes = miner_address.to_bytes();
+        let mem = Arc::new(packx::build_memory(&miner_bytes));
 
         for (key, data) in segment_writes {
             if key.address != *tape_address {
                 continue;
             }
-            let processed_segment = pack_segment(&key.address, &data, packing_difficulty)?;
-            store.put_segment(&key.address, key.segment_number, processed_segment)?;
+
+            pack_segment(
+                store,
+                &mem,
+                miner_address,
+                &key.address, 
+                data,
+                key.segment_number,
+                epoch.packing_difficulty,
+            )?;
         }
 
         for parent in parents {

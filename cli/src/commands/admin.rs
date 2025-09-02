@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use dialoguer::{theme::ColorfulTheme, Confirm};
 use solana_sdk::signer::Signer;
 
 use crate::cli::{Cli, Context, Commands};
@@ -14,15 +13,6 @@ use tape_client::{
 pub async fn handle_admin_commands(cli:Cli, context: Context) -> Result<()> {
 
     log::print_divider();
-    let proceed = Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("→ Are you sure?")
-        .default(false)
-        .interact()
-        .map_err(|e| anyhow::anyhow!("Failed to get user input: {}", e))?;
-    if !proceed {
-        log::print_error("Write operation cancelled");
-        return Ok(());
-    }
 
     match cli.command {
         Commands::Init {} => {
