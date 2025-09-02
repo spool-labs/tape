@@ -40,7 +40,7 @@ async fn run_tape_cli() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let config = match TapeConfig::load_with_path(&cli.config_path) {
+    let config = match TapeConfig::load(&cli.config) {
         Ok(config) => config,
         Err(e) => match e {
             TapeConfigError::ConfigFileNotFound => {
