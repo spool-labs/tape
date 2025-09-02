@@ -6,7 +6,7 @@ use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
-    pub mining_config: MiningConfig,
+    pub mining: MiningConfig,
     pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
@@ -103,7 +103,7 @@ impl CommitmentLevel {
 
 impl TapeConfig {
 
-   pub fn load_with_path(config_path: &Option<PathBuf>) -> Result<Self, TapeConfigError> {
+   pub fn load(config_path: &Option<PathBuf>) -> Result<Self, TapeConfigError> {
         match config_path {
             Some(path) => {
                 let expanded_path = expand_path(path);
@@ -208,7 +208,7 @@ pub fn get_default_config_path() -> Result<PathBuf, TapeConfigError> {
 impl Default for TapeConfig {
     fn default() -> Self {
         Self {
-            mining_config: MiningConfig{
+            mining: MiningConfig{
                 num_cores: num_cpus::get(),
                 max_memory_mb: 16384,
                 max_poa_threads: 4,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_toml_parsing_works_properly() {
         let toml_content = r#"
-[mining_config]
+[mining]
 num_cores = 4                    
 max_memory_mb = 16384            
 max_poa_threads = 4
