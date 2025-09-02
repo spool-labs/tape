@@ -39,14 +39,6 @@ pub async fn run(rpc: Arc<RpcClient>, mut rx: Rx, miner: Pubkey, store: Arc<Tape
                 packing_difficulty
             )?;
 
-            // TODO: only update the canopy if this segment is the last for this sector
-            update_merkle_canopy_for_segment(
-                &store,
-                &miner,
-                &job.tape,
-                job.seg_no,
-            )?;
-
             Ok(())
         })
         .await??;
@@ -95,11 +87,19 @@ pub fn pack_segment(
         packed_segment.to_vec()
     )?;
 
+    // TODO: only update the canopy if this segment is the last for this sector
+    update_merkle_canopy_for_segment(
+        &store,
+        miner_address,
+        tape_address,
+        segment_number,
+    )?;
+
     Ok(())
 }
 
 /// Updates the Merkle canopy for the sector containing the specified segment.
-pub fn update_merkle_canopy_for_segment(
+fn update_merkle_canopy_for_segment(
     store: &Arc<TapeStore>,
     miner_address: &Pubkey,
     tape_address: &Pubkey,
@@ -116,7 +116,7 @@ pub fn update_merkle_canopy_for_segment(
 }
 
 /// Updates the Merkle canopy for the provided sector number.
-pub fn update_merkle_canopy_for_sector(
+fn update_merkle_canopy_for_sector(
     store: &Arc<TapeStore>,
     miner_address: &Pubkey,
     tape_address: &Pubkey,
@@ -215,7 +215,7 @@ pub fn get_tape_root(
 }
 
 /// Computes packed leaves (stored solution bytes).
-pub fn compute_sector_leaves_packed(
+fn compute_sector_leaves_packed(
     store: &Arc<TapeStore>,
     tape_address: &Pubkey,
     sector_number: u64,
@@ -238,7 +238,7 @@ pub fn compute_sector_leaves_packed(
 }
 
 /// Computes unpacked leaves (reconstructed 128-byte data from solutions).
-pub fn compute_sector_leaves_unpacked(
+fn compute_sector_leaves_unpacked(
     store: &Arc<TapeStore>,
     miner_address: &Pubkey,
     tape_address: &Pubkey,
@@ -270,7 +270,7 @@ pub fn compute_sector_leaves_unpacked(
 }
 
 /// Computes the root node for a sector at the specified layer.
-pub fn compute_sector_root(
+fn compute_sector_root(
     leaves: &[Leaf],
     empty_hashes: &[Hash],
 ) -> Result<Hash> {
@@ -299,7 +299,7 @@ pub fn compute_sector_root(
 }
 
 /// Helper to update a specific MerkleCacheKey layer with the new sector root.
-pub fn update_sector_canopy_with_key(
+fn update_sector_canopy_with_key(
     store: &TapeStore,
     sector_number: u64,
     root: Hash,
@@ -320,7 +320,7 @@ pub fn update_sector_canopy_with_key(
 }
 
 /// Helper to create or init the zero values for a tape
-pub fn get_or_create_empty_hashes(
+fn get_or_create_empty_hashes(
     store: &Arc<TapeStore>,
     tape_address: &Pubkey,
 ) -> Result<Vec<Hash>> {

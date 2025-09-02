@@ -194,6 +194,9 @@ pub async fn sync_from_block(
     let mut visited: HashSet<u64> = HashSet::new();
     let mut stack: Vec<u64> = Vec::new();
 
+    let miner_bytes = miner_address.to_bytes();
+    let mem = Arc::new(packx::build_memory(&miner_bytes));
+
     // Ensure the tape address is stored if finalized
     let (tape, _) = get_tape_account(client, tape_address).await?;
     if tape.state == u64::from(TapeState::Finalized) {
@@ -255,9 +258,6 @@ pub async fn sync_from_block(
         let epoch = get_epoch_account(client)
             .await
             .map_err(|e| anyhow!("Failed to get epoch account: {}", e))?.0;
-
-        let miner_bytes = miner_address.to_bytes();
-        let mem = Arc::new(packx::build_memory(&miner_bytes));
 
         for (key, data) in segment_writes {
             if key.address != *tape_address {
