@@ -151,7 +151,7 @@ mod tests {
         let (store, _temp_dir) = setup_store()?;
         let address = Pubkey::new_unique();
         let global_seg_idx = 0;
-        let oversized_data = vec![42u8; (PACKED_SEGMENT_SIZE as usize) + 1];
+        let oversized_data = vec![42u8; PACKED_SEGMENT_SIZE + 1];
         let result = store.put_segment(&address, global_seg_idx, oversized_data);
         assert!(matches!(result, Err(StoreError::InvalidSegmentSize(_))));
         Ok(())

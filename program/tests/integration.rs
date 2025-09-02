@@ -18,7 +18,6 @@ use tape_api::prelude::*;
 use tape_api::instruction;
 use litesvm::LiteSVM;
 
-use packx;
 use crankx::equix::SolverMemory;
 use crankx::{
     solve_with_memory,
@@ -99,7 +98,7 @@ fn run_integration() {
     let tape_count = 5;
     for tape_index in 1..tape_count {
         let stored_tape = create_and_verify_tape(&mut svm, &payer, ata, tape_index);
-        let _packed_tape = pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
+        pack_tape(&mut svm, &payer, &stored_tape, &mut stored_spool);
     }
 
     // Verify archive account after tape creation
@@ -180,7 +179,7 @@ fn do_mining_run(
         // submitting the transaction if the commitment is still valid.
 
         let mut current_clock = svm.get_sysvar::<Clock>();
-        current_clock.slot = current_clock.slot + 10;
+        current_clock.slot += 10;
         svm.set_sysvar::<Clock>(&current_clock);
         svm.expire_blockhash();
 
@@ -275,8 +274,8 @@ fn do_mining_run(
             // Tx1: load the packed tape leaf from the spool onto the miner commitment field
             commit_for_mining(
                 svm, 
-                &payer, 
-                &stored_spool, 
+                payer, 
+                stored_spool, 
                 tape_index, 
                 segment_number
             );
@@ -328,14 +327,14 @@ fn get_genesis_tape(svm: &mut LiteSVM, payer: &Keypair) -> StoredTape {
     let genesis_segment = padded_array::<SEGMENT_SIZE>(genesis_data).to_vec();
     let segments = vec![genesis_segment];
 
-    let stored_genesis = StoredTape {
+    
+
+    StoredTape {
         number: tape.number,
         address: genesis_pubkey,
         segments,
         account: *tape,
-    };
-
-    stored_genesis
+    }
 }
 
 
@@ -813,19 +812,19 @@ fn get_packed_tape(
         let segment_id = segment_number.to_le_bytes();
         let leaf = Leaf::new(&[
             segment_id.as_ref(),
-            &packed_data,
+            packed_data,
         ]);
         
         merkle_tree.try_add_leaf(leaf)
             .expect("Failed to add leaf to Merkle tree");
     }
 
-    return PackedTape {
+    PackedTape {
         number: stored_tape.number,
         address: stored_tape.address,
         tree: merkle_tree,
         data: packed_segments,
-    };
+    }
 }
 
 fn commit_for_mining(

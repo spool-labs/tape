@@ -498,7 +498,7 @@ mod tests {
         let _ = std::thread::Builder::new()
             .name("larger_stack".into())
             .stack_size(4 * 1024 * 1024)
-            .spawn(|| test_with_larger_stack())
+            .spawn(test_with_larger_stack)
             .unwrap()
             .join()
             .unwrap();

@@ -52,7 +52,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         let mut header = TapeHeader::new(mime_type, compression_algo, encryption_algo, flags);
 
         let encoded = encode_tape(&data, &mut header)?;
-        let num_segments = (encoded.len() + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+        let num_segments = encoded.len().div_ceil(SEGMENT_SIZE);
         let chunks: Vec<_> = encoded.chunks(SAFE_SIZE).map(|c| c.to_vec()).collect();
         let chunks_len = chunks.len();
 
