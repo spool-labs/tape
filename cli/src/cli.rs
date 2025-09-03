@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
@@ -10,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::keypair::{get_keypair_path, get_payer};
+use crate::config::{TapeConfig, TapeConfigError};
+use crate::log;
 
 #[derive(Parser)]
 #[command(
@@ -22,17 +23,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
+    #[arg(short = 'c', long = "config", help = "Path to config file (overrides default)", global = true)]
+    pub config: Option<PathBuf>,
+
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
-
-    #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
-        global = true,
-        help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
-    )]
-    pub cluster: Cluster,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -246,12 +241,74 @@ pub struct Context {
 
 impl Context{
     pub fn try_build(cli:&Cli) -> Result<Self> {
-        let rpc_url = cli.cluster.rpc_url();
+        
+        // loading up configs
+        let config = match TapeConfig::load(&cli.config) {
+            Ok(config) => config,
+            Err(e) => match e {
+                TapeConfigError::ConfigFileNotFound => {
+                    log::print_info("tape.toml not found, creating default configuration...");
+                    match TapeConfig::create_default() {
+                        Ok(config) => {
+                            log::print_info("✓ Default configuration created successfully");
+                            config
+                        },
+                        Err(creation_error) => {
+                            log::print_error(&format!("{}", creation_error));
+                            std::process::exit(1);
+                        }
+                    }
+                },
+
+                TapeConfigError::CustomConfigFileNotFound(path) => {
+                // This happens when user explicitly provided a path that doesn't exist
+                log::print_error(&format!("Custom config file not found: {}", path));
+                log::print_info("Please check the path and try again.");
+                std::process::exit(1);
+            },
+                
+                TapeConfigError::InvalidUrl(msg) => {
+                    log::print_error(&format!("URL Configuration Error: {}", msg));
+                    log::print_info("Please fix the URL in your tape.toml file and try again.");
+                    std::process::exit(1);
+                },
+                
+                TapeConfigError::KeypairNotFound(path) => {
+                    log::print_error(&format!("Keypair not found at path: {}", path));
+                    log::print_info("Please ensure the keypair file exists at the specified path in tape.toml");
+                    std::process::exit(1);
+                },
+                
+                TapeConfigError::FileReadError(io_err) => {
+                    log::print_error(&format!("Could not read config file: {}", io_err));
+                    std::process::exit(1);
+                },
+                
+                TapeConfigError::ParseError(parse_err) => {
+                    log::print_error(&format!("Invalid tape.toml format: {}", parse_err));
+                    log::print_info("Please check your tape.toml file syntax.");
+                    std::process::exit(1);
+                },
+                
+                TapeConfigError::HomeDirectoryNotFound => {
+                    log::print_error("Could not determine home directory");
+                    std::process::exit(1);
+                },
+                
+                TapeConfigError::DefaultConfigCreationFailed(msg) => {
+                    log::print_error(&format!("Failed to create default config: {}", msg));
+                    std::process::exit(1);
+                },
+            }
+        };
+
+        let rpc_url = config.solana.rpc_url.to_string();
+        let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            commitment_level)
         );
-        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+        let keypair_path = get_keypair_path(Some(PathBuf::from(&*shellexpand::tilde(&config.identity.keypair_path))));
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
