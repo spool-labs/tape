@@ -1,6 +1,6 @@
 use steel::*;
 use crate::{
-    consts::*, pda::spool_find_pda,
+    consts::*, pda::spool_find_pda, types::ProofPath,
 };
 
 #[repr(u8)]
@@ -56,7 +56,7 @@ pub fn build_create_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (spool_address, _bump) = spool_find_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(&miner_address, number);
 
     Instruction {
         program_id: crate::ID,
@@ -65,7 +65,6 @@ pub fn build_create_ix(
             AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
             AccountMeta::new_readonly(sysvar::clock::ID, false),
         ],
         data: Create {
@@ -79,14 +78,13 @@ pub fn build_destroy_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (spool_address, _bump) = spool_find_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(&miner_address, number);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(spool_address, false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: Destroy {}.to_bytes(),
     }

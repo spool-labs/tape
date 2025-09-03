@@ -110,7 +110,7 @@ pub async fn handle_register(
 
     log::print_info("Registering miner...");
 
-    let (miner_address, _) = miner_find_pda(context.payer().pubkey(), to_name(&name));
+    let (miner_address, _) = miner_find_pda(&context.payer().pubkey(), to_name(&name));
 
     register_miner(context.rpc(), context.payer(), &name).await?;
 
@@ -135,8 +135,8 @@ pub async fn get_or_create_miner(
     let (miner_address, name) = match (pubkey_opt, name_opt) {
         (Some(_), Some(_)) => bail!("Cannot provide both pubkey and name"),
         (Some(p), None) => (Pubkey::from_str(&p)?, None),
-        (None, Some(n)) => (miner_find_pda(payer.pubkey(), to_name(&n)).0, Some(n)),
-        (None, None) => (miner_find_pda(payer.pubkey(), to_name("default")).0, Some("default".to_string())),
+        (None, Some(n)) => (miner_find_pda(&payer.pubkey(), to_name(&n)).0, Some(n)),
+        (None, None) => (miner_find_pda(&payer.pubkey(), to_name("default")).0, Some("default".to_string())),
     };
 
     let miner_account = get_miner_account(client, &miner_address).await;

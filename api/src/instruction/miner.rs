@@ -50,7 +50,7 @@ pub fn build_register_ix(
     name: &str
 ) -> Instruction {
     let name = utils::to_name(name);
-    let (miner_address, _bump) = miner_find_pda(signer, name);
+    let (miner_address, _bump) = miner_find_pda(&signer, name);
 
     Instruction {
         program_id: crate::ID,

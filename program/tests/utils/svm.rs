@@ -7,6 +7,7 @@ use tape_api::instruction::{
     spool as spool_ix,
     program as program_ix,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::fs::{read_to_string, write};
 use std::path::Path;

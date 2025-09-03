@@ -55,9 +55,6 @@ jobs:
       - name: Build Tape Solana SBF program
         run: cargo build-sbf --manifest-path=program/Cargo.toml --verbose
 
-      - name: Build Example Solana SBF program
-        run: cargo build-sbf --manifest-path=example/Cargo.toml --verbose
-
       - name: Run tests
         run: cargo test --verbose
 

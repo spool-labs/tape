@@ -18,7 +18,7 @@ pub async fn airdrop_tokens(
     amount: u64,
 ) -> Result<Signature> {
     let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_limit(50_000);
-    let airdrop_ix = build_airdrop_ix(signer.pubkey(), beneficiary, amount);
+    let airdrop_ix = build_airdrop_ix(beneficiary, amount);
 
     let signature = build_send_and_confirm_tx(
         &[compute_budget_ix, airdrop_ix],

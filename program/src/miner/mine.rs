@@ -8,7 +8,6 @@ const EPOCHS_PER_YEAR: u64 = 365 * 24 * 60 / EPOCH_BLOCKS;
 
 pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     msg!("Starting mine instruction processing");
-    let current_time = Clock::get()?.unix_timestamp;
     msg!("data size: {}", data.len());
     let args = Mine::try_from_bytes(data)?;
 
@@ -20,11 +19,15 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         tape_info,
         archive_info,
         slot_hashes_info,
+        clock_info
     ] = accounts else { 
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
     signer_info.is_signer()?;
+
+    let current_time = Clock::from_account_info(clock_info)?.unix_timestamp;
+
     msg!("Verified signer");
 
     let archive = archive_info
@@ -50,7 +53,7 @@ pub fn process_mine(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         .as_account_mut::<Miner>(&tape_api::ID)?;
     msg!("Loaded miner account");
 
-    let (miner_address, _miner_bump) = miner_pda(miner.authority, miner.name);
+    let miner_address = miner_derive_pda(&miner.authority, &miner.name, miner.pda_bump as u8);
     msg!("Computed miner PDA: {}", miner_address);
 
     check_condition(

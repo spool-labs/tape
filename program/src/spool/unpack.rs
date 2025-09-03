@@ -30,8 +30,6 @@ pub fn process_spool_unpack(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         &args.value,
     ]);
 
-    // let leaf = Leaf::from(args.value);
-
     check_condition(
         spool.state.contains_leaf(&merkle_proof, leaf),
         TapeError::SpoolUnpackFailed,

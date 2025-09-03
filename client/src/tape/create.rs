@@ -17,8 +17,8 @@ pub async fn create_tape(
     name: &str,
 ) -> Result<(Pubkey, Pubkey, Signature)> {
 
-    let (tape_address, _tape_bump) = tape_find_pda(signer.pubkey(), &to_name(name));
-    let (writer_address, _writer_bump) = writer_find_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(&signer.pubkey(), &to_name(name));
+    let (writer_address, _writer_bump) = writer_find_pda(&tape_address);
 
     let create_ix = build_create_ix(
         signer.pubkey(), 

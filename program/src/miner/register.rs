@@ -3,38 +3,37 @@ use tape_api::instruction::miner::Register;
 use steel::*;
 
 pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let current_time = Clock::get()?.unix_timestamp;
     let args = Register::try_from_bytes(data)?;
     let [
         signer_info,
         miner_info,
         system_program_info, 
-        rent_info,
         slot_hashes_info,
+        clock_info
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
     signer_info.is_signer()?;
 
-    let (miner_pda, _bump) = miner_pda(*signer_info.key, args.name);
+    let current_time = Clock::from_account_info(clock_info)?.unix_timestamp;
+
+    let (miner_pda, miner_bump) = miner_find_pda(signer_info.key, args.name);
 
     miner_info
         .is_empty()?
-        .is_writable()?
         .has_address(&miner_pda)?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
 
     // Register miner.
-    create_program_account::<Miner>(
+    create_program_account_with_bump::<Miner>(
         miner_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[MINER, signer_info.key.as_ref(), args.name.as_ref()],
+        miner_bump
     )?;
 
     let miner = miner_info.as_account_mut::<Miner>(&tape_api::ID)?;
@@ -47,6 +46,7 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     miner.total_proofs      = 0;
     miner.total_rewards     = 0;
     miner.unclaimed_rewards = 0;
+    miner.pda_bump          = miner_bump as u64;
 
     let next_challenge = compute_next_challenge(
         &miner_info.key.to_bytes(),

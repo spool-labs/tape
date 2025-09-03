@@ -326,7 +326,7 @@ fn get_genesis_tape(svm: &mut SvmWithCUTracker) -> StoredTape {
     let SvmWithCUTracker { svm, cu_tracker:_, payer } = svm;
     let genesis_name = "genesis".to_string();
     let genesis_name_bytes = to_name(&genesis_name);
-    let (genesis_pubkey, _) = tape_pda(payer.pubkey(), &genesis_name_bytes);
+    let (genesis_pubkey, _) = tape_find_pda(&payer.pubkey(), &genesis_name_bytes);
 
     let account = svm.get_account(&genesis_pubkey).expect("Genesis tape should exist");
     let tape = Tape::unpack(&account.data).expect("Failed to unpack genesis tape");
@@ -426,7 +426,7 @@ fn verify_metadata_account(svm: &SvmWithCUTracker) {
     let SvmWithCUTracker {svm,..} = svm;
 
     let (mint_address, _mint_bump) = mint_pda();
-    let (metadata_address, _metadata_bump) = metadata_pda(mint_address);
+    let (metadata_address, _metadata_bump) = metadata_find_pda(mint_address);
     let account = svm
         .get_account(&metadata_address)
         .expect("Metadata account should exist");
@@ -436,7 +436,7 @@ fn verify_metadata_account(svm: &SvmWithCUTracker) {
 fn verify_treasury_ata(svm: &SvmWithCUTracker) {
     let SvmWithCUTracker {svm,..} = svm;
 
-    let (treasury_ata_address, _ata_bump) = treasury_ata();
+    let (treasury_ata_address, _ata_bump) = treasury_find_ata();
     let account = svm
         .get_account(&treasury_ata_address)
         .expect("Treasury ATA should exist");
@@ -453,8 +453,8 @@ fn create_and_verify_tape(
     let payer_pk = payer.pubkey();
     let tape_name = format!("tape-name-{tape_index}");
 
-    let (tape_address, _tape_bump) = tape_pda(payer_pk, &to_name(&tape_name));
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(&payer_pk, &to_name(&tape_name));
+    let (writer_address, _writer_bump) = writer_find_pda(&tape_address);
 
     // Create tape and verify initial state
     let mut stored_tape = create_tape(
@@ -763,7 +763,7 @@ fn finalize_tape(
 fn register_miner(svm: &mut SvmWithCUTracker, miner_name: &str) -> Pubkey {
     let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
     let payer_pk = payer.pubkey();
-    let (miner_address, _miner_bump) = miner_pda(payer_pk, to_name(miner_name));
+    let (miner_address, _miner_bump) = miner_find_pda(&payer_pk, to_name(miner_name));
 
     let blockhash = svm.latest_blockhash();
     let ix = instruction::miner::build_register_ix(payer_pk, miner_name);
@@ -791,7 +791,7 @@ fn create_spool(svm: &mut SvmWithCUTracker, miner_address: Pubkey, number: u64) 
     let SvmWithCUTracker { svm, cu_tracker, payer } = svm;
 
     let payer_pk = payer.pubkey();
-    let (spool_address, _bump) = spool_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(&miner_address, number);
 
     let blockhash = svm.latest_blockhash();
     let ix = instruction::spool::build_create_ix(payer_pk, miner_address, number);

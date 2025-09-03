@@ -71,23 +71,23 @@ pub fn pda_derive_address<const N: usize>(
     unreachable!("deriving a pda is only available on target `solana`");
 }
 
-pub fn archive_pda() -> (Pubkey, u8) {
-    (ARCHIVE_ADDRESS, ARCHIVE_BUMP)
+pub const fn archive_pda() -> (&'static Pubkey, u8) {
+    (&ARCHIVE_ADDRESS, ARCHIVE_BUMP)
 }
 
-pub fn epoch_pda() -> (Pubkey, u8) {
-    (EPOCH_ADDRESS, EPOCH_BUMP)
+pub const fn epoch_pda() -> (&'static Pubkey, u8) {
+    (&EPOCH_ADDRESS, EPOCH_BUMP)
 }
 
-pub fn block_pda() -> (Pubkey, u8) {
-    (BLOCK_ADDRESS, BLOCK_BUMP)
+pub const fn block_pda() -> (&'static Pubkey, u8) {
+    (&BLOCK_ADDRESS, BLOCK_BUMP)
 }
 
-pub fn treasury_pda() -> (Pubkey, u8) {
-    (TREASURY_ADDRESS, TREASURY_BUMP)
+pub const fn treasury_pda() -> (&'static Pubkey, u8) {
+    (&TREASURY_ADDRESS, TREASURY_BUMP)
 }
 
-pub fn treasury_ata() -> (Pubkey, u8) {
+pub fn treasury_find_ata() -> (Pubkey, u8) {
     let (treasury_pda,_bump) = treasury_pda();
     let (mint_pda, _bump) = mint_pda();
     Pubkey::find_program_address(
@@ -100,22 +100,22 @@ pub fn treasury_ata() -> (Pubkey, u8) {
     )
 }
 
-pub fn mint_pda() -> (Pubkey, u8) {
-    (MINT_ADDRESS, MINT_BUMP)
+pub const fn mint_pda() -> (&'static Pubkey, u8) {
+    (&MINT_ADDRESS, MINT_BUMP)
 }
 
-pub fn metadata_find_pda(mint: Pubkey) -> (Pubkey, u8) {
+pub fn metadata_find_pda(mint: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref() ],
         &mpl_token_metadata::ID,
     )
 }
 
-pub fn tape_find_pda(authority: Pubkey, name: &[u8; NAME_LEN]) -> (Pubkey, u8) {
+pub fn tape_find_pda(authority: &Pubkey, name: &[u8; NAME_LEN]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TAPE, authority.as_ref(), name.as_ref()], &crate::id())
 }
 
-pub fn tape_derive_pda(authority: Pubkey, name: &[u8; NAME_LEN], bump: u8) -> Pubkey {
+pub fn tape_derive_pda(authority: &Pubkey, name: &[u8; NAME_LEN], bump: u8) -> Pubkey {
     pda_derive_address(
         &[TAPE, authority.as_ref(), name.as_ref()],
         Some(bump),
@@ -123,19 +123,19 @@ pub fn tape_derive_pda(authority: Pubkey, name: &[u8; NAME_LEN], bump: u8) -> Pu
     )
 }
 
-pub fn writer_find_pda(tape: Pubkey) -> (Pubkey, u8) {
+pub fn writer_find_pda(tape: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[WRITER, tape.as_ref()], &crate::id())
 }
 
-pub fn writer_derive_pda(tape: Pubkey, bump: u8) -> Pubkey {
+pub fn writer_derive_pda(tape: &Pubkey, bump: u8) -> Pubkey {
     pda_derive_address(&[WRITER, tape.as_ref()], Some(bump), &crate::id())
 }
 
-pub fn miner_find_pda(authority: Pubkey, name: [u8; NAME_LEN]) -> (Pubkey, u8) {
+pub fn miner_find_pda(authority: &Pubkey, name: [u8; NAME_LEN]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[MINER, authority.as_ref(), name.as_ref()], &crate::id())
 }
 
-pub fn miner_derive_pda(authority: Pubkey, name: &[u8; NAME_LEN], bump: u8) -> Pubkey {
+pub fn miner_derive_pda(authority: &Pubkey, name: &[u8; NAME_LEN], bump: u8) -> Pubkey {
     pda_derive_address(
         &[MINER, authority.as_ref(), name.as_ref()],
         Some(bump),
@@ -144,14 +144,14 @@ pub fn miner_derive_pda(authority: Pubkey, name: &[u8; NAME_LEN], bump: u8) -> P
 }
 
 
-pub fn spool_find_pda(miner: Pubkey, number: u64) -> (Pubkey, u8) {
+pub fn spool_find_pda(miner: &Pubkey, number: u64) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[SPOOL, miner.as_ref(), number.to_le_bytes().as_ref()],
         &crate::id(),
     )
 }
 
-pub fn spool_derive_pda(miner: Pubkey, number: u64, bump: u8) -> Pubkey {
+pub fn spool_derive_pda(miner: &Pubkey, number: u64, bump: u8) -> Pubkey {
     pda_derive_address(
         &[SPOOL, miner.as_ref(), &number.to_le_bytes()],
         Some(bump),

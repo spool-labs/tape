@@ -35,12 +35,12 @@ pub fn build_initialize_ix(
     let (block_pda, _block_bump) = block_pda();
     let (mint_pda, _mint_bump) = mint_pda();
     let (treasury_pda, _treasury_bump) = treasury_pda();
-    let (treasury_ata, _treasury_ata_bump) = treasury_ata();
+    let (treasury_ata, _treasury_ata_bump) = treasury_find_ata();
     let (metadata_pda, _metadata_bump) = metadata_find_pda(mint_pda);
 
     let name = utils::to_name("genesis");
-    let (tape_pda, _tape_bump) = tape_find_pda(signer, &name);
-    let (writer_pda, _writer_bump) = writer_find_pda(tape_pda);
+    let (tape_pda, _tape_bump) = tape_find_pda(&signer, &name);
+    let (writer_pda, _writer_bump) = writer_find_pda(&tape_pda);
 
     assert_eq!(treasury_ata, TREASURY_ATA);
 
@@ -48,12 +48,12 @@ pub fn build_initialize_ix(
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(archive_pda, false),
-            AccountMeta::new(epoch_pda, false),
-            AccountMeta::new(block_pda, false),
+            AccountMeta::new(*archive_pda, false),
+            AccountMeta::new(*epoch_pda, false),
+            AccountMeta::new(*block_pda, false),
             AccountMeta::new(metadata_pda, false),
-            AccountMeta::new(mint_pda, false),
-            AccountMeta::new(treasury_pda, false),
+            AccountMeta::new(*mint_pda, false),
+            AccountMeta::new(*treasury_pda, false),
             AccountMeta::new(treasury_ata, false),
             AccountMeta::new(tape_pda, false),
             AccountMeta::new(writer_pda, false),
@@ -63,14 +63,15 @@ pub fn build_initialize_ix(
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(mpl_token_metadata::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false)
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(sysvar::clock::ID, false)
+
         ],
         data: Initialize {}.to_bytes(),
     }
 }
 
 pub fn build_airdrop_ix(
-    signer: Pubkey,
     beneficiary: Pubkey, 
     amount: u64
 ) -> Instruction {
@@ -80,10 +81,9 @@ pub fn build_airdrop_ix(
     Instruction {
         program_id: crate::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
             AccountMeta::new(beneficiary, false),
-            AccountMeta::new(mint_pda, false),
-            AccountMeta::new(treasury_pda, false),
+            AccountMeta::new(*mint_pda, false),
+            AccountMeta::new(*treasury_pda, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: Airdrop {

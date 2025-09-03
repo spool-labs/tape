@@ -7,7 +7,7 @@ pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
     let [
         signer_info, 
         beneficiary_info, 
-        proof_info, 
+        miner_info, 
         treasury_info, 
         treasury_ata_info, 
         token_program_info,
@@ -17,12 +17,7 @@ pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
 
     signer_info.is_signer()?;
 
-    beneficiary_info
-        .is_writable()?
-        .as_token_account()?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
-
-    let miner = proof_info
+    let miner = miner_info
         .as_account_mut::<Miner>(&tape_api::ID)?
         .assert_mut_err(
             |p| p.authority == *signer_info.key,
@@ -33,11 +28,7 @@ pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         .is_treasury()?;
 
     treasury_ata_info
-        .is_writable()?
         .is_treasury_ata()?;
-
-    token_program_info
-        .is_program(&spl_token::ID)?;
 
     let mut amount = u64::from_le_bytes(args.amount);
 
@@ -53,13 +44,14 @@ pub fn process_claim(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         .ok_or(TapeError::ClaimTooLarge)?;
 
     // Transfer tokens from treasury to beneficiary.
-    transfer_signed(
+    transfer_signed_with_bump(
         treasury_info,
         treasury_ata_info,
         beneficiary_info,
         token_program_info,
         amount,
         &[TREASURY],
+        treasury_pda().1
     )?;
 
     Ok(())
