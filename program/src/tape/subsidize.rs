@@ -14,18 +14,13 @@ pub fn process_tape_subsidize_rent(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
-
     // We don't require the owner of the tape to be the 
     // signer; anyone can subsidize any tape.
     let tape = tape_info
         .as_account_mut::<Tape>(&tape_api::ID)?;
 
     treasury_ata_info
-        .is_writable()?;
-
-    token_program_info
-        .is_program(&spl_token::ID)?;
+        .is_treasury_ata()?;
 
     let amount = u64::from_le_bytes(args.amount);
 

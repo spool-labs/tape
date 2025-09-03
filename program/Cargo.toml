@@ -31,6 +31,7 @@ spl-associated-token-account.workspace = true
 steel.workspace = true
 brine-tree.workspace = true
 
+
 # Fix for issues with `build-sbf` rustc being on `1.79-dev`
 bytemuck_derive=">=1.8.1, <1.9.0"
 half = "=2.4.1"
@@ -45,3 +46,7 @@ rand = "0.8.5"
 solana-compute-budget = "2.1.16"
 solana-client = "=2.1"
 tokio = { version = "1.37", features = ["full"] }
+chrono.workspace = true
+sha2 = "0.10.9"
+serde_json = "1.0.142"
+serde.workspace = true

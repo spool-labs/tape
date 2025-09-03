@@ -50,7 +50,7 @@ pub fn build_register_ix(
     name: &str
 ) -> Instruction {
     let name = utils::to_name(name);
-    let (miner_address, _bump) = miner_pda(signer, name);
+    let (miner_address, _bump) = miner_find_pda(&signer, name);
 
     Instruction {
         program_id: crate::ID,
@@ -58,8 +58,8 @@ pub fn build_register_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(miner_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+            AccountMeta::new_readonly(sysvar::clock::ID, false)
         ],
         data: Register {
             name,
@@ -85,6 +85,8 @@ pub fn build_mine_ix(
             AccountMeta::new(tape, false),
             AccountMeta::new_readonly(ARCHIVE_ADDRESS, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+            AccountMeta::new_readonly(sysvar::clock::ID, false)
+
         ],
         data: Mine {
             pow,
@@ -115,7 +117,7 @@ pub fn build_claim_ix(
     }
 }
 
-pub fn build_close_ix(
+pub fn build_unregister_ix(
     signer: Pubkey,
     miner: Pubkey,
 ) -> Instruction {
@@ -124,7 +126,6 @@ pub fn build_close_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(miner, false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
         data: Unregister {}.to_bytes(),
     }

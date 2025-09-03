@@ -1,8 +1,6 @@
 use steel::*;
 use crate::{
-    consts::*,
-    pda::*,
-    types::*,
+    consts::*, pda::spool_find_pda, types::ProofPath,
 };
 
 #[repr(u8)]
@@ -29,9 +27,7 @@ pub struct Create {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Destroy {
-    pub number: [u8; 8],
-}
+pub struct Destroy {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -60,7 +56,7 @@ pub fn build_create_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (spool_address, _bump) = spool_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(&miner_address, number);
 
     Instruction {
         program_id: crate::ID,
@@ -69,7 +65,7 @@ pub fn build_create_ix(
             AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
             AccountMeta::new_readonly(solana_program::system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(sysvar::clock::ID, false),
         ],
         data: Create {
             number: number.to_le_bytes(),
@@ -82,19 +78,15 @@ pub fn build_destroy_ix(
     miner_address: Pubkey, 
     number: u64,
 ) -> Instruction {
-    let (spool_address, _bump) = spool_pda(miner_address, number);
+    let (spool_address, _bump) = spool_find_pda(&miner_address, number);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(miner_address, false),
             AccountMeta::new(spool_address, false),
-            AccountMeta::new_readonly(solana_program::system_program::ID, false),
         ],
-        data: Destroy {
-            number: number.to_le_bytes(),
-        }.to_bytes(),
+        data: Destroy {}.to_bytes(),
     }
 }
 

@@ -23,81 +23,60 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         treasury_ata_info, 
         tape_info,
         writer_info,
-        tape_program_info,
+        _tape_program_info,
         system_program_info, 
         token_program_info, 
         associated_token_program_info, 
         metadata_program_info, 
-        rent_sysvar_info,
         slot_hashes_info,
+        rent_sysvar_info,
+        clock_info
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    let (archive_address, archive_bump) = archive_pda();
+    let (epcoh_address, epoch_bump) = epoch_pda();
+    let (block_address, block_bump) = block_pda();
+    let (mint_address, mint_bump) = mint_pda();
+    let (treasury_address, treasury_bump) = treasury_pda();
+    let (metadata_address, _metadata_bump) = metadata_find_pda(mint_address);
+
     archive_info
         .is_empty()?
-        .is_writable()?
-        .has_seeds(&[ARCHIVE], &tape_api::ID)?;
+        .has_address(archive_address)?;
 
     epoch_info
         .is_empty()?
-        .is_writable()?
-        .has_seeds(&[EPOCH], &tape_api::ID)?;
+        .has_address(epcoh_address)?;
 
     block_info
         .is_empty()?
-        .is_writable()?
-        .has_seeds(&[BLOCK], &tape_api::ID)?;
-
-    // Check mint, metadata, treasury
-    let (mint_address, mint_bump) = mint_pda();
-    let (treasury_address, treasury_bump) = treasury_pda();
-    let (metadata_address, _metadata_bump) = metadata_pda(mint_address);
-
-    assert_eq!(mint_bump, MINT_BUMP);
-    assert_eq!(treasury_bump, TREASURY_BUMP);
+        .has_address(block_address)?;
 
     mint_info
         .is_empty()?
-        .is_writable()?
-        .has_address(&mint_address)?;
+        .has_address(mint_address)?;
 
     metadata_info
         .is_empty()?
-        .is_writable()?
         .has_address(&metadata_address)?;
 
     treasury_info
         .is_empty()?
-        .is_writable()?
-        .has_address(&treasury_address)?;
+        .has_address(treasury_address)?;
 
     treasury_ata_info
-        .is_empty()?
-        .is_writable()?;
-
-    // Check programs and sysvars.
-    tape_program_info
-        .is_program(&tape_api::ID)?;
-    system_program_info
-        .is_program(&system_program::ID)?;
-    token_program_info
-        .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
-
-    metadata_program_info
-        .is_program(&mpl_token_metadata::ID)?;
-    rent_sysvar_info
-        .is_sysvar(&sysvar::rent::ID)?;
+        .is_empty()?;
 
     // Initialize epoch.
-    create_program_account::<Epoch>(
+    create_program_account_with_bump::<Epoch>(
         epoch_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[EPOCH],
+        epoch_bump
     )?;
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
@@ -112,12 +91,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.last_epoch_at        = 0;
 
     // Initialize block.
-    create_program_account::<Block>(
+    create_program_account_with_bump::<Block>(
         block_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[BLOCK],
+        block_bump
     )?;
 
     let block = block_info.as_account_mut::<Block>(&tape_api::ID)?;
@@ -128,7 +108,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     block.last_block_at     = 0;
 
     let next_challenge = compute_next_challenge(
-        &BLOCK_ADDRESS.to_bytes(),
+        &block_address.to_bytes(),
         slot_hashes_info
     );
 
@@ -136,12 +116,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     block.challenge_set = 1;
 
     // Initialize archive.
-    create_program_account::<Archive>(
+    create_program_account_with_bump::<Archive>(
         archive_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[ARCHIVE],
+        archive_bump
     )?;
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
@@ -150,12 +131,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     archive.segments_stored   = 0;
 
     // Initialize treasury.
-    create_program_account::<Treasury>(
+    create_program_account_with_bump::<Treasury>(
         treasury_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[TREASURY],
+        treasury_bump
     )?;
 
     // Initialize mint.
@@ -166,8 +148,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         Mint::LEN,
         &spl_token::ID,
         &[MINT, MINT_SEED],
-        MINT_BUMP,
+        mint_bump
     )?;
+
     initialize_mint_signed_with_bump(
         mint_info,
         treasury_info,
@@ -176,7 +159,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         rent_sysvar_info,
         TOKEN_DECIMALS,
         &[MINT, MINT_SEED],
-        MINT_BUMP,
+        mint_bump
     )?;
 
     // Initialize mint metadata.
@@ -217,20 +200,21 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     )?;
 
     // Fund the treasury token account.
-    mint_to_signed(
+    mint_to_signed_with_bump(
         mint_info,
         treasury_ata_info,
         treasury_info,
         token_program_info,
         MAX_SUPPLY,
         &[TREASURY],
+        treasury_bump
     )?;
 
     // Create the genesis tape
 
     let name = "genesis";
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &to_name(name));
-    let (writer_address, _writer_bump) = writer_pda(tape_address);
+    let (tape_address, _tape_bump) = tape_find_pda(signer_info.key, &to_name(name));
+    let (writer_address, _writer_bump) = writer_find_pda(&tape_address);
 
     // Create the tape
     invoke(
@@ -243,8 +227,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             tape_info.clone(),
             writer_info.clone(),
             system_program_info.clone(),
-            rent_sysvar_info.clone(),
-            slot_hashes_info.clone(),
+            clock_info.clone(),
         ],
     )?;
 
@@ -260,6 +243,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             signer_info.clone(),
             tape_info.clone(),
             writer_info.clone(),
+            clock_info.clone()
         ],
     )?;
 
@@ -273,8 +257,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         ),
         &[
             treasury_info.clone(),
-            treasury_ata_info.clone(),
             tape_info.clone(),
+            treasury_ata_info.clone(),
         ],
         &[&[TREASURY, &[TREASURY_BUMP]]]
     )?;
@@ -291,8 +275,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             tape_info.clone(),
             writer_info.clone(),
             archive_info.clone(),
-            system_program_info.clone(),
-            rent_sysvar_info.clone(),
         ],
     )?;
 

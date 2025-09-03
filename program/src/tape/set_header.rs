@@ -20,7 +20,7 @@ pub fn process_tape_set_header(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
             ProgramError::MissingRequiredSignature,
         )?;
 
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &tape.name);
+    let tape_address= tape_derive_pda(signer_info.key, &tape.name, tape.pda_bump as u8);
 
     tape_info.has_address(&tape_address)?;
 

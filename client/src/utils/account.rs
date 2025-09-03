@@ -74,7 +74,7 @@ pub async fn get_epoch_account(client: &Arc<RpcClient>) -> Result<(Epoch, Pubkey
     let account = Epoch::unpack(&account.data)
         .map_err(|e| anyhow!("Failed to unpack epoch account: {}", e))
         .copied()?;
-    Ok((account, epoch_address))
+    Ok((account, *epoch_address))
 }
 
 pub async fn get_block_account(client: &Arc<RpcClient>) -> Result<(Block, Pubkey)> {
@@ -84,7 +84,7 @@ pub async fn get_block_account(client: &Arc<RpcClient>) -> Result<(Block, Pubkey
     let account = Block::unpack(&account.data)
         .map_err(|e| anyhow!("Failed to unpack block account: {}", e))
         .copied()?;
-    Ok((account, block_address))
+    Ok((account, *block_address))
 }
 
 pub async fn get_archive_account(client: &Arc<RpcClient>) -> Result<(Archive, Pubkey)> {
@@ -94,5 +94,5 @@ pub async fn get_archive_account(client: &Arc<RpcClient>) -> Result<(Archive, Pu
     let account = Archive::unpack(&account.data)
         .map_err(|e| anyhow!("Failed to unpack archive account: {}", e))
         .copied()?;
-    Ok((account, archive_address))
+    Ok((account, *archive_address))
 }

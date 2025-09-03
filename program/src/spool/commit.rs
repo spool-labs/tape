@@ -31,13 +31,8 @@ pub fn process_spool_commit(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let merkle_root = &spool.contains;
     let merkle_proof = args.proof.as_ref();
+    
     assert!(merkle_proof.len() == SEGMENT_PROOF_LEN);
-
-    // let segment_id = args.index;
-    // let leaf = Leaf::new(&[
-    //     segment_id.as_ref(), // u64 (8 bytes)
-    //     &args.value,
-    // ]);
 
     let leaf = Leaf::from(args.value);
 
