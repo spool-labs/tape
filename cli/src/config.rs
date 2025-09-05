@@ -16,6 +16,7 @@ pub struct TapeConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MiningConfig {
+    pub miner_name: String,
     pub num_cores: usize,
     pub max_memory_mb: u64,
     pub max_poa_threads: u64,
@@ -209,6 +210,7 @@ impl Default for TapeConfig {
     fn default() -> Self {
         Self {
             mining: MiningConfig{
+                miner_name: "tape_miner".to_string(),
                 num_cores: num_cpus::get(),
                 max_memory_mb: 16384,
                 max_poa_threads: 4,
@@ -248,18 +250,7 @@ mod tests {
     fn test_toml_parsing_works_properly() {
         let toml_content = r#"
 [mining]
-num_cores = 4                    
-max_memory_mb = 16384            
-max_poa_threads = 4
-max_pow_threads = 4
-
-[performance]
-num_cores = 4                    
-max_memory_mb = 16384            
-max_poa_threads = 4
-max_pow_threads = 4
-
-[performance]
+miner_name = "tape_miner"
 num_cores = 4                    
 max_memory_mb = 16384            
 max_poa_threads = 4
