@@ -44,7 +44,16 @@ pub struct Cli {
     )]
     pub commitment: CommitmentLevel
 }
+impl Cli {
+	pub fn commitment_time(&self)-> u64 {
+    match self.commitment {
+        CommitmentLevel::Confirmed => 32,
+        CommitmentLevel::Finalized => 16,
+        CommitmentLevel::Processed => 8,
+    }
+}
 
+}
 #[derive(Subcommand)]
 pub enum Commands {
 
