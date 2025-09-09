@@ -1,4 +1,4 @@
-[mining_config]
+[mining]
 num_cores = 4                    
 max_memory_mb = 16384            
 max_poa_threads = 4
