@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use solana_sdk::commitment_config::CommitmentConfig;
 use std::fmt;
+use crate::log::*;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
@@ -117,7 +118,16 @@ impl TapeConfig {
             },
             None => {
                 let default_path = get_default_config_path()?;
-                Self::load_from_path(default_path)
+                match Self::load_from_path(&default_path) {
+                    Ok(config) => Ok(config),
+                    Err(TapeConfigError::ConfigFileNotFound) => {
+                        print_info("tape.toml not found, creating default configuration...");
+                        let config = Self::create_default()?;
+                        print_info("✓ Default configuration created successfully");
+                        Ok(config)
+                    },
+                    Err(e) => Err(e),
+                }
             }
         }
     }
