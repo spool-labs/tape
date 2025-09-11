@@ -16,10 +16,10 @@ pub fn secondary_mine(tape_store_primary_db: &str, tape_store_secondary_db_mine:
     TapeStore::new_secondary(&db_primary, &db_secondary)
 }
 
-pub fn secondary_web() -> Result<TapeStore, StoreError> {
+pub fn secondary_web(tape_store_primary_db: &str, tape_store_secondary_db_web: &str) -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;
-    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
-    let db_secondary = current_dir.join(TAPE_STORE_SECONDARY_DB_WEB);
+    let db_primary = current_dir.join(tape_store_primary_db);
+    let db_secondary = current_dir.join(tape_store_secondary_db_web);
     std::fs::create_dir_all(&db_secondary).map_err(StoreError::IoError)?;
     TapeStore::new_secondary(&db_primary, &db_secondary)
 }
