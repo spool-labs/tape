@@ -3,9 +3,10 @@ mod keypair;
 mod log;
 mod commands;
 mod utils;
+mod config;
 
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands};
 use commands::{admin, read, write, info, snapshot, network, claim};
@@ -37,7 +38,6 @@ async fn run_tape_cli() -> Result<()> {
     log::print_title(format!("⊙⊙ TAPEDRIVE {}", env!("CARGO_PKG_VERSION")).as_str());
 
     let cli = Cli::parse();
-  
 
     let context = Context::try_build(&cli)?;
 
@@ -49,8 +49,7 @@ async fn run_tape_cli() -> Result<()> {
         => {
             log::print_message(&format!(
                 "Using keypair from {}",
-                context.keyapir_path().display()
-                
+                context.keypair_path().display()
             ));
         }
         _ => {}

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
@@ -9,7 +8,8 @@ use std::str::FromStr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::keypair::{get_keypair_path, get_payer};
+use crate::keypair::get_payer;
+use crate::config::TapeConfig;
 
 #[derive(Parser)]
 #[command(
@@ -22,17 +22,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
+    #[arg(short = 'c', long = "config", help = "Path to config file (overrides default)", global = true)]
+    pub config: Option<PathBuf>,
+
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
-
-    #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
-        global = true,
-        help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
-    )]
-    pub cluster: Cluster,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -239,31 +233,37 @@ impl FromStr for Cluster {
 }
 
 pub struct Context {
+    pub config: Arc<TapeConfig>,
     pub rpc: Arc<RpcClient>,
-    pub keypair_path: PathBuf,
     pub payer: Keypair
 }
 
 impl Context{
     pub fn try_build(cli:&Cli) -> Result<Self> {
-        let rpc_url = cli.cluster.rpc_url();
+        
+        // loading up configs
+        let config = Arc::new(TapeConfig::load(&cli.config)?);
+
+        let rpc_url = config.solana.rpc_url.to_string();
+        let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            commitment_level)
         );
-        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+
+        let keypair_path = config.solana.keypair_path();
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
+             config,
              rpc,
-             keypair_path,
              payer
         })
 
     }
 
-    pub fn keyapir_path(&self) -> &PathBuf{
-        &self.keypair_path
+    pub fn keypair_path(&self) -> PathBuf {
+        self.config.solana.keypair_path()
     }
 
     pub fn rpc(&self) -> &Arc<RpcClient>{
@@ -275,7 +275,9 @@ impl Context{
     }
 
     pub fn open_secondary_store_conn_mine(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::secondary_mine()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::secondary_mine(&rocksdb_config.primary_path, &rocksdb_config.secondary_path_mine)?)
     }
 
     pub fn open_secondary_store_conn_web(&self) -> Result<TapeStore> {
