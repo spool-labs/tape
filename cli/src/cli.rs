@@ -250,7 +250,7 @@ impl Context{
             RpcClient::new_with_commitment(rpc_url.clone(),
             commitment_level)
         );
-        let keypair_path = get_keypair_path(&config.identity.keypair_path);
+        let keypair_path = get_keypair_path(&config.solana.keypair_path);
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {

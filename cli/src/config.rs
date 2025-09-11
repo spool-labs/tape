@@ -8,7 +8,6 @@ use crate::log::*;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TapeConfig {
     pub mining: MiningConfig,
-    pub identity: IdentityConfig,
     pub solana: SolanaConfig,
     pub storage: StorageConfig,
     pub logging: LoggingConfig,
@@ -24,13 +23,10 @@ pub struct MiningConfig {
     pub max_pow_threads: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct IdentityConfig {
-    pub keypair_path: String,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SolanaConfig {
+    pub keypair_path: String,
     pub rpc_url: String,
     pub ws_url: Option<String>,
     pub commitment: CommitmentLevel,
@@ -155,7 +151,7 @@ impl TapeConfig {
         }
 
         // keypair validation
-        let keypair_path = &*shellexpand::tilde(&self.identity.keypair_path);
+        let keypair_path = &*shellexpand::tilde(&self.solana.keypair_path);
         if !Path::new(&keypair_path).exists() {
             return Err(TapeConfigError::KeypairNotFound(keypair_path.to_string()));
         }
@@ -226,10 +222,8 @@ impl Default for TapeConfig {
                 max_poa_threads: 4,
                 max_pow_threads: 4
             },
-            identity: IdentityConfig {
-                keypair_path: "~/.config/solana/id.json".to_string(),
-            },
             solana: SolanaConfig {
+                keypair_path: "~/.config/solana/id.json".to_string(),
                 rpc_url: "https://api.devnet.solana.com".to_string(),
                 ws_url: Some("wss://api.devnet.solana.com/".to_string()),
                 commitment: CommitmentLevel::Confirmed,
@@ -266,10 +260,8 @@ max_memory_mb = 16384
 max_poa_threads = 4
 max_pow_threads = 4
 
-[identity]
-keypair_path = "~/.config/solana/id.json"
-
 [solana]
+keypair_path = "~/.config/solana/id.json"
 rpc_url = "https://api.mainnet-beta.solana.com"
 ws_url = "wss://api.mainnet-beta.solana.com/"
 commitment = "finalized"
@@ -292,7 +284,7 @@ log_path = "./test.log"
         let config: TapeConfig = toml::from_str(toml_content).unwrap();
 
         
-        assert_eq!(config.identity.keypair_path, "~/.config/solana/id.json");
+        assert_eq!(config.solana.keypair_path, "~/.config/solana/id.json");
         assert_eq!(config.solana.rpc_url, "https://api.mainnet-beta.solana.com");
         assert_eq!(config.solana.ws_url, Some("wss://api.mainnet-beta.solana.com/".to_string()));
         assert_eq!(config.solana.commitment, CommitmentLevel::Finalized);

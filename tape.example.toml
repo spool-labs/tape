@@ -4,10 +4,8 @@ max_memory_mb = 16384
 max_poa_threads = 4
 max_pow_threads = 4
 
-[identity]
-keypair_path = "~/.config/solana/id.json"
-
 [solana]
+keypair_path = "~/.config/solana/id.json"
 rpc_url = "https://api.mainnet-beta.solana.com"
 ws_url = "wss://api.mainnet-beta.solana.com/"
 commitment = "finalized"
