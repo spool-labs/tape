@@ -117,9 +117,9 @@ impl TapeConfig {
                 match Self::load_from_path(&default_path) {
                     Ok(config) => Ok(config),
                     Err(TapeConfigError::ConfigFileNotFound) => {
-                        print_info("tape.toml not found, creating default configuration...");
+                        print_info("No configuration found, creating default tape.toml...");
                         let config = Self::create_default()?;
-                        print_info("✓ Default configuration created successfully");
+                        print_info(&format!("✓ Created default configuration at {:?}", default_path));
                         Ok(config)
                     },
                     Err(e) => Err(e),
