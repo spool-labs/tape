@@ -44,7 +44,8 @@ pub struct StorageConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RocksDbConfig {
     pub primary_path: String,
-    pub secondary_path: Option<String>,
+    pub secondary_path_mine: String,
+    pub secondary_path_web: String,
     pub cache_size_mb: u64,
 }
 
@@ -245,8 +246,9 @@ impl Default for TapeConfig {
             storage: StorageConfig {
                 backend: StorageBackend::RocksDb,
                 rocksdb: Some(RocksDbConfig{
-                primary_path: "./db_tapestore".to_string(),
-                secondary_path: Some("./db_tapestore_secondary".to_string()),
+                primary_path: "db_tapestore".to_string(),
+                secondary_path_mine: "db_tapestore_read_mine".to_string(),
+                secondary_path_web: "db_tapestore_read_web".to_string(),
                 cache_size_mb: 512,
                 })
             },
