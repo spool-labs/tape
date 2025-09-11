@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::keypair::{get_keypair_path, get_payer};
+use crate::keypair::get_payer;
 use crate::config::TapeConfig;
 
 #[derive(Parser)]
@@ -233,8 +233,8 @@ impl FromStr for Cluster {
 }
 
 pub struct Context {
+    pub config: Arc<TapeConfig>,
     pub rpc: Arc<RpcClient>,
-    pub keypair_path: PathBuf,
     pub payer: Keypair
 }
 
@@ -242,7 +242,7 @@ impl Context{
     pub fn try_build(cli:&Cli) -> Result<Self> {
         
         // loading up configs
-        let config = TapeConfig::load(&cli.config)?;
+        let config = Arc::new(TapeConfig::load(&cli.config)?);
 
         let rpc_url = config.solana.rpc_url.to_string();
         let commitment_level = config.solana.commitment.to_commitment_config();
@@ -250,19 +250,20 @@ impl Context{
             RpcClient::new_with_commitment(rpc_url.clone(),
             commitment_level)
         );
-        let keypair_path = get_keypair_path(&config.solana.keypair_path);
+
+        let keypair_path = config.solana.keypair_path();
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
+             config,
              rpc,
-             keypair_path,
              payer
         })
 
     }
 
-    pub fn keyapir_path(&self) -> &PathBuf{
-        &self.keypair_path
+    pub fn keypair_path(&self) -> PathBuf {
+        self.config.solana.keypair_path()
     }
 
     pub fn rpc(&self) -> &Arc<RpcClient>{

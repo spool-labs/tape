@@ -78,6 +78,18 @@ pub enum CommitmentLevel {
     Finalized,
 }
 
+impl SolanaConfig {
+    pub fn keypair_path(&self) -> PathBuf {
+        if self.keypair_path.is_empty() {
+            dirs::home_dir()
+                .expect("Could not find home directory")
+                .join(".config/solana/id.json")
+        } else {
+            PathBuf::from(&*shellexpand::tilde(&self.keypair_path))
+        }
+    }
+}
+
 impl ToString for CommitmentLevel {
     fn to_string(&self) -> String {
         match self {
