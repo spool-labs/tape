@@ -22,17 +22,6 @@ pub fn load_keypair(path: &PathBuf) -> Result<Keypair> {
         .map_err(|e| anyhow!("Failed to create keypair from bytes: {}", e))
 }
 
-/// Loads the keypair from a specified path or the default Solana keypair location.
-pub fn get_keypair_path(keypair_path: &str) -> PathBuf {
-    if keypair_path.is_empty() {
-        dirs::home_dir()
-            .expect("Could not find home directory")
-            .join(".config/solana/id.json")
-    } else {
-        PathBuf::from(&*shellexpand::tilde(keypair_path))
-    }
-}
-
 pub fn get_payer(keypair_path: PathBuf) -> Result<Keypair> {
     let payer = match load_keypair(&keypair_path) {
         Ok(payer) => payer,

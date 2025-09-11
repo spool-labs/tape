@@ -49,8 +49,7 @@ async fn run_tape_cli() -> Result<()> {
         => {
             log::print_message(&format!(
                 "Using keypair from {}",
-                context.keyapir_path().display()
-                
+                context.keypair_path().display()
             ));
         }
         _ => {}
