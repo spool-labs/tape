@@ -4,8 +4,8 @@ use crate::{
     state, 
     types::{ 
         NodeID, 
-        EpochIndex, 
-        BlockIndex, 
+        EpochNumber, 
+        BlockNumber, 
         NetworkAddress
     },
     NAME_LENGTH
@@ -26,8 +26,8 @@ pub struct Member {
     pub storage_price: u64,
     pub storage_capacity: u64,
 
-    pub last_active_epoch: EpochIndex,
-    pub last_block_index: BlockIndex,
+    pub last_active_epoch: EpochNumber,
+    pub last_active_block: BlockNumber,
 }
 
 state!(AccountType, Member);

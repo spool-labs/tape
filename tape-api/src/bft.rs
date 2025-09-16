@@ -3,7 +3,7 @@
 use core::num::NonZeroU16;
 
 /// Computes the maximum number of Byzantine (faulty) nodes a system of size n can tolerate.
-/// This is the classic BFT bound f = ⌊(n − 1)/3⌋, ensuring 3f < n.
+/// This is the classic BFT bound f = (n − 1)/3, ensuring 3f < n.
 #[inline]
 pub fn max_byzantine_nodes(n: NonZeroU16) -> u16 {
     (n.get() - 1) / 3

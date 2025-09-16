@@ -103,7 +103,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
 
-    epoch.number               = EpochIndex::new(0);
+    epoch.number               = EpochNumber::new(0);
     // epoch.progress             = 0;
     // epoch.target_participation = MIN_PARTICIPATION_TARGET;
     // epoch.mining_difficulty    = MIN_MINING_DIFFICULTY;
@@ -123,7 +123,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let block = block_info.as_account_mut::<Block>(&tape_api::ID)?;
 
-    block.number            = BlockIndex::new(0);
+    block.number            = BlockNumber::new(0);
     // block.progress          = 0;
     // block.last_proof_at     = 0;
     block.last_block_at     = 0;

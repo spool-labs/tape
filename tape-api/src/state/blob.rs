@@ -2,7 +2,7 @@ use steel::*;
 use super::AccountType;
 use crate::{
     state, 
-    types::EpochIndex, 
+    types::EpochNumber, 
 };
 
 #[repr(C)]
@@ -12,7 +12,7 @@ pub struct Blob {
     pub storage: Pubkey,
 
     pub size: u64,
-    pub certified_epoch: EpochIndex,
+    pub certified_epoch: EpochNumber,
 }
 
 state!(AccountType, Blob);

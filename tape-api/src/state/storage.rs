@@ -2,7 +2,7 @@ use steel::*;
 use super::AccountType;
 use crate::{
     state, 
-    types::EpochIndex, 
+    types::EpochNumber, 
 };
 
 #[repr(C)]
@@ -10,8 +10,8 @@ use crate::{
 pub struct Storage {
     pub authority: Pubkey,
     pub size: u64,
-    pub start_epoch: EpochIndex,
-    pub end_epoch: EpochIndex,
+    pub start_epoch: EpochNumber,
+    pub end_epoch: EpochNumber,
 }
 
 state!(AccountType, Storage);

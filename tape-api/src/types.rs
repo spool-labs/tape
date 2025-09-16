@@ -1,12 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 use core::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
-use crate::{define_u16_type, define_u64_type};
+use crate::define_u64_type;
 
-define_u16_type!(VersionID, "ver");
+define_u64_type!(VersionID, "ver");
 define_u64_type!(NodeID, "node");
 
-define_u64_type!(EpochIndex, "epoch");
-define_u64_type!(BlockIndex, "block");
+define_u64_type!(EpochNumber, "epoch");
+define_u64_type!(BlockNumber, "block");
 
 define_u64_type!(SpoolIndex, "spool");
 define_u64_type!(TapeIndex, "tape");

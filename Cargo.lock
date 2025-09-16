@@ -306,6 +306,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert_matches"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
+
+[[package]]
 name = "async-channel"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4704,6 +4710,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-transaction-status"
+version = "2.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d551f506a53022863458d85e4088de58f6938cc0a27d6454bc055ee5fd42ea3f"
+dependencies = [
+ "Inflector",
+ "base64 0.22.1",
+ "bincode",
+ "borsh 1.5.7",
+ "bs58",
+ "lazy_static",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-sdk",
+ "solana-transaction-status-client-types",
+ "spl-associated-token-account 4.0.0",
+ "spl-memo 5.0.0",
+ "spl-token 6.0.0",
+ "spl-token-2022 4.0.0",
+ "spl-token-group-interface 0.3.0",
+ "spl-token-metadata-interface 0.4.0",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "solana-transaction-status-client-types"
 version = "2.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4883,6 +4917,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d96d2d1d716fb500937168cc09353ffdc7a012be8475ac7308e1bdf0e3923300"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "spl-associated-token-account"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68034596cf4804880d265f834af1ff2f821ad5293e41fa0f8f59086c181fc38e"
+dependencies = [
+ "assert_matches",
+ "borsh 1.5.7",
+ "num-derive 0.4.2",
+ "num-traits",
+ "solana-program",
+ "spl-token 6.0.0",
+ "spl-token-2022 4.0.0",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -5430,7 +5480,7 @@ dependencies = [
  "fixed",
  "num_enum",
  "solana-program",
- "spl-associated-token-account",
+ "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
  "spl-token-2022 7.0.0",
  "thiserror 1.0.69",
@@ -5531,7 +5581,7 @@ dependencies = [
  "mpl-token-metadata",
  "num_enum",
  "solana-program",
- "spl-associated-token-account",
+ "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
  "steel",
 ]
@@ -5568,7 +5618,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account",
+ "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-api",
@@ -5582,6 +5632,31 @@ version = "0.3.0"
 [[package]]
 name = "tape-solana"
 version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "base64 0.13.1",
+ "bincode",
+ "blake3",
+ "bytemuck",
+ "chrono",
+ "log",
+ "num_enum",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-program",
+ "solana-sdk",
+ "solana-transaction-status",
+ "solana-transaction-status-client-types",
+ "spl-associated-token-account 6.0.0",
+ "spl-token 4.0.2",
+ "steel",
+ "tape-api",
+ "thiserror 2.0.16",
+ "tokio",
+]
 
 [[package]]
 name = "tape-store"

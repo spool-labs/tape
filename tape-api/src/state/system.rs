@@ -6,8 +6,8 @@ use crate::{state, types::VersionID, hash::Hash};
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
     pub version: VersionID,
-
     pub committee: Hash,
+    pub registered_nodes: u64,
 }
 
 state!(AccountType, System);
