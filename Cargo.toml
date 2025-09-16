@@ -1,25 +1,39 @@
 [workspace]
 resolver = "2"
-members = [ "api", "client", "cli", "network", "program", "example" ]
+members = [ 
+  "tape-api",
+  "tape-archive",
+  "tape-cli",
+  "tape-client",
+  "tape-network",
+  "tape-program",
+  "tape-rpc",
+  "tape-solana",
+  "tape-store",
+  "tape-utils"
+]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 homepage = "https://tapedrive.io"
-description = "Your data, permanently recorded — uncensorable, uneditable, and here for good."
+description = "A decentralized blob store using Solana."
 repository = "https://github.com/tapedrive-io/tape"
 readme = "./README.md"
-keywords = ["solana", "crypto", "mining"]
+keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
-tape-api = { version = "0.2.1", path = "./api" }
-tape-client = { version = "0.2.1", path = "./client" }
-tape-network = { version = "0.2.1", path = "./network" }
-tape-program = { version = "0.2.1", path = "./program" }
-
-crankx = { version = "0.2.2", features = ["solana"] }
-packx = { version = "0.4.1", features = ["solana"] }
+tape-api = { version = "0.3.1", path = "./tape-api" }
+tape-archive = { version = "0.3.1", path = "./tape-archive" }
+tape-cli = { version = "0.3.1", path = "./tape-cli" }
+tape-client = { version = "0.3.1", path = "./tape-client" }
+tape-network = { version = "0.3.1", path = "./tape-node" }
+tape-program = { version = "0.3.1", path = "./tape-program" }
+tape-rpc = { version = "0.3.1", path = "./tape-rpc" }
+tape-solana = { version = "0.3.1", path = "./tape-solana" }
+tape-store = { version = "0.3.1", path = "./tape-store" }
+tape-utils = { version = "0.3.1", path = "./tape-utils" }
 
 # program dependencies
 bytemuck = "1.14.3"
@@ -87,12 +101,3 @@ http-body-util = "0.1.3"
 
 [profile.release]
 overflow-checks = true
-
-[profile.dev]
-overflow-checks = true
-opt-level = 3
-debug = false
-
-[profile.test]
-opt-level = 3
-debug = false
