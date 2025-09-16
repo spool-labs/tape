@@ -5,6 +5,7 @@ use solana_program::pubkey::Pubkey;
 // PDA Seed Constants
 // ====================================================================
 /// Program-derived address (PDA) seeds
+pub const SYSTEM:   &[u8] = b"system";
 pub const ARCHIVE:  &[u8] = b"archive";
 pub const BLOCK:    &[u8] = b"block";
 pub const EPOCH:    &[u8] = b"epoch";
@@ -112,6 +113,12 @@ pub const HEADER_SIZE: usize = 64;
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&crate::id() as *const Pubkey as *const [u8; 32]) };
+
+pub const SYSTEM_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
+
+pub const SYSTEM_BUMP: u8 =
+    ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).1;
 
 pub const ARCHIVE_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);

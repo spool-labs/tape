@@ -21,7 +21,6 @@ solana-program.workspace = true
 mpl-token-metadata.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
-brine-tree.workspace = true
 array-const-fn-init.workspace = true
 const-crypto.workspace = true
 

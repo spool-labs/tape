@@ -24,22 +24,21 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
-tape-api = { version = "0.3.1", path = "./tape-api" }
-tape-archive = { version = "0.3.1", path = "./tape-archive" }
-tape-cli = { version = "0.3.1", path = "./tape-cli" }
-tape-client = { version = "0.3.1", path = "./tape-client" }
-tape-network = { version = "0.3.1", path = "./tape-node" }
-tape-program = { version = "0.3.1", path = "./tape-program" }
-tape-rpc = { version = "0.3.1", path = "./tape-rpc" }
-tape-solana = { version = "0.3.1", path = "./tape-solana" }
-tape-store = { version = "0.3.1", path = "./tape-store" }
-tape-utils = { version = "0.3.1", path = "./tape-utils" }
+tape-api = { version = "0.3.0", path = "./tape-api" }
+tape-archive = { version = "0.3.0", path = "./tape-archive" }
+tape-cli = { version = "0.3.0", path = "./tape-cli" }
+tape-client = { version = "0.3.0", path = "./tape-client" }
+tape-network = { version = "0.3.0", path = "./tape-node" }
+tape-program = { version = "0.3.0", path = "./tape-program" }
+tape-rpc = { version = "0.3.0", path = "./tape-rpc" }
+tape-solana = { version = "0.3.0", path = "./tape-solana" }
+tape-store = { version = "0.3.0", path = "./tape-store" }
+tape-utils = { version = "0.3.0", path = "./tape-utils" }
 
 # program dependencies
 bytemuck = "1.14.3"
 bytemuck_derive = "1.7.0"
 num_enum = "0.7.2"
-brine-tree = { version = "0.6.2", features = ["solana"] }
 array-const-fn-init = "0.1.1"
 const-crypto = "0.3.0"
 

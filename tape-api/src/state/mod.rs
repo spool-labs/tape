@@ -1,23 +1,27 @@
 mod system;
 mod treasury;
 mod archive;
-// mod epoch;
-// mod block;
+mod epoch;
+mod block;
 // mod tape;
 // mod writer;
 // mod miner;
 // mod spool;
+mod storage;
+mod blob;
 mod member;
 
 pub use system::*;
 pub use treasury::*;
 pub use archive::*;
-// pub use epoch::*;
-// pub use block::*;
+pub use epoch::*;
+pub use block::*;
 // pub use tape::*;
 // pub use writer::*;
 // pub use miner::*;
 // pub use spool::*;
+pub use storage::*;
+pub use blob::*;
 pub use member::*;
 
 use steel::*;
@@ -32,6 +36,7 @@ pub enum AccountType {
     Archive,
     Spool,
     Tape,
+    Storage,
     Blob,
 
     Epoch,
