@@ -16,23 +16,15 @@ pub enum NetworkAddressError {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct NetworkAddress {
-    pub flags: u8,    // 0 for IPv4, 1 for IPv6
-    _p1: [u8; 3],
+    pub flags: u16,
     pub port: u16,
-    pub ip: [u8; 16], // IPv4 uses first 4 bytes (zero-padded); IPv6 uses all 16
-    _p2: [u8; 2],
+    pub ip: [u8; 16],
+    pub _empty: u32,
 }
 
 impl NetworkAddress {
-
     pub fn default() -> Self {
-        NetworkAddress {
-            flags: 0,
-            _p1: [0; 3],
-            port: 0,
-            ip: [0; 16],
-            _p2: [0; 2],
-        }
+        NetworkAddress { flags: 0, port: 0, ip: [0; 16], _empty: 0, }
     }
 
     pub fn from(addr: &str) -> Result<Self, NetworkAddressError> {
@@ -50,18 +42,16 @@ impl NetworkAddress {
                 ip_bytes[..4].copy_from_slice(&ip);
                 NetworkAddress {
                     flags: 0,
-                    _p1: [0; 3],
                     port: v4.port().to_le(),
                     ip: ip_bytes,
-                    _p2: [0; 2],
+                    _empty: 0,
                 }
             }
             SocketAddr::V6(v6) => NetworkAddress {
                 flags: 1,
-                _p1: [0; 3],
                 port: v6.port().to_le(),
                 ip: v6.ip().octets(),
-                _p2: [0; 2],
+                _empty: 0,
             },
         }
     }
@@ -96,8 +86,6 @@ mod tests {
         assert_eq!(network_addr.port, 8080u16.to_le());
         assert_eq!(network_addr.ip[..4], [127, 0, 0, 1]);
         assert_eq!(network_addr.ip[4..], [0; 12]);
-        assert_eq!(network_addr._p1, [0; 3]);
-        assert_eq!(network_addr._p2, [0; 2]);
 
         let data = &[network_addr];
         let bytes = cast_slice(data);
@@ -121,8 +109,6 @@ mod tests {
                 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04
             ]).octets()
         );
-        assert_eq!(network_addr._p1, [0; 3]);
-        assert_eq!(network_addr._p2, [0; 2]);
 
         let data = &[network_addr];
         let bytes = cast_slice(data);
