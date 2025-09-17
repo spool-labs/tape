@@ -24,6 +24,17 @@ pub struct NetworkAddress {
 }
 
 impl NetworkAddress {
+
+    pub fn default() -> Self {
+        NetworkAddress {
+            flags: 0,
+            _p1: [0; 3],
+            port: 0,
+            ip: [0; 16],
+            _p2: [0; 2],
+        }
+    }
+
     pub fn from(addr: &str) -> Result<Self, NetworkAddressError> {
         match addr.parse::<SocketAddr>() {
             Ok(socket_addr) => Ok(Self::from_socket_addr(socket_addr)),

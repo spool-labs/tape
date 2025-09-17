@@ -17,11 +17,11 @@ pub struct System {
     /// The minimum version required to be part of the committee.
     pub version: VersionNumber,
 
-    /// The current committee of nodes responsible for this epoch.
-    pub committee: [Pubkey; 256],
+    /// The current committee of nodes responsible for consensus.
+    pub current_committee: [CommitteeMember; 256],
 
-    /// The current active set of nodes.
-    pub active_set: [Pubkey; 256],
+    /// The next committee of nodes for the upcoming epoch.
+    pub next_committeee: [CommitteeMember; 256],
 
     /// The current voted on price to write data (in TAPE tokens per byte).
     pub write_price: Coin<TAPE>,
@@ -31,6 +31,16 @@ pub struct System {
 
     /// Future epoch accounting 
     pub future_accounting: FutureAccountingRingBuffer<256>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct CommitteeMember {
+    /// The public key of the committee member node.
+    pub node: Pubkey,
+
+    /// The stake weight of the committee member.
+    pub stake: Balance<TAPE>,
 }
 
 #[repr(C)]
@@ -640,13 +650,13 @@ mod tests {
 
     /// A simple in-memory account database for testing purposes.
     struct AccountDB {
-        db: std::collections::HashMap<Pubkey, Vec<u8>>
+        db: std::collections::HashMap<Pubkey, Vec<u8>>,
     }
 
     impl AccountDB {
         fn new() -> Self {
             AccountDB {
-                db: std::collections::HashMap::new()
+                db: std::collections::HashMap::new(),
             }
         }
 
@@ -665,79 +675,15 @@ mod tests {
         fn clear(&mut self) {
             self.db.clear();
         }
-    }
 
-    impl AccountDB {
-        fn get_system_account(&self, address: &Pubkey) -> Option<&System> {
-            self.get(address).and_then(|data| System::unpack(data).ok())
+        /// Generic method to get an account of type T.
+        fn get_account<T: Pod>(&self, address: &Pubkey) -> Option<&T> {
+            self.get(address).and_then(|data| bytemuck::try_from_bytes(data).ok())
         }
 
-        fn set_system_account(&mut self, address: Pubkey, sys: &System) {
-            self.insert(address, sys.to_bytes().to_vec());
-        }
-
-        fn get_epoch_account(&self, address: &Pubkey) -> Option<&Epoch> {
-            self.get(address).and_then(|data| Epoch::unpack(data).ok())
-        }
-
-        fn set_epoch_account(&mut self, address: Pubkey, epoch: &Epoch) {
-            self.insert(address, epoch.to_bytes().to_vec());
-        }
-
-        fn get_node_account(&self, address: &Pubkey) -> Option<&Node> {
-            self.get(address).and_then(|data| Node::unpack(data).ok())
-        }
-
-        fn set_node_account(&mut self, address: Pubkey, node: &Node) {
-            self.insert(address, node.to_bytes().to_vec());
-        }
-
-        fn get_pool_account(&self, address: &Pubkey) -> Option<&Pool> {
-            self.get(address).and_then(|data| Pool::unpack(data).ok())
-        }
-
-        fn set_pool_account(&mut self, address: Pubkey, pool: &Pool) {
-            self.insert(address, pool.to_bytes().to_vec());
-        }
-
-        fn get_share_account(&self, address: &Pubkey) -> Option<&Share> {
-            self.get(address).and_then(|data| Share::unpack(data).ok())
-        }
-
-        fn set_share_account(&mut self, address: Pubkey, share: &Share) {
-            self.insert(address, share.to_bytes().to_vec());
-        }
-
-        fn get_blob_account(&self, address: &Pubkey) -> Option<&Blob> {
-            self.get(address).and_then(|data| Blob::unpack(data).ok())
-        }
-
-        fn set_blob_account(&mut self, address: Pubkey, blob: &Blob) {
-            self.insert(address, blob.to_bytes().to_vec());
-        }
-
-        fn get_tape_account(&self, address: &Pubkey) -> Option<&Tape> {
-            self.get(address).and_then(|data| Tape::unpack(data).ok())
-        }
-
-        fn set_tape_account(&mut self, address: Pubkey, tape: &Tape) {
-            self.insert(address, tape.to_bytes().to_vec());
-        }
-
-        fn get_spool_account(&self, address: &Pubkey) -> Option<&Spool> {
-            self.get(address).and_then(|data| Spool::unpack(data).ok())
-        }
-
-        fn set_spool_account(&mut self, address: Pubkey, spool: &Spool) {
-            self.insert(address, spool.to_bytes().to_vec());
-        }
-
-        fn get_archive_account(&self, address: &Pubkey) -> Option<&Archive> {
-            self.get(address).and_then(|data| Archive::unpack(data).ok())
-        }
-
-        fn set_archive_account(&mut self, address: Pubkey, archive: &Archive) {
-            self.insert(address, archive.to_bytes().to_vec());
+        /// Generic method to set an account of type T.
+        fn set_account<T: Pod>(&mut self, address: Pubkey, account: &T) {
+            self.insert(address, bytemuck::bytes_of(account).to_vec());
         }
     }
 
@@ -749,8 +695,8 @@ mod tests {
 
         let sys = System {
             version: VersionNumber::new(1),
-            committee: [Pubkey::default(); 256],
-            active_set: [Pubkey::default(); 256],
+            current_committee: [CommitteeMember::zeroed(); 256],
+            next_committeee: [CommitteeMember::zeroed(); 256],
             write_price: TAPE::new(0),
             storage_price: TAPE::new(0),
             future_accounting: FutureAccountingRingBuffer {
@@ -769,8 +715,8 @@ mod tests {
             last_epoch_at: 0,
         };
 
-        db.set_system_account(sys_key, &sys);
-        db.set_epoch_account(epoch_key, &epoch);
+        db.set_account(sys_key, &sys);
+        db.set_account(epoch_key, &epoch);
 
         db
     }
@@ -800,11 +746,11 @@ mod tests {
     fn test_staking_active_set() {
         let db = setup();
 
-        let (epoch_key, _epoch_bump) = epoch_pda();
-        let epoch = db.get_epoch_account(&epoch_key).unwrap();
-
         let (sys_key, _sys_bump) = system_pda();
-        let sys = db.get_system_account(&sys_key).unwrap();
+        let sys = db.get_account::<System>(&sys_key).unwrap();
+
+        let (epoch_key, _epoch_bump) = epoch_pda();
+        let epoch = db.get_account::<Epoch>(&epoch_key).unwrap();
 
         let owner = [
             Pubkey::new_unique(),
@@ -841,39 +787,6 @@ mod tests {
             storage_capacity,
             version
         );
-
-
-        /*
-        let mut staking = staking_inner::new(0, EPOCH_DURATION, 300, &clock, ctx);
-
-        // register pools in the `StakingInnerV1`.
-        let pool_one = test::pool().name(b"pool_1".to_string()).register(&mut staking, ctx);
-        let pool_two = test::pool().name(b"pool_2".to_string()).register(&mut staking, ctx);
-        let pool_three = test::pool().name(b"pool_3".to_string()).register(&mut staking, ctx);
-
-        // now Alice, Bob, and Carl stake in the pools
-        let mut wal_alice = staking.stake_with_pool(test::mint_wal(100000, ctx), pool_one, ctx);
-        let wal_alice_2 = staking.stake_with_pool(test::mint_wal(100000, ctx), pool_one, ctx);
-
-        wal_alice.join(wal_alice_2);
-
-        let wal_bob = staking.stake_with_pool(test::mint_wal(200000, ctx), pool_two, ctx);
-        let wal_carl = staking.stake_with_pool(test::mint_wal(600000, ctx), pool_three, ctx);
-
-        // expect the active set to be modified
-        assert!(staking.active_set().total_stake() == 1000000 * frost_per_wal());
-        assert!(staking.active_set().active_ids().length() == 3);
-        assert!(staking.active_set().cur_min_stake() == 0);
-
-        // trigger `advance_epoch` to update the committee
-        staking.select_committee_and_calculate_votes();
-        staking.advance_epoch(vec_map::empty()); // no rewards for E0
-
-        // we expect:
-        // - all 3 pools have been advanced
-        // - all 3 pools have been added to the committee
-        // - shards have been assigned to the pools evenly
-        */
     }
 
 }
