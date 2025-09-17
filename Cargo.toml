@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [ 
+  "tape",
   "tape-api",
   "tape-archive",
   "tape-cli",
