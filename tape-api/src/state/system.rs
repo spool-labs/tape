@@ -1,13 +1,12 @@
 use steel::*;
 use super::AccountType;
-use crate::{state, types::VersionID, hash::Hash};
+use crate::{state, types::VersionNumber};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
-    pub version: VersionID,
-    pub committee: Hash,
-    pub registered_nodes: u64,
+    /// The minimum version required to participate in the network.
+    pub version: VersionNumber,
 }
 
 state!(AccountType, System);

@@ -1,4 +1,5 @@
 pub mod program;
-// pub mod miner;
+pub mod pool;
+pub mod stake;
 // pub mod spool;
 // pub mod tape;

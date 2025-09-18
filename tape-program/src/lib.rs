@@ -14,6 +14,7 @@ use tape_api::instruction::{
     // tape::TapeInstruction,
     // miner::MinerInstruction,
     program::ProgramInstruction,
+    pool::PoolInstruction,
     //spool::SpoolInstruction,
 };
 use steel::*;
@@ -27,6 +28,8 @@ pub fn process_instruction(
 
     let ix_type = if let Ok(instruction) = ProgramInstruction::try_from_primitive(discriminator) {
         format!("ProgramInstruction::{:?}", instruction)
+    } else if let Ok(instruction) = PoolInstruction::try_from_primitive(discriminator) {
+        format!("PoolInstruction::{:?}", instruction)
     // } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
     //     format!("TapeInstruction::{:?}", instruction)
     // } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
@@ -44,6 +47,14 @@ pub fn process_instruction(
             ProgramInstruction::Initialize => process_initialize(accounts, data)?,
             #[cfg(feature = "airdrop")]
             ProgramInstruction::Airdrop => process_airdrop(accounts, data)?,
+            _ => return Err(ProgramError::InvalidInstructionData),
+        }
+
+    } else if let Ok(ix) = PoolInstruction::try_from_primitive(discriminator) {
+        match ix {
+            PoolInstruction::Register => {
+                solana_program::msg!("PoolInstruction::Register");
+            },
             _ => return Err(ProgramError::InvalidInstructionData),
         }
     // } else if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {

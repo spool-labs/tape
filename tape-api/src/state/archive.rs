@@ -1,19 +1,24 @@
 use steel::*;
 use super::AccountType;
-use crate::state;
+use crate::{state, types::*};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Archive {
-    pub total_capacity_size: u64,
-    pub used_capacity_size: u64,
-    pub storage_price_per_unit_size: u64,
-    pub write_price_per_unit_size: u64,
+    /// The unique identifier for this archive.
+    pub id: ArchiveNumber,
 
-    pub num_spools: u64,
-    pub num_tapes: u64,
-    pub num_blobs: u64,
-    pub num_segments: u64,
+    /// The encoding scheme used by this archive (e.g., erasure coding = 0, replication = 1).
+    pub encoding: u64,
+
+    /// The number of data shards (spools) in the encoding scheme.
+    pub spool_count: u64,
+
+    /// The total storage capacity of the archive.
+    pub storage_capacity: u64,
+
+    /// The total storage used by the archive.
+    pub storage_used: u64,
 }
 
 state!(AccountType, Archive);

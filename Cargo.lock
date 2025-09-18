@@ -5571,22 +5571,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape"
-version = "0.3.0"
-dependencies = [
- "array-const-fn-init",
- "blake3",
- "bytemuck",
- "const-crypto",
- "mpl-token-metadata",
- "num_enum",
- "solana-program",
- "spl-associated-token-account 6.0.0",
- "spl-token 4.0.2",
- "steel",
-]
-
-[[package]]
 name = "tape-api"
 version = "0.3.0"
 dependencies = [

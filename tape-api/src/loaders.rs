@@ -8,7 +8,6 @@ pub trait AccountInfoLoader {
     fn is_treasury(&self) -> Result<&Self, ProgramError>;
     fn is_archive(&self) -> Result<&Self, ProgramError>;
     fn is_epoch(&self) -> Result<&Self, ProgramError>;
-    fn is_block(&self) -> Result<&Self, ProgramError>;
     fn is_treasury_ata(&self) -> Result<&Self, ProgramError>;
 }
 
@@ -31,11 +30,6 @@ impl AccountInfoLoader for AccountInfo<'_> {
     fn is_epoch(&self) -> Result<&Self, ProgramError> {
         self.has_address(&EPOCH_ADDRESS)?
             .is_type::<Epoch>(&crate::ID)
-    }
-
-    fn is_block(&self) -> Result<&Self, ProgramError> {
-        self.has_address(&BLOCK_ADDRESS)?
-            .is_type::<crate::state::Block>(&crate::ID)
     }
 
     fn is_treasury_ata(&self) -> Result<&Self, ProgramError> {

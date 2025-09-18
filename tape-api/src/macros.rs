@@ -1,4 +1,3 @@
-
 #[macro_export]
 macro_rules! state {
     // $acct_ty is your AccountType enum variant, $data_ty is the struct name
@@ -11,12 +10,24 @@ macro_rules! state {
 
             /// Immutably unpack from a raw account data slice
             pub fn unpack(data: &[u8]) -> Result<&Self, ProgramError> {
+                bytemuck::try_from_bytes::<Self>(data)
+                    .map_err(|_| ProgramError::InvalidAccountData)
+            }
+
+            /// Mutably unpack from a raw account data slice
+            pub fn unpack_mut(data: &mut [u8]) -> Result<&mut Self, ProgramError> {
+                bytemuck::try_from_bytes_mut::<Self>(data)
+                    .map_err(|_| ProgramError::InvalidAccountData)
+            }
+
+            /// Immutably unpack from a raw account data slice
+            pub fn unpack_with_discriminator(data: &[u8]) -> Result<&Self, ProgramError> {
                 let data = &data[..Self::get_size()];
                 Self::try_from_bytes(data)
             }
 
             /// Mutably unpack from a raw account data slice
-            pub fn unpack_mut(data: &mut [u8]) -> Result<&mut Self, ProgramError> {
+            pub fn unpack_with_discriminator_mut(data: &mut [u8]) -> Result<&mut Self, ProgramError> {
                 let data = &mut data[..Self::get_size()];
                 Self::try_from_bytes_mut(data)
             }
@@ -132,12 +143,10 @@ macro_rules! wrapped_uint {
 macro_rules! define_u16_type {
     ($type_name:ident, $prefix:literal) => {
         /// A type-safe wrapper around a `u16` index for $type_name.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $type_name(u16);
 
-        // Safety: u16 is Pod and Zeroable, and the struct is repr(transparent),
-        // ensuring no padding or invalid bit patterns.
         unsafe impl bytemuck::Pod for $type_name {}
         unsafe impl bytemuck::Zeroable for $type_name {}
 
@@ -198,12 +207,10 @@ macro_rules! define_u64_type {
     ($type_name:ident, $prefix:literal) => {
 
         /// A type-safe wrapper around a `u64` index for $type_name.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $type_name(u64);
 
-        // Safety: u16 is Pod and Zeroable, and the struct is repr(transparent),
-        // ensuring no padding or invalid bit patterns.
         unsafe impl bytemuck::Pod for $type_name {}
         unsafe impl bytemuck::Zeroable for $type_name {}
 

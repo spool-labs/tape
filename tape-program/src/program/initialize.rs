@@ -1,15 +1,7 @@
 use steel::*;
-//use solana_program::{program_pack::Pack, program::{invoke, invoke_signed}};
 use solana_program::program_pack::Pack;
 use spl_token::state::Mint;
 use tape_api::prelude::*;
-// use tape_api::instruction::tape::{
-//     build_create_ix, 
-//     build_write_ix, 
-//     build_subsidize_ix, 
-//     build_finalize_ix,
-// };
-// use crate::mine::get_base_rate;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     solana_program::msg!("num accounts: {}", accounts.len());
@@ -17,20 +9,15 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         signer_info, 
         archive_info, 
         epoch_info, 
-        block_info,
         metadata_info, 
         mint_info, 
         treasury_info, 
         treasury_ata_info, 
-        _tape_info,
-        _writer_info,
-        tape_program_info,
         system_program_info, 
         token_program_info, 
         associated_token_program_info, 
         metadata_program_info, 
         rent_sysvar_info,
-        _slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -44,11 +31,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_empty()?
         .is_writable()?
         .has_seeds(&[EPOCH], &tape_api::ID)?;
-
-    block_info
-        .is_empty()?
-        .is_writable()?
-        .has_seeds(&[BLOCK], &tape_api::ID)?;
 
     // Check mint, metadata, treasury
     let (mint_address, mint_bump) = mint_pda();
@@ -78,8 +60,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?;
 
     // Check programs and sysvars.
-    tape_program_info
-        .is_program(&tape_api::ID)?;
     system_program_info
         .is_program(&system_program::ID)?;
     token_program_info
@@ -103,38 +83,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
 
-    epoch.number               = EpochNumber::new(0);
-    // epoch.progress             = 0;
-    // epoch.target_participation = MIN_PARTICIPATION_TARGET;
-    // epoch.mining_difficulty    = MIN_MINING_DIFFICULTY;
-    // epoch.packing_difficulty   = MIN_PACKING_DIFFICULTY;
-    // epoch.reward_rate          = get_base_rate(1);
-    // epoch.duplicates           = 0;
-    epoch.last_epoch_at        = 0;
-
-    // Initialize block.
-    create_program_account::<Block>(
-        block_info,
-        system_program_info,
-        signer_info,
-        &tape_api::ID,
-        &[BLOCK],
-    )?;
-
-    let block = block_info.as_account_mut::<Block>(&tape_api::ID)?;
-
-    block.number            = BlockNumber::new(0);
-    // block.progress          = 0;
-    // block.last_proof_at     = 0;
-    block.last_block_at     = 0;
-
-    // let next_challenge = compute_next_challenge(
-    //     &BLOCK_ADDRESS.to_bytes(),
-    //     slot_hashes_info
-    // );
-
-    //block.challenge = next_challenge;
-    //block.challenge_set = 1;
+    epoch.id            = EpochNumber::new(0);
+    epoch.last_epoch_at = 0;
 
     // Initialize archive.
     create_program_account::<Archive>(
@@ -145,12 +95,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[ARCHIVE],
     )?;
 
-    let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
-
-    archive.num_tapes      = 0;
-    archive.num_segments   = 0;
-    archive.num_blobs      = 0;
-    archive.num_spools     = 0;
+    let _archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
 
     // Initialize treasury.
     create_program_account::<Treasury>(
@@ -228,77 +173,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         MAX_SUPPLY,
         &[TREASURY],
     )?;
-
-    // Create the genesis tape
-
-    let name = "genesis";
-    let (tape_address, _tape_bump) = tape_pda(*signer_info.key, &to_name(name));
-    let (_writer_address, _writer_bump) = writer_pda(tape_address);
-
-    // Create the tape
-
-    // invoke(
-    //     &build_create_ix(
-    //         *signer_info.key,
-    //         name,
-    //     ),
-    //     &[
-    //         signer_info.clone(),
-    //         tape_info.clone(),
-    //         writer_info.clone(),
-    //         system_program_info.clone(),
-    //         rent_sysvar_info.clone(),
-    //         slot_hashes_info.clone(),
-    //     ],
-    // )?;
-    //
-    // // Write "hello, world" to the tape
-    // invoke(
-    //     &build_write_ix(
-    //         *signer_info.key,
-    //         tape_address,
-    //         writer_address,
-    //         b"hello, world",
-    //     ),
-    //     &[
-    //         signer_info.clone(),
-    //         tape_info.clone(),
-    //         writer_info.clone(),
-    //     ],
-    // )?;
-    //
-    // // Subsidize the tape for 1 block
-    // invoke_signed(
-    //     &build_subsidize_ix(
-    //         *treasury_info.key,
-    //         *treasury_ata_info.key,
-    //         tape_address,
-    //         min_finalization_rent(1),
-    //     ),
-    //     &[
-    //         treasury_info.clone(),
-    //         treasury_ata_info.clone(),
-    //         tape_info.clone(),
-    //     ],
-    //     &[&[TREASURY, &[TREASURY_BUMP]]]
-    // )?;
-    //
-    // // Finalize the tape
-    // invoke(
-    //     &build_finalize_ix(
-    //         *signer_info.key,
-    //         tape_address,
-    //         writer_address,
-    //     ),
-    //     &[
-    //         signer_info.clone(),
-    //         tape_info.clone(),
-    //         writer_info.clone(),
-    //         archive_info.clone(),
-    //         system_program_info.clone(),
-    //         rent_sysvar_info.clone(),
-    //     ],
-    // )?;
 
     Ok(())
 }
