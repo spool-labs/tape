@@ -18,7 +18,17 @@ fn test_stake() {
 
     airdrop(&mut svm, &payer, ata, amount);
 
-    let (pool, _pool_bump) = pool_pda(payer.pubkey());
-    stake_with_pool(&mut svm, &payer, ata, pool, TAPE::new(500));
+    let pre_balance = get_ata_balance(&svm, &TREASURY_ATA);
+
+    {
+        let (pool, _pool_bump) = pool_pda(payer.pubkey());
+        stake_with_pool(&mut svm, &payer, ata, pool, TAPE::new(700));
+
+        let ata_balance = get_ata_balance(&svm, &ata);
+        assert_eq!(ata_balance, 300);
+    }
+
+    let post_balance = get_ata_balance(&svm, &TREASURY_ATA);
+    assert_eq!(post_balance - pre_balance, 700);
 }
 
