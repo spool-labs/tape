@@ -6,11 +6,13 @@ pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
     let args = StakeIx::try_from_bytes(data)?;
     let [
         signer_info,
+        signer_ata_info,
+
         system_info,
         epoch_info,
         pool_info,
         stake_info,
-        signer_ata_info,
+
         treasury_info,
         treasury_ata_info,
         token_program_info,

@@ -3,8 +3,6 @@ use tape_api::instruction::pool::Register;
 use steel::*;
 
 pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    solana_program::msg!("1");
-
     let args = Register::try_from_bytes(data)?;
     let [
         signer_info,
@@ -17,7 +15,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    solana_program::msg!("1");
     signer_info.is_signer()?;
 
     let (pool_address, _bump) = pool_pda(*signer_info.key);
@@ -29,17 +26,14 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     let epoch = epoch_info
         .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
-    solana_program::msg!("1");
 
     let system = system_info
         .is_system()?
         .is_writable()?
         .as_account_mut::<System>(&tape_api::ID)?;
-    solana_program::msg!("1");
 
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
-    solana_program::msg!("1");
 
     create_program_account::<Pool>(
         pool_info,
@@ -48,7 +42,6 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         &tape_api::ID,
         &[POOL, signer_info.key.as_ref()],
     )?;
-    solana_program::msg!("1");
 
     let pool = pool_info.as_account_mut::<Pool>(&tape_api::ID)?;
 

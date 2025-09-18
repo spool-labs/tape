@@ -50,7 +50,6 @@ pub fn process_instruction(
     if let Ok(ix) = ProgramInstruction::try_from_primitive(discriminator) {
         match ix {
             ProgramInstruction::Initialize => process_initialize(accounts, data)?,
-            #[cfg(feature = "airdrop")]
             ProgramInstruction::Airdrop => process_airdrop(accounts, data)?,
             _ => return Err(ProgramError::InvalidInstructionData),
         }

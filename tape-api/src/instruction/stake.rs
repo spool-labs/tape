@@ -1,4 +1,5 @@
 use steel::*;
+use crate::consts::*;
 use crate::pda::*;
 use crate::types::*;
 
@@ -45,6 +46,7 @@ pub struct Merge {}
 
 pub fn build_stake_ix(
     signer: Pubkey,
+    ata: Pubkey,
     pool_address: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
@@ -59,10 +61,16 @@ pub fn build_stake_ix(
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
+            AccountMeta::new(ata, false),
+
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(pool_address, false),
             AccountMeta::new(stake_address, false),
+
+            AccountMeta::new(TREASURY_ADDRESS, false),
+            AccountMeta::new(TREASURY_ATA, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
