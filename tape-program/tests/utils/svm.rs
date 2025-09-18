@@ -4,6 +4,8 @@ use tape_api::instruction::{
     // miner as miner_ix,
     // spool as spool_ix,
     program as program_ix,
+    pool as pool_ix,
+    stake as stake_ix,
 };
 use std::path::PathBuf;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
@@ -85,6 +87,10 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
         let discriminator = ix.data[0];
         let ix_type = if let Ok(instruction) = program_ix::ProgramInstruction::try_from_primitive(discriminator) {
             format!("ProgramInstruction::{:?}", instruction)
+         } else if let Ok(instruction) = pool_ix::PoolInstruction::try_from_primitive(discriminator) {
+             format!("PoolInstruction::{:?}", instruction)
+         } else if let Ok(instruction) = stake_ix::StakeInstruction::try_from_primitive(discriminator) {
+             format!("StakeInstruction::{:?}", instruction)
         // } else if let Ok(instruction) = tape_ix::TapeInstruction::try_from_primitive(discriminator) {
         //     format!("TapeInstruction::{:?}", instruction)
         // } else if let Ok(instruction) = miner_ix::MinerInstruction::try_from_primitive(discriminator) {

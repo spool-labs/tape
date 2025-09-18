@@ -36,9 +36,6 @@ pub struct StorageNode {
     /// The storage used by the node in bytes.
     pub storage_used: u64,
 
-    /// The version of software the node is running.
-    pub version: VersionNumber,
-
     /// The SocketAddr of the node
     pub network_address: NetworkAddress,
 

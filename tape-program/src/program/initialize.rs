@@ -7,6 +7,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     solana_program::msg!("num accounts: {}", accounts.len());
     let [
         signer_info, 
+        system_info,
         archive_info, 
         epoch_info, 
         metadata_info, 
@@ -21,6 +22,11 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    system_info
+        .is_empty()?
+        .is_writable()?
+        .has_seeds(&[SYSTEM], &tape_api::ID)?;
 
     archive_info
         .is_empty()?
@@ -72,6 +78,18 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
+    // Initialize system.
+    create_program_account::<System>(
+        system_info,
+        system_program_info,
+        signer_info,
+        &tape_api::ID,
+        &[SYSTEM],
+    )?;
+
+    let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
+    system.total_pools = 0;
+
     // Initialize epoch.
     create_program_account::<Epoch>(
         epoch_info,
@@ -83,7 +101,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
 
-    epoch.id            = EpochNumber::new(0);
+    epoch.id            = EpochNumber::zero();
     epoch.last_epoch_at = 0;
 
     // Initialize archive.

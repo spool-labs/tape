@@ -4,6 +4,8 @@
 // pub mod miner;
 // pub mod spool;
 pub mod program;
+pub mod pool;
+pub mod stake;
 
 // use tape::*;
 // use miner::*;
@@ -13,9 +15,10 @@ use program::*;
 use tape_api::instruction::{
     // tape::TapeInstruction,
     // miner::MinerInstruction,
+    // spool::SpoolInstruction,
     program::ProgramInstruction,
     pool::PoolInstruction,
-    //spool::SpoolInstruction,
+    stake::StakeInstruction,
 };
 use steel::*;
 
@@ -30,6 +33,8 @@ pub fn process_instruction(
         format!("ProgramInstruction::{:?}", instruction)
     } else if let Ok(instruction) = PoolInstruction::try_from_primitive(discriminator) {
         format!("PoolInstruction::{:?}", instruction)
+    } else if let Ok(instruction) = StakeInstruction::try_from_primitive(discriminator) {
+        format!("StakeInstruction::{:?}", instruction)
     // } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
     //     format!("TapeInstruction::{:?}", instruction)
     // } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
@@ -52,9 +57,13 @@ pub fn process_instruction(
 
     } else if let Ok(ix) = PoolInstruction::try_from_primitive(discriminator) {
         match ix {
-            PoolInstruction::Register => {
-                solana_program::msg!("PoolInstruction::Register");
-            },
+            PoolInstruction::Register => pool::register::process_register(accounts, data)?,
+            _ => return Err(ProgramError::InvalidInstructionData),
+        }
+
+    } else if let Ok(ix) = StakeInstruction::try_from_primitive(discriminator) {
+        match ix {
+            StakeInstruction::Stake => stake::stake::process_stake(accounts, data)?,
             _ => return Err(ProgramError::InvalidInstructionData),
         }
     // } else if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {

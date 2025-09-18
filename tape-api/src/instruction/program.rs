@@ -1,15 +1,19 @@
 use steel::*;
 use crate::pda::*;
+use crate::types::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum ProgramInstruction {
     Unknown = 0,
-    Initialize, // Initialize the program, setting up necessary accounts
-    Airdrop,    // Airdrop tokens to the fee payer (devnet/localnet only)
+    Initialize,
+    AdvanceEpoch,
+
+    Airdrop,
 }
 
 instruction!(ProgramInstruction, Initialize);
+instruction!(ProgramInstruction, AdvanceEpoch);
 instruction!(ProgramInstruction, Airdrop);
 
 #[repr(C)]
@@ -22,26 +26,33 @@ pub struct Airdrop {
     pub amount: [u8; 8],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct AdvanceEpoch {}
+
+
 pub fn build_initialize_ix(
     signer: Pubkey
 ) -> Instruction {
 
-    let (archive_pda, _archive_bump) = archive_pda();
-    let (epoch_pda, _epoch_bump) = epoch_pda();
-    let (mint_pda, _mint_bump) = mint_pda();
-    let (treasury_pda, _treasury_bump) = treasury_pda();
-    let (treasury_ata, _treasury_ata_bump) = treasury_ata();
-    let (metadata_pda, _metadata_bump) = metadata_pda(mint_pda);
+    let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (mint_address, _) = mint_pda();
+    let (treasury_address, _) = treasury_pda();
+    let (treasury_ata, _) = treasury_ata();
+    let (metadata_address, _) = metadata_pda(mint_address);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(archive_pda, false),
-            AccountMeta::new(epoch_pda, false),
-            AccountMeta::new(metadata_pda, false),
-            AccountMeta::new(mint_pda, false),
-            AccountMeta::new(treasury_pda, false),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(metadata_address, false),
+            AccountMeta::new(mint_address, false),
+            AccountMeta::new(treasury_address, false),
             AccountMeta::new(treasury_ata, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
@@ -56,22 +67,39 @@ pub fn build_initialize_ix(
 pub fn build_airdrop_ix(
     signer: Pubkey,
     beneficiary: Pubkey, 
-    amount: u64
+    amount: Coin<TAPE>
 ) -> Instruction {
-    let (mint_pda, _mint_bump) = mint_pda();
-    let (treasury_pda, _treasury_bump) = treasury_pda();
+    let (mint_address, _) = mint_pda();
+    let (treasury_address, _) = treasury_pda();
+
+    let amount = amount.pack();
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(beneficiary, false),
-            AccountMeta::new(mint_pda, false),
-            AccountMeta::new(treasury_pda, false),
+            AccountMeta::new(mint_address, false),
+            AccountMeta::new(treasury_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: Airdrop {
-            amount: amount.to_le_bytes(),
+            amount,
         }.to_bytes(),
+    }
+}
+
+pub fn build_advance_epoch_ix(
+    signer: Pubkey
+) ->Instruction {
+    let (epoch_address, _) = epoch_pda();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(epoch_address, false),
+        ],
+        data: AdvanceEpoch {}.to_bytes(),
     }
 }

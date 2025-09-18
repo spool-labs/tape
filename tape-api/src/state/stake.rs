@@ -13,6 +13,9 @@ pub enum StakeState {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Stake {
+    /// The authority that owns this stake.
+    pub authority: Pubkey,
+
     /// The pool this stake is associated with.
     pub pool: Pubkey,
 

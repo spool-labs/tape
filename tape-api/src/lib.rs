@@ -5,6 +5,7 @@ pub mod merkle;
 pub mod instruction;
 pub mod loaders;
 pub mod pda;
+pub mod error;
 pub mod state;
 pub mod types;
 pub mod utils;
@@ -18,6 +19,7 @@ pub mod prelude {
     pub use crate::hash::*;
     pub use crate::merkle::*;
     pub use crate::loaders::*;
+    pub use crate::error::*;
     pub use crate::pda::*;
     pub use crate::state::*;
     pub use crate::types::*;

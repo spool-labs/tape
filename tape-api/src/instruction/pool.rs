@@ -30,7 +30,7 @@ instruction!(PoolInstruction, ClaimCommission);
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Register {
     pub name: [u8; NAME_LENGTH],
-    pub commission_rate: BasisPoints,
+    pub commission_rate: [u8; 8],
     pub network_address: NetworkAddress,
     pub network_tls: Pubkey,
 }
@@ -64,7 +64,7 @@ pub struct SetName {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommissionRate {
-    pub commission_rate: BasisPoints,
+    pub commission_rate: [u8; 8],
 }
 
 #[repr(C)]
@@ -80,15 +80,19 @@ pub fn build_register_ix(
     network_tls: Pubkey,
 ) -> Instruction {
 
-    let (epoch_pda, _epoch_bump) = epoch_pda();
-    let (pool_pda, _pool_bump) = pool_pda(signer);
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (pool_address, _) = pool_pda(signer);
+
+    let commission_rate = commission_rate.pack();
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(epoch_pda, false),
-            AccountMeta::new(pool_pda, false),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(pool_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],

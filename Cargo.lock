@@ -5607,6 +5607,7 @@ name = "tape-program"
 version = "0.3.0"
 dependencies = [
  "bincode",
+ "bytemuck",
  "bytemuck_derive",
  "half",
  "litesvm",

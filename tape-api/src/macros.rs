@@ -137,69 +137,6 @@ macro_rules! wrapped_uint {
     };
 }
 
-/// A macro to create distinct index types wrapping a `u16` for type safety.
-/// Generates a newtype struct with conversions, Default, and Display implementations.
-#[macro_export]
-macro_rules! define_u16_type {
-    ($type_name:ident, $prefix:literal) => {
-        /// A type-safe wrapper around a `u16` index for $type_name.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        #[repr(transparent)]
-        pub struct $type_name(u16);
-
-        unsafe impl bytemuck::Pod for $type_name {}
-        unsafe impl bytemuck::Zeroable for $type_name {}
-
-        impl $type_name {
-            /// Creates a new $type_name from a u16.
-            #[inline]
-            pub fn new(value: u16) -> Self {
-                $type_name(value)
-            }
-
-            /// Returns the inner u16 value.
-            #[inline]
-            pub fn as_u16(&self) -> u16 {
-                self.0
-            }
-
-            /// Converts the index to usize.
-            #[inline]
-            pub fn as_usize(&self) -> usize {
-                self.0 as usize
-            }
-
-            /// Converts the index to u32.
-            #[inline]
-            pub fn as_u32(&self) -> u32 {
-                self.0 as u32
-            }
-
-            /// Converts the index to u64.
-            #[inline]
-            pub fn as_u64(&self) -> u64 {
-                self.0 as u64
-            }
-        }
-
-        impl Default for $type_name {
-            /// Returns a default $type_name with value 0.
-            fn default() -> Self {
-                $type_name(0)
-            }
-        }
-
-        impl std::fmt::Display for $type_name {
-            /// Formats the $type_name as its inner u16 value with a prefix.
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}:{}", $prefix, self.0)
-            }
-        }
-
-        $crate::wrapped_uint!($type_name, u16);
-    };
-}
-
 /// A macro to create distinct index types wrapping a `u64` for type safety.
 /// Generates a newtype struct with conversions, Default, and Display implementations.
 #[macro_export]
@@ -221,6 +158,24 @@ macro_rules! define_u64_type {
                 $type_name(value)
             }
 
+            /// Zero value for $type_name.
+            #[inline]
+            pub fn zero() -> Self {
+                $type_name(0)
+            }
+
+            /// Pack from a u64 into a [u8; 8] array in little-endian order.
+            #[inline]
+            pub fn pack(&self) -> [u8; 8] {
+                self.0.to_le_bytes()
+            }
+
+            /// Unpack from a [u8; 8] array in little-endian order into a $type_name.
+            #[inline]
+            pub fn unpack(data: [u8; 8]) -> Self {
+                $type_name(u64::from_le_bytes(data))
+            }
+
             /// Returns the inner u64 value.
             #[inline]
             pub fn as_u64(&self) -> u64 {
@@ -237,6 +192,18 @@ macro_rules! define_u64_type {
             #[inline]
             pub fn as_u32(&self) -> u32 {
                 self.0 as u32
+            }
+
+            /// Checked addition with overflow handling.
+            #[inline]
+            pub fn checked_add(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_add(rhs.0).map($type_name)
+            }
+
+            /// Checked subtraction with underflow handling.
+            #[inline]
+            pub fn checked_sub(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_sub(rhs.0).map($type_name)
             }
         }
 
@@ -262,36 +229,8 @@ macro_rules! define_u64_type {
 
 #[cfg(test)]
 mod tests {
-    define_u16_type!(SegmentIndexU16, "seg16");
-    define_u16_type!(SectorIndexU16, "sec16");
     define_u64_type!(SegmentIndexU64, "seg64");
     define_u64_type!(SectorIndexU64, "sec64");
-
-    #[test]
-    fn test_segment_index_u16() {
-        let seg = SegmentIndexU16::new(42);
-        assert_eq!(seg.as_u16(), 42);
-        assert_eq!(seg.as_usize(), 42);
-        assert_eq!(seg.as_u32(), 42);
-        assert_eq!(seg.as_u64(), 42);
-        assert_eq!(seg, SegmentIndexU16::from(42));
-        assert_eq!(u16::from(seg), 42);
-        assert_eq!(format!("{}", seg), "seg16:42");
-        assert_eq!(SegmentIndexU16::default(), SegmentIndexU16(0));
-    }
-
-    #[test]
-    fn test_sector_index_u16() {
-        let sec = SectorIndexU16::new(99);
-        assert_eq!(sec.as_u16(), 99);
-        assert_eq!(sec.as_usize(), 99);
-        assert_eq!(sec.as_u32(), 99);
-        assert_eq!(sec.as_u64(), 99);
-        assert_eq!(sec, SectorIndexU16::from(99));
-        assert_eq!(u16::from(sec), 99);
-        assert_eq!(format!("{}", sec), "sec16:99");
-        assert_eq!(SectorIndexU16::default(), SectorIndexU16(0));
-    }
 
     #[test]
     fn test_segment_index_u64() {
@@ -315,21 +254,5 @@ mod tests {
         assert_eq!(u64::from(sec), 99_000);
         assert_eq!(format!("{}", sec), "sec64:99000");
         assert_eq!(SectorIndexU64::default(), SectorIndexU64(0));
-    }
-
-    #[test]
-    fn test_type_safety() {
-        let seg_u16 = SegmentIndexU16::new(42);
-        let sec_u16 = SectorIndexU16::new(42);
-        let seg_u64 = SegmentIndexU64::new(42);
-        let sec_u64 = SectorIndexU64::new(42);
-
-        // Different types cannot be compared directly, ensuring type safety.
-        assert_eq!(seg_u16.as_u16(), sec_u16.as_u16());
-        assert_eq!(seg_u64.as_u64(), sec_u64.as_u64());
-        // The following would cause compile-time errors:
-        // let _ = seg_u16 == sec_u16; // Different u16 types.
-        // let _ = seg_u64 == sec_u64; // Different u64 types.
-        // let _ = seg_u16 == seg_u64; // u16 vs u64 types.
     }
 }
