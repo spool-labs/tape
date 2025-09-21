@@ -9,7 +9,8 @@ pub mod error;
 pub mod state;
 pub mod types;
 pub mod utils;
-pub mod apportionment;
+pub mod shard;
+//pub mod apportionment;
 mod macros;
 
 pub use crate::consts::*;
