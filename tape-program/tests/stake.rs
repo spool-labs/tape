@@ -11,7 +11,7 @@ fn test_stake() {
     let (mut svm, payer) = setup_environment();
 
     initialize_program(&mut svm, &payer);
-    initialize_pool(&mut svm, &payer);
+    initialize_storage_node(&mut svm, &payer);
 
     let amount = TAPE::new(1000);
     let ata = create_ata(&mut svm, &payer, &MINT_ADDRESS, &payer.pubkey());
@@ -21,7 +21,7 @@ fn test_stake() {
     let pre_balance = get_ata_balance(&svm, &TREASURY_ATA);
 
     {
-        let (pool, _pool_bump) = pool_pda(payer.pubkey());
+        let (pool, _pool_bump) = storage_node_pda(payer.pubkey());
         stake_with_pool(&mut svm, &payer, ata, pool, TAPE::new(700));
 
         let ata_balance = get_ata_balance(&svm, &ata);

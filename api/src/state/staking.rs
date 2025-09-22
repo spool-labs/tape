@@ -13,29 +13,36 @@ pub enum StakeState {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct StakingPool {
+pub struct StorageNode {
     /// The unique identifier for this pool.
-    pub id: PoolNumber,
+    pub id: NodeId,
 
     /// The authority that owns this node.
     pub authority: Pubkey,
 
+    /// The staking pool associated with this node.
+    pub pool: StakingPool,
+
+    /// Metadata about this storage node.
+    pub metadata: NodeMetadata,
+
+    /// The epoch when this node was registered.
+    pub registered_epoch: EpochNumber,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct StakingPool {
     /// The total stake balance in the pool.
     pub total_stake: Coin<TAPE>,
 
     /// The commission rate taken by the pool (in basis points).
     pub commission_rate: BasisPoints,
-
-    /// The epoch when this node was registered.
-    pub registered_epoch: EpochNumber,
-
-    /// The storage nodes associated with this pool.
-    pub storage_node: StorageNode,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct StorageNode {
+pub struct NodeMetadata {
     /// The name of this node storage node.
     pub name: [u8; 32],
 
@@ -59,7 +66,7 @@ pub struct StakedTape {
     pub authority: Pubkey,
 
     /// The pool this stake is associated with.
-    pub pool: Pubkey,
+    pub node: Pubkey,
 
     /// The state of this stake.
     pub state: u64,
@@ -74,5 +81,5 @@ pub struct StakedTape {
     pub unstake_epoch: EpochNumber,
 }
 
-state!(AccountType, StakingPool);
+state!(AccountType, StorageNode);
 state!(AccountType, StakedTape);

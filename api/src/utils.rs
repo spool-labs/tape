@@ -1,5 +1,7 @@
 use steel::*;
 
+use tape_core::types::EpochNumber;
+use crate::state::Epoch;
 use crate::consts::NAME_LENGTH;
 
 /// Helper: check a condition is true and return an error if not
@@ -45,4 +47,16 @@ pub fn from_name(val: &[u8; NAME_LENGTH]) -> String {
     let mut name_bytes = val.to_vec();
     name_bytes.retain(|&x| x != 0);
     String::from_utf8(name_bytes).unwrap()
+}
+
+/// Helper: get the current epoch from an Epoch account
+#[inline(always)]
+pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
+    epoch.id
+}
+
+/// Helper: get the next epoch from an Epoch account
+#[inline(always)]
+pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
+    epoch.id.checked_add(EpochNumber::one()).unwrap()
 }

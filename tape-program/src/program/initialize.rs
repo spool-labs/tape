@@ -88,7 +88,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     )?;
 
     let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
-    system.total_pools = 0;
+    system.total_nodes = 0;
 
     // Initialize epoch.
     create_program_account::<Epoch>(

@@ -1,35 +1,8 @@
 use steel::*;
 use tape_core::prelude::*;
 use crate::pda::*;
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum ProgramInstruction {
-    Unknown = 0,
-    Initialize,
-    AdvanceEpoch,
-
-    Airdrop,
-}
-
-instruction!(ProgramInstruction, Initialize);
-instruction!(ProgramInstruction, AdvanceEpoch);
-instruction!(ProgramInstruction, Airdrop);
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Initialize {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Airdrop {
-    pub amount: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AdvanceEpoch {}
-
+use crate::consts::*;
+use crate::instruction::*;
 
 pub fn build_initialize_ix(
     signer: Pubkey
@@ -103,3 +76,75 @@ pub fn build_advance_epoch_ix(
         data: AdvanceEpoch {}.to_bytes(),
     }
 }
+
+pub fn build_register_node_ix(
+    signer: Pubkey,
+    name: [u8; NAME_LENGTH],
+    commission_rate: BasisPoints,
+    network_address: NetworkAddress,
+    network_tls: Pubkey,
+) -> Instruction {
+
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (node_address, _) = storage_node_pda(signer);
+
+    let commission_rate = commission_rate.pack();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(node_address, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: RegisterNode {
+            name,
+            commission_rate,
+            network_address,
+            network_tls,
+        }.to_bytes(),
+    }
+}
+
+
+pub fn build_stake_ix(
+    signer: Pubkey,
+    ata: Pubkey,
+    node_address: Pubkey,
+    amount: Coin<TAPE>,
+) -> Instruction {
+
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (stake_address, _) = staked_tape_pda(signer, node_address);
+
+    let amount = amount.pack();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(ata, false),
+
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(node_address, false),
+            AccountMeta::new(stake_address, false),
+
+            AccountMeta::new(TREASURY_ADDRESS, false),
+            AccountMeta::new(TREASURY_ATA, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: Stake {
+            amount
+        }.to_bytes(),
+    }
+}
+
+

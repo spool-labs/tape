@@ -1,25 +1,14 @@
 #![allow(unexpected_cfgs)]
 
-// pub mod tape;
-// pub mod miner;
-// pub mod spool;
 pub mod program;
-pub mod pool;
-pub mod stake;
+pub mod staking;
+pub mod data;
 
-// use tape::*;
-// use miner::*;
-// use spool::*;
 use program::*;
+use staking::*;
+use data::*;
 
-use tape_api::instruction::{
-    // tape::TapeInstruction,
-    // miner::MinerInstruction,
-    // spool::SpoolInstruction,
-    program::ProgramInstruction,
-    pool::PoolInstruction,
-    stake::StakeInstruction,
-};
+use tape_api::prelude::*;
 use steel::*;
 
 pub fn process_instruction(
@@ -29,66 +18,22 @@ pub fn process_instruction(
 ) -> ProgramResult {
     let (discriminator, data) = parse_instruction(&tape_api::ID, program_id, data)?;
 
-    let ix_type = if let Ok(instruction) = ProgramInstruction::try_from_primitive(discriminator) {
-        format!("ProgramInstruction::{:?}", instruction)
-    } else if let Ok(instruction) = PoolInstruction::try_from_primitive(discriminator) {
-        format!("PoolInstruction::{:?}", instruction)
-    } else if let Ok(instruction) = StakeInstruction::try_from_primitive(discriminator) {
-        format!("StakeInstruction::{:?}", instruction)
-    // } else if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
-    //     format!("TapeInstruction::{:?}", instruction)
-    // } else if let Ok(instruction) = MinerInstruction::try_from_primitive(discriminator) {
-    //     format!("MinerInstruction::{:?}", instruction)
-    // } else if let Ok(instruction) = SpoolInstruction::try_from_primitive(discriminator) {
-    //     format!("SpoolInstruction::{:?}", instruction)
+    let ix_type = if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
+        format!("{:?}", instruction)
     } else {
         format!("Invalid (discriminator: {})", discriminator)
     };
 
     solana_program::msg!("Instruction: {}", ix_type);
 
-    if let Ok(ix) = ProgramInstruction::try_from_primitive(discriminator) {
+    if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {
         match ix {
-            ProgramInstruction::Initialize => process_initialize(accounts, data)?,
-            ProgramInstruction::Airdrop => process_airdrop(accounts, data)?,
+            TapeInstruction::Initialize => process_initialize(accounts, data)?,
+            TapeInstruction::Airdrop => process_airdrop(accounts, data)?,
+            TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+            TapeInstruction::Stake => process_stake(accounts, data)?,
             _ => return Err(ProgramError::InvalidInstructionData),
         }
-
-    } else if let Ok(ix) = PoolInstruction::try_from_primitive(discriminator) {
-        match ix {
-            PoolInstruction::Register => pool::register::process_register(accounts, data)?,
-            _ => return Err(ProgramError::InvalidInstructionData),
-        }
-
-    } else if let Ok(ix) = StakeInstruction::try_from_primitive(discriminator) {
-        match ix {
-            StakeInstruction::Stake => stake::stake::process_stake(accounts, data)?,
-            _ => return Err(ProgramError::InvalidInstructionData),
-        }
-    // } else if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {
-    //     match ix {
-    //         TapeInstruction::Create => process_tape_create(accounts, data)?,
-    //         TapeInstruction::Write => process_tape_write(accounts, data)?,
-    //         TapeInstruction::Update => process_tape_update(accounts, data)?,
-    //         TapeInstruction::Finalize => process_tape_finalize(accounts, data)?,
-    //         TapeInstruction::SetHeader => process_tape_set_header(accounts, data)?,
-    //         TapeInstruction::Subsidize => process_tape_subsidize_rent(accounts, data)?,
-    //     }
-    // } else if let Ok(ix) = MinerInstruction::try_from_primitive(discriminator) {
-    //     match ix {
-    //         MinerInstruction::Register => process_register(accounts, data)?,
-    //         MinerInstruction::Unregister => process_unregister(accounts, data)?,
-    //         MinerInstruction::Mine => process_mine(accounts, data)?,
-    //         MinerInstruction::Claim => process_claim(accounts, data)?,
-    //     }
-    //  } else if let Ok(ix) = SpoolInstruction::try_from_primitive(discriminator) {
-    //      match ix {
-    //         SpoolInstruction::Create => process_spool_create(accounts, data)?,
-    //         SpoolInstruction::Destroy => process_spool_destroy(accounts, data)?,
-    //         SpoolInstruction::Pack => process_spool_pack(accounts, data)?,
-    //         SpoolInstruction::Unpack => process_spool_unpack(accounts, data)?,
-    //         SpoolInstruction::Commit => process_spool_commit(accounts, data)?,
-    //      }
     } else {
         return Err(ProgramError::InvalidInstructionData);
     }

@@ -1,8 +1,8 @@
-mod core;
+mod program;
 mod staking;
 mod data;
 
-pub use core::*;
+pub use program::*;
 pub use staking::*;
 pub use data::*;
 
@@ -20,7 +20,7 @@ pub enum AccountType {
     Epoch,
 
     // Staking
-    StakingPool,
+    StorageNode,
     StakedTape,
 
     // Data

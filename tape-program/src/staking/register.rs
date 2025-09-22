@@ -1,14 +1,13 @@
 use tape_api::prelude::*;
-use tape_api::instruction::pool::Register;
 use steel::*;
 
-pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = Register::try_from_bytes(data)?;
+pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let args = RegisterNode::try_from_bytes(data)?;
     let [
         signer_info,
         system_info,
         epoch_info,
-        pool_info,
+        node_info,
         system_program_info, 
         rent_info,
     ] = accounts else {
@@ -17,8 +16,8 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
 
     signer_info.is_signer()?;
 
-    let (pool_address, _bump) = pool_pda(*signer_info.key);
-    pool_info
+    let (pool_address, _bump) = storage_node_pda(*signer_info.key);
+    node_info
         .is_empty()?
         .is_writable()?
         .has_address(&pool_address)?;
@@ -35,23 +34,26 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
-    create_program_account::<Pool>(
-        pool_info,
+    create_program_account::<StorageNode>(
+        node_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
-        &[POOL, signer_info.key.as_ref()],
+        &[NODE, signer_info.key.as_ref()],
     )?;
 
-    let pool = pool_info.as_account_mut::<Pool>(&tape_api::ID)?;
+    let node = node_info.as_account_mut::<StorageNode>(&tape_api::ID)?;
 
-    pool.id                   = PoolNumber::new(system.total_pools);
-    pool.authority            = *signer_info.key;
-    pool.total_stake          = TAPE::zero();
-    pool.commission_rate      = BasisPoints::unpack(args.commission_rate);
-    pool.registered_epoch     = current_epoch(epoch);
+    node.id                   = NodeId::new(system.total_nodes);
+    node.authority            = *signer_info.key;
+    node.registered_epoch     = current_epoch(epoch);
 
-    pool.storage_node = StorageNode {
+    node.pool = StakingPool {
+        total_stake : TAPE::zero(),
+        commission_rate : BasisPoints::unpack(args.commission_rate)
+    };
+
+    node.metadata = NodeMetadata {
         name: args.name,
         storage_capacity: 0,
         storage_used: 0,
@@ -59,8 +61,7 @@ pub fn process_register(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramRes
         network_tls: args.network_tls,
     };
 
-    system.total_pools = system
-        .total_pools
+    system.total_nodes = system.total_nodes
         .checked_add(1)
         .ok_or(TapeError::UnexpectedState)?;
 

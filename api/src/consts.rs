@@ -5,7 +5,7 @@ pub const SYSTEM:    &[u8] = b"system";
 pub const TREASURY:  &[u8] = b"treasury";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
-pub const POOL:      &[u8] = b"pool";
+pub const NODE:      &[u8] = b"node";
 pub const STAKE:     &[u8] = b"stake";
 pub const BLOB:      &[u8] = b"blob";
 

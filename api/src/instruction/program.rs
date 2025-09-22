@@ -2,12 +2,16 @@ use steel::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitResource {
+pub struct Initialize {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Airdrop {
     pub amount: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct MergeResource {}
+pub struct AdvanceEpoch {}
 
 

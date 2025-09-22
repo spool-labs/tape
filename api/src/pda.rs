@@ -14,18 +14,6 @@ pub fn epoch_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[EPOCH], &crate::id())
 }
 
-pub fn pool_pda(authority: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[POOL, authority.as_ref()], &crate::id())
-}
-
-pub fn stake_pda(authority: Pubkey, pool: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[STAKE, authority.as_ref(), pool.as_ref()], &crate::id())
-}
-
-pub fn blob_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[BLOB, authority.as_ref(), hash.as_ref()], &crate::id())
-}
-
 pub fn treasury_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TREASURY], &crate::id())
 }
@@ -52,5 +40,17 @@ pub fn metadata_pda(mint: Pubkey) -> (Pubkey, u8) {
         &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
         &mpl_token_metadata::ID,
     )
+}
+
+pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[NODE, authority.as_ref()], &crate::id())
+}
+
+pub fn staked_tape_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &crate::id())
+}
+
+pub fn blob_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[BLOB, authority.as_ref(), hash.as_ref()], &crate::id())
 }
 

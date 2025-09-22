@@ -19,13 +19,13 @@ macro_rules! wrapped_uint {
     };
 }
 
-/// A macro to create distinct index types wrapping a `u64` for type safety.
+/// A macro to create distinct value types wrapping a `u64` for type safety.
 /// Generates a newtype struct with conversions, Default, and Display implementations.
 #[macro_export]
 macro_rules! define_u64_type {
     ($type_name:ident, $prefix:literal) => {
 
-        /// A type-safe wrapper around a `u64` index for $type_name.
+        /// A type-safe wrapper around a `u64` value for $type_name.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $type_name(pub u64);
@@ -42,8 +42,14 @@ macro_rules! define_u64_type {
 
             /// Zero value for $type_name.
             #[inline]
-            pub fn zero() -> Self {
+            pub const fn zero() -> Self {
                 $type_name(0)
+            }
+
+            /// One value for $type_name.
+            #[inline]
+            pub const fn one() -> Self {
+                $type_name(1)
             }
 
             /// Pack from a u64 into a [u8; 8] array in little-endian order.
@@ -64,13 +70,13 @@ macro_rules! define_u64_type {
                 self.0
             }
 
-            /// Converts the index to usize.
+            /// Converts the value to usize.
             #[inline]
             pub fn as_usize(&self) -> usize {
                 self.0 as usize
             }
 
-            /// Converts the index to u32.
+            /// Converts the value to u32.
             #[inline]
             pub fn as_u32(&self) -> u32 {
                 self.0 as u32
@@ -100,19 +106,19 @@ macro_rules! define_u64_type {
                 self.0.checked_div(rhs.0).map($type_name)
             }
 
-            /// Increments the index by 1, saturating at u64::MAX.
+            /// Increments the by 1, saturating at u64::MAX.
             #[inline]
             pub fn increment(&mut self) {
                 self.0 = self.0.saturating_add(1);
             }
 
-            /// Decrements the index by 1, saturating at 0.
+            /// Decrements the by 1, saturating at 0.
             #[inline]
             pub fn decrement(&mut self) {
                 self.0 = self.0.saturating_sub(1);
             }
 
-            /// Returns true if the index is zero.
+            /// Returns true if the value is zero.
             #[inline]
             pub fn is_zero(&self) -> bool {
                 self.0 == 0

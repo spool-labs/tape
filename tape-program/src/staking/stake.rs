@@ -1,16 +1,15 @@
 use tape_api::prelude::*;
-use tape_api::instruction::stake::Stake as StakeIx;
 use steel::*;
 
 pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = StakeIx::try_from_bytes(data)?;
+    let args = Stake::try_from_bytes(data)?;
     let [
         signer_info,
         signer_ata_info,
 
         system_info,
         epoch_info,
-        pool_info,
+        node_info,
         stake_info,
 
         treasury_info,
@@ -24,7 +23,7 @@ pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
 
     signer_info.is_signer()?;
 
-    let (stake_address, _) = stake_pda(*signer_info.key, *pool_info.key);
+    let (stake_address, _) = staked_tape_pda(*signer_info.key, *node_info.key);
     stake_info
         .is_empty()?
         .is_writable()?
@@ -38,9 +37,9 @@ pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         .is_system()?
         .as_account_mut::<System>(&tape_api::ID)?;
 
-    let pool = pool_info
+    let node = node_info
         .is_writable()?
-        .as_account_mut::<Pool>(&tape_api::ID)?;
+        .as_account_mut::<StorageNode>(&tape_api::ID)?;
 
     let treasury = treasury_info
         .is_treasury()?
@@ -76,18 +75,18 @@ pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         amount,
     )?;
 
-    create_program_account::<Stake>(
+    create_program_account::<StakedTape>(
         stake_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
-        &[STAKE, signer_info.key.as_ref(), pool_info.key.as_ref()],
+        &[STAKE, signer_info.key.as_ref(), node_info.key.as_ref()],
     )?;
 
-    let stake = stake_info.as_account_mut::<Stake>(&tape_api::ID)?;
+    let stake = stake_info.as_account_mut::<StakedTape>(&tape_api::ID)?;
 
     stake.authority            = *signer_info.key;
-    stake.pool                 = *pool_info.key;
+    stake.node                 = *node_info.key;
     stake.state                = StakeState::Active.into();
     stake.amount               = TAPE::new(amount);
     stake.activated_epoch      = current_epoch(epoch);
@@ -98,11 +97,7 @@ pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult
         .checked_add(stake.amount)
         .ok_or(TapeError::UnexpectedState)?;
 
-    pool.total_stake = pool
-        .total_stake
-        .checked_add(stake.amount)
-        .ok_or(TapeError::UnexpectedState)?;
-
+    node.pool.total_stake.increment();
 
     // TODO: Emit event, check if the stake puts the pool into the active set for the next epoch.
 

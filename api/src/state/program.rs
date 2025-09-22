@@ -6,8 +6,8 @@ use crate::state;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
-    /// The number of pools currently registered.
-    pub total_pools: u64,
+    /// The number of storage nodes currently registered.
+    pub total_nodes: u64,
 }
 
 #[repr(C)]

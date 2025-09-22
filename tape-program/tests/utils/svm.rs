@@ -1,12 +1,5 @@
 use steel::*;
-use tape_api::instruction::{
-    // tape as tape_ix,
-    // miner as miner_ix,
-    // spool as spool_ix,
-    program as program_ix,
-    pool as pool_ix,
-    stake as stake_ix,
-};
+use tape_api::instruction::TapeInstruction;
 use std::path::PathBuf;
 use solana_sdk::{signature::Keypair, signer::Signer, transaction::Transaction};
 use solana_compute_budget::compute_budget::ComputeBudget;
@@ -85,22 +78,11 @@ pub fn print_tx(meta: TransactionMetadata, tx: Transaction) {
         let ix = &tx.message.instructions[i];
 
         let discriminator = ix.data[0];
-        let ix_type = if let Ok(instruction) = program_ix::ProgramInstruction::try_from_primitive(discriminator) {
-            format!("ProgramInstruction::{:?}", instruction)
-         } else if let Ok(instruction) = pool_ix::PoolInstruction::try_from_primitive(discriminator) {
-             format!("PoolInstruction::{:?}", instruction)
-         } else if let Ok(instruction) = stake_ix::StakeInstruction::try_from_primitive(discriminator) {
-             format!("StakeInstruction::{:?}", instruction)
-        // } else if let Ok(instruction) = tape_ix::TapeInstruction::try_from_primitive(discriminator) {
-        //     format!("TapeInstruction::{:?}", instruction)
-        // } else if let Ok(instruction) = miner_ix::MinerInstruction::try_from_primitive(discriminator) {
-        //     format!("MinerInstruction::{:?}", instruction)
-        // } else if let Ok(instruction) = spool_ix::SpoolInstruction::try_from_primitive(discriminator) {
-        //     format!("SpoolInstruction::{:?}", instruction)
+        let ix_type = if let Ok(instruction) = TapeInstruction::try_from_primitive(discriminator) {
+            format!("{:?}", instruction)
         } else {
             format!("Invalid (discriminator: {})", discriminator)
         };
-
 
         println!("\nix:\t{:?} ({})", ix_type, ix.data[0]);
         println!("accounts:");

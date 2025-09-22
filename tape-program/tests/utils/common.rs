@@ -6,10 +6,9 @@ use solana_sdk::{
     transaction::Transaction,
     signature::Keypair,
 };
-use litesvm::{types::TransactionResult, LiteSVM};
+use litesvm::LiteSVM;
 
 use tape_api::prelude::*;
-use tape_api::instruction;
 
 pub fn setup_environment() -> (LiteSVM, Keypair) {
     let mut svm = setup_svm();
@@ -47,7 +46,7 @@ pub fn airdrop(
 ) {
     let payer_pk = payer.pubkey();
     let blockhash = svm.latest_blockhash();
-    let ix = instruction::program::build_airdrop_ix(payer_pk, beneficiary_ata, amount);
+    let ix = build_airdrop_ix(payer_pk, beneficiary_ata, amount);
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
@@ -59,7 +58,7 @@ pub fn initialize_program(
     payer: &Keypair
 ) {
     let payer_pk = payer.pubkey();
-    let ix = instruction::program::build_initialize_ix(payer_pk);
+    let ix = build_initialize_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
@@ -67,18 +66,18 @@ pub fn initialize_program(
     assert!(res.is_ok());
 }
 
-pub fn initialize_pool(
+pub fn initialize_storage_node(
     svm: &mut LiteSVM,
     payer: &Keypair
 ) {
     let payer_pk = payer.pubkey();
 
-    let name = to_name("Test Pool");
+    let name = to_name("Test Node");
     let commission_rate = BasisPoints::new(1000);
     let network_address = NetworkAddress::default();
     let network_tls = Pubkey::new_unique();
 
-    let ix = instruction::pool::build_register_ix(
+    let ix = build_register_node_ix(
         payer_pk, name, commission_rate, network_address, network_tls);
 
     let blockhash = svm.latest_blockhash();
@@ -97,7 +96,7 @@ pub fn stake_with_pool(
 ) {
     let payer_pk = payer.pubkey();
 
-    let ix = instruction::stake::build_stake_ix(
+    let ix = build_stake_ix(
         payer_pk, ata, pool, amount
     );
 

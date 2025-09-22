@@ -1,6 +1,5 @@
 use steel::*;
 use tape_api::prelude::*;
-use tape_api::instruction::program::Airdrop;
 
 pub fn process_airdrop(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = Airdrop::try_from_bytes(data)?;

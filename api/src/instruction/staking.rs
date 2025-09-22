@@ -1,50 +1,10 @@
 use steel::*;
 use tape_core::prelude::*;
-use crate::pda::*;
 use crate::consts::*;
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum StakingInstruction {
-    Register = 0x20,
-    Unregister,
-
-    SetAuthority,
-    SetNetworkAddress,
-    SetNetworkTls,
-    SetName,
-
-    SetCommissionRate,
-    ClaimCommission,
-
-    Stake,
-    Unstake,
-    Claim,
-    Split,
-    Merge,
-}
-
-instruction!(StakingInstruction, Register);
-instruction!(StakingInstruction, Unregister);
-
-instruction!(StakingInstruction, SetAuthority);
-instruction!(StakingInstruction, SetNetworkAddress);
-instruction!(StakingInstruction, SetNetworkTls);
-instruction!(StakingInstruction, SetName);
-
-instruction!(StakingInstruction, SetCommissionRate);
-instruction!(StakingInstruction, ClaimCommission);
-
-instruction!(StakingInstruction, Stake);
-instruction!(StakingInstruction, Unstake);
-instruction!(StakingInstruction, Claim);
-instruction!(StakingInstruction, Split);
-instruction!(StakingInstruction, Merge);
-
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Register {
+pub struct RegisterNode {
     pub name: [u8; NAME_LENGTH],
     pub commission_rate: [u8; 8],
     pub network_address: NetworkAddress,
@@ -53,7 +13,8 @@ pub struct Register {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct Unregister {}
+//#[deprecated(note = "Node unregistration is not supported")]
+pub struct UnregisterNode {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -111,77 +72,5 @@ pub struct Split {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Merge {}
-
-
-pub fn build_register_ix(
-    signer: Pubkey,
-    name: [u8; NAME_LENGTH],
-    commission_rate: BasisPoints,
-    network_address: NetworkAddress,
-    network_tls: Pubkey,
-) -> Instruction {
-
-    let (system_address, _) = system_pda();
-    let (epoch_address, _) = epoch_pda();
-    let (pool_address, _) = pool_pda(signer);
-
-    let commission_rate = commission_rate.pack();
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(system_address, false),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(pool_address, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: Register {
-            name,
-            commission_rate,
-            network_address,
-            network_tls,
-        }.to_bytes(),
-    }
-}
-
-
-
-pub fn build_stake_ix(
-    signer: Pubkey,
-    ata: Pubkey,
-    pool_address: Pubkey,
-    amount: Coin<TAPE>,
-) -> Instruction {
-
-    let (system_address, _) = system_pda();
-    let (epoch_address, _) = epoch_pda();
-    let (stake_address, _) = stake_pda(signer, pool_address);
-
-    let amount = amount.pack();
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(ata, false),
-
-            AccountMeta::new(system_address, false),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(pool_address, false),
-            AccountMeta::new(stake_address, false),
-
-            AccountMeta::new(TREASURY_ADDRESS, false),
-            AccountMeta::new(TREASURY_ATA, false),
-            AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: Stake {
-            amount
-        }.to_bytes(),
-    }
-}
 
 
