@@ -141,6 +141,54 @@ pub fn withdraw_tape(
     assert!(res.is_ok());
 }
 
+pub fn set_exchange_rate(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    exchange: Pubkey,
+    tape: u64,
+    sol: u64,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_set_exchange_rate_ix(payer_pk, exchange, tape, sol);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn swap_for_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    payer_ata: Pubkey,
+    exchange: Pubkey,
+    amount_sol: Coin<SOL>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_swap_for_tape_ix(payer_pk, payer_ata, exchange, amount_sol);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn swap_for_sol(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    payer_ata: Pubkey,
+    exchange: Pubkey,
+    amount_tape: Coin<TAPE>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_swap_for_sol_ix(payer_pk, payer_ata, exchange, amount_tape);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
 pub fn initialize_storage_node(
     svm: &mut LiteSVM,
     payer: &Keypair

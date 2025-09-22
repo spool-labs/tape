@@ -61,8 +61,6 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         tape: 1,
     };
 
-    solana_program::msg!("1");
-
     // Initialize exchange token account.
     create_associated_token_account(
         signer_info,

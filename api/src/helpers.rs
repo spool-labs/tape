@@ -15,6 +15,8 @@ pub fn build_initialize_ix(
     let (treasury_address, _) = treasury_pda();
     let (treasury_ata, _) = treasury_ata();
     let (metadata_address, _) = metadata_pda(mint_address);
+    let (exchange_address, _) = exchange_pda(treasury_address);
+    let (exchange_ata_address, _) = exchange_ata(exchange_address);
 
     Instruction {
         program_id: crate::ID,
@@ -27,12 +29,13 @@ pub fn build_initialize_ix(
             AccountMeta::new(mint_address, false),
             AccountMeta::new(treasury_address, false),
             AccountMeta::new(treasury_ata, false),
+            AccountMeta::new(exchange_address, false),
+            AccountMeta::new(exchange_ata_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(mpl_token_metadata::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
-            AccountMeta::new_readonly(crate::ID, false),
         ],
         data: Initialize {}.to_bytes(),
     }

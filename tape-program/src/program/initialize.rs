@@ -4,7 +4,6 @@ use spl_token::state::Mint;
 use tape_api::prelude::*;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
-    solana_program::msg!("num accounts: {}", accounts.len());
     let [
         signer_info, 
         system_info,
@@ -14,6 +13,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         mint_info, 
         treasury_info, 
         treasury_ata_info, 
+        exchange_info,
+        exchange_ata_info,
         system_program_info, 
         token_program_info, 
         associated_token_program_info, 
@@ -101,7 +102,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
 
-    epoch.id            = EpochNumber::zero();
+    epoch.id = EpochNumber::zero();
     epoch.last_epoch_at = 0;
 
     // Initialize archive.
@@ -189,6 +190,58 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         treasury_info,
         token_program_info,
         MAX_SUPPLY,
+        &[TREASURY],
+    )?;
+
+    // TODO: move exchange to a seperate program, then call the instructions via CPI
+
+    let (exchange_address, _) = exchange_pda(*treasury_info.key);
+    let (exchange_ata, _) = exchange_ata(exchange_address);
+
+    exchange_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&exchange_address)?;
+
+    exchange_ata_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&exchange_ata)?;
+
+    create_program_account::<Exchange>(
+        exchange_info,
+        system_program_info,
+        signer_info,
+        &tape_api::ID,
+        &[EXCHANGE, treasury_info.key.as_ref()],
+    )?;
+
+    create_associated_token_account(
+        signer_info,
+        exchange_info,
+        exchange_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
+
+    let exchange_tokens = TAPE::new(1_000_000);
+    let exchange = exchange_info.as_account_mut::<Exchange>(&tape_api::ID)?;
+    exchange.authority = *treasury_info.key;
+    exchange.balance_sol = SOL::zero();
+    exchange.balance_tape = exchange_tokens;
+    exchange.rate = ExchangeRate {
+        sol: 1,
+        tape: 1
+    };
+
+    transfer_signed(
+        treasury_info,
+        treasury_ata_info,
+        exchange_ata_info,
+        token_program_info,
+        exchange_tokens.as_u64(),
         &[TREASURY],
     )?;
 
