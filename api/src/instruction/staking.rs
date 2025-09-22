@@ -5,7 +5,7 @@ use crate::consts::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum PoolInstruction {
+pub enum StakingInstruction {
     Register = 0x20,
     Unregister,
 
@@ -16,16 +16,31 @@ pub enum PoolInstruction {
 
     SetCommissionRate,
     ClaimCommission,
+
+    Stake,
+    Unstake,
+    Claim,
+    Split,
+    Merge,
 }
 
-instruction!(PoolInstruction, Register);
-instruction!(PoolInstruction, Unregister);
-instruction!(PoolInstruction, SetAuthority);
-instruction!(PoolInstruction, SetNetworkAddress);
-instruction!(PoolInstruction, SetNetworkTls);
-instruction!(PoolInstruction, SetName);
-instruction!(PoolInstruction, SetCommissionRate);
-instruction!(PoolInstruction, ClaimCommission);
+instruction!(StakingInstruction, Register);
+instruction!(StakingInstruction, Unregister);
+
+instruction!(StakingInstruction, SetAuthority);
+instruction!(StakingInstruction, SetNetworkAddress);
+instruction!(StakingInstruction, SetNetworkTls);
+instruction!(StakingInstruction, SetName);
+
+instruction!(StakingInstruction, SetCommissionRate);
+instruction!(StakingInstruction, ClaimCommission);
+
+instruction!(StakingInstruction, Stake);
+instruction!(StakingInstruction, Unstake);
+instruction!(StakingInstruction, Claim);
+instruction!(StakingInstruction, Split);
+instruction!(StakingInstruction, Merge);
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -73,6 +88,31 @@ pub struct SetCommissionRate {
 pub struct ClaimCommission {}
 
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Stake {
+    pub amount: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Unstake {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Claim {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Split {
+    pub amount: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Merge {}
+
+
 pub fn build_register_ix(
     signer: Pubkey,
     name: [u8; NAME_LENGTH],
@@ -105,4 +145,43 @@ pub fn build_register_ix(
         }.to_bytes(),
     }
 }
+
+
+
+pub fn build_stake_ix(
+    signer: Pubkey,
+    ata: Pubkey,
+    pool_address: Pubkey,
+    amount: Coin<TAPE>,
+) -> Instruction {
+
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (stake_address, _) = stake_pda(signer, pool_address);
+
+    let amount = amount.pack();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(ata, false),
+
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(pool_address, false),
+            AccountMeta::new(stake_address, false),
+
+            AccountMeta::new(TREASURY_ADDRESS, false),
+            AccountMeta::new(TREASURY_ATA, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: Stake {
+            amount
+        }.to_bytes(),
+    }
+}
+
 

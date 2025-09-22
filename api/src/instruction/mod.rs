@@ -1,5 +1,3 @@
-pub mod program;
-pub mod pool;
-pub mod stake;
-// pub mod spool;
-// pub mod tape;
+pub mod core;
+pub mod staking;
+pub mod data;

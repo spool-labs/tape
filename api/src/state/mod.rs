@@ -1,18 +1,10 @@
-mod system;
-mod treasury;
-mod archive;
-mod epoch;
-mod pool;
-mod blob;
-mod stake;
+mod core;
+mod staking;
+mod data;
 
-pub use system::*;
-pub use treasury::*;
-pub use archive::*;
-pub use epoch::*;
-pub use pool::*;
-pub use blob::*;
-pub use stake::*;
+pub use core::*;
+pub use staking::*;
+pub use data::*;
 
 use steel::*;
 
@@ -20,11 +12,18 @@ use steel::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum AccountType {
     Unknown = 0,
+
+    // Core
     System,
     Treasury,
     Archive,
     Epoch,
-    Pool,
-    Stake,
+
+    // Staking
+    StakingPool,
+    StakedTape,
+
+    // Data
+    StorageResource,
     Blob,
 }
