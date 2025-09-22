@@ -66,6 +66,34 @@ pub fn initialize_program(
     assert!(res.is_ok());
 }
 
+pub fn initialize_exchange(
+    svm: &mut LiteSVM,
+    payer: &Keypair
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_register_exchange_ix(payer_pk);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn deposit_sol(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    exchange: Pubkey,
+    amount: Coin<SOL>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_deposit_ix(payer_pk, exchange, amount);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
 pub fn initialize_storage_node(
     svm: &mut LiteSVM,
     payer: &Keypair

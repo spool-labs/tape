@@ -34,6 +34,11 @@ pub fn get_ata_balance(svm: &LiteSVM, ata: &Pubkey) -> u64 {
     info.amount
 }
 
+pub fn get_balance(svm: &LiteSVM, pk: &Pubkey) -> u64 {
+    let account = svm.get_account(pk).unwrap();
+    account.lamports
+}
+
 pub fn get_mint(svm: &LiteSVM, mint: &Pubkey) -> Mint {
     get_spl_account(svm, mint).unwrap()
 }

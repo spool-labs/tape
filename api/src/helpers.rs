@@ -37,6 +37,50 @@ pub fn build_initialize_ix(
     }
 }
 
+pub fn build_register_exchange_ix(
+    signer: Pubkey,
+) -> Instruction {
+
+    let (mint_address, _) = mint_pda();
+    let (exchange_address, _) = exchange_pda(signer);
+    let (exchange_ata, _) = exchange_ata(exchange_address);
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(exchange_address, false),
+            AccountMeta::new(exchange_ata, false),
+            AccountMeta::new_readonly(mint_address, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(spl_associated_token_account::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: RegisterExchange {}.to_bytes(),
+    }
+}
+
+pub fn build_deposit_ix(
+    signer: Pubkey,
+    exchange: Pubkey,
+    amount: Coin<SOL>,
+) -> Instruction {
+    let amount = amount.pack();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(exchange, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: DepositSol {
+            amount,
+        }.to_bytes(),
+    }
+}
+
 pub fn build_airdrop_ix(
     signer: Pubkey,
     beneficiary: Pubkey, 

@@ -42,6 +42,22 @@ pub fn metadata_pda(mint: Pubkey) -> (Pubkey, u8) {
     )
 }
 
+pub fn exchange_pda(authority: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[EXCHANGE, authority.as_ref()], &crate::id())
+}
+
+pub fn exchange_ata(exchange: Pubkey) -> (Pubkey, u8) {
+    let (mint_pda, _bump) = mint_pda();
+    Pubkey::find_program_address(
+        &[
+            exchange.as_ref(), 
+            spl_token::ID.as_ref(),
+            mint_pda.as_ref()
+        ],
+        &spl_associated_token_account::ID,
+    )
+}
+
 pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NODE, authority.as_ref()], &crate::id())
 }

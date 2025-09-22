@@ -1,9 +1,11 @@
 #![allow(unexpected_cfgs)]
 
+pub mod exchange; 
 pub mod program;
 pub mod staking;
 pub mod data;
 
+use exchange::*;
 use program::*;
 use staking::*;
 use data::*;
@@ -32,6 +34,10 @@ pub fn process_instruction(
             TapeInstruction::Airdrop => process_airdrop(accounts, data)?,
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
             TapeInstruction::Stake => process_stake(accounts, data)?,
+
+            TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
+            TapeInstruction::DepositSol => process_deposit_sol(accounts, data)?,
+            
             _ => return Err(ProgramError::InvalidInstructionData),
         }
     } else {

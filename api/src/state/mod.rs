@@ -1,10 +1,12 @@
+mod data;
 mod program;
 mod staking;
-mod data;
+mod exchange;
 
 pub use program::*;
 pub use staking::*;
 pub use data::*;
+pub use exchange::*;
 
 use steel::*;
 
@@ -18,6 +20,9 @@ pub enum AccountType {
     Treasury,
     Archive,
     Epoch,
+
+    // Exchange
+    Exchange,
 
     // Staking
     StorageNode,

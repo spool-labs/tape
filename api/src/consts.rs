@@ -2,6 +2,7 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 
 pub const SYSTEM:    &[u8] = b"system";
+pub const EXCHANGE:  &[u8] = b"exchange";
 pub const TREASURY:  &[u8] = b"treasury";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
