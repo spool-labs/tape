@@ -9,6 +9,10 @@ pub enum TapeError {
     #[error("The provided account is in an unexpected state")]
     UnexpectedState         = 0x10,
 
+
+    #[error("The provided account has insufficient funds")]
+    InsufficientFunds       = 0x20,
+
 }
 
 error!(TapeError);

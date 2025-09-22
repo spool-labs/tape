@@ -36,7 +36,13 @@ pub fn process_instruction(
             TapeInstruction::Stake => process_stake(accounts, data)?,
 
             TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
+            TapeInstruction::SetExchangeRate => process_set_exchange_rate(accounts, data)?,
             TapeInstruction::DepositSol => process_deposit_sol(accounts, data)?,
+            TapeInstruction::DepositTape => process_deposit_tape(accounts, data)?,
+            TapeInstruction::WithdrawSol => process_withdraw_sol(accounts, data)?,
+            TapeInstruction::WithdrawTape => process_withdraw_tape(accounts, data)?,
+            TapeInstruction::SwapForTape => process_swap_for_tape(accounts, data)?,
+            TapeInstruction::SwapForSol => process_swap_for_sol(accounts, data)?,
             
             _ => return Err(ProgramError::InvalidInstructionData),
         }

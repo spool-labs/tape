@@ -13,8 +13,13 @@ pub fn process_deposit_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    exchange_info
-        .is_writable()?;
+    signer_info
+        .is_writable()?
+        .is_signer()?;
+
+    let exchange = exchange_info
+        .is_writable()?
+        .as_account_mut::<Exchange>(&tape_api::ID)?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -33,8 +38,6 @@ pub fn process_deposit_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
             system_program_info.clone(),
         ],
     )?;
-
-    let exchange = exchange_info.as_account_mut::<Exchange>(&tape_api::ID)?;
 
     exchange.balance_sol = exchange.balance_sol
         .checked_add(amount)

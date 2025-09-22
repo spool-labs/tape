@@ -30,8 +30,15 @@ fn test_stake() {
 
     let account = svm.get_account(&exchange_address).unwrap();
     let exchange = Exchange::unpack_with_discriminator(&account.data).unwrap();
-
     assert_eq!(exchange.balance_sol, amout);
 
+    withdraw_sol(&mut svm, &payer, exchange_address, amout);
+
+    let account = svm.get_account(&exchange_address).unwrap();
+    let exchange = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    assert_eq!(exchange.balance_sol, SOL::zero());
+
+    let post_sol_balance = get_balance(&svm, &exchange_address);
+    assert_eq!(post_sol_balance, pre_sol_balance);
 }
 

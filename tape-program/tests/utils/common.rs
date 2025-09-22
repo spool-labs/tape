@@ -86,7 +86,54 @@ pub fn deposit_sol(
     amount: Coin<SOL>,
 ) {
     let payer_pk = payer.pubkey();
-    let ix = build_deposit_ix(payer_pk, exchange, amount);
+    let ix = build_deposit_sol_ix(payer_pk, exchange, amount);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn withdraw_sol(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    exchange: Pubkey,
+    amount: Coin<SOL>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_withdraw_sol_ix(payer_pk, exchange, amount);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn deposit_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    payer_ata: Pubkey,
+    exchange: Pubkey,
+    amount: Coin<TAPE>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_deposit_tape_ix(payer_pk, payer_ata, exchange, amount);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    assert!(res.is_ok());
+}
+
+pub fn withdraw_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    payer_ata: Pubkey,
+    exchange: Pubkey,
+    amount: Coin<TAPE>,
+) {
+    let payer_pk = payer.pubkey();
+    let ix = build_withdraw_tape_ix(payer_pk, payer_ata, exchange, amount);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
