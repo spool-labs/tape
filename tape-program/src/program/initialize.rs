@@ -226,14 +226,14 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         associated_token_program_info,
     )?;
 
-    let exchange_tokens = TAPE::new(1_000_000);
+    let exchange_tokens = TAPE::new(100_000_000);
     let exchange = exchange_info.as_account_mut::<Exchange>(&tape_api::ID)?;
     exchange.authority = *treasury_info.key;
     exchange.balance_sol = SOL::zero();
     exchange.balance_tape = exchange_tokens;
     exchange.rate = ExchangeRate {
         sol: 1,
-        tape: 1
+        tape: 100
     };
 
     transfer_signed(
