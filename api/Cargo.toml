@@ -1,0 +1,34 @@
+[package]
+name = "tape-api"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
+
+documentation = "https://docs.rs/tape-api"
+
+[dependencies]
+tape-core.workspace = true
+
+steel.workspace = true
+blake3.workspace = true
+bytemuck.workspace = true
+num_enum.workspace = true
+solana-program.workspace = true
+mpl-token-metadata.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
+array-const-fn-init.workspace = true
+const-crypto.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = ["std"]
+std = []
+solana = []

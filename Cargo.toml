@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
 members = [ 
-  "tape-api",
+  "core",
+  "api",
+# "tape-api",
   "tape-archive",
   "tape-cli",
   "tape-client",
@@ -24,7 +26,9 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
-tape-api = { version = "0.3.0", path = "./tape-api" }
+tape-api = { version = "0.3.0", path = "./api" }
+tape-core = { version = "0.3.0", path = "./core" }
+
 tape-archive = { version = "0.3.0", path = "./tape-archive" }
 tape-cli = { version = "0.3.0", path = "./tape-cli" }
 tape-client = { version = "0.3.0", path = "./tape-client" }

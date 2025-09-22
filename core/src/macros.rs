@@ -1,0 +1,170 @@
+/// Helper macro to provide baseline unsigned integer functionality.
+/// Assumes the type has a single unsigned integer field.
+#[macro_export]
+macro_rules! wrapped_uint {
+    ($type_name:ident, $inner:ty) => {
+        impl From<$inner> for $type_name {
+            #[inline]
+            fn from(value: $inner) -> Self {
+                $type_name(value)
+            }
+        }
+
+        impl From<$type_name> for $inner {
+            #[inline]
+            fn from(value: $type_name) -> $inner {
+                value.0
+            }
+        }
+    };
+}
+
+/// A macro to create distinct index types wrapping a `u64` for type safety.
+/// Generates a newtype struct with conversions, Default, and Display implementations.
+#[macro_export]
+macro_rules! define_u64_type {
+    ($type_name:ident, $prefix:literal) => {
+
+        /// A type-safe wrapper around a `u64` index for $type_name.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $type_name(pub u64);
+
+        unsafe impl bytemuck::Pod for $type_name {}
+        unsafe impl bytemuck::Zeroable for $type_name {}
+
+        impl $type_name {
+            /// Creates a new $type_name from a u64.
+            #[inline]
+            pub fn new(value: u64) -> Self {
+                $type_name(value)
+            }
+
+            /// Zero value for $type_name.
+            #[inline]
+            pub fn zero() -> Self {
+                $type_name(0)
+            }
+
+            /// Pack from a u64 into a [u8; 8] array in little-endian order.
+            #[inline]
+            pub fn pack(&self) -> [u8; 8] {
+                self.0.to_le_bytes()
+            }
+
+            /// Unpack from a [u8; 8] array in little-endian order into a $type_name.
+            #[inline]
+            pub fn unpack(data: [u8; 8]) -> Self {
+                $type_name(u64::from_le_bytes(data))
+            }
+
+            /// Returns the inner u64 value.
+            #[inline]
+            pub fn as_u64(&self) -> u64 {
+                self.0
+            }
+
+            /// Converts the index to usize.
+            #[inline]
+            pub fn as_usize(&self) -> usize {
+                self.0 as usize
+            }
+
+            /// Converts the index to u32.
+            #[inline]
+            pub fn as_u32(&self) -> u32 {
+                self.0 as u32
+            }
+
+            /// Checked addition with overflow handling.
+            #[inline]
+            pub fn checked_add(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_add(rhs.0).map($type_name)
+            }
+
+            /// Checked subtraction with underflow handling.
+            #[inline]
+            pub fn checked_sub(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_sub(rhs.0).map($type_name)
+            }
+
+            /// Checked multiplication with overflow handling.
+            #[inline]
+            pub fn checked_mul(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_mul(rhs.0).map($type_name)
+            }
+
+            /// Checked division with division-by-zero handling.
+            #[inline]
+            pub fn checked_div(&self, rhs: Self) -> Option<Self> {
+                self.0.checked_div(rhs.0).map($type_name)
+            }
+
+            /// Increments the index by 1, saturating at u64::MAX.
+            #[inline]
+            pub fn increment(&mut self) {
+                self.0 = self.0.saturating_add(1);
+            }
+
+            /// Decrements the index by 1, saturating at 0.
+            #[inline]
+            pub fn decrement(&mut self) {
+                self.0 = self.0.saturating_sub(1);
+            }
+
+            /// Returns true if the index is zero.
+            #[inline]
+            pub fn is_zero(&self) -> bool {
+                self.0 == 0
+            }
+        }
+
+        impl Default for $type_name {
+            /// Returns a default $type_name with value 0.
+            fn default() -> Self {
+                $type_name(0)
+            }
+        }
+
+        impl std::fmt::Display for $type_name {
+            /// Formats the $type_name as its inner u64 value with a prefix.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}:{}", $prefix, self.0)
+            }
+        }
+
+        $crate::wrapped_uint!($type_name, u64);
+    };
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    define_u64_type!(SegmentIndexU64, "seg64");
+    define_u64_type!(SectorIndexU64, "sec64");
+
+    #[test]
+    fn test_segment_index_u64() {
+        let seg = SegmentIndexU64::new(42_000);
+        assert_eq!(seg.as_u64(), 42_000);
+        assert_eq!(seg.as_usize(), 42_000);
+        assert_eq!(seg.as_u32(), 42_000);
+        assert_eq!(seg, SegmentIndexU64::from(42_000));
+        assert_eq!(u64::from(seg), 42_000);
+        assert_eq!(format!("{}", seg), "seg64:42000");
+        assert_eq!(SegmentIndexU64::default(), SegmentIndexU64(0));
+    }
+
+    #[test]
+    fn test_sector_index_u64() {
+        let sec = SectorIndexU64::new(99_000);
+        assert_eq!(sec.as_u64(), 99_000);
+        assert_eq!(sec.as_usize(), 99_000);
+        assert_eq!(sec.as_u32(), 99_000);
+        assert_eq!(sec, SectorIndexU64::from(99_000));
+        assert_eq!(u64::from(sec), 99_000);
+        assert_eq!(format!("{}", sec), "sec64:99000");
+        assert_eq!(SectorIndexU64::default(), SectorIndexU64(0));
+    }
+}

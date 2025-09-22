@@ -5584,6 +5584,7 @@ dependencies = [
  "spl-associated-token-account 6.0.0",
  "spl-token 4.0.2",
  "steel",
+ "tape-core",
 ]
 
 [[package]]
@@ -5597,6 +5598,17 @@ version = "0.3.0"
 [[package]]
 name = "tape-client"
 version = "0.3.0"
+
+[[package]]
+name = "tape-core"
+version = "0.3.0"
+dependencies = [
+ "blake3",
+ "bytemuck",
+ "num_enum",
+ "solana-program",
+ "steel",
+]
 
 [[package]]
 name = "tape-network"
@@ -5623,6 +5635,7 @@ dependencies = [
  "spl-token 4.0.2",
  "steel",
  "tape-api",
+ "tape-core",
  "tokio",
 ]
 
