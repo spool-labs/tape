@@ -12,12 +12,10 @@ fn test_register_exchange() {
     initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
 
     // Verify exchange account exists and has correct initial state
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
 
     assert_eq!(exchange_data.authority, payer.pubkey());
     assert_eq!(exchange_data.balance_sol, SOL::zero());
@@ -32,8 +30,7 @@ fn test_set_exchange_rate() {
     initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
 
     // Set exchange rate (e.g., 10 TAPE = 1 SOL)
     let tape_rate = 10;
@@ -41,8 +38,7 @@ fn test_set_exchange_rate() {
     set_exchange_rate(&mut svm, &payer, exchange, tape_rate, sol_rate);
 
     // Verify exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
 
     assert_eq!(exchange_data.rate.tape, tape_rate);
     assert_eq!(exchange_data.rate.sol, sol_rate);
@@ -54,8 +50,7 @@ fn test_deposit_and_withdraw_tape() {
     let treasury = initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Deposit TAPE into user exchange
@@ -73,9 +68,8 @@ fn test_deposit_and_withdraw_tape() {
     assert_eq!(exchange_balance_after - exchange_balance, tape_amount.as_u64());
 
     // Verify exchange account data after deposit
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_tape.as_u64(), tape_amount.as_u64());
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_tape, tape_amount);
 
     // Withdraw a portion of TAPE
     let withdraw_amount = TAPE::new(50);
@@ -92,12 +86,11 @@ fn test_deposit_and_withdraw_tape() {
     assert_eq!(exchange_balance - exchange_balance_after, withdraw_amount.as_u64());
 
     // Verify exchange account data after withdrawal
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_tape.as_u64(), tape_amount.as_u64() - withdraw_amount.as_u64());
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_tape, tape_amount - withdraw_amount);
 
     // Withdraw full TAPE balance (amount = 0)
-    let remaining_tape = tape_amount.as_u64() - withdraw_amount.as_u64();
+    let remaining_tape = tape_amount - withdraw_amount;
     let payer_balance = get_ata_balance(&svm, &treasury);
     let exchange_balance = get_ata_balance(&svm, &exchange_ata);
 
@@ -107,13 +100,12 @@ fn test_deposit_and_withdraw_tape() {
     let exchange_balance_after = get_ata_balance(&svm, &exchange_ata);
 
     // Verify full withdrawal balances
-    assert_eq!(payer_balance_after - payer_balance, remaining_tape);
-    assert_eq!(exchange_balance - exchange_balance_after, remaining_tape);
+    assert_eq!(payer_balance_after - payer_balance, remaining_tape.as_u64());
+    assert_eq!(exchange_balance - exchange_balance_after, remaining_tape.as_u64());
     assert_eq!(exchange_balance_after, 0);
 
     // Verify exchange account data after full withdrawal
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
     assert_eq!(exchange_data.balance_tape.as_u64(), 0);
 }
 
@@ -123,8 +115,7 @@ fn test_deposit_and_withdraw_sol() {
     initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
 
     // Capture initial SOL balance
     let initial_balance = get_balance(&svm, &exchange);
@@ -141,9 +132,8 @@ fn test_deposit_and_withdraw_sol() {
     assert_eq!(exchange_balance_after - exchange_balance, sol_amount.as_u64());
 
     // Verify exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_sol.as_u64(), sol_amount.as_u64());
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_sol, sol_amount);
 
     // Withdraw SOL
     let withdraw_amount = SOL::new(120);
@@ -157,12 +147,11 @@ fn test_deposit_and_withdraw_sol() {
     assert_eq!(exchange_balance - exchange_balance_after, withdraw_amount.as_u64());
 
     // Verify exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_sol.as_u64(), sol_amount.as_u64() - withdraw_amount.as_u64());
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_sol, sol_amount - withdraw_amount);
 
     // Withdraw full SOL balance (amount = 0)
-    let remaining_sol = sol_amount.as_u64() - withdraw_amount.as_u64();
+    let remaining_sol = sol_amount - withdraw_amount;
     let exchange_balance = get_balance(&svm, &exchange);
 
     withdraw_sol(&mut svm, &payer, exchange, SOL::new(0));
@@ -170,12 +159,11 @@ fn test_deposit_and_withdraw_sol() {
     let exchange_balance_after = get_balance(&svm, &exchange);
 
     // Verify full SOL withdrawal
-    assert_eq!(exchange_balance - exchange_balance_after, remaining_sol);
+    assert_eq!(exchange_balance - exchange_balance_after, remaining_sol.as_u64());
     assert_eq!(exchange_balance_after, initial_balance);
 
     // Verify exchange account data after full withdrawal
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
     assert_eq!(exchange_data.balance_sol.as_u64(), 0);
 }
 
@@ -185,8 +173,7 @@ fn test_swap_for_tape() {
     let treasury = initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Deposit TAPE into user exchange for swapping
@@ -194,8 +181,7 @@ fn test_swap_for_tape() {
     deposit_tape(&mut svm, &payer, treasury, exchange, tape_amount);
 
     // Get exchange rate
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
     let rate = exchange_data.rate;
 
     // Perform SOL -> TAPE swap
@@ -211,18 +197,17 @@ fn test_swap_for_tape() {
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output
-    let expected_tape = (sol_in.as_u64() * rate.tape) / rate.sol;
+    let expected_tape = TAPE::new(sol_in.as_u64() * rate.tape / rate.sol);
 
     // Verify balances
-    assert_eq!(payer_balance_after - payer_balance, expected_tape);
-    assert_eq!(exchange_balance - exchange_balance_after, expected_tape);
+    assert_eq!(payer_balance_after - payer_balance, expected_tape.as_u64());
+    assert_eq!(exchange_balance - exchange_balance_after, expected_tape.as_u64());
     assert_eq!(exchange_sol_after - exchange_sol, sol_in.as_u64());
 
     // Verify exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_sol.as_u64(), sol_in.as_u64());
-    assert_eq!(exchange_data.balance_tape.as_u64(), tape_amount.as_u64() - expected_tape);
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_sol, sol_in);
+    assert_eq!(exchange_data.balance_tape, tape_amount - expected_tape);
 }
 
 #[test]
@@ -231,8 +216,7 @@ fn test_swap_for_sol() {
     let treasury = initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Set exchange rate (e.g., 2 TAPE = 1 SOL)
@@ -257,18 +241,17 @@ fn test_swap_for_sol() {
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected SOL output
-    let expected_sol = (tape_in.as_u64() * sol_rate) / tape_rate;
+    let expected_sol = SOL::new(tape_in.as_u64() * sol_rate / tape_rate);
 
     // Verify balances
     assert_eq!(exchange_balance_after - exchange_balance, tape_in.as_u64());
     assert_eq!(payer_balance - payer_balance_after, tape_in.as_u64());
-    assert_eq!(exchange_sol - exchange_sol_after, expected_sol);
+    assert_eq!(exchange_sol - exchange_sol_after, expected_sol.as_u64());
 
     // Verify exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_sol.as_u64(), sol_amount.as_u64() - expected_sol);
-    assert_eq!(exchange_data.balance_tape.as_u64(), tape_in.as_u64());
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_sol, sol_amount - expected_sol);
+    assert_eq!(exchange_data.balance_tape, tape_in);
 }
 
 #[test]
@@ -277,16 +260,15 @@ fn test_swap_for_tape_with_rate_change() {
     let treasury = initialize_program(&mut svm, &payer);
 
     // Initialize user-owned exchange
-    initialize_exchange(&mut svm, &payer);
-    let (exchange, _) = exchange_pda(payer.pubkey());
+    let exchange = initialize_exchange(&mut svm, &payer);
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Deposit TAPE into user exchange for swapping
-    let tape_amount = TAPE::new(1_00_000);
+    let tape_amount = TAPE::new(2000);
     deposit_tape(&mut svm, &payer, treasury, exchange, tape_amount);
 
-    // Set initial exchange rate (e.g., 100 TAPE = 1 SOL)
-    let initial_tape_rate = 100;
+    // Set initial exchange rate (e.g., 2 TAPE = 1 SOL)
+    let initial_tape_rate = 2;
     let initial_sol_rate = 1;
     set_exchange_rate(&mut svm, &payer, exchange, initial_tape_rate, initial_sol_rate);
 
@@ -303,11 +285,11 @@ fn test_swap_for_tape_with_rate_change() {
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output for first swap
-    let expected_tape = (sol_in.as_u64() * initial_tape_rate) / initial_sol_rate;
+    let expected_tape = TAPE::new(sol_in.as_u64() * initial_tape_rate / initial_sol_rate);
 
     // Verify balances for first swap
-    assert_eq!(payer_balance_after - payer_balance, expected_tape);
-    assert_eq!(exchange_balance - exchange_balance_after, expected_tape);
+    assert_eq!(payer_balance_after - payer_balance, expected_tape.as_u64());
+    assert_eq!(exchange_balance - exchange_balance_after, expected_tape.as_u64());
     assert_eq!(exchange_sol_after - exchange_sol, sol_in.as_u64());
 
     // Change exchange rate (e.g., 4 TAPE = 1 SOL)
@@ -316,8 +298,7 @@ fn test_swap_for_tape_with_rate_change() {
     set_exchange_rate(&mut svm, &payer, exchange, new_tape_rate, new_sol_rate);
 
     // Verify new exchange rate
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
+    let exchange_data = get_exchange_state(&svm, &exchange);
     assert_eq!(exchange_data.rate.tape, new_tape_rate);
     assert_eq!(exchange_data.rate.sol, new_sol_rate);
 
@@ -334,16 +315,15 @@ fn test_swap_for_tape_with_rate_change() {
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output for second swap
-    let expected_tape_2 = (sol_in.as_u64() * new_tape_rate) / new_sol_rate;
+    let expected_tape_2 = TAPE::new(sol_in.as_u64() * new_tape_rate / new_sol_rate);
 
     // Verify balances for second swap
-    assert_eq!(payer_balance_after - payer_balance, expected_tape_2);
-    assert_eq!(exchange_balance - exchange_balance_after, expected_tape_2);
+    assert_eq!(payer_balance_after - payer_balance, expected_tape_2.as_u64());
+    assert_eq!(exchange_balance - exchange_balance_after, expected_tape_2.as_u64());
     assert_eq!(exchange_sol_after - exchange_sol, sol_in.as_u64());
 
     // Verify final exchange account data
-    let account = svm.get_account(&exchange).unwrap();
-    let exchange_data = Exchange::unpack_with_discriminator(&account.data).unwrap();
-    assert_eq!(exchange_data.balance_sol.as_u64(), sol_in.as_u64() + sol_in.as_u64());
-    assert_eq!(exchange_data.balance_tape.as_u64(), tape_amount.as_u64() - expected_tape - expected_tape_2);
+    let exchange_data = get_exchange_state(&svm, &exchange);
+    assert_eq!(exchange_data.balance_sol, sol_in + sol_in);
+    assert_eq!(exchange_data.balance_tape, tape_amount - expected_tape - expected_tape_2);
 }

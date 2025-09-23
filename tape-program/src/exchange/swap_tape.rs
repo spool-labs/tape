@@ -95,14 +95,14 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     exchange.balance_sol = exchange
         .balance_sol
         .checked_add(amount_in_sol)
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     // Convert output u64 to TAPE coin and subtract
     let amount_out_tape: TAPE = amount_out_tape_u64.into();
     exchange.balance_tape = exchange
         .balance_tape
         .checked_sub(amount_out_tape)
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     Ok(())
 }

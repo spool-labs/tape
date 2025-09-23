@@ -40,7 +40,7 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     exchange.balance_tape = exchange.balance_tape
         .checked_add(amount)
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     Ok(())
 }

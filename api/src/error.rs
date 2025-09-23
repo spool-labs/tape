@@ -6,10 +6,10 @@ pub enum TapeError {
     #[error("Unknown error")]
     UnknownError = 0,
 
+    #[error("Arithmetic overflow occurred")]
+    Overflow                = 0x01,
     #[error("The provided account is in an unexpected state")]
     UnexpectedState         = 0x10,
-
-
     #[error("The provided account has insufficient funds")]
     InsufficientFunds       = 0x20,
 

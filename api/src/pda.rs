@@ -48,7 +48,7 @@ pub fn mint_pda() -> (Pubkey, u8) {
 
 #[cfg(debug_assertions)]
 pub fn metadata_pda() -> (Pubkey, u8) {
-    let (mint, _bump) = mint_pda();
+    let (mint, _) = mint_pda();
     Pubkey::find_program_address(
         &[METADATA, mpl_token_metadata::ID.as_ref(), mint.as_ref()],
         &mpl_token_metadata::ID,
@@ -68,7 +68,7 @@ pub fn exchange_pda(authority: Pubkey) -> (Pubkey, u8) {
 
 #[inline(always)]
 pub fn exchange_ata(exchange: Pubkey) -> (Pubkey, u8) {
-    let (mint_pda, _bump) = mint_pda();
+    let (mint_pda, _) = mint_pda();
     Pubkey::find_program_address(
         &[
             exchange.as_ref(), 
@@ -87,6 +87,19 @@ pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
 #[inline(always)]
 pub fn staked_tape_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &crate::id())
+}
+
+#[inline(always)]
+pub fn staked_tape_ata(stake: Pubkey) -> (Pubkey, u8) {
+    let (mint_pda, _) = mint_pda();
+    Pubkey::find_program_address(
+        &[
+            stake.as_ref(),
+            spl_token::ID.as_ref(),
+            mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::ID,
+    )
 }
 
 #[inline(always)]

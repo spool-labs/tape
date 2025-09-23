@@ -41,7 +41,7 @@ pub fn process_deposit_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     exchange.balance_sol = exchange.balance_sol
         .checked_add(amount)
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     Ok(())
 }

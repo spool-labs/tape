@@ -34,7 +34,7 @@ pub struct StorageNode {
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct StakingPool {
     /// The total stake balance in the pool.
-    pub total_stake: Coin<TAPE>,
+    pub total_staked: Coin<TAPE>,
 
     /// The commission rate taken by the pool (in basis points).
     pub commission_rate: BasisPoints,

@@ -41,8 +41,10 @@ pub fn initialize_program(
 pub fn initialize_exchange(
     svm: &mut LiteSVM,
     payer: &Keypair
-) {
+) -> Pubkey {
     let payer_pk = payer.pubkey();
+    let (exchange, _) = exchange_pda(payer_pk);
+
     let ix = build_register_exchange_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
@@ -50,6 +52,7 @@ pub fn initialize_exchange(
 
     svm.expire_blockhash();
     assert!(res.is_ok());
+    exchange
 }
 
 pub fn deposit_sol(
@@ -172,8 +175,9 @@ pub fn swap_for_sol(
 pub fn initialize_storage_node(
     svm: &mut LiteSVM,
     payer: &Keypair
-) {
+) -> Pubkey {
     let payer_pk = payer.pubkey();
+    let (node_address, _) = storage_node_pda(payer_pk);
 
     let name = to_name("Test Node");
     let commission_rate = BasisPoints::new(1000);
@@ -189,26 +193,25 @@ pub fn initialize_storage_node(
 
     svm.expire_blockhash();
     assert!(res.is_ok());
+    node_address
 }
 
-pub fn stake_with_pool(
+pub fn stake_with_node(
     svm: &mut LiteSVM,
     payer: &Keypair,
-    ata: Pubkey,
-    pool: Pubkey,
+    node_address: Pubkey,
     amount: Coin<TAPE>,
-) {
+) -> Pubkey {
     let payer_pk = payer.pubkey();
+    let (stake_address, _) = staked_tape_pda(payer_pk, node_address);
 
-    let ix = build_stake_ix(
-        payer_pk, ata, pool, amount
-    );
-
+    let ix = build_stake_ix(payer_pk, node_address, amount);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
     svm.expire_blockhash();
     assert!(res.is_ok());
+    stake_address
 }
 

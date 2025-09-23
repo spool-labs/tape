@@ -35,10 +35,10 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Transfer lamports
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount.as_u64())
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
         .checked_add(amount.as_u64())
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
     **signer_info.try_borrow_mut_lamports()? = new_signer_lamports;
@@ -46,7 +46,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Update exchange state
     exchange.balance_sol = exchange.balance_sol
         .checked_sub(amount)
-        .ok_or(TapeError::UnexpectedState)?;
+        .ok_or(TapeError::Overflow)?;
 
     Ok(())
 }
