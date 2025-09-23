@@ -6,18 +6,15 @@ use tape_api::prelude::*;
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
         signer_info, 
+        treasury_info,
         system_info,
         archive_info, 
         epoch_info, 
         metadata_info, 
         mint_info, 
-        treasury_info, 
-        treasury_ata_info, 
-        exchange_info,
-        exchange_ata_info,
         system_program_info, 
         token_program_info, 
-        associated_token_program_info, 
+        associated_token_program_info,
         metadata_program_info, 
         rent_sysvar_info,
     ] = accounts else {
@@ -27,59 +24,38 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     system_info
         .is_empty()?
         .is_writable()?
-        .has_seeds(&[SYSTEM], &tape_api::ID)?;
+        .has_address(&SYSTEM_ADDRESS)?;
 
     archive_info
         .is_empty()?
         .is_writable()?
-        .has_seeds(&[ARCHIVE], &tape_api::ID)?;
+        .has_address(&ARCHIVE_ADDRESS)?;
 
     epoch_info
         .is_empty()?
         .is_writable()?
-        .has_seeds(&[EPOCH], &tape_api::ID)?;
-
-    // Check mint, metadata, treasury
-    let (mint_address, mint_bump) = mint_pda();
-    let (treasury_address, treasury_bump) = treasury_pda();
-    let (metadata_address, _metadata_bump) = metadata_pda(mint_address);
-
-    assert_eq!(mint_bump, MINT_BUMP);
-    assert_eq!(treasury_bump, TREASURY_BUMP);
+        .has_address(&EPOCH_ADDRESS)?;
 
     mint_info
         .is_empty()?
         .is_writable()?
-        .has_address(&mint_address)?;
+        .has_address(&MINT_ADDRESS)?;
 
     metadata_info
         .is_empty()?
         .is_writable()?
-        .has_address(&metadata_address)?;
-
-    treasury_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&treasury_address)?;
-
-    treasury_ata_info
-        .is_empty()?
-        .is_writable()?;
+        .has_address(&METADATA_ADDRESS)?;
 
     // Check programs and sysvars.
     system_program_info
         .is_program(&system_program::ID)?;
     token_program_info
         .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
-
     metadata_program_info
         .is_program(&mpl_token_metadata::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    // Initialize system.
     create_program_account::<System>(
         system_info,
         system_program_info,
@@ -88,10 +64,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[SYSTEM],
     )?;
 
-    let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
-    system.total_nodes = 0;
-
-    // Initialize epoch.
     create_program_account::<Epoch>(
         epoch_info,
         system_program_info,
@@ -100,12 +72,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[EPOCH],
     )?;
 
-    let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
-
-    epoch.id = EpochNumber::zero();
-    epoch.last_epoch_at = 0;
-
-    // Initialize archive.
     create_program_account::<Archive>(
         archive_info,
         system_program_info,
@@ -114,16 +80,16 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[ARCHIVE],
     )?;
 
-    let _archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
+    let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
+    system.total_staked = TAPE::zero();
+    system.total_nodes = 0;
 
-    // Initialize treasury.
-    create_program_account::<Treasury>(
-        treasury_info,
-        system_program_info,
-        signer_info,
-        &tape_api::ID,
-        &[TREASURY],
-    )?;
+    let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
+    epoch.id = EpochNumber::zero();
+    epoch.last_epoch_at = 0;
+
+    let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
+    archive.storage_used = 0;
 
     // Initialize mint.
     allocate_account_with_bump(
@@ -135,9 +101,11 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[MINT, MINT_SEED],
         MINT_BUMP,
     )?;
+
+    // Set mint authority
     initialize_mint_signed_with_bump(
-        mint_info,
-        treasury_info,
+        mint_info, 
+        system_info, // mint authority
         None,
         token_program_info,
         rent_sysvar_info,
@@ -151,7 +119,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         __program: metadata_program_info,
         metadata: metadata_info,
         mint: mint_info,
-        mint_authority: treasury_info,
+        mint_authority: system_info,
         payer: signer_info,
         update_authority: (signer_info, true),
         system_program: system_program_info,
@@ -170,79 +138,27 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             collection_details: None,
         },
     }
-    .invoke_signed(&[&[TREASURY, &[TREASURY_BUMP]]])?;
+    .invoke_signed(&[&[SYSTEM, &[SYSTEM_BUMP]]])?;
 
-    // Initialize treasury token account.
+    // Create treasury token account.
     create_associated_token_account(
         signer_info,
+        signer_info,
         treasury_info,
-        treasury_ata_info,
         mint_info,
         system_program_info,
         token_program_info,
         associated_token_program_info,
     )?;
 
-    // Fund the treasury token account.
+    // Mint max supply to treasury.
     mint_to_signed(
         mint_info,
-        treasury_ata_info,
         treasury_info,
+        system_info,
         token_program_info,
         MAX_SUPPLY,
-        &[TREASURY],
-    )?;
-
-    // TODO: move exchange to a seperate program, then call the instructions via CPI
-
-    let (exchange_address, _) = exchange_pda(*treasury_info.key);
-    let (exchange_ata, _) = exchange_ata(exchange_address);
-
-    exchange_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&exchange_address)?;
-
-    exchange_ata_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&exchange_ata)?;
-
-    create_program_account::<Exchange>(
-        exchange_info,
-        system_program_info,
-        signer_info,
-        &tape_api::ID,
-        &[EXCHANGE, treasury_info.key.as_ref()],
-    )?;
-
-    create_associated_token_account(
-        signer_info,
-        exchange_info,
-        exchange_ata_info,
-        mint_info,
-        system_program_info,
-        token_program_info,
-        associated_token_program_info,
-    )?;
-
-    let exchange_tokens = TAPE::new(100_000_000);
-    let exchange = exchange_info.as_account_mut::<Exchange>(&tape_api::ID)?;
-    exchange.authority = *treasury_info.key;
-    exchange.balance_sol = SOL::zero();
-    exchange.balance_tape = exchange_tokens;
-    exchange.rate = ExchangeRate {
-        sol: 1,
-        tape: 100
-    };
-
-    transfer_signed(
-        treasury_info,
-        treasury_ata_info,
-        exchange_ata_info,
-        token_program_info,
-        exchange_tokens.as_u64(),
-        &[TREASURY],
+        &[SYSTEM],
     )?;
 
     Ok(())

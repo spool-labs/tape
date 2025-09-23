@@ -17,13 +17,11 @@ pub enum TapeInstruction {
 
     // Core
     Initialize,
-    Airdrop,
     AdvanceEpoch,
 
     // Exchange
     RegisterExchange,
     SetExchangeRate,
-    SetExchangeAuthority,
     DepositTape,
     DepositSol,
     WithdrawTape,
@@ -49,11 +47,9 @@ pub enum TapeInstruction {
 
 instruction!(TapeInstruction, Initialize);
 instruction!(TapeInstruction, AdvanceEpoch);
-instruction!(TapeInstruction, Airdrop);
 
 instruction!(TapeInstruction, RegisterExchange);
 instruction!(TapeInstruction, SetExchangeRate);
-instruction!(TapeInstruction, SetExchangeAuthority);
 instruction!(TapeInstruction, DepositTape);
 instruction!(TapeInstruction, DepositSol);
 instruction!(TapeInstruction, WithdrawTape);

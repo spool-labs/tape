@@ -8,6 +8,9 @@ use crate::state;
 pub struct System {
     /// The number of storage nodes currently registered.
     pub total_nodes: u64,
+
+    /// The total amount of stake in the treasury.
+    pub total_staked: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -39,14 +42,6 @@ pub struct Archive {
     pub storage_used: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Treasury {
-    /// The total amount of stake in the treasury.
-    pub total_stake: Coin<TAPE>,
-}
-
 state!(AccountType, System);
 state!(AccountType, Epoch);
 state!(AccountType, Archive);
-state!(AccountType, Treasury);

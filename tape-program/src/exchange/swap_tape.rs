@@ -35,8 +35,6 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
 
-    system_program_info
-        .is_program(&system_program::ID)?;
     token_program_info
         .is_program(&spl_token::ID)?;
 

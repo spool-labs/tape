@@ -3,34 +3,30 @@ use tape_core::prelude::*;
 use crate::pda::*;
 use crate::consts::*;
 use crate::instruction::*;
+use spl_associated_token_account::get_associated_token_address;
 
 pub fn build_initialize_ix(
-    signer: Pubkey
+    signer: Pubkey,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
-    let (treasury_address, _) = treasury_pda();
-    let (treasury_ata, _) = treasury_ata();
-    let (metadata_address, _) = metadata_pda(mint_address);
-    let (exchange_address, _) = exchange_pda(treasury_address);
-    let (exchange_ata_address, _) = exchange_ata(exchange_address);
+    let (metadata_address, _) = metadata_pda();
+
+    let treasury = get_associated_token_address(&signer, &mint_address);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
+            AccountMeta::new(treasury, false),
             AccountMeta::new(system_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(metadata_address, false),
             AccountMeta::new(mint_address, false),
-            AccountMeta::new(treasury_address, false),
-            AccountMeta::new(treasury_ata, false),
-            AccountMeta::new(exchange_address, false),
-            AccountMeta::new(exchange_ata_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
@@ -211,35 +207,9 @@ pub fn build_swap_for_sol_ix(
             AccountMeta::new(signer_ata, false),
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
-            AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: SwapForSol { amount_tape }.to_bytes(),
-    }
-}
-
-pub fn build_airdrop_ix(
-    signer: Pubkey,
-    beneficiary: Pubkey, 
-    amount: Coin<TAPE>
-) -> Instruction {
-    let (mint_address, _) = mint_pda();
-    let (treasury_address, _) = treasury_pda();
-
-    let amount = amount.pack();
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(beneficiary, false),
-            AccountMeta::new(mint_address, false),
-            AccountMeta::new(treasury_address, false),
-            AccountMeta::new_readonly(spl_token::ID, false),
-        ],
-        data: Airdrop {
-            amount,
-        }.to_bytes(),
     }
 }
 
@@ -316,8 +286,8 @@ pub fn build_stake_ix(
             AccountMeta::new(node_address, false),
             AccountMeta::new(stake_address, false),
 
-            AccountMeta::new(TREASURY_ADDRESS, false),
-            AccountMeta::new(TREASURY_ATA, false),
+            //AccountMeta::new(TREASURY_ADDRESS, false),
+            //AccountMeta::new(TREASURY_ATA, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),

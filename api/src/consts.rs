@@ -3,7 +3,6 @@ use solana_program::pubkey::Pubkey;
 
 pub const SYSTEM:    &[u8] = b"system";
 pub const EXCHANGE:  &[u8] = b"exchange";
-pub const TREASURY:  &[u8] = b"treasury";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
 pub const NODE:      &[u8] = b"node";
@@ -43,6 +42,9 @@ pub const PROGRAM_ID: [u8; 32] =
 pub const SYSTEM_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
 
+pub const SYSTEM_BUMP: u8 =
+    ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).1;
+
 pub const ARCHIVE_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);
 
@@ -61,31 +63,22 @@ pub const MINT_ADDRESS: Pubkey =
 pub const MINT_BUMP: u8 = 
     ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).1;
 
-pub const TREASURY_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);
-
-pub const TREASURY_BUMP: u8 = 
-    ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).1;
-
-pub const TREASURY_ATA: Pubkey = Pubkey::new_from_array(
+pub const METADATA_ADDRESS: Pubkey = Pubkey::new_from_array(
     ed25519::derive_program_address(
         &[
-            unsafe { &*(&TREASURY_ADDRESS as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
+            METADATA,
+            unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
             unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
         ],
-        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
-    )
-    .0,
+        unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
+    ).0
 );
 
-pub const TREASURY_ATA_BUMP: u8 = 
-    ed25519::derive_program_address(
-        &[
-            unsafe { &*(&TREASURY_ADDRESS as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
-            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
-        ],
-        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
-    )
-    .1;
+pub const METADATA_BUMP: u8 = ed25519::derive_program_address(
+    &[
+        METADATA,
+        unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
+        unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+    ],
+    unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
+).1;

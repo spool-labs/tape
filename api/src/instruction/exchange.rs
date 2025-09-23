@@ -13,10 +13,6 @@ pub struct SetExchangeRate {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SetExchangeAuthority {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct DepositTape {
     pub amount: [u8; 8],
 }

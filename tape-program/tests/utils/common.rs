@@ -16,54 +16,26 @@ pub fn setup_environment() -> (LiteSVM, Keypair) {
     (svm, payer)
 }
 
-pub fn verify_treasury_account(svm: &LiteSVM) {
-    let (treasury_address, _treasury_bump) = treasury_pda();
-    let _treasury_account = svm
-        .get_account(&treasury_address)
-        .expect("Treasury account should exist");
-}
-
-pub fn verify_mint_account(svm: &LiteSVM) {
-    let (mint_address, _mint_bump) = mint_pda();
-    let mint = get_mint(svm, &mint_address);
-    assert_eq!(mint.supply, MAX_SUPPLY, "Mint supply should be MAX_SUPPLY");
-    assert_eq!(mint.decimals, TOKEN_DECIMALS, "Mint decimals should match TOKEN_DECIMALS");
-}
-
-pub fn verify_treasury_ata(svm: &LiteSVM) {
-    let (treasury_ata_address, _ata_bump) = treasury_ata();
-    let account = svm
-        .get_account(&treasury_ata_address)
-        .expect("Treasury ATA should exist");
-    assert!(!account.data.is_empty(), "Treasury ATA data should not be empty");
-}
-
-pub fn airdrop(
-    svm: &mut LiteSVM,
-    payer: &Keypair,
-    beneficiary_ata: Pubkey,
-    amount: Coin<TAPE>,
-) {
-    let payer_pk = payer.pubkey();
-    let blockhash = svm.latest_blockhash();
-    let ix = build_airdrop_ix(payer_pk, beneficiary_ata, amount);
-    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
-    let res = send_tx(svm, tx);
-
-    assert!(res.is_ok());
+pub fn get_exchange_state(svm: &LiteSVM, exchange: &Pubkey) -> Exchange {
+    let account = svm.get_account(exchange).unwrap();
+    *Exchange::unpack_with_discriminator(&account.data).unwrap()
 }
 
 pub fn initialize_program(
     svm: &mut LiteSVM,
     payer: &Keypair
-) {
+) -> Pubkey {
     let payer_pk = payer.pubkey();
+    let treasury = get_ata_address(&MINT_ADDRESS, &payer_pk);
+
     let ix = build_initialize_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
+    treasury
 }
 
 pub fn initialize_exchange(
@@ -76,6 +48,7 @@ pub fn initialize_exchange(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -91,6 +64,7 @@ pub fn deposit_sol(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -106,6 +80,7 @@ pub fn withdraw_sol(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -122,6 +97,7 @@ pub fn deposit_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -138,6 +114,7 @@ pub fn withdraw_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -154,6 +131,7 @@ pub fn set_exchange_rate(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -170,6 +148,7 @@ pub fn swap_for_tape(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -186,6 +165,7 @@ pub fn swap_for_sol(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -207,6 +187,7 @@ pub fn initialize_storage_node(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 
@@ -227,6 +208,7 @@ pub fn stake_with_pool(
     let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
     let res = send_tx(svm, tx);
 
+    svm.expire_blockhash();
     assert!(res.is_ok());
 }
 

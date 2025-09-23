@@ -31,9 +31,9 @@ pub fn process_instruction(
     if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {
         match ix {
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
-            TapeInstruction::Airdrop => process_airdrop(accounts, data)?,
-            TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
-            TapeInstruction::Stake => process_stake(accounts, data)?,
+            //TapeInstruction::Airdrop => process_airdrop(accounts, data)?,
+            //TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+            //TapeInstruction::Stake => process_stake(accounts, data)?,
 
             TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
             TapeInstruction::SetExchangeRate => process_set_exchange_rate(accounts, data)?,

@@ -17,7 +17,6 @@ pub enum AccountType {
 
     // Core
     System,
-    Treasury,
     Archive,
     Epoch,
 

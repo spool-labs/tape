@@ -1,14 +1,19 @@
 #![cfg(test)]
 
 pub mod utils;
-use utils::common;
+use utils::*;
+
+use solana_sdk::signer::Signer;
+use tape_api::prelude::*;
 
 #[test]
 fn test_minimal() {
-    // Setup environment
-    let (mut svm, payer) = common::setup_environment();
+    let (mut svm, payer) = setup_environment();
+    initialize_program(&mut svm, &payer);
 
-    // Initialize program
-    common::initialize_program(&mut svm, &payer);
+    let treasury = get_ata_address(&MINT_ADDRESS, &payer.pubkey());
+    let balance = get_ata_balance(&svm, &treasury);
+
+    assert_eq!(balance, MAX_SUPPLY);
 }
 

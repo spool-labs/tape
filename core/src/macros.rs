@@ -123,6 +123,43 @@ macro_rules! define_u64_type {
             pub fn is_zero(&self) -> bool {
                 self.0 == 0
             }
+
+        }
+
+        impl std::ops::Add for $type_name {
+            type Output = Self;
+
+            #[inline]
+            fn add(self, rhs: Self) -> Self {
+                self.checked_add(rhs).expect("Addition overflow")
+            }
+        }
+
+        impl std::ops::Sub for $type_name {
+            type Output = Self;
+
+            #[inline]
+            fn sub(self, rhs: Self) -> Self {
+                self.checked_sub(rhs).expect("Subtraction underflow")
+            }
+        }
+
+        impl std::ops::Mul for $type_name {
+            type Output = Self;
+
+            #[inline]
+            fn mul(self, rhs: Self) -> Self {
+                self.checked_mul(rhs).expect("Multiplication overflow")
+            }
+        }
+
+        impl std::ops::Div for $type_name {
+            type Output = Self;
+
+            #[inline]
+            fn div(self, rhs: Self) -> Self {
+                self.checked_div(rhs).expect("Division by zero or overflow")
+            }
         }
 
         impl Default for $type_name {
