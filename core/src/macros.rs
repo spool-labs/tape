@@ -20,13 +20,13 @@ macro_rules! wrapped_uint {
 }
 
 /// A macro to create distinct value types wrapping a `u64` for type safety.
-/// Generates a newtype struct with conversions, Default, and Display implementations.
+/// Generates a newtype struct with conversions, Default implementations.
 #[macro_export]
 macro_rules! define_u64_type {
-    ($type_name:ident, $prefix:literal) => {
+    ($type_name:ident) => {
 
         /// A type-safe wrapper around a `u64` value for $type_name.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $type_name(pub u64);
 
@@ -126,7 +126,7 @@ macro_rules! define_u64_type {
 
         }
 
-        impl std::ops::Add for $type_name {
+        impl core::ops::Add for $type_name {
             type Output = Self;
 
             #[inline]
@@ -135,7 +135,7 @@ macro_rules! define_u64_type {
             }
         }
 
-        impl std::ops::Sub for $type_name {
+        impl core::ops::Sub for $type_name {
             type Output = Self;
 
             #[inline]
@@ -144,7 +144,7 @@ macro_rules! define_u64_type {
             }
         }
 
-        impl std::ops::Mul for $type_name {
+        impl core::ops::Mul for $type_name {
             type Output = Self;
 
             #[inline]
@@ -153,7 +153,7 @@ macro_rules! define_u64_type {
             }
         }
 
-        impl std::ops::Div for $type_name {
+        impl core::ops::Div for $type_name {
             type Output = Self;
 
             #[inline]
@@ -169,45 +169,56 @@ macro_rules! define_u64_type {
             }
         }
 
-        impl std::fmt::Display for $type_name {
-            /// Formats the $type_name as its inner u64 value with a prefix.
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}:{}", $prefix, self.0)
-            }
-        }
-
         $crate::wrapped_uint!($type_name, u64);
     };
 }
 
+/// A macro to create distinct value types wrapping a `u64` for type safety.
+/// Generates a newtype struct with conversions, Default, and Display implementations.
+#[macro_export]
+macro_rules! define_u64_type_with_display {
+    ($type_name:ident, $prefix:literal) => {
+        $crate::define_u64_type!($type_name);
 
+        impl core::fmt::Debug for $type_name {
+            /// Formats the $type_name as its inner u64 value with a prefix.
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "{}:{}", $prefix, self.0)
+            }
+        }
+
+        impl core::fmt::Display for $type_name {
+            /// Formats the $type_name as its inner u64 value with a prefix.
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "{}:{}", $prefix, self.0)
+            }
+        }
+    };
+}
 
 #[cfg(test)]
 mod tests {
-    define_u64_type!(SegmentIndexU64, "seg64");
-    define_u64_type!(SectorIndexU64, "sec64");
+    define_u64_type!(SegmentNumber);
+    define_u64_type_with_display!(TapeNumber, "tape");
 
     #[test]
-    fn test_segment_index_u64() {
-        let seg = SegmentIndexU64::new(42_000);
-        assert_eq!(seg.as_u64(), 42_000);
-        assert_eq!(seg.as_usize(), 42_000);
-        assert_eq!(seg.as_u32(), 42_000);
-        assert_eq!(seg, SegmentIndexU64::from(42_000));
-        assert_eq!(u64::from(seg), 42_000);
-        assert_eq!(format!("{}", seg), "seg64:42000");
-        assert_eq!(SegmentIndexU64::default(), SegmentIndexU64(0));
+    fn test_segment() {
+        let v = SegmentNumber::new(42_000);
+        assert_eq!(v.as_u64(), 42_000);
+        assert_eq!(v.as_usize(), 42_000);
+        assert_eq!(v.as_u32(), 42_000);
+        assert_eq!(u64::from(v), 42_000);
     }
 
     #[test]
-    fn test_sector_index_u64() {
-        let sec = SectorIndexU64::new(99_000);
-        assert_eq!(sec.as_u64(), 99_000);
-        assert_eq!(sec.as_usize(), 99_000);
-        assert_eq!(sec.as_u32(), 99_000);
-        assert_eq!(sec, SectorIndexU64::from(99_000));
-        assert_eq!(u64::from(sec), 99_000);
-        assert_eq!(format!("{}", sec), "sec64:99000");
-        assert_eq!(SectorIndexU64::default(), SectorIndexU64(0));
+    fn test_tape() {
+        let v = TapeNumber::new(99_000);
+        assert_eq!(v.as_u64(), 99_000);
+        assert_eq!(v.as_usize(), 99_000);
+        assert_eq!(v.as_u32(), 99_000);
+        assert_eq!(v, TapeNumber::from(99_000));
+        assert_eq!(u64::from(v), 99_000);
+        assert_eq!(format!("{}", v), "tape:99000");
+        assert_eq!(TapeNumber::default(), TapeNumber(0));
     }
 }

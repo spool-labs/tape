@@ -264,33 +264,33 @@ fn test_swap_for_tape_with_rate_change() {
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Deposit TAPE into user exchange for swapping
-    let tape_amount = TAPE::new(2000);
+    let tape_amount = TAPE::from_whole(1_000.0); // 1 TAPE = 1,000,000 micro-units 
     deposit_tape(&mut svm, &payer, treasury, exchange, tape_amount);
 
-    // Set initial exchange rate (e.g., 2 TAPE = 1 SOL)
-    let initial_tape_rate = 2;
+    // Set initial exchange rate (e.g., 100 TAPE = 1 SOL)
+    let initial_tape_rate = 100;
     let initial_sol_rate = 1;
     set_exchange_rate(&mut svm, &payer, exchange, initial_tape_rate, initial_sol_rate);
 
     // Perform first SOL -> TAPE swap
-    let sol_in = SOL::new(100);
+    let sol_in_1 = SOL::from_whole(0.001); // 0.001 SOL = 1,000,000 lamports
     let payer_balance = get_ata_balance(&svm, &treasury);
     let exchange_balance = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol = get_balance(&svm, &exchange);
 
-    swap_for_tape(&mut svm, &payer, treasury, exchange, sol_in);
+    swap_for_tape(&mut svm, &payer, treasury, exchange, sol_in_1);
 
     let payer_balance_after = get_ata_balance(&svm, &treasury);
     let exchange_balance_after = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output for first swap
-    let expected_tape = TAPE::new(sol_in.as_u64() * initial_tape_rate / initial_sol_rate);
+    let expected_tape = TAPE::new(sol_in_1.as_u64() * initial_tape_rate / initial_sol_rate);
 
     // Verify balances for first swap
     assert_eq!(payer_balance_after - payer_balance, expected_tape.as_u64());
     assert_eq!(exchange_balance - exchange_balance_after, expected_tape.as_u64());
-    assert_eq!(exchange_sol_after - exchange_sol, sol_in.as_u64());
+    assert_eq!(exchange_sol_after - exchange_sol, sol_in_1.as_u64());
 
     // Change exchange rate (e.g., 4 TAPE = 1 SOL)
     let new_tape_rate = 4;
@@ -303,27 +303,27 @@ fn test_swap_for_tape_with_rate_change() {
     assert_eq!(exchange_data.rate.sol, new_sol_rate);
 
     // Perform second SOL -> TAPE swap
-    let sol_in = SOL::new(100);
+    let sol_in_2 = SOL::from_whole(0.1);
     let payer_balance = get_ata_balance(&svm, &treasury);
     let exchange_balance = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol = get_balance(&svm, &exchange);
 
-    swap_for_tape(&mut svm, &payer, treasury, exchange, sol_in);
+    swap_for_tape(&mut svm, &payer, treasury, exchange, sol_in_2);
 
     let payer_balance_after = get_ata_balance(&svm, &treasury);
     let exchange_balance_after = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output for second swap
-    let expected_tape_2 = TAPE::new(sol_in.as_u64() * new_tape_rate / new_sol_rate);
+    let expected_tape_2 = TAPE::new(sol_in_2.as_u64() * new_tape_rate / new_sol_rate);
 
     // Verify balances for second swap
     assert_eq!(payer_balance_after - payer_balance, expected_tape_2.as_u64());
     assert_eq!(exchange_balance - exchange_balance_after, expected_tape_2.as_u64());
-    assert_eq!(exchange_sol_after - exchange_sol, sol_in.as_u64());
+    assert_eq!(exchange_sol_after - exchange_sol, sol_in_2.as_u64());
 
     // Verify final exchange account data
     let exchange_data = get_exchange_state(&svm, &exchange);
-    assert_eq!(exchange_data.balance_sol, sol_in + sol_in);
+    assert_eq!(exchange_data.balance_sol, sol_in_1 + sol_in_2);
     assert_eq!(exchange_data.balance_tape, tape_amount - expected_tape - expected_tape_2);
 }
