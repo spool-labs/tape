@@ -27,7 +27,8 @@ pub fn assign_shards(
         .map(|i| (node_count - i) as u64)
         .collect();
 
-    let shards_vec = allocate_shards(&node_priorities, shard_count, &stakes);
+    let shards_vec = allocate_shards(
+        &node_priorities, &stakes, shard_count);
 
     let mut distribution = BTreeMap::new();
     for (i, &sh) in shards_vec.iter().enumerate() {
