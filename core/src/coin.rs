@@ -274,6 +274,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "fraction must be < SCALE")]
+    fn test_from_fixed_panic() {
+        let _ = TAPE::from_fixed(0, TAPE::SCALE); // should panic
+    }
+
+    #[test]
     fn test_padding_tape() {
         // whole numbers (no dot)
         assert_eq!(TAPE::parse("2").unwrap().flux(), 2_000_000);
