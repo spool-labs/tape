@@ -1,11 +1,11 @@
-use crate::define_u64_type_with_display;
+use crate::define_numeric_type;
 
-// Tapedrive specific types
-define_u64_type_with_display!(ArchiveNumber, "archive");
-define_u64_type_with_display!(EpochNumber, "epoch");
-define_u64_type_with_display!(PoolNumber, "pool");
-define_u64_type_with_display!(SpoolNumber, "spool");
-define_u64_type_with_display!(NodeId, "node");
+// Index types
+define_numeric_type!(EpochNumber, "epoch");
+define_numeric_type!(PoolNumber, "pool");
+define_numeric_type!(SpoolNumber, "spool");
+define_numeric_type!(NodeId, "node");
 
 // Generic types
-define_u64_type_with_display!(BasisPoints, "bps");
+define_numeric_type!(BasisPoints, "bps");
+define_numeric_type!(StorageUnits, "bytes");

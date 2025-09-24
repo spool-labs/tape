@@ -294,7 +294,7 @@ pub fn build_stake_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: Stake {
+        data: StakeWithNode {
             amount
         }.to_bytes(),
     }

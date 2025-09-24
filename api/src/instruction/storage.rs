@@ -2,26 +2,20 @@ use steel::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct StakeWithNode {
-    pub amount: [u8; 8],
-}
+pub struct ReserveTape {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UnstakeFromNode {}
+pub struct BurnTape {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ClaimStake {}
+pub struct SplitTapeByDuration {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitStake {
-    pub amount: [u8; 8],
-}
+pub struct SplitTapeBySize {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct MergeStake {}
-
-
+pub struct MergeTape {}

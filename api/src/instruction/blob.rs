@@ -2,26 +2,18 @@ use steel::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct StakeWithNode {
-    pub amount: [u8; 8],
-}
+pub struct RegisterBlob {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UnstakeFromNode {}
+pub struct DeleteBlob {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ClaimStake {}
+pub struct CertifyBlob {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitStake {
-    pub amount: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct MergeStake {}
+pub struct InvalidateBlob {}
 
 

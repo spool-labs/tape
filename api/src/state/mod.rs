@@ -1,12 +1,16 @@
-mod data;
-mod program;
-mod staking;
+mod system;
 mod exchange;
+mod operator;
+mod staking;
+mod storage;
+mod blob;
 
-pub use program::*;
-pub use staking::*;
-pub use data::*;
+pub use system::*;
 pub use exchange::*;
+pub use operator::*;
+pub use staking::*;
+pub use storage::*;
+pub use blob::*;
 
 use steel::*;
 
@@ -15,19 +19,14 @@ use steel::*;
 pub enum AccountType {
     Unknown = 0,
 
-    // Core
     System,
     Archive,
     Epoch,
+    Feature,
 
-    // Exchange
     Exchange,
-
-    // Staking
     StorageNode,
     StakedTape,
-
-    // Data
-    StorageResource,
+    TapeResource,
     Blob,
 }

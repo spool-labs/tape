@@ -176,7 +176,7 @@ macro_rules! define_u64_type {
 /// A macro to create distinct value types wrapping a `u64` for type safety.
 /// Generates a newtype struct with conversions, Default, and Display implementations.
 #[macro_export]
-macro_rules! define_u64_type_with_display {
+macro_rules! define_numeric_type {
     ($type_name:ident, $prefix:literal) => {
         $crate::define_u64_type!($type_name);
 
@@ -198,12 +198,12 @@ macro_rules! define_u64_type_with_display {
 
 #[cfg(test)]
 mod tests {
-    define_u64_type!(SegmentNumber);
-    define_u64_type_with_display!(TapeNumber, "tape");
+    define_u64_type!(BasisPoints);
+    define_numeric_type!(TapeNumber, "tape");
 
     #[test]
     fn test_segment() {
-        let v = SegmentNumber::new(42_000);
+        let v = BasisPoints::new(42_000);
         assert_eq!(v.as_u64(), 42_000);
         assert_eq!(v.as_usize(), 42_000);
         assert_eq!(v.as_u32(), 42_000);
