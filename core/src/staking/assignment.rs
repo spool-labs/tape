@@ -302,4 +302,61 @@ mod tests {
             assert!(s.contains(&(i as u16)));
         }
     }
+
+    #[test]
+    fn test_many() {
+        fn print_table_header() {
+            println!(
+                "{:<8} | {:>12} | {:>6} | {}",
+                "NodeId", "Stake", "Shards", "ShardIds"
+            );
+            println!("{}", "-".repeat(8 + 3 + 12 + 3 + 6 + 3 + 40));
+        }
+
+        // Generate 100 nodes with stakes from 1000 to 100,000
+        let initial_stakes: BTreeMap<NodeId, u64> = (1..=100)
+            .map(|i| (NodeId(100 - i), i as u64 * 1000))
+            .collect();
+        
+        let shard_counts = assign_shards(&initial_stakes, 1000);
+        let initial_shard_map = map_shard_indices(shard_counts);
+        assert_eq!(total_shard_count(&initial_shard_map), 1000);
+
+        print_table_header();
+        for (node_id, shard_ids) in &initial_shard_map {
+            let stake = initial_stakes.get(node_id).unwrap_or(&0);
+            println!(
+                "{:<8} | {:>12} | {:>6} | {:?}",
+                format!("{:?}", node_id),
+                stake,
+                shard_ids.len(),
+                shard_ids
+            );
+        }
+
+        // Updated stakes: keep only nodes 51 to 100
+        let updated_stakes: BTreeMap<NodeId, u64> = (51..=100)
+            .map(|i| (NodeId(100 - i), i as u64 * 1000))
+            .collect();
+        
+        let shard_counts = assign_shards(&updated_stakes, 1000);
+        let updated_shard_map = move_shards(&initial_shard_map, shard_counts);
+        
+        assert_eq!(updated_shard_map.len(), 50);
+        assert_eq!(total_shard_count(&updated_shard_map), 1000);
+
+        // Print updated shard map
+        println!("\nAfter reassignment:");
+        print_table_header();
+        for (node_id, shard_ids) in &updated_shard_map {
+            let stake = updated_stakes.get(node_id).unwrap_or(&0);
+            println!(
+                "{:<8} | {:>12} | {:>6} | {:?}",
+                format!("{:?}", node_id),
+                stake,
+                shard_ids.len(),
+                shard_ids
+            );
+        }
+    }
 }
