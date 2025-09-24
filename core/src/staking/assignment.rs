@@ -135,40 +135,50 @@ mod tests {
     }
 
     #[test]
-    fn test_apportionment_equal_three_nodes() {
+    fn test_single() {
         let stake_map: BTreeMap<NodeId, u64> = [
-            (NodeId(1), 1000),
-            (NodeId(2), 1000),
-            (NodeId(3), 1000),
+            (NodeId(10), 1_000_000)
         ].into();
-        let res = assign_shards(&stake_map, 10);
-        assert_eq!(res.values().copied().sum::<u16>(), 10);
-        let v: Vec<u16> = [NodeId(1), NodeId(2), NodeId(3)]
-            .iter()
-            .map(|nid| *res.get(nid).unwrap_or(&0))
-            .collect();
-        assert_eq!(v, vec![4, 3, 3]);
-    }
 
-    #[test]
-    fn test_compute_single_node() {
-        let stake_map: BTreeMap<NodeId, u64> = [(NodeId(10), 1_000_000)].into();
         let shard_counts = assign_shards(&stake_map, 10);
         let shards_map = map_shard_indices(shard_counts);
+
         assert_eq!(shards_map.len(), 1);
         assert_eq!(total_shard_count(&shards_map), 10);
         assert_eq!(shards_map.get(&NodeId(10)).unwrap().len(), 10);
     }
 
     #[test]
-    fn test_compute_even_distribution() {
+    fn test_equal() {
         let stake_map: BTreeMap<NodeId, u64> = [
             (NodeId(1), 1000),
             (NodeId(2), 1000),
             (NodeId(3), 1000),
         ].into();
+
+        let res = assign_shards(&stake_map, 10);
+        assert_eq!(res.values().copied().sum::<u16>(), 10);
+
+        let v: Vec<u16> = [NodeId(1), NodeId(2), NodeId(3)]
+            .iter()
+            .map(|nid| *res.get(nid).unwrap_or(&0))
+            .collect();
+
+        assert_eq!(v, vec![4, 3, 3]);
+    }
+
+
+    #[test]
+    fn test_even_distribution() {
+        let stake_map: BTreeMap<NodeId, u64> = [
+            (NodeId(1), 1000),
+            (NodeId(2), 1000),
+            (NodeId(3), 1000),
+        ].into();
+
         let shard_counts = assign_shards(&stake_map, 6);
         let shards_map = map_shard_indices(shard_counts);
+
         assert_eq!(shards_map.len(), 3);
         assert_eq!(shards_map.get(&NodeId(1)).unwrap().len(), 2);
         assert_eq!(shards_map.get(&NodeId(2)).unwrap().len(), 2);
@@ -176,14 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_uneven_distribution() {
+    fn test_uneven_distribution() {
         let stake_map: BTreeMap<NodeId, u64> = [
             (NodeId(1), 4000),
             (NodeId(2), 2000),
             (NodeId(3), 1000),
         ].into();
+
         let shard_counts = assign_shards(&stake_map, 10);
         let shards_map = map_shard_indices(shard_counts);
+
         assert_eq!(shards_map.len(), 3);
         assert_eq!(shards_map.get(&NodeId(1)).unwrap().len(), 6);
         assert_eq!(shards_map.get(&NodeId(2)).unwrap().len(), 3);
@@ -191,22 +203,28 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_and_reassign_preserve() {
+    fn test_reassign_preserve() {
         let init_map: BTreeMap<NodeId, u16> = [
             (NodeId(3), 2),
             (NodeId(2), 2),
             (NodeId(1), 2),
             (NodeId(0), 2),
         ].into();
+
         let shards_map1 = map_shard_indices(init_map);
+
         assert_eq!(shards_map1.len(), 4);
         assert_eq!(shards_map1.get(&NodeId(0)).unwrap(), &vec![0, 1]);
         assert_eq!(shards_map1.get(&NodeId(1)).unwrap(), &vec![2, 3]);
         assert_eq!(shards_map1.get(&NodeId(2)).unwrap(), &vec![4, 5]);
         assert_eq!(shards_map1.get(&NodeId(3)).unwrap(), &vec![6, 7]);
 
-        let t_map: BTreeMap<NodeId, u16> = [(NodeId(3), 4), (NodeId(2), 4)].into();
-        let shards_map2 = move_shards(&shards_map1, t_map);
+        let target: BTreeMap<NodeId, u16> = [
+            (NodeId(3), 4), 
+            (NodeId(2), 4)
+        ].into();
+
+        let shards_map2 = move_shards(&shards_map1, target);
         assert_eq!(shards_map2.len(), 2);
 
         let s3 = shards_map2.get(&NodeId(3)).unwrap();
@@ -219,7 +237,31 @@ mod tests {
     }
 
     #[test]
-    fn test_default_scenario_reassign_chain() {
+    fn test_compute_reassign() {
+        let initial_stakes: BTreeMap<NodeId, u64> = [
+            (NodeId(1), 1000),
+            (NodeId(2), 2000),
+            (NodeId(3), 3000),
+        ].into();
+
+        let shard_counts = assign_shards(&initial_stakes, 6);
+        let initial_shard_map = map_shard_indices(shard_counts);
+        assert_eq!(total_shard_count(&initial_shard_map), 6);
+
+        let updated_stakes: BTreeMap<NodeId, u64> = [
+            (NodeId(2), 2000),
+            (NodeId(3), 3000),
+        ].into();
+
+        let shard_counts = assign_shards(&updated_stakes, 6);
+        let updated_shard_map = move_shards(&initial_shard_map, shard_counts);
+
+        assert_eq!(updated_shard_map.len(), 2);
+        assert_eq!(total_shard_count(&updated_shard_map), 6);
+    }
+
+    #[test]
+    fn test_reassign_chain() {
         let n1 = NodeId(1);
         let n2 = NodeId(2);
         let n3 = NodeId(3);
@@ -258,28 +300,5 @@ mod tests {
         for i in 0..10 {
             assert!(s.contains(&(i as u16)));
         }
-    }
-
-    #[test]
-    fn test_compute_next_reassign() {
-        let stake_map: BTreeMap<NodeId, u64> = [
-            (NodeId(1), 1000),
-            (NodeId(2), 2000),
-            (NodeId(3), 3000),
-        ].into();
-        let shard_counts = assign_shards(&stake_map, 6);
-        let shards_map_first = map_shard_indices(shard_counts);
-        assert_eq!(total_shard_count(&shards_map_first), 6);
-
-        let stake_map2: BTreeMap<NodeId, u64> = [(NodeId(2), 2000), (NodeId(3), 3000)].into();
-        let shards_map_second = if shards_map_first.is_empty() {
-            let shard_counts = assign_shards(&stake_map2, 6);
-            map_shard_indices(shard_counts)
-        } else {
-            let shard_counts = assign_shards(&stake_map2, 6);
-            move_shards(&shards_map_first, shard_counts)
-        };
-        assert_eq!(shards_map_second.len(), 2);
-        assert_eq!(total_shard_count(&shards_map_second), 6);
     }
 }

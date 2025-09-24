@@ -5,7 +5,6 @@ pub mod network;
 pub mod staking;
 pub mod tree;
 pub mod types;
-pub mod apportion;
 mod macros;
 
 pub mod prelude {

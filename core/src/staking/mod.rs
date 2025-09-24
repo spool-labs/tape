@@ -1,4 +1,4 @@
 pub mod assignment;
 pub mod dhondt;
-pub mod quotient;
+pub mod priority;
 
