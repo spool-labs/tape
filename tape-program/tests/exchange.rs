@@ -264,7 +264,7 @@ fn test_swap_for_tape_with_rate_change() {
     let (exchange_ata, _) = exchange_ata(exchange);
 
     // Deposit TAPE into user exchange for swapping
-    let tape_amount = TAPE::from_whole(1_000.0); // 1 TAPE = 1,000,000 micro-units 
+    let tape_amount = TAPE::from("1_000.0"); // 1 TAPE = 1,000,000 flux 
     deposit_tape(&mut svm, &payer, treasury, exchange, tape_amount);
 
     // Set initial exchange rate (e.g., 100 TAPE = 1 SOL)
@@ -273,7 +273,7 @@ fn test_swap_for_tape_with_rate_change() {
     set_exchange_rate(&mut svm, &payer, exchange, initial_tape_rate, initial_sol_rate);
 
     // Perform first SOL -> TAPE swap
-    let sol_in_1 = SOL::from_whole(0.001); // 0.001 SOL = 1,000,000 lamports
+    let sol_in_1 = SOL::from("0.001"); // 1 SOL = 1,000,000,000 lamports
     let payer_balance = get_ata_balance(&svm, &treasury);
     let exchange_balance = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol = get_balance(&svm, &exchange);
@@ -303,7 +303,7 @@ fn test_swap_for_tape_with_rate_change() {
     assert_eq!(exchange_data.rate.sol, new_sol_rate);
 
     // Perform second SOL -> TAPE swap
-    let sol_in_2 = SOL::from_whole(0.1);
+    let sol_in_2 = SOL::from("0.1");
     let payer_balance = get_ata_balance(&svm, &treasury);
     let exchange_balance = get_ata_balance(&svm, &exchange_ata);
     let exchange_sol = get_balance(&svm, &exchange);
@@ -326,4 +326,6 @@ fn test_swap_for_tape_with_rate_change() {
     let exchange_data = get_exchange_state(&svm, &exchange);
     assert_eq!(exchange_data.balance_sol, sol_in_1 + sol_in_2);
     assert_eq!(exchange_data.balance_tape, tape_amount - expected_tape - expected_tape_2);
+
+    println!("sol: {} tape: {}", exchange_data.balance_sol, exchange_data.balance_tape)
 }

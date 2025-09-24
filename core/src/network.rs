@@ -140,13 +140,14 @@ impl AsMut<[u8]> for NetworkAddress {
 
 
 #[cfg(test)]
+#[cfg(not(feature = "solana"))]
 mod tests {
     use super::*;
     use bytemuck::{cast_slice, try_from_bytes};
     use core::net::{Ipv6Addr, SocketAddr};
 
     #[test]
-    fn test_ipv4_from_string_and_back() {
+    fn test_ipv4() {
         let addr_str = "192.168.1.1:12345";
         let addr: SocketAddr = addr_str.parse().unwrap();
         let network_addr = NetworkAddress::from(addr_str).unwrap();
@@ -165,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv6_from_socket_addr_and_bytes() {
+    fn test_ipv6() {
         let addr: SocketAddr = "[2001:db8::8:800:200c:417a]:8081".parse().unwrap();
         let network_addr = NetworkAddress::from_socket_addr(addr);
 

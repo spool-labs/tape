@@ -76,8 +76,12 @@ pub fn descendant_range(node_index: usize, target_layer: usize, height: usize) -
 mod tests {
     use super::*;
 
+    fn expand((start, count): (usize, usize)) -> Vec<usize> {
+        (start..start + count).collect()
+    }
+
     #[test]
-    fn group_to_parents_layer1_height_3() {
+    fn test_ancestor() {
         // Leaves 0..7 -> layer 1 parents 8..11
         assert_eq!(find_ancestor(1, 0, 3), 8);
         assert_eq!(find_ancestor(1, 1, 3), 8);
@@ -90,27 +94,18 @@ mod tests {
 
         assert_eq!(find_ancestor(1, 6, 3), 11);
         assert_eq!(find_ancestor(1, 7, 3), 11);
-    }
 
-    #[test]
-    fn group_to_parents_layer2_height_3() {
         // Layer 1 nodes 8..11 -> layer 2 parents 12..13
         assert_eq!(find_ancestor(2, 8, 3), 12);
         assert_eq!(find_ancestor(2, 9, 3), 12);
         assert_eq!(find_ancestor(2, 10, 3), 13);
         assert_eq!(find_ancestor(2, 11, 3), 13);
-    }
 
-    #[test]
-    fn all_to_root_height_3() {
         // Root index for height=3 is 14
         for idx in 0..=14 {
             assert_eq!(find_ancestor(3, idx, 3), 14);
         }
-    }
 
-    #[test]
-    fn same_layer_identity_height_3() {
         // Asking for the same layer should return the same index.
         assert_eq!(find_ancestor(0, 5, 3), 5);
         assert_eq!(find_ancestor(1, 8, 3), 8);
@@ -118,12 +113,8 @@ mod tests {
         assert_eq!(find_ancestor(3, 14, 3), 14);
     }
 
-    fn expand((start, count): (usize, usize)) -> Vec<usize> {
-        (start..start + count).collect()
-    }
-
     #[test]
-    fn left_and_right_subtrees_height_3() {
+    fn test_descendant() {
         // Node 12 (layer 2, left) -> leaves 0..4 and layer1 nodes 8..10
         assert_eq!(descendant_range(12, 0, 3), (0, 4));
         assert_eq!(expand(descendant_range(12, 0, 3)), (0..4).collect::<Vec<_>>());
@@ -135,10 +126,7 @@ mod tests {
         assert_eq!(expand(descendant_range(13, 0, 3)), (4..8).collect::<Vec<_>>());
         assert_eq!(descendant_range(13, 1, 3), (10, 2));
         assert_eq!(descendant_range(13, 2, 3), (13, 1)); // same-layer
-    }
-
-    #[test]
-    fn mid_level_node_to_leaves_height_3() {
+                                                         //
         // Node 9 (layer 1, 'j') -> leaves [2,3]
         assert_eq!(descendant_range(9, 0, 3), (2, 2));
         assert_eq!(expand(descendant_range(9, 0, 3)), vec![2, 3]);
@@ -147,8 +135,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "target_layer exceeds tree height")]
-    fn panics_when_target_layer_too_high() {
+    fn test_ancestor_panic() {
         let _ = find_ancestor(4, 0, 3);
     }
-
 }

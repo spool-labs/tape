@@ -170,7 +170,7 @@ mod tests {
 
 
     #[test]
-    fn test_even_distribution() {
+    fn test_even() {
         let stake_map: BTreeMap<NodeId, u64> = [
             (NodeId(1), 1000),
             (NodeId(2), 1000),
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_uneven_distribution() {
+    fn test_uneven() {
         let stake_map: BTreeMap<NodeId, u64> = [
             (NodeId(1), 4000),
             (NodeId(2), 2000),
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reassign_preserve() {
+    fn test_reassign() {
         let init_map: BTreeMap<NodeId, u16> = [
             (NodeId(3), 2),
             (NodeId(2), 2),
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_reassign() {
+    fn test_reassign_reduce() {
         let initial_stakes: BTreeMap<NodeId, u64> = [
             (NodeId(1), 1000),
             (NodeId(2), 2000),

@@ -154,7 +154,7 @@ mod tests {
     use crate::tree::{verify, MerkleTree};
 
     #[test]
-    fn split_properties() {
+    fn test_split_properties() {
         const TREE_HEIGHT: usize = 3;    // tree height (root at layer 3)
 
         let layer_number = 2;  // split layer
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn split_baseline() {
+    fn test_split_baseline() {
         const TREE_HEIGHT: usize = 5;
         const FILLED: usize      = 4; // fill 4 leaves (out of 32)
 
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn split_large_tree() {
+    fn test_split_large_tree() {
         const TREE_HEIGHT: usize = 18; // 262 144-leaf capacity
         const FILLED: usize = 1 << 12; // fill 4096 leaves
 
