@@ -1,8 +1,8 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = Stake::try_from_bytes(data)?;
+pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let args = StakeWithNode::try_from_bytes(data)?;
     let [
         signer_info,
         signer_ata_info,

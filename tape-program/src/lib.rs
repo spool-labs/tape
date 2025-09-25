@@ -1,14 +1,18 @@
 #![allow(unexpected_cfgs)]
 
-pub mod exchange; 
-pub mod program;
+pub mod system;
+pub mod exchange;
+pub mod operator;
 pub mod staking;
-pub mod data;
+pub mod storage;
+pub mod blob;
 
+use system::*;
 use exchange::*;
-use program::*;
+use operator::*;
 use staking::*;
-use data::*;
+use storage::*;
+use blob::*;
 
 use tape_api::prelude::*;
 use steel::*;
@@ -30,10 +34,10 @@ pub fn process_instruction(
 
     if let Ok(ix) = TapeInstruction::try_from_primitive(discriminator) {
         match ix {
+            // System
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
-            TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
-            TapeInstruction::Stake => process_stake(accounts, data)?,
 
+            // Exchange
             TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
             TapeInstruction::SetExchangeRate => process_set_exchange_rate(accounts, data)?,
             TapeInstruction::DepositSol => process_deposit_sol(accounts, data)?,
@@ -42,6 +46,16 @@ pub fn process_instruction(
             TapeInstruction::WithdrawTape => process_withdraw_tape(accounts, data)?,
             TapeInstruction::SwapForTape => process_swap_for_tape(accounts, data)?,
             TapeInstruction::SwapForSol => process_swap_for_sol(accounts, data)?,
+
+            // Operator
+            TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+
+            // Staking
+            TapeInstruction::StakeWithNode => process_stake_with_node(accounts, data)?,
+
+            // Storage
+            
+            // Blob
             
             _ => return Err(ProgramError::InvalidInstructionData),
         }
