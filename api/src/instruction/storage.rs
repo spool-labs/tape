@@ -6,9 +6,9 @@ use spl_associated_token_account::get_associated_token_address;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ReserveTape {
-    storage_units: [u8; 8],
-    start_epoch: [u8; 8],
-    end_epoch: [u8; 8],
+    pub storage_units: [u8; 8],
+    pub start_epoch: [u8; 8],
+    pub end_epoch: [u8; 8],
 }
 
 #[repr(C)]

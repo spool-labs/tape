@@ -24,23 +24,29 @@ pub fn build_initialize_ix(
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
+    let (treasury_address, _) = treasury_pda();
+    let (treasury_ata, _) = treasury_ata();
     let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
 
-    let treasury = get_associated_token_address(&signer, &mint_address);
+    let signer_ata = get_associated_token_address(&signer, &mint_address);
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(treasury, false),
+            AccountMeta::new(signer_ata, false),
+
             AccountMeta::new(system_address, false),
-            AccountMeta::new(archive_address, false),
             AccountMeta::new(epoch_address, false),
-            AccountMeta::new(metadata_address, false),
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(treasury_address, false),
+            AccountMeta::new(treasury_ata, false),
             AccountMeta::new(mint_address, false),
+            AccountMeta::new(metadata_address, false),
+
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),

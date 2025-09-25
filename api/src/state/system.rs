@@ -3,6 +3,8 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
+const FUTURE_EPOCHS: usize = 256;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
@@ -27,19 +29,31 @@ pub struct Epoch {
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Archive {
     /// The total storage capacity of the archive.
-    pub storage_capacity: u64,
+    pub storage_capacity: StorageUnits,
 
-    /// The total storage used by the archive.
-    pub storage_used: u64,
+    /// The price per unit of storage in TAPE.
+    pub storage_price_per_unit: Coin<TAPE>,
+
+    /// The price per unit for writing data in TAPE.
+    pub write_price_per_unit: Coin<TAPE>,
+
+    /// The total storage used per epoch.
+    pub storage_used: RingBuffer<StorageUnits, FUTURE_EPOCHS>,
+
+    /// The collected fees per epoch.
+    pub fees_collected: RingBuffer<Coin<TAPE>, FUTURE_EPOCHS>,
 }
-
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Feature {
-}
+pub struct Treasury {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Feature {}
 
 state!(AccountType, System);
 state!(AccountType, Epoch);
 state!(AccountType, Archive);
+state!(AccountType, Treasury);
 state!(AccountType, Feature);

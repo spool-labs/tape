@@ -35,7 +35,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Transfer lamports
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount.as_u64())
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(TapeError::Underflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
         .checked_add(amount.as_u64())
         .ok_or(TapeError::Overflow)?;
@@ -46,7 +46,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Update exchange state
     exchange.balance_sol = exchange.balance_sol
         .checked_sub(amount)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(TapeError::Underflow)?;
 
     Ok(())
 }

@@ -102,7 +102,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     exchange.balance_tape = exchange
         .balance_tape
         .checked_sub(amount_out_tape)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(TapeError::Underflow)?;
 
     Ok(())
 }

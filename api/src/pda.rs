@@ -14,6 +14,37 @@ pub fn system_pda() -> (Pubkey, u8) {
 }
 
 #[cfg(debug_assertions)]
+pub fn treasury_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[TREASURY], &crate::id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn treasury_pda() -> (Pubkey, u8) {
+    (TREASURY_ADDRESS, TREASURY_BUMP)
+}
+
+#[cfg(debug_assertions)]
+pub fn treasury_ata() -> (Pubkey, u8) {
+    let (treasury_pda, _bump) = treasury_pda();
+    let (mint_pda, _bump) = mint_pda();
+    Pubkey::find_program_address(
+        &[
+            treasury_pda.as_ref(),
+            spl_token::ID.as_ref(),
+            mint_pda.as_ref(),
+        ],
+        &spl_associated_token_account::ID,
+    )
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn treasury_ata() -> (Pubkey, u8) {
+    (TREASURY_ATA, TREASURY_ATA_BUMP)
+}
+
+#[cfg(debug_assertions)]
 pub fn archive_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[ARCHIVE], &crate::id())
 }
@@ -128,13 +159,13 @@ mod tests {
         assert_eq!(pda, SYSTEM_ADDRESS);
         assert_eq!(bump, SYSTEM_BUMP);
 
-        let (pda, bump) = archive_pda();
-        assert_eq!(pda, ARCHIVE_ADDRESS);
-        assert_eq!(bump, ARCHIVE_BUMP);
-
         let (pda, bump) = epoch_pda();
         assert_eq!(pda, EPOCH_ADDRESS);
         assert_eq!(bump, EPOCH_BUMP);
+
+        let (pda, bump) = archive_pda();
+        assert_eq!(pda, ARCHIVE_ADDRESS);
+        assert_eq!(bump, ARCHIVE_BUMP);
 
         let (pda, bump) = mint_pda();
         assert_eq!(pda, MINT_ADDRESS);
@@ -143,5 +174,13 @@ mod tests {
         let (pda, bump) = metadata_pda();
         assert_eq!(pda, METADATA_ADDRESS);
         assert_eq!(bump, METADATA_BUMP);
+
+        let (pda, bump) = treasury_pda();
+        assert_eq!(pda, TREASURY_ADDRESS);
+        assert_eq!(bump, TREASURY_BUMP);
+
+        let (pda, bump) = treasury_ata();
+        assert_eq!(pda, TREASURY_ATA);
+        assert_eq!(bump, TREASURY_ATA_BUMP);
     }
 }

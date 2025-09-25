@@ -76,6 +76,16 @@ impl<T: Pod + Zeroable, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    /// Get a mutable reference to an entry by relative index (0 = oldest).
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut T> {
+        if i >= self.len() {
+            None
+        } else {
+            let idx = (self.index + i as u64) % N as u64;
+            Some(&mut self.entries[idx as usize])
+        }
+    }
+
     /// Iterate over entries in order from oldest to newest.
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         (0..self.len()).map(move |i| {

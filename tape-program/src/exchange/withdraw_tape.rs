@@ -53,7 +53,7 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     exchange.balance_tape = exchange.balance_tape
         .checked_sub(amount)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(TapeError::Underflow)?;
 
     Ok(())
 }

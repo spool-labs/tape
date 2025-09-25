@@ -20,8 +20,9 @@ pub enum AccountType {
     Unknown = 0,
 
     System,
-    Archive,
     Epoch,
+    Archive,
+    Treasury,
     Feature,
 
     Exchange,

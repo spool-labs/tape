@@ -2,6 +2,7 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 
 pub const SYSTEM:    &[u8] = b"system";
+pub const TREASURY:  &[u8] = b"treasury";
 pub const EXCHANGE:  &[u8] = b"exchange";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
@@ -83,3 +84,32 @@ pub const METADATA_BUMP: u8 = ed25519::derive_program_address(
     ],
     unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
 ).1;
+
+pub const TREASURY_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);
+
+pub const TREASURY_BUMP: u8 = 
+    ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).1;
+
+pub const TREASURY_ATA: Pubkey = Pubkey::new_from_array(
+    ed25519::derive_program_address(
+        &[
+            unsafe { &*(&TREASURY_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+        ],
+        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+    )
+    .0,
+);
+
+pub const TREASURY_ATA_BUMP: u8 = 
+    ed25519::derive_program_address(
+        &[
+            unsafe { &*(&TREASURY_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+        ],
+        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+    )
+    .1;
