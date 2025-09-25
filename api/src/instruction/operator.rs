@@ -1,6 +1,7 @@
 use steel::*;
+use crate::{pda::*, consts::*};
 use tape_core::prelude::*;
-use crate::consts::*;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -77,3 +78,36 @@ pub struct VoteOnShardSize {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct VoteOnFeature {}
 
+
+pub fn build_register_node_ix(
+    signer: Pubkey,
+    name: [u8; NAME_LENGTH],
+    commission_rate: BasisPoints,
+    network_address: NetworkAddress,
+    network_tls: Pubkey,
+) -> Instruction {
+
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (node_address, _) = storage_node_pda(signer);
+
+    let commission_rate = commission_rate.pack();
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(node_address, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: RegisterNode {
+            name,
+            commission_rate,
+            network_address,
+            network_tls,
+        }.to_bytes(),
+    }
+}

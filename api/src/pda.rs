@@ -103,9 +103,15 @@ pub fn staked_tape_ata(stake: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
+pub fn resource_pda(authority: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[RESOURCE, authority.as_ref()], &crate::id())
+}
+
+#[inline(always)]
 pub fn blob_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[BLOB, authority.as_ref(), hash.as_ref()], &crate::id())
 }
+
 
 #[cfg(test)]
 mod tests {

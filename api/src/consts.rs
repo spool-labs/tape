@@ -7,6 +7,7 @@ pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
 pub const NODE:      &[u8] = b"node";
 pub const STAKE:     &[u8] = b"stake";
+pub const RESOURCE:  &[u8] = b"resource";
 pub const BLOB:      &[u8] = b"blob";
 
 // ====================================================================

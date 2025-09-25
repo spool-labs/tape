@@ -2,7 +2,6 @@ pub mod consts;
 pub mod error;
 pub mod event;
 pub mod instruction;
-pub mod helpers;
 pub mod loaders;
 pub mod pda;
 pub mod state;
@@ -16,7 +15,6 @@ pub mod prelude {
     pub use crate::error::*;
     pub use crate::event::*;
     pub use crate::instruction::*;
-    pub use crate::helpers::*;
     pub use crate::loaders::*;
     pub use crate::pda::*;
     pub use crate::state::*;
