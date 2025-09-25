@@ -72,58 +72,43 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .checked_sub(start_epoch)
         .ok_or(ProgramError::InvalidArgument)?;
 
-    let total_units = StorageUnits::unpack(args.storage_units)
-        .as_u64();
+    let total_units = StorageUnits::unpack(args.storage_units);
 
     let price_per_unit = archive.storage_price_per_unit
         .as_u64();
 
     let single_epoch_price = price_per_unit
-        .checked_mul(total_units)
+        .checked_mul(total_units.as_u64())
         .ok_or(ProgramError::InvalidArgument)?;
 
     let total_cost = single_epoch_price
         .checked_mul(num_epochs.as_u64())
         .ok_or(ProgramError::InvalidArgument)?;
 
-    // Update the storage used in the archive for each epoch covered by this reservation
     let current_epoch = current_epoch(epoch);
-    for epoch_index in start_epoch.as_u64()..end_epoch.as_u64() {
+    let current_capacity = archive.storage_capacity;
+    let future_usage = &mut archive.storage_used;
+    let future_rewards = &mut archive.fees_collected;
+    let fee_per_epoch = TAPE(single_epoch_price);
 
-        // Calculate the relative index in the RingBuffer
-        let relative_epoch = epoch_index
-            .checked_sub(current_epoch.as_u64())
-            .ok_or(TapeError::Underflow)?;
-        
-        // Check if the epoch is beyond the buffer's capacity
-        if relative_epoch >= archive.storage_used.capacity() as u64 {
-            return Err(ProgramError::InvalidArgument)
-        }
+    has_capacity_for(
+        total_units,
+        start_epoch, 
+        end_epoch, 
+        current_capacity, 
+        current_epoch, 
+        future_usage
+    ).map_err(|_| TapeError::InsufficientCapacity)?;
 
-        // Get the storage used for this epoch, or 0 if not set
-        let storage_used = archive.storage_used
-            .get(relative_epoch as usize)
-            .copied()
-            .unwrap_or(StorageUnits::zero());
-
-        // Check if adding total_units exceeds capacity
-        let new_storage_used = storage_used
-            .checked_add(StorageUnits::new(total_units))
-            .ok_or(TapeError::Overflow)?;
-
-        if new_storage_used > archive.storage_capacity {
-            return Err(TapeError::InsufficientCapacity.into());
-        }
-
-        // Update the storage used for this epoch
-        archive.storage_used
-            .get_mut(relative_epoch as usize)
-            .map(|su| *su = new_storage_used)
-            .ok_or(TapeError::UnexpectedState)?;
-    }
-
-    // TODO: spread the total cost over the covered epochs in the archive's fees_collected
-    // RingBuffer
+    reserve_capacity(
+        total_units,
+        start_epoch,
+        end_epoch,
+        current_epoch,
+        fee_per_epoch,
+        future_usage,
+        future_rewards
+    ).map_err(|_| TapeError::UnexpectedState)?;
 
     create_program_account::<TapeResource>(
         resource_info,
@@ -137,7 +122,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     tape.authority = *signer_info.key;
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
-    tape.capacity = StorageUnits::new(total_units);
+    tape.capacity = total_units;
     tape.used = StorageUnits::zero();
 
     transfer(
@@ -150,3 +135,6 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     Ok(())
 }
+
+
+

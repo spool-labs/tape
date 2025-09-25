@@ -3,7 +3,7 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
-const FUTURE_EPOCHS: usize = 256;
+pub const FUTURE_EPOCHS: usize = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]

@@ -4,6 +4,7 @@ pub mod hash;
 pub mod network;
 pub mod ring;
 pub mod staking;
+pub mod storage;
 pub mod tree;
 pub mod types;
 mod macros;
@@ -15,6 +16,7 @@ pub mod prelude {
     pub use crate::network::*;
     pub use crate::ring::*;
     pub use crate::staking::*;
+    pub use crate::storage::*;
     pub use crate::tree::*;
     pub use crate::types::*;
 }

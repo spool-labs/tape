@@ -17,6 +17,8 @@ pub enum TapeError {
     InsufficientFunds       = 0x20,
     #[error("The operation could not be completed due to insufficient capacity")]
     InsufficientCapacity    = 0x30,
+    #[error("The specified epoch range is invalid")]
+    InvalidEpochRange       = 0x40,
 }
 
 error!(TapeError);
