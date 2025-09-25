@@ -54,6 +54,7 @@ pub fn process_instruction(
             TapeInstruction::StakeWithNode => process_stake_with_node(accounts, data)?,
 
             // Storage
+            TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
             
             // Blob
             

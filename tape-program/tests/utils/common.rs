@@ -16,17 +16,48 @@ pub fn setup_environment() -> (LiteSVM, Keypair) {
     (svm, payer)
 }
 
+pub fn get_system_state(svm: &LiteSVM) -> System {
+    let account = svm.get_account(&SYSTEM_ADDRESS).unwrap();
+    *System::unpack_with_discriminator(&account.data).unwrap()
+}
+
+pub fn get_archive_state(svm: &LiteSVM, archive: &Pubkey) -> Archive {
+    let account = svm.get_account(archive).unwrap();
+    *Archive::unpack_with_discriminator(&account.data).unwrap()
+}
+
+pub fn get_epoch_state(svm: &LiteSVM, epoch: &Pubkey) -> Epoch {
+    let account = svm.get_account(epoch).unwrap();
+    *Epoch::unpack_with_discriminator(&account.data).unwrap()
+}
+
 pub fn get_exchange_state(svm: &LiteSVM, exchange: &Pubkey) -> Exchange {
     let account = svm.get_account(exchange).unwrap();
     *Exchange::unpack_with_discriminator(&account.data).unwrap()
 }
+
+pub fn get_storage_node_state(svm: &LiteSVM, node: &Pubkey) -> StorageNode {
+    let account = svm.get_account(node).unwrap();
+    *StorageNode::unpack_with_discriminator(&account.data).unwrap()
+}
+
+pub fn get_staked_tape_state(svm: &LiteSVM, stake: &Pubkey) -> StakedTape {
+    let account = svm.get_account(stake).unwrap();
+    *StakedTape::unpack_with_discriminator(&account.data).unwrap()
+}
+
+pub fn get_tape_state(svm: &LiteSVM, resource: &Pubkey) -> TapeResource {
+    let account = svm.get_account(resource).unwrap();
+    *TapeResource::unpack_with_discriminator(&account.data).unwrap()
+}
+
 
 pub fn initialize_program(
     svm: &mut LiteSVM,
     payer: &Keypair
 ) -> Pubkey {
     let payer_pk = payer.pubkey();
-    let treasury = get_ata_address(&MINT_ADDRESS, &payer_pk);
+    let payer_ata = get_ata_address(&MINT_ADDRESS, &payer_pk);
 
     let ix = build_initialize_ix(payer_pk);
     let blockhash = svm.latest_blockhash();
@@ -35,7 +66,7 @@ pub fn initialize_program(
 
     svm.expire_blockhash();
     assert!(res.is_ok());
-    treasury
+    payer_ata
 }
 
 pub fn initialize_exchange(
@@ -194,6 +225,26 @@ pub fn initialize_storage_node(
     svm.expire_blockhash();
     assert!(res.is_ok());
     node_address
+}
+
+pub fn reserve_tape(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    storage_units: StorageUnits,
+    start_epoch: EpochNumber,
+    end_epoch: EpochNumber,
+) -> Pubkey {
+    let payer_pk = payer.pubkey();
+    let (resource_address, _) = resource_pda(payer_pk);
+
+    let ix = build_reserve_tape_ix(payer_pk, storage_units, start_epoch, end_epoch);
+    let blockhash = svm.latest_blockhash();
+    let tx = Transaction::new_signed_with_payer(&[ix], Some(&payer_pk), &[payer], blockhash);
+    let res = send_tx(svm, tx);
+
+    svm.expire_blockhash();
+    assert!(res.is_ok());
+    resource_address
 }
 
 pub fn stake_with_node(

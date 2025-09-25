@@ -106,9 +106,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.last_epoch_at = 0;
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
-    archive.storage_capacity = StorageUnits::zero();
-    archive.write_price_per_unit = TAPE::zero();
-    archive.storage_price_per_unit = TAPE::zero();
+    archive.storage_capacity = StorageUnits(1000); // 1Gb
+    archive.write_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
+    archive.storage_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
 
     // Initialize mint.
     allocate_account_with_bump(

@@ -35,6 +35,10 @@ pub fn build_reserve_tape_ix(
     end_epoch: EpochNumber,
 ) -> Instruction {
 
+    let (epoch_address, _) = epoch_pda();
+    let (archive_address, _) = archive_pda();
+    let (treasury_ata, _) = treasury_ata();
+
     let (mint_address, _) = mint_pda();
     let (resource_address, _) = resource_pda(signer);
     let signer_ata = get_associated_token_address(&signer, &mint_address);
@@ -49,6 +53,11 @@ pub fn build_reserve_tape_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
             AccountMeta::new(resource_address, false),
+
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(treasury_ata, false),
+
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),

@@ -22,6 +22,27 @@ pub fn has_capacity_for<const N: usize>(
     current_capacity: StorageUnits,
     current_epoch: EpochNumber,
     future_usage: &RingBuffer<StorageUnits, N>,
+) -> bool {
+    match check_capacity(
+        additional_units,
+        start_epoch,
+        end_epoch,
+        current_capacity,
+        current_epoch,
+        future_usage,
+    ) {
+        Ok(result) => result,
+        Err(_) => false,
+    }
+}
+
+pub fn check_capacity<const N: usize>(
+    additional_units: StorageUnits,
+    start_epoch: EpochNumber,
+    end_epoch: EpochNumber,
+    current_capacity: StorageUnits,
+    current_epoch: EpochNumber,
+    future_usage: &RingBuffer<StorageUnits, N>,
 ) -> Result<bool, ResourceError> {
 
     // Basic range checks
@@ -114,6 +135,7 @@ pub fn reserve_capacity<const N: usize>(
         let entry = future_usage
             .get_mut(i)
             .ok_or(ResourceError::IndexOutOfBounds)?;
+
         *entry = entry
             .checked_add(additional_units)
             .ok_or(ResourceError::StorageOverflow)?;
@@ -121,6 +143,7 @@ pub fn reserve_capacity<const N: usize>(
         let fees = future_rewards
             .get_mut(i)
             .ok_or(ResourceError::IndexOutOfBounds)?;
+
         *fees = fees
             .checked_add(fee_per_epoch)
             .ok_or(ResourceError::StorageOverflow)?;
@@ -190,7 +213,7 @@ mod tests {
             buffer.push(StorageUnits::new(u));
         }
 
-        let res = has_capacity_for(
+        let res = check_capacity(
             StorageUnits(additional_units),
             EpochNumber(start_epoch),
             EpochNumber(end_epoch),

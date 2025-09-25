@@ -8,7 +8,7 @@ define_numeric_type!(NodeId, "node");
 
 // Generic types
 define_numeric_type!(BasisPoints, "bps");
-define_numeric_type!(StorageUnits, "bytes");
+define_numeric_type!(StorageUnits, "units");
 
 impl BasisPoints {
     #[inline]

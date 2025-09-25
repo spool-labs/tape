@@ -91,14 +91,10 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let future_rewards = &mut archive.fees_collected;
     let fee_per_epoch = TAPE(single_epoch_price);
 
-    has_capacity_for(
-        total_units,
-        start_epoch, 
-        end_epoch, 
-        current_capacity, 
-        current_epoch, 
-        future_usage
-    ).map_err(|_| TapeError::InsufficientCapacity)?;
+    if !has_capacity_for(
+        total_units, start_epoch, end_epoch, current_capacity, current_epoch, future_usage) {
+        return Err(TapeError::InsufficientCapacity.into());
+    }
 
     reserve_capacity(
         total_units,
