@@ -280,7 +280,5 @@ curl -X POST http://127.0.0.1:3000/api \
 
 ## Contributing
 Fork, PR, or suggest:
-- Faster writes/reads (turbo mode).
-- Encryption.
 
 Take a look at the `Makefile` if you'd like to build or test the program localy.
