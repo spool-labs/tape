@@ -37,6 +37,7 @@ pub fn build_reserve_tape_ix(
 
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
+    let (treasury_address, _) = treasury_pda();
     let (treasury_ata, _) = treasury_ata();
 
     let (mint_address, _) = mint_pda();
@@ -56,6 +57,7 @@ pub fn build_reserve_tape_ix(
 
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(archive_address, false),
+            AccountMeta::new(treasury_address, false),
             AccountMeta::new(treasury_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),

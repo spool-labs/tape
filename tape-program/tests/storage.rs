@@ -25,15 +25,18 @@ fn test_storage() {
     let (archive_address, _) = archive_pda();
     let archive = get_archive_state(&svm, &archive_address);
 
-    assert_eq!(*archive.storage_used.get(0).unwrap(), StorageUnits(0));
-    assert_eq!(*archive.storage_used.get(1).unwrap(), StorageUnits(10));
-    assert_eq!(*archive.storage_used.get(2).unwrap(), StorageUnits(10));
+    assert_eq!(archive.storage_used.get(0).unwrap(), &StorageUnits(0));
+    assert_eq!(archive.storage_used.get(1).unwrap(), &StorageUnits(10));
+    assert_eq!(archive.storage_used.get(2).unwrap(), &StorageUnits(10));
     assert_eq!(archive.storage_used.get(3), None);
 
-    assert_eq!(*archive.fees_collected.get(0).unwrap(), TAPE(0));
-    assert_eq!(*archive.fees_collected.get(1).unwrap(), TAPE::from("0.001"));
-    assert_eq!(*archive.fees_collected.get(2).unwrap(), TAPE::from("0.001"));
-    assert_eq!(archive.fees_collected.get(3), None);
+    let (treasury_address, _) = treasury_pda();
+    let treasury = get_treasury_state(&svm, &treasury_address);
+
+    assert_eq!(treasury.fees_collected.get(0).unwrap(), &TAPE(0));
+    assert_eq!(treasury.fees_collected.get(1).unwrap(), &TAPE::from("0.001"));
+    assert_eq!(treasury.fees_collected.get(2).unwrap(), &TAPE::from("0.001"));
+    assert_eq!(treasury.fees_collected.get(3), None);
 
     //println!("{:?}", archive);
 

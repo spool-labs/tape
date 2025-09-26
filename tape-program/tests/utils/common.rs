@@ -31,6 +31,11 @@ pub fn get_epoch_state(svm: &LiteSVM, epoch: &Pubkey) -> Epoch {
     *Epoch::unpack_with_discriminator(&account.data).unwrap()
 }
 
+pub fn get_treasury_state(svm: &LiteSVM, treasury: &Pubkey) -> Treasury {
+    let account = svm.get_account(treasury).unwrap();
+    *Treasury::unpack_with_discriminator(&account.data).unwrap()
+}
+
 pub fn get_exchange_state(svm: &LiteSVM, exchange: &Pubkey) -> Exchange {
     let account = svm.get_account(exchange).unwrap();
     *Exchange::unpack_with_discriminator(&account.data).unwrap()

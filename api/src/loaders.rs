@@ -7,6 +7,7 @@ pub trait AccountInfoLoader {
     fn is_tape_system(&self) -> Result<&Self, ProgramError>;
     fn is_tape_archive(&self) -> Result<&Self, ProgramError>;
     fn is_tape_epoch(&self) -> Result<&Self, ProgramError>;
+    fn is_tape_treasury(&self) -> Result<&Self, ProgramError>;
     fn is_tape_mint(&self) -> Result<&Self, ProgramError>;
     fn is_tape_metadata(&self) -> Result<&Self, ProgramError>;
 }
@@ -25,6 +26,11 @@ impl AccountInfoLoader for AccountInfo<'_> {
     fn is_tape_epoch(&self) -> Result<&Self, ProgramError> {
         self.has_address(&EPOCH_ADDRESS)?
             .is_type::<Epoch>(&crate::ID)
+    }
+
+    fn is_tape_treasury(&self) -> Result<&Self, ProgramError> {
+        self.has_address(&TREASURY_ADDRESS)?
+            .is_type::<crate::state::Treasury>(&crate::ID)
     }
 
     fn is_tape_mint(&self) -> Result<&Self, ProgramError> {

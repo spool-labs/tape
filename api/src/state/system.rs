@@ -39,14 +39,14 @@ pub struct Archive {
 
     /// The total storage used per epoch.
     pub storage_used: RingBuffer<StorageUnits, FUTURE_EPOCHS>,
-
-    /// The collected fees per epoch.
-    pub fees_collected: RingBuffer<Coin<TAPE>, FUTURE_EPOCHS>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Treasury {}
+pub struct Treasury {
+    /// The collected fees per epoch.
+    pub fees_collected: RingBuffer<Coin<TAPE>, FUTURE_EPOCHS>,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]

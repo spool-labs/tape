@@ -10,6 +10,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
         epoch_info,
         archive_info,
+        treasury_info,
         treasury_ata_info,
 
         token_program_info,
@@ -51,6 +52,11 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_tape_archive()?
         .as_account_mut::<Archive>(&tape_api::ID)?;
 
+    let treasury = treasury_info
+        .is_writable()?
+        .is_tape_treasury()?
+        .as_account_mut::<Treasury>(&tape_api::ID)?;
+
     token_program_info
         .is_program(&spl_token::ID)?;
     system_program_info
@@ -88,7 +94,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let current_epoch = current_epoch(epoch);
     let current_capacity = archive.storage_capacity;
     let future_usage = &mut archive.storage_used;
-    let future_rewards = &mut archive.fees_collected;
+    let future_rewards = &mut treasury.fees_collected;
     let fee_per_epoch = TAPE(single_epoch_price);
 
     if !has_capacity_for(
