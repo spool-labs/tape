@@ -104,7 +104,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         write_chunks(&rpc, &payer, tape_address, writer_address, chunks, &pb).await?;
 
         pb.set_message("finalizing tape...");
-        tokio::time::sleep(Duration::from_secs(32)).await;
+        tokio::time::sleep(Duration::from_secs(cli.commitment_time())).await;
 
         set_header(&rpc, &payer, tape_address, header).await?;
         subsidize_tape(&rpc, &payer, tape_address, payer_ata, required_rent).await?;
@@ -291,4 +291,3 @@ fn read_from_stdin() -> std::io::Result<Vec<u8>> {
     std::io::stdin().read_to_end(&mut buffer)?;
     Ok(buffer)
 }
-
