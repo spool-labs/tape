@@ -12,16 +12,23 @@ readme.workspace = true
 documentation = "https://docs.rs/tape-api"
 
 [dependencies]
-steel.workspace = true
-crankx.workspace = true
-packx.workspace = true
+tape-core.workspace = true
 
+steel.workspace = true
+blake3.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
 solana-program.workspace = true
 mpl-token-metadata.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
-brine-tree.workspace = true
 array-const-fn-init.workspace = true
 const-crypto.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = ["std"]
+std = []
+solana = []

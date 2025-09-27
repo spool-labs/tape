@@ -1,20 +1,16 @@
-mod archive;
-mod epoch;
-mod block;
-mod tape;
-mod treasury;
-mod writer;
-mod miner;
-mod spool;
+mod system;
+mod exchange;
+mod operator;
+mod staking;
+mod storage;
+mod blob;
 
-pub use archive::*;
-pub use epoch::*;
-pub use block::*;
-pub use tape::*;
-pub use treasury::*;
-pub use writer::*;
-pub use miner::*;
-pub use spool::*;
+pub use system::*;
+pub use exchange::*;
+pub use operator::*;
+pub use staking::*;
+pub use storage::*;
+pub use blob::*;
 
 use steel::*;
 
@@ -22,12 +18,16 @@ use steel::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum AccountType {
     Unknown = 0,
-    Archive,
-    Spool,
-    Writer,
-    Tape,
-    Miner,
+
+    System,
     Epoch,
-    Block,
+    Archive,
     Treasury,
+    Feature,
+
+    Exchange,
+    StorageNode,
+    StakedTape,
+    TapeResource,
+    Blob,
 }
