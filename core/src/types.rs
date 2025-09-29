@@ -11,6 +11,8 @@ define_numeric_type!(BasisPoints, "bps");
 define_numeric_type!(StorageUnits, "units");
 
 impl BasisPoints {
+    pub const MAX: u64 = 10_000;
+
     #[inline]
     pub fn is_valid(&self) -> bool {
         self.0 <= 10_000

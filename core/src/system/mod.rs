@@ -1,11 +1,15 @@
 mod exchange;
 mod reward;
+mod staking;
 mod storage;
 mod utils;
 mod value;
 
+pub mod sim;
+
 pub use exchange::*;
 pub use reward::*;
+pub use staking::*;
 pub use storage::*;
 pub use utils::*;
 pub use value::*;

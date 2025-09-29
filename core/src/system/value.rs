@@ -22,6 +22,11 @@ impl<const N: usize> PendingValues<N> {
         Self(FixedMap::new())
     }
 
+    #[inline]
+    pub fn get(&self, epoch: &EpochNumber) -> Option<&u64> {
+        self.0.get(epoch)
+    }
+
     pub fn insert_or_add(&mut self, epoch: EpochNumber, value: u64) -> Result<(), PendingValuesError> {
         if let Some(v) = self.0.get_mut(&epoch) { 
             *v += value;

@@ -70,6 +70,12 @@ macro_rules! define_u64_type {
                 self.0
             }
 
+            /// Returns the value as a u128
+            #[inline]
+            pub fn as_u128(&self) -> u128 {
+                self.0 as u128
+            }
+
             /// Converts the value to usize.
             #[inline]
             pub fn as_usize(&self) -> usize {
@@ -104,6 +110,24 @@ macro_rules! define_u64_type {
             #[inline]
             pub fn checked_div(&self, rhs: Self) -> Option<Self> {
                 self.0.checked_div(rhs.0).map($type_name)
+            }
+
+            /// Saturating addition, capping at u64::MAX.
+            #[inline]
+            pub fn saturating_add(&self, rhs: Self) -> Self {
+                $type_name(self.0.saturating_add(rhs.0))
+            }
+
+            /// Saturating subtraction, capping at 0.
+            #[inline]
+            pub fn saturating_sub(&self, rhs: Self) -> Self {
+                $type_name(self.0.saturating_sub(rhs.0))
+            }
+
+            /// Saturating multiplication, capping at u64::MAX.
+            #[inline]
+            pub fn saturating_mul(&self, rhs: Self) -> Self {
+                $type_name(self.0.saturating_mul(rhs.0))
             }
 
             /// Increments the by 1, saturating at u64::MAX.

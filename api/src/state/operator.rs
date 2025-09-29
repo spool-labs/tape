@@ -3,6 +3,9 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
+const PAST_EPOCHS: usize = 256;
+const PENDING_VALUES: usize = 2;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct StorageNode {
@@ -13,23 +16,13 @@ pub struct StorageNode {
     pub authority: Pubkey,
 
     /// The staking pool associated with this node.
-    pub pool: StakingPool,
+    pub pool: StakingPool<PAST_EPOCHS, PENDING_VALUES>,
 
     /// Metadata about this storage node.
     pub metadata: NodeMetadata,
 
     /// The epoch when this node was registered.
     pub registered_epoch: EpochNumber,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct StakingPool {
-    /// The total stake balance in the pool.
-    pub total_staked: Coin<TAPE>,
-
-    /// The commission rate taken by the pool (in basis points).
-    pub commission_rate: BasisPoints,
 }
 
 #[repr(C)]
