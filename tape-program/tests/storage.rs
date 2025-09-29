@@ -25,18 +25,18 @@ fn test_storage() {
     let (archive_address, _) = archive_pda();
     let archive = get_archive_state(&svm, &archive_address);
 
-    assert_eq!(archive.usage.get_usage_at(EpochNumber(0)).unwrap(), StorageUnits(0));
-    assert_eq!(archive.usage.get_usage_at(EpochNumber(1)).unwrap(), StorageUnits(10));
-    assert_eq!(archive.usage.get_usage_at(EpochNumber(2)).unwrap(), StorageUnits(10));
-    assert!(archive.usage.get_usage_at(EpochNumber(3)).is_err());
+    assert_eq!(archive.future_usage.get(EpochNumber(0)).unwrap(), StorageUnits(0));
+    assert_eq!(archive.future_usage.get(EpochNumber(1)).unwrap(), StorageUnits(10));
+    assert_eq!(archive.future_usage.get(EpochNumber(2)).unwrap(), StorageUnits(10));
+    assert_eq!(archive.future_usage.get(EpochNumber(3)).unwrap(), StorageUnits(0));
 
     let (treasury_address, _) = treasury_pda();
     let treasury = get_treasury_state(&svm, &treasury_address);
 
-    assert_eq!(treasury.rewards.get_rewards_at(EpochNumber(0)).unwrap(), TAPE(0));
-    assert_eq!(treasury.rewards.get_rewards_at(EpochNumber(1)).unwrap(), TAPE::from("0.001"));
-    assert_eq!(treasury.rewards.get_rewards_at(EpochNumber(2)).unwrap(), TAPE::from("0.001"));
-    assert!(treasury.rewards.get_rewards_at(EpochNumber(3)).is_err());
+    assert_eq!(treasury.future_rewards.get(EpochNumber(0)).unwrap(), TAPE::zero());
+    assert_eq!(treasury.future_rewards.get(EpochNumber(1)).unwrap(), TAPE::from("0.001"));
+    assert_eq!(treasury.future_rewards.get(EpochNumber(2)).unwrap(), TAPE::from("0.001"));
+    assert_eq!(treasury.future_rewards.get(EpochNumber(3)).unwrap(), TAPE::zero());
 
     //println!("{:?}", archive);
 

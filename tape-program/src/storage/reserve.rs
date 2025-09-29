@@ -93,19 +93,18 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let current_epoch = current_epoch(epoch);
     let current_capacity = archive.storage_capacity;
-    let future_usage = &mut archive.usage;
-    let future_rewards = &mut treasury.rewards;
-    let fee_per_epoch = TAPE(single_epoch_price);
+    let future_usage = &mut archive.future_usage;
+    let future_rewards = &mut treasury.future_rewards;
 
-    if future_usage.get_base_epoch() != current_epoch {
+    if future_usage.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if future_rewards.get_base_epoch() != current_epoch {
+    if future_rewards.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if future_usage.get_base_epoch() != future_rewards.get_base_epoch() {
+    if future_usage.current_epoch() != future_rewards.current_epoch() {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -120,26 +119,12 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         end_epoch,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
+    let fee_per_epoch = TAPE(single_epoch_price);
     future_rewards.add_rewards(
         fee_per_epoch,
         start_epoch,
         end_epoch,
     ).map_err(|_| TapeError::UnexpectedState)?;
-
-    // if !has_capacity_for(
-    //     total_units, start_epoch, end_epoch, current_capacity, current_epoch, future_usage) {
-    //     return Err(TapeError::InsufficientCapacity.into());
-    // }
-    //
-    // reserve_capacity(
-    //     total_units,
-    //     start_epoch,
-    //     end_epoch,
-    //     current_epoch,
-    //     fee_per_epoch,
-    //     future_usage,
-    //     future_rewards
-    // ).map_err(|_| TapeError::UnexpectedState)?;
 
     create_program_account::<TapeResource>(
         resource_info,
@@ -166,6 +151,4 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     Ok(())
 }
-
-
 

@@ -3,6 +3,8 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
+const FUTURE_EPOCHS: usize = 256;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
@@ -36,14 +38,14 @@ pub struct Archive {
     pub write_price_per_unit: Coin<TAPE>,
 
     /// The total storage used per epoch.
-    pub usage: FutureUsage,
+    pub future_usage: StorageAccounting<FUTURE_EPOCHS>,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Treasury {
     /// The collected fees per epoch.
-    pub rewards: FutureRewards,
+    pub future_rewards: RewardAccounting<FUTURE_EPOCHS>,
 }
 
 #[repr(C)]

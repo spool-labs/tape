@@ -109,10 +109,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     archive.storage_capacity = StorageUnits(1000); // 1Gb
     archive.write_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
     archive.storage_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
-    archive.usage = FutureUsage::new();
+    archive.future_usage = StorageAccounting::new();
 
     let treasury = treasury_info.as_account_mut::<Treasury>(&tape_api::ID)?;
-    treasury.rewards = FutureRewards::new();
+    treasury.future_rewards = RewardAccounting::new();
 
 
     // Initialize mint.
