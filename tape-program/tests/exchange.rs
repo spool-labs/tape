@@ -21,7 +21,7 @@ fn test_register_exchange() {
     assert_eq!(exchange_data.balance_sol, SOL::zero());
     assert_eq!(exchange_data.balance_tape, TAPE::zero());
     assert_eq!(exchange_data.rate.tape, 1);
-    assert_eq!(exchange_data.rate.sol, 1);
+    assert_eq!(exchange_data.rate.other, 1);
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_set_exchange_rate() {
     let exchange_data = get_exchange_state(&svm, &exchange);
 
     assert_eq!(exchange_data.rate.tape, tape_rate);
-    assert_eq!(exchange_data.rate.sol, sol_rate);
+    assert_eq!(exchange_data.rate.other, sol_rate);
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn test_swap_for_tape() {
     let exchange_sol_after = get_balance(&svm, &exchange);
 
     // Calculate expected TAPE output
-    let expected_tape = TAPE::new(sol_in.as_u64() * rate.tape / rate.sol);
+    let expected_tape = TAPE::new(sol_in.as_u64() * rate.tape / rate.other);
 
     // Verify balances
     assert_eq!(payer_balance_after - payer_balance, expected_tape.as_u64());
@@ -300,7 +300,7 @@ fn test_swap_for_tape_with_rate_change() {
     // Verify new exchange rate
     let exchange_data = get_exchange_state(&svm, &exchange);
     assert_eq!(exchange_data.rate.tape, new_tape_rate);
-    assert_eq!(exchange_data.rate.sol, new_sol_rate);
+    assert_eq!(exchange_data.rate.other, new_sol_rate);
 
     // Perform second SOL -> TAPE swap
     let sol_in_2 = SOL::from("0.1");

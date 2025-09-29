@@ -28,7 +28,7 @@ pub fn process_set_exchange_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     }
 
     exchange.rate = ExchangeRate {
-        sol: sol_per_unit,
+        other: sol_per_unit,
         tape: tape_per_unit,
     };
 

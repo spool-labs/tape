@@ -105,11 +105,48 @@ impl<T: Pod + Zeroable, const N: usize> RingBuffer<T, N> {
     }
 
     /// Iterate over entries in order from oldest to newest.
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
-        (0..self.len()).map(move |i| {
-            let idx = (self.index + i as u64) % N as u64;
-            &self.entries[idx as usize]
-        })
+    pub fn iter(&self) -> Iter<'_, T, N> {
+        Iter {
+            rb: self,
+            front: 0,
+            back: self.len(),
+        }
+    }
+}
+
+/// Iterator over the ring buffer from oldest to newest.
+/// Supports reverse iteration via `.rev()`.
+pub struct Iter<'a, T: Pod + Zeroable, const N: usize> {
+    rb: &'a RingBuffer<T, N>,
+    front: usize,
+    back: usize,
+}
+
+impl<'a, T: Pod + Zeroable, const N: usize> Iterator for Iter<'a, T, N> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.front < self.back {
+            let i = self.front;
+            self.front += 1;
+            let idx = (self.rb.index + i as u64) % N as u64;
+            Some(&self.rb.entries[idx as usize])
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, T: Pod + Zeroable, const N: usize> DoubleEndedIterator for Iter<'a, T, N> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.front < self.back {
+            let i = self.back - 1;
+            self.back -= 1;
+            let idx = (self.rb.index + i as u64) % N as u64;
+            Some(&self.rb.entries[idx as usize])
+        } else {
+            None
+        }
     }
 }
 
@@ -145,6 +182,8 @@ mod tests {
         assert_eq!(rb.get(3), Some(&0));
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![0, 0, 0, 0]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![0, 0, 0, 0]);
     }
 
     #[test]
@@ -160,6 +199,8 @@ mod tests {
         assert_eq!(rb.back(), Some(&30));
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![10, 20, 30]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![30, 20, 10]);
     }
 
     #[test]
@@ -173,6 +214,8 @@ mod tests {
         assert_eq!(rb.index, 0);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![1, 2, 3, 4]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![4, 3, 2, 1]);
 
         rb.push(5);
         assert_eq!(rb.len(), 4);
@@ -181,6 +224,8 @@ mod tests {
         assert_eq!(rb.back(), Some(&5));
         let v2: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v2, vec![2, 3, 4, 5]);
+        let rev_v2: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v2, vec![5, 4, 3, 2]);
     }
 
     #[test]
@@ -193,20 +238,28 @@ mod tests {
         assert_eq!(rb.index, 1);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![0, 0, 0, 7]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![7, 0, 0, 0]);
 
         rb.push(8);
         assert_eq!(rb.index, 2);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![0, 0, 7, 8]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![8, 7, 0, 0]);
 
         rb.push(9);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![0, 7, 8, 9]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![9, 8, 7, 0]);
 
         rb.push(10);
         assert_eq!(rb.index, 0);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![7, 8, 9, 10]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![10, 9, 8, 7]);
     }
 
     #[test]
@@ -228,6 +281,8 @@ mod tests {
         assert_eq!(rb.index, 1);
         let v: Vec<_> = rb.iter().copied().collect();
         assert_eq!(v, vec![201, 300, 400, 500]);
+        let rev_v: Vec<_> = rb.iter().rev().copied().collect();
+        assert_eq!(rev_v, vec![500, 400, 300, 201]);
 
         assert_eq!(rb.get(4), None);
         assert!(rb.get_mut(4).is_none());

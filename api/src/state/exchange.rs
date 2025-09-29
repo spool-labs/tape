@@ -19,14 +19,4 @@ pub struct Exchange {
     pub rate: ExchangeRate,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct ExchangeRate {
-    /// The amount of SOL per TAPE.
-    pub sol: u64,
-
-    /// The amount of TAPE per SOL.
-    pub tape: u64,
-}
-
 state!(AccountType, Exchange);

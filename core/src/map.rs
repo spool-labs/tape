@@ -1,5 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixedMapError {
+    ExceededCapacity,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FixedMap<K: Pod + Zeroable, V: Pod + Zeroable, const N: usize> {
@@ -16,6 +21,15 @@ where
     K: Ord + Copy + Pod + Zeroable,
     V: Copy + Pod + Zeroable,
 {
+    /// Creates a new, empty `FixedMap`.
+    pub fn new() -> Self {
+        Self {
+            length: 0,
+            keys: [K::zeroed(); N],
+            values: [V::zeroed(); N],
+        }
+    }
+
     /// Returns the number of elements in the map.
     pub fn len(&self) -> usize {
         self.length as usize
@@ -59,7 +73,7 @@ where
     /// If the key already exists, the old value is returned.
     /// If the map is at capacity (length == N) and the key is new, returns Err((key, value)).
     /// Otherwise, Ok(old_value) where old_value is Some if overwritten, None if new.
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, FixedMapError> {
         let len = self.len();
         match self.keys[..len].binary_search_by(|k| k.cmp(&key)) {
             Ok(idx) => {
@@ -71,7 +85,7 @@ where
             Err(idx) => {
                 // Key not found: insert at position idx.
                 if len == N {
-                    return Err((key, value)); // At capacity.
+                    return Err(FixedMapError::ExceededCapacity);
                 }
                 // Shift keys and values to the right.
                 self.keys.copy_within(idx..len, idx + 1);

@@ -54,12 +54,7 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     exchange.authority = *signer_info.key;
     exchange.balance_sol = SOL::zero();
     exchange.balance_tape = TAPE::zero();
-
-    // Simple 1:1 exchange rate (call set_exchange_rate to update).
-    exchange.rate = ExchangeRate {
-        sol: 1,
-        tape: 1,
-    };
+    exchange.rate = ExchangeRate::flat();
 
     // Initialize exchange token account.
     create_associated_token_account(

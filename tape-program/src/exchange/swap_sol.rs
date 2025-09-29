@@ -43,24 +43,14 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Validate rate
     let rate = exchange.rate;
-    if rate.sol == 0 || rate.tape == 0 {
+    if rate.other == 0 || rate.tape == 0 {
         return Err(TapeError::UnexpectedState.into());
     }
 
-    // Compute SOL out: amount_out = amount_in * sol / tape
-    let amount_in_u64 = amount_in_tape.as_u64();
-    let amount_out_sol_u64 = (amount_in_u64 as u128)
-        .checked_mul(rate.sol as u128)
-        .ok_or(TapeError::Overflow)?
-        .checked_div(rate.tape as u128)
-        .ok_or(TapeError::Overflow)? as u64;
+    let amount_out_sol = exchange.rate
+        .convert_to_other_amount(amount_in_tape.as_u64());
 
-    if amount_out_sol_u64 == 0 {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
-    // Check liquidity
-    if amount_out_sol_u64 > exchange.balance_sol.as_u64() {
+    if amount_out_sol > exchange.balance_sol.as_u64() {
         return Err(TapeError::InsufficientFunds.into());
     }
 
@@ -70,15 +60,15 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         signer_ata_info,
         exchange_ata_info,
         token_program_info,
-        amount_in_u64,
+        amount_in_tape.as_u64(),
     )?;
 
     // Transfer SOL from exchange to signer
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
-        .checked_sub(amount_out_sol_u64)
+        .checked_sub(amount_out_sol)
         .ok_or(TapeError::Underflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
-        .checked_add(amount_out_sol_u64)
+        .checked_add(amount_out_sol)
         .ok_or(TapeError::Overflow)?;
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
@@ -90,7 +80,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .checked_add(amount_in_tape)
         .ok_or(TapeError::Overflow)?;
 
-    let amount_out_sol: SOL = amount_out_sol_u64.into();
+    let amount_out_sol: SOL = amount_out_sol.into();
     exchange.balance_sol = exchange
         .balance_sol
         .checked_sub(amount_out_sol)

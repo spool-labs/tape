@@ -46,24 +46,15 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Validate rate
     let rate = exchange.rate;
-    if rate.sol == 0 || rate.tape == 0 {
+    if rate.other == 0 || rate.tape == 0 {
         return Err(TapeError::UnexpectedState.into());
     }
 
     // Compute tape out: amount_out = amount_in * tape / sol
-    let amount_in_u64 = amount_in_sol.as_u64();
-    let amount_out_tape_u64 = (amount_in_u64 as u128)
-        .checked_mul(rate.tape as u128)
-        .ok_or(TapeError::UnexpectedState)?
-        .checked_div(rate.sol as u128)
-        .ok_or(TapeError::UnexpectedState)? as u64;
+    let amount_out_tape = exchange.rate
+        .convert_to_tape_amount(amount_in_sol.as_u64());
 
-    if amount_out_tape_u64 == 0 {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
-    // Check liquidity
-    if amount_out_tape_u64 > exchange.balance_tape.as_u64() {
+    if amount_out_tape > exchange.balance_tape.as_u64() {
         return Err(TapeError::InsufficientFunds.into());
     }
 
@@ -72,7 +63,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &system_instruction::transfer(
             signer_info.key,
             exchange_info.key,
-            amount_in_u64,
+            amount_in_sol.as_u64(),
         ),
         &[
             signer_info.clone(),
@@ -87,7 +78,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         exchange_ata_info,
         signer_ata_info,
         token_program_info,
-        amount_out_tape_u64,
+        amount_out_tape,
         &[EXCHANGE, exchange.authority.as_ref()],
     )?;
 
@@ -98,7 +89,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .ok_or(TapeError::Overflow)?;
 
     // Convert output u64 to TAPE coin and subtract
-    let amount_out_tape: TAPE = amount_out_tape_u64.into();
+    let amount_out_tape: TAPE = amount_out_tape.into();
     exchange.balance_tape = exchange
         .balance_tape
         .checked_sub(amount_out_tape)
