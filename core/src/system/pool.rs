@@ -32,7 +32,6 @@ pub struct StakingPool<const N: usize, const M: usize> {
     /// The latest epoch for this pool was updated.
     pub latest_epoch: EpochNumber,
 
-
     /// The total TAPE held by this pool (excluding commission).
     pub tape_balance: Coin<TAPE>,
 
@@ -47,7 +46,6 @@ pub struct StakingPool<const N: usize, const M: usize> {
 
     /// The commission rate (in basis points, 1/100 of a percent) taken from rewards earned by this pool.
     pub commission_rate: BasisPoints,
-
 
     /// The pending commission rate changes, scheduled for future epochs.
     /// epoch -> u64(bps)
@@ -100,7 +98,6 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
 
         self.history.on_or_before(epoch)
     }
-
 
     /// Add rewards from previous epoch to this pool, split commission vs net rewards.
     /// rewards_gross is the total earned by this pool in the previous epoch.
@@ -637,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn calc_simple() {
+    fn calc_minimal() {
         let mut p = P::new(BasisPoints(0));
         // E1: +100 stake → shares 100
         p.pending_stake.insert_or_add(epoch(1), 100).unwrap();
