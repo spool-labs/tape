@@ -10,10 +10,6 @@ pub struct ExchangeRate {
 }
 
 impl ExchangeRate {
-    pub fn flat() -> Self {
-        ExchangeRate { tape: 1, other: 1 }
-    }
-
     pub fn new(tape_amount: u64, share_amount: u64) -> Self {
         if tape_amount == 0 || share_amount == 0 {
             ExchangeRate::flat()
@@ -23,6 +19,10 @@ impl ExchangeRate {
                 other: share_amount,
             }
         }
+    }
+
+    pub fn flat() -> Self {
+        ExchangeRate { tape: 1, other: 1 }
     }
 
     pub fn convert_to_tape_amount(&self, other_amount: u64) -> u64 {

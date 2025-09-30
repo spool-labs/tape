@@ -19,6 +19,9 @@ pub enum TapeError {
     InsufficientCapacity    = 0x30,
     #[error("The specified epoch range is invalid")]
     InvalidEpochRange       = 0x40,
+
+    #[error("Staking operation failed")]
+    StakingFailed           = 0x100,
 }
 
 error!(TapeError);

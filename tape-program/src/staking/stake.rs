@@ -84,19 +84,18 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     stake.authority       = *signer_info.key;
     stake.node            = *node_info.key;
-    stake.state           = StakeState::Active.into();
     stake.amount          = TAPE::new(amount);
     stake.activated_epoch = current_epoch(epoch);
-    stake.unstake_epoch   = EpochNumber::zero();
+    stake.state           = StakeState::new();
 
     system.total_staked = system.total_staked
         .checked_add(stake.amount)
         .ok_or(TapeError::Overflow)?;
 
-    node.pool.total_staked = node.pool.total_staked
-        .checked_add(stake.amount)
-        .ok_or(TapeError::Overflow)?;
-
+    node.pool.stake(
+        current_epoch(epoch),
+        stake.amount
+    ).map_err(|_| TapeError::StakingFailed)?;
 
     create_associated_token_account(
         signer_info,
@@ -115,8 +114,6 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         token_program_info,
         amount,
     )?;
-
-    // TODO: Emit event, check if the stake puts the pool into the active set for the next epoch.
 
     Ok(())
 }

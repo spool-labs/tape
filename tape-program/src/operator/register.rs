@@ -42,16 +42,16 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[NODE, signer_info.key.as_ref()],
     )?;
 
+
     let node = node_info.as_account_mut::<StorageNode>(&tape_api::ID)?;
 
     node.id                   = NodeId::new(system.total_nodes);
     node.authority            = *signer_info.key;
     node.registered_epoch     = current_epoch(epoch);
 
-    node.pool = StakingPool {
-        total_staked : TAPE::zero(),
-        commission_rate : BasisPoints::unpack(args.commission_rate)
-    };
+    let activation_epoch = next_epoch(epoch);
+    let commission_rate  = BasisPoints::unpack(args.commission_rate);
+    node.pool = StakingPool::new(activation_epoch, commission_rate);
 
     node.metadata = NodeMetadata {
         name: args.name,
