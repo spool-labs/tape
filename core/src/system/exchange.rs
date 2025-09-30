@@ -62,7 +62,7 @@ impl<const N: usize> PreviousRates<N> {
 
     /// Get the most recent rate at or before the given epoch, returning None if no such rate
     /// exists.
-    pub fn rate_at(&self, epoch: EpochNumber) -> Option<ExchangeRate> {
+    pub fn on_or_before(&self, epoch: EpochNumber) -> Option<ExchangeRate> {
         for i in self.0.iter().rev() {
             if i.epoch <= epoch {
                 return Some(i.rate);
@@ -150,8 +150,8 @@ mod tests {
     #[test]
     fn new_empty() {
         let rates = TestRates::new();
-        assert!(rates.rate_at(EpochNumber(0)).is_none());
-        assert!(rates.rate_at(EpochNumber(100)).is_none());
+        assert!(rates.on_or_before(EpochNumber(0)).is_none());
+        assert!(rates.on_or_before(EpochNumber(100)).is_none());
     }
 
     #[test]
@@ -159,28 +159,28 @@ mod tests {
         let mut rates = TestRates::new();
         let rate = ExchangeRate::new(1, 1);
         rates.push(EpochNumber(5), rate);
-        assert_eq!(rates.rate_at(EpochNumber(5)), Some(rate));
+        assert_eq!(rates.on_or_before(EpochNumber(5)), Some(rate));
     }
 
     #[test]
     fn rate_before() {
         let mut rates = TestRates::new();
         rates.push(EpochNumber(5), ExchangeRate::new(1, 1));
-        assert!(rates.rate_at(EpochNumber(4)).is_none());
+        assert!(rates.on_or_before(EpochNumber(4)).is_none());
     }
 
     #[test]
     fn rate_exact() {
         let mut rates = TestRates::new();
         rates.push(EpochNumber(5), ExchangeRate::new(1, 1));
-        assert_eq!(rates.rate_at(EpochNumber(5)), Some(ExchangeRate::new(1, 1)));
+        assert_eq!(rates.on_or_before(EpochNumber(5)), Some(ExchangeRate::new(1, 1)));
     }
 
     #[test]
     fn rate_after() {
         let mut rates = TestRates::new();
         rates.push(EpochNumber(5), ExchangeRate::new(1, 1));
-        assert_eq!(rates.rate_at(EpochNumber(6)), Some(ExchangeRate::new(1, 1)));
+        assert_eq!(rates.on_or_before(EpochNumber(6)), Some(ExchangeRate::new(1, 1)));
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         rates.push(EpochNumber(1), ExchangeRate::new(1, 1));
         rates.push(EpochNumber(3), ExchangeRate::new(2, 2));
         rates.push(EpochNumber(5), ExchangeRate::new(3, 3));
-        assert_eq!(rates.rate_at(EpochNumber(5)), Some(ExchangeRate::new(3, 3)));
+        assert_eq!(rates.on_or_before(EpochNumber(5)), Some(ExchangeRate::new(3, 3)));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
         let mut rates = TestRates::new();
         rates.push(EpochNumber(1), ExchangeRate::new(1, 1));
         rates.push(EpochNumber(3), ExchangeRate::new(2, 2));
-        assert_eq!(rates.rate_at(EpochNumber(2)), Some(ExchangeRate::new(1, 1)));
+        assert_eq!(rates.on_or_before(EpochNumber(2)), Some(ExchangeRate::new(1, 1)));
     }
 
     #[test]
@@ -233,8 +233,8 @@ mod tests {
         rates.push(EpochNumber(2), ExchangeRate::new(2, 2));
         rates.push(EpochNumber(3), ExchangeRate::new(3, 3));
         rates.push(EpochNumber(4), ExchangeRate::new(4, 4));
-        assert!(rates.rate_at(EpochNumber(1)).is_none());
-        assert_eq!(rates.rate_at(EpochNumber(2)), Some(ExchangeRate::new(2, 2)));
-        assert_eq!(rates.rate_at(EpochNumber(5)), Some(ExchangeRate::new(4, 4)));
+        assert!(rates.on_or_before(EpochNumber(1)).is_none());
+        assert_eq!(rates.on_or_before(EpochNumber(2)), Some(ExchangeRate::new(2, 2)));
+        assert_eq!(rates.on_or_before(EpochNumber(5)), Some(ExchangeRate::new(4, 4)));
     }
 }
