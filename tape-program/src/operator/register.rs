@@ -49,9 +49,8 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.authority            = *signer_info.key;
     node.registered_epoch     = current_epoch(epoch);
 
-    let activation_epoch = next_epoch(epoch);
-    let commission_rate  = BasisPoints::unpack(args.commission_rate);
-    node.pool = StakingPool::new(activation_epoch, commission_rate);
+    let commission_rate = BasisPoints::unpack(args.commission_rate);
+    node.pool = StakingPool::new(commission_rate);
 
     node.metadata = NodeMetadata {
         name: args.name,

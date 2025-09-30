@@ -3,7 +3,6 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::coin::*;
 use crate::types::EpochNumber;
-use super::EpochExchangeRate;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -77,9 +76,9 @@ impl StakeState {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Stake {
-    pub state: StakeState,
-    pub activation_epoch: EpochNumber,
     pub amount: Coin<TAPE>,
+    pub activation_epoch: EpochNumber,
+    pub state: StakeState,
 }
 
 impl Stake {
@@ -105,5 +104,9 @@ impl Stake {
 
     pub fn set_withdrawing(&mut self, epoch: EpochNumber) {
         self.state.set_withdrawing(epoch);
+    }
+
+    pub fn set_withdrawn(&mut self) {
+        self.state.set_withdrawn();
     }
 }

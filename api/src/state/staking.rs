@@ -12,14 +12,8 @@ pub struct StakedTape {
     /// The pool this stake is associated with.
     pub node: Pubkey,
 
-    /// The amount that may be unstaked.
-    pub amount: Coin<TAPE>,
-
-    /// The epoch when this stake was activated.
-    pub activated_epoch: EpochNumber,
-
-    /// The state of this stake.
-    pub state: StakeState,
+    /// The staking details (amount, activation, state, etc).
+    pub inner: Stake,
 }
 
 state!(AccountType, StakedTape);

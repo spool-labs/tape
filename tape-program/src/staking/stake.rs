@@ -42,7 +42,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .has_address(&stake_ata_address)?;
 
-    let system = system_info
+    let _system = system_info
         .is_writable()?
         .is_tape_system()?
         .as_account_mut::<System>(&tape_api::ID)?;
@@ -68,9 +68,10 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_sysvar(&sysvar::rent::ID)?;
 
     let amount = u64::from_le_bytes(args.amount);
-    if amount == 0 {
-        return Err(ProgramError::InvalidArgument);
-    }
+    let staked_tape = node.pool.stake_with_pool(
+        current_epoch(epoch),
+        amount.into()
+    ).map_err(|_| TapeError::StakingFailed)?;
 
     create_program_account::<StakedTape>(
         stake_info,
@@ -84,18 +85,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     stake.authority       = *signer_info.key;
     stake.node            = *node_info.key;
-    stake.amount          = TAPE::new(amount);
-    stake.activated_epoch = current_epoch(epoch);
-    stake.state           = StakeState::new();
-
-    system.total_staked = system.total_staked
-        .checked_add(stake.amount)
-        .ok_or(TapeError::Overflow)?;
-
-    node.pool.stake(
-        current_epoch(epoch),
-        stake.amount
-    ).map_err(|_| TapeError::StakingFailed)?;
+    stake.inner           = staked_tape;
 
     create_associated_token_account(
         signer_info,
