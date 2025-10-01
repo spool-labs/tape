@@ -1,33 +1,41 @@
-use std::collections::BTreeMap;
-use super::{assign_shards, move_shards, map_shard_indices};
+use std::collections::{BTreeMap, BTreeSet};
+use super::{assign_shards, move_shards_new2, map_shard_indices2};
 use crate::types::NodeId;
 
 // ========== Core Types ==========
 
 #[derive(Clone, Debug, Default)]
 pub struct Committee {
-    // Sorted mapping: NodeId -> assigned shards
-    pub shards_by_node: BTreeMap<NodeId, Vec<u16>>,
+    // Mapping: shard_id -> NodeId
+    pub shard_to_node: BTreeMap<u16, NodeId>,
 }
 
 impl Committee {
-    pub fn new(shards_by_node: BTreeMap<NodeId, Vec<u16>>) -> Self {
-        Committee { shards_by_node }
+    pub fn new(shard_to_node: BTreeMap<u16, NodeId>) -> Self {
+        Committee { shard_to_node }
     }
+    // Number of unique nodes in the committee
     pub fn size(&self) -> usize {
-        self.shards_by_node.len()
+        let uniq: BTreeSet<NodeId> = self.shard_to_node.values().cloned().collect();
+        uniq.len()
     }
     pub fn contains(&self, node_id: &NodeId) -> bool {
-        self.shards_by_node.contains_key(node_id)
+        self.shard_to_node.values().any(|n| n == node_id)
     }
-    pub fn shards(&self, node_id: &NodeId) -> Option<&Vec<u16>> {
-        self.shards_by_node.get(node_id)
-    }
+    // Return total number of shards in the committee
     pub fn total_shards(&self) -> u16 {
-        self.shards_by_node
-            .values()
-            .map(|v| v.len() as u16)
-            .sum::<u16>()
+        self.shard_to_node.len() as u16
+    }
+    // Return the number of shards (weight) assigned to a node
+    pub fn node_weight(&self, node_id: &NodeId) -> u16 {
+        self.shard_to_node.values().filter(|&&n| n == *node_id).count() as u16
+    }
+    // Return the list of shard indices assigned to a node
+    pub fn shards_for(&self, node_id: &NodeId) -> Vec<u16> {
+        self.shard_to_node
+            .iter()
+            .filter_map(|(shard, nid)| if nid == node_id { Some(*shard) } else { None })
+            .collect()
     }
 }
 
@@ -415,14 +423,13 @@ impl Staking {
         let counts = assign_shards(&stake_by_node, self.n_shards);
 
         if self.committee.size() == 0 {
-            // First epoch: sequential assignment
-            let shards_by_node = map_shard_indices(counts);
-            return Committee::new(shards_by_node);
+            let shard_to_node = map_shard_indices2(&counts);
+            return Committee::new(shard_to_node);
         }
 
         // Transition preserving shard placement where possible
-        let new_shards_by_node = move_shards(&self.committee.shards_by_node, counts);
-        Committee::new(new_shards_by_node)
+        let new_shard_to_node = move_shards_new2(&self.committee.shard_to_node, &counts);
+        Committee::new(new_shard_to_node)
     }
 
     // Port of Move's select_committee_and_calculate_votes
@@ -438,9 +445,15 @@ impl Staking {
         let mut storage_price_votes: Vec<(u64, u16)> = Vec::new();
         let mut capacity_votes: Vec<(u64, u16)> = Vec::new();
 
+        // Build weights per node from shard_to_node
+        let mut weights_by_node: BTreeMap<NodeId, u16> = BTreeMap::new();
+        for (_shard, id) in committee.shard_to_node.iter() {
+            *weights_by_node.entry(*id).or_insert(0) += 1;
+        }
+
         // iterate next committee members
-        for (id, shards) in committee.shards_by_node.iter() {
-            let weight = shards.len() as u16;
+        for (id, weight) in weights_by_node.iter() {
+            let weight = *weight;
             assert!(weight > 0, "Zero node weight");
             // pool is ensured on set_stake/try_join but be robust
             self.ensure_pool(*id);
@@ -544,11 +557,7 @@ impl Staking {
         );
         cap.set_last_epoch_sync_done(self.epoch);
 
-        let node_weight = self
-            .committee
-            .shards(&id)
-            .map(|v| v.len() as u16)
-            .unwrap_or(0);
+        let node_weight = self.committee.node_weight(&id);
 
         match self.epoch_state.clone() {
             EpochState::EpochChangeSync(weight) => {
@@ -569,11 +578,7 @@ impl Staking {
             self.committee.contains(node_id),
             "Node is not in the committee"
         );
-        let w = self
-            .committee
-            .shards(node_id)
-            .map(|v| v.len() as u64)
-            .unwrap_or(0);
+        let w = self.committee.node_weight(node_id) as u64;
         assert!(w <= u16::MAX as u64, "Invalid node weight");
         w as u16
     }

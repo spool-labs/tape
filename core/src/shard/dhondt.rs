@@ -3,11 +3,9 @@ use super::priority::{ ShardPriority, NodePriority };
 
 /// Allocate shards to nodes using the D'Hondt method with tie-breaking and max shard limits.
 pub fn allocate_shards(
-    node_priorities: &[u64], 
     stake: &[u64],
     shard_count: u16, 
 ) -> Vec<u16> {
-
     let node_count = stake.len();
     if node_count == 0 {
         return Vec::new();
@@ -36,7 +34,7 @@ pub fn allocate_shards(
             let priority = ShardPriority::from(s as u128, d as u128);
             heap.push(NodePriority {
                 priority,
-                tie_breaker: node_priorities[i],
+                tie_breaker: (node_count - i) as u64,
                 index: i,
             });
         }
@@ -101,10 +99,9 @@ mod tests {
     #[test]
     fn test_basic_even() {
         let stake: Vec<u64> = vec![25_000, 25_000, 25_000, 25_000];
-        let priorities: Vec<u64> = (0..4).map(|i| 4 - i as u64).collect();
-        assert_eq!(allocate_shards(&priorities, &stake, 4), vec![1, 1, 1, 1]);
+        assert_eq!(allocate_shards(&stake, 4), vec![1, 1, 1, 1]);
 
-        let res = allocate_shards(&priorities, &stake, 1000);
+        let res = allocate_shards(&stake, 1000);
         assert_eq!(res.iter().map(|&x| x as u64).sum::<u64>(), 1000);
         assert_eq!(res, vec![250, 250, 250, 250]);
     }
@@ -112,10 +109,9 @@ mod tests {
     #[test]
     fn test_basic_uneven() {
         let stake: Vec<u64> = vec![50_000, 30_000, 15_000, 5_000];
-        let priorities: Vec<u64> = (0..4).map(|i| 4 - i as u64).collect();
-        assert_eq!(allocate_shards(&priorities, &stake, 4), vec![2, 2, 0, 0]);
+        assert_eq!(allocate_shards(&stake, 4), vec![2, 2, 0, 0]);
 
-        let res = allocate_shards(&priorities, &stake, 1000);
+        let res = allocate_shards(&stake, 1000);
         assert_eq!(res.iter().map(|&x| x as u64).sum::<u64>(), 1000);
         assert_eq!(res, vec![500, 300, 150, 50]);
     }

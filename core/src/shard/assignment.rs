@@ -23,12 +23,8 @@ pub fn assign_shards(
         .map(|k| stake_by_node[k])
         .collect();
 
-    let node_priorities: Vec<u64> = (0..node_count)
-        .map(|i| (node_count - i) as u64)
-        .collect();
-
-    let shards_vec = allocate_shards(
-        &node_priorities, &stakes, shard_count);
+    // Run D'Hondt allocation on stake weights
+    let shards_vec = allocate_shards(&stakes, shard_count);
 
     let mut distribution = BTreeMap::new();
     for (i, &sh) in shards_vec.iter().enumerate() {
@@ -47,7 +43,114 @@ pub fn move_shards(
     shards_by_node: &BTreeMap<NodeId, Vec<u16>>,
     target_counts: BTreeMap<NodeId, u16>,
 ) -> BTreeMap<NodeId, Vec<u16>> {
+    let shard_to_node = from_vec(shards_by_node);
+    let res = move_shards_new2(&shard_to_node, &target_counts);
+    to_vec(&res)
+}
 
+pub fn move_shards_new2(
+    shard_to_node: &BTreeMap<u16, NodeId>,
+    target_counts: &BTreeMap<NodeId, u16>,
+) -> BTreeMap<u16, NodeId> {
+    // Result: shard_id -> NodeId
+    let mut result: BTreeMap<u16, NodeId> = BTreeMap::new();
+
+    // Remaining shards each node still needs to receive
+    let mut remaining: BTreeMap<NodeId, u16> = target_counts.clone();
+
+    // Shards that must be moved elsewhere
+    let mut to_move: Vec<u16> = Vec::new();
+
+    // Sanity: total shard count must match
+    let total_target: u64 = target_counts.values().map(|&s| s as u64).sum();
+    let total_current: u64 = shard_to_node.len() as u64;
+    assert_eq!(
+        total_target, total_current,
+        "Target shard counts must sum to the total number of shards"
+    );
+
+    // First pass: keep shards on their current node when that node still has remaining capacity
+    for (&shard_id, &node_id) in shard_to_node.iter() {
+        match remaining.get_mut(&node_id) {
+            Some(rem) if *rem > 0 => {
+                result.insert(shard_id, node_id);
+                *rem -= 1;
+            }
+            _ => {
+                // Node removed or already satisfied; free this shard for reassignment
+                to_move.push(shard_id);
+            }
+        }
+    }
+
+    // Second pass: assign freed shards to nodes that still need more (LIFO to preserve prior semantics)
+    for (&node_id, &need) in remaining.iter() {
+        for _ in 0..need {
+            let shard = to_move.pop().expect("Not enough freed shards to reassign");
+            result.insert(shard, node_id);
+        }
+    }
+
+    debug_assert_eq!(result.len(), shard_to_node.len());
+    result
+}
+
+pub fn move_shards_new(
+    shard_to_node: &BTreeMap<u16, NodeId>,
+    target_counts: &BTreeMap<NodeId, u16>,
+) -> BTreeMap<NodeId, Vec<u16>> {
+    // Result: NodeId -> Vec<shard_id>
+    let mut result: BTreeMap<NodeId, Vec<u16>> = BTreeMap::new();
+
+    // Remaining shards each node still needs to receive
+    let mut remaining: BTreeMap<NodeId, u16> = target_counts.clone();
+
+    // Shards that must be moved elsewhere
+    let mut to_move: Vec<u16> = Vec::new();
+
+    // Sanity: total shard count must match
+    let total_target: u64 = target_counts.values().map(|&s| s as u64).sum();
+    let total_current: u64 = shard_to_node.len() as u64;
+    assert_eq!(
+        total_target, total_current,
+        "Target shard counts must sum to the total number of shards"
+    );
+
+    // First pass: keep shards on their current node when that node still has remaining capacity
+    for (&shard_id, &node_id) in shard_to_node.iter() {
+        match remaining.get_mut(&node_id) {
+            Some(rem) if *rem > 0 => {
+                result.entry(node_id).or_default().push(shard_id);
+                *rem -= 1;
+            }
+            _ => {
+                // Node removed or already satisfied; free this shard for reassignment
+                to_move.push(shard_id);
+            }
+        }
+    }
+
+    // Second pass: assign freed shards to nodes that still need more (LIFO to preserve prior semantics)
+    for (&node_id, &need) in remaining.iter() {
+        let need = need as usize;
+        if need == 0 {
+            continue;
+        }
+        let mut curr = result.remove(&node_id).unwrap_or_default();
+        for _ in 0..need {
+            let shard = to_move.pop().expect("Not enough freed shards to reassign");
+            curr.push(shard);
+        }
+        result.insert(node_id, curr);
+    }
+
+    result
+}
+
+pub fn move_shards_old(
+    shards_by_node: &BTreeMap<NodeId, Vec<u16>>,
+    target_counts: BTreeMap<NodeId, u16>,
+) -> BTreeMap<NodeId, Vec<u16>> {
     let mut new_assignment: BTreeMap<NodeId, Vec<u16>> = BTreeMap::new();
     let mut target_counts = target_counts;
     let mut to_move: Vec<u16> = Vec::new();
@@ -99,7 +202,10 @@ pub fn move_shards(
         if need == 0 {
             continue;
         }
-        let mut curr = new_assignment.remove(&node_id).unwrap_or_default();
+
+        let mut curr = new_assignment
+            .remove(&node_id)
+            .unwrap_or_default();
 
         for _ in 0..need {
             let shard = to_move.pop().expect("Not enough freed shards to reassign");
@@ -110,6 +216,42 @@ pub fn move_shards(
     }
 
     new_assignment
+}
+
+pub fn from_vec(
+    shards_by_node: &BTreeMap<NodeId, Vec<u16>>,
+) -> BTreeMap<u16, NodeId> {
+    let mut out = BTreeMap::new();
+    for (node_id, shard_list) in shards_by_node {
+        for &sh in shard_list {
+            if out.insert(sh, *node_id).is_some() {
+                panic!("Duplicate shard id {sh} encountered while inverting assignments");
+            }
+        }
+    }
+    out
+}
+
+pub fn to_vec(
+    shard_to_node: &BTreeMap<u16, NodeId>,
+) -> BTreeMap<NodeId, Vec<u16>> {
+    let mut out : BTreeMap<NodeId, Vec<u16>> = BTreeMap::new();
+    for (&sh, &node_id) in shard_to_node {
+        out.entry(node_id).or_default().push(sh);
+    }
+    out
+}
+
+pub fn map_shard_indices2(assigned_number: &BTreeMap<NodeId, u16>) -> BTreeMap<u16, NodeId> {
+    let mut shard_to_node: BTreeMap<u16, NodeId> = BTreeMap::new();
+    let mut next_shard: u16 = 0;
+    for (node, count) in assigned_number.iter() {
+        for _ in 0..*count {
+            shard_to_node.insert(next_shard, *node);
+            next_shard = next_shard.saturating_add(1);
+        }
+    }
+    shard_to_node
 }
 
 pub fn map_shard_indices(assigned_number: BTreeMap<NodeId, u16>) -> BTreeMap<NodeId, Vec<u16>> {
