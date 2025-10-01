@@ -47,7 +47,6 @@ pub enum TapeInstruction {
     AddToBlacklist,
     RemoveFromBlacklist,
     VoteOnStoragePrice,
-    VoteOnWritePrice,
     VoteOnShardSize,
     VoteOnFeature,
 
@@ -97,7 +96,6 @@ instruction!(TapeInstruction, ClaimCommission);
 instruction!(TapeInstruction, AddToBlacklist);
 instruction!(TapeInstruction, RemoveFromBlacklist);
 instruction!(TapeInstruction, VoteOnStoragePrice);
-instruction!(TapeInstruction, VoteOnWritePrice);
 instruction!(TapeInstruction, VoteOnShardSize);
 instruction!(TapeInstruction, VoteOnFeature);
 

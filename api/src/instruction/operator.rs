@@ -64,12 +64,6 @@ pub struct VoteOnStoragePrice {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteOnWritePrice {
-    pub price: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct VoteOnShardSize {
     pub size: [u8; 8],
 }

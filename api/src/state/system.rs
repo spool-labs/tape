@@ -34,9 +34,6 @@ pub struct Archive {
     /// The price per unit of storage in TAPE.
     pub storage_price_per_unit: Coin<TAPE>,
 
-    /// The price per unit for writing data in TAPE.
-    pub write_price_per_unit: Coin<TAPE>,
-
     /// The total storage used per epoch.
     pub future_usage: StorageAccounting<FUTURE_EPOCHS>,
 }
