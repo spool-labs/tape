@@ -1,4 +1,5 @@
 pub mod bft;
+pub mod bls;
 pub mod coin;
 pub mod hash;
 pub mod network;
@@ -12,6 +13,7 @@ mod macros;
 
 pub mod prelude {
     pub use crate::bft::*;
+    pub use crate::bls::*;
     pub use crate::coin::*;
     pub use crate::hash::*;
     pub use crate::network::*;

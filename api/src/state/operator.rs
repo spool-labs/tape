@@ -3,7 +3,7 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
-const PAST_EPOCHS: usize = 256;
+const EPOCH_HISTORY: usize = 256;
 const PENDING_VALUES: usize = 2;
 
 #[repr(C)]
@@ -16,7 +16,7 @@ pub struct StorageNode {
     pub authority: Pubkey,
 
     /// The staking pool associated with this node.
-    pub pool: StakingPool<PAST_EPOCHS, PENDING_VALUES>,
+    pub pool: StakingPool<EPOCH_HISTORY, PENDING_VALUES>,
 
     /// Metadata about this storage node.
     pub metadata: NodeMetadata,

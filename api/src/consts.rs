@@ -6,6 +6,7 @@ pub const TREASURY:  &[u8] = b"treasury";
 pub const EXCHANGE:  &[u8] = b"exchange";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
+pub const COUNCIL:   &[u8] = b"council";
 pub const NODE:      &[u8] = b"node";
 pub const STAKE:     &[u8] = b"stake";
 pub const RESOURCE:  &[u8] = b"resource";

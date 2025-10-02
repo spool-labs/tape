@@ -4,15 +4,14 @@ use super::AccountType;
 use crate::state;
 
 const FUTURE_EPOCHS: usize = 256;
+const COMMITTEE_SIZE: usize = 127;
+const SEAT_COUNT: usize = 1000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct System {
     /// The number of storage nodes currently registered.
     pub total_nodes: u64,
-
-    /// The total amount of stake in the treasury.
-    pub total_staked: Coin<TAPE>,
 }
 
 #[repr(C)]
@@ -23,6 +22,22 @@ pub struct Epoch {
 
     /// The timestamp of the last epoch transition.
     pub last_epoch_at: i64,
+
+    /// The state of the current epoch.
+    pub state: EpochState,
+
+    /// The current active set of storage nodes for the next epoch.
+    pub candidates: CandidateSet<COMMITTEE_SIZE>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct Council {
+    /// The epoch number for which this council is valid.
+    pub epoch: EpochNumber,
+
+    /// The appointed set of storage nodes for the `epoch`.
+    pub committee: AppointedSet<COMMITTEE_SIZE, SEAT_COUNT>,
 }
 
 #[repr(C)]
@@ -51,6 +66,7 @@ pub struct Feature {}
 
 state!(AccountType, System);
 state!(AccountType, Epoch);
+state!(AccountType, Council);
 state!(AccountType, Archive);
 state!(AccountType, Treasury);
 state!(AccountType, Feature);

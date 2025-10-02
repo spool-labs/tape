@@ -1,12 +1,14 @@
-mod exchange;
+mod committee;
 mod epoch;
-mod reward;
+mod exchange;
 mod pool;
+mod reward;
 mod staking;
 mod storage;
 mod utils;
 mod value;
 
+pub use committee::*;
 pub use exchange::*;
 pub use epoch::*;
 pub use reward::*;

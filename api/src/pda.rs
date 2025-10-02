@@ -111,6 +111,11 @@ pub fn exchange_ata(exchange: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
+pub fn council_pda(epoch: EpochNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[COUNCIL, &epoch.pack()], &crate::id())
+}
+
+#[inline(always)]
 pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NODE, authority.as_ref()], &crate::id())
 }
