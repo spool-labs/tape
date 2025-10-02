@@ -3,12 +3,12 @@ use core::cmp::Ordering;
 /// A struct representing a priority score (numerator/denominator) for shard allocation.
 #[derive(Clone, Debug)]
 pub struct ShardPriority {
-    pub n: u128,
-    pub d: u128,
+    pub n: u64,
+    pub d: u64,
 }
 
 impl ShardPriority {
-    pub fn from(n: u128, d: u128) -> Self {
+    pub fn from(n: u64, d: u64) -> Self {
         assert!(d > 0, "Denominator must be > 0");
         Self { n, d }
     }

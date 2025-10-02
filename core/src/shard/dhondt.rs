@@ -31,7 +31,7 @@ pub fn allocate_shards(
     for (i, &s) in stake.iter().enumerate() {
         if shards[i] != max_shards {
             let d = shards[i] + 1;
-            let priority = ShardPriority::from(s as u128, d as u128);
+            let priority = ShardPriority::from(s, d);
             heap.push(NodePriority {
                 priority,
                 tie_breaker: (node_count - i) as u64,
@@ -52,7 +52,7 @@ pub fn allocate_shards(
         distributed += 1;
         if shards[index] != max_shards {
             let d = shards[index] + 1;
-            let q = ShardPriority::from(stake[index] as u128, d as u128);
+            let q = ShardPriority::from(stake[index], d);
             heap.push(NodePriority {
                 priority: q,
                 tie_breaker,

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use super::{assign_shards, move_shards_new2, map_shard_indices2};
+use super::{assign_shards, move_shards, map_shard_indices};
 use crate::types::NodeId;
 
 // ========== Core Types ==========
@@ -29,6 +29,14 @@ impl Committee {
     // Return the number of shards (weight) assigned to a node
     pub fn node_weight(&self, node_id: &NodeId) -> u16 {
         self.shard_to_node.values().filter(|&&n| n == *node_id).count() as u16
+    }
+    // Return the map of weights by node in the committee
+    pub fn weights(&self) -> BTreeMap<NodeId, u16> {
+        let mut weights: BTreeMap<NodeId, u16> = BTreeMap::new();
+        for node_id in self.shard_to_node.values() {
+            *weights.entry(*node_id).or_insert(0) += 1;
+        }
+        weights
     }
     // Return the list of shard indices assigned to a node
     pub fn shards_for(&self, node_id: &NodeId) -> Vec<u16> {
@@ -423,12 +431,12 @@ impl Staking {
         let counts = assign_shards(&stake_by_node, self.n_shards);
 
         if self.committee.size() == 0 {
-            let shard_to_node = map_shard_indices2(&counts);
+            let shard_to_node = map_shard_indices(&counts);
             return Committee::new(shard_to_node);
         }
 
         // Transition preserving shard placement where possible
-        let new_shard_to_node = move_shards_new2(&self.committee.shard_to_node, &counts);
+        let new_shard_to_node = move_shards(&self.committee.shard_to_node, &counts);
         Committee::new(new_shard_to_node)
     }
 
@@ -446,10 +454,7 @@ impl Staking {
         let mut capacity_votes: Vec<(u64, u16)> = Vec::new();
 
         // Build weights per node from shard_to_node
-        let mut weights_by_node: BTreeMap<NodeId, u16> = BTreeMap::new();
-        for (_shard, id) in committee.shard_to_node.iter() {
-            *weights_by_node.entry(*id).or_insert(0) += 1;
-        }
+        let weights_by_node = committee.weights();
 
         // iterate next committee members
         for (id, weight) in weights_by_node.iter() {
