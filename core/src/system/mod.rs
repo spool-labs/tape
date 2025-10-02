@@ -1,4 +1,5 @@
 mod exchange;
+mod epoch;
 mod reward;
 mod pool;
 mod staking;
@@ -7,6 +8,7 @@ mod utils;
 mod value;
 
 pub use exchange::*;
+pub use epoch::*;
 pub use reward::*;
 pub use pool::*;
 pub use staking::*;
