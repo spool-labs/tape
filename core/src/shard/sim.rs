@@ -6,21 +6,21 @@ use crate::types::NodeId;
 
 #[derive(Clone, Debug, Default)]
 pub struct Committee {
-    // Mapping: shard_id -> NodeId
-    pub shard_to_node: BTreeMap<u16, NodeId>,
+    // shard_id is the index; value is NodeId
+    pub shard_to_node: Vec<NodeId>,
 }
 
 impl Committee {
-    pub fn new(shard_to_node: BTreeMap<u16, NodeId>) -> Self {
+    pub fn new(shard_to_node: Vec<NodeId>) -> Self {
         Committee { shard_to_node }
     }
     // Number of unique nodes in the committee
     pub fn size(&self) -> usize {
-        let uniq: BTreeSet<NodeId> = self.shard_to_node.values().cloned().collect();
+        let uniq: BTreeSet<NodeId> = self.shard_to_node.iter().cloned().collect();
         uniq.len()
     }
     pub fn contains(&self, node_id: &NodeId) -> bool {
-        self.shard_to_node.values().any(|n| n == node_id)
+        self.shard_to_node.iter().any(|n| n == node_id)
     }
     // Return total number of shards in the committee
     pub fn total_shards(&self) -> u16 {
@@ -28,13 +28,13 @@ impl Committee {
     }
     // Return the number of shards (weight) assigned to a node
     pub fn node_weight(&self, node_id: &NodeId) -> u16 {
-        self.shard_to_node.values().filter(|&&n| n == *node_id).count() as u16
+        self.shard_to_node.iter().filter(|&&n| n == *node_id).count() as u16
     }
     // Return the map of weights by node in the committee
     pub fn weights(&self) -> BTreeMap<NodeId, u16> {
         let mut weights: BTreeMap<NodeId, u16> = BTreeMap::new();
-        for node_id in self.shard_to_node.values() {
-            *weights.entry(*node_id).or_insert(0) += 1;
+        for &node_id in self.shard_to_node.iter() {
+            *weights.entry(node_id).or_insert(0) += 1;
         }
         weights
     }
@@ -42,7 +42,8 @@ impl Committee {
     pub fn shards_for(&self, node_id: &NodeId) -> Vec<u16> {
         self.shard_to_node
             .iter()
-            .filter_map(|(shard, nid)| if nid == node_id { Some(*shard) } else { None })
+            .enumerate()
+            .filter_map(|(shard, &nid)| if nid == *node_id { Some(shard as u16) } else { None })
             .collect()
     }
 }
@@ -297,7 +298,6 @@ pub struct Staking {
     epoch: u32,
     active_set: ActiveSet,
     committee: Committee,
-    previous_committee: Committee,
     next_committee: Option<Committee>,
     epoch_state: EpochState,
 
@@ -321,7 +321,6 @@ impl Staking {
             epoch: 0,
             active_set: ActiveSet::new(1000), // default max active size
             committee: Committee::default(),
-            previous_committee: Committee::default(),
             next_committee: None,
             epoch_state: EpochState::EpochChangeDone(clock.timestamp_ms()),
             next_epoch_params: None,
@@ -344,10 +343,6 @@ impl Staking {
 
     pub fn committee(&self) -> &Committee {
         &self.committee
-    }
-
-    pub fn previous_committee(&self) -> &Committee {
-        &self.previous_committee
     }
 
     pub fn set_active_set_max_size(&mut self, max_size: usize) {
@@ -520,7 +515,6 @@ impl Staking {
     pub fn advance_epoch(&mut self) {
         assert!(self.next_committee.is_some(), "Next committee not set");
         self.epoch = self.epoch.saturating_add(1);
-        self.previous_committee = std::mem::take(&mut self.committee);
         self.committee = self.next_committee.take().unwrap(); // set new
         self.epoch_state = EpochState::EpochChangeSync(0);
     }

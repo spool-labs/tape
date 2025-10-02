@@ -107,7 +107,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
-    archive.write_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
     archive.storage_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
     archive.future_usage = StorageAccounting::new();
 

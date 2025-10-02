@@ -40,31 +40,34 @@ pub fn assign_shards(
 /// Keep existing shards where possible, free those for removed or reduced assignments,
 /// and assign freed shards to nodes that need more or newly added nodes.
 pub fn move_shards(
-    shard_to_node: &BTreeMap<u16, NodeId>,
+    current: &[NodeId],
     target_counts: &BTreeMap<NodeId, u16>,
-) -> BTreeMap<u16, NodeId> {
-    // Result: shard_id -> NodeId
-    let mut result: BTreeMap<u16, NodeId> = BTreeMap::new();
+) -> Vec<NodeId> {
+    let total_current: usize = current.len();
+    let total_target: usize = target_counts
+        .values()
+        .map(|&s| s as usize)
+        .sum();
 
-    // Remaining shards each node still needs to receive
-    let mut remaining: BTreeMap<NodeId, u16> = target_counts.clone();
-
-    // Shards that must be moved elsewhere
-    let mut to_move: Vec<u16> = Vec::new();
-
-    // Sanity: total shard count must match
-    let total_target: u64 = target_counts.values().map(|&s| s as u64).sum();
-    let total_current: u64 = shard_to_node.len() as u64;
     assert_eq!(
         total_target, total_current,
         "Target shard counts must sum to the total number of shards"
     );
 
+    // Start with current mapping; keep slots as-is unless they must be moved.
+    let mut result: Vec<NodeId> = current.to_vec();
+
+    // Remaining shards each node still needs to receive
+    let mut remaining: BTreeMap<NodeId, u16> = target_counts.clone();
+
+    // Shards that must be moved elsewhere
+    let mut to_move: Vec<usize> = Vec::new();
+
     // First pass: keep shards on their current node when that node still has remaining capacity
-    for (&shard_id, &node_id) in shard_to_node.iter() {
+    for (shard_id, &node_id) in current.iter().enumerate() {
         match remaining.get_mut(&node_id) {
             Some(rem) if *rem > 0 => {
-                result.insert(shard_id, node_id);
+                // Keep this shard with the same node; just decrement remaining
                 *rem -= 1;
             }
             _ => {
@@ -78,21 +81,22 @@ pub fn move_shards(
     for (&node_id, &need) in remaining.iter() {
         for _ in 0..need {
             let shard = to_move.pop().expect("Not enough freed shards to reassign");
-            result.insert(shard, node_id);
+            result[shard] = node_id;
         }
     }
 
-    debug_assert_eq!(result.len(), shard_to_node.len());
+    debug_assert!(to_move.is_empty(), "Unassigned shards remain after reassignment");
     result
 }
 
-pub fn map_shard_indices(assigned_number: &BTreeMap<NodeId, u16>) -> BTreeMap<u16, NodeId> {
-    let mut shard_to_node: BTreeMap<u16, NodeId> = BTreeMap::new();
-    let mut next_shard: u16 = 0;
+/// Map per-node assigned shard counts into a Vec<NodeId> where index is shard_id.
+/// The order is deterministic (ascending NodeId order), so each node's shards occupy contiguous ranges.
+pub fn map_shard_indices(assigned_number: &BTreeMap<NodeId, u16>) -> Vec<NodeId> {
+    let total: usize = assigned_number.values().map(|&c| c as usize).sum();
+    let mut shard_to_node: Vec<NodeId> = Vec::with_capacity(total);
     for (node, count) in assigned_number.iter() {
         for _ in 0..*count {
-            shard_to_node.insert(next_shard, *node);
-            next_shard = next_shard.saturating_add(1);
+            shard_to_node.push(*node);
         }
     }
     shard_to_node
@@ -101,29 +105,32 @@ pub fn map_shard_indices(assigned_number: &BTreeMap<NodeId, u16>) -> BTreeMap<u1
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
-    fn total_count(shard_to_node: &BTreeMap<u16, NodeId>) -> usize {
+    fn total_count(shard_to_node: &[NodeId]) -> usize {
         shard_to_node.len()
     }
 
     fn shard_count(
-        shard_to_node: &BTreeMap<u16, NodeId>, 
+        shard_to_node: &[NodeId], 
         node_id: NodeId
     ) -> usize {
-        shard_to_node.values()
+        shard_to_node
+            .iter()
             .filter(|&&n| n == node_id)
             .count()
     }
 
     fn shards(
-        shard_to_node: &BTreeMap<u16, NodeId>, 
+        shard_to_node: &[NodeId], 
         node_id: NodeId
     ) -> Vec<u16> {
-        shard_to_node.iter()
-            .filter_map(|(&shard_id, &n)| if n == node_id { Some(shard_id) } else { None })
+        shard_to_node
+            .iter()
+            .enumerate()
+            .filter_map(|(shard_id, &n)| if n == node_id { Some(shard_id as u16) } else { None })
             .collect()
     }
-
 
     #[test]
     fn test_single() {
@@ -156,7 +163,6 @@ mod tests {
 
         assert_eq!(v, vec![4, 3, 3]);
     }
-
 
     #[test]
     fn test_even() {
@@ -326,7 +332,7 @@ mod tests {
 
         // Verify total shards and correct number of nodes
         assert_eq!(total_count(&updated_shard_map), 1000);
-        let unique_nodes: std::collections::HashSet<NodeId> = updated_shard_map.values().cloned().collect();
+        let unique_nodes: HashSet<NodeId> = updated_shard_map.iter().cloned().collect();
         assert_eq!(unique_nodes.len(), 50, "Expected 50 nodes in updated_shard_map");
 
         // Verify shard counts match target_counts
