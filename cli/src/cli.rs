@@ -271,7 +271,9 @@ impl Context{
     }
 
     pub fn open_primary_store_conn(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::primary()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::primary(&rocksdb_config.primary_path)?)
     }
 
     pub fn open_secondary_store_conn_mine(&self) -> Result<TapeStore> {

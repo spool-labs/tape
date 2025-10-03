@@ -87,7 +87,9 @@ async fn run_tape_cli() -> Result<()> {
         Commands::Web { .. } |
         Commands::Archive { .. } |
         Commands::Mine { .. } => {
-            TapeStore::try_init_store()?;
+            let rocksdb_config = context.config.storage.rocksdb.as_ref()
+              .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+            TapeStore::try_init_store(&rocksdb_config.primary_path)?;
             network::handle_network_commands(cli, context).await?;
         }
 

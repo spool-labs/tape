@@ -1,9 +1,9 @@
 use super::{TapeStore, StoreError, consts::*};
 use std::{env, sync::Arc};
 
-pub fn primary() -> Result<TapeStore, StoreError> {
+pub fn primary(tape_store_primary_db: &str) -> Result<TapeStore, StoreError> {
     let current_dir = env::current_dir().map_err(StoreError::IoError)?;
-    let db_primary = current_dir.join(TAPE_STORE_PRIMARY_DB);
+    let db_primary = current_dir.join(tape_store_primary_db);
     std::fs::create_dir_all(&db_primary).map_err(StoreError::IoError)?;
     TapeStore::new(&db_primary)
 }
