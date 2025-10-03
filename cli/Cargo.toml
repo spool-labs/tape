@@ -23,6 +23,7 @@ packx.workspace = true
 
 anyhow.workspace = true
 chrono.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 colored.workspace = true
@@ -36,6 +37,8 @@ num_enum.workspace = true
 log.workspace = true
 env_logger.workspace = true
 num_cpus.workspace = true
+toml.workspace = true
+shellexpand.workspace = true
 
 mime.workspace = true
 mime_guess.workspace = true
