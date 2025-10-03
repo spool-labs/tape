@@ -6,7 +6,8 @@ pub const TREASURY:  &[u8] = b"treasury";
 pub const EXCHANGE:  &[u8] = b"exchange";
 pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
-pub const COUNCIL:   &[u8] = b"council";
+pub const COMMITTEE: &[u8] = b"committee";
+pub const CANDIDATE: &[u8] = b"candidate";
 pub const NODE:      &[u8] = b"node";
 pub const STAKE:     &[u8] = b"stake";
 pub const RESOURCE:  &[u8] = b"resource";
@@ -59,6 +60,12 @@ pub const EPOCH_ADDRESS: Pubkey =
 
 pub const EPOCH_BUMP: u8 =
     ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
+
+pub const CANDIDATE_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[CANDIDATE], &PROGRAM_ID).0);
+
+pub const CANDIDATE_BUMP: u8 =
+    ed25519::derive_program_address(&[CANDIDATE], &PROGRAM_ID).1;
 
 pub const MINT_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).0);

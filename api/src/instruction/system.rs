@@ -31,7 +31,7 @@ pub fn build_initialize_ix(
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
-    let (council_address, _) = council_pda(EpochNumber::zero());
+    let (committee_address, _) = committee_pda(EpochNumber::zero());
 
     let signer_ata = get_associated_token_address(&signer, &mint_address);
 
@@ -43,7 +43,7 @@ pub fn build_initialize_ix(
 
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
-            AccountMeta::new(council_address, false),
+            AccountMeta::new(committee_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(treasury_address, false),
             AccountMeta::new(treasury_ata, false),

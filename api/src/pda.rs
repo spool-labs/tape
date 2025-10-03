@@ -110,9 +110,20 @@ pub fn exchange_ata(exchange: Pubkey) -> (Pubkey, u8) {
     )
 }
 
+#[cfg(debug_assertions)]
+pub fn candidate_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[CANDIDATE], &crate::id())
+}
+
+#[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn council_pda(epoch: EpochNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[COUNCIL, &epoch.pack()], &crate::id())
+pub fn candidate_pda() -> (Pubkey, u8) {
+    (CANDIDATE_ADDRESS, CANDIDATE_BUMP)
+}
+
+#[inline(always)]
+pub fn committee_pda(epoch: EpochNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[COMMITTEE, &epoch.pack()], &crate::id())
 }
 
 #[inline(always)]

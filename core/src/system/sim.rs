@@ -1,16 +1,3 @@
-// Below is your updated Rust version using the “always E+2” approach. Key changes:
-//
-// - Activation: callers should schedule new stake for activation_epoch = current_epoch + 2. (Optionally use the helper stake method I added.)
-// - Withdrawals: request_withdraw_stake always sets withdraw_epoch = current_epoch + 2.
-//   - If stake is pre-active (activation_epoch > current_epoch), we record a pre-active cancellation (pre_active_withdrawals at the activation epoch) so the stake never becomes active and never accrues rewards.
-//   - If stake is active, we schedule a shares withdrawal at withdraw_epoch.
-// - No “early/direct withdraw” paths. can_withdraw_early always returns false.
-// - process_pending_stake:
-//   - Adds net pending stake as: added_pending - pre_active_cancellations at current epoch.
-//   - Applies scheduled share withdrawals at current epoch.
-// - wal_balance_at_epoch projection now subtracts pre-active cancellations as principals (no share conversions).
-//
-// You can drop in this code; tests included in your module should continue to work conceptually, but any test that depended on E+1 behavior or “direct/early withdrawal” will need adjustment.
 
 use std::collections::BTreeMap;
 
@@ -352,7 +339,7 @@ impl StakingPool {
 
     pub fn rewards_amount(&self) -> u64 {
         self.rewards_pool
-    }
+}
 
     // Always E+2: request withdrawal schedules:
     // - If pre-active (activation_epoch > current): record a pre-active cancel at activation_epoch.

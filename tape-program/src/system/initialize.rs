@@ -10,7 +10,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
         system_info,
         epoch_info, 
-        council_info,
+        committee_info,
         archive_info, 
         treasury_info,
         treasury_ata_info,
@@ -57,11 +57,11 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .has_address(&METADATA_ADDRESS)?;
 
     let epoch_number = EpochNumber::zero();
-    let (council_address, _) = council_pda(epoch_number);
-    council_info
+    let (committee_address, _) = committee_pda(epoch_number);
+    committee_info
         .is_empty()?
         .is_writable()?
-        .has_address(&council_address)?;
+        .has_address(&committee_address)?;
 
     // Check programs and sysvars.
     system_program_info
@@ -105,12 +105,12 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[TREASURY],
     )?;
 
-    create_program_account::<Council>(
-        council_info,
+    create_program_account::<Committee>(
+        committee_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
-        &[COUNCIL, &epoch_number.pack()],
+        &[COMMITTEE, &epoch_number.pack()],
     )?;
 
     let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
@@ -120,12 +120,12 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.id = epoch_number;
     epoch.last_epoch_at = 0;
 
-    let council = council_info.as_account_mut::<Council>(&tape_api::ID)?;
-    council.epoch = epoch_number;
+    let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
+    committee.epoch = epoch_number;
 
     solana_program::log::sol_log_compute_units();
     for i in 0..127 {
-        council.committee.members[i] = CommitteeMember {
+        committee.inner.members[i] = CommitteeMember {
             id: NodeId((256 - i) as u64),
             key: Bn128PublicKey([i as u8; G2_COMPRESSED_SIZE]),
         };

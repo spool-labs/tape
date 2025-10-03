@@ -21,7 +21,8 @@ pub enum AccountType {
 
     System,
     Epoch,
-    Council,
+    Committee,
+    Candidate,
     Archive,
     Treasury,
     Feature,

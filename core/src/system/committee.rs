@@ -105,12 +105,15 @@ impl<const N: usize> CandidateSet<N> {
     /// the node is removed. Returns true iff the node is in the set after the operation.
     pub fn insert_or_update(&mut self, member: CommitteeMember, staked_amount: Coin::<TAPE>) -> bool {
         if let Some(idx) = self.index_of(&member.id) {
-            // Update existing
             let full = self.size() == N;
-            let threshold = if full { self.threshold_stake() } else { TAPE::zero() };
+            let threshold = if full {
+                self.threshold_stake()
+            } else { 
+                TAPE::zero() 
+            };
 
+            // If full and new stake is below threshold, remove the member
             if full && staked_amount < threshold {
-                // Below threshold in a full set: remove
                 self.remove_index(idx);
                 return false;
             }
@@ -325,6 +328,18 @@ impl<const N: usize, const M: usize> AppointedSet<N, M> {
         }
     }
 }
+
+//// input: epoch, pool, 
+//pub fn try_join_candidate_set() {
+//}
+//
+//pub fn compute_next_appointed_set() {
+//}
+//
+//pub fn advance_epoch() {
+//}
+//
+
 
 #[cfg(test)]
 mod tests {

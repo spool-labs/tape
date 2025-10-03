@@ -14,8 +14,8 @@ fn test_minimal() {
     let treasury = get_ata_address(&MINT_ADDRESS, &payer.pubkey());
     let balance = get_ata_balance(&svm, &treasury);
 
-    //let (council, _) = council_pda(EpochNumber::zero());
-    //let council_state = get_council_state(&svm, &council);
+    //let (committee, _) = committee_pda(EpochNumber::zero());
+    //let committee_state = get_committee_state(&svm, &committee);
 
     assert_eq!(balance, MAX_SUPPLY);
 }

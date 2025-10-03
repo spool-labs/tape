@@ -41,9 +41,9 @@ pub fn get_exchange_state(svm: &LiteSVM, exchange: &Pubkey) -> Exchange {
     *Exchange::unpack_with_discriminator(&account.data).unwrap()
 }
 
-pub fn get_council_state(svm: &LiteSVM, council: &Pubkey) -> Council {
-    let account = svm.get_account(council).unwrap();
-    *Council::unpack_with_discriminator(&account.data).unwrap()
+pub fn get_committee_state(svm: &LiteSVM, committee: &Pubkey) -> Committee {
+    let account = svm.get_account(committee).unwrap();
+    *Committee::unpack_with_discriminator(&account.data).unwrap()
 }
 
 pub fn get_storage_node_state(svm: &LiteSVM, node: &Pubkey) -> StorageNode {
