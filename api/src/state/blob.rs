@@ -3,15 +3,6 @@ use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
 
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum BlobState {
-    Unknown = 0,
-    Registered,
-    Certified,
-    Invalidated,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Blob {

@@ -1,16 +1,26 @@
-mod system;
+mod archive;
+mod blob;
+mod committee;
+mod epoch;
 mod exchange;
+mod feature;
 mod operator;
 mod staking;
 mod storage;
-mod blob;
+mod system;
+mod treasury;
 
-pub use system::*;
+pub use archive::*;
+pub use blob::*;
+pub use committee::*;
+pub use epoch::*;
 pub use exchange::*;
+pub use feature::*;
 pub use operator::*;
 pub use staking::*;
 pub use storage::*;
-pub use blob::*;
+pub use system::*;
+pub use treasury::*;
 
 use steel::*;
 
@@ -22,7 +32,6 @@ pub enum AccountType {
     System,
     Epoch,
     Committee,
-    Candidate,
     Archive,
     Treasury,
     Feature,
