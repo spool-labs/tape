@@ -26,6 +26,9 @@ use spl_token::state::{
     Mint,
 };
 
+// Re-export checks
+pub use mollusk_svm::result::Check;
+
 // Helpers for constructing test accounts.
 
 pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
@@ -116,8 +119,9 @@ impl TestEnv {
         &self,
         instruction: &Instruction,
         accounts: &[(Pubkey, Account)],
+        checks: &[Check],
     ) {
-        self.mollusk.process_instruction(instruction, accounts);
+        self.mollusk.process_and_validate_instruction(instruction, accounts, checks);
     }
 }
 

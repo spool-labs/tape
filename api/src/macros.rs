@@ -8,6 +8,17 @@ macro_rules! state {
                 8 + core::mem::size_of::<Self>()
             }
 
+            pub fn pack(&self) -> Vec<u8> {
+                let mut discriminator = [0u8; 8];
+                discriminator[0] = $acct_ty::$data_ty as u8;
+
+                let mut data = Vec::with_capacity(8 + self.to_bytes().len());
+                data.extend_from_slice(&discriminator);
+                data.extend_from_slice(self.to_bytes());
+
+                data
+            }
+
             /// Immutably unpack from a raw account data slice
             pub fn unpack(data: &[u8]) -> Result<&Self, ProgramError> {
                 bytemuck::try_from_bytes::<Self>(data)

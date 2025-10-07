@@ -100,6 +100,20 @@ mod tests {
         ];
 
         let env = test_env("tape".to_string());
-        env.process_instruction(&instruction, &accounts);
+        env.process_instruction(
+            &instruction, 
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&exchange_address).data(
+                    Exchange { 
+                        authority: signer,
+                        balance_tape: TAPE::zero(),
+                        balance_sol: SOL::zero(),
+                        rate: ExchangeRate::flat(),
+                    }.pack().as_ref()
+                ).build(),
+            ]
+        );
     }
 }
