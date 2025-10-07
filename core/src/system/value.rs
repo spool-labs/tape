@@ -1,5 +1,4 @@
-use crate::map::FixedMap;
-use crate::types::EpochNumber;
+use crate::types::{EpochNumber, FixedMap};
 use bytemuck::{Pod, Zeroable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

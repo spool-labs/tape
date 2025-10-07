@@ -1,4 +1,4 @@
-use steel::*;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]

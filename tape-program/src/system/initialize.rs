@@ -127,7 +127,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     for i in 0..127 {
         committee.inner.members[i] = CommitteeMember {
             id: NodeId((256 - i) as u64),
-            key: Bn128PublicKey([i as u8; G2_COMPRESSED_SIZE]),
+            key: BlsPublicKey::zeroed(),
         };
     }
     solana_program::log::sol_log_compute_units();

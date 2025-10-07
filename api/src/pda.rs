@@ -1,6 +1,5 @@
 use crate::consts::*;
 use tape_core::prelude::*;
-use steel::*;
 
 #[cfg(debug_assertions)]
 pub fn system_pda() -> (Pubkey, u8) {

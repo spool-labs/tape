@@ -1,6 +1,4 @@
-use crate::coin::*;
-use crate::types::{EpochNumber, BasisPoints};
-
+use crate::types::*;
 use bytemuck::{Pod, Zeroable};
 
 use super::{

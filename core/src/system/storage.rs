@@ -1,7 +1,4 @@
-use crate::{
-    types::*,
-    ring::*,
-};
+use crate::types::*;
 use bytemuck::{Pod, Zeroable};
 use super::SystemError;
 use super::utils::get_offsets;

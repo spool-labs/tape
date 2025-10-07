@@ -1,10 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{
-    types::*,
-    ring::*,
-    coin::*,
-};
+use crate::types::*;
 use super::SystemError;
 use super::utils::get_offsets;
 
@@ -121,8 +117,6 @@ impl<const N: usize> RewardAccounting<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::EpochNumber;
-    use crate::coin::Coin;
 
     const N: usize = 5;
 

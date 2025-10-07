@@ -13,8 +13,6 @@ documentation = "https://docs.rs/tape-api"
 
 [dependencies]
 tape-crypto.workspace = true
-steel.workspace = true
-blake3.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
 solana-program.workspace = true
@@ -23,6 +21,6 @@ solana-program.workspace = true
 crate-type = ["cdylib", "lib"]
 
 [features]
-default = ["std"]
+default = []
 std = []
 solana = []

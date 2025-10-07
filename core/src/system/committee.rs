@@ -1,6 +1,5 @@
-use crate::coin::*;
 use crate::types::*;
-use crate::bls::Bn128PublicKey;
+use crate::bls::*;
 use std::collections::BTreeMap;
 use bytemuck::{Pod, Zeroable};
 
@@ -14,7 +13,7 @@ pub type RelativeNodeId = u8;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct CommitteeMember {
     pub id: NodeId,
-    pub key: Bn128PublicKey,
+    pub key: BlsPublicKey,
 }
 
 /// A CandidateSet defines a set of committee members that will be considered for appointment
@@ -358,7 +357,7 @@ mod tests {
     fn member_with_id(id: NodeId) -> CommitteeMember {
         CommitteeMember {
             id,
-            key: Bn128PublicKey::zeroed(),
+            key: BlsPublicKey::zeroed(),
         }
     }
 

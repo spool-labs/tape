@@ -1,5 +1,4 @@
-use crate::ring::RingBuffer;
-use crate::types::EpochNumber;
+use crate::types::{EpochNumber, RingBuffer};
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]

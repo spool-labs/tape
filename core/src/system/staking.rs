@@ -1,8 +1,7 @@
-use steel::*;
 use bytemuck::{Pod, Zeroable};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::coin::*;
-use crate::types::EpochNumber;
+use crate::types::*;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]

@@ -1,10 +1,10 @@
-use steel::*;
+use bytemuck::{Pod, Zeroable};
+
 #[cfg(not(feature = "solana"))]
 use core::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkAddressError {
-    #[error("Invalid address format")]
     InvalidAddressFormat,
 }
 

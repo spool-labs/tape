@@ -7,11 +7,14 @@ use solana_bn254::{
 
 use crate::bls12254::errors::BLSError;
 use super::privkey::PrivKey;
+use bytemuck::{Pod, Zeroable};
 
-#[derive(Clone)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct G1Point(pub [u8; 64]);
 
-#[derive(Clone)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct G1CompressedPoint(pub [u8; 32]);
 
 impl Add for G1Point {

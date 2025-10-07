@@ -16,11 +16,14 @@ use crate::bls12254::G2_MINUS_ONE;
 use crate::bls12254::errors::BLSError;
 use super::g1::G1Point;
 use super::hash::hash_to_curve;
+use bytemuck::{Pod, Zeroable};
 
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct G2Point(pub [u8; 128]);
 
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct G2CompressedPoint(pub [u8; 64]);
 
 impl G2Point {

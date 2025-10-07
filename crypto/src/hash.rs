@@ -44,34 +44,14 @@ impl Hash {
     }
 }
 
-#[cfg(feature = "solana")]
 #[inline(always)]
 pub fn hashv(data: &[&[u8]]) -> Hash {
     let res = solana_program::blake3::hashv(data);
     Hash::new_from_array(res.to_bytes())
 }
 
-#[cfg(not(feature = "solana"))]
-#[inline(always)]
-pub fn hashv(data: &[&[u8]]) -> Hash {
-    let mut hasher = blake3::Hasher::new();
-    for d in data {
-        hasher.update(d);
-    }
-    Hash::new_from_array(hasher.finalize().into())
-}
-
-#[cfg(feature = "solana")]
 #[inline(always)]
 pub fn hash(data: &[u8]) -> Hash {
     let res = solana_program::blake3::hash(data);
     Hash::new_from_array(res.to_bytes())
-}
-
-#[cfg(not(feature = "solana"))]
-#[inline(always)]
-pub fn hash(data: &[u8]) -> Hash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data);
-    Hash::new_from_array(hasher.finalize().into())
 }
