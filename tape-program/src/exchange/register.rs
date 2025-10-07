@@ -77,83 +77,29 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use spl_token::{
-        state::{Account as TokenAccount, Mint},
-    };
-    use mollusk_svm::{
-        Mollusk, 
-        program::keyed_account_for_system_program,
-        sysvar::Sysvars,
-    };
-    use mollusk_svm_programs_token::{associated_token, token};
-
-    use solana_sdk::{
-        account::{AccountSharedData, Account},
-        pubkey::Pubkey,
-        rent::Rent,
-        program_pack::Pack,
-    };
-
-    fn funded(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
-        (key, Account {
-            lamports,
-            data: vec![],
-            owner: system_program::ID,
-            executable: false,
-            rent_epoch: 0,
-        })
-    }
-
-    fn mint(key: Pubkey) -> (Pubkey, Account) {
-        let mint_data = Mint {
-            mint_authority: Some(key).into(),
-            supply: 1,
-            decimals: 6,
-            is_initialized: true,
-            freeze_authority: None.into(),
-        };
-
-        let mut data = vec![0u8; Mint::LEN];
-        Mint::pack(mint_data, &mut data).unwrap();
-
-        (key, Account {
-            lamports: Rent::default().minimum_balance(Mint::LEN),
-            data,
-            owner: token::ID,
-            executable: false,
-            rent_epoch: 0,
-        })
-    }
+    use tape_test::*;
 
     #[test]
     fn test_register() {
-        let sysvars = Sysvars::default();
-
         let signer = Pubkey::new_unique();
         let instruction = build_register_exchange_ix(signer);
 
-        let (mint_address, _) = mint_pda();
         let (exchange_address, _) = exchange_pda(signer);
         let (exchange_ata, _) = exchange_ata(exchange_address);
 
         let accounts = vec![
-            funded(signer, 1_000_000_000),
+            sol(signer, 1_000_000_000),
+            empty(exchange_address),
+            empty(exchange_ata),
+            mint(1_000),
 
-            (exchange_address, Account::default()),
-            (exchange_ata, Account::default()),
-            mint(mint_address),
-
-            keyed_account_for_system_program(),
-            token::keyed_account(),
-            associated_token::keyed_account(),
-            sysvars.keyed_account_for_rent_sysvar(),
+            system_program(),
+            token_program(),
+            ata_program(),
+            rent_sysvar(),
         ];
 
-        let mut mollusk = Mollusk::new(&tape_api::ID, "../target/deploy/tape");
-        token::add_program(&mut mollusk);
-        associated_token::add_program(&mut mollusk);
-
-        mollusk.process_instruction(&instruction, &accounts );
+        let env = test_env("tape".to_string());
+        env.process_instruction(&instruction, &accounts);
     }
 }

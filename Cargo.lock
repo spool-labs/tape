@@ -6065,6 +6065,7 @@ dependencies = [
  "steel",
  "tape-api",
  "tape-core",
+ "tape-test",
  "tokio",
 ]
 
@@ -6095,6 +6096,22 @@ dependencies = [
  "tape-api",
  "thiserror 2.0.16",
  "tokio",
+]
+
+[[package]]
+name = "tape-test"
+version = "0.3.0"
+dependencies = [
+ "mollusk-svm",
+ "mollusk-svm-programs-token",
+ "mpl-token-metadata",
+ "pretty-hex",
+ "solana-program",
+ "solana-sdk",
+ "spl-associated-token-account 6.0.0",
+ "spl-token 4.0.2",
+ "tape-api",
+ "tape-core",
 ]
 
 [[package]]

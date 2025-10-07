@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+pub mod committee;
 pub mod system;
 pub mod exchange;
 pub mod operator;
@@ -7,6 +8,7 @@ pub mod staking;
 pub mod storage;
 pub mod blob;
 
+use committee::*;
 use system::*;
 use exchange::*;
 use operator::*;
@@ -36,6 +38,7 @@ pub fn process_instruction(
         match ix {
             // System
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
+            TapeInstruction::CreateCommittee => process_create_committee(accounts, data)?,
 
             // Exchange
             TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
