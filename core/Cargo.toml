@@ -9,7 +9,7 @@ repository.workspace = true
 keywords.workspace = true
 readme.workspace = true
 
-documentation = "https://docs.rs/tape-api"
+documentation = "https://docs.rs/tape-core"
 
 [dependencies]
 tape-crypto.workspace = true

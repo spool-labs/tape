@@ -118,7 +118,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
     epoch.id = epoch_number;
-    epoch.last_epoch_at = 0;
+    epoch.last_epoch_ms = 0;
 
     let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
     committee.epoch = epoch_number;
