@@ -3,7 +3,7 @@ resolver = "2"
 members = [ 
   "core",
   "api",
-# "tape-api",
+  "crypto",
   "tape-archive",
   "tape-cli",
   "tape-client",
@@ -28,6 +28,7 @@ keywords = ["solana", "crypto", "storage"]
 [workspace.dependencies]
 tape-api = { version = "0.3.0", path = "./api" }
 tape-core = { version = "0.3.0", path = "./core" }
+tape-crypto = { version = "0.3.0", path = "./crypto" }
 
 tape-archive = { version = "0.3.0", path = "./tape-archive" }
 tape-cli = { version = "0.3.0", path = "./tape-cli" }
