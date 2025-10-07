@@ -5901,6 +5901,7 @@ dependencies = [
  "spl-token 4.0.2",
  "steel",
  "tape-core",
+ "tape-crypto",
 ]
 
 [[package]]
@@ -5924,6 +5925,7 @@ dependencies = [
  "num_enum",
  "solana-program",
  "steel",
+ "tape-crypto",
 ]
 
 [[package]]
