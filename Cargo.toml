@@ -4,15 +4,8 @@ members = [
   "core",
   "api",
   "crypto",
-  "tape-archive",
-  "tape-cli",
-  "tape-client",
-  "tape-network",
   "tape-program",
-  "tape-rpc",
-  "tape-solana",
-  "tape-store",
-  "tape-utils"
+  "solana",
 ]
 
 [workspace.package]

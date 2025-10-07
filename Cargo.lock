@@ -5904,18 +5904,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-archive"
-version = "0.3.0"
-
-[[package]]
-name = "tape-cli"
-version = "0.3.0"
-
-[[package]]
-name = "tape-client"
-version = "0.3.0"
-
-[[package]]
 name = "tape-core"
 version = "0.3.0"
 dependencies = [
@@ -5943,10 +5931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-network"
-version = "0.3.0"
-
-[[package]]
 name = "tape-program"
 version = "0.3.0"
 dependencies = [
@@ -5970,10 +5954,6 @@ dependencies = [
  "tape-core",
  "tokio",
 ]
-
-[[package]]
-name = "tape-rpc"
-version = "0.3.0"
 
 [[package]]
 name = "tape-solana"
@@ -6003,14 +5983,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tokio",
 ]
-
-[[package]]
-name = "tape-store"
-version = "0.3.0"
-
-[[package]]
-name = "tape-utils"
-version = "0.3.0"
 
 [[package]]
 name = "task-local-extensions"

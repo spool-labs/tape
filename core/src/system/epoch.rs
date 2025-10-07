@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 use crate::bft::is_supermajority;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]

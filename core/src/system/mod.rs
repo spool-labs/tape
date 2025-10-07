@@ -9,6 +9,7 @@ mod staking;
 mod storage;
 mod utils;
 mod value;
+pub mod sim;
 
 pub use blob::*;
 pub use committee::*;
