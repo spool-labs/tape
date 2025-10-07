@@ -1,6 +1,6 @@
 use tape_api::prelude::*;
 use mollusk_svm::{
-    program::keyed_account_for_system_program,
+    program::{keyed_account_for_system_program, loader_keys::LOADER_V2},
     sysvar::Sysvars,
     Mollusk,
 };
@@ -123,8 +123,32 @@ impl TestEnv {
 
 pub fn test_env(name: String) -> TestEnv {
     let name = format!("../target/deploy/{}", name);
-    let mut mollusk = Mollusk::new(&tape_api::ID, &name);
+
+    with_programs(&name, &[
+        (&mpl_token_metadata::ID, program_elf!("elfs/mpl_token_metadata.so")),
+    ])
+}
+
+pub fn with_programs(program_name: &str, programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
+    let mut mollusk = Mollusk::new(&tape_api::ID, program_name);
+
     spl_token_program::add_program(&mut mollusk);
     spl_ata_program::add_program(&mut mollusk);
+
+    for (id, elf) in programs {
+        mollusk.add_program_with_elf_and_loader(id, elf, &LOADER_V2);
+    }
+
     TestEnv { mollusk }
 }
+
+// ELF helpers
+
+#[macro_export]
+macro_rules! program_elf {
+    ($relative_path:literal) => {
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $relative_path))
+    };
+}
+
+

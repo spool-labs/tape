@@ -38,3 +38,29 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+
+    #[test]
+    fn test_create() {
+        let signer = Pubkey::new_unique();
+        let epoch_number = EpochNumber(0);
+
+        let instruction = build_create_committee(signer, epoch_number);
+        let (committee_address, _) = committee_pda(epoch_number);
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            empty(committee_address),
+
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(&instruction, &accounts);
+    }
+}
