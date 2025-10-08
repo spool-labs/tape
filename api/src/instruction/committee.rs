@@ -11,7 +11,7 @@ pub struct CreateCommittee {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ExpandCommittee {
-    pub additional_size: [u8; 8],
+    pub epoch: [u8; 8],
 }
 
 pub fn build_create_committee(
@@ -37,7 +37,6 @@ pub fn build_create_committee(
 pub fn build_expand_committee_ix(
     signer: Pubkey,
     epoch: EpochNumber,
-    additional_size: u64,
 ) -> Instruction {
     let (committee_address, _) = committee_pda(epoch);
 
@@ -50,8 +49,7 @@ pub fn build_expand_committee_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: ExpandCommittee {
-            additional_size: additional_size.to_le_bytes(),
-        }
-        .to_bytes(),
+            epoch: epoch.pack(),
+        }.to_bytes(),
     }
 }

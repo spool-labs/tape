@@ -1,5 +1,6 @@
 use steel::*;
 use tape_api::prelude::*;
+use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CreateCommittee::try_from_bytes(data)?;
@@ -12,6 +13,11 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    system_program_info
+        .is_program(&system_program::ID)?;
+    rent_sysvar_info
+        .is_sysvar(&sysvar::rent::ID)?;
+
     let epoch_number = EpochNumber::unpack(args.epoch);
     let (committee_address, _) = committee_pda(epoch_number);
     committee_info
@@ -19,22 +25,17 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_writable()?
         .has_address(&committee_address)?;
 
-    // Check programs and sysvars.
-    system_program_info
-        .is_program(&system_program::ID)?;
-    rent_sysvar_info
-        .is_sysvar(&sysvar::rent::ID)?;
-
-    create_program_account::<Committee>(
+    let size = MAX_PERMITTED_DATA_INCREASE
+        .min(Committee::get_size());
+    
+    create_account_with_size::<Committee>(
         committee_info,
         system_program_info,
         signer_info,
+        size,
         &tape_api::ID,
         &[COMMITTEE, &epoch_number.pack()],
     )?;
-
-    let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
-    committee.epoch = epoch_number;
 
     Ok(())
 }
@@ -60,20 +61,20 @@ mod tests {
             rent_sysvar(),
         ];
 
+        let size = MAX_PERMITTED_DATA_INCREASE
+            .min(Committee::get_size());
+
         let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction, 
             &accounts,
             &[
                 Check::success(),
-                //Check::account(&exchange_address).data(
-                //    Exchange { 
-                //        authority: signer,
-                //        balance_tape: TAPE::zero(),
-                //        balance_sol: SOL::zero(),
-                //        rate: ExchangeRate::flat(),
-                //    }.to_bytes()
-                //).build(),
+                Check::account(&committee_address)
+                    .space(size)
+                    .owner(&tape_api::ID)
+                    .data_slice(0, &[Committee::discriminator()])
+                    .build(),
             ]
         );
     }
