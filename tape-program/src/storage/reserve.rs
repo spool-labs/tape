@@ -160,9 +160,9 @@ mod tests {
     #[test]
     fn test_reserve_tape() {
         let signer = Pubkey::new_unique();
-        let storage_units = StorageUnits(100); // 100 MB
-        let start_epoch = EpochNumber(43); // In the future
-        let end_epoch = EpochNumber(45); // Two epochs duration
+        let storage_units = StorageUnits(100);     // 100 MB
+        let start_epoch = EpochNumber(43);         // In the future
+        let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
         let instruction = build_reserve_tape_ix(signer, storage_units, start_epoch, end_epoch);
@@ -175,13 +175,8 @@ mod tests {
         let signer_ata = ata_address(&signer);
 
         // Setup existing accounts
-        let epoch = Epoch {
-            id: EpochNumber::zero(),
-            state: EpochState::zeroed(),
-            last_epoch_ms: 0,
-            leaders: CandidateSet::zeroed(),
-        };
 
+        let epoch = Epoch::zeroed();
         let archive = Archive {
             storage_capacity: StorageUnits(1000), // 1000 MB capacity
             storage_price_per_unit: price_per_unit,
