@@ -1,6 +1,7 @@
 use steel::*;
 
 mod system;
+mod epoch;
 mod committee;
 mod exchange;
 mod operator;
@@ -9,6 +10,7 @@ mod storage;
 mod blob;
 
 pub use system::*;
+pub use epoch::*;
 pub use committee::*;
 pub use exchange::*;
 pub use operator::*;
@@ -25,10 +27,8 @@ pub enum TapeInstruction {
     Initialize,
 
     CreateEpoch,
+    ExpandEpoch,
     AdvanceEpoch,
-
-    CreateCandidateSet,
-    ExpandCandidateSet,
 
     CreateCommittee,
     ExpandCommittee,
@@ -83,12 +83,13 @@ pub enum TapeInstruction {
 }
 
 instruction!(TapeInstruction, Initialize);
+instruction!(TapeInstruction, CreateEpoch);
+instruction!(TapeInstruction, ExpandEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
-instruction!(TapeInstruction, RegisterFeature);
-instruction!(TapeInstruction, CertifyFeature);
-
 instruction!(TapeInstruction, CreateCommittee);
 instruction!(TapeInstruction, ExpandCommittee);
+instruction!(TapeInstruction, RegisterFeature);
+instruction!(TapeInstruction, CertifyFeature);
 
 instruction!(TapeInstruction, RegisterExchange);
 instruction!(TapeInstruction, SetExchangeRate);

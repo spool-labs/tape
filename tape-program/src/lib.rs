@@ -1,20 +1,22 @@
 #![allow(unexpected_cfgs)]
 
+pub mod blob;
 pub mod committee;
-pub mod system;
+pub mod epoch;
 pub mod exchange;
 pub mod operator;
 pub mod staking;
 pub mod storage;
-pub mod blob;
+pub mod system;
 
+use blob::*;
 use committee::*;
-use system::*;
+use epoch::*;
 use exchange::*;
 use operator::*;
 use staking::*;
 use storage::*;
-use blob::*;
+use system::*;
 
 use tape_api::prelude::*;
 use steel::*;
@@ -38,6 +40,10 @@ pub fn process_instruction(
         match ix {
             // System
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
+
+            TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
+            TapeInstruction::ExpandEpoch => process_expand_epoch(accounts, data)?,
+
             TapeInstruction::CreateCommittee => process_create_committee(accounts, data)?,
             TapeInstruction::ExpandCommittee => process_expand_committee(accounts, data)?,
 

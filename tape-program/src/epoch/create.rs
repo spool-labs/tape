@@ -2,11 +2,11 @@ use steel::*;
 use tape_api::prelude::*;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
-pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = CreateCommittee::try_from_bytes(data)?;
+pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let _args = CreateEpoch::try_from_bytes(data)?;
     let [
         signer_info, 
-        committee_info,
+        epoch_info,
         system_program_info, 
         rent_sysvar_info,
     ] = accounts else {
@@ -18,28 +18,23 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let committee_number = CommitteeNumber::unpack(args.id);
-    if !committee_number.is_valid() {
-        return Err(ProgramError::InvalidArgument);
-    }
+    let (epoch_address, _) = epoch_pda();
 
-    let (committee_address, _) = committee_pda(committee_number);
-
-    committee_info
+    epoch_info
         .is_empty()?
         .is_writable()?
-        .has_address(&committee_address)?;
+        .has_address(&epoch_address)?;
 
     let size = MAX_PERMITTED_DATA_INCREASE
-        .min(Committee::get_size());
+        .min(Epoch::get_size());
     
-    create_account_with_size::<Committee>(
-        committee_info,
+    create_account_with_size::<Epoch>(
+        epoch_info,
         system_program_info,
         signer_info,
         size,
         &tape_api::ID,
-        &[COMMITTEE, &committee_number.pack()],
+        &[EPOCH],
     )?;
 
     Ok(())
@@ -51,23 +46,22 @@ mod tests {
     use tape_test::*;
 
     #[test]
-    fn test_committee_create() {
+    fn test_epoch_create() {
         let signer = Pubkey::new_unique();
-        let committee_number = CommitteeNumber(0);
 
-        let instruction = build_create_committee_ix(signer, committee_number);
-        let (committee_address, _) = committee_pda(committee_number);
+        let instruction = build_create_epoch_ix(signer);
+        let (epoch_address, _) = epoch_pda();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-            empty(committee_address),
+            empty(epoch_address),
 
             system_program(),
             rent_sysvar(),
         ];
 
         let size = MAX_PERMITTED_DATA_INCREASE
-            .min(Committee::get_size());
+            .min(Epoch::get_size());
 
         let env = test_env("tape".to_string());
         env.process_instruction(
@@ -75,10 +69,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&committee_address)
+                Check::account(&epoch_address)
                     .space(size)
                     .owner(&tape_api::ID)
-                    .data_slice(0, &[Committee::discriminator()])
+                    .data_slice(0, &[Epoch::discriminator()])
                     .build(),
             ]
         );
