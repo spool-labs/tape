@@ -41,6 +41,16 @@ pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
     })
 }
 
+pub fn pda(key: Pubkey, data: Vec<u8>) -> (Pubkey, Account) {
+    (key, Account {
+        lamports: Rent::default().minimum_balance(data.len()),
+        data,
+        owner: tape_api::ID,
+        executable: false,
+        rent_epoch: 0,
+    })
+}
+
 pub fn empty(key: Pubkey) -> (Pubkey, Account) {
     (key, Account::default())
 }

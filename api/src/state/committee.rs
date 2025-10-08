@@ -6,6 +6,9 @@ use crate::{state, consts::*};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Committee {
+    /// The id of this committee.
+    pub id: CommitteeNumber,
+
     /// The epoch number for which this committee is valid.
     pub epoch: EpochNumber,
 

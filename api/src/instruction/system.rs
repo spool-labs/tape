@@ -31,7 +31,7 @@ pub fn build_initialize_ix(
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
-    let (committee_address, _) = committee_pda(EpochNumber::zero());
+    let (committee_address, _) = committee_pda(CommitteeNumber::current());
 
     let signer_ata = get_associated_token_address(&signer, &mint_address);
 

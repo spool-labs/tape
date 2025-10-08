@@ -39,6 +39,7 @@ pub fn process_instruction(
             // System
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
             TapeInstruction::CreateCommittee => process_create_committee(accounts, data)?,
+            TapeInstruction::ExpandCommittee => process_expand_committee(accounts, data)?,
 
             // Exchange
             TapeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,

@@ -2,6 +2,7 @@ use crate::define_numeric_type;
 
 // Index types
 define_numeric_type!(EpochNumber, "epoch");
+define_numeric_type!(CommitteeNumber, "committee");
 define_numeric_type!(PoolNumber, "pool");
 define_numeric_type!(SpoolNumber, "spool");
 define_numeric_type!(NodeId, "node");
@@ -35,6 +36,36 @@ impl StorageUnits {
     #[inline]
     pub fn to_bytes(&self) -> u64 {
         self.0 * Self::BYTES
+    }
+}
+
+impl CommitteeNumber {
+    const CURRENT: u64 = 0;
+    const PREVIOUS: u64 = 1;
+
+    #[inline]
+    pub fn previous() -> Self {
+        Self::new(Self::PREVIOUS)
+    }
+
+    #[inline]
+    pub fn current() -> Self {
+        Self::new(Self::CURRENT)
+    }
+
+    #[inline]
+    pub fn is_current(&self) -> bool {
+        self.0 == Self::CURRENT
+    }
+
+    #[inline]
+    pub fn is_previous(&self) -> bool {
+        self.0 == Self::PREVIOUS
+    }
+    
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self.0 == Self::CURRENT || self.0 == Self::PREVIOUS
     }
 }
 

@@ -18,8 +18,12 @@ pub fn process_expand_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let epoch_number = EpochNumber::unpack(args.epoch);
-    let (committee_address, _) = committee_pda(epoch_number);
+    let committee_number = CommitteeNumber::unpack(args.id);
+    if !committee_number.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let (committee_address, _) = committee_pda(committee_number);
 
     committee_info
         .is_type::<Committee>(&tape_api::ID)?
@@ -27,7 +31,12 @@ pub fn process_expand_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .has_address(&committee_address)?;
 
     let current_size = committee_info.data_len();
+    solana_program::log::msg!("Current size: {}, Required size: {}", current_size, Committee::get_size());
     let required_size = Committee::get_size();
+
+    if current_size == 0 {
+        return Err(ProgramError::UninitializedAccount);
+    }
 
     if current_size >= required_size {
         return Err(ProgramError::AccountAlreadyInitialized);
@@ -46,48 +55,51 @@ pub fn process_expand_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     if new_size == required_size {
         let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
-        committee.epoch = epoch_number;
+        committee.id = committee_number;
     }
 
     Ok(())
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use tape_test::*;
-//
-//     #[test]
-//     fn test_create() {
-//         let signer = Pubkey::new_unique();
-//         let epoch_number = EpochNumber(0);
-//
-//         let instruction = build_create_committee(signer, epoch_number);
-//         let (committee_address, _) = committee_pda(epoch_number);
-//
-//         let accounts = vec![
-//             sol(signer, 1_000_000_000),
-//             empty(committee_address),
-//
-//             system_program(),
-//             rent_sysvar(),
-//         ];
-//
-//         let env = test_env("tape".to_string());
-//         env.process_instruction(
-//             &instruction, 
-//             &accounts,
-//             &[
-//                 Check::success(),
-//                 //Check::account(&exchange_address).data(
-//                 //    Exchange { 
-//                 //        authority: signer,
-//                 //        balance_tape: TAPE::zero(),
-//                 //        balance_sol: SOL::zero(),
-//                 //        rate: ExchangeRate::flat(),
-//                 //    }.to_bytes()
-//                 //).build(),
-//             ]
-//         );
-//     }
-// }
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use tape_test::*;
+
+     #[test]
+     fn test_expand() {
+         let signer = Pubkey::new_unique();
+         let committee_number = CommitteeNumber::previous();
+
+         let instruction = build_expand_committee_ix(signer, committee_number);
+         let (committee_address, _) = committee_pda(committee_number);
+
+         // Create a committee account with half the required size
+         let partial_account = Committee::zeroed()
+             .pack()[..Committee::get_size()/2].to_vec();
+
+         let accounts = vec![
+             sol(signer, 1_000_000_000),
+             pda(committee_address, partial_account),
+
+             system_program(),
+             rent_sysvar(),
+         ];
+
+         let env = test_env("tape".to_string());
+         env.process_instruction(
+             &instruction, 
+             &accounts,
+             &[
+                 Check::success(),
+                 Check::account(&committee_address).data(
+                     Committee { 
+                         id: committee_number,
+                         epoch: EpochNumber::zero(),
+                         inner: AppointedSet::zeroed(),
+                     }.pack().as_ref()
+                 ).build(),
+             ]
+         );
+     }
+ }

@@ -5,20 +5,22 @@ use tape_core::prelude::*;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateCommittee {
-    pub epoch: [u8; 8],
+    pub id: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ExpandCommittee {
-    pub epoch: [u8; 8],
+    pub id: [u8; 8],
 }
 
-pub fn build_create_committee(
+pub fn build_create_committee_ix(
     signer: Pubkey,
-    epoch: EpochNumber,
+    committee: CommitteeNumber,
 ) -> Instruction {
-    let (committee_address, _) = committee_pda(epoch);
+    assert!(committee.is_valid());
+
+    let (committee_address, _) = committee_pda(committee);
 
     Instruction {
         program_id: crate::ID,
@@ -29,16 +31,18 @@ pub fn build_create_committee(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: CreateCommittee {
-            epoch: epoch.pack(),
+            id: committee.pack(),
         }.to_bytes(),
     }
 }
 
 pub fn build_expand_committee_ix(
     signer: Pubkey,
-    epoch: EpochNumber,
+    committee: CommitteeNumber,
 ) -> Instruction {
-    let (committee_address, _) = committee_pda(epoch);
+    assert!(committee.is_valid());
+
+    let (committee_address, _) = committee_pda(committee);
 
     Instruction {
         program_id: crate::ID,
@@ -49,7 +53,7 @@ pub fn build_expand_committee_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: ExpandCommittee {
-            epoch: epoch.pack(),
+            id: committee.pack(),
         }.to_bytes(),
     }
 }

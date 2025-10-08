@@ -18,8 +18,13 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let epoch_number = EpochNumber::unpack(args.epoch);
-    let (committee_address, _) = committee_pda(epoch_number);
+    let committee_number = CommitteeNumber::unpack(args.id);
+    if !committee_number.is_valid() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let (committee_address, _) = committee_pda(committee_number);
+
     committee_info
         .is_empty()?
         .is_writable()?
@@ -34,7 +39,7 @@ pub fn process_create_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         signer_info,
         size,
         &tape_api::ID,
-        &[COMMITTEE, &epoch_number.pack()],
+        &[COMMITTEE, &committee_number.pack()],
     )?;
 
     Ok(())
@@ -48,10 +53,10 @@ mod tests {
     #[test]
     fn test_create() {
         let signer = Pubkey::new_unique();
-        let epoch_number = EpochNumber(0);
+        let committee_number = CommitteeNumber(0);
 
-        let instruction = build_create_committee(signer, epoch_number);
-        let (committee_address, _) = committee_pda(epoch_number);
+        let instruction = build_create_committee_ix(signer, committee_number);
+        let (committee_address, _) = committee_pda(committee_number);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),

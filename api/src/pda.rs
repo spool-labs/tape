@@ -121,8 +121,8 @@ pub fn candidate_pda() -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn committee_pda(epoch: EpochNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[COMMITTEE, &epoch.pack()], &crate::id())
+pub fn committee_pda(id: CommitteeNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[COMMITTEE, &id.pack()], &crate::id())
 }
 
 #[inline(always)]
@@ -197,5 +197,9 @@ mod tests {
         let (pda, bump) = treasury_ata();
         assert_eq!(pda, TREASURY_ATA);
         assert_eq!(bump, TREASURY_ATA_BUMP);
+
+        let (pda, bump) = candidate_pda();
+        assert_eq!(pda, CANDIDATE_ADDRESS);
+        assert_eq!(bump, CANDIDATE_BUMP);
     }
 }

@@ -57,7 +57,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .has_address(&METADATA_ADDRESS)?;
 
     let epoch_number = EpochNumber::zero();
-    let (committee_address, _) = committee_pda(epoch_number);
+    let committee_number = CommitteeNumber::current();
+    let (committee_address, _) = committee_pda(committee_number);
     committee_info
         .is_empty()?
         .is_writable()?
@@ -121,6 +122,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.last_epoch_ms = 0;
 
     let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
+    committee.id = committee_number;
     committee.epoch = epoch_number;
 
     solana_program::log::sol_log_compute_units();
