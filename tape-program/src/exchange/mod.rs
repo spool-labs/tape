@@ -22,7 +22,14 @@ mod tests {
     use tape_test::*;
     use solana_sdk::account::Account;
 
-    fn create_exchange_data(signer: Pubkey, balance_tape: u64, balance_sol: u64, tape_rate: u64, sol_rate: u64) -> Exchange {
+    fn create_exchange(
+        signer: Pubkey, 
+        balance_tape: u64, 
+        balance_sol: u64, 
+        tape_rate: u64, 
+        sol_rate: u64
+    ) -> Exchange {
+
         Exchange {
             authority: signer,
             balance_tape: TAPE(balance_tape),
@@ -34,10 +41,48 @@ mod tests {
         }
     }
 
-    fn create_exchange_account(address: Pubkey, data: &Exchange) -> Account {
+    fn create_account(address: Pubkey, data: &Exchange) -> Account {
         let mut account = pda(address, data.pack()).1;
         account.lamports += data.balance_sol.as_u64();
         account
+    }
+
+    #[test]
+    fn test_register() {
+        let signer = Pubkey::new_unique();
+        let instruction = build_register_exchange_ix(signer);
+
+        let (exchange_address, _) = exchange_pda(signer);
+        let (exchange_ata, _) = exchange_ata(exchange_address);
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            empty(exchange_address),
+            empty(exchange_ata),
+            mint(1_000),
+
+            system_program(),
+            token_program(),
+            ata_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(
+            &instruction, 
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&exchange_address).data(
+                    Exchange { 
+                        authority: signer,
+                        balance_tape: TAPE::zero(),
+                        balance_sol: SOL::zero(),
+                        rate: ExchangeRate::flat(),
+                    }.pack().as_ref()
+                ).build(),
+            ]
+        );
     }
 
     #[test]
@@ -47,13 +92,14 @@ mod tests {
         let sol_rate = 1; // 1 SOL
 
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 0, 0, 1, 1);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
+        let exchange = create_exchange(signer, 0, 0, 1, 1);
+        let account = create_account(exchange_address, &exchange);
+
         let instruction = build_set_exchange_rate_ix(signer, exchange_address, tape_rate, sol_rate);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
         ];
 
         let expected_exchange = Exchange {
@@ -80,13 +126,15 @@ mod tests {
     #[test]
     fn test_deposit_tape() {
         let signer = Pubkey::new_unique();
+        let signer_ata = ata_address(&signer);
+
         let amount = TAPE(1000); // 0.001 TAPE
 
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 500, 0, 1, 1);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
         let (exchange_ata, _) = exchange_ata(exchange_address);
-        let signer_ata = ata_address(&signer);
+
+        let exchange = create_exchange(signer, 500, 0, 1, 1);
+        let account = create_account(exchange_address, &exchange);
         let instruction = build_deposit_tape_ix(signer, signer_ata, exchange_address, amount);
 
         let initial_signer_balance = 2000; // Sufficient for 1000
@@ -95,7 +143,7 @@ mod tests {
         let accounts = vec![
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, initial_signer_balance),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
             token(exchange_ata, exchange_address, initial_exchange_ata_balance),
             token_program(),
         ];
@@ -130,14 +178,16 @@ mod tests {
         let amount = SOL(1_000_000); // 0.001 SOL
 
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 0, 500_000, 1, 1);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
+
+        let exchange = create_exchange(signer, 0, 500_000, 1, 1);
+        let account = create_account(exchange_address, &exchange);
+
         let initial_signer_lamports = 2_000_000_000; // Sufficient for 0.001 SOL
-        let initial_exchange_lamports = exchange_acc.lamports;
+        let initial_exchange_lamports = account.lamports;
 
         let accounts = vec![
             sol(signer, initial_signer_lamports),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
             system_program(),
         ];
 
@@ -170,13 +220,15 @@ mod tests {
     #[test]
     fn test_withdraw_tape() {
         let signer = Pubkey::new_unique();
+        let signer_ata = ata_address(&signer);
+
         let amount = TAPE(500); // 0.0005 TAPE
 
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 1000, 0, 1, 1);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
         let (exchange_ata, _) = exchange_ata(exchange_address);
-        let signer_ata = ata_address(&signer);
+
+        let exchange = create_exchange(signer, 1000, 0, 1, 1);
+        let account = create_account(exchange_address, &exchange);
         let instruction = build_withdraw_tape_ix(signer, signer_ata, exchange_address, amount);
 
         let initial_signer_ata_balance = 500;
@@ -185,7 +237,7 @@ mod tests {
         let accounts = vec![
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, initial_signer_ata_balance),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
             token(exchange_ata, exchange_address, initial_exchange_ata_balance),
             token_program(),
         ];
@@ -220,14 +272,15 @@ mod tests {
         let amount = SOL(1_000_000); // 0.001 SOL
 
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 0, 2_000_000, 1, 1);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
+        let exchange = create_exchange(signer, 0, 2_000_000, 1, 1);
+        let account = create_account(exchange_address, &exchange);
+
         let initial_signer_lamports = 1_000_000_000;
-        let initial_exchange_lamports = exchange_acc.lamports;
+        let initial_exchange_lamports = account.lamports;
 
         let accounts = vec![
             sol(signer, initial_signer_lamports),
-            (exchange_address, exchange_acc)
+            (exchange_address, account)
         ];
 
         let instruction = build_withdraw_sol_ix(signer, exchange_address, amount);
@@ -259,27 +312,30 @@ mod tests {
     #[test]
     fn test_swap_for_tape() {
         let signer = Pubkey::new_unique();
+        let signer_ata = ata_address(&signer);
+
         let amount_sol = SOL(1_000_000); // 0.001 SOL
         let tape_rate = 100; // 100 TAPE per 1 SOL
         let sol_rate = 1000;
 
         let amount_out_tape = amount_sol.as_u64() * tape_rate / sol_rate; // 0.001 * 100 = 0.1 TAPE = 100_000
+
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 200_000, 500_000, tape_rate, sol_rate);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
         let (exchange_ata, _) = exchange_ata(exchange_address);
-        let signer_ata = ata_address(&signer);
+
+        let exchange = create_exchange(signer, 200_000, 500_000, tape_rate, sol_rate);
+        let account = create_account(exchange_address, &exchange);
         let instruction = build_swap_for_tape_ix(signer, signer_ata, exchange_address, amount_sol);
 
         let initial_signer_lamports = 2_000_000_000;
-        let initial_exchange_lamports = exchange_acc.lamports;
+        let initial_exchange_lamports = account.lamports;
         let initial_signer_ata_balance = 500;
         let initial_exchange_ata_balance = 200_000;
 
         let accounts = vec![
             sol(signer, initial_signer_lamports),
             token(signer_ata, signer, initial_signer_ata_balance),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
             token(exchange_ata, exchange_address, initial_exchange_ata_balance),
             system_program(),
             token_program(),
@@ -319,27 +375,29 @@ mod tests {
     #[test]
     fn test_swap_for_sol() {
         let signer = Pubkey::new_unique();
+        let signer_ata = ata_address(&signer);
+
         let amount_tape = TAPE(1000); // 0.001 TAPE
         let tape_rate = 100; // 100 TAPE per 1 SOL
         let sol_rate = 1000;
 
         let amount_out_sol = amount_tape.as_u64() * sol_rate / tape_rate; // 0.001 / 100 = 0.00001 SOL = 10_000
         let (exchange_address, _) = exchange_pda(signer);
-        let exchange = create_exchange_data(signer, 2000, 1_000_000, tape_rate, sol_rate);
-        let exchange_acc = create_exchange_account(exchange_address, &exchange);
         let (exchange_ata, _) = exchange_ata(exchange_address);
-        let signer_ata = ata_address(&signer);
+        let exchange = create_exchange(signer, 2000, 1_000_000, tape_rate, sol_rate);
+        let account = create_account(exchange_address, &exchange);
+
         let instruction = build_swap_for_sol_ix(signer, signer_ata, exchange_address, amount_tape);
 
         let initial_signer_lamports = 1_000_000_000;
-        let initial_exchange_lamports = exchange_acc.lamports;
+        let initial_exchange_lamports = account.lamports;
         let initial_signer_ata_balance = 1000;
         let initial_exchange_ata_balance = 2000;
 
         let accounts = vec![
             sol(signer, initial_signer_lamports),
             token(signer_ata, signer, initial_signer_ata_balance),
-            (exchange_address, exchange_acc),
+            (exchange_address, account),
             token(exchange_ata, exchange_address, initial_exchange_ata_balance),
             token_program(),
         ];
