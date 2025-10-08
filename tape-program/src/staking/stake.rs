@@ -68,6 +68,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_sysvar(&sysvar::rent::ID)?;
 
     let amount = u64::from_le_bytes(args.amount);
+
     let staked_tape = node.pool.stake_with_pool(
         current_epoch(epoch),
         amount.into()
@@ -106,4 +107,107 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     )?;
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+
+    #[test]
+    fn test_stake_with_node() {
+        let signer = Pubkey::new_unique();
+        let node_key = Pubkey::new_unique();
+        let amount: u64 = 1000;
+        let commission_rate = BasisPoints(100); // 1%
+
+        let instruction = build_stake_ix(signer, node_key, amount.into());
+
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (stake_address, _) = staked_tape_pda(signer, node_key);
+        let stake_ata = ata_address(&stake_address);
+        let signer_ata = ata_address(&signer);
+
+        // Setup existing accounts
+
+        let system_data = System {
+            total_nodes: 1,
+        }.pack();
+
+        let current_epoch_number = EpochNumber(42);
+        let epoch_data = Epoch {
+            id: current_epoch_number,
+            state: EpochState::zeroed(),
+            last_epoch_ms: 0,
+            leaders: CandidateSet::zeroed(),
+        }.pack();
+
+        let mut node_pool = StakingPool::new(commission_rate);
+
+        let initial_node = StorageNode {
+            id: NodeId::new(0),
+            authority: Pubkey::new_unique(),
+            pool: node_pool,
+            metadata: NodeMetadata::zeroed(),
+            registered_epoch: EpochNumber(1),
+        };
+
+        // Simulate the stake_with_pool effect for expected state
+        let activation_epoch = current_epoch_number + EpochNumber(2);
+        let expected_stake_inner = Stake::new(amount.into(), activation_epoch);
+
+        // Update pool: schedule pending stake
+        node_pool.pending_stake.insert_or_add(activation_epoch, amount).unwrap();
+
+        let expected_node = StorageNode {
+            pool: node_pool,
+            ..initial_node
+        };
+
+        let initial_signer_balance: u64 = 2000; // More than amount
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            token(signer_ata, signer, initial_signer_balance),
+            empty(stake_address),
+            empty(stake_ata),
+
+            pda(system_address, system_data),
+            pda(epoch_address, epoch_data),
+            pda(node_key, initial_node.pack()),
+            mint(0),
+
+            token_program(),
+            ata_program(),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(
+            &instruction, 
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&stake_address).data(
+                    StakedTape {
+                        authority: signer,
+                        node: node_key,
+                        inner: expected_stake_inner,
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&node_key).data(
+                    expected_node.pack().as_ref()
+                ).build(),
+                Check::account(&signer_ata).data(
+                    token(signer_ata, signer, initial_signer_balance - amount).1.data.as_ref()
+                ).build(),
+                Check::account(&stake_ata).data(
+                    token(stake_ata, stake_address, amount).1.data.as_ref()
+                ).build(),
+            ]
+        );
+    }
 }

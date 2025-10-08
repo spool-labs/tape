@@ -152,3 +152,112 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+
+    #[test]
+    fn test_reserve_tape() {
+        let signer = Pubkey::new_unique();
+        let storage_units = StorageUnits(100); // 100 MB
+        let start_epoch = EpochNumber(43); // In the future
+        let end_epoch = EpochNumber(45); // Two epochs duration
+        let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
+
+        let instruction = build_reserve_tape_ix(signer, storage_units, start_epoch, end_epoch);
+
+        let (epoch_address, _) = epoch_pda();
+        let (archive_address, _) = archive_pda();
+        let (treasury_address, _) = treasury_pda();
+        let (treasury_ata, _) = treasury_ata();
+        let (resource_address, _) = resource_pda(signer);
+        let signer_ata = ata_address(&signer);
+
+        // Setup existing accounts
+        let epoch = Epoch {
+            id: EpochNumber::zero(),
+            state: EpochState::zeroed(),
+            last_epoch_ms: 0,
+            leaders: CandidateSet::zeroed(),
+        };
+
+        let archive = Archive {
+            storage_capacity: StorageUnits(1000), // 1000 MB capacity
+            storage_price_per_unit: price_per_unit,
+            future_usage: StorageAccounting::new(),
+        };
+
+        let treasury = Treasury {
+            future_rewards: RewardAccounting::new(),
+        };
+
+        // Calculate expected cost and state
+        let num_epochs = (end_epoch - start_epoch).as_u64(); // 2 epochs
+        let single_epoch_price = price_per_unit.as_u64() * storage_units.as_u64(); // 0.0001 * 100 = 0.01 TAPE
+        let total_cost = single_epoch_price * num_epochs; // 0.01 * 2 = 0.02 TAPE
+
+        // Simulate reserve_capacity and add_rewards
+
+        let mut expected_archive = archive;
+        expected_archive
+            .future_usage
+            .reserve_capacity(storage_units, start_epoch, end_epoch)
+            .unwrap();
+
+        let mut expected_treasury = treasury;
+        let fee_per_epoch = TAPE(single_epoch_price);
+        expected_treasury
+            .future_rewards
+            .add_rewards(fee_per_epoch, start_epoch, end_epoch)
+            .unwrap();
+
+        let initial_signer_balance: u64 = 1_000_000; // Sufficient for 0.02 TAPE
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            token(signer_ata, signer, initial_signer_balance),
+            empty(resource_address),
+
+            pda(epoch_address, epoch.pack()),
+            pda(archive_address, archive.pack()),
+            pda(treasury_address, treasury.pack()),
+            token(treasury_ata, treasury_address, 0),
+
+            token_program(),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&resource_address).data(
+                    TapeResource {
+                        authority: signer,
+                        capacity: storage_units,
+                        used: StorageUnits::zero(),
+                        active_epoch: start_epoch,
+                        expiry_epoch: end_epoch,
+                        total_blobs: 0,
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&archive_address).data(
+                    expected_archive.pack().as_ref()
+                ).build(),
+                Check::account(&treasury_address).data(
+                    expected_treasury.pack().as_ref()
+                ).build(),
+                Check::account(&signer_ata).data(
+                    token(signer_ata, signer, initial_signer_balance - total_cost).1.data.as_ref()
+                ).build(),
+                Check::account(&treasury_ata).data(
+                    token(treasury_ata, treasury_address, total_cost).1.data.as_ref()
+                ).build(),
+            ]
+        );
+    }
+}
