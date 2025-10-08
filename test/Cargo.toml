@@ -23,11 +23,14 @@ airdrop = []
 tape-core = { workspace = true, features = ["solana"] }
 tape-api = { workspace = true, features = ["solana"] }
 
-mpl-token-metadata.workspace = true
-solana-program.workspace = true
-spl-token.workspace = true
-spl-associated-token-account.workspace = true
-solana-sdk.workspace = true
 mollusk-svm = "0.0.15"
 mollusk-svm-programs-token = "0.0.15"
 pretty-hex = "0.4.1"
+solana-log-collector = "=2.1"
+
+bincode.workspace = true
+mpl-token-metadata.workspace = true
+solana-program.workspace = true
+solana-sdk.workspace = true
+spl-associated-token-account.workspace = true
+spl-token.workspace = true

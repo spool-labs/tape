@@ -52,7 +52,6 @@ solana-account-decoder = "=2.1"
 solana-transaction-status-client-types = "=2.1"
 
 steel = { version="4.0.0", features = ["spl"] }
-litesvm = "0.5.0"
 
 mpl-token-metadata = "5.1"
 spl-token = { version = "^4", features = ["no-entrypoint"] }

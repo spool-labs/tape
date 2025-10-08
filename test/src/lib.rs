@@ -19,6 +19,8 @@ use solana_sdk::{
 };
 
 use solana_program::program_option::COption;
+use pretty_hex::*;
+use bincode;
 
 use spl_associated_token_account::get_associated_token_address;
 use spl_token::state::{
@@ -149,7 +151,48 @@ impl TestEnv {
         accounts: &[(Pubkey, Account)],
         checks: &[Check],
     ) {
-        self.mollusk.process_and_validate_instruction(instruction, accounts, checks);
+        self.print_instruction(instruction);
+
+
+        let result = self.mollusk.process_instruction(instruction, accounts);
+
+        println!("size:\t{:?}", bincode::serialize(instruction).unwrap().len());
+        println!("cu:\t{:?}", result.compute_units_consumed);
+
+        println!("logs:\n");
+        if let Some(logger) = &self.mollusk.logger {
+            let guard = logger.borrow();
+            for log in guard.get_recorded_content() {
+                println!("\t{}", log);
+            }
+        }
+
+        result.run_checks(checks);
+    }
+
+    fn print_instruction(&self, instruction: &Instruction) {
+        println!("\n");
+        println!("--------------------------------------------------------------------------------");
+        println!("Program: {}", instruction.program_id);
+
+        if !instruction.data.is_empty() {
+            let discriminator = instruction.data[0];
+            let ix_type = if let Ok(instruction_type) = TapeInstruction::try_from(discriminator) {
+                format!("{:?}", instruction_type)
+            } else {
+                format!("Invalid (discriminator: {})", discriminator)
+            };
+
+            println!("\nix:\t{:?} ({})", ix_type, discriminator);
+        }
+
+        println!("accounts:");
+        for (index, acc_meta) in instruction.accounts.iter().enumerate() {
+            println!("\t{}: {:?}", index, acc_meta.pubkey);
+        }
+
+        println!("\ndata:\n\t{:?}", instruction.data);
+        println!("\n\n{}\n", pretty_hex(&instruction.data));
     }
 }
 
@@ -163,6 +206,7 @@ pub fn test_env(name: String) -> TestEnv {
 
 pub fn with_programs(program_name: &str, programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
     let mut mollusk = Mollusk::new(&tape_api::ID, program_name);
+    mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
 
     spl_token_program::add_program(&mut mollusk);
     spl_ata_program::add_program(&mut mollusk);
