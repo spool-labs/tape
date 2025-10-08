@@ -44,11 +44,11 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     let _system = system_info
         .is_writable()?
-        .is_tape_system()?
+        .is_system()?
         .as_account_mut::<System>(&tape_api::ID)?;
 
     let epoch = epoch_info
-        .is_tape_epoch()?
+        .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
 
     let node = node_info
@@ -56,7 +56,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .as_account_mut::<StorageNode>(&tape_api::ID)?;
 
     mint_info
-        .is_tape_mint()?;
+        .is_mint()?;
 
     token_program_info
         .is_program(&spl_token::ID)?;

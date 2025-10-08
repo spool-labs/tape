@@ -40,8 +40,6 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    solana_program::log::msg!("Creating exchange...");
-
     // Initialize exchange.
     create_program_account::<Exchange>(
         exchange_info,
@@ -51,7 +49,6 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         &[EXCHANGE, signer_info.key.as_ref()],
     )?;
 
-    solana_program::log::msg!("Initializing exchange...");
     let exchange = exchange_info.as_account_mut::<Exchange>(&tape_api::ID)?;
 
     exchange.authority = *signer_info.key;
@@ -59,7 +56,6 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     exchange.balance_tape = TAPE::zero();
     exchange.rate = ExchangeRate::flat();
 
-    solana_program::log::msg!("Creating exchange token account...");
     // Initialize exchange token account.
     create_associated_token_account(
         signer_info,

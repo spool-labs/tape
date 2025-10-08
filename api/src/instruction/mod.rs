@@ -8,6 +8,7 @@ mod operator;
 mod staking;
 mod storage;
 mod blob;
+mod feature;
 
 pub use system::*;
 pub use epoch::*;
@@ -17,6 +18,7 @@ pub use operator::*;
 pub use staking::*;
 pub use storage::*;
 pub use blob::*;
+pub use feature::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]

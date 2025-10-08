@@ -126,6 +126,16 @@ pub fn committee_pda(id: CommitteeNumber) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
+pub fn current_committee_pda() -> (Pubkey, u8) {
+    committee_pda(CommitteeNumber::current())
+}
+
+#[inline(always)]
+pub fn previous_committee_pda() -> (Pubkey, u8) {
+    committee_pda(CommitteeNumber::previous())
+}
+
+#[inline(always)]
 pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NODE, authority.as_ref()], &crate::id())
 }

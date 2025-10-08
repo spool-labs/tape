@@ -44,17 +44,17 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .has_address(&resource_address)?;
 
     let epoch = epoch_info
-        .is_tape_epoch()?
+        .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
 
     let archive = archive_info
         .is_writable()?
-        .is_tape_archive()?
+        .is_archive()?
         .as_account_mut::<Archive>(&tape_api::ID)?;
 
     let treasury = treasury_info
         .is_writable()?
-        .is_tape_treasury()?
+        .is_treasury()?
         .as_account_mut::<Treasury>(&tape_api::ID)?;
 
     token_program_info

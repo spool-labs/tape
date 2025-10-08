@@ -20,6 +20,7 @@ use solana_sdk::{
 
 use solana_program::program_option::COption;
 
+use spl_associated_token_account::get_associated_token_address;
 use spl_token::state::{
     Account as Token,
     AccountState as TokenAccountStateEnum,
@@ -55,6 +56,15 @@ pub fn empty(key: Pubkey) -> (Pubkey, Account) {
     (key, Account::default())
 }
 
+pub fn ata_address(owner: &Pubkey) -> Pubkey {
+    get_associated_token_address(owner, &MINT_ADDRESS)
+}
+
+pub fn ata(owner: Pubkey, amount: u64) -> (Pubkey, Account) {
+    let address = ata_address(&owner);
+    token(address, owner, amount)
+}
+
 pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
     let state = Token {
         mint: MINT_ADDRESS,
@@ -81,7 +91,7 @@ pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
 
 pub fn mint(supply: u64) -> (Pubkey, Account) {
     let mint_data = Mint {
-        mint_authority: Some(MINT_ADDRESS).into(),
+        mint_authority: Some(TREASURY_ADDRESS).into(),
         supply,
         decimals: TOKEN_DECIMALS,
         is_initialized: true,
@@ -118,6 +128,14 @@ pub fn rent_sysvar() -> (Pubkey, Account) {
     Sysvars::default().keyed_account_for_rent_sysvar()
 }
 
+const METAPLEX_ELF : &[u8] = program_elf!("elfs/mpl_token_metadata.so");
+pub fn mpl_program() -> (Pubkey, Account) {
+    (
+        mpl_token_metadata::ID, 
+        mollusk_svm::program::create_program_account_loader_v2(METAPLEX_ELF)
+    )
+}
+
 // Test environment
 
 pub struct TestEnv {
@@ -139,7 +157,7 @@ pub fn test_env(name: String) -> TestEnv {
     let name = format!("../target/deploy/{}", name);
 
     with_programs(&name, &[
-        (&mpl_token_metadata::ID, program_elf!("elfs/mpl_token_metadata.so")),
+        (&mpl_token_metadata::ID, METAPLEX_ELF),
     ])
 }
 

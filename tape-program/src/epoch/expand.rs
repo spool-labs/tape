@@ -47,11 +47,6 @@ pub fn process_expand_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         new_size,
     )?;
 
-    if new_size == required_size {
-        let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
-        epoch.id = EpochNumber::zero();
-    }
-
     Ok(())
 }
 

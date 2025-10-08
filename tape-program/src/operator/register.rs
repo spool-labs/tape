@@ -23,12 +23,12 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .has_address(&node_address)?;
 
     let epoch = epoch_info
-        .is_tape_epoch()?
+        .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
 
     let system = system_info
         .is_writable()?
-        .is_tape_system()?
+        .is_system()?
         .as_account_mut::<System>(&tape_api::ID)?;
 
     system_program_info.is_program(&system_program::ID)?;

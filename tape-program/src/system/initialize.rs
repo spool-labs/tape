@@ -11,6 +11,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         system_info,
         epoch_info, 
         committee_info,
+        previous_committee_info,
         archive_info, 
         treasury_info,
         treasury_ata_info,
@@ -26,15 +27,12 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    // Empty accounts
+
     system_info
         .is_empty()?
         .is_writable()?
         .has_address(&SYSTEM_ADDRESS)?;
-
-    epoch_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&EPOCH_ADDRESS)?;
 
     archive_info
         .is_empty()?
@@ -56,15 +54,22 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?
         .has_address(&METADATA_ADDRESS)?;
 
-    let epoch_number = EpochNumber::zero();
-    let committee_number = CommitteeNumber::current();
-    let (committee_address, _) = committee_pda(committee_number);
-    committee_info
-        .is_empty()?
+    // Existing accounts
+
+    epoch_info
         .is_writable()?
-        .has_address(&committee_address)?;
+        .is_epoch()?;
+
+    committee_info
+        .is_writable()?
+        .is_current_committee()?;
+
+    previous_committee_info
+        .is_writable()?
+        .is_previous_committee()?;
 
     // Check programs and sysvars.
+
     system_program_info
         .is_program(&system_program::ID)?;
     token_program_info
@@ -74,20 +79,14 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
+    // Create new accounts.
+
     create_program_account::<System>(
         system_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[SYSTEM],
-    )?;
-
-    create_program_account::<Epoch>(
-        epoch_info,
-        system_program_info,
-        signer_info,
-        &tape_api::ID,
-        &[EPOCH],
     )?;
 
     create_program_account::<Archive>(
@@ -106,13 +105,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[TREASURY],
     )?;
 
-    create_program_account::<Committee>(
-        committee_info,
-        system_program_info,
-        signer_info,
-        &tape_api::ID,
-        &[COMMITTEE, &epoch_number.pack()],
-    )?;
+    // Start at epoch 1, previous epoch is 0.
+    let epoch_number = EpochNumber(1);
+    let prev_epoch_number = EpochNumber(0);
 
     let system = system_info.as_account_mut::<System>(&tape_api::ID)?;
     system.total_nodes = 0;
@@ -122,17 +117,12 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch.last_epoch_ms = 0;
 
     let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
-    committee.id = committee_number;
     committee.epoch = epoch_number;
 
-    solana_program::log::sol_log_compute_units();
-    for i in 0..127 {
-        committee.inner.members[i] = CommitteeMember {
-            id: NodeId((256 - i) as u64),
-            key: BlsPublicKey::zeroed(),
-        };
-    }
-    solana_program::log::sol_log_compute_units();
+    let prev_committee = previous_committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
+    prev_committee.epoch = prev_epoch_number;
+
+    // Default to 1Tb storage, 0.0001 TAPE per Mb.
 
     let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
@@ -225,4 +215,129 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     )?;
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+
+    #[test]
+    fn test_initialize() {
+        let signer = Pubkey::new_unique();
+        let signer_ata = ata_address(&signer);
+
+        let instruction = build_initialize_ix(signer);
+
+        let (system_address, _) = system_pda();
+        let (treasury_address, _) = treasury_pda();
+        let (treasury_ata_address, _) = treasury_ata();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (mint_address, _) = mint_pda();
+        let (metadata_address, _) = metadata_pda();
+        let (committee_address, _) = current_committee_pda();
+        let (prev_committee_address, _) = previous_committee_pda();
+
+        // Setup existing accounts
+        // (assuming created and expanded)
+
+        let epoch_data = Epoch { 
+            id: EpochNumber::zero(),
+            state: EpochState::zeroed(),
+            last_epoch_ms: 0,
+            leaders: CandidateSet::zeroed(),
+        }.pack();
+
+        let committee_data = Committee { 
+            id: CommitteeNumber::current(),
+            epoch: EpochNumber::zero(),
+            inner: AppointedSet::zeroed(),
+        }.pack();
+
+        let prev_committee_data = Committee { 
+            id: CommitteeNumber::previous(),
+            epoch: EpochNumber::zero(),
+            inner: AppointedSet::zeroed(),
+        }.pack();
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            empty(signer_ata),
+
+            empty(system_address),
+            pda(epoch_address, epoch_data),
+            pda(committee_address, committee_data),
+            pda(prev_committee_address, prev_committee_data),
+            empty(archive_address),
+            empty(treasury_address),
+            empty(treasury_ata_address),
+            empty(mint_address),
+            empty(metadata_address),
+
+            system_program(),
+            token_program(),
+            ata_program(),
+            mpl_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(
+            &instruction, 
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&system_address).data(
+                    System { 
+                        total_nodes: 0,
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&epoch_address).data(
+                    Epoch { 
+                        id: EpochNumber(1),
+                        state: EpochState::zeroed(),
+                        last_epoch_ms: 0,
+                        leaders: CandidateSet::zeroed(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&committee_address).data(
+                    Committee { 
+                        id: CommitteeNumber::current(),
+                        epoch: EpochNumber(1),
+                        inner: AppointedSet::zeroed(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&prev_committee_address).data(
+                    Committee { 
+                        id: CommitteeNumber::previous(),
+                        epoch: EpochNumber(0),
+                        inner: AppointedSet::zeroed(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&archive_address).data(
+                    Archive { 
+                        storage_capacity: StorageUnits(1000),
+                        storage_price_per_unit: TAPE::from("0.0001"),
+                        future_usage: StorageAccounting::new(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&treasury_address).data(
+                    Treasury { 
+                        future_rewards: RewardAccounting::new(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&signer_ata).data(
+                    token(signer_ata, signer, MAX_SUPPLY).1.data.as_ref()
+                ).build(),
+                Check::account(&treasury_ata_address).data(
+                    token(treasury_ata_address, treasury_address, 0).1.data.as_ref()
+                ).build(),
+                Check::account(&mint_address).data(
+                    mint(MAX_SUPPLY).1.data.as_ref()
+                ).build(),
+            ]
+        );
+    }
 }

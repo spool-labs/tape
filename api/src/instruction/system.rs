@@ -7,19 +7,6 @@ use spl_associated_token_account::get_associated_token_address;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Initialize {}
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AdvanceEpoch {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct RegisterFeature {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct CertifyFeature {}
-
-
 pub fn build_initialize_ix(
     signer: Pubkey,
 ) -> Instruction {
@@ -32,6 +19,7 @@ pub fn build_initialize_ix(
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
     let (committee_address, _) = committee_pda(CommitteeNumber::current());
+    let (prev_committee_address, _) = committee_pda(CommitteeNumber::previous());
 
     let signer_ata = get_associated_token_address(&signer, &mint_address);
 
@@ -44,6 +32,7 @@ pub fn build_initialize_ix(
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(committee_address, false),
+            AccountMeta::new(prev_committee_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(treasury_address, false),
             AccountMeta::new(treasury_ata, false),
@@ -60,17 +49,3 @@ pub fn build_initialize_ix(
     }
 }
 
-pub fn build_advance_epoch_ix(
-    signer: Pubkey
-) ->Instruction {
-    let (epoch_address, _) = epoch_pda();
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(epoch_address, false),
-        ],
-        data: AdvanceEpoch {}.to_bytes(),
-    }
-}
