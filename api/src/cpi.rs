@@ -12,10 +12,6 @@ pub fn create_account_with_size<'a, 'info, T: Discriminator + Pod>(
     owner: &Pubkey,
     seeds: &[&[u8]],
 ) -> ProgramResult {
-    assert!(
-        size >= 8 + std::mem::size_of::<T>(),
-        "provided size is too small",
-    );
 
     // Allocate space.
     allocate_account(

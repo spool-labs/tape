@@ -42,7 +42,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[NODE, signer_info.key.as_ref()],
     )?;
 
-
     let node = node_info.as_account_mut::<StorageNode>(&tape_api::ID)?;
 
     node.id                   = NodeId::new(system.total_nodes);
@@ -65,4 +64,96 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .ok_or(TapeError::Overflow)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+
+    #[test]
+    fn test_register_node() {
+        let signer = Pubkey::new_unique();
+        let commission_rate = BasisPoints(100); // 1%
+        let name = to_name("hello, world");
+        let network_address = NetworkAddress::default();
+        let network_tls = Pubkey::new_unique();
+
+        let args = RegisterNode {
+            name,
+            commission_rate: commission_rate.pack(),
+            network_address,
+            network_tls,
+        };
+
+        let data = args.to_bytes();
+
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (node_address, _) = storage_node_pda(signer);
+
+        // Setup existing accounts
+
+        let system = System {
+            total_nodes: 0,
+        };
+
+        let epoch = Epoch {
+            id: EpochNumber(42),
+            state: EpochState::new(),
+            last_epoch_ms: 0,
+            leaders: CandidateSet::zeroed(),
+        };
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            pda(system_address, system.pack()),
+            pda(epoch_address, epoch.pack()),
+            empty(node_address),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let instruction = Instruction {
+            program_id: tape_api::ID,
+            accounts: vec![
+                AccountMeta::new(signer, true),
+                AccountMeta::new(system_address, false),
+                AccountMeta::new(epoch_address, false),
+                AccountMeta::new(node_address, false),
+                AccountMeta::new_readonly(system_program::ID, false),
+                AccountMeta::new_readonly(sysvar::rent::ID, false),
+            ],
+            data: data.to_vec(),
+        };
+
+        let env = test_env("tape".to_string());
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&system_address).data(
+                    System {
+                        total_nodes: 1,
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&node_address).data(
+                    StorageNode {
+                        id: NodeId::new(0),
+                        authority: signer,
+                        pool: StakingPool::new(commission_rate),
+                        metadata: NodeMetadata {
+                            name,
+                            storage_capacity: 0,
+                            storage_used: 0,
+                            network_address,
+                            network_tls,
+                        },
+                        registered_epoch: epoch.id,
+                    }.pack().as_ref()
+                ).build(),
+            ]
+        );
+    }
 }

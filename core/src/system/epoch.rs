@@ -39,24 +39,27 @@ impl EpochState {
     }
 
     /// Sets the phase to Syncing with the given attested weight.
-    pub fn set_syncing(&mut self, attested_weight: u64) {
+    pub fn set_syncing(&mut self, attested_weight: u64) -> &mut Self {
         self.phase = EpochPhase::Syncing.into();
         self.attested_weight = attested_weight;
         self.last_change_ms = 0;
+        self
     }
 
     /// Sets the phase to Active with the given timestamp.
-    pub fn set_active(&mut self, last_change_ms: u64) {
+    pub fn set_active(&mut self, last_change_ms: u64) -> &mut Self {
         self.phase = EpochPhase::Active.into();
         self.attested_weight = 0;
         self.last_change_ms = last_change_ms;
+        self
     }
 
     /// Sets the phase to NextEpochReady with the given timestamp.
-    pub fn set_next_epoch_ready(&mut self, last_change_ms: u64) {
+    pub fn set_next_epoch_ready(&mut self, last_change_ms: u64) -> &mut Self {
         self.phase = EpochPhase::NextEpochReady.into();
         self.attested_weight = 0;
         self.last_change_ms = last_change_ms;
+        self
     }
 
     /// Checks if the phase is Syncing.

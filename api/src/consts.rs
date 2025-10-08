@@ -33,7 +33,7 @@ pub const METADATA_URI:    &str = "https://tapedrive.io/metadata.json";
 // Network Parameters
 // ====================================================================
 
-pub const COMMITTEE_SIZE: usize = 127;
+pub const COMMITTEE_SIZE: usize = 128;
 pub const SEAT_COUNT: usize = 1000;
 pub const FUTURE_EPOCHS: usize = 256;
 

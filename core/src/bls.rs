@@ -11,5 +11,5 @@ pub struct BlsSignature(pub G1CompressedPoint);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct BlsPublicKey(pub G2CompressedPoint);
+pub struct BlsPublicKey(pub G2Point); // using the uncompressed form to reduce CU
 
