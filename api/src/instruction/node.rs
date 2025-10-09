@@ -10,6 +10,8 @@ pub struct RegisterNode {
     pub commission_rate: [u8; 8],
     pub network_address: NetworkAddress,
     pub network_tls: Pubkey,
+    pub bls_pubkey: BlsPubkey,
+    pub bls_pop: BlsSignature,
 }
 
 #[repr(C)]
@@ -79,6 +81,8 @@ pub fn build_register_node_ix(
     commission_rate: BasisPoints,
     network_address: NetworkAddress,
     network_tls: Pubkey,
+    bls_pubkey: BlsPubkey,
+    bls_pop: BlsSignature,
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
@@ -102,6 +106,8 @@ pub fn build_register_node_ix(
             commission_rate,
             network_address,
             network_tls,
+            bls_pubkey,
+            bls_pop,
         }.to_bytes(),
     }
 }

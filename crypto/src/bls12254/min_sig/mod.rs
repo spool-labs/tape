@@ -8,5 +8,5 @@ pub mod privkey;
 
 pub use g1::{G1CompressedPoint, G1Point};
 pub use g2::{G2CompressedPoint, G2Point};
-pub use privkey::PrivKey;
+pub use privkey::{PrivKey, verify_proof_of_possession};
 pub use aggregate::{aggregate_partials, verify_aggregate};

@@ -165,7 +165,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     }
 
     /// Project the tape_balance at a future epoch
-    pub fn tape_balance_at_epoch(&self, epoch: EpochNumber) -> u64 {
+    pub fn tape_balance_at_epoch(&self, epoch: EpochNumber) -> Coin<TAPE> {
         let current_rate = ExchangeRate::new(
             self.tape_balance.into(),
             self.count_shares
@@ -182,6 +182,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
             .as_u64()
             .saturating_add(net_additions)
             .saturating_sub(withdrawals_tape)
+            .into()
     }
 
     /// Process pending stake/withdrawals for the current_epoch
@@ -275,7 +276,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
 
         self.pending_stake
             .insert_or_add(activation_epoch, stake_amount.into())
-            .map_err(|_| PoolError::FailedToScheduleStake)?;
+            .map_err(|e| { println!("{:?}", e); PoolError::FailedToScheduleStake})?;
 
         Ok(StakedTape {
             activation_epoch,
@@ -516,9 +517,9 @@ mod tests {
         p.pending_stake.insert_or_add(epoch(5), 600).unwrap();
         p.pending_shares_withdraw.insert_or_add(epoch(6), 200).unwrap();
         // Projection uses current rate (flat 1:1 here)
-        assert_eq!(p.tape_balance_at_epoch(epoch(4)), 1000);
-        assert_eq!(p.tape_balance_at_epoch(epoch(5)), 1600);
-        assert_eq!(p.tape_balance_at_epoch(epoch(6)), 1400);
+        assert_eq!(p.tape_balance_at_epoch(epoch(4)), tape(1000));
+        assert_eq!(p.tape_balance_at_epoch(epoch(5)), tape(1600));
+        assert_eq!(p.tape_balance_at_epoch(epoch(6)), tape(1400));
     }
 
     #[test]

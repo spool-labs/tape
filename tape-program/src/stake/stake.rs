@@ -148,7 +148,7 @@ mod tests {
 
         let initial_node = Node {
             id: NodeId::new(0),
-            authority: Pubkey::new_unique(),
+            authority: signer,
             pool: node_pool,
             metadata: NodeMetadata::zeroed(),
             registered_epoch: EpochNumber(1),

@@ -28,6 +28,10 @@ pub struct G2CompressedPoint(pub [u8; 64]);
 
 impl G2Point {
     pub fn verify<T: AsRef<[u8]>>(&self, signature: &G1Point, message: T) -> Result<(), BLSError> {
+        if signature.0 == [0u8; 64] {
+            return Err(BLSError::BLSVerificationError);
+        }
+
         let mut input = [0u8; 384];
 
         // Hash message to curve
@@ -62,6 +66,10 @@ impl G2CompressedPoint {
         signature: &G1Point,
         message: T,
     ) -> Result<(), BLSError> {
+        if signature.0 == [0u8; 64] {
+            return Err(BLSError::BLSVerificationError);
+        }
+
         let mut input = [0u8; 384];
 
         // Hash message to curve

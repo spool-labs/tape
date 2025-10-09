@@ -11,7 +11,7 @@ pub enum PendingValuesError {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PendingValues<const N: usize>(FixedMap<EpochNumber, u64, N>);
+pub struct PendingValues<const N: usize>(pub FixedMap<EpochNumber, u64, N>);
 
 unsafe impl<const N: usize> Zeroable for PendingValues<N> {}
 unsafe impl<const N: usize> Pod for PendingValues<N> {}

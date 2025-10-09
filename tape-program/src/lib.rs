@@ -59,6 +59,7 @@ pub fn process_instruction(
 
             // Node
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+            TapeInstruction::NominateNode => process_nominate_node(accounts, data)?,
 
             // Stake
             TapeInstruction::StakeWithNode => process_stake_with_node(accounts, data)?,

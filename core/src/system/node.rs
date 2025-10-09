@@ -1,5 +1,6 @@
 use crate::types::*;
 use tape_crypto::Pubkey;
+use crate::bls::BlsPubkey;
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
@@ -19,4 +20,7 @@ pub struct NodeMetadata {
 
     /// The public key used for TLS connections to this node.
     pub network_tls: Pubkey,
+
+    /// The BLS public key of this node.
+    pub bls_pubkey: BlsPubkey,
 }

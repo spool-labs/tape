@@ -13,7 +13,7 @@ pub type RelativeNodeId = u8;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct CommitteeMember {
     pub id: NodeId,
-    pub key: BlsPublicKey,
+    pub key: BlsPubkey,
 }
 
 /// A CandidateSet defines a set of committee members that will be considered for appointment
@@ -100,8 +100,8 @@ impl<const N: usize> CandidateSet<N> {
     }
 
     /// Inserts the node if it is not already present; otherwise updates its stake.
-    /// If the set is full and the (new) stake is below the current threshold (min stake in a full set),
-    /// the node is removed. Returns true iff the node is in the set after the operation.
+    /// If the new stake is zero or below the threshold, the node is removed.
+    /// Returns true if the node is in the set after the operation.
     pub fn insert_or_update(&mut self, member: CommitteeMember, staked_amount: Coin::<TAPE>) -> bool {
         if let Some(idx) = self.index_of(&member.id) {
             let full = self.size() == N;
@@ -145,6 +145,7 @@ impl<const N: usize> CandidateSet<N> {
             return false;
         }
 
+        // If the set is not full, append the member
         let count = self.size();
         if count < N {
             self.members[count] = member;
@@ -153,7 +154,7 @@ impl<const N: usize> CandidateSet<N> {
             return true;
         }
 
-        // Full: replace the minimum only if the new stake is strictly greater
+        // Otherwise, replace the minimum stake member if the new stake is larger
         if let Some(min_idx) = self.min_stake_index() {
             let min_val = self.stake_at(min_idx);
             if staked_amount > min_val {
@@ -193,7 +194,9 @@ impl<const N: usize> CandidateSet<N> {
 
     /// Minimum stake in the set (0 if empty).
     pub fn threshold_stake(&self) -> Coin<TAPE> {
-        self.min_stake_index().map(|i| self.stake_at(i)).unwrap_or(TAPE::zero())
+        self.min_stake_index()
+            .map(|i| self.stake_at(i))
+            .unwrap_or(TAPE::zero())
     }
 
     /// Total stake in the set.
@@ -328,18 +331,6 @@ impl<const N: usize, const M: usize> AppointedSet<N, M> {
     }
 }
 
-//// input: epoch, pool, 
-//pub fn try_join_candidate_set() {
-//}
-//
-//pub fn compute_next_appointed_set() {
-//}
-//
-//pub fn advance_epoch() {
-//}
-//
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,7 +348,7 @@ mod tests {
     fn member_with_id(id: NodeId) -> CommitteeMember {
         CommitteeMember {
             id,
-            key: BlsPublicKey::zeroed(),
+            key: BlsPubkey::zeroed(),
         }
     }
 

@@ -34,6 +34,13 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
+    let bls_pubkey = args.bls_pubkey;
+    let bls_signature = args.bls_pop;
+    if !bls_pubkey.is_valid(bls_signature) {
+        solana_program::msg!("Invalid BLS proof of possession");
+        return Err(ProgramError::InvalidArgument);
+    }
+
     create_program_account::<Node>(
         node_info,
         system_program_info,
@@ -57,6 +64,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         storage_used: 0,
         network_address: args.network_address,
         network_tls: args.network_tls,
+        bls_pubkey: args.bls_pubkey,
     };
 
     system.total_nodes = system.total_nodes
@@ -79,14 +87,19 @@ mod tests {
         let network_address = NetworkAddress::default();
         let network_tls = Pubkey::new_unique();
 
-        let args = RegisterNode {
+        let secret = BlsPrivateKey::from_random();
+        let bls_pubkey = secret.public_key().expect("pubkey");
+        let bls_pop = secret.proof_of_possession().expect("pop");
+
+        let instruction = build_register_node_ix(
+            signer,
             name,
-            commission_rate: commission_rate.pack(),
+            commission_rate,
             network_address,
             network_tls,
-        };
-
-        let data = args.to_bytes();
+            bls_pubkey,
+            bls_pop,
+        );
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
@@ -114,19 +127,6 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let instruction = Instruction {
-            program_id: tape_api::ID,
-            accounts: vec![
-                AccountMeta::new(signer, true),
-                AccountMeta::new(system_address, false),
-                AccountMeta::new(epoch_address, false),
-                AccountMeta::new(node_address, false),
-                AccountMeta::new_readonly(system_program::ID, false),
-                AccountMeta::new_readonly(sysvar::rent::ID, false),
-            ],
-            data: data.to_vec(),
-        };
-
         let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
@@ -149,6 +149,7 @@ mod tests {
                             storage_used: 0,
                             network_address,
                             network_tls,
+                            bls_pubkey,
                         },
                         registered_epoch: epoch.id,
                     }.pack().as_ref()
