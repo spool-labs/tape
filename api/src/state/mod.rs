@@ -4,10 +4,10 @@ mod committee;
 mod epoch;
 mod exchange;
 mod feature;
-mod operator;
-mod staking;
-mod storage;
+mod node;
+mod stake;
 mod system;
+mod tape;
 mod treasury;
 
 pub use archive::*;
@@ -16,10 +16,10 @@ pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use feature::*;
-pub use operator::*;
-pub use staking::*;
-pub use storage::*;
+pub use node::*;
+pub use stake::*;
 pub use system::*;
+pub use tape::*;
 pub use treasury::*;
 
 use steel::*;
@@ -37,8 +37,8 @@ pub enum AccountType {
     Feature,
 
     Exchange,
-    StorageNode,
-    StakedTape,
-    TapeResource,
+    Node,
+    Stake,
+    Tape,
     Blob,
 }

@@ -126,7 +126,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         end_epoch,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
-    create_program_account::<TapeResource>(
+    create_program_account::<Tape>(
         resource_info,
         system_program_info,
         signer_info,
@@ -134,7 +134,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         &[RESOURCE, signer_info.key.as_ref()],
     )?;
 
-    let tape = resource_info.as_account_mut::<TapeResource>(&tape_api::ID)?;
+    let tape = resource_info.as_account_mut::<Tape>(&tape_api::ID)?;
     tape.authority = *signer_info.key;
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
@@ -231,7 +231,7 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&resource_address).data(
-                    TapeResource {
+                    Tape {
                         authority: signer,
                         capacity: storage_units,
                         used: StorageUnits::zero(),

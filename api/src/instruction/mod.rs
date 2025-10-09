@@ -1,24 +1,24 @@
 use steel::*;
 
-mod system;
-mod epoch;
-mod committee;
-mod exchange;
-mod operator;
-mod staking;
-mod storage;
 mod blob;
+mod committee;
+mod epoch;
+mod exchange;
 mod feature;
+mod node;
+mod stake;
+mod system;
+mod tape;
 
-pub use system::*;
-pub use epoch::*;
-pub use committee::*;
-pub use exchange::*;
-pub use operator::*;
-pub use staking::*;
-pub use storage::*;
 pub use blob::*;
+pub use committee::*;
+pub use epoch::*;
+pub use exchange::*;
 pub use feature::*;
+pub use node::*;
+pub use stake::*;
+pub use system::*;
+pub use tape::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]

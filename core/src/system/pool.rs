@@ -264,7 +264,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         &mut self, 
         current_epoch: EpochNumber, 
         stake_amount: Coin<TAPE>
-    ) -> Result<Stake, PoolError> {
+    ) -> Result<StakedTape, PoolError> {
         if stake_amount == TAPE::zero() {
             return Err(PoolError::ZeroStake);
         }
@@ -277,7 +277,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
             .insert_or_add(activation_epoch, stake_amount.into())
             .map_err(|_| PoolError::FailedToScheduleStake)?;
 
-        Ok(Stake {
+        Ok(StakedTape {
             activation_epoch,
             amount: stake_amount,
             state: StakeState::new(),
@@ -287,7 +287,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     /// Request a withdrawal of stake from this pool.
     pub fn unstake_from_pool(
         &mut self,
-        stake: &mut Stake,
+        stake: &mut StakedTape,
         current_epoch: EpochNumber,
     ) -> Result<EpochNumber, PoolError> {
 
@@ -342,7 +342,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     /// Claim rewards earned by a stake from activation to withdraw epoch.
     pub fn claim_stake_rewards(
         &mut self,
-        stake: &mut Stake,
+        stake: &mut StakedTape,
         current_epoch: EpochNumber,
     ) -> Result<Coin<TAPE>, PoolError> {
 

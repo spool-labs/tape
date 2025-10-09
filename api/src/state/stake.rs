@@ -5,7 +5,7 @@ use crate::state;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct StakedTape {
+pub struct Stake {
     /// The authority that owns this stake.
     pub authority: Pubkey,
 
@@ -13,9 +13,9 @@ pub struct StakedTape {
     pub node: Pubkey,
 
     /// The staking details (amount, activation, state, etc).
-    pub inner: Stake,
+    pub inner: StakedTape,
 }
 
-state!(AccountType, StakedTape);
+state!(AccountType, Stake);
 
 

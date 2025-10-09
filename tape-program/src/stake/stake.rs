@@ -53,7 +53,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     let node = node_info
         .is_writable()?
-        .as_account_mut::<StorageNode>(&tape_api::ID)?;
+        .as_account_mut::<Node>(&tape_api::ID)?;
 
     mint_info
         .is_mint()?;
@@ -74,7 +74,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         amount.into()
     ).map_err(|_| TapeError::StakingFailed)?;
 
-    create_program_account::<StakedTape>(
+    create_program_account::<Stake>(
         stake_info,
         system_program_info,
         signer_info,
@@ -82,7 +82,7 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         &[STAKE, signer_info.key.as_ref(), node_info.key.as_ref()],
     )?;
 
-    let stake = stake_info.as_account_mut::<StakedTape>(&tape_api::ID)?;
+    let stake = stake_info.as_account_mut::<Stake>(&tape_api::ID)?;
 
     stake.authority       = *signer_info.key;
     stake.node            = *node_info.key;
@@ -146,7 +146,7 @@ mod tests {
 
         let mut node_pool = StakingPool::new(commission_rate);
 
-        let initial_node = StorageNode {
+        let initial_node = Node {
             id: NodeId::new(0),
             authority: Pubkey::new_unique(),
             pool: node_pool,
@@ -156,12 +156,12 @@ mod tests {
 
         // Simulate the stake_with_pool effect for expected state
         let activation_epoch = current_epoch_number + EpochNumber(2);
-        let expected_stake_inner = Stake::new(amount.into(), activation_epoch);
+        let expected_stake_inner = StakedTape::new(amount.into(), activation_epoch);
 
         // Update pool: schedule pending stake
         node_pool.pending_stake.insert_or_add(activation_epoch, amount).unwrap();
 
-        let expected_node = StorageNode {
+        let expected_node = Node {
             pool: node_pool,
             ..initial_node
         };
@@ -192,7 +192,7 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&stake_address).data(
-                    StakedTape {
+                    Stake {
                         authority: signer,
                         node: node_key,
                         inner: expected_stake_inner,

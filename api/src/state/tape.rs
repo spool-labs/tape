@@ -5,7 +5,7 @@ use crate::state;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct TapeResource {
+pub struct Tape {
     /// The authority that owns this resource.
     pub authority: Pubkey,
 
@@ -25,4 +25,4 @@ pub struct TapeResource {
     pub total_blobs: u64,
 }
 
-state!(AccountType, TapeResource);
+state!(AccountType, Tape);

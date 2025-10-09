@@ -5,7 +5,7 @@ use crate::types::*;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub(super) enum State {
+pub enum StakePhase {
     Unknown = 0,
     Active,
     Unstaking,
@@ -15,8 +15,8 @@ pub(super) enum State {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct StakeState {
-    /// The state of this stake.
-    pub state: u64,
+    /// The phase of this stake.
+    pub phase: u64,
 
     /// The epoch unstaking can be initiated (0 if not unstaking).
     pub unstake_epoch: EpochNumber,
@@ -25,62 +25,62 @@ pub struct StakeState {
 impl StakeState {
     pub const fn new() -> Self {
         Self {
-            state: State::Active as u64,
+            phase: StakePhase::Active as u64,
             unstake_epoch: EpochNumber::zero(),
         }
     }
 
     #[inline]
-    fn state_enum(&self) -> Option<State> {
-        State::try_from(self.state).ok()
+    fn state_enum(&self) -> Option<StakePhase> {
+        StakePhase::try_from(self.phase).ok()
     }
 
     #[inline]
-    fn set_state(&mut self, s: State) {
-        self.state = s.into();
+    fn set_state(&mut self, s: StakePhase) {
+        self.phase = s.into();
     }
 
     pub fn is_active(&self) -> bool {
-        matches!(self.state_enum(), Some(State::Active))
+        matches!(self.state_enum(), Some(StakePhase::Active))
     }
 
     pub fn is_withdrawing(&self) -> bool {
-        matches!(self.state_enum(), Some(State::Unstaking))
+        matches!(self.state_enum(), Some(StakePhase::Unstaking))
     }
 
     pub fn withdraw_epoch(&self) -> Option<EpochNumber> {
         match self.state_enum() {
-            Some(State::Unstaking) => Some(self.unstake_epoch),
+            Some(StakePhase::Unstaking) => Some(self.unstake_epoch),
             _ => None,
         }
     }
 
     pub fn set_withdrawing(&mut self, epoch: EpochNumber) {
-        assert!(self.is_active(), "can only withdraw from staked state");
-        self.set_state(State::Unstaking);
+        assert!(self.is_active(), "can only withdraw from staked phase");
+        self.set_state(StakePhase::Unstaking);
         self.unstake_epoch = epoch;
     }
 
     pub fn set_staked(&mut self) {
-        self.set_state(State::Active);
+        self.set_state(StakePhase::Active);
         self.unstake_epoch = EpochNumber::zero();
     }
 
     pub fn set_withdrawn(&mut self) {
-        self.set_state(State::Withdrawn);
+        self.set_state(StakePhase::Withdrawn);
         self.unstake_epoch = EpochNumber::zero();
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct Stake {
+pub struct StakedTape {
     pub amount: Coin<TAPE>,
     pub activation_epoch: EpochNumber,
     pub state: StakeState,
 }
 
-impl Stake {
+impl StakedTape {
     pub fn new(amount: Coin<TAPE>, activation_epoch: EpochNumber) -> Self {
         Self {
             amount,

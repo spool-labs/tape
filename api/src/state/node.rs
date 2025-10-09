@@ -8,7 +8,7 @@ const PENDING_VALUES: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-pub struct StorageNode {
+pub struct Node {
     /// The unique identifier for this pool.
     pub id: NodeId,
 
@@ -26,4 +26,4 @@ pub struct StorageNode {
 }
 
 
-state!(AccountType, StorageNode);
+state!(AccountType, Node);

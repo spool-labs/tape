@@ -4,19 +4,19 @@ pub mod blob;
 pub mod committee;
 pub mod epoch;
 pub mod exchange;
-pub mod operator;
-pub mod staking;
-pub mod storage;
+pub mod node;
+pub mod stake;
 pub mod system;
+pub mod tape;
 
 use blob::*;
 use committee::*;
 use epoch::*;
 use exchange::*;
-use operator::*;
-use staking::*;
-use storage::*;
+use node::*;
+use stake::*;
 use system::*;
+use tape::*;
 
 use tape_api::prelude::*;
 use steel::*;
@@ -57,13 +57,13 @@ pub fn process_instruction(
             TapeInstruction::SwapForTape => process_swap_for_tape(accounts, data)?,
             TapeInstruction::SwapForSol => process_swap_for_sol(accounts, data)?,
 
-            // Operator
+            // Node
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
 
-            // Staking
+            // Stake
             TapeInstruction::StakeWithNode => process_stake_with_node(accounts, data)?,
 
-            // Storage
+            // Tape
             TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
             
             // Blob

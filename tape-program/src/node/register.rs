@@ -34,7 +34,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
-    create_program_account::<StorageNode>(
+    create_program_account::<Node>(
         node_info,
         system_program_info,
         signer_info,
@@ -42,7 +42,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[NODE, signer_info.key.as_ref()],
     )?;
 
-    let node = node_info.as_account_mut::<StorageNode>(&tape_api::ID)?;
+    let node = node_info.as_account_mut::<Node>(&tape_api::ID)?;
 
     node.id                   = NodeId::new(system.total_nodes);
     node.authority            = *signer_info.key;
@@ -139,7 +139,7 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&node_address).data(
-                    StorageNode {
+                    Node {
                         id: NodeId::new(0),
                         authority: signer,
                         pool: StakingPool::new(commission_rate),
