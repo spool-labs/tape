@@ -34,30 +34,18 @@ pub fn process_nominate_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
-    let activation_epoch = current_epoch(epoch)
-        .checked_add(EpochNumber(2))
-        .ok_or(TapeError::Overflow)?;
-
-    // Find the stake balance at activation epoch (2 epochs from now)
+    // Find the stake balance at activation epoch (1 epoch from now)
+    let activation_epoch = next_epoch(epoch);
     let balance = node.pool.tape_balance_at_epoch(activation_epoch);
 
-    solana_program::msg!("threshold {:?}", epoch.leaders.threshold_stake());
-    solana_program::msg!("count {:?}", epoch.leaders.size());
-    solana_program::msg!("balance {:?}", balance);
-
-    let res = epoch.leaders.insert_or_update(
+    // TODO: perhaps we should error on failure to nominate?
+    epoch.leaders.insert_or_update(
         CommitteeMember {
             id: node.id,
             key: node.metadata.bls_pubkey,
         }, 
         balance
     );
-
-    if res {
-        solana_program::msg!("Node nominated: {:?} with stake {:?}", node.id, balance);
-    } else {
-        solana_program::msg!("Failed to nominate node: {:?}", node.id);
-    }
 
     Ok(())
 }
@@ -85,28 +73,19 @@ mod tests {
         let mut epoch = Epoch {
             id: EpochNumber(42),
             state: EpochState::zeroed(),
-            last_epoch_ms: 0,
             leaders: CandidateSet::zeroed(),
+            last_epoch_ms: 0,
         };
 
         epoch.leaders = CandidateSet {
-            member_count: COMMITTEE_SIZE as u64 - 5,
+            member_count: COMMITTEE_SIZE as u64,
             members: [CommitteeMember::zeroed(); COMMITTEE_SIZE],
-            //members: (0..COMMITTEE_SIZE as u64)
-            //    .map(|i| CommitteeMember { id: i.into(), key: BlsPubkey::zeroed() })
-            //    .collect::<Vec<_>>()
-            //    .try_into()
-            //    .unwrap(),
-            stakes: [TAPE(100000); COMMITTEE_SIZE],
+            stakes: (0..COMMITTEE_SIZE as u64)
+                .map(|i| TAPE(1000 - i))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
         };
-
-        //let res = epoch.leaders.insert_or_update(
-        //    CommitteeMember { id: NodeId::new(9000), key: BlsPubkey::zeroed() },
-        //    TAPE(1901)
-        //);
-        //println!("Initial epoch leaders: {:?}", epoch.leaders);
-        //println!("res: {:?}", res);
-        //assert!(false);
 
         let commission_rate = BasisPoints(100);
         let mut node = Node {
@@ -120,20 +99,24 @@ mod tests {
         let e0: EpochNumber = epoch.id;
         let e1: EpochNumber = e0 + EpochNumber(1);
         let e2: EpochNumber = e1 + EpochNumber(1);
-        let e3: EpochNumber = e2 + EpochNumber(1);
-        let e4: EpochNumber = e3 + EpochNumber(1);
 
+        node.pool.tape_balance = TAPE(5000);
         node.pool.pending_stake.0 = FixedMap {
             length: 2,
-            keys: [e2, e3],
+            keys: [e1, e2],
             values: [1000, 200],
         };
-
         node.pool.pre_active_withdrawals.0 = FixedMap {
             length: 2,
-            keys: [e2, e3],
+            keys: [e1, e2],
             values: [100, 50],
         };
+
+        assert_eq!(node.pool.tape_balance_at_epoch(e0), TAPE(5000));
+        assert_eq!(node.pool.tape_balance_at_epoch(e1), TAPE(5900));
+        assert_eq!(node.pool.tape_balance_at_epoch(e2), TAPE(6050));
+
+        println!("leaders {:?}", epoch.leaders);
 
         // Simulate pending stake on the pool
         //node.pool.stake_with_pool(e0, TAPE(1000)).expect("schedule stake"); // activation at e2
@@ -160,102 +143,27 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                //Check::account(&epoch_address).data(
-                //    Epoch {
-                //        leaders: {
-                //            let mut leaders = CandidateSet::zeroed();
-                //            leaders.insert_or_update(
-                //                CommitteeMember {
-                //                    id: node.id,
-                //                    key: node.metadata.bls_pubkey,
-                //                },
-                //                TAPE(1000) // balance at e4
-                //            );
-                //            leaders
-                //        },
-                //        ..epoch
-                //    }.pack().as_ref()
-                //).build(),
+                Check::account(&epoch_address).data(
+                    Epoch {
+                        leaders: {
+                            // Same as before, but with our node replacing the lowest stake node
+                            let mut leaders = epoch.leaders;
+
+                            let index = leaders.min_stake_index().unwrap();
+
+                            leaders.stakes[index] = TAPE(5900);
+                            leaders.members[index] = CommitteeMember { 
+                                id: node.id, 
+                                key: node.metadata.bls_pubkey
+                            };
+
+                            leaders
+                        },
+                        ..epoch
+                    }.pack().as_ref()
+                ).build(),
             ]
         );
     }
 
-    //#[test]
-    //fn test_register_node() {
-    //    let signer = Pubkey::new_unique();
-    //    let commission_rate = BasisPoints(100); // 1%
-    //    let name = to_name("hello, world");
-    //    let network_address = NetworkAddress::default();
-    //    let network_tls = Pubkey::new_unique();
-    //
-    //    let secret = BlsPrivateKey::from_random();
-    //    let bls_pubkey = secret.public_key().expect("pubkey");
-    //    let bls_pop = secret.proof_of_possession().expect("pop");
-    //
-    //    let instruction = build_register_node_ix(
-    //        signer,
-    //        name,
-    //        commission_rate,
-    //        network_address,
-    //        network_tls,
-    //        bls_pubkey,
-    //        bls_pop,
-    //    );
-    //
-    //    let (system_address, _) = system_pda();
-    //    let (epoch_address, _) = epoch_pda();
-    //    let (node_address, _) = node_pda(signer);
-    //
-    //    // Setup existing accounts
-    //
-    //    let system = System {
-    //        total_nodes: 0,
-    //    };
-    //
-    //    let epoch = Epoch {
-    //        id: EpochNumber(42),
-    //        state: EpochState::new(),
-    //        last_epoch_ms: 0,
-    //        leaders: CandidateSet::zeroed(),
-    //    };
-    //
-    //    let accounts = vec![
-    //        sol(signer, 1_000_000_000),
-    //        pda(system_address, system.pack()),
-    //        pda(epoch_address, epoch.pack()),
-    //        empty(node_address),
-    //        system_program(),
-    //        rent_sysvar(),
-    //    ];
-    //
-    //    let env = test_env("tape".to_string());
-    //    env.process_instruction(
-    //        &instruction,
-    //        &accounts,
-    //        &[
-    //            Check::success(),
-    //            Check::account(&system_address).data(
-    //                System {
-    //                    total_nodes: 1,
-    //                }.pack().as_ref()
-    //            ).build(),
-    //            Check::account(&node_address).data(
-    //                Node {
-    //                    id: NodeId::new(0),
-    //                    authority: signer,
-    //                    pool: StakingPool::new(commission_rate),
-    //                    metadata: NodeMetadata {
-    //                        name,
-    //                        storage_capacity: 0,
-    //                        storage_used: 0,
-    //                        network_address,
-    //                        network_tls,
-    //                        bls_pubkey,
-    //                    },
-    //                    registered_epoch: epoch.id,
-    //                }.pack().as_ref()
-    //            ).build(),
-    //        ]
-    //    );
-    //}
 }

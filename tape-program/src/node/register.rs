@@ -138,6 +138,9 @@ mod tests {
                         total_nodes: 1,
                     }.pack().as_ref()
                 ).build(),
+                Check::account(&epoch_address).data(
+                    epoch.pack().as_ref()
+                ).build(),
                 Check::account(&node_address).data(
                     Node {
                         id: NodeId::new(0),

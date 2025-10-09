@@ -1,5 +1,7 @@
 #![allow(unexpected_cfgs)]
 
+use core::{fmt, str::from_utf8_unchecked};
+
 use tape_crypto::bls12254::errors::BLSError;
 use tape_crypto::bls12254::min_sig::*;
 use bytemuck::{Pod, Zeroable};
@@ -33,17 +35,15 @@ impl BlsPrivateKey {
     }
 }
 
-
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct BlsSignature(pub G1CompressedPoint);
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
 
 impl BlsPubkey {
-
     /// Verify a proof of possession (PoP) against this public key.
     pub fn is_valid(&self, pop: BlsSignature) -> bool {
         let pubkey = G2Point::try_from(self.0);
@@ -60,7 +60,68 @@ impl BlsPubkey {
     }
 }
 
+fn write_sig_base58(f: &mut fmt::Formatter<'_>, sig: &BlsSignature) -> fmt::Result {
+    const SIG_BYTES: usize = 32; // G1 compressed
+    const SIG_MAX_BASE58: usize = 44;
 
+    let sig_bytes = sig.0.0;
+    if sig_bytes.len() != 32 {
+        return f.write_str("<invalid bls signature>");
+    }
+    let mut in32 = [0u8; SIG_BYTES];
+    in32.copy_from_slice(&sig_bytes);
+
+    let mut out = [0u8; SIG_MAX_BASE58];
+    let len = five8::encode_32(&in32, &mut out) as usize;
+    let s = unsafe { from_utf8_unchecked(&out[..len]) };
+    f.write_str(s)
+}
+
+fn write_pubkey_base58(f: &mut fmt::Formatter<'_>, pk: &BlsPubkey) -> fmt::Result {
+    const PK_BYTES: usize = 64;  // G2 compressed
+    const PK_MAX_BASE58: usize = 88;
+
+    match G2CompressedPoint::try_from(&pk.0) {
+        Ok(comp) => {
+            let pk_bytes = comp.0;
+            if pk_bytes.len() != PK_BYTES {
+                return f.write_str("<invalid bls pubkey>");
+            }
+            let mut in64 = [0u8; PK_BYTES];
+            in64.copy_from_slice(&pk_bytes);
+
+            let mut out = [0u8; PK_MAX_BASE58];
+            let len = five8::encode_64(&in64, &mut out) as usize;
+            let s = unsafe { from_utf8_unchecked(&out[..len]) };
+            f.write_str(s)
+        }
+        Err(_) => f.write_str("<invalid bls pubkey>"),
+    }
+}
+
+impl fmt::Debug for BlsPubkey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_pubkey_base58(f, self)
+    }
+}
+
+impl fmt::Display for BlsPubkey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_pubkey_base58(f, self)
+    }
+}
+
+impl fmt::Debug for BlsSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_sig_base58(f, self)
+    }
+}
+
+impl fmt::Display for BlsSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_sig_base58(f, self)
+    }
+}
 
 #[cfg(test)]
 mod tests {
