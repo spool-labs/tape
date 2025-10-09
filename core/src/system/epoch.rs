@@ -4,7 +4,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub(super) enum EpochPhase {
+pub enum EpochPhase {
     Unknown = 0,
     Syncing,
     Active,

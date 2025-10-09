@@ -38,15 +38,17 @@ pub fn process_nominate_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let activation_epoch = next_epoch(epoch);
     let balance = node.pool.tape_balance_at_epoch(activation_epoch);
 
-    // TODO: perhaps we should error on failure to nominate?
-    epoch.leaders.insert_or_update(
-        CommitteeMember {
-            id: node.id,
-            key: node.metadata.bls_pubkey,
-        }, 
-        balance
-    );
+    let member = CommitteeMember { 
+        id: node.id, 
+        key: node.metadata.bls_pubkey 
+    };
 
+    // Try to nominate the node into the candidate set if there's enough stake to either bump
+    // someone out or fill an empty slot.
+    epoch.leaders
+        .try_nominate(member, balance)
+        .map_err(|_| TapeError::UnexpectedState)?;
+    
     Ok(())
 }
 
@@ -116,7 +118,7 @@ mod tests {
         assert_eq!(node.pool.tape_balance_at_epoch(e1), TAPE(5900));
         assert_eq!(node.pool.tape_balance_at_epoch(e2), TAPE(6050));
 
-        println!("leaders {:?}", epoch.leaders);
+        // println!("leaders {:?}", epoch.leaders);
 
         // Simulate pending stake on the pool
         //node.pool.stake_with_pool(e0, TAPE(1000)).expect("schedule stake"); // activation at e2

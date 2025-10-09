@@ -3,6 +3,16 @@ use crate::bls::*;
 use std::collections::BTreeMap;
 use bytemuck::{Pod, Zeroable};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateSetError {
+    AlreadyPresent { idx: usize },
+    Full,
+    NotFull,
+    NotFound,
+    NotBetter { min_idx: usize, min_stake: Coin<TAPE> },
+    ZeroStake,
+}
+
 /// Relative NodeId within a committee
 pub type RelativeNodeId = u8;
 
@@ -35,6 +45,18 @@ impl<const N: usize> CandidateSet<N> {
     #[inline]
     pub fn size(&self) -> usize {
         (self.member_count as usize).min(N)
+    }
+
+    /// Capacity of the set.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        N
+    }
+
+    /// Whether the set is full.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.size() == N
     }
 
     /// Checks if the given NodeId is present in the candidate set.
@@ -80,12 +102,119 @@ impl<const N: usize> CandidateSet<N> {
         Some(min_idx)
     }
 
-    /// Helper: swap-remove at index, zeroing the freed slot.
-    pub fn remove_index(&mut self, idx: usize) {
+    /// Minimum stake in the set (0 if empty).
+    pub fn threshold_stake(&self) -> Coin<TAPE> {
+        self.min_stake_index()
+            .map(|i| self.stake_at(i))
+            .unwrap_or(TAPE::zero())
+    }
+
+    /// Total stake in the set.
+    pub fn total_stake(&self) -> Coin<TAPE> {
         let count = self.size();
-        if count == 0 || idx >= count {
-            return;
+        let mut sum = TAPE::zero();
+        for i in 0..count {
+            sum = sum.saturating_add(self.stake_at(i));
         }
+        sum
+    }
+
+    /// Tries to nominate a new member with the given stake. If the set is not full, it inserts the
+    /// new member. If the set is full, it replaces the current minimum-stake member.
+    pub fn try_nominate(
+        &mut self,
+        member: CommitteeMember,
+        staked_amount: Coin<TAPE>,
+    ) -> Result<usize, CandidateSetError> {
+        if self.is_full() {
+            self.replace_if_better(member, staked_amount)
+        } else {
+            self.insert(member, staked_amount)
+        }
+    }
+
+    /// Inserts a new node if there is capacity. Never evicts.
+    /// Returns the index where the member was inserted.
+    pub fn insert(&mut self, member: CommitteeMember, staked_amount: Coin::<TAPE>) -> Result<usize, CandidateSetError> {
+        if staked_amount == TAPE::zero() {
+            return Err(CandidateSetError::ZeroStake);
+        }
+
+        if let Some(idx) = self.index_of(&member.id) {
+            return Err(CandidateSetError::AlreadyPresent { idx });
+        }
+
+        let count = self.size();
+        if count >= N {
+            return Err(CandidateSetError::Full);
+        }
+
+        self.members[count] = member;
+        self.set_stake_at(count, staked_amount);
+        self.member_count = (count + 1) as u64;
+        Ok(count)
+    }
+
+    /// Replaces the current minimum-stake member iff the set is full and the new stake is strictly larger.
+    /// Returns the index replaced on success.
+    pub fn replace_if_better(
+        &mut self,
+        member: CommitteeMember,
+        staked_amount: Coin::<TAPE>,
+    ) -> Result<usize, CandidateSetError> {
+        if staked_amount == TAPE::zero() {
+            return Err(CandidateSetError::ZeroStake);
+        }
+
+        if let Some(idx) = self.index_of(&member.id) {
+            return Err(CandidateSetError::AlreadyPresent { idx });
+        }
+
+        if !self.is_full() {
+            return Err(CandidateSetError::NotFull);
+        }
+
+        let Some(min_idx) = self.min_stake_index() else {
+            return Err(CandidateSetError::NotFull);
+        };
+
+        let min_val = self.stake_at(min_idx);
+        if staked_amount <= min_val {
+            return Err(CandidateSetError::NotBetter { min_idx, min_stake: min_val });
+        }
+
+        self.members[min_idx] = member;
+        self.set_stake_at(min_idx, staked_amount);
+        Ok(min_idx)
+    }
+
+    /// Updates the staked amount of the node with the given NodeId.
+    /// Never removes. Returns the previous stake on success.
+    pub fn update_stake(
+        &mut self,
+        node_id: &NodeId,
+        new_stake: Coin::<TAPE>,
+    ) -> Result<Coin<TAPE>, CandidateSetError> {
+        let Some(idx) = self.index_of(node_id) else {
+            return Err(CandidateSetError::NotFound);
+        };
+        let old = self.stake_at(idx);
+        self.set_stake_at(idx, new_stake);
+        Ok(old)
+    }
+
+    /// Removes a node with the given NodeId from the set using unordered swap-remove semantics.
+    /// Returns the removed member and its stake.
+    pub fn remove(&mut self, node_id: &NodeId) -> Result<(CommitteeMember, Coin<TAPE>), CandidateSetError> {
+        let Some(idx) = self.index_of(node_id) else {
+            return Err(CandidateSetError::NotFound);
+        };
+
+        let count = self.size();
+        debug_assert!(idx < count);
+
+        let removed_member = self.members[idx];
+        let removed_stake = self.stake_at(idx);
 
         let last = count - 1;
         if idx != last {
@@ -95,83 +224,9 @@ impl<const N: usize> CandidateSet<N> {
 
         self.members[last] = CommitteeMember::zeroed();
         self.stakes[last] = TAPE::zero();
-
         self.member_count = count as u64 - 1;
-    }
 
-    /// Inserts the node if it is not already present; otherwise updates its stake.
-    /// If the new stake is zero or below the threshold, the node is removed.
-    /// Returns true if the node is in the set after the operation.
-    pub fn insert_or_update(&mut self, member: CommitteeMember, staked_amount: Coin::<TAPE>) -> bool {
-        if let Some(idx) = self.index_of(&member.id) {
-            let full = self.size() == N;
-            let threshold = if full {
-                self.threshold_stake()
-            } else { 
-                TAPE::zero() 
-            };
-
-            // If full and new stake is below threshold, remove the member
-            if full && staked_amount < threshold {
-                self.remove_index(idx);
-                return false;
-            }
-
-            self.set_stake_at(idx, staked_amount);
-            true
-        } else {
-            // Insert new
-            self.insert(member, staked_amount)
-        }
-    }
-
-    /// Updates the staked amount of the node with the given NodeId.
-    /// Returns true if the node exists in the set (stake updated), false otherwise.
-    pub fn update(&mut self, node_id: &NodeId, staked_amount: Coin::<TAPE>) -> bool {
-        if let Some(idx) = self.index_of(node_id) {
-            self.set_stake_at(idx, staked_amount);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Inserts a new node if it has enough stake to be included.
-    /// - If there is capacity, the node is appended.
-    /// - If full, the node replaces the current minimum-stake node iff its stake is strictly larger.
-    /// Returns true if inserted, false otherwise (including if it already exists).
-    pub fn insert(&mut self, member: CommitteeMember, staked_amount: Coin::<TAPE>) -> bool {
-        if self.contains(&member.id) {
-            return false;
-        }
-
-        // If the set is not full, append the member
-        let count = self.size();
-        if count < N {
-            self.members[count] = member;
-            self.set_stake_at(count, staked_amount);
-            self.member_count = (count + 1) as u64;
-            return true;
-        }
-
-        // Otherwise, replace the minimum stake member if the new stake is larger
-        if let Some(min_idx) = self.min_stake_index() {
-            let min_val = self.stake_at(min_idx);
-            if staked_amount > min_val {
-                self.members[min_idx] = member;
-                self.set_stake_at(min_idx, staked_amount);
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Removes a node with the given NodeId from the set (no-op if absent).
-    pub fn remove(&mut self, node_id: &NodeId) {
-        if let Some(idx) = self.index_of(node_id) {
-            self.remove_index(idx);
-        }
+        Ok((removed_member, removed_stake))
     }
 
     /// Returns the IDs of the nodes in the set.
@@ -190,23 +245,6 @@ impl<const N: usize> CandidateSet<N> {
             stakes.push(self.stake_at(i));
         }
         (ids, stakes)
-    }
-
-    /// Minimum stake in the set (0 if empty).
-    pub fn threshold_stake(&self) -> Coin<TAPE> {
-        self.min_stake_index()
-            .map(|i| self.stake_at(i))
-            .unwrap_or(TAPE::zero())
-    }
-
-    /// Total stake in the set.
-    pub fn total_stake(&self) -> Coin<TAPE> {
-        let count = self.size();
-        let mut sum = TAPE::zero();
-        for i in 0..count {
-            sum = sum.saturating_add(self.stake_at(i));
-        }
-        sum
     }
 }
 
@@ -235,7 +273,8 @@ impl<const N: usize, const M: usize> AppointedSet<N, M> {
 
     /// Creates a new, empty AppointedSet.
     pub fn new() -> Self {
-        assert!(N <= u8::MAX as usize);
+        debug_assert!(N <= u8::MAX as usize);
+
         Self {
             member_count: 0,
             members: [CommitteeMember::zeroed(); N],
@@ -299,7 +338,6 @@ impl<const N: usize, const M: usize> AppointedSet<N, M> {
             if idx < count {
                 let id = self.members[idx].id;
                 let e = map.entry(id).or_insert(0);
-                //*e = e.saturating_add(1);
                 *e += 1;
             }
         }
@@ -378,17 +416,18 @@ mod tests {
         let m5 = member_with_id(node(5));
         let m6 = member_with_id(node(6));
 
-        assert!(set.insert_or_update(m1, tape(10)));
-        assert!(set.insert_or_update(m2, tape(9)));
-        assert!(set.insert_or_update(m3, tape(8)));
-        assert!(set.insert_or_update(m4, tape(7)));
-        assert!(set.insert_or_update(m5, tape(6)));
+        assert_eq!(set.insert(m1, tape(10)), Ok(0));
+        assert_eq!(set.insert(m2, tape(9)), Ok(1));
+        assert_eq!(set.insert(m3, tape(8)), Ok(2));
+        assert_eq!(set.insert(m4, tape(7)), Ok(3));
+        assert_eq!(set.insert(m5, tape(6)), Ok(4));
 
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
 
-        // Insert another node which should evict node 5 (stake 6)
-        assert!(set.insert_or_update(m6, tape(11)));
+        // Full. Replace min (stake 6) if better with 11.
+        let replaced_idx = set.replace_if_better(m6, tape(11)).expect("should replace min");
+        assert_eq!(set.stake_at(replaced_idx), tape(11));
 
         total = total - 6 + 11;
         assert_eq!(set.total_stake(), tape(total));
@@ -421,47 +460,53 @@ mod tests {
         ];
 
         // Insert out of order
-        assert!(set.insert_or_update(nodes[3], tape(7)));
-        assert!(set.insert_or_update(nodes[0], tape(10)));
-        assert!(set.insert_or_update(nodes[2], tape(8)));
-        assert!(set.insert_or_update(nodes[1], tape(9)));
-        assert!(set.insert_or_update(nodes[4], tape(6)));
+        assert_eq!(set.insert(nodes[3], tape(7)), Ok(0));
+        assert_eq!(set.insert(nodes[0], tape(10)), Ok(1));
+        assert_eq!(set.insert(nodes[2], tape(8)), Ok(2));
+        assert_eq!(set.insert(nodes[1], tape(9)), Ok(3));
+        assert_eq!(set.insert(nodes[4], tape(6)), Ok(4));
 
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
 
         // Update node[0] to 12
-        assert!(set.insert_or_update(nodes[0], tape(12)));
+        let old = set.update_stake(&nodes[0].id, tape(12)).unwrap();
+        assert_eq!(old, tape(10));
         total = total - 10 + 12;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[0].id), Some(tape(12)));
 
         // Update node[2] to 13
-        assert!(set.insert_or_update(nodes[2], tape(13)));
+        let old = set.update_stake(&nodes[2].id, tape(13)).unwrap();
+        assert_eq!(old, tape(8));
         total = total - 8 + 13;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[2].id), Some(tape(13)));
 
         // Update node[3] to 9
-        assert!(set.insert_or_update(nodes[3], tape(9)));
+        let old = set.update_stake(&nodes[3].id, tape(9)).unwrap();
+        assert_eq!(old, tape(7));
         total = total - 7 + 9;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[3].id), Some(tape(9)));
 
         // Update node[1] to 10
-        assert!(set.insert_or_update(nodes[1], tape(10)));
+        let old = set.update_stake(&nodes[1].id, tape(10)).unwrap();
+        assert_eq!(old, tape(9));
         total = total - 9 + 10;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[1].id), Some(tape(10)));
 
         // Update node[4] to 7
-        assert!(set.insert_or_update(nodes[4], tape(7)));
+        let old = set.update_stake(&nodes[4].id, tape(7)).unwrap();
+        assert_eq!(old, tape(6));
         total = total - 6 + 7;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[4].id), Some(tape(7)));
 
-        // Insert node[5] with 11; should evict node[4] (min = 7)
-        assert!(set.insert_or_update(nodes[5], tape(11)));
+        // Insert node[5] with 11; set is full so use replacement; should evict current min (7)
+        let replaced_idx = set.replace_if_better(nodes[5], tape(11)).expect("should replace min with 11");
+        assert_eq!(set.stake_at(replaced_idx), tape(11));
         total = total - 7 + 11;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[5].id), Some(tape(11)));
@@ -486,13 +531,17 @@ mod tests {
         let d = member_with_id(node(4));
         let e = member_with_id(node(5));
 
-        assert!(set.insert_or_update(a, tape(10)));
-        assert!(set.insert_or_update(b, tape(9)));
-        assert!(set.insert_or_update(ccc, tape(8)));
-        assert!(set.insert_or_update(d, tape(6)));
+        assert_eq!(set.insert(a, tape(10)), Ok(0));
+        assert_eq!(set.insert(b, tape(9)), Ok(1));
+        assert_eq!(set.insert(ccc, tape(8)), Ok(2));
+        assert_eq!(set.insert(d, tape(6)), Ok(3));
 
-        // Full, min = 6. Try to insert e with equal stake 6; should NOT replace.
-        assert!(!set.insert_or_update(e, tape(6)));
+        // Full, min = 6. Try to replace with equal stake 6; should NOT replace.
+        let err = set.replace_if_better(e, tape(6)).unwrap_err();
+        assert!(matches!(err, CandidateSetError::NotBetter { .. }));
+
+        // Insert should also fail because full.
+        assert_eq!(set.insert(e, tape(6)), Err(CandidateSetError::Full));
 
         let ids = set.candidate_ids();
         assert!(ids.contains(&a.id));
@@ -513,18 +562,25 @@ mod tests {
         let d = member_with_id(node(4)); // 7
         let e = member_with_id(node(5)); // 6
 
-        assert!(set.insert_or_update(a, tape(10)));
-        assert!(set.insert_or_update(b, tape(9)));
-        assert!(set.insert_or_update(c_m, tape(8)));
-        assert!(set.insert_or_update(d, tape(7)));
-        assert!(set.insert_or_update(e, tape(6)));
+        assert_eq!(set.insert(a, tape(10)), Ok(0));
+        assert_eq!(set.insert(b, tape(9)), Ok(1));
+        assert_eq!(set.insert(c_m, tape(8)), Ok(2));
+        assert_eq!(set.insert(d, tape(7)), Ok(3));
+        assert_eq!(set.insert(e, tape(6)), Ok(4));
 
         let total_before = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total_before));
 
-        // Full, threshold = current min = 6.
-        // Update c (8 -> 5), which is below threshold => should remove c.
-        assert!(!set.insert_or_update(c_m, tape(5)));
+        // Emulate old policy explicitly: when full, updating below the current threshold removes.
+        let threshold_before = set.threshold_stake(); // 6
+        let new_stake_for_c = tape(5);
+        if new_stake_for_c < threshold_before {
+            let (removed_member, removed_stake) = set.remove(&c_m.id).expect("c should be removed");
+            assert_eq!(removed_member.id, c_m.id);
+            assert_eq!(removed_stake, tape(8));
+        } else {
+            let _old = set.update_stake(&c_m.id, new_stake_for_c).unwrap();
+        }
 
         let ids = set.candidate_ids();
         assert!(!ids.contains(&c_m.id));
@@ -541,9 +597,9 @@ mod tests {
         let b = member_with_id(node(2));
         let c_m = member_with_id(node(3));
 
-        assert!(set.insert_or_update(a, tape(5)));
-        assert!(set.insert_or_update(b, tape(10)));
-        assert!(set.insert_or_update(c_m, tape(20)));
+        assert_eq!(set.insert(a, tape(5)), Ok(0));
+        assert_eq!(set.insert(b, tape(10)), Ok(1));
+        assert_eq!(set.insert(c_m, tape(20)), Ok(2));
 
         let (ids, stakes) = set.candidate_ids_and_stake();
 
@@ -558,6 +614,93 @@ mod tests {
         assert_eq!(stakes[0], tape(5));
         assert_eq!(stakes[1], tape(10));
         assert_eq!(stakes[2], tape(20));
+    }
+
+    #[test]
+    fn try_nominate_inserts_when_not_full() {
+        const N: usize = 3;
+        let mut set: CandidateSet<N> = empty_candidate_set();
+
+        let a = member_with_id(node(1));
+        let b = member_with_id(node(2));
+
+        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
+        assert_eq!(set.try_nominate(b, tape(5)), Ok(1));
+        assert!(set.contains(&a.id) && set.contains(&b.id));
+    }
+
+    #[test]
+    fn try_nominate_replaces_when_full_and_better() {
+        const N: usize = 3;
+        let mut set: CandidateSet<N> = empty_candidate_set();
+
+        let a = member_with_id(node(1));
+        let b = member_with_id(node(2));
+        let c = member_with_id(node(3));
+        let d = member_with_id(node(4)); // challenger
+
+        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
+        assert_eq!(set.try_nominate(b, tape(9)), Ok(1));
+        assert_eq!(set.try_nominate(c, tape(6)), Ok(2));
+
+        // Full now; challenger beats min (6)
+        let idx = set.try_nominate(d, tape(11)).expect("should replace min");
+        assert_eq!(set.stake_at(idx), tape(11));
+        assert!(!set.contains(&c.id));
+        assert!(set.contains(&d.id));
+    }
+
+    #[test]
+    fn try_nominate_rejects_when_full_and_not_better() {
+        const N: usize = 2;
+        let mut set: CandidateSet<N> = empty_candidate_set();
+
+        let a = member_with_id(node(1));
+        let b = member_with_id(node(2));
+        let c = member_with_id(node(3));
+
+        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
+        assert_eq!(set.try_nominate(b, tape(7)), Ok(1));
+
+        // Full; c == min (7) is not strictly better
+        let err = set.try_nominate(c, tape(7)).unwrap_err();
+        assert!(matches!(err, CandidateSetError::NotBetter { .. }));
+        assert!(!set.contains(&c.id));
+    }
+
+    #[test]
+    fn try_nominate_rejects_when_already_present() {
+        const N: usize = 3;
+        let mut set: CandidateSet<N> = empty_candidate_set();
+
+        let a = member_with_id(node(1));
+
+        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
+        let err = set.try_nominate(a, tape(12)).unwrap_err();
+        assert!(matches!(err, CandidateSetError::AlreadyPresent { .. }));
+        // Stake unchanged by try_nominate
+        let idx = set.index_of(&a.id).unwrap();
+        assert_eq!(set.stake_at(idx), tape(10));
+    }
+
+    #[test]
+    fn try_nominate_rejects_zero_stake() {
+        const N: usize = 2;
+        let mut set: CandidateSet<N> = empty_candidate_set();
+
+        let a = member_with_id(node(1));
+        let b = member_with_id(node(2));
+
+        let err = set.try_nominate(a, TAPE::zero()).unwrap_err();
+        assert!(matches!(err, CandidateSetError::ZeroStake));
+
+        assert_eq!(set.try_nominate(a, tape(5)), Ok(0));
+        assert_eq!(set.try_nominate(b, tape(6)), Ok(1));
+
+        // Full; zero still invalid
+        let c = member_with_id(node(3));
+        let err = set.try_nominate(c, TAPE::zero()).unwrap_err();
+        assert!(matches!(err, CandidateSetError::ZeroStake));
     }
 
     #[test]

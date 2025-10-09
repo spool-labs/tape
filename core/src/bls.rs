@@ -2,6 +2,7 @@
 
 use core::{fmt, str::from_utf8_unchecked};
 
+#[cfg(not(target_os = "solana"))]
 use tape_crypto::bls12254::errors::BLSError;
 use tape_crypto::bls12254::min_sig::*;
 use bytemuck::{Pod, Zeroable};
