@@ -16,7 +16,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     signer_info.is_signer()?;
 
-    let (node_address, _bump) = node_pda(*signer_info.key);
+    let (node_address, _bump) = storage_node_pda(*signer_info.key);
     node_info
         .is_empty()?
         .is_writable()?
@@ -90,7 +90,7 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = storage_node_pda(signer);
 
         // Setup existing accounts
 

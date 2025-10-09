@@ -1,7 +1,7 @@
 use steel::*;
 use crate::pda::*;
+use crate::utils::ata;
 use tape_core::prelude::*;
-use spl_associated_token_account::get_associated_token_address;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -37,9 +37,9 @@ pub fn build_stake_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
-    let (stake_address, _) = staked_tape_pda(signer, node_address);
-    let stake_ata = get_associated_token_address(&stake_address, &mint_address);
-    let signer_ata = get_associated_token_address(&signer, &mint_address);
+    let (stake_address, _) = stake_pda(signer, node_address);
+    let stake_ata = ata(&stake_address);
+    let signer_ata = ata(&signer);
 
     let amount = amount.pack();
 

@@ -50,7 +50,7 @@ pub enum TapeInstruction {
 
     // Operator
     RegisterNode,
-    JoinNetwork,
+    NominateNode,
     SetAuthority,
     SetNetworkAddress,
     SetNetworkTls,
@@ -103,7 +103,7 @@ instruction!(TapeInstruction, SwapForTape);
 instruction!(TapeInstruction, SwapForSol);
 
 instruction!(TapeInstruction, RegisterNode);
-instruction!(TapeInstruction, JoinNetwork);
+instruction!(TapeInstruction, NominateNode);
 instruction!(TapeInstruction, SetAuthority);
 instruction!(TapeInstruction, SetNetworkAddress);
 instruction!(TapeInstruction, SetNetworkTls);

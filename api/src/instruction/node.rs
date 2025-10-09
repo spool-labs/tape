@@ -14,7 +14,7 @@ pub struct RegisterNode {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct JoinNetwork {}
+pub struct NominateNode {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -83,7 +83,7 @@ pub fn build_register_node_ix(
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-    let (node_address, _) = storage_node_pda(signer);
+    let (node_address, _) = node_pda(signer);
 
     let commission_rate = commission_rate.pack();
 
@@ -103,5 +103,26 @@ pub fn build_register_node_ix(
             network_address,
             network_tls,
         }.to_bytes(),
+    }
+}
+
+pub fn build_nominate_node_ix(
+    signer: Pubkey,
+) -> Instruction {
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    let (node_address, _) = node_pda(signer);
+
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(node_address, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: NominateNode {}.to_bytes(),
     }
 }

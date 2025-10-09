@@ -1,7 +1,6 @@
 use steel::*;
 use crate::pda::*;
-use tape_core::prelude::*;
-use spl_associated_token_account::get_associated_token_address;
+use crate::utils::ata;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -18,10 +17,10 @@ pub fn build_initialize_ix(
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
-    let (committee_address, _) = committee_pda(CommitteeNumber::current());
-    let (prev_committee_address, _) = committee_pda(CommitteeNumber::previous());
+    let (committee_address, _) = current_committee_pda();
+    let (prev_committee_address, _) = previous_committee_pda();
 
-    let signer_ata = get_associated_token_address(&signer, &mint_address);
+    let signer_ata = ata(&signer);
 
     Instruction {
         program_id: crate::ID,

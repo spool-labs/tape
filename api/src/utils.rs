@@ -2,7 +2,9 @@ use steel::*;
 
 use tape_core::types::EpochNumber;
 use crate::state::Epoch;
-use crate::consts::NAME_LENGTH;
+use crate::consts::{MINT_ADDRESS, NAME_LENGTH};
+
+use spl_associated_token_account::get_associated_token_address;
 
 /// Helper: check a condition is true and return an error if not
 #[inline(always)]
@@ -59,4 +61,10 @@ pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
 #[inline(always)]
 pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
     epoch.id.checked_add(EpochNumber::one()).unwrap()
+}
+
+/// Helper: get the associated token account
+#[inline(always)]
+pub fn ata(owner: &Pubkey) -> Pubkey {
+    get_associated_token_address(owner, &MINT_ADDRESS)
 }

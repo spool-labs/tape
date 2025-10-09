@@ -1,7 +1,7 @@
 use steel::*;
 use crate::pda::*;
+use crate::utils::ata;
 use tape_core::prelude::*;
-use spl_associated_token_account::get_associated_token_address;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -40,9 +40,8 @@ pub fn build_reserve_tape_ix(
     let (treasury_address, _) = treasury_pda();
     let (treasury_ata, _) = treasury_ata();
 
-    let (mint_address, _) = mint_pda();
-    let (resource_address, _) = resource_pda(signer);
-    let signer_ata = get_associated_token_address(&signer, &mint_address);
+    let (tape_address, _) = tape_pda(signer);
+    let signer_ata = ata(&signer);
 
     let storage_units = storage_units.pack();
     let start_epoch = start_epoch.pack();
@@ -53,7 +52,7 @@ pub fn build_reserve_tape_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
-            AccountMeta::new(resource_address, false),
+            AccountMeta::new(tape_address, false),
 
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(archive_address, false),

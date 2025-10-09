@@ -29,8 +29,8 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    let (stake_address, _)     = staked_tape_pda(*signer_info.key, *node_info.key);
-    let (stake_ata_address, _) = staked_tape_ata(stake_address);
+    let (stake_address, _)     = stake_pda(*signer_info.key, *node_info.key);
+    let (stake_ata_address, _) = stake_ata(stake_address);
 
     stake_info
         .is_empty()?
@@ -126,7 +126,7 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = staked_tape_pda(signer, node_key);
+        let (stake_address, _) = stake_pda(signer, node_key);
         let stake_ata = ata_address(&stake_address);
         let signer_ata = ata_address(&signer);
 

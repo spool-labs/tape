@@ -136,17 +136,17 @@ pub fn previous_committee_pda() -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn storage_node_pda(authority: Pubkey) -> (Pubkey, u8) {
+pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NODE, authority.as_ref()], &crate::id())
 }
 
 #[inline(always)]
-pub fn staked_tape_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
+pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &crate::id())
 }
 
 #[inline(always)]
-pub fn staked_tape_ata(stake: Pubkey) -> (Pubkey, u8) {
+pub fn stake_ata(stake: Pubkey) -> (Pubkey, u8) {
     let (mint_pda, _) = mint_pda();
     Pubkey::find_program_address(
         &[
@@ -159,7 +159,7 @@ pub fn staked_tape_ata(stake: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn resource_pda(authority: Pubkey) -> (Pubkey, u8) {
+pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[RESOURCE, authority.as_ref()], &crate::id())
 }
 

@@ -6,7 +6,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let [
         signer_info,
         signer_ata_info,
-        resource_info,
+        tape_info,
 
         epoch_info,
         archive_info,
@@ -36,12 +36,12 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .assert(|t| t.owner() == TREASURY_ADDRESS)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    let (resource_address, _)  = resource_pda(*signer_info.key);
+    let (tape_address, _)  = tape_pda(*signer_info.key);
 
-    resource_info
+    tape_info
         .is_empty()?
         .is_writable()?
-        .has_address(&resource_address)?;
+        .has_address(&tape_address)?;
 
     let epoch = epoch_info
         .is_epoch()?
@@ -127,14 +127,14 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     ).map_err(|_| TapeError::UnexpectedState)?;
 
     create_program_account::<Tape>(
-        resource_info,
+        tape_info,
         system_program_info,
         signer_info,
         &tape_api::ID,
         &[RESOURCE, signer_info.key.as_ref()],
     )?;
 
-    let tape = resource_info.as_account_mut::<Tape>(&tape_api::ID)?;
+    let tape = tape_info.as_account_mut::<Tape>(&tape_api::ID)?;
     tape.authority = *signer_info.key;
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
@@ -171,7 +171,7 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (treasury_address, _) = treasury_pda();
         let (treasury_ata, _) = treasury_ata();
-        let (resource_address, _) = resource_pda(signer);
+        let (tape_address, _) = tape_pda(signer);
         let signer_ata = ata_address(&signer);
 
         // Setup existing accounts
@@ -212,7 +212,7 @@ mod tests {
         let accounts = vec![
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, initial_signer_balance),
-            empty(resource_address),
+            empty(tape_address),
 
             pda(epoch_address, epoch.pack()),
             pda(archive_address, archive.pack()),
@@ -230,7 +230,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&resource_address).data(
+                Check::account(&tape_address).data(
                     Tape {
                         authority: signer,
                         capacity: storage_units,
