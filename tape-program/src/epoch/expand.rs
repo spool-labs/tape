@@ -85,7 +85,7 @@ mod tests {
                         id: EpochNumber::zero(),
                         state: EpochState::zeroed(),
                         last_epoch_ms: 0,
-                        leaders: CandidateSet::zeroed(),
+                        leaders: LeaderSet::zeroed(),
                     }.pack().as_ref()
                 ).build(),
             ]

@@ -115,7 +115,7 @@ mod tests {
             id: EpochNumber(42),
             state: EpochState::new(),
             last_epoch_ms: 0,
-            leaders: CandidateSet::zeroed(),
+            leaders: LeaderSet::zeroed(),
         };
 
         let accounts = vec![

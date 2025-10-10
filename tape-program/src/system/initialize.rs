@@ -247,7 +247,7 @@ mod tests {
             id: EpochNumber::zero(),
             state: EpochState::zeroed(),
             last_epoch_ms: 0,
-            leaders: CandidateSet::zeroed(),
+            leaders: LeaderSet::zeroed(),
         }.pack();
 
         let committee_data = Committee { 
@@ -299,7 +299,7 @@ mod tests {
                         id: EpochNumber(1),
                         state: EpochState::zeroed(),
                         last_epoch_ms: 0,
-                        leaders: CandidateSet::zeroed(),
+                        leaders: LeaderSet::zeroed(),
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&committee_address).data(

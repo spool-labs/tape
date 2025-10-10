@@ -26,21 +26,21 @@ pub struct CommitteeMember {
     pub key: BlsPubkey,
 }
 
-/// A CandidateSet defines a set of committee members that will be considered for appointment
+/// A LeaderSet defines a set of committee members that will be considered for appointment
 /// during an upcoming epoch. Each member has an associated stake, which influences their
 /// likelihood of being assigned seats in the committee.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CandidateSet<const N: usize> {
+pub struct LeaderSet<const N: usize> {
     pub member_count: u64,
     pub members: [CommitteeMember; N],
     pub stakes: [Coin<TAPE>; N], // (member_index -> stake)
 }
 
-unsafe impl<const N: usize> Zeroable for CandidateSet<N> {}
-unsafe impl<const N: usize> Pod for CandidateSet<N> {}
+unsafe impl<const N: usize> Zeroable for LeaderSet<N> {}
+unsafe impl<const N: usize> Pod for LeaderSet<N> {}
 
-impl<const N: usize> CandidateSet<N> {
+impl<const N: usize> LeaderSet<N> {
     /// Number of active members in the candidate set.
     #[inline]
     pub fn size(&self) -> usize {
@@ -249,7 +249,7 @@ impl<const N: usize> CandidateSet<N> {
 }
 
 /// An AppointedSet defines a set of committee members and their assigned seats. The number of
-/// seats assigned depends on the originating CandidateSet stakes. More stake usually means more
+/// seats assigned depends on the originating LeaderSet stakes. More stake usually means more
 /// seats assigned to that member. The number of seats is finite and is distributed using the
 /// Jefferson method (a.k.a. d'Hondt method). A single committee member is likely to be assigned
 /// multiple seats and the seat count influences the weight of that node's signature in the
@@ -390,9 +390,9 @@ mod tests {
         }
     }
 
-    // Helper to create an empty CandidateSet<N>
-    fn empty_candidate_set<const N: usize>() -> CandidateSet<N> {
-        CandidateSet {
+    // Helper to create an empty LeaderSet<N>
+    fn empty_leader_set<const N: usize>() -> LeaderSet<N> {
+        LeaderSet {
             member_count: 0,
             members: [CommitteeMember::zeroed(); N],
             stakes: [TAPE::zero(); N],
@@ -400,14 +400,14 @@ mod tests {
     }
 
     // Helper: stake for a node (used only in tests)
-    fn stake_for_node<const N: usize>(set: &CandidateSet<N>, node_id: &NodeId) -> Option<Coin<TAPE>> {
+    fn stake_for_node<const N: usize>(set: &LeaderSet<N>, node_id: &NodeId) -> Option<Coin<TAPE>> {
         set.index_of(node_id).map(|i| set.stake_at(i))
     }
 
     #[test]
     fn candidate_evict_correct_node_simple() {
         const N: usize = 5;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let m1 = member_with_id(node(1));
         let m2 = member_with_id(node(2));
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn candidate_evict_correct_node_with_updates() {
         const N: usize = 5;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let nodes = [
             member_with_id(node(1)),
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn candidate_insert_equal_min_does_not_replace() {
         const N: usize = 4;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn candidate_update_below_threshold_removes_when_full() {
         const N: usize = 5;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1)); // 10
         let b = member_with_id(node(2)); // 9
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn candidate_ids_and_stake_parallel() {
         const N: usize = 3;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn try_nominate_inserts_when_not_full() {
         const N: usize = 3;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn try_join_replaces_when_full_and_better() {
         const N: usize = 3;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn try_join_rejects_when_full_and_not_better() {
         const N: usize = 2;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn try_join_rejects_when_already_present() {
         const N: usize = 3;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
 
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn try_join_rejects_zero_stake() {
         const N: usize = 2;
-        let mut set: CandidateSet<N> = empty_candidate_set();
+        let mut set: LeaderSet<N> = empty_leader_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));

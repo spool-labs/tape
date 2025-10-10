@@ -136,7 +136,7 @@ mod tests {
             id: EpochNumber(42),
             state: EpochState::zeroed(),
             last_epoch_ms: 0,
-            leaders: CandidateSet::zeroed(),
+            leaders: LeaderSet::zeroed(),
         };
 
         let mut node = Node {

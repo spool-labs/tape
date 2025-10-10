@@ -16,7 +16,7 @@ pub struct Epoch {
     pub last_epoch_ms: i64,
 
     /// The current set of candidates for the next committee.
-    pub leaders: CandidateSet<COMMITTEE_SIZE>,
+    pub leaders: LeaderSet<COMMITTEE_SIZE>,
 }
 
 state!(AccountType, Epoch);

@@ -37,7 +37,7 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         key: node.metadata.bls_pubkey 
     };
 
-    // Try to nominate the node into the candidate set if there's enough stake to either bump
+    // Try to nominate the node into the leader set if there's enough stake to either bump
     // someone out or fill an empty slot.
     epoch.leaders
         .try_join(member, balance)
@@ -64,11 +64,11 @@ mod tests {
         let mut epoch = Epoch {
             id: EpochNumber(42),
             state: EpochState::zeroed(),
-            leaders: CandidateSet::zeroed(),
+            leaders: LeaderSet::zeroed(),
             last_epoch_ms: 0,
         };
 
-        epoch.leaders = CandidateSet {
+        epoch.leaders = LeaderSet {
             member_count: COMMITTEE_SIZE as u64,
             members: [CommitteeMember::zeroed(); COMMITTEE_SIZE],
             stakes: (0..COMMITTEE_SIZE as u64)
