@@ -6,6 +6,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let [
         signer_info,
         epoch_info,
+        committee_info,
+        previous_committee_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -13,10 +15,23 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     signer_info
         .is_signer()?;
 
-    let epoch = epoch_info
+    let mut epoch = epoch_info
         .is_writable()?
         .is_epoch()?
-        .as_account::<Epoch>(&tape_api::ID)?;
+        .as_account_mut::<Epoch>(&tape_api::ID)?;
+
+    let mut committee = committee_info
+        .is_writable()?
+        .is_current_committee()?
+        .as_account_mut::<Committee>(&tape_api::ID)?;
+
+    let mut previous_committee = previous_committee_info
+        .is_writable()?
+        .is_previous_committee()?
+        .as_account::<Committee>(&tape_api::ID)?;
+
+    // Advance to the next epoch
+    epoch.id = next_epoch(epoch);
 
     // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
     // - Syncing: nodes move recovery symbols based on seat assignments for the new committee
@@ -25,6 +40,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // may start for features to be activated in E+2.
     // - NextEpoch: called once the epoch duration has elapsed (epoch duration starts at the Active
     // transition, not Syncing).
+    
+    // LeaderSet -> Next Committee
+    // - Update seat assignments
 
     // Update future accounting
     // - pop a value off the ring buffer (storage and rewards)
