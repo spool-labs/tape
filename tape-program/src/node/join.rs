@@ -5,7 +5,6 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let _args = JoinNetwork::try_from_bytes(data)?;
     let [
         signer_info,
-        system_info,
         epoch_info,
         node_info,
         system_program_info, 
@@ -15,11 +14,6 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     };
 
     signer_info.is_signer()?;
-
-    let _system = system_info
-        .is_writable()?
-        .is_system()?
-        .as_account_mut::<System>(&tape_api::ID)?;
 
     let epoch = epoch_info
         .is_epoch()?
@@ -62,15 +56,10 @@ mod tests {
         let signer = Pubkey::new_unique();
         let instruction = build_join_network_ix(signer);
 
-        let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (node_address, _) = node_pda(signer);
 
         // Setup existing accounts
-
-        let system = System {
-            total_nodes: 1,
-        };
 
         let mut epoch = Epoch {
             id: EpochNumber(42),
@@ -132,7 +121,6 @@ mod tests {
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-            pda(system_address, system.pack()),
             pda(epoch_address, epoch.pack()),
             pda(node_address, node.pack()),
             system_program(),

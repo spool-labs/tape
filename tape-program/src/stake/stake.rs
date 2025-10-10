@@ -8,7 +8,6 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         signer_ata_info,
         stake_info,
         stake_ata_info,
-        system_info,
         epoch_info,
         node_info,
         mint_info,
@@ -42,11 +41,6 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .has_address(&stake_ata_address)?;
 
-    let _system = system_info
-        .is_writable()?
-        .is_system()?
-        .as_account_mut::<System>(&tape_api::ID)?;
-
     let epoch = epoch_info
         .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
@@ -69,10 +63,17 @@ pub fn process_stake_with_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
     let amount = u64::from_le_bytes(args.amount);
 
-    let staked_tape = node.pool.stake_with_pool(
-        current_epoch(epoch),
-        amount.into()
-    ).map_err(|_| TapeError::StakingFailed)?;
+    // Stake the tokens with the node's staking pool
+    let staked_tape = node.pool
+        .stake_with_pool(current_epoch(epoch), amount.into())
+        .map_err(|_| TapeError::StakingFailed)?;
+    
+    // TODO: If the node is part of the epoch leader set, we *might* need to update the stake
+    // (perhaps not needed as the candidate set is for E+1, and the stake activates in E+2)
+    // if epoch.leaders.contains(&node.id) {
+    //     ...
+    //     epoch.leaders.update_stake(jkhh, new_stake)
+    // }
 
     create_program_account::<Stake>(
         stake_info,
@@ -119,12 +120,11 @@ mod tests {
     fn test_stake_with_node() {
         let signer = Pubkey::new_unique();
         let node_key = Pubkey::new_unique();
-        let amount: u64 = 1000;
         let commission_rate = BasisPoints(100); // 1%
+        let amount: u64 = 1000;
 
         let instruction = build_stake_ix(signer, node_key, amount.into());
 
-        let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (stake_address, _) = stake_pda(signer, node_key);
         let stake_ata = ata_address(&stake_address);
@@ -132,51 +132,50 @@ mod tests {
 
         // Setup existing accounts
 
-        let system_data = System {
-            total_nodes: 1,
-        }.pack();
-
-        let current_epoch_number = EpochNumber(42);
-        let epoch_data = Epoch {
-            id: current_epoch_number,
+        let epoch = Epoch {
+            id: EpochNumber(42),
             state: EpochState::zeroed(),
             last_epoch_ms: 0,
             leaders: CandidateSet::zeroed(),
-        }.pack();
+        };
 
-        let mut node_pool = StakingPool::new(commission_rate);
-
-        let initial_node = Node {
-            id: NodeId::new(0),
+        let mut node = Node {
+            id: NodeId::new(37),
             authority: signer,
-            pool: node_pool,
+            pool: StakingPool::new(commission_rate),
             metadata: NodeMetadata::zeroed(),
             registered_epoch: EpochNumber(1),
         };
 
-        // Simulate the stake_with_pool effect for expected state
-        let activation_epoch = current_epoch_number + EpochNumber(2);
-        let expected_stake_inner = StakedTape::new(amount.into(), activation_epoch);
+        // Setup initial state
+        let e0: EpochNumber = epoch.id;
+        let e1: EpochNumber = e0 + EpochNumber(1);
+        let e2: EpochNumber = e1 + EpochNumber(1);
 
-        // Update pool: schedule pending stake
-        node_pool.pending_stake.insert_or_add(activation_epoch, amount).unwrap();
+        node.pool.tape_balance = TAPE(1000);
+        node.pool.pending_stake = PendingValues(
+            FixedMap {
+                length: 2,
+                keys: [e1, e2],
+                values: [200, 30],
+            }
+        );
 
-        let expected_node = Node {
-            pool: node_pool,
-            ..initial_node
-        };
+        // Check initial state
+        assert_eq!(node.pool.tape_balance_at_epoch(e0), TAPE(1000));
+        assert_eq!(node.pool.tape_balance_at_epoch(e1), TAPE(1200));
+        assert_eq!(node.pool.tape_balance_at_epoch(e2), TAPE(1230));
 
-        let initial_signer_balance: u64 = 2000; // More than amount
+        let initial_token_balance: u64 = 1_000_000_000;
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_signer_balance),
+            token(signer_ata, signer, initial_token_balance),
             empty(stake_address),
             empty(stake_ata),
 
-            pda(system_address, system_data),
-            pda(epoch_address, epoch_data),
-            pda(node_key, initial_node.pack()),
+            pda(epoch_address, epoch.pack()),
+            pda(node_key, node.pack()),
             mint(0),
 
             token_program(),
@@ -195,14 +194,28 @@ mod tests {
                     Stake {
                         authority: signer,
                         node: node_key,
-                        inner: expected_stake_inner,
+                        inner: StakedTape {
+                            amount: amount.into(),
+                            activation_epoch: e2,
+                            state: *StakeState::new().set_staked(),
+                        },
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&node_key).data(
-                    expected_node.pack().as_ref()
+                    Node {
+                        pool: StakingPool {
+                            pending_stake: PendingValues(FixedMap {
+                                length: 2,
+                                keys: [e1, e2],
+                                values: [200, 30 + amount],
+                            }),
+                            ..node.pool
+                        },
+                        ..node
+                    }.pack().as_ref()
                 ).build(),
                 Check::account(&signer_ata).data(
-                    token(signer_ata, signer, initial_signer_balance - amount).1.data.as_ref()
+                    token(signer_ata, signer, initial_token_balance - amount).1.data.as_ref()
                 ).build(),
                 Check::account(&stake_ata).data(
                     token(stake_ata, stake_address, amount).1.data.as_ref()

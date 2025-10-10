@@ -55,20 +55,23 @@ impl StakeState {
         }
     }
 
-    pub fn set_withdrawing(&mut self, epoch: EpochNumber) {
+    pub fn set_withdrawing(&mut self, epoch: EpochNumber) -> &mut Self {
         assert!(self.is_active(), "can only withdraw from staked phase");
         self.set_state(StakePhase::Unstaking);
         self.unstake_epoch = epoch;
+        self
     }
 
-    pub fn set_staked(&mut self) {
+    pub fn set_staked(&mut self) -> &mut Self {
         self.set_state(StakePhase::Active);
         self.unstake_epoch = EpochNumber::zero();
+        self
     }
 
-    pub fn set_withdrawn(&mut self) {
+    pub fn set_withdrawn(&mut self) -> &mut Self {
         self.set_state(StakePhase::Withdrawn);
         self.unstake_epoch = EpochNumber::zero();
+        self
     }
 }
 

@@ -34,7 +34,6 @@ pub fn build_stake_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
 
-    let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
     let (stake_address, _) = stake_pda(signer, node_address);
@@ -51,7 +50,6 @@ pub fn build_stake_ix(
             AccountMeta::new(stake_address, false),
             AccountMeta::new(stake_ata, false),
 
-            AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(node_address, false),
             AccountMeta::new(mint_address, false),

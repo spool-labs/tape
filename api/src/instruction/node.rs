@@ -115,7 +115,6 @@ pub fn build_register_node_ix(
 pub fn build_join_network_ix(
     signer: Pubkey,
 ) -> Instruction {
-    let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (node_address, _) = node_pda(signer);
 
@@ -123,7 +122,6 @@ pub fn build_join_network_ix(
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(node_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
