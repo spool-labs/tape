@@ -8,7 +8,6 @@ mod node;
 mod stake;
 mod system;
 mod tape;
-mod treasury;
 
 pub use archive::*;
 pub use blob::*;
@@ -20,7 +19,6 @@ pub use node::*;
 pub use stake::*;
 pub use system::*;
 pub use tape::*;
-pub use treasury::*;
 
 use steel::*;
 
@@ -33,7 +31,6 @@ pub enum AccountType {
     Epoch,
     Committee,
     Archive,
-    Treasury,
     Feature,
 
     Exchange,

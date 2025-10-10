@@ -109,6 +109,7 @@ mod tests {
 
         let system = System {
             total_nodes: 0,
+            total_archives: 0,
         };
 
         let epoch = Epoch {
@@ -136,6 +137,7 @@ mod tests {
                 Check::account(&system_address).data(
                     System {
                         total_nodes: 1,
+                        total_archives: 0,
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&epoch_address).data(

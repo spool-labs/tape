@@ -6,6 +6,7 @@ use tape_core::prelude::*;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ReserveTape {
+    pub archive: [u8; 8],
     pub storage_units: [u8; 8],
     pub start_epoch: [u8; 8],
     pub end_epoch: [u8; 8],
@@ -30,19 +31,20 @@ pub struct MergeTape {}
 
 pub fn build_reserve_tape_ix(
     signer: Pubkey,
+    archive: ArchiveNumber,
     storage_units: StorageUnits,
     start_epoch: EpochNumber,
     end_epoch: EpochNumber,
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
-    let (archive_address, _) = archive_pda();
-    let (treasury_address, _) = treasury_pda();
-    let (treasury_ata, _) = treasury_ata();
+    let (archive_address, _) = archive_pda(archive);
+    let (archive_ata, _) = archive_ata(archive_address);
 
     let (tape_address, _) = tape_pda(signer);
     let signer_ata = ata(&signer);
 
+    let archive = archive.pack();
     let storage_units = storage_units.pack();
     let start_epoch = start_epoch.pack();
     let end_epoch = end_epoch.pack();
@@ -56,14 +58,14 @@ pub fn build_reserve_tape_ix(
 
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(archive_address, false),
-            AccountMeta::new(treasury_address, false),
-            AccountMeta::new(treasury_ata, false),
+            AccountMeta::new(archive_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: ReserveTape {
+            archive,
             storage_units,
             start_epoch,
             end_epoch,

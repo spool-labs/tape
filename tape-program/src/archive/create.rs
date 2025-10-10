@@ -3,7 +3,7 @@ use solana_program::program_pack::Pack;
 use spl_token::state::Mint;
 use tape_api::prelude::*;
 
-pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
+pub fn process_create_archive(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
         signer_info, 
         signer_ata_info,
@@ -12,6 +12,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         epoch_info, 
         committee_info,
         previous_committee_info,
+        archive_info, 
+        treasury_info,
+        treasury_ata_info,
         mint_info, 
         metadata_info, 
 
@@ -30,6 +33,16 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_empty()?
         .is_writable()?
         .has_address(&SYSTEM_ADDRESS)?;
+
+    archive_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&ARCHIVE_ADDRESS)?;
+
+    treasury_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&TREASURY_ADDRESS)?;
 
     mint_info
         .is_empty()?
@@ -76,6 +89,22 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         &[SYSTEM],
     )?;
 
+    create_program_account::<Archive>(
+        archive_info,
+        system_program_info,
+        signer_info,
+        &tape_api::ID,
+        &[ARCHIVE],
+    )?;
+
+    create_program_account::<Treasury>(
+        treasury_info,
+        system_program_info,
+        signer_info,
+        &tape_api::ID,
+        &[TREASURY],
+    )?;
+
     // Start at epoch 1, previous epoch is 0.
     let epoch_number = EpochNumber(1);
     let prev_epoch_number = EpochNumber(0);
@@ -93,6 +122,17 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let prev_committee = previous_committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
     prev_committee.epoch = prev_epoch_number;
 
+    // Default to 1Tb storage, 0.0001 TAPE per Mb.
+
+    let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
+    archive.storage_capacity = StorageUnits(1000); // 1Gb
+    archive.storage_price_per_unit = TAPE::from("0.0001"); // 1 TAPE per 1Mb
+    archive.future_usage = StorageAccounting::new();
+
+    let treasury = treasury_info.as_account_mut::<Treasury>(&tape_api::ID)?;
+    treasury.future_rewards = RewardAccounting::new();
+
+
     // Initialize mint.
     allocate_account_with_bump(
         mint_info,
@@ -107,13 +147,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Set mint authority
     initialize_mint_signed_with_bump(
         mint_info, 
-        system_info,
+        treasury_info,
         None,
         token_program_info,
         rent_sysvar_info,
         TOKEN_DECIMALS,
-        &[SYSTEM],
-        SYSTEM_BUMP,
+        &[TREASURY],
+        TREASURY_BUMP,
     )?;
 
     // Initialize mint metadata.
@@ -121,7 +161,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         __program: metadata_program_info,
         metadata: metadata_info,
         mint: mint_info,
-        mint_authority: system_info,
+        mint_authority: treasury_info,
         payer: signer_info,
         update_authority: (signer_info, true),
         system_program: system_program_info,
@@ -140,7 +180,18 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             collection_details: None,
         },
     }
-    .invoke_signed(&[&[SYSTEM, &[SYSTEM_BUMP]]])?;
+    .invoke_signed(&[&[TREASURY, &[TREASURY_BUMP]]])?;
+
+    // Create the treasury_ata token account.
+    create_associated_token_account(
+        signer_info,
+        treasury_info,
+        treasury_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
 
     // Create signer_ata token account.
     create_associated_token_account(
@@ -157,10 +208,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     mint_to_signed(
         mint_info,
         signer_ata_info,
-        system_info,
+        treasury_info,
         token_program_info,
         MAX_SUPPLY,
-        &[SYSTEM],
+        &[TREASURY],
     )?;
 
     Ok(())
@@ -180,6 +231,9 @@ mod tests {
         let instruction = build_initialize_ix(signer);
 
         let (system_address, _) = system_pda();
+        let (treasury_address, _) = treasury_pda();
+        let (treasury_ata_address, _) = treasury_ata();
+        let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
         let (mint_address, _) = mint_pda();
         let (metadata_address, _) = metadata_pda();
@@ -216,6 +270,9 @@ mod tests {
             pda(epoch_address, epoch_data),
             pda(committee_address, committee_data),
             pda(prev_committee_address, prev_committee_data),
+            empty(archive_address),
+            empty(treasury_address),
+            empty(treasury_ata_address),
             empty(mint_address),
             empty(metadata_address),
 
@@ -234,7 +291,6 @@ mod tests {
                 Check::success(),
                 Check::account(&system_address).data(
                     System { 
-                        total_archives: 0,
                         total_nodes: 0,
                     }.pack().as_ref()
                 ).build(),
@@ -260,8 +316,23 @@ mod tests {
                         inner: AppointedSet::zeroed(),
                     }.pack().as_ref()
                 ).build(),
+                Check::account(&archive_address).data(
+                    Archive { 
+                        storage_capacity: StorageUnits(1000),
+                        storage_price_per_unit: TAPE::from("0.0001"),
+                        future_usage: StorageAccounting::new(),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&treasury_address).data(
+                    Treasury { 
+                        future_rewards: RewardAccounting::new(),
+                    }.pack().as_ref()
+                ).build(),
                 Check::account(&signer_ata).data(
                     token(signer_ata, signer, MAX_SUPPLY).1.data.as_ref()
+                ).build(),
+                Check::account(&treasury_ata_address).data(
+                    token(treasury_ata_address, treasury_address, 0).1.data.as_ref()
                 ).build(),
                 Check::account(&mint_address).data(
                     mint(MAX_SUPPLY).1.data.as_ref()

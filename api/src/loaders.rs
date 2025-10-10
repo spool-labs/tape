@@ -1,16 +1,14 @@
 use steel::*;
 
 use crate::consts::*;
-use crate::state::{System, Archive, Epoch, Committee};
+use crate::state::{System, Epoch, Committee};
 use crate::pda::*;
 
 pub trait AccountInfoLoader {
     fn is_system(&self) -> Result<&Self, ProgramError>;
-    fn is_archive(&self) -> Result<&Self, ProgramError>;
     fn is_epoch(&self) -> Result<&Self, ProgramError>;
     fn is_current_committee(&self) -> Result<&Self, ProgramError>;
     fn is_previous_committee(&self) -> Result<&Self, ProgramError>;
-    fn is_treasury(&self) -> Result<&Self, ProgramError>;
     fn is_mint(&self) -> Result<&Self, ProgramError>;
     fn is_metadata(&self) -> Result<&Self, ProgramError>;
 }
@@ -19,11 +17,6 @@ impl AccountInfoLoader for AccountInfo<'_> {
     fn is_system(&self) -> Result<&Self, ProgramError> {
         self.has_address(&SYSTEM_ADDRESS)?
             .is_type::<System>(&crate::ID)
-    }
-
-    fn is_archive(&self) -> Result<&Self, ProgramError> {
-        self.has_address(&ARCHIVE_ADDRESS)?
-            .is_type::<Archive>(&crate::ID)
     }
 
     fn is_epoch(&self) -> Result<&Self, ProgramError> {
@@ -41,11 +34,6 @@ impl AccountInfoLoader for AccountInfo<'_> {
         let (prev_committee_address, _) = previous_committee_pda();
         self.has_address(&prev_committee_address)?
             .is_type::<Committee>(&crate::ID)
-    }
-
-    fn is_treasury(&self) -> Result<&Self, ProgramError> {
-        self.has_address(&TREASURY_ADDRESS)?
-            .is_type::<crate::state::Treasury>(&crate::ID)
     }
 
     fn is_mint(&self) -> Result<&Self, ProgramError> {

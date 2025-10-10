@@ -10,8 +10,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
         epoch_info,
         archive_info,
-        treasury_info,
-        treasury_ata_info,
+        archive_ata_info,
 
         token_program_info,
         system_program_info, 
@@ -29,11 +28,24 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    treasury_ata_info
+    let epoch = epoch_info
+        .is_epoch()?
+        .as_account::<Epoch>(&tape_api::ID)?;
+
+    let archive_number = ArchiveNumber::unpack(args.archive);
+    let (archive_address, _) = archive_pda(archive_number);
+    let (archive_ata_address, _) = archive_ata(archive_address);
+
+    let archive = archive_info
         .is_writable()?
-        .has_address(&TREASURY_ATA)?
+        .has_address(&archive_address)?
+        .as_account_mut::<Archive>(&tape_api::ID)?
+        .assert_mut(|a| a.id == archive_number)?;
+
+    archive_ata_info
+        .is_writable()?
+        .has_address(&archive_ata_address)?
         .as_token_account()?
-        .assert(|t| t.owner() == TREASURY_ADDRESS)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     let (tape_address, _)  = tape_pda(*signer_info.key);
@@ -42,20 +54,6 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_empty()?
         .is_writable()?
         .has_address(&tape_address)?;
-
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tape_api::ID)?;
-
-    let archive = archive_info
-        .is_writable()?
-        .is_archive()?
-        .as_account_mut::<Archive>(&tape_api::ID)?;
-
-    let treasury = treasury_info
-        .is_writable()?
-        .is_treasury()?
-        .as_account_mut::<Treasury>(&tape_api::ID)?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
@@ -80,7 +78,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let total_units = StorageUnits::unpack(args.storage_units);
 
-    let price_per_unit = archive.storage_price_per_unit
+    let price_per_unit = archive.storage_price
         .as_u64();
 
     let single_epoch_price = price_per_unit
@@ -93,34 +91,28 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let current_epoch = current_epoch(epoch);
     let current_capacity = archive.storage_capacity;
-    let future_usage = &mut archive.future_usage;
-    let future_rewards = &mut treasury.future_rewards;
+    let fee_per_epoch = TAPE(single_epoch_price);
 
-    if future_usage.current_epoch() != current_epoch {
+    if archive.future_storage.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if future_rewards.current_epoch() != current_epoch {
+    if archive.future_rewards.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if future_usage.current_epoch() != future_rewards.current_epoch() {
-        return Err(TapeError::UnexpectedState.into());
-    }
-
-    if !future_usage.has_capacity_for(
+    if !archive.future_storage.has_capacity_for(
         total_units, current_capacity, start_epoch, end_epoch) {
         return Err(TapeError::InsufficientCapacity.into());
     }
-
-    future_usage.reserve_capacity(
+    
+    archive.future_storage.reserve_capacity(
         total_units,
         start_epoch,
         end_epoch,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
-    let fee_per_epoch = TAPE(single_epoch_price);
-    future_rewards.add_rewards(
+    archive.future_rewards.add_rewards(
         fee_per_epoch,
         start_epoch,
         end_epoch,
@@ -144,7 +136,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     transfer(
         signer_info,
         signer_ata_info,
-        treasury_ata_info,
+        archive_ata_info,
         token_program_info,
         total_cost,
     )?;
@@ -160,17 +152,19 @@ mod tests {
     #[test]
     fn test_reserve_tape() {
         let signer = Pubkey::new_unique();
+
+        let archive_number = ArchiveNumber(0);
         let storage_units = StorageUnits(100);     // 100 MB
         let start_epoch = EpochNumber(43);         // In the future
         let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
-        let instruction = build_reserve_tape_ix(signer, storage_units, start_epoch, end_epoch);
+        let instruction = build_reserve_tape_ix(
+            signer, archive_number, storage_units, start_epoch, end_epoch);
 
         let (epoch_address, _) = epoch_pda();
-        let (archive_address, _) = archive_pda();
-        let (treasury_address, _) = treasury_pda();
-        let (treasury_ata, _) = treasury_ata();
+        let (archive_address, _) = archive_pda(archive_number);
+        let (archive_ata, _) = archive_ata(archive_address);
         let (tape_address, _) = tape_pda(signer);
         let signer_ata = ata_address(&signer);
 
@@ -178,12 +172,10 @@ mod tests {
 
         let epoch = Epoch::zeroed();
         let archive = Archive {
+            id: archive_number,
             storage_capacity: StorageUnits(1000), // 1000 MB capacity
-            storage_price_per_unit: price_per_unit,
-            future_usage: StorageAccounting::new(),
-        };
-
-        let treasury = Treasury {
+            storage_price: price_per_unit,
+            future_storage: StorageAccounting::new(),
             future_rewards: RewardAccounting::new(),
         };
 
@@ -191,33 +183,30 @@ mod tests {
         let num_epochs = (end_epoch - start_epoch).as_u64(); // 2 epochs
         let single_epoch_price = price_per_unit.as_u64() * storage_units.as_u64(); // 0.0001 * 100 = 0.01 TAPE
         let total_cost = single_epoch_price * num_epochs; // 0.01 * 2 = 0.02 TAPE
+        let fee_per_epoch = TAPE(single_epoch_price);
 
         // Simulate reserve_capacity and add_rewards
 
-        let mut expected_archive = archive;
+        let mut expected_archive = archive.clone();
         expected_archive
-            .future_usage
+            .future_storage
             .reserve_capacity(storage_units, start_epoch, end_epoch)
             .unwrap();
-
-        let mut expected_treasury = treasury;
-        let fee_per_epoch = TAPE(single_epoch_price);
-        expected_treasury
+        expected_archive
             .future_rewards
             .add_rewards(fee_per_epoch, start_epoch, end_epoch)
             .unwrap();
 
-        let initial_signer_balance: u64 = 1_000_000; // Sufficient for 0.02 TAPE
+        let initial_token_balance: u64 = 1_000_000;
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_signer_balance),
+            token(signer_ata, signer, initial_token_balance),
             empty(tape_address),
 
             pda(epoch_address, epoch.pack()),
             pda(archive_address, archive.pack()),
-            pda(treasury_address, treasury.pack()),
-            token(treasury_ata, treasury_address, 0),
+            token(archive_ata, archive_address, 0),
 
             token_program(),
             system_program(),
@@ -243,14 +232,11 @@ mod tests {
                 Check::account(&archive_address).data(
                     expected_archive.pack().as_ref()
                 ).build(),
-                Check::account(&treasury_address).data(
-                    expected_treasury.pack().as_ref()
-                ).build(),
                 Check::account(&signer_ata).data(
-                    token(signer_ata, signer, initial_signer_balance - total_cost).1.data.as_ref()
+                    token(signer_ata, signer, initial_token_balance - total_cost).1.data.as_ref()
                 ).build(),
-                Check::account(&treasury_ata).data(
-                    token(treasury_ata, treasury_address, total_cost).1.data.as_ref()
+                Check::account(&archive_ata).data(
+                    token(archive_ata, archive_address, total_cost).1.data.as_ref()
                 ).build(),
             ]
         );

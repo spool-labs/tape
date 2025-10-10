@@ -93,7 +93,7 @@ pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
 
 pub fn mint(supply: u64) -> (Pubkey, Account) {
     let mint_data = Mint {
-        mint_authority: Some(TREASURY_ADDRESS).into(),
+        mint_authority: Some(SYSTEM_ADDRESS).into(),
         supply,
         decimals: TOKEN_DECIMALS,
         is_initialized: true,

@@ -1,5 +1,6 @@
 use steel::*;
 
+mod archive;
 mod blob;
 mod committee;
 mod epoch;
@@ -10,6 +11,7 @@ mod stake;
 mod system;
 mod tape;
 
+pub use archive::*;
 pub use blob::*;
 pub use committee::*;
 pub use epoch::*;
@@ -27,14 +29,12 @@ pub enum TapeInstruction {
 
     // System
     Initialize,
-
+    CreateArchive,
     CreateEpoch,
     ExpandEpoch,
     AdvanceEpoch,
-
     CreateCommittee,
     ExpandCommittee,
-
     RegisterFeature,
     CertifyFeature,
 
@@ -85,6 +85,7 @@ pub enum TapeInstruction {
 }
 
 instruction!(TapeInstruction, Initialize);
+instruction!(TapeInstruction, CreateArchive);
 instruction!(TapeInstruction, CreateEpoch);
 instruction!(TapeInstruction, ExpandEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
