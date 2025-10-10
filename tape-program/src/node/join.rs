@@ -1,8 +1,8 @@
 use tape_api::prelude::*;
 use steel::*;
 
-pub fn process_nominate_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = NominateNode::try_from_bytes(data)?;
+pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let _args = JoinNetwork::try_from_bytes(data)?;
     let [
         signer_info,
         system_info,
@@ -46,7 +46,7 @@ pub fn process_nominate_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Try to nominate the node into the candidate set if there's enough stake to either bump
     // someone out or fill an empty slot.
     epoch.leaders
-        .try_nominate(member, balance)
+        .try_join(member, balance)
         .map_err(|_| TapeError::UnexpectedState)?;
     
     Ok(())
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn test_nominate_node() {
         let signer = Pubkey::new_unique();
-        let instruction = build_nominate_node_ix(signer);
+        let instruction = build_join_network_ix(signer);
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();

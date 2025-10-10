@@ -16,7 +16,7 @@ pub struct RegisterNode {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct NominateNode {}
+pub struct JoinNetwork {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -112,7 +112,7 @@ pub fn build_register_node_ix(
     }
 }
 
-pub fn build_nominate_node_ix(
+pub fn build_join_network_ix(
     signer: Pubkey,
 ) -> Instruction {
     let (system_address, _) = system_pda();
@@ -129,6 +129,6 @@ pub fn build_nominate_node_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: NominateNode {}.to_bytes(),
+        data: JoinNetwork {}.to_bytes(),
     }
 }

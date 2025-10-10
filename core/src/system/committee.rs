@@ -119,9 +119,9 @@ impl<const N: usize> CandidateSet<N> {
         sum
     }
 
-    /// Tries to nominate a new member with the given stake. If the set is not full, it inserts the
+    /// Tries to join  new member with the given stake. If the set is not full, it inserts the
     /// new member. If the set is full, it replaces the current minimum-stake member.
-    pub fn try_nominate(
+    pub fn try_join(
         &mut self,
         member: CommitteeMember,
         staked_amount: Coin<TAPE>,
@@ -624,13 +624,13 @@ mod tests {
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
 
-        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
-        assert_eq!(set.try_nominate(b, tape(5)), Ok(1));
+        assert_eq!(set.try_join(a, tape(10)), Ok(0));
+        assert_eq!(set.try_join(b, tape(5)), Ok(1));
         assert!(set.contains(&a.id) && set.contains(&b.id));
     }
 
     #[test]
-    fn try_nominate_replaces_when_full_and_better() {
+    fn try_join_replaces_when_full_and_better() {
         const N: usize = 3;
         let mut set: CandidateSet<N> = empty_candidate_set();
 
@@ -639,19 +639,19 @@ mod tests {
         let c = member_with_id(node(3));
         let d = member_with_id(node(4)); // challenger
 
-        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
-        assert_eq!(set.try_nominate(b, tape(9)), Ok(1));
-        assert_eq!(set.try_nominate(c, tape(6)), Ok(2));
+        assert_eq!(set.try_join(a, tape(10)), Ok(0));
+        assert_eq!(set.try_join(b, tape(9)), Ok(1));
+        assert_eq!(set.try_join(c, tape(6)), Ok(2));
 
         // Full now; challenger beats min (6)
-        let idx = set.try_nominate(d, tape(11)).expect("should replace min");
+        let idx = set.try_join(d, tape(11)).expect("should replace min");
         assert_eq!(set.stake_at(idx), tape(11));
         assert!(!set.contains(&c.id));
         assert!(set.contains(&d.id));
     }
 
     #[test]
-    fn try_nominate_rejects_when_full_and_not_better() {
+    fn try_join_rejects_when_full_and_not_better() {
         const N: usize = 2;
         let mut set: CandidateSet<N> = empty_candidate_set();
 
@@ -659,47 +659,47 @@ mod tests {
         let b = member_with_id(node(2));
         let c = member_with_id(node(3));
 
-        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
-        assert_eq!(set.try_nominate(b, tape(7)), Ok(1));
+        assert_eq!(set.try_join(a, tape(10)), Ok(0));
+        assert_eq!(set.try_join(b, tape(7)), Ok(1));
 
         // Full; c == min (7) is not strictly better
-        let err = set.try_nominate(c, tape(7)).unwrap_err();
+        let err = set.try_join(c, tape(7)).unwrap_err();
         assert!(matches!(err, CandidateSetError::NotBetter { .. }));
         assert!(!set.contains(&c.id));
     }
 
     #[test]
-    fn try_nominate_rejects_when_already_present() {
+    fn try_join_rejects_when_already_present() {
         const N: usize = 3;
         let mut set: CandidateSet<N> = empty_candidate_set();
 
         let a = member_with_id(node(1));
 
-        assert_eq!(set.try_nominate(a, tape(10)), Ok(0));
-        let err = set.try_nominate(a, tape(12)).unwrap_err();
+        assert_eq!(set.try_join(a, tape(10)), Ok(0));
+        let err = set.try_join(a, tape(12)).unwrap_err();
         assert!(matches!(err, CandidateSetError::AlreadyPresent { .. }));
-        // Stake unchanged by try_nominate
+        // Stake unchanged by try_join
         let idx = set.index_of(&a.id).unwrap();
         assert_eq!(set.stake_at(idx), tape(10));
     }
 
     #[test]
-    fn try_nominate_rejects_zero_stake() {
+    fn try_join_rejects_zero_stake() {
         const N: usize = 2;
         let mut set: CandidateSet<N> = empty_candidate_set();
 
         let a = member_with_id(node(1));
         let b = member_with_id(node(2));
 
-        let err = set.try_nominate(a, TAPE::zero()).unwrap_err();
+        let err = set.try_join(a, TAPE::zero()).unwrap_err();
         assert!(matches!(err, CandidateSetError::ZeroStake));
 
-        assert_eq!(set.try_nominate(a, tape(5)), Ok(0));
-        assert_eq!(set.try_nominate(b, tape(6)), Ok(1));
+        assert_eq!(set.try_join(a, tape(5)), Ok(0));
+        assert_eq!(set.try_join(b, tape(6)), Ok(1));
 
         // Full; zero still invalid
         let c = member_with_id(node(3));
-        let err = set.try_nominate(c, TAPE::zero()).unwrap_err();
+        let err = set.try_join(c, TAPE::zero()).unwrap_err();
         assert!(matches!(err, CandidateSetError::ZeroStake));
     }
 

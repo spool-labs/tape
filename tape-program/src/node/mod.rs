@@ -1,5 +1,5 @@
 pub mod register;
-pub mod nominate;
+pub mod join;
 
 pub use register::*;
-pub use nominate::*;
+pub use join::*;
