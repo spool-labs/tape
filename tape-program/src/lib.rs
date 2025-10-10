@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+pub mod archive;
 pub mod blob;
 pub mod committee;
 pub mod epoch;
@@ -9,6 +10,7 @@ pub mod stake;
 pub mod system;
 pub mod tape;
 
+use archive::*;
 use blob::*;
 use committee::*;
 use epoch::*;
@@ -40,6 +42,8 @@ pub fn process_instruction(
         match ix {
             // System
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
+
+            TapeInstruction::CreateArchive => process_create_archive(accounts, data)?,
 
             TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
             TapeInstruction::ExpandEpoch => process_expand_epoch(accounts, data)?,

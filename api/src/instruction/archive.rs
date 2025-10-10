@@ -5,7 +5,9 @@ use tape_core::types::ArchiveNumber;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct CreateArchive {}
+pub struct CreateArchive {
+    pub id: [u8; 8],
+}
 
 pub fn build_create_archive_ix(
     signer: Pubkey,
@@ -19,6 +21,7 @@ pub fn build_create_archive_ix(
     let (mint_address, _) = mint_pda();
 
     let signer_ata = ata(&signer);
+    let id = archive.pack();
 
     Instruction {
         program_id: crate::ID,
@@ -37,7 +40,9 @@ pub fn build_create_archive_ix(
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: CreateArchive {}.to_bytes(),
+        data: CreateArchive {
+            id,
+        }.to_bytes(),
     }
 }
 
