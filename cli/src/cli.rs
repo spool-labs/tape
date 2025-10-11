@@ -289,7 +289,9 @@ impl Context{
     }
 
     pub fn open_read_only_store_conn(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::read_only()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::read_only(&rocksdb_config.primary_path)?)
     }
 
 
