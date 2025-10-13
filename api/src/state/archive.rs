@@ -6,9 +6,6 @@ use crate::{state, consts::*};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Archive {
-    /// The unique identifier for this archive.
-    pub id: ArchiveNumber,
-
     /// The total storage capacity of the archive.
     pub storage_capacity: StorageUnits,
 
@@ -16,10 +13,10 @@ pub struct Archive {
     pub storage_price: Coin<TAPE>,
 
     /// The total storage per epoch.
-    pub future_storage: StorageAccounting<FUTURE_EPOCHS>,
+    pub future_usage: FutureUsage<FUTURE_EPOCHS>,
 
     /// The total rewards per epoch.
-    pub future_rewards: RewardAccounting<FUTURE_EPOCHS>,
+    pub future_rewards: FutureRewards<FUTURE_EPOCHS>,
 }
 
 state!(AccountType, Archive);

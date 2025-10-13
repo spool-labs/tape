@@ -10,6 +10,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
         system_info,
         epoch_info, 
+        archive_info,
+        archive_ata_info,
         committee_info,
         previous_committee_info,
         mint_info, 
@@ -46,6 +48,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     epoch_info
         .is_writable()?
         .is_epoch()?;
+
+    archive_info
+        .is_writable()?
+        .is_archive()?;
 
     committee_info
         .is_writable()?
@@ -86,6 +92,13 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let epoch = epoch_info.as_account_mut::<Epoch>(&tape_api::ID)?;
     epoch.id = epoch_number;
     epoch.last_epoch_ms = 0;
+
+    let archive = archive_info.as_account_mut::<Archive>(&tape_api::ID)?;
+
+    archive.storage_capacity = StorageUnits(1000); // 1Gb
+    archive.storage_price = TAPE::from("0.0001"); // 1 TAPE per 1Mb
+    archive.future_usage = FutureUsage::new_at(epoch_number);
+    archive.future_rewards = FutureRewards::new_at(epoch_number);
 
     let committee = committee_info.as_account_mut::<Committee>(&tape_api::ID)?;
     committee.epoch = epoch_number;
@@ -142,6 +155,17 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     }
     .invoke_signed(&[&[SYSTEM, &[SYSTEM_BUMP]]])?;
 
+    // Create the archive_ata token account.
+    create_associated_token_account(
+        signer_info,
+        archive_info,
+        archive_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
+
     // Create signer_ata token account.
     create_associated_token_account(
         signer_info,
@@ -181,41 +205,31 @@ mod tests {
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
         let (mint_address, _) = mint_pda();
         let (metadata_address, _) = metadata_pda();
         let (committee_address, _) = current_committee_pda();
         let (prev_committee_address, _) = previous_committee_pda();
 
         // Setup existing accounts
-        // (assuming created and expanded)
+        // (assuming created and expanded, but not initialized)
 
-        let epoch_data = Epoch { 
-            id: EpochNumber::zero(),
-            state: EpochState::zeroed(),
-            last_epoch_ms: 0,
-            leaders: LeaderSet::zeroed(),
-        }.pack();
-
-        let committee_data = Committee { 
-            id: CommitteeNumber::current(),
-            epoch: EpochNumber::zero(),
-            inner: AppointedSet::zeroed(),
-        }.pack();
-
-        let prev_committee_data = Committee { 
-            id: CommitteeNumber::previous(),
-            epoch: EpochNumber::zero(),
-            inner: AppointedSet::zeroed(),
-        }.pack();
+        let epoch = Epoch::zeroed();
+        let archive = Archive::zeroed();
+        let committee = Committee::zeroed();
+        let prev_committee = Committee::zeroed();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
             empty(signer_ata),
 
             empty(system_address),
-            pda(epoch_address, epoch_data),
-            pda(committee_address, committee_data),
-            pda(prev_committee_address, prev_committee_data),
+            pda(epoch_address, epoch.pack()),
+            pda(archive_address, archive.pack()),
+            empty(archive_ata),
+            pda(committee_address, committee.pack()),
+            pda(prev_committee_address, prev_committee.pack()),
             empty(mint_address),
             empty(metadata_address),
 
@@ -234,30 +248,36 @@ mod tests {
                 Check::success(),
                 Check::account(&system_address).data(
                     System { 
-                        total_archives: 0,
                         total_nodes: 0,
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&epoch_address).data(
-                    Epoch { 
+                    Epoch {
                         id: EpochNumber(1),
-                        state: EpochState::zeroed(),
-                        last_epoch_ms: 0,
-                        leaders: LeaderSet::zeroed(),
+                        ..epoch
                     }.pack().as_ref()
                 ).build(),
+                Check::account(&archive_address).data(
+                    Archive {
+                        storage_capacity: StorageUnits(1000),
+                        storage_price: TAPE::from("0.0001"),
+                        future_rewards: FutureRewards::new_at(EpochNumber(1)),
+                        future_usage: FutureUsage::new_at(EpochNumber(1)),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&archive_ata).data(
+                    token(archive_ata, archive_address, 0).1.data.as_ref()
+                ).build(),
                 Check::account(&committee_address).data(
-                    Committee { 
-                        id: CommitteeNumber::current(),
+                    Committee {
                         epoch: EpochNumber(1),
-                        inner: AppointedSet::zeroed(),
+                        ..committee
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&prev_committee_address).data(
-                    Committee { 
-                        id: CommitteeNumber::previous(),
+                    Committee {
                         epoch: EpochNumber(0),
-                        inner: AppointedSet::zeroed(),
+                        ..prev_committee
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&signer_ata).data(

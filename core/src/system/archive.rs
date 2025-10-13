@@ -5,117 +5,7 @@ use super::utils::get_offsets;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RewardAccounting<const N: usize> {
-    /// The rewards to be distributed in future epochs.
-    rewards: RingBuffer<Coin::<TAPE>, N>,
-
-    /// The current epoch number for index 0 in the usage buffer.
-    now: EpochNumber,
-}
-
-unsafe impl<const N: usize> Zeroable for RewardAccounting<N> {}
-unsafe impl<const N: usize> Pod for RewardAccounting<N> {}
-
-impl<const N: usize> RewardAccounting<N> {
-    pub fn new() -> Self {
-        let now = EpochNumber(0);
-        let mut rewards = RingBuffer::new();
-
-        while rewards.len() < N {
-            rewards.push(Coin::<TAPE>::zero());
-        }
-
-        Self { rewards, now }
-    }
-
-    /// Get the current epoch number.
-    pub fn current_epoch(&self) -> EpochNumber {
-        self.now
-    }
-
-    /// Advance to the next epoch, returning the rewards of the current epoch.
-    pub fn advance_epoch(&mut self) -> Coin::<TAPE> {
-        let current_rewards = *self.rewards
-            .front()
-            .unwrap_or(&Coin::<TAPE>::zero());
-
-        // Push a new zeroed entry for the new future epoch
-        self.rewards.push(Coin::<TAPE>::zero());
-
-        // Advance the epoch number
-        self.now.increment();
-
-        current_rewards
-    }
-
-    /// Get the rewards for the provided epoch.
-    #[inline]
-    pub fn get(&self, epoch: EpochNumber) -> Result<Coin::<TAPE>, SystemError> {
-        if epoch < self.now {
-            return Err(SystemError::EpochInPast);
-        }
-
-        if epoch >= EpochNumber(self.now.as_u64() + N as u64) {
-            return Err(SystemError::EpochTooFar);
-        }
-
-        let index = (epoch - self.now).as_u64() as usize;
-        self.rewards.get(index).copied().ok_or(SystemError::IndexOutOfBounds)
-    }
-
-    /// Add rewards in the specified epoch range.
-    pub fn add_rewards(
-        &mut self,
-        amount: Coin::<TAPE>,
-        start_epoch: EpochNumber,
-        end_epoch: EpochNumber,
-    ) -> Result<(), SystemError> {
-        let (start_offset, end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
-
-        for i in start_offset..end_offset {
-            let entry = self.rewards
-                .get_mut(i)
-                .ok_or(SystemError::IndexOutOfBounds)?;
-
-            *entry = entry
-                .checked_add(amount)
-                .ok_or(SystemError::Overflow)?;
-        }
-
-        Ok(())
-    }
-
-    /// Slash rewards in the specified epoch range.
-    pub fn slash_rewards(
-        &mut self,
-        start_epoch: EpochNumber,
-        end_epoch: EpochNumber,
-        amount: Coin::<TAPE>,
-    ) -> Result<(), SystemError> {
-        let (start_offset, mut end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
-
-        // Clamp to current length
-        end_offset = end_offset.min(self.rewards.len());
-
-        for i in start_offset..end_offset {
-            let entry = self.rewards
-                .get_mut(i)
-                .ok_or(SystemError::IndexOutOfBounds)?;
-
-            *entry = entry
-                .checked_sub(amount)
-                .ok_or(SystemError::Underflow)?;
-        }
-
-        Ok(())
-    }
-
-}
-
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StorageAccounting<const N: usize> {
+pub struct FutureUsage<const N: usize> {
     /// The storage usage for future epochs.
     usage: RingBuffer<StorageUnits, N>,
 
@@ -123,19 +13,20 @@ pub struct StorageAccounting<const N: usize> {
     now: EpochNumber,
 }
 
-unsafe impl<const N: usize> Zeroable for StorageAccounting<N> {}
-unsafe impl<const N: usize> Pod for StorageAccounting<N> {}
+unsafe impl<const N: usize> Zeroable for FutureUsage<N> {}
+unsafe impl<const N: usize> Pod for FutureUsage<N> {}
 
-impl<const N: usize> StorageAccounting<N> {
+impl<const N: usize> FutureUsage<N> {
     pub fn new() -> Self {
-        let now = EpochNumber(0);
-        let mut usage = RingBuffer::new();
+        Self::new_at(EpochNumber(0))
+    }
 
-        while usage.len() < N {
-            usage.push(StorageUnits::zero());
+    pub fn new_at(start_epoch: EpochNumber) -> Self {
+        let front = (start_epoch.as_u64() as usize) % N;
+        Self {
+            usage: RingBuffer::filled_zero_at(front),
+            now: start_epoch,
         }
-
-        Self { usage, now }
     }
 
     /// Get the current epoch number.
@@ -251,6 +142,116 @@ impl<const N: usize> StorageAccounting<N> {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FutureRewards<const N: usize> {
+    /// The rewards to be distributed in future epochs.
+    rewards: RingBuffer<Coin::<TAPE>, N>,
+
+    /// The current epoch number for index 0 in the usage buffer.
+    now: EpochNumber,
+}
+
+unsafe impl<const N: usize> Zeroable for FutureRewards<N> {}
+unsafe impl<const N: usize> Pod for FutureRewards<N> {}
+
+impl<const N: usize> FutureRewards<N> {
+    pub fn new() -> Self {
+        Self::new_at(EpochNumber(0))
+    }
+
+    pub fn new_at(start_epoch: EpochNumber) -> Self {
+        let front = (start_epoch.as_u64() as usize) % N;
+        Self {
+            rewards: RingBuffer::filled_zero_at(front),
+            now: start_epoch,
+        }
+    }
+
+    /// Get the current epoch number.
+    pub fn current_epoch(&self) -> EpochNumber {
+        self.now
+    }
+
+    /// Advance to the next epoch, returning the rewards of the current epoch.
+    pub fn advance_epoch(&mut self) -> Coin::<TAPE> {
+        let current_rewards = *self.rewards
+            .front()
+            .unwrap_or(&Coin::<TAPE>::zero());
+
+        // Push a new zeroed entry for the new future epoch
+        self.rewards.push(Coin::<TAPE>::zero());
+
+        // Advance the epoch number
+        self.now.increment();
+
+        current_rewards
+    }
+
+    /// Get the rewards for the provided epoch.
+    #[inline]
+    pub fn get(&self, epoch: EpochNumber) -> Result<Coin::<TAPE>, SystemError> {
+        if epoch < self.now {
+            return Err(SystemError::EpochInPast);
+        }
+
+        if epoch >= EpochNumber(self.now.as_u64() + N as u64) {
+            return Err(SystemError::EpochTooFar);
+        }
+
+        let index = (epoch - self.now).as_u64() as usize;
+        self.rewards.get(index).copied().ok_or(SystemError::IndexOutOfBounds)
+    }
+
+    /// Add rewards in the specified epoch range.
+    pub fn add_rewards(
+        &mut self,
+        amount: Coin::<TAPE>,
+        start_epoch: EpochNumber,
+        end_epoch: EpochNumber,
+    ) -> Result<(), SystemError> {
+        let (start_offset, end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
+
+        for i in start_offset..end_offset {
+            let entry = self.rewards
+                .get_mut(i)
+                .ok_or(SystemError::IndexOutOfBounds)?;
+
+            *entry = entry
+                .checked_add(amount)
+                .ok_or(SystemError::Overflow)?;
+        }
+
+        Ok(())
+    }
+
+    /// Slash rewards in the specified epoch range.
+    pub fn slash_rewards(
+        &mut self,
+        start_epoch: EpochNumber,
+        end_epoch: EpochNumber,
+        amount: Coin::<TAPE>,
+    ) -> Result<(), SystemError> {
+        let (start_offset, mut end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
+
+        // Clamp to current length
+        end_offset = end_offset.min(self.rewards.len());
+
+        for i in start_offset..end_offset {
+            let entry = self.rewards
+                .get_mut(i)
+                .ok_or(SystemError::IndexOutOfBounds)?;
+
+            *entry = entry
+                .checked_sub(amount)
+                .ok_or(SystemError::Underflow)?;
+        }
+
+        Ok(())
+    }
+
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -261,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_new() {
-        let db: RewardAccounting<N> = RewardAccounting::new();
+        let db: FutureRewards<N> = FutureRewards::new();
         assert_eq!(db.now, EpochNumber(0));
         assert_eq!(db.rewards.len(), N);
 
@@ -275,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_get_rewards_at() {
-        let db: RewardAccounting<N> = RewardAccounting::new();
+        let db: FutureRewards<N> = FutureRewards::new();
 
         // Valid ranges
         for i in 0..N as u64 {
@@ -291,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_advance_epoch() {
-        let mut db: RewardAccounting<N> = RewardAccounting::new();
+        let mut db: FutureRewards<N> = FutureRewards::new();
 
         for _ in 0..10 {
             let current = db.advance_epoch();
@@ -310,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_add_and_slash_rewards() {
-        let mut db: RewardAccounting<N> = RewardAccounting::new();
+        let mut db: FutureRewards<N> = FutureRewards::new();
         let amount = TAPE::new(100);
 
         // Add in epochs 1 to 3
@@ -334,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_add_errors() {
-        let mut db: RewardAccounting<N> = RewardAccounting::new();
+        let mut db: FutureRewards<N> = FutureRewards::new();
         let amount = TAPE::new(100);
 
         // Invalid ranges
@@ -363,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_slash_errors() {
-        let mut db: RewardAccounting<N> = RewardAccounting::new();
+        let mut db: FutureRewards<N> = FutureRewards::new();
         let amount = TAPE::new(100);
 
         // Underflow
@@ -381,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_future_rewards_advance_with_additions() {
-        let mut db: RewardAccounting<N> = RewardAccounting::new();
+        let mut db: FutureRewards<N> = FutureRewards::new();
         let amount = TAPE::new(100);
 
         // Add in future epochs 2-4
@@ -418,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_new() {
-        let db: StorageAccounting<N> = StorageAccounting::new();
+        let db: FutureUsage<N> = FutureUsage::new();
         assert_eq!(db.now, EpochNumber(0));
         assert_eq!(db.usage.len(), N);
 
@@ -432,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_get_usage_at() {
-        let db: StorageAccounting<N> = StorageAccounting::new();
+        let db: FutureUsage<N> = FutureUsage::new();
 
         // Valid ranges
         for i in 0..N as u64 {
@@ -448,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_advance_epoch() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
 
         for _ in 0..10 {
             let current = db.advance_epoch();
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_reserve_and_cancel_capacity() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
         let units = StorageUnits(100);
 
         // Reserve in epochs 1 to 3 (exclusive, so 1,2)
@@ -492,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_reserve_errors() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
         let units = StorageUnits(100);
 
         // Invalid ranges
@@ -521,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_cancel_errors() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
         let units = StorageUnits(100);
 
         // Underflow
@@ -539,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_has_capacity_for() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
         let max_cap = StorageUnits(200);
         let add_units = StorageUnits(100);
 
@@ -563,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_future_usage_advance_with_reservations() {
-        let mut db: StorageAccounting<N> = StorageAccounting::new();
+        let mut db: FutureUsage<N> = FutureUsage::new();
         let units = StorageUnits(100);
 
         // Reserve in future epochs 2-4

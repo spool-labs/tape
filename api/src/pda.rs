@@ -49,22 +49,37 @@ pub fn metadata_pda() -> (Pubkey, u8) {
     (METADATA_ADDRESS, METADATA_BUMP)
 }
 
+#[cfg(debug_assertions)]
 #[inline(always)]
-pub fn archive_pda(id: ArchiveNumber) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[ARCHIVE, &id.pack()], &crate::id())
+pub fn archive_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[ARCHIVE], &crate::id())
 }
 
+#[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn archive_ata(archive: Pubkey) -> (Pubkey, u8) {
-    let (mint_pda, _bump) = mint_pda();
+pub fn archive_pda() -> (Pubkey, u8) {
+    (ARCHIVE_ADDRESS, ARCHIVE_BUMP)
+}
+
+#[cfg(debug_assertions)]
+#[inline(always)]
+pub fn archive_ata() -> (Pubkey, u8) {
+    let (archive, _) = archive_pda();
+    let (mint, _bump) = mint_pda();
     Pubkey::find_program_address(
         &[
             archive.as_ref(),
             spl_token::ID.as_ref(),
-            mint_pda.as_ref(),
+            mint.as_ref(),
         ],
         &spl_associated_token_account::ID,
     )
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn archive_ata() -> (Pubkey, u8) {
+    (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
 }
 
 #[inline(always)]
@@ -74,12 +89,12 @@ pub fn exchange_pda(authority: Pubkey) -> (Pubkey, u8) {
 
 #[inline(always)]
 pub fn exchange_ata(exchange: Pubkey) -> (Pubkey, u8) {
-    let (mint_pda, _) = mint_pda();
+    let (mint, _) = mint_pda();
     Pubkey::find_program_address(
         &[
             exchange.as_ref(), 
             spl_token::ID.as_ref(),
-            mint_pda.as_ref()
+            mint.as_ref()
         ],
         &spl_associated_token_account::ID,
     )
@@ -112,12 +127,12 @@ pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
 
 #[inline(always)]
 pub fn stake_ata(stake: Pubkey) -> (Pubkey, u8) {
-    let (mint_pda, _) = mint_pda();
+    let (mint, _) = mint_pda();
     Pubkey::find_program_address(
         &[
             stake.as_ref(),
             spl_token::ID.as_ref(),
-            mint_pda.as_ref(),
+            mint.as_ref(),
         ],
         &spl_associated_token_account::ID,
     )
@@ -160,5 +175,13 @@ mod tests {
         let (pda, bump) = metadata_pda();
         assert_eq!(pda, METADATA_ADDRESS);
         assert_eq!(bump, METADATA_BUMP);
+
+        let (pda, bump) = archive_pda();
+        assert_eq!(pda, ARCHIVE_ADDRESS);
+        assert_eq!(bump, ARCHIVE_BUMP);
+
+        let (pda, bump) = archive_ata();
+        assert_eq!(pda, ARCHIVE_ATA);
+        assert_eq!(bump, ARCHIVE_ATA_BUMP);
     }
 }

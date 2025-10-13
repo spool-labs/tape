@@ -12,6 +12,8 @@ pub fn build_initialize_ix(
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
+    let (archive_address, _) = archive_pda();
+    let (archive_ata, _) = archive_ata();
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
     let (committee_address, _) = current_committee_pda();
@@ -27,6 +29,8 @@ pub fn build_initialize_ix(
 
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(archive_ata, false),
             AccountMeta::new(committee_address, false),
             AccountMeta::new(prev_committee_address, false),
             AccountMeta::new(mint_address, false),

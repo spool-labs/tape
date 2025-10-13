@@ -32,15 +32,13 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_epoch()?
         .as_account::<Epoch>(&tape_api::ID)?;
 
-    let archive_number = ArchiveNumber::unpack(args.archive);
-    let (archive_address, _) = archive_pda(archive_number);
-    let (archive_ata_address, _) = archive_ata(archive_address);
+    let (archive_address, _) = archive_pda();
+    let (archive_ata_address, _) = archive_ata();
 
     let archive = archive_info
         .is_writable()?
         .has_address(&archive_address)?
-        .as_account_mut::<Archive>(&tape_api::ID)?
-        .assert_mut(|a| a.id == archive_number)?;
+        .as_account_mut::<Archive>(&tape_api::ID)?;
 
     archive_ata_info
         .is_writable()?
@@ -93,7 +91,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let current_capacity = archive.storage_capacity;
     let fee_per_epoch = TAPE(single_epoch_price);
 
-    if archive.future_storage.current_epoch() != current_epoch {
+    if archive.future_usage.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -101,12 +99,12 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if !archive.future_storage.has_capacity_for(
+    if !archive.future_usage.has_capacity_for(
         total_units, current_capacity, start_epoch, end_epoch) {
         return Err(TapeError::InsufficientCapacity.into());
     }
     
-    archive.future_storage.reserve_capacity(
+    archive.future_usage.reserve_capacity(
         total_units,
         start_epoch,
         end_epoch,
@@ -153,18 +151,17 @@ mod tests {
     fn test_reserve_tape() {
         let signer = Pubkey::new_unique();
 
-        let archive_number = ArchiveNumber(0);
         let storage_units = StorageUnits(100);     // 100 MB
         let start_epoch = EpochNumber(43);         // In the future
         let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
         let instruction = build_reserve_tape_ix(
-            signer, archive_number, storage_units, start_epoch, end_epoch);
+            signer, storage_units, start_epoch, end_epoch);
 
         let (epoch_address, _) = epoch_pda();
-        let (archive_address, _) = archive_pda(archive_number);
-        let (archive_ata, _) = archive_ata(archive_address);
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
         let (tape_address, _) = tape_pda(signer);
         let signer_ata = ata_address(&signer);
 
@@ -172,11 +169,10 @@ mod tests {
 
         let epoch = Epoch::zeroed();
         let archive = Archive {
-            id: archive_number,
             storage_capacity: StorageUnits(1000), // 1000 MB capacity
             storage_price: price_per_unit,
-            future_storage: StorageAccounting::new(),
-            future_rewards: RewardAccounting::new(),
+            future_usage: FutureUsage::new(),
+            future_rewards: FutureRewards::new(),
         };
 
         // Calculate expected cost and state
@@ -189,7 +185,7 @@ mod tests {
 
         let mut expected_archive = archive.clone();
         expected_archive
-            .future_storage
+            .future_usage
             .reserve_capacity(storage_units, start_epoch, end_epoch)
             .unwrap();
         expected_archive

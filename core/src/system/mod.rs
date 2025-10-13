@@ -1,4 +1,4 @@
-mod accounting;
+mod archive;
 mod blob;
 mod committee;
 mod epoch;
@@ -10,7 +10,7 @@ mod utils;
 mod value;
 pub mod sim;
 
-pub use accounting::*;
+pub use archive::*;
 pub use blob::*;
 pub use committee::*;
 pub use epoch::*;

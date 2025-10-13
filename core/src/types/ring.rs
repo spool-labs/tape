@@ -31,6 +31,17 @@ impl<T: Pod + Zeroable, const N: usize> RingBuffer<T, N> {
         }
     }
 
+    /// Create a full ring buffer containing zeros with the logical "front"
+    /// (oldest element) at `front_index`.
+    pub fn filled_zero_at(front_index: usize) -> Self {
+        debug_assert!(N > 0);
+        Self {
+            index: (front_index % N) as u64,
+            length: N as u64,
+            entries: [T::zeroed(); N],
+        }
+    }
+
     /// Returns true if the buffer has no entries.
     pub fn is_empty(&self) -> bool {
         self.length == 0

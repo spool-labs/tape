@@ -61,6 +61,35 @@ pub const EPOCH_ADDRESS: Pubkey =
 pub const EPOCH_BUMP: u8 =
     ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
 
+pub const ARCHIVE_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);
+
+pub const ARCHIVE_BUMP: u8 =
+    ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).1;
+
+pub const ARCHIVE_ATA: Pubkey = Pubkey::new_from_array(
+    ed25519::derive_program_address(
+        &[
+            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+        ],
+        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+    )
+    .0,
+);
+
+pub const ARCHIVE_ATA_BUMP: u8 = 
+    ed25519::derive_program_address(
+        &[
+            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
+        ],
+        unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
+    )
+    .1;
+
 pub const MINT_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[MINT, MINT_SEED], &PROGRAM_ID).0);
 

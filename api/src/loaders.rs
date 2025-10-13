@@ -1,12 +1,14 @@
 use steel::*;
 
 use crate::consts::*;
-use crate::state::{System, Epoch, Committee};
+use crate::state::{System, Epoch, Committee, Archive};
 use crate::pda::*;
 
 pub trait AccountInfoLoader {
     fn is_system(&self) -> Result<&Self, ProgramError>;
     fn is_epoch(&self) -> Result<&Self, ProgramError>;
+    fn is_archive(&self) -> Result<&Self, ProgramError>;
+    fn is_archive_ata(&self) -> Result<&Self, ProgramError>;
     fn is_current_committee(&self) -> Result<&Self, ProgramError>;
     fn is_previous_committee(&self) -> Result<&Self, ProgramError>;
     fn is_mint(&self) -> Result<&Self, ProgramError>;
@@ -22,6 +24,16 @@ impl AccountInfoLoader for AccountInfo<'_> {
     fn is_epoch(&self) -> Result<&Self, ProgramError> {
         self.has_address(&EPOCH_ADDRESS)?
             .is_type::<Epoch>(&crate::ID)
+    }
+
+    fn is_archive(&self) -> Result<&Self, ProgramError> {
+        self.has_address(&ARCHIVE_ADDRESS)?
+            .is_type::<Archive>(&crate::ID)
+    }
+
+    fn is_archive_ata(&self) -> Result<&Self, ProgramError> {
+        self.has_address(&ARCHIVE_ATA)?
+            .has_owner(&spl_token::ID)
     }
 
     fn is_current_committee(&self) -> Result<&Self, ProgramError> {
