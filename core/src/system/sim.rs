@@ -1,49 +1,49 @@
 use std::collections::{BTreeMap, BTreeSet};
-use crate::shard::{assign_shards, move_shards, map_shard_indices};
+use crate::seat::{assign_seats, move_seats, map_seat_indices};
 use crate::types::NodeId;
 
 // ========== Core Types ==========
 
 #[derive(Clone, Debug, Default)]
 pub struct Committee {
-    // shard_id is the index; value is NodeId
-    pub shard_to_node: Vec<NodeId>,
+    // seat_id is the index; value is NodeId
+    pub seat_to_node: Vec<NodeId>,
 }
 
 impl Committee {
-    pub fn new(shard_to_node: Vec<NodeId>) -> Self {
-        Committee { shard_to_node }
+    pub fn new(seat_to_node: Vec<NodeId>) -> Self {
+        Committee { seat_to_node }
     }
     // Number of unique nodes in the committee
     pub fn size(&self) -> usize {
-        let uniq: BTreeSet<NodeId> = self.shard_to_node.iter().cloned().collect();
+        let uniq: BTreeSet<NodeId> = self.seat_to_node.iter().cloned().collect();
         uniq.len()
     }
     pub fn contains(&self, node_id: &NodeId) -> bool {
-        self.shard_to_node.iter().any(|n| n == node_id)
+        self.seat_to_node.iter().any(|n| n == node_id)
     }
-    // Return total number of shards in the committee
-    pub fn total_shards(&self) -> u16 {
-        self.shard_to_node.len() as u16
+    // Return total number of seats in the committee
+    pub fn total_seats(&self) -> u16 {
+        self.seat_to_node.len() as u16
     }
-    // Return the number of shards (weight) assigned to a node
+    // Return the number of seats (weight) assigned to a node
     pub fn node_weight(&self, node_id: &NodeId) -> u16 {
-        self.shard_to_node.iter().filter(|&&n| n == *node_id).count() as u16
+        self.seat_to_node.iter().filter(|&&n| n == *node_id).count() as u16
     }
     // Return the map of weights by node in the committee
     pub fn weights(&self) -> BTreeMap<NodeId, u16> {
         let mut weights: BTreeMap<NodeId, u16> = BTreeMap::new();
-        for &node_id in self.shard_to_node.iter() {
+        for &node_id in self.seat_to_node.iter() {
             *weights.entry(node_id).or_insert(0) += 1;
         }
         weights
     }
-    // Return the list of shard indices assigned to a node
-    pub fn shards_for(&self, node_id: &NodeId) -> Vec<u16> {
-        self.shard_to_node
+    // Return the list of seat indices assigned to a node
+    pub fn seats_for(&self, node_id: &NodeId) -> Vec<u16> {
+        self.seat_to_node
             .iter()
             .enumerate()
-            .filter_map(|(shard, &nid)| if nid == *node_id { Some(shard as u16) } else { None })
+            .filter_map(|(seat, &nid)| if nid == *node_id { Some(seat as u16) } else { None })
             .collect()
     }
 }
@@ -72,15 +72,15 @@ impl Clock {
 pub struct System {
     pub epoch: u32,
     pub committee: Committee,
-    pub n_shards: u16,
+    pub n_seats: u16,
 }
 
 impl System {
-    pub fn new(n_shards: u16) -> Self {
+    pub fn new(n_seats: u16) -> Self {
         Self {
             epoch: 0,
             committee: Committee::default(),
-            n_shards,
+            n_seats,
         }
     }
 }
@@ -204,19 +204,19 @@ pub enum EpochState {
 
 // ========== Helpers mirroring staking_inner.move semantics ==========
 
-// Equivalent to Move is_quorum_for_n_shards(weight, n_shards)
-pub fn is_quorum_for_n_shards(weight: u64, n_shards: u64) -> bool {
-    3 * weight >= 2 * n_shards + 1
+// Equivalent to Move is_quorum_for_n_seats(weight, n_seats)
+pub fn is_quorum_for_n_seats(weight: u64, n_seats: u64) -> bool {
+    3 * weight >= 2 * n_seats + 1
 }
 
 // Equivalent to Move quorum_above on a priority queue, but implemented on a vec sorted by value desc.
 // Input is (value, weight). Returns highest value such that a quorum voted >= this.
-pub fn quorum_above(mut votes: Vec<(u64, u16)>, n_shards: u16) -> u64 {
+pub fn quorum_above(mut votes: Vec<(u64, u16)>, n_seats: u16) -> u64 {
     votes.sort_by(|a, b| b.0.cmp(&a.0)); // max-first
     let mut sum_weight: u64 = 0;
     for (value, weight) in votes {
         sum_weight = sum_weight.saturating_add(weight as u64);
-        if is_quorum_for_n_shards(sum_weight, n_shards as u64) {
+        if is_quorum_for_n_seats(sum_weight, n_seats as u64) {
             return value;
         }
     }
@@ -225,12 +225,12 @@ pub fn quorum_above(mut votes: Vec<(u64, u16)>, n_shards: u16) -> u64 {
 
 // Equivalent to Move quorum_below: start with full weight, remove highest values until quorum breaks.
 // Return the value that just broke quorum (i.e., minimum value with quorum support).
-pub fn quorum_below(mut votes: Vec<(u64, u16)>, n_shards: u16) -> u64 {
+pub fn quorum_below(mut votes: Vec<(u64, u16)>, n_seats: u16) -> u64 {
     votes.sort_by(|a, b| b.0.cmp(&a.0)); // max-first
-    let mut sum_weight: u64 = n_shards as u64;
+    let mut sum_weight: u64 = n_seats as u64;
     for (value, weight) in votes {
         sum_weight = sum_weight.saturating_sub(weight as u64);
-        if !is_quorum_for_n_shards(sum_weight, n_shards as u64) {
+        if !is_quorum_for_n_seats(sum_weight, n_seats as u64) {
             return value;
         }
     }
@@ -290,7 +290,7 @@ impl StakingPool {
 #[derive(Clone, Debug)]
 pub struct Staking {
     // Parameters
-    n_shards: u16,
+    n_seats: u16,
     epoch_duration_ms: u64,
     first_epoch_start_ms: u64,
 
@@ -313,9 +313,9 @@ pub struct Staking {
 }
 
 impl Staking {
-    pub fn new(epoch_zero_duration_ms: u64, epoch_duration_ms: u64, n_shards: u16, clock: &Clock) -> Self {
+    pub fn new(epoch_zero_duration_ms: u64, epoch_duration_ms: u64, n_seats: u16, clock: &Clock) -> Self {
         Staking {
-            n_shards,
+            n_seats,
             epoch_duration_ms,
             first_epoch_start_ms: clock.timestamp_ms().saturating_add(epoch_zero_duration_ms),
             epoch: 0,
@@ -333,7 +333,7 @@ impl Staking {
     // Helper: 2f+1 quorum
     fn is_quorum(&self, weight: u16) -> bool {
         let w = weight as u64;
-        let n = self.n_shards as u64;
+        let n = self.n_seats as u64;
         3 * w >= 2 * n + 1
     }
 
@@ -422,17 +422,17 @@ impl Staking {
     pub fn compute_next_committee(&self) -> Committee {
         let stake_by_node = self.active_set.as_stake_map();
 
-        // Use provided assign_shards helper: NodeId->u16
-        let counts = assign_shards(&stake_by_node, self.n_shards);
+        // Use provided assign_seats helper: NodeId->u16
+        let counts = assign_seats(&stake_by_node, self.n_seats);
 
         if self.committee.size() == 0 {
-            let shard_to_node = map_shard_indices(&counts);
-            return Committee::new(shard_to_node);
+            let seat_to_node = map_seat_indices(&counts);
+            return Committee::new(seat_to_node);
         }
 
-        // Transition preserving shard placement where possible
-        let new_shard_to_node = move_shards(&self.committee.shard_to_node, &counts);
-        Committee::new(new_shard_to_node)
+        // Transition preserving seat placement where possible
+        let new_seat_to_node = move_seats(&self.committee.seat_to_node, &counts);
+        Committee::new(new_seat_to_node)
     }
 
     // Port of Move's select_committee_and_calculate_votes
@@ -448,7 +448,7 @@ impl Staking {
         let mut storage_price_votes: Vec<(u64, u16)> = Vec::new();
         let mut capacity_votes: Vec<(u64, u16)> = Vec::new();
 
-        // Build weights per node from shard_to_node
+        // Build weights per node from seat_to_node
         let weights_by_node = committee.weights();
 
         // iterate next committee members
@@ -465,9 +465,9 @@ impl Staking {
             // collect votes from pool
             let wp = pool.write_price();
             let sp = pool.storage_price();
-            // capacity_vote = (pool.node_capacity * n_shards) / weight (clamped to u64)
+            // capacity_vote = (pool.node_capacity * n_seats) / weight (clamped to u64)
             let cap_calc = (pool.node_capacity() as u128)
-                .saturating_mul(self.n_shards as u128)
+                .saturating_mul(self.n_seats as u128)
                 / (weight as u128);
             let cap_vote = cap_calc.min(u64::MAX as u128) as u64;
 
@@ -481,9 +481,9 @@ impl Staking {
         self.next_committee = Some(committee);
 
         // derive next epoch params using quorum rules
-        let capacity = quorum_above(capacity_votes, self.n_shards);
-        let storage_price = quorum_below(storage_price_votes, self.n_shards);
-        let write_price = quorum_below(write_price_votes, self.n_shards);
+        let capacity = quorum_above(capacity_votes, self.n_seats);
+        let storage_price = quorum_below(storage_price_votes, self.n_seats);
+        let write_price = quorum_below(write_price_votes, self.n_seats);
         self.next_epoch_params = Some(EpochParams::new(capacity, storage_price, write_price));
     }
 
@@ -539,7 +539,7 @@ impl Staking {
 
         // Update system to reflect new epoch and committee.
         system.epoch = self.epoch;
-        system.n_shards = self.n_shards;
+        system.n_seats = self.n_seats;
         system.committee = self.committee.clone();
     }
 
@@ -626,9 +626,9 @@ mod tests {
         assert_eq!(system.epoch, 1);
         assert!(staking.committee().contains(&n1));
         assert!(staking.committee().contains(&n2));
-        assert_eq!(staking.committee().total_shards(), 6);
+        assert_eq!(staking.committee().total_seats(), 6);
 
-        // Check get_current_node_weight mirrors shard count
+        // Check get_current_node_weight mirrors seat count
         let w1 = staking.get_current_node_weight(&n1);
         let w2 = staking.get_current_node_weight(&n2);
         assert_eq!(w1 as u16 + w2 as u16, 6);
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn test_next_epoch_params_quorum_selection() {
         let clock = Clock::new(0);
-        // 3 shards, so each of three nodes will likely get 1 shard with equal stake
+        // 3 seats, so each of three nodes will likely get 1 seat with equal stake
         let mut staking = Staking::new(0, 1_000, 3, &clock);
 
         let n1 = NodeId(10);
@@ -889,7 +889,7 @@ mod tests {
         staking.set_write_price_vote(&cap2, 100);
         staking.set_write_price_vote(&cap3, 300);
 
-        // capacity votes based on node_capacity * n_shards / weight
+        // capacity votes based on node_capacity * n_seats / weight
         // set capacities 10, 20, 30 -> with weight 1, values: 30, 60, 90
         // quorum_above needs total weight >= 3 (need all three), returns the last (smallest) value 30
         staking.set_node_capacity_vote(&cap1, 10);

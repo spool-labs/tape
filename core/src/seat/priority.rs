@@ -2,19 +2,19 @@ use core::cmp::Ordering;
 
 /// A struct representing a priority score (numerator/denominator) for shard allocation.
 #[derive(Clone, Debug)]
-pub struct ShardPriority {
+pub struct SeatPriority {
     pub n: u64,
     pub d: u64,
 }
 
-impl ShardPriority {
+impl SeatPriority {
     pub fn from(n: u64, d: u64) -> Self {
         assert!(d > 0, "Denominator must be > 0");
         Self { n, d }
     }
 }
 
-pub fn compare_shard_priorities(a: &ShardPriority, b: &ShardPriority) -> Ordering {
+pub fn compare_shard_priorities(a: &SeatPriority, b: &SeatPriority) -> Ordering {
     let left = a.n.saturating_mul(b.d);
     let right = b.n.saturating_mul(a.d);
     left.cmp(&right)
@@ -31,7 +31,7 @@ pub fn tie_break(t1: u64, i1: usize, t2: u64, i2: usize) -> Ordering {
 /// A priority queue entry for a node's shard allocation
 #[derive(Clone, Debug)]
 pub struct NodePriority {
-    pub priority: ShardPriority,
+    pub priority: SeatPriority,
     pub tie_breaker: u64,
     pub index: usize,
 }
@@ -67,11 +67,11 @@ mod tests {
 
     #[test]
     fn test_shard_priority() {
-        let q1 = ShardPriority::from(1, 2); // 0.5
-        let q2 = ShardPriority::from(2, 3); // ~0.6667
-        let q3 = ShardPriority::from(3, 4); // 0.75
-        let q4 = ShardPriority::from(4, 5); // 0.8
-        let q5 = ShardPriority::from(1, 2); // 0.5 (same as q1)
+        let q1 = SeatPriority::from(1, 2); // 0.5
+        let q2 = SeatPriority::from(2, 3); // ~0.6667
+        let q3 = SeatPriority::from(3, 4); // 0.75
+        let q4 = SeatPriority::from(4, 5); // 0.8
+        let q5 = SeatPriority::from(1, 2); // 0.5 (same as q1)
 
         assert_eq!(compare_shard_priorities(&q1, &q2), Ordering::Less);
         assert_eq!(compare_shard_priorities(&q2, &q1), Ordering::Greater);

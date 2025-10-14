@@ -47,6 +47,7 @@ pub fn process_instruction(
 
             TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
             TapeInstruction::ExpandEpoch => process_expand_epoch(accounts, data)?,
+            TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 
             TapeInstruction::CreateCommittee => process_create_committee(accounts, data)?,
             TapeInstruction::ExpandCommittee => process_expand_committee(accounts, data)?,

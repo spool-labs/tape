@@ -51,12 +51,16 @@ pub fn build_advance_epoch_ix(
     signer: Pubkey
 ) ->Instruction {
     let (epoch_address, _) = epoch_pda();
+    let (committee_address, _) = current_committee_pda();
+    let (prev_committee_address, _) = previous_committee_pda();
 
     Instruction {
         program_id: crate::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(epoch_address, false),
+            AccountMeta::new(committee_address, false),
+            AccountMeta::new(prev_committee_address, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),
     }
