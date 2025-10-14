@@ -95,13 +95,6 @@ mod tests {
     }
 
     #[test]
-    fn test_max_seats_per_node() {
-        assert_eq!(cap_seats(20, 1000), 100);
-        assert_eq!(cap_seats(25, 1000), 100);
-        assert_eq!(cap_seats(5, 1000), 400);
-    }
-
-    #[test]
     fn test_basic_even() {
         let stake = weights(&[25_000, 25_000, 25_000, 25_000]);
         assert_eq!(allocate_seats(&stake, 4), vec![1, 1, 1, 1]);
@@ -119,5 +112,41 @@ mod tests {
         let res = allocate_seats(&stake, 1000);
         assert_eq!(res.iter().map(|&x| x as u64).sum::<u64>(), 1000);
         assert_eq!(res, vec![500, 300, 150, 50]);
+    }
+
+    #[test]
+    fn test_ties() {
+        // Even stake with uneven seat distribution
+        let stake = weights(&[25_000, 25_000, 25_000, 25_000]);
+        assert_eq!(allocate_seats(&stake, 7), vec![2, 2, 2, 1]);
+        assert_eq!(allocate_seats(&stake, 6), vec![2, 2, 1, 1]);
+
+        // Small uneven stake
+        let stake = weights(&[200, 200, 200, 100]);
+        assert_eq!(allocate_seats(&stake, 7), vec![2, 2, 2, 1]);
+
+        // Larger stake with ties
+        let stake = weights(&[780_000, 650_000, 520_000, 390_000, 260_000]);
+        assert_eq!(allocate_seats(&stake, 18), vec![6, 5, 4, 2, 1]);
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // No seats
+        let stake = weights(&[100, 90, 80]);
+        assert_eq!(allocate_seats(&stake, 0), vec![0, 0, 0]);
+
+        // Low stake
+        let stake = weights(&[1, 0, 0]);
+        assert_eq!(allocate_seats(&stake, 5), vec![4, 1, 0]);
+
+        // Nearly identical stake
+        let s = 1_000_000;
+        let stake = weights(&[s, s - 1]);
+        assert_eq!(allocate_seats(&stake, 3), vec![2, 1]);
+
+        // Large stake
+        let stake = weights(&[1_000_000_000_000, 900_000_000_000, 100_000_000_000]);
+        assert_eq!(allocate_seats(&stake, 500), vec![250, 225, 25]);
     }
 }

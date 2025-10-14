@@ -144,38 +144,38 @@ pub fn move_seats2<const SEATS: usize, const NODES: usize>(
     result
 }
 
-/// Combine members from the current committee and the next leader set into a single Vec.
-pub fn merge_members(
-    current: &AppointedSet,
-    next: &LeaderSet
-) -> Vec<CommitteeMember> {
-    let mut mappings = Vec::new();
-
-    // First add all members from the current committee to the mappings array
-    for member in committee.inner.iter_members() {
-        mappings.push(member);
-    }
-
-    // Then add members from the leader set
-    for index in 0..epoch.leaders.size() {
-        let member = &epoch.leaders.members[index];
-
-        // Check if this member was already in the array
-        let previous = mappings
-            .iter()
-            .position(|&m| m.id == member.id);
-
-        // If yes, use the latest CommitteeMember
-        // (in case the BlsPubkey changed)
-        if let Some(index) = previous {
-            mappings[index] = member; 
-        } else {
-            mappings.push(member);
-        }
-    }
-
-    mappings
-}
+// /// Combine members from the current committee and the next leader set into a single Vec.
+// pub fn merge_members(
+//     current: &AppointedSet,
+//     next: &LeaderSet
+// ) -> Vec<CommitteeMember> {
+//     let mut mappings = Vec::new();
+//
+//     // First add all members from the current committee to the mappings array
+//     for member in committee.inner.iter_members() {
+//         mappings.push(member);
+//     }
+//
+//     // Then add members from the leader set
+//     for index in 0..epoch.leaders.size() {
+//         let member = &epoch.leaders.members[index];
+//
+//         // Check if this member was already in the array
+//         let previous = mappings
+//             .iter()
+//             .position(|&m| m.id == member.id);
+//
+//         // If yes, use the latest CommitteeMember
+//         // (in case the BlsPubkey changed)
+//         if let Some(index) = previous {
+//             mappings[index] = member; 
+//         } else {
+//             mappings.push(member);
+//         }
+//     }
+//
+//     mappings
+// }
 
 
 #[cfg(test)]

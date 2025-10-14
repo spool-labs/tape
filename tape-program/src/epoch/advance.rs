@@ -36,23 +36,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Rotate committees
 
-    solana_program::log::sol_log_compute_units();
     let stake_weights = &epoch.leaders.stakes;
     let seat_allocations = allocate_seats(stake_weights, 1000);
-    solana_program::log::sol_log_compute_units();
-
-    // 1. Create a set of at most 256 NodeIds from the current committee and the leader set. The
-    //    NodeIds can be found in epoch.leaders.members[0..128].id and
-    //    committee.inner.members[0..128].id.
-    // 2. Create a mapping of NodeIds to u8 values (there are only 128 possible NodeIds in
-    //    committee and 128 possible NodeIds in leader set, so at most 256 unique NodeIds). Lets
-    //    call these relative node ids. There is a type called RelativeNodeId that aliases u8. It
-    //    is important that the first set of NodeIds is from committee exactly in the order they
-    //    appear in committee.inner.members, and the second set of NodeIds is from epoch.leaders
-    //    but merged against the first set (i.e. if a NodeId is already in the first set, it is not 
-    //    added again).
-    // 3. The output should be a fixed-size array: 
-    //    [NodeId; 256] mapping from array index to NodeId
 
     // TODO: the seat allocations are sorted, but the leader member list is not
 
