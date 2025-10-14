@@ -54,70 +54,57 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // 3. The output should be a fixed-size array: 
     //    [NodeId; 256] mapping from array index to NodeId
 
-    //let mut current_seats = [0u8; 1000];
-    //let mut seat_index = 0;
-    //for index in 0..committee.inner.size() {
-    //    let seats = committee.inner.seats[index];
-    //    for _ in 0..seats {
-    //        current_seats[seat_index] = index as u8;
-    //        seat_index += 1;
-    //    }
-    //}
-    //assert!(current_seats.len() <= 1000, "Too many seats in current committee");
-    //
-    
-    //let unique_set = get_unique_members(
-    //    &committee.inner, 
-    //    &epoch.leaders
-    //);
+    // TODO: the seat allocations are sorted, but the leader member list is not
 
-    // node_mappings: [CommitteeMember; 256] - mapping from array index to CommitteeMember (in either the current committee or the leader set)
-    // seat_counts: [u16; 256]               - mapping from array index to number of seats assigned in the new committee
-    let (node_mappings, seat_counts) = {
+    // unique_set: [CommitteeMember; 256] - mapping from array index to CommitteeMember (in either the current committee or the leader set)
+    // seat_counts: [u16; 256]            - mapping from array index to number of seats assigned in the new committee
+    let (unique_set, seat_counts) = {
 
-        let mut mappings = Vec::new();
-        let mut assignments = [0u16; 256];
+        let mut unique_set = Vec::new();
+        let mut seat_count = [0u16; 256];
 
-        // First add all members from the current committee to the mappings array
+        // First add all members from the current committee to the unique_set array
         for member in committee.inner.iter_members() {
-            mappings.push(member);
+            unique_set.push(member);
         }
 
-        // Then add members from the leader set, skipping any that are already in the mappings array.
+        // Then add members from the leader set, skipping any that are already in the unique_set array.
         for index in 0..epoch.leaders.size() {
             let member = &epoch.leaders.members[index];
-            let seats = seat_allocations[index];
+            let seats = seat_allocations[index]; // <- not correct (TODO)
 
-            // Check if this member is already in the mappings array
-            let previous = mappings
+            // Check if this member is already in the unique_set array
+            let previous = unique_set
                 .iter()
                 .position(|&m| m.id == member.id);
 
-            // If it is already in the mappings array, update its seat assignment. 
+            // If it is already in the unique_set array, update its seat assignment. 
             if let Some(index) = previous {
-                assignments[index] = seats;
+                seat_count[index] = seats;
 
                 // Update to the latest CommitteeMember 
                 // (in case the BlsPubkey changed)
-                mappings[index] = member; 
+                unique_set[index] = member; 
 
-            // Otherwise, add it to the end of the mappings array and set its seat assignment.
+            // Otherwise, add it to the end of the unique_set array and set its seat assignment.
             } else {
-                assignments[mappings.len()] = seats;
-                mappings.push(member);
+                seat_count[unique_set.len()] = seats;
+                unique_set.push(member);
             }
         }
 
-        (mappings, assignments)
+        (unique_set, seat_count)
     };
 
     solana_program::log::sol_log_compute_units();
     let new_seats = move_seats2(
-        //&current_seats, 
         &committee.inner.seats,
         &seat_counts,
     );
     solana_program::log::sol_log_compute_units();
+
+    // New seats is a list of indexes into *unique_set*, where each index represents a seat in the
+    // new committee.
 
     //solana_program::msg!("Node mappings: {:?}", node_mappings);
     //solana_program::msg!("Res: {:?}", new_seats);
