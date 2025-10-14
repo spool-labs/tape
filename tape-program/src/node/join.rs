@@ -39,9 +39,11 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Try to nominate the node into the leader set if there's enough stake to either bump
     // someone out or fill an empty slot.
-    epoch.leaders
+    let index = epoch.leaders
         .try_join(member, balance)
         .map_err(|_| TapeError::UnexpectedState)?;
+
+    solana_program::msg!("Node {:?} joined the network at index {}", node.authority, index);
     
     Ok(())
 }
@@ -52,7 +54,7 @@ mod tests {
     use tape_test::*;
 
     #[test]
-    fn test_nominate_node() {
+    fn test_join_network() {
         let signer = Pubkey::new_unique();
         let instruction = build_join_network_ix(signer);
 
@@ -136,13 +138,18 @@ mod tests {
                 Check::account(&epoch_address).data(
                     Epoch {
                         leaders: {
-                            // Same as before, but with our node replacing the lowest stake node
+                            // Same as before, but with our node evicting the lowest stake node
                             let mut leaders = epoch.leaders;
 
-                            let index = leaders.min_stake_index().unwrap();
+                            // Nudge all values over by one
+                            let last_index = (COMMITTEE_SIZE - 1) as usize;
+                            for i in (1..COMMITTEE_SIZE).rev() {
+                                leaders.stakes[i] = leaders.stakes[i - 1];
+                                leaders.members[i] = leaders.members[i - 1];
+                            }
 
-                            leaders.stakes[index] = TAPE(5900);
-                            leaders.members[index] = CommitteeMember { 
+                            leaders.stakes[0] = TAPE(5900);
+                            leaders.members[0] = CommitteeMember { 
                                 id: node.id, 
                                 key: node.metadata.bls_pubkey
                             };

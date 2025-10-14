@@ -154,7 +154,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
 
         self.sort_active_desc();
 
-        Ok(count)
+        Ok(self.index_of(&member.id).expect("just inserted"))
     }
 
     /// Replaces the current minimum-stake member if the set is full and the new stake is strictly larger.
@@ -558,9 +558,9 @@ mod tests {
 
         // Insert out of order
         assert_eq!(set.insert(nodes[3], tape(7)), Ok(0));
-        assert_eq!(set.insert(nodes[0], tape(10)), Ok(1));
-        assert_eq!(set.insert(nodes[2], tape(8)), Ok(2));
-        assert_eq!(set.insert(nodes[1], tape(9)), Ok(3));
+        assert_eq!(set.insert(nodes[0], tape(10)), Ok(0));
+        assert_eq!(set.insert(nodes[2], tape(8)), Ok(1));
+        assert_eq!(set.insert(nodes[1], tape(9)), Ok(1));
         assert_eq!(set.insert(nodes[4], tape(6)), Ok(4));
 
         let mut total = 10 + 9 + 8 + 7 + 6;
@@ -695,8 +695,8 @@ mod tests {
         let c = member(node(3));
 
         assert_eq!(set.insert(a, tape(5)), Ok(0));
-        assert_eq!(set.insert(b, tape(10)), Ok(1));
-        assert_eq!(set.insert(c, tape(20)), Ok(2));
+        assert_eq!(set.insert(b, tape(10)), Ok(0));
+        assert_eq!(set.insert(c, tape(20)), Ok(0));
 
         let (ids, stakes) = set.leader_ids_and_stake();
 
@@ -792,7 +792,7 @@ mod tests {
         assert!(matches!(err, LeaderSetError::ZeroStake));
 
         assert_eq!(set.try_join(a, tape(5)), Ok(0));
-        assert_eq!(set.try_join(b, tape(6)), Ok(1));
+        assert_eq!(set.try_join(b, tape(6)), Ok(0));
 
         // Full; zero still invalid
         let c = member(node(3));
