@@ -36,10 +36,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Rotate committees
 
-    let stake_weights = &epoch.leaders.stakes;
-    let seat_allocations = allocate_seats(stake_weights, 1000);
-
-    // TODO: the seat allocations are sorted, but the leader member list is not
+    let stake_weights = &epoch.leaders.stakes;  // sorted in descending order
+    let seat_count_per_leader = allocate_seats(stake_weights, 1000); // seat count per leader
 
     // unique_set: [CommitteeMember; 256] - mapping from array index to CommitteeMember (in either the current committee or the leader set)
     // seat_counts: [u16; 256]            - mapping from array index to number of seats assigned in the new committee
@@ -56,7 +54,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         // Then add members from the leader set, skipping any that are already in the unique_set array.
         for index in 0..epoch.leaders.size() {
             let member = &epoch.leaders.members[index];
-            let seats = seat_allocations[index]; // <- not correct (TODO)
+            let seats = seat_count_per_leader[index]; 
 
             // Check if this member is already in the unique_set array
             let previous = unique_set
@@ -78,32 +76,50 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             }
         }
 
-        (unique_set, seat_count)
+        (
+            unique_set, // across both current committee and leader set
+            seat_count  // across both current committee and leader set but only for those staying in the new committee
+        )
     };
 
-    solana_program::log::sol_log_compute_units();
+    let previous_seats = committee.inner.seats;
     let new_seats = move_seats2(
-        &committee.inner.seats,
-        &seat_counts,
+        &previous_seats, // index to node in unique_set (which contains the current committee
+                         // members as the first entries) 
+        &seat_counts,    // count per node, index is to a node in unique_set 
     );
-    solana_program::log::sol_log_compute_units();
 
     // New seats is a list of indexes into *unique_set*, where each index represents a seat in the
     // new committee.
 
-    //solana_program::msg!("Node mappings: {:?}", node_mappings);
-    //solana_program::msg!("Res: {:?}", new_seats);
 
-    previous_committee.inner = committee.inner;
+    {
+        let count = epoch.leaders.member_count;
+        let members = epoch.leaders.members.clone();
+        let mut seats = [0u8; 1000];
+        // let members = &committee.inner.members;
+        // let mut seats = &mut committee.inner.seats;
 
-    //for seat in 0..new_seats.len() {
-    //    let member_index = new_seats[seat] as usize;
-    //    let member = node_mappings.get(member_index)
-    //        .ok_or(ProgramError::InvalidAccountData)?;
-    //
-    //    committee.inner.members[seat] = *member;
-    //    committee.inner.seats[seat] = seat_counts[member_index];
-    //}
+        // map seats from unique_set indexes to epoch.leaders indexes
+
+        for seat_index in 0..new_seats.len() {
+            let union_index = new_seats[seat_index];
+            let member = unique_set[union_index as usize];
+
+            for member_index in 0..count {
+                if member.id == members[member_index as usize].id {
+                    seats[seat_index] = member_index as u8;
+                }
+            }
+        }
+
+        // Stack errors...
+        committee.inner.seats = seats;
+        committee.inner.member_count = count;
+        committee.inner.members = members;
+    }
+
+    previous_committee.inner = committee.inner.clone();
 
 
 
