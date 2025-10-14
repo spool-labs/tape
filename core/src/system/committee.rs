@@ -31,32 +31,32 @@ pub struct CommitteeMember {
 /// likelihood of being assigned seats in the committee.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LeaderSet<const N: usize> {
+pub struct LeaderSet<const NODES: usize> {
     pub member_count: u64,
-    pub members: [CommitteeMember; N],
-    pub stakes: [Coin<TAPE>; N], // (member_index -> stake)
+    pub members: [CommitteeMember; NODES],
+    pub stakes: [Coin<TAPE>; NODES], // (member_index -> stake)
 }
 
-unsafe impl<const N: usize> Zeroable for LeaderSet<N> {}
-unsafe impl<const N: usize> Pod for LeaderSet<N> {}
+unsafe impl<const NODES: usize> Zeroable for LeaderSet<NODES> {}
+unsafe impl<const NODES: usize> Pod for LeaderSet<NODES> {}
 
-impl<const N: usize> LeaderSet<N> {
+impl<const NODES: usize> LeaderSet<NODES> {
     /// Number of active members in the candidate set.
     #[inline]
     pub fn size(&self) -> usize {
-        (self.member_count as usize).min(N)
+        (self.member_count as usize).min(NODES)
     }
 
     /// Capacity of the set.
     #[inline]
     pub fn capacity(&self) -> usize {
-        N
+        NODES
     }
 
     /// Whether the set is full.
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.size() == N
+        self.size() == NODES
     }
 
     /// Checks if the given NodeId is present in the candidate set.
@@ -145,7 +145,7 @@ impl<const N: usize> LeaderSet<N> {
         }
 
         let count = self.size();
-        if count >= N {
+        if count >= NODES {
             return Err(CandidateSetError::Full);
         }
 
@@ -229,6 +229,12 @@ impl<const N: usize> LeaderSet<N> {
         Ok((removed_member, removed_stake))
     }
 
+    /// Returns an iterator over the committee members.
+    pub fn iter_members(&self) -> impl Iterator<Item = &CommitteeMember> {
+        let count = self.size();
+        self.members[..count].iter()
+    }
+
     /// Returns the IDs of the nodes in the set.
     pub fn candidate_ids(&self) -> Vec<NodeId> {
         let count = self.size();
@@ -260,32 +266,32 @@ impl<const N: usize> LeaderSet<N> {
 /// back the next epoch will likely get the same set of seat indicies if all stake remains equal).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AppointedSet<const N: usize, const M: usize> {
+pub struct AppointedSet<const NODES: usize, const SEATS: usize> {
     pub member_count: u64,
-    pub members: [CommitteeMember; N],
-    pub seats: [RelativeNodeId; M], // (seat_index -> member_index)
+    pub members: [CommitteeMember; NODES],
+    pub seats: [RelativeNodeId; SEATS], // (seat_index -> member_index)
 }
 
-unsafe impl<const N: usize, const M: usize> Zeroable for AppointedSet<N, M> {}
-unsafe impl<const N: usize, const M: usize> Pod for AppointedSet<N, M> {}
+unsafe impl<const NODES: usize, const SEATS: usize> Zeroable for AppointedSet<NODES, SEATS> {}
+unsafe impl<const NODES: usize, const SEATS: usize> Pod for AppointedSet<NODES, SEATS> {}
 
-impl<const N: usize, const M: usize> AppointedSet<N, M> {
+impl<const NODES: usize, const SEATS: usize> AppointedSet<NODES, SEATS> {
 
     /// Creates a new, empty AppointedSet.
     pub fn new() -> Self {
-        debug_assert!(N <= u8::MAX as usize);
+        debug_assert!(NODES <= u8::MAX as usize);
 
         Self {
             member_count: 0,
-            members: [CommitteeMember::zeroed(); N],
-            seats: [0; M],
+            members: [CommitteeMember::zeroed(); NODES],
+            seats: [0; SEATS],
         }
     }
 
     /// Returns the size of the appointed committee (number of active members).
     #[inline]
     pub fn size(&self) -> usize {
-        (self.member_count as usize).min(N)
+        (self.member_count as usize).min(NODES)
     }
 
     /// Checks if a node with the given NodeId is part of the committee.
@@ -367,7 +373,48 @@ impl<const N: usize, const M: usize> AppointedSet<N, M> {
             Vec::new()
         }
     }
+
+    /// Returns an iterator over the committee members.
+    pub fn iter_members(&self) -> impl Iterator<Item = &CommitteeMember> {
+        let count = self.size();
+        self.members[..count].iter()
+    }
 }
+
+
+/// Combine members from the current committee and the next leader set into a single Vec.
+pub fn get_unique_members<'a, const NODES: usize, const SEATS: usize>(
+    current: &'a AppointedSet<NODES, SEATS>,
+    next: &'a LeaderSet<NODES>,
+) -> Vec<&'a CommitteeMember> {
+    let mut unique = Vec::new();
+
+    // First add all members from the current committee to the unique array
+    for member in current.iter_members() {
+        unique.push(member);
+    }
+
+    // Then add members from the leader set
+    for index in 0..next.size() {
+        let member = &next.members[index];
+
+        // Check if this member was already in the array
+        let previous = unique
+            .iter()
+            .position(|&m| m.id == member.id);
+
+        // If yes, use the latest CommitteeMember
+        // (in case the BlsPubkey changed)
+        if let Some(index) = previous {
+            unique[index] = member; 
+        } else {
+            unique.push(member);
+        }
+    }
+
+    unique
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -28,27 +28,110 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let mut previous_committee = previous_committee_info
         .is_writable()?
         .is_previous_committee()?
-        .as_account::<Committee>(&tape_api::ID)?;
+        .as_account_mut::<Committee>(&tape_api::ID)?;
 
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
 
+
+    // Rotate committees
+
     solana_program::log::sol_log_compute_units();
     let stake_weights = &epoch.leaders.stakes;
-    let seat_assignments = allocate_seats(stake_weights, 1000);
+    let seat_allocations = allocate_seats(stake_weights, 1000);
     solana_program::log::sol_log_compute_units();
 
-    let mut fixed_assignments : [u16; 256] = [0u16; 256];
-    for i in 0..256 {
-        fixed_assignments[i] = seat_assignments.get(i).cloned().unwrap_or(0);
-    }
+    // 1. Create a set of at most 256 NodeIds from the current committee and the leader set. The
+    //    NodeIds can be found in epoch.leaders.members[0..128].id and
+    //    committee.inner.members[0..128].id.
+    // 2. Create a mapping of NodeIds to u8 values (there are only 128 possible NodeIds in
+    //    committee and 128 possible NodeIds in leader set, so at most 256 unique NodeIds). Lets
+    //    call these relative node ids. There is a type called RelativeNodeId that aliases u8. It
+    //    is important that the first set of NodeIds is from committee exactly in the order they
+    //    appear in committee.inner.members, and the second set of NodeIds is from epoch.leaders
+    //    but merged against the first set (i.e. if a NodeId is already in the first set, it is not 
+    //    added again).
+    // 3. The output should be a fixed-size array: 
+    //    [NodeId; 256] mapping from array index to NodeId
+
+    //let mut current_seats = [0u8; 1000];
+    //let mut seat_index = 0;
+    //for index in 0..committee.inner.size() {
+    //    let seats = committee.inner.seats[index];
+    //    for _ in 0..seats {
+    //        current_seats[seat_index] = index as u8;
+    //        seat_index += 1;
+    //    }
+    //}
+    //assert!(current_seats.len() <= 1000, "Too many seats in current committee");
+    //
+    
+    //let unique_set = get_unique_members(
+    //    &committee.inner, 
+    //    &epoch.leaders
+    //);
+
+    // node_mappings: [CommitteeMember; 256] - mapping from array index to CommitteeMember (in either the current committee or the leader set)
+    // seat_counts: [u16; 256]               - mapping from array index to number of seats assigned in the new committee
+    let (node_mappings, seat_counts) = {
+
+        let mut mappings = Vec::new();
+        let mut assignments = [0u16; 256];
+
+        // First add all members from the current committee to the mappings array
+        for member in committee.inner.iter_members() {
+            mappings.push(member);
+        }
+
+        // Then add members from the leader set, skipping any that are already in the mappings array.
+        for index in 0..epoch.leaders.size() {
+            let member = &epoch.leaders.members[index];
+            let seats = seat_allocations[index];
+
+            // Check if this member is already in the mappings array
+            let previous = mappings
+                .iter()
+                .position(|&m| m.id == member.id);
+
+            // If it is already in the mappings array, update its seat assignment. 
+            if let Some(index) = previous {
+                assignments[index] = seats;
+
+                // Update to the latest CommitteeMember 
+                // (in case the BlsPubkey changed)
+                mappings[index] = member; 
+
+            // Otherwise, add it to the end of the mappings array and set its seat assignment.
+            } else {
+                assignments[mappings.len()] = seats;
+                mappings.push(member);
+            }
+        }
+
+        (mappings, assignments)
+    };
 
     solana_program::log::sol_log_compute_units();
-    let _res = move_seats2(
-        &[0; 1000], 
-        &fixed_assignments
+    let new_seats = move_seats2(
+        //&current_seats, 
+        &committee.inner.seats,
+        &seat_counts,
     );
     solana_program::log::sol_log_compute_units();
+
+    //solana_program::msg!("Node mappings: {:?}", node_mappings);
+    //solana_program::msg!("Res: {:?}", new_seats);
+
+    previous_committee.inner = committee.inner;
+
+    //for seat in 0..new_seats.len() {
+    //    let member_index = new_seats[seat] as usize;
+    //    let member = node_mappings.get(member_index)
+    //        .ok_or(ProgramError::InvalidAccountData)?;
+    //
+    //    committee.inner.members[seat] = *member;
+    //    committee.inner.seats[seat] = seat_counts[member_index];
+    //}
 
 
 

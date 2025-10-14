@@ -94,8 +94,8 @@ pub fn map_seat_indices(assigned_number: &BTreeMap<NodeId, u16>) -> Vec<NodeId> 
 
 
 pub fn move_seats2<const SEATS: usize, const NODES: usize>(
-    current_seats: &[u8; SEATS],   // seat_index -> node_idx
-    target_counts: &[u16; NODES],   // node_idx -> desired seat count
+    current_seats: &[u8; SEATS],   // &[u8; 1000], seat_index -> node_idx
+    target_counts: &[u16; NODES],  // &[u16; 256], node_idx -> desired seat count
 ) -> [u8; SEATS] {
     debug_assert!(NODES <= 256, "NODES must be <= 256 for u8 node indices");
 
@@ -142,6 +142,39 @@ pub fn move_seats2<const SEATS: usize, const NODES: usize>(
 
     debug_assert!(to_move.is_empty(), "Unassigned seats remain after reassignment");
     result
+}
+
+/// Combine members from the current committee and the next leader set into a single Vec.
+pub fn merge_members(
+    current: &AppointedSet,
+    next: &LeaderSet
+) -> Vec<CommitteeMember> {
+    let mut mappings = Vec::new();
+
+    // First add all members from the current committee to the mappings array
+    for member in committee.inner.iter_members() {
+        mappings.push(member);
+    }
+
+    // Then add members from the leader set
+    for index in 0..epoch.leaders.size() {
+        let member = &epoch.leaders.members[index];
+
+        // Check if this member was already in the array
+        let previous = mappings
+            .iter()
+            .position(|&m| m.id == member.id);
+
+        // If yes, use the latest CommitteeMember
+        // (in case the BlsPubkey changed)
+        if let Some(index) = previous {
+            mappings[index] = member; 
+        } else {
+            mappings.push(member);
+        }
+    }
+
+    mappings
 }
 
 
