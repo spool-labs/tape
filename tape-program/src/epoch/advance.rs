@@ -42,87 +42,6 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     solana_program::msg!("1");
     solana_program::log::sol_log_compute_units();
 
-    /*
-    // 0) Save previous committee before mutating
-    previous_committee.inner = committee.inner;
-
-    // 1) Seat allocation for leaders (use full stakes, no slicing)
-    let seats_total = committee.inner.seats.len();
-    let leader_len = epoch.leaders.member_count as usize;
-    solana_program::msg!("leader_len: {}", leader_len);
-    solana_program::msg!("seats_len: {}", seats_total);
-    //solana_program::msg!("seats: {:?}", epoch.leaders.stakes);
-
-    let seat_count_per_leader = allocate_seats(&epoch.leaders.stakes[..leader_len], seats_total as u16);
-    solana_program::msg!("seats: {:?}", seat_count_per_leader);
-
-    solana_program::msg!("seat_count_per_leader: {:?}", seat_count_per_leader);
-
-    solana_program::msg!("2");
-    solana_program::log::sol_log_compute_units();
-    // 2) Build unique_set (current committee first) and per-unique seat counts
-    let cur_len = committee.inner.size();
-
-    let mut unique_set: Vec<&CommitteeMember> = Vec::with_capacity(cur_len + leader_len);
-    let mut seat_counts: [u16; 256] = [0; 256];
-
-    solana_program::msg!("3");
-    solana_program::log::sol_log_compute_units();
-    // Current committee members first: keeps indices aligned with current_seats
-    for m in committee.inner.iter_members() {
-        unique_set.push(m);
-    }
-
-    solana_program::msg!("4");
-    solana_program::log::sol_log_compute_units();
-    // Add/refresh leaders; set desired seat counts in unique_set index-space
-    for li in 0..leader_len {
-        let m = &epoch.leaders.members[li];
-        let seats = seat_count_per_leader[li];
-
-        if let Some(ui) = unique_set.iter().position(|&x| x.id == m.id) {
-            seat_counts[ui] = seats;
-            unique_set[ui] = m; // refresh pubkey, etc.
-        } else {
-            // Append new leader
-            let ui = unique_set.len();
-            debug_assert!(ui < 256, "union cannot exceed 256 entries");
-            seat_counts[ui] = seats;
-            unique_set.push(m);
-        }
-    }
-
-    solana_program::msg!("5");
-    solana_program::log::sol_log_compute_units();
-    // 3) Reassign seats with minimal churn
-    let new_seats_unique_idx = move_seats2(&committee.inner.seats, &seat_counts);
-
-    solana_program::msg!("6");
-    solana_program::log::sol_log_compute_units();
-    // 4) Map unique_set index -> leaders index using a tiny fixed map
-    let mut unique_to_leader: [u8; 256] = [u8::MAX; 256];
-    for li in 0..leader_len {
-        let id = epoch.leaders.members[li].id;
-        if let Some(ui) = unique_set.iter().position(|&x| x.id == id) {
-            unique_to_leader[ui] = li as u8;
-        }
-    }
-
-    // Rewrite seats in place: unique_idx -> leader_idx
-    for s in 0..committee.inner.seats.len() {
-        let ui = new_seats_unique_idx[s] as usize;
-        let li = unique_to_leader[ui];
-        debug_assert!(li != u8::MAX, "Seat mapped to non-leader; check seat_counts");
-        committee.inner.seats[s] = li;
-    }
-
-
-    // 5) Commit leaders as the new committee (no local clones)
-    committee.inner.members = epoch.leaders.members;
-    committee.inner.member_count = epoch.leaders.member_count;
-    */
-
-
     // Save previous committee
     previous_committee.inner = committee.inner;
 
@@ -138,18 +57,19 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let lead_counts = &counts[..leader_count];
 
     // Minimal-churn reassignment
-    let new_seats = shift_seats::<1000, 256>(
+    let new_seats = reassign_seats(
         &committee.inner.seats,
         cur_members,
         lead_members,
         lead_counts,
-    );
+    )
+        .try_into()
+        .map_err(|_| TapeError::UnexpectedState)?;
 
     // Install new seats and leaders
     committee.inner.seats = new_seats;
     committee.inner.members = epoch.leaders.members;
     committee.inner.member_count = epoch.leaders.member_count;
-
 
     solana_program::msg!("after: \n{}", committee.inner);
     solana_program::msg!("seats: {:?}", committee.inner.seats);
