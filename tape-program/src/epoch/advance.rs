@@ -30,8 +30,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_previous_committee()?
         .as_account_mut::<Committee>(&tape_api::ID)?;
 
-    solana_program::msg!("before: \n{}", committee.inner);
-    solana_program::msg!("seats: {:?}", committee.inner.seats);
+    //solana_program::msg!("before: \n{}", committee.inner);
+    //solana_program::msg!("seats: {:?}", committee.inner.seats);
 
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
@@ -71,8 +71,35 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     committee.inner.members = epoch.leaders.members;
     committee.inner.member_count = epoch.leaders.member_count;
 
-    solana_program::msg!("after: \n{}", committee.inner);
-    solana_program::msg!("seats: {:?}", committee.inner.seats);
+    //solana_program::msg!("after: \n{}", committee.inner);
+    //solana_program::msg!("seats: {:?}", committee.inner.seats);
+
+    // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
+    // - Syncing: nodes move recovery symbols based on seat assignments for the new committee
+    // - Active: old committee stops serving reads for the previous epoch, new committee starts
+    // serving reads for the current epoch. Rewards are distributed to the old committee. Voting
+    // may start for features to be activated in E+2.
+    // - NextEpoch: called once the epoch duration has elapsed (epoch duration starts at the Active
+    // transition, not Syncing).
+    
+    // LeaderSet -> Next Committee
+    // - Update seat assignments
+
+    // Update future accounting
+    // - pop a value off the ring buffer (storage and rewards)
+
+    // Update archive
+    // - Set total_capacity_size = max(next_capacity_size, used_capacity_size)
+    // - Set storage_price_per_unit from features
+
+    // Distribute rewards (during "Syncing" -> "Active" transition)
+    // - Let total_rewards = old_epoch_balance
+    // - For each node in old_epoch_leaders:
+    //    - weight = seats(from previous committee)
+    //    - stored = old_epoch_used_capacity - node.blacklist_size
+    //    - node.score = weight * stored
+    // - Split total epoch rewards proportionally to node scores
+    // - Leftover rounding remainder is carried into the next epoch
 
     Ok(())
 }
