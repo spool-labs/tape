@@ -62,7 +62,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         cur_members,
         lead_members,
         lead_counts,
-    )
+    )   
+        .map_err(|_| TapeError::UnexpectedState)?
         .try_into()
         .map_err(|_| TapeError::UnexpectedState)?;
 

@@ -6,6 +6,18 @@ pub type SeatCount = u16;
 pub type Member = NodeId;
 
 const REMOVED: u8 = u8::MAX;
+const MEMBER_LIMIT: usize = u8::MAX as usize;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatAssignmentError {
+    CountMismatch,
+    MemberLimit,
+    TotalMismatch,
+    BalanceMismatch,
+    InsufficientFree,
+    BadIndex,
+    NotNext,
+}
 
 /// Reassign seats from current members to next members with minimal disruption.
 pub fn reassign_seats(
@@ -13,35 +25,45 @@ pub fn reassign_seats(
     current_members: &[Member],
     next_members: &[Member],
     next_seat_counts: &[SeatCount],
-) -> Vec<SeatMapping> {
-
-    debug_assert!(next_members.len() == next_seat_counts.len());
-    debug_assert!(current_members.len() <= u8::MAX as usize);
+) -> Result<Vec<SeatMapping>, SeatAssignmentError> {
+    if current_members.len() >= MEMBER_LIMIT {
+        return Err(SeatAssignmentError::MemberLimit);
+    }
 
     // Merge current and next members into a unique set, and adjust the next_seat_counts to be
     // relative to that unique set.
-
-    let (unique_set, target_counts) =
+    let (unique_set, target_counts) = 
         get_union_set(
             current_members, 
             next_members, 
             next_seat_counts
-        );
+        )?;
 
-    // Retain or free current seats based on target counts in the unique set.
-    let (free, remaining) = 
-        free_seats(
-            current_seats, 
-            &target_counts
-        );
+    // Verify total required seats equals number of current seats
+    let total_required: usize = target_counts
+        .iter()
+        .map(|&x| x as usize)
+        .sum();
 
-    debug_assert!(
-        free.len() == remaining.iter().map(|&x| x as usize).sum::<usize>(),
-        "Mismatch between freed seats and required counts"
-    );
+    if total_required != current_seats.len() {
+        return Err(SeatAssignmentError::TotalMismatch);
+    }
+
+    // Free current seats based on target counts in the unique set.
+    let (free, remaining) = free_seats(current_seats, &target_counts);
+
+    // Ensure freed seats exactly match the remaining demand
+    let needed: usize = remaining
+        .iter()
+        .map(|&x| x as usize)
+        .sum();
+
+    if free.len() != needed {
+        return Err(SeatAssignmentError::BalanceMismatch);
+    }
 
     // Assign free seats to members still needing seats
-    let result = assign_seats(current_seats, &free, &remaining);
+    let result = assign_seats(current_seats, &free, &remaining)?;
 
     // Remap seats into the the right index space
     remap_index_space(&result, &unique_set)
@@ -53,7 +75,11 @@ fn get_union_set(
     current_members: &[Member],
     next_members: &[Member],
     next_seat_counts: &[SeatCount],
-) -> (Vec<SeatMapping>, Vec<SeatCount>) {
+) -> Result<(Vec<SeatMapping>, Vec<SeatCount>), SeatAssignmentError> {
+
+    if next_members.len() != next_seat_counts.len() {
+        return Err(SeatAssignmentError::CountMismatch);
+    }
 
     let mut members = vec![REMOVED; current_members.len()];
     let mut seats = vec![0; current_members.len()];
@@ -73,9 +99,11 @@ fn get_union_set(
         seats[unique_index] = next_seat_counts[next_index];
     }
 
-    debug_assert!(members.len() <= 256, "unique member count exceeds 256");
+    if members.len() >= MEMBER_LIMIT {
+        return Err(SeatAssignmentError::MemberLimit);
+    }
 
-    (members, seats)
+    Ok((members, seats))
 }
 
 /// Free seats that are no longer needed, and decrement remaining demand for retained seats.
@@ -84,7 +112,6 @@ fn free_seats(
     seats: &[SeatMapping],
     required_counts: &[SeatCount],
 ) -> (Vec<SeatIndex>, Vec<SeatCount>) {
-
     let mut freed = Vec::new();
     let mut remaining = required_counts.to_vec();
 
@@ -110,58 +137,56 @@ fn assign_seats(
     current_seats: &[SeatMapping],
     free_seats: &[SeatIndex],
     required_counts: &[SeatCount],
-) -> Vec<SeatMapping> {
+) -> Result<Vec<SeatMapping>, SeatAssignmentError> {
 
     let mut result = current_seats.to_vec();
     let mut free_seats = free_seats.to_vec();
 
-    let total: usize = required_counts
-        .iter()
-        .map(|&x| x as usize)
-        .sum();
+    let total: usize = required_counts.iter().map(|&x| x as usize).sum();
 
-    debug_assert!(
-        total <= free_seats.len(),
-        "Not enough freed seats to reassign"
-    );
+    if total > free_seats.len() {
+        return Err(SeatAssignmentError::InsufficientFree);
+    }
 
     // For each member with unallocated seats, assign from freed seats.
     for member_index in 0..required_counts.len() {
-
         // Number of seats still needed for this member.
         let count = required_counts[member_index] as usize;
         for _ in 0..count {
-
-            // Pop a freed seat and assign it to this member.
             let seat_index = free_seats
                 .pop()
-                .expect("Not enough freed seats to reassign") as usize;
+                .expect("logic error: validated above that freed seats are sufficient") as usize;
 
             result[seat_index] = member_index as u8;
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Remap from union set indices to next member indices.
 fn remap_index_space(
     seat_map: &[SeatMapping],
     union_set: &[SeatMapping],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, SeatAssignmentError> {
     let seat_count = seat_map.len();
     let mut result = Vec::with_capacity(seat_count);
 
     for seat_index in 0..seat_count {
         let union_index = seat_map[seat_index] as usize;
+        if union_index >= union_set.len() {
+            return Err(SeatAssignmentError::BadIndex);
+        }
         let next_index = union_set[union_index];
 
-        debug_assert!(next_index != u8::MAX, "seat mapped to non-next member");
+        if next_index == u8::MAX {
+            return Err(SeatAssignmentError::NotNext);
+        }
 
         result.push(next_index);
     }
 
-    result
+    Ok(result)
 }
 
 /// Linear search of member id in current member list.
@@ -178,11 +203,7 @@ fn find_member(members: &[NodeId], id: NodeId) -> Option<usize> {
 pub fn to_seat_map(
     seat_counts: &[SeatCount],
 ) -> Vec<SeatMapping> {
-
-    let total: usize = seat_counts
-        .iter()
-        .map(|&c| c as usize)
-        .sum();
+    let total: usize = seat_counts.iter().map(|&c| c as usize).sum();
 
     let mut result = vec![0u8; total];
     let mut pos = 0usize;
@@ -267,7 +288,7 @@ mod tests {
         let next = members([3, 4, 5]);
         let counts = vec![3, 2, 5];
 
-        let (members, seats) = get_union_set(&current, &next, &counts);
+        let (members, seats) = get_union_set(&current, &next, &counts).unwrap();
 
         assert_eq!(members, [REMOVED, 0, REMOVED, 1, 2]);
         assert_eq!(seats, [0, 3, 0, 2, 5]);
@@ -278,7 +299,7 @@ mod tests {
         let current = members([1, 2, 3]);
         let next = members([1, 2, 3]);
         let counts = vec![3, 2, 5];
-        let (members, seats) = get_union_set(&current, &next, &counts);
+        let (members, seats) = get_union_set(&current, &next, &counts).unwrap();
         assert_eq!(members, [0, 1, 2]);
         assert_eq!(seats, [3, 2, 5]);
     }
@@ -288,7 +309,7 @@ mod tests {
         let current = members([1, 2, 3]);
         let next = members([4, 5, 6]);
         let counts = vec![3, 2, 5];
-        let (members, seats) = get_union_set(&current, &next, &counts);
+        let (members, seats) = get_union_set(&current, &next, &counts).unwrap();
         assert_eq!(members, [REMOVED, REMOVED, REMOVED, 0, 1, 2]);
         assert_eq!(seats, [0, 0, 0, 3, 2, 5]);
     }
@@ -298,7 +319,7 @@ mod tests {
         let current = members([1, 2, 3, 4, 5]);
         let next = members([5, 4, 3, 2, 1]);
         let counts = vec![1, 1, 1, 1, 1];
-        let (members, seats) = get_union_set(&current, &next, &counts);
+        let (members, seats) = get_union_set(&current, &next, &counts).unwrap();
         assert_eq!(members, [4, 3, 2, 1, 0]);
         assert_eq!(seats, [1, 1, 1, 1, 1]);
     }
@@ -363,7 +384,7 @@ mod tests {
         let free = vec![2, 3, 4];
         let required = vec![1, 1, 1];
 
-        let out = assign_seats(&current, &free, &required);
+        let out = assign_seats(&current, &free, &required).unwrap();
         assert_eq!(out, vec![0, 0, 2, 1, 0, 2]);
     }
 
@@ -373,7 +394,7 @@ mod tests {
         let free = vec![0, 1, 2, 3, 4, 5]; // all seats freed
         let required = vec![2, 2, 2];
 
-        let out = assign_seats(&current, &free, &required);
+        let out = assign_seats(&current, &free, &required).unwrap();
         assert_eq!(out, vec![2, 2, 1, 1, 0, 0]);
     }
 
@@ -383,7 +404,7 @@ mod tests {
         let free = vec![3, 4, 5];
         let required = vec![1, 1, 0, 0, 0, 0];
 
-        let out = assign_seats(&current, &free, &required);
+        let out = assign_seats(&current, &free, &required).unwrap();
         assert_eq!(out, vec![0, 1, 2, 3, 1, 0]);
     }
 
@@ -396,7 +417,7 @@ mod tests {
         // Start with all seats owned by the single current member
         let seats = to_seat_map(&counts);
 
-        let out = reassign_seats(&seats, &current, &next, &counts);
+        let out = reassign_seats(&seats, &current, &next, &counts).unwrap();
         let node_seats = out_to_nodes(&out, &next);
 
         assert_eq!(total_count(&node_seats), 10);
@@ -421,7 +442,7 @@ mod tests {
         let current = next.clone();
         let seats = vec![0u8; SEATS];
 
-        let out = reassign_seats(&seats, &current, &next, &counts);
+        let out = reassign_seats(&seats, &current, &next, &counts).unwrap();
         let node_seats = out_to_nodes(&out, &next);
 
         let v: Vec<u16> = [NodeId(1), NodeId(2), NodeId(3)]
@@ -448,7 +469,7 @@ mod tests {
         let current = next.clone();
         let seats = vec![0u8; SEATS];
 
-        let out = reassign_seats(&seats, &current, &next, &counts);
+        let out = reassign_seats(&seats, &current, &next, &counts).unwrap();
         let node_seats = out_to_nodes(&out, &next);
 
         assert_eq!(seat_count(&node_seats, NodeId(1)), 2);
@@ -472,7 +493,7 @@ mod tests {
         let current = next.clone();
         let seats = vec![0u8; SEATS];
 
-        let out = reassign_seats(&seats, &current, &next, &counts);
+        let out = reassign_seats(&seats, &current, &next, &counts).unwrap();
         let node_seats = out_to_nodes(&out, &next);
 
         assert_eq!(seat_count(&node_seats, NodeId(1)), 6);
@@ -482,7 +503,6 @@ mod tests {
 
     #[test]
     fn test_reassign() {
-
         let n0 = NodeId(0);
         let n1 = NodeId(1);
         let n2 = NodeId(2);
@@ -498,7 +518,7 @@ mod tests {
         let next = vec![n3, n2];
         let counts = vec![4, 4];
 
-        let out = reassign_seats(&seats, &current, &next, &counts);
+        let out = reassign_seats(&seats, &current, &next, &counts).unwrap();
         let node_seats = out_to_nodes(&out, &next);
 
         let s3 = seat_list(&node_seats, n3);
@@ -528,7 +548,7 @@ mod tests {
         let seats1 = to_seat_map(&counts1);
 
         // Shift to itself (no-op, but validates path)
-        let out1 = reassign_seats(&seats1, &leaders1, &leaders1, &counts1);
+        let out1 = reassign_seats(&seats1, &leaders1, &leaders1, &counts1).unwrap();
         assert_eq!(out1.len(), SEATS);
 
         // Updated stakes: only nodes 2 and 3 remain
@@ -541,7 +561,7 @@ mod tests {
         let counts2 = dhondt_counts_for(&leaders2, &updated_stakes, SEATS as u16);
 
         // Reassign from previous seats/current to new next
-        let out2 = reassign_seats(&out1, &leaders1, &leaders2, &counts2);
+        let out2 = reassign_seats(&out1, &leaders1, &leaders2, &counts2).unwrap();
         let node_seats = out_to_nodes(&out2, &leaders2);
 
         assert_eq!(total_count(&node_seats), SEATS);
@@ -553,7 +573,6 @@ mod tests {
 
     #[test]
     fn test_reassign_chain() {
-
         let n1 = NodeId(1);
         let n2 = NodeId(2);
         let n3 = NodeId(3);
@@ -569,7 +588,7 @@ mod tests {
         let leaders1 = vec![n1, n2, n3];
         let counts1 = vec![4, 3, 3];
 
-        let out1 = reassign_seats(&seats0, &current, &leaders1, &counts1);
+        let out1 = reassign_seats(&seats0, &current, &leaders1, &counts1).unwrap();
         let map1 = out_to_nodes(&out1, &leaders1);
 
         assert_eq!(map1.len(), 10);
@@ -588,7 +607,7 @@ mod tests {
 
         // Note: keeping 'current' as the current_members here matches the original test’s behavior
         // and preserves indices because leaders1 is a prefix of current in the same order.
-        let out2 = reassign_seats(&out1, &current, &leaders2, &counts2);
+        let out2 = reassign_seats(&out1, &current, &leaders2, &counts2).unwrap();
         let map2 = out_to_nodes(&out2, &leaders2);
 
         assert_eq!(seat_list(&map2, n2), s2);
@@ -600,7 +619,7 @@ mod tests {
         let leaders3 = vec![n1];
         let counts3 = vec![10];
 
-        let out3 = reassign_seats(&out2, &current, &leaders3, &counts3);
+        let out3 = reassign_seats(&out2, &current, &leaders3, &counts3).unwrap();
         let map3 = out_to_nodes(&out3, &leaders3);
 
         let s = seat_list(&map3, n1);
@@ -631,7 +650,7 @@ mod tests {
         let seats1 = to_seat_map(&counts1);
 
         // No-op shift to validate base
-        let out1 = reassign_seats(&seats1, &leaders1, &leaders1, &counts1);
+        let out1 = reassign_seats(&seats1, &leaders1, &leaders1, &counts1).unwrap();
         let map1 = out_to_nodes(&out1, &leaders1);
         assert_eq!(total_count(&map1), SEATS);
 
@@ -657,7 +676,7 @@ mod tests {
         let counts2 = dhondt_counts_for(&leaders2, &updated_stakes, SEATS as u16);
 
         // Reassign from previous seats/current to new next
-        let out2 = reassign_seats(&out1, &leaders1, &leaders2, &counts2);
+        let out2 = reassign_seats(&out1, &leaders1, &leaders2, &counts2).unwrap();
         let map2 = out_to_nodes(&out2, &leaders2);
 
         // Verify total seats and correct number of nodes
