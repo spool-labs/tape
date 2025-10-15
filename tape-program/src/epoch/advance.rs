@@ -36,119 +36,89 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Rotate committees
 
-    let stake_weights = &epoch.leaders.stakes;  // sorted in descending order
-    let seat_count_per_leader = allocate_seats(stake_weights, 1000); // seat count per leader
+    solana_program::msg!("1");
+    solana_program::log::sol_log_compute_units();
 
-    // unique_set: [CommitteeMember; 256] - mapping from array index to CommitteeMember (in either the current committee or the leader set)
-    // seat_counts: [u16; 256]            - mapping from array index to number of seats assigned in the new committee
-    let (unique_set, seat_counts) = {
+    // 0) Save previous committee before mutating
+    previous_committee.inner = committee.inner;
 
-        let mut unique_set = Vec::new();
-        let mut seat_count = [0u16; 256];
+    // 1) Seat allocation for leaders (use full stakes, no slicing)
+    let seats_total = committee.inner.seats.len();
+    let leader_len = epoch.leaders.member_count as usize;
+    solana_program::msg!("leader_len: {}", leader_len);
+    solana_program::msg!("seats_len: {}", seats_total);
+    //solana_program::msg!("seats: {:?}", epoch.leaders.stakes);
 
-        // First add all members from the current committee to the unique_set array
-        for member in committee.inner.iter_members() {
-            unique_set.push(member);
-        }
+    let seat_count_per_leader = allocate_seats(&epoch.leaders.stakes[..leader_len], seats_total as u16);
 
-        // Then add members from the leader set, skipping any that are already in the unique_set array.
-        for index in 0..epoch.leaders.size() {
-            let member = &epoch.leaders.members[index];
-            let seats = seat_count_per_leader[index]; 
+    solana_program::msg!("seat_count_per_leader: {:?}", seat_count_per_leader);
 
-            // Check if this member is already in the unique_set array
-            let previous = unique_set
-                .iter()
-                .position(|&m| m.id == member.id);
+    solana_program::msg!("2");
+    solana_program::log::sol_log_compute_units();
+    // 2) Build unique_set (current committee first) and per-unique seat counts
+    let cur_len = committee.inner.size();
 
-            // If it is already in the unique_set array, update its seat assignment. 
-            if let Some(index) = previous {
-                seat_count[index] = seats;
+    let mut unique_set: Vec<&CommitteeMember> = Vec::with_capacity(cur_len + leader_len);
+    let mut seat_counts: [u16; 256] = [0; 256];
 
-                // Update to the latest CommitteeMember 
-                // (in case the BlsPubkey changed)
-                unique_set[index] = member; 
-
-            // Otherwise, add it to the end of the unique_set array and set its seat assignment.
-            } else {
-                seat_count[unique_set.len()] = seats;
-                unique_set.push(member);
-            }
-        }
-
-        (
-            unique_set, // across both current committee and leader set
-            seat_count  // across both current committee and leader set but only for those staying in the new committee
-        )
-    };
-
-    let previous_seats = committee.inner.seats;
-    let new_seats = move_seats2(
-        &previous_seats, // index to node in unique_set (which contains the current committee
-                         // members as the first entries) 
-        &seat_counts,    // count per node, index is to a node in unique_set 
-    );
-
-    // New seats is a list of indexes into *unique_set*, where each index represents a seat in the
-    // new committee.
-
-
-    {
-        let count = epoch.leaders.member_count;
-        let members = epoch.leaders.members.clone();
-        let mut seats = [0u8; 1000];
-        // let members = &committee.inner.members;
-        // let mut seats = &mut committee.inner.seats;
-
-        // map seats from unique_set indexes to epoch.leaders indexes
-
-        for seat_index in 0..new_seats.len() {
-            let union_index = new_seats[seat_index];
-            let member = unique_set[union_index as usize];
-
-            for member_index in 0..count {
-                if member.id == members[member_index as usize].id {
-                    seats[seat_index] = member_index as u8;
-                }
-            }
-        }
-
-        // Stack errors...
-        committee.inner.seats = seats;
-        committee.inner.member_count = count;
-        committee.inner.members = members;
+    solana_program::msg!("3");
+    solana_program::log::sol_log_compute_units();
+    // Current committee members first: keeps indices aligned with current_seats
+    for m in committee.inner.iter_members() {
+        unique_set.push(m);
     }
 
-    previous_committee.inner = committee.inner.clone();
+    solana_program::msg!("4");
+    solana_program::log::sol_log_compute_units();
+    // Add/refresh leaders; set desired seat counts in unique_set index-space
+    for li in 0..leader_len {
+        let m = &epoch.leaders.members[li];
+        let seats = seat_count_per_leader[li];
 
+        if let Some(ui) = unique_set.iter().position(|&x| x.id == m.id) {
+            seat_counts[ui] = seats;
+            unique_set[ui] = m; // refresh pubkey, etc.
+        } else {
+            // Append new leader
+            let ui = unique_set.len();
+            debug_assert!(ui < 256, "union cannot exceed 256 entries");
+            seat_counts[ui] = seats;
+            unique_set.push(m);
+        }
+    }
 
+    solana_program::msg!("5");
+    solana_program::log::sol_log_compute_units();
+    // 3) Reassign seats with minimal churn
+    let new_seats_unique_idx = move_seats2(&committee.inner.seats, &seat_counts);
 
-    // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
-    // - Syncing: nodes move recovery symbols based on seat assignments for the new committee
-    // - Active: old committee stops serving reads for the previous epoch, new committee starts
-    // serving reads for the current epoch. Rewards are distributed to the old committee. Voting
-    // may start for features to be activated in E+2.
-    // - NextEpoch: called once the epoch duration has elapsed (epoch duration starts at the Active
-    // transition, not Syncing).
-    
-    // LeaderSet -> Next Committee
-    // - Update seat assignments
+    solana_program::msg!("6");
+    solana_program::log::sol_log_compute_units();
+    // 4) Map unique_set index -> leaders index using a tiny fixed map
+    let mut unique_to_leader: [u8; 256] = [u8::MAX; 256];
+    for li in 0..leader_len {
+        let id = epoch.leaders.members[li].id;
+        if let Some(ui) = unique_set.iter().position(|&x| x.id == id) {
+            unique_to_leader[ui] = li as u8;
+        }
+    }
 
-    // Update future accounting
-    // - pop a value off the ring buffer (storage and rewards)
+    // Rewrite seats in place: unique_idx -> leader_idx
+    for s in 0..committee.inner.seats.len() {
+        let ui = new_seats_unique_idx[s] as usize;
+        let li = unique_to_leader[ui];
+        debug_assert!(li != u8::MAX, "Seat mapped to non-leader; check seat_counts");
+        committee.inner.seats[s] = li;
+    }
 
-    // Update archive
-    // - Set total_capacity_size = max(next_capacity_size, used_capacity_size)
-    // - Set storage_price_per_unit from features
+    solana_program::msg!("before: \n{}", committee.inner);
 
-    // Distribute rewards (during "Syncing" -> "Active" transition)
-    // - Let total_rewards = old_epoch_balance
-    // - For each node in old_epoch_leaders:
-    //    - weight = seats(from previous committee)
-    //    - stored = old_epoch_used_capacity - node.blacklist_size
-    //    - node.score = weight * stored
-    // - Split total epoch rewards proportionally to node scores
-    // - Leftover rounding remainder is carried into the next epoch
+    // 5) Commit leaders as the new committee (no local clones)
+    committee.inner.members = epoch.leaders.members;
+    committee.inner.member_count = epoch.leaders.member_count;
+
+    solana_program::msg!("after: \n{}", committee.inner);
+    solana_program::msg!("seats: {:?}", committee.inner.seats);
 
     Ok(())
 }
@@ -171,32 +141,55 @@ mod tests {
 
         // Setup existing accounts
 
+        // Current committee members
+        let mut c = AppointedSet::zeroed();
+        c.member_count = 3;
+        c.members[0] = CommitteeMember { id: NodeId::new(1), key: BlsPubkey::zeroed(), };
+        c.members[1] = CommitteeMember { id: NodeId::new(2), key: BlsPubkey::zeroed(), };
+        c.members[1] = CommitteeMember { id: NodeId::new(3), key: BlsPubkey::zeroed(), };
+        c.seats[0..10].copy_from_slice(&[0;10]);
+        c.seats[10..15].copy_from_slice(&[1;5]);
+        c.seats[15..18].copy_from_slice(&[2;3]);
+
+        // New leaders (some overlap with current committee)
+        let mut l = LeaderSet::zeroed();
+        l.member_count = 4;
+        l.members[0] = CommitteeMember { id: NodeId::new(1), key: BlsPubkey::zeroed(), };
+        l.members[1] = CommitteeMember { id: NodeId::new(3), key: BlsPubkey::zeroed(), };
+        l.members[2] = CommitteeMember { id: NodeId::new(4), key: BlsPubkey::zeroed(), };
+        l.members[3] = CommitteeMember { id: NodeId::new(5), key: BlsPubkey::zeroed(), };
+        l.stakes[0..4].copy_from_slice(&[TAPE(900), TAPE(300), TAPE(200), TAPE(100)]);
+
         let mut epoch = Epoch {
             id: EpochNumber(42),
             state: EpochState::zeroed(),
-            leaders: LeaderSet::zeroed(),
+            leaders: l,
             last_epoch_ms: 0,
+            // leaders: LeaderSet {
+            //     member_count: 5,
+            //     members: (0..COMMITTEE_SIZE as u64)
+            //         .map(|i| CommitteeMember {
+            //             id: NodeId::new(i + 1),
+            //             key: BlsPubkey::zeroed(),
+            //         })
+            //         .collect::<Vec<_>>()
+            //         .try_into()
+            //         .unwrap(),
+            //     stakes: (0..COMMITTEE_SIZE as u64)
+            //         .map(|i| TAPE(1280 - i*10))
+            //         .collect::<Vec<_>>()
+            //         .try_into()
+            //         .unwrap()
+            // },
         };
 
-        epoch.leaders = LeaderSet {
-            member_count: COMMITTEE_SIZE as u64,
-            //members: [CommitteeMember::zeroed(); COMMITTEE_SIZE],
-            members: (0..COMMITTEE_SIZE as u64)
-                .map(|i| CommitteeMember {
-                    id: NodeId::new(i + 1),
-                    key: BlsPubkey::zeroed(),
-                })
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap(),
-            stakes: (0..COMMITTEE_SIZE as u64)
-                .map(|i| TAPE(1280 - i*10))
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap()
-        };
+        // epoch.leaders.stakes[25..].copy_from_slice(&[TAPE(10); COMMITTEE_SIZE - 25]);
+        // epoch.leaders.members[25..].copy_from_slice(&[CommitteeMember {
+        //     id: NodeId::new(1),
+        //     key: BlsPubkey::zeroed(),
+        // }; COMMITTEE_SIZE - 25]);
 
-        println!("stakes: {:?}", epoch.leaders.stakes);
+        //println!("stakes: {:?}", epoch.leaders.stakes);
 
         let previous_committee = Committee {
             id: CommitteeNumber::previous(),
@@ -207,9 +200,8 @@ mod tests {
         let committee = Committee {
             id: CommitteeNumber::current(),
             epoch: EpochNumber(42),
-            inner: AppointedSet::zeroed(),
+            inner: c,
         };
-
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -224,6 +216,33 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
+                // Check::account(&committee_address).data(
+                //     Committee {
+                //         inner: AppointedSet {
+                //             member_count: COMMITTEE_SIZE as u64,
+                //             members: leaders, // new leaders
+                //             seats: committee.inner.seats, // reassigned seats
+                //         },
+                //
+                //         ..committee
+                //     }.pack().as_ref()
+                // ).build(),
+
+                // Check::account(&committee_address).data(
+                //     Committee {
+                //         //...
+                //     }.pack().as_ref()
+                // ).build(),
+                // Check::account(&previous_committee_address).data(
+                //     Committee {
+                //         //...
+                //     }.pack().as_ref()
+                // ).build(),
+                // Check::account(&epoch_address).data(
+                //     Epoch {
+                //         //...
+                //     }.pack().as_ref()
+                // ).build(),
             ]
         );
     }

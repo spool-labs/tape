@@ -1,3 +1,4 @@
+use core::fmt;
 use crate::types::*;
 use crate::bls::*;
 use std::collections::BTreeMap;
@@ -30,7 +31,7 @@ pub struct CommitteeMember {
 /// during an upcoming epoch. Each member has an associated stake, which influences their
 /// likelihood of being assigned seats in the committee.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct LeaderSet<const NODES: usize> {
     pub member_count: u64,
     pub members: [CommitteeMember; NODES],
@@ -304,6 +305,35 @@ impl<const NODES: usize> LeaderSet<NODES> {
     }
 }
 
+impl<const NODES: usize> fmt::Debug for LeaderSet<NODES> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.size();
+        f.debug_struct("LeaderSet")
+            .field("member_count", &count)
+            .field("members", &&self.members[..count])
+            .field("stakes", &&self.stakes[..count])
+            .finish()
+    }
+}
+
+impl<const NODES: usize> fmt::Display for LeaderSet<NODES> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.size();
+        write!(f, "LeaderSet(size={}, members=[", count)?;
+        for i in 0..count {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(
+                f,
+                "{{ id: {:?}, stake: {:?} }}",
+                self.members[i].id, self.stakes[i]
+            )?;
+        }
+        write!(f, "])")
+    }
+}
+
 /// An AppointedSet defines a set of committee members and their assigned seats. The number of
 /// seats assigned depends on the originating LeaderSet stakes. More stake usually means more
 /// seats assigned to that member. The number of seats is finite and is distributed using the
@@ -315,7 +345,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
 /// Seat movement between epochs is minimized to reduce disruption (a pool dropping out and coming
 /// back the next epoch will likely get the same set of seat indicies if all stake remains equal).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct AppointedSet<const NODES: usize, const SEATS: usize> {
     pub member_count: u64,
     pub members: [CommitteeMember; NODES],
@@ -428,6 +458,67 @@ impl<const NODES: usize, const SEATS: usize> AppointedSet<NODES, SEATS> {
     pub fn iter_members(&self) -> impl Iterator<Item = &CommitteeMember> {
         let count = self.size();
         self.members[..count].iter()
+    }
+}
+
+impl<const NODES: usize, const SEATS: usize> fmt::Debug for AppointedSet<NODES, SEATS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.size();
+
+        // Only seats pointing to a valid member index are included.
+        let seats: Vec<(usize, _)> = self
+            .seats
+            .iter()
+            .enumerate()
+            .filter_map(|(seat_idx, &owner_idx)| {
+                let idx = owner_idx as usize;
+                if idx < count {
+                    Some((seat_idx, self.members[idx].id))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        f.debug_struct("AppointedSet")
+            .field("member_count", &count)
+            .field("members", &&self.members[..count])
+            .field("seats", &seats)
+            .finish()
+    }
+}
+
+impl<const NODES: usize, const SEATS: usize> fmt::Display for AppointedSet<NODES, SEATS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.size();
+
+        write!(f, "AppointedSet(size={}, members=[", count)?;
+        for i in 0..count {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?}", self.members[i].id)?;
+        }
+
+        // Count seats per valid member index
+        let mut counts = vec![0u16; count];
+        for &seat in &self.seats {
+            let idx = seat as usize;
+            if idx < count {
+                counts[idx] = counts[idx].saturating_add(1);
+            }
+        }
+
+        write!(f, "], weights=[")?;
+        let mut first = true;
+        for i in 0..count {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(f, "{:?}: {}", self.members[i].id, counts[i])?;
+        }
+        write!(f, "])")
     }
 }
 
