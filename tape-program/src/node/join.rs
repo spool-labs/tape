@@ -32,19 +32,14 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let activation_epoch = next_epoch(epoch);
     let balance = node.pool.tape_balance_at_epoch(activation_epoch);
 
-    let member = CommitteeMember { 
-        id: node.id, 
-        key: node.metadata.bls_pubkey 
-    };
-
-    // Try to nominate the node into the leader set if there's enough stake to either bump
-    // someone out or fill an empty slot.
-    let index = epoch.leaders
-        .try_join(member, balance)
+    epoch.leaders
+        .try_join(&node.id, balance)
+        .map_err(|_| TapeError::UnexpectedState)?;
+    
+    epoch.leaders
+        .set_bls_key(&node.id, node.metadata.bls_pubkey)
         .map_err(|_| TapeError::UnexpectedState)?;
 
-    solana_program::msg!("Node {:?} joined the network at index {}", node.authority, index);
-    
     Ok(())
 }
 
@@ -72,7 +67,8 @@ mod tests {
 
         epoch.leaders = LeaderSet {
             member_count: COMMITTEE_SIZE as u64,
-            members: [CommitteeMember::zeroed(); COMMITTEE_SIZE],
+            members: [NodeId::zeroed(); COMMITTEE_SIZE],
+            keys: [BlsPubkey::zeroed(); COMMITTEE_SIZE],
             stakes: (0..COMMITTEE_SIZE as u64)
                 .map(|i| TAPE(1000 - i))
                 .collect::<Vec<_>>()
@@ -148,11 +144,9 @@ mod tests {
                                 leaders.members[i] = leaders.members[i - 1];
                             }
 
+                            leaders.members[0] = node.id;
                             leaders.stakes[0] = TAPE(5900);
-                            leaders.members[0] = CommitteeMember { 
-                                id: node.id, 
-                                key: node.metadata.bls_pubkey
-                            };
+                            leaders.keys[0] = node.metadata.bls_pubkey;
 
                             leaders
                         },

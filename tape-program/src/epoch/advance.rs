@@ -178,9 +178,9 @@ mod tests {
         // Current committee members
         let mut c = AppointedSet::zeroed();
         c.member_count = 3;
-        c.members[0] = CommitteeMember { id: NodeId::new(1), key: BlsPubkey::zeroed(), };
-        c.members[1] = CommitteeMember { id: NodeId::new(2), key: BlsPubkey::zeroed(), };
-        c.members[1] = CommitteeMember { id: NodeId::new(3), key: BlsPubkey::zeroed(), };
+        c.members[0] = NodeId::new(1);
+        c.members[1] = NodeId::new(2);
+        c.members[1] = NodeId::new(3);
         c.seats[0..10].copy_from_slice(&[0;10]);
         c.seats[10..15].copy_from_slice(&[1;5]);
         c.seats[15..18].copy_from_slice(&[2;3]);
@@ -188,10 +188,10 @@ mod tests {
         // New leaders (some overlap with current committee)
         let mut l = LeaderSet::zeroed();
         l.member_count = 4;
-        l.members[0] = CommitteeMember { id: NodeId::new(1), key: BlsPubkey::zeroed(), };
-        l.members[1] = CommitteeMember { id: NodeId::new(3), key: BlsPubkey::zeroed(), };
-        l.members[2] = CommitteeMember { id: NodeId::new(4), key: BlsPubkey::zeroed(), };
-        l.members[3] = CommitteeMember { id: NodeId::new(5), key: BlsPubkey::zeroed(), };
+        l.members[0] = NodeId::new(1);
+        l.members[1] = NodeId::new(3);
+        l.members[2] = NodeId::new(4);
+        l.members[3] = NodeId::new(5);
         l.stakes[0..4].copy_from_slice(&[TAPE(900), TAPE(300), TAPE(200), TAPE(100)]);
 
         let mut epoch = Epoch {
