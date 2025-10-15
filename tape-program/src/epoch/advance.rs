@@ -30,6 +30,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_previous_committee()?
         .as_account_mut::<Committee>(&tape_api::ID)?;
 
+    solana_program::msg!("before: \n{}", committee.inner);
+    solana_program::msg!("seats: {:?}", committee.inner.seats);
+
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
 
@@ -39,6 +42,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     solana_program::msg!("1");
     solana_program::log::sol_log_compute_units();
 
+    /*
     // 0) Save previous committee before mutating
     previous_committee.inner = committee.inner;
 
@@ -50,6 +54,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     //solana_program::msg!("seats: {:?}", epoch.leaders.stakes);
 
     let seat_count_per_leader = allocate_seats(&epoch.leaders.stakes[..leader_len], seats_total as u16);
+    solana_program::msg!("seats: {:?}", seat_count_per_leader);
 
     solana_program::msg!("seat_count_per_leader: {:?}", seat_count_per_leader);
 
@@ -111,11 +116,40 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         committee.inner.seats[s] = li;
     }
 
-    solana_program::msg!("before: \n{}", committee.inner);
 
     // 5) Commit leaders as the new committee (no local clones)
     committee.inner.members = epoch.leaders.members;
     committee.inner.member_count = epoch.leaders.member_count;
+    */
+
+
+    // Save previous committee
+    previous_committee.inner = committee.inner;
+
+    // Seat allocation for leaders (d’Hondt)
+    let seats_total = committee.inner.seats.len();
+    let leader_count = epoch.leaders.size();
+    let counts = allocate_seats(&epoch.leaders.stakes[..leader_count], seats_total as u16);
+
+    // Active slices
+    let cur_count = committee.inner.size();
+    let cur_members = &committee.inner.members[..cur_count];
+    let lead_members = &epoch.leaders.members[..leader_count];
+    let lead_counts = &counts[..leader_count];
+
+    // Minimal-churn reassignment
+    let new_seats = shift_seats::<1000, 256>(
+        &committee.inner.seats,
+        cur_members,
+        lead_members,
+        lead_counts,
+    );
+
+    // Install new seats and leaders
+    committee.inner.seats = new_seats;
+    committee.inner.members = epoch.leaders.members;
+    committee.inner.member_count = epoch.leaders.member_count;
+
 
     solana_program::msg!("after: \n{}", committee.inner);
     solana_program::msg!("seats: {:?}", committee.inner.seats);

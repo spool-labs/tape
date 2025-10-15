@@ -431,6 +431,21 @@ impl<const NODES: usize, const SEATS: usize> AppointedSet<NODES, SEATS> {
         map
     }
 
+    /// Returns a vector of seat counts per active member (in member order).
+    /// Seats that point beyond member_count are ignored.
+    pub fn seat_counts(&self) -> Vec<u16> {
+        let count = self.size();
+        let mut counts = vec![0u16; count];
+        for &seat in &self.seats {
+            let idx = seat as usize;
+            if idx < count {
+                counts[idx] = counts[idx].saturating_add(1);
+            }
+        }
+        counts
+    }
+
+
     /// Returns a list of seat indices assigned to the node with the given NodeId.
     pub fn seats_for(&self, node_id: &NodeId) -> Vec<u16> {
         let count = self.size();
@@ -500,14 +515,7 @@ impl<const NODES: usize, const SEATS: usize> fmt::Display for AppointedSet<NODES
             write!(f, "{:?}", self.members[i].id)?;
         }
 
-        // Count seats per valid member index
-        let mut counts = vec![0u16; count];
-        for &seat in &self.seats {
-            let idx = seat as usize;
-            if idx < count {
-                counts[idx] = counts[idx].saturating_add(1);
-            }
-        }
+        let counts = self.seat_counts();
 
         write!(f, "], weights=[")?;
         let mut first = true;
@@ -522,6 +530,15 @@ impl<const NODES: usize, const SEATS: usize> fmt::Display for AppointedSet<NODES
     }
 }
 
+#[inline]
+fn find_member(members: &[CommitteeMember], id: NodeId) -> Option<usize> {
+    for i in 0..members.len() {
+        if members[i].id == id {
+            return Some(i);
+        }
+    }
+    None
+}
 
 /// Combine members from the current committee and the next leader set into a single Vec.
 pub fn get_unique_members<'a, const NODES: usize, const SEATS: usize>(
@@ -556,6 +573,88 @@ pub fn get_unique_members<'a, const NODES: usize, const SEATS: usize>(
     unique
 }
 
+#[inline]
+pub fn shift_seats<const SEATS: usize, const NODES: usize>(
+    seats: &[u8; SEATS],          // seat -> current member index (0..current.len())
+    current: &[CommitteeMember],  // active current members
+    leaders: &[CommitteeMember],  // active leaders
+    counts: &[u16],               // desired seat counts per leader
+) -> [u8; SEATS] {
+
+    // Validate inputs
+    debug_assert!(leaders.len() == counts.len(), "leaders and counts must match");
+    debug_assert!(current.len() <= NODES, "current too large");
+    debug_assert!(NODES <= 256, "NODES must be <= 256 for u8 node indices");
+
+    // Create a unique set of members from current + leaders
+
+    let mut targets = [0u16; NODES];
+    let mut leader_map = [u8::MAX; NODES];
+    let mut unique_len = current.len();
+
+    for leader_index in 0..leaders.len() {
+        let id = leaders[leader_index].id;
+
+        let i = match find_member(current, id) {
+            Some(index) => index,
+            None => {
+                let index = unique_len;
+                unique_len += 1;
+                debug_assert!(unique_len <= NODES, "capacity exceeded");
+                index
+            }
+        };
+
+        targets[i] = counts[leader_index];
+        leader_map[i] = leader_index as u8;
+    }
+
+    // Move seats to match targets while minimizing movement. Keep seats with their current owner
+    // if possible; otherwise free them and reassign.
+
+    let mut result = *seats;
+    let mut remaining = targets;
+    let mut to_move: Vec<u16> = Vec::new();
+
+    // Keep seats when owner still needs them; otherwise free them.
+    for seat in 0..SEATS {
+        let idx = seats[seat] as usize;
+        if remaining[idx] > 0 {
+            remaining[idx] -= 1;
+        } else {
+            to_move.push(seat as u16);
+        }
+    }
+
+    debug_assert!(
+        to_move.len() == remaining.iter().map(|&x| x as usize).sum::<usize>(),
+        "Mismatch between freed seats and remaining demand"
+    );
+
+    // Assign freed seats to nodes still needing seats.
+    for node_idx in 0..NODES {
+        let need = remaining[node_idx] as usize;
+        for _ in 0..need {
+            let seat = to_move
+                .pop()
+                .expect("Not enough freed seats to reassign") as usize;
+            result[seat] = node_idx as u8;
+        }
+    }
+
+    debug_assert!(to_move.is_empty(), "Unassigned seats remain after reassignment");
+
+    // Map from merged indices back to leaders indices.
+    let mut out = [0u8; SEATS];
+    for seat_index in 0..SEATS {
+        let index = result[seat_index] as usize;
+        let leader_index = leader_map[index];
+        debug_assert!(leader_index != u8::MAX, "seat mapped to non-leader");
+        out[seat_index] = leader_index;
+    }
+
+    out
+}
 
 #[cfg(test)]
 mod tests {
