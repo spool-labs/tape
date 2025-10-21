@@ -1,3 +1,17 @@
+/// Similar to declare_id! from solana_program, but doesn't declare everything pub
+#[macro_export]
+macro_rules! declare_id {
+    ($address:expr) => {
+        /// The const program ID.
+        const ID: Pubkey = Pubkey::from_str_const($address);
+
+        /// Returns the program ID.
+        const fn id() -> Pubkey {
+            ID
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! state {
     // $acct_ty is your AccountType enum variant, $data_ty is the struct name

@@ -1,22 +1,10 @@
 use steel::*;
 
 use tape_core::types::EpochNumber;
-use crate::state::Epoch;
-use crate::consts::{MINT_ADDRESS, NAME_LENGTH};
+use crate::consts::NAME_LENGTH;
+//use crate::state::Epoch;
 
 use spl_associated_token_account::get_associated_token_address;
-
-/// Helper: check a condition is true and return an error if not
-#[inline(always)]
-pub fn check_condition<E>(condition: bool, err: E) -> ProgramResult
-where
-    E: Into<ProgramError>,
-{
-    if !condition {
-        return Err(err.into());
-    }
-    Ok(())
-}
 
 /// Helper: convert a slice to a fixed-size array, truncating or padding with zeros as needed
 #[inline(always)]
@@ -51,20 +39,20 @@ pub fn from_name(val: &[u8; NAME_LENGTH]) -> String {
     String::from_utf8(name_bytes).unwrap()
 }
 
-/// Helper: get the current epoch from an Epoch account
-#[inline(always)]
-pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id
-}
-
-/// Helper: get the next epoch from an Epoch account
-#[inline(always)]
-pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id.checked_add(EpochNumber::one()).unwrap()
-}
+///// Helper: get the current epoch from an Epoch account
+//#[inline(always)]
+//pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
+//    epoch.id
+//}
+//
+///// Helper: get the next epoch from an Epoch account
+//#[inline(always)]
+//pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
+//    epoch.id.checked_add(EpochNumber::one()).unwrap()
+//}
 
 /// Helper: get the associated token account
 #[inline(always)]
 pub fn ata(owner: &Pubkey) -> Pubkey {
-    get_associated_token_address(owner, &MINT_ADDRESS)
+    get_associated_token_address(owner, &crate::program::token::MINT_ADDRESS)
 }

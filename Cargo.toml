@@ -1,12 +1,10 @@
 [workspace]
 resolver = "2"
 members = [ 
-  "core",
   "api",
+  "core",
   "crypto",
-  "tape-program",
-  "solana",
-  "test",
+#  "programs",
 ]
 
 [workspace.package]
@@ -23,17 +21,17 @@ keywords = ["solana", "crypto", "storage"]
 tape-api = { version = "0.3.0", path = "./api" }
 tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
-tape-test = { version = "0.3.0", path = "./test" }
+#tape-test = { version = "0.3.0", path = "./test" }
 
-tape-archive = { version = "0.3.0", path = "./tape-archive" }
-tape-cli = { version = "0.3.0", path = "./tape-cli" }
-tape-client = { version = "0.3.0", path = "./tape-client" }
-tape-network = { version = "0.3.0", path = "./tape-node" }
-tape-program = { version = "0.3.0", path = "./tape-program" }
-tape-rpc = { version = "0.3.0", path = "./tape-rpc" }
-tape-solana = { version = "0.3.0", path = "./tape-solana" }
-tape-store = { version = "0.3.0", path = "./tape-store" }
-tape-utils = { version = "0.3.0", path = "./tape-utils" }
+# tape-archive = { version = "0.3.0", path = "./tape-archive" }
+# tape-cli = { version = "0.3.0", path = "./tape-cli" }
+# tape-client = { version = "0.3.0", path = "./tape-client" }
+# tape-network = { version = "0.3.0", path = "./tape-node" }
+# tape-program = { version = "0.3.0", path = "./tape-program" }
+# tape-rpc = { version = "0.3.0", path = "./tape-rpc" }
+# tape-solana = { version = "0.3.0", path = "./tape-solana" }
+# tape-store = { version = "0.3.0", path = "./tape-store" }
+# tape-utils = { version = "0.3.0", path = "./tape-utils" }
 
 # program dependencies
 bytemuck = "1.14.3"
