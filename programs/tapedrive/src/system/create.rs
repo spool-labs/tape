@@ -1,6 +1,5 @@
 use steel::*;
 use tape_api::prelude::*;
-use tape_api::program::tapedrive;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -72,7 +71,7 @@ mod tests {
                 Check::success(),
                 Check::account(&system_address)
                     .space(size)
-                    .owner(&tape_api::program::tapedrive::ID)
+                    .owner(&tapedrive::ID)
                     .data_slice(0, &[System::discriminator()])
                     .build(),
             ]
