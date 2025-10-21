@@ -1,44 +1,42 @@
 use steel::*;
 
-mod archive;
-mod blob;
-mod committee;
-mod epoch;
-mod exchange;
-mod feature;
-mod node;
-mod stake;
-mod system;
-mod tape;
+//mod archive;
+//mod blob;
+//mod committee;
+//mod epoch;
+//mod exchange;
+//mod feature;
+//mod node;
+//mod stake;
+//mod system;
+//mod tape;
+mod token;
 
-pub use archive::*;
-pub use blob::*;
-pub use committee::*;
-pub use epoch::*;
-pub use exchange::*;
-pub use feature::*;
-pub use node::*;
-pub use stake::*;
-pub use system::*;
-pub use tape::*;
+//pub use archive::*;
+//pub use blob::*;
+//pub use committee::*;
+//pub use epoch::*;
+//pub use exchange::*;
+//pub use feature::*;
+//pub use node::*;
+//pub use stake::*;
+//pub use system::*;
+//pub use tape::*;
+pub use token::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-pub enum TapeInstruction {
+pub enum TokenInstruction {
     Unknown = 0,
 
-    // System
-    Initialize,
-    CreateArchive,
-    CreateEpoch,
-    ExpandEpoch,
-    AdvanceEpoch,
-    CreateCommittee,
-    ExpandCommittee,
-    RegisterFeature,
-    CertifyFeature,
+    InitializeMint,
+}
 
-    // Exchange
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+pub enum ExchangeInstruction {
+    Unknown = 10,
+
     RegisterExchange,
     SetExchangeRate,
     DepositTape,
@@ -47,6 +45,33 @@ pub enum TapeInstruction {
     WithdrawSol,
     SwapForTape,
     SwapForSol,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+pub enum StakingInstruction {
+    Unknown = 30,
+
+    StakeWithNode,
+    UnstakeFromNode,
+    ClaimStake,
+    SplitStake,
+    MergeStake,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+pub enum TapeInstruction {
+    Unknown = 20,
+
+    // System
+    Initialize,
+    CreateSystem,
+    ExpandSystem,
+    CreateEpoch,
+    AdvanceEpoch,
+    RegisterFeature,
+    CertifyFeature,
 
     // Operator
     RegisterNode,
@@ -63,13 +88,6 @@ pub enum TapeInstruction {
     VoteOnShardSize,
     VoteOnFeature,
 
-    // Staking
-    StakeWithNode,
-    UnstakeFromNode,
-    ClaimStake,
-    SplitStake,
-    MergeStake,
-
     // Storage
     ReserveTape,
     BurnTape,
@@ -84,53 +102,54 @@ pub enum TapeInstruction {
     InvalidateBlob,
 }
 
-instruction!(TapeInstruction, Initialize);
-instruction!(TapeInstruction, CreateArchive);
-instruction!(TapeInstruction, CreateEpoch);
-instruction!(TapeInstruction, ExpandEpoch);
-instruction!(TapeInstruction, AdvanceEpoch);
-instruction!(TapeInstruction, CreateCommittee);
-instruction!(TapeInstruction, ExpandCommittee);
-instruction!(TapeInstruction, RegisterFeature);
-instruction!(TapeInstruction, CertifyFeature);
 
-instruction!(TapeInstruction, RegisterExchange);
-instruction!(TapeInstruction, SetExchangeRate);
-instruction!(TapeInstruction, DepositTape);
-instruction!(TapeInstruction, DepositSol);
-instruction!(TapeInstruction, WithdrawTape);
-instruction!(TapeInstruction, WithdrawSol);
-instruction!(TapeInstruction, SwapForTape);
-instruction!(TapeInstruction, SwapForSol);
+instruction!(TokenInstruction, InitializeMint);
 
-instruction!(TapeInstruction, RegisterNode);
-instruction!(TapeInstruction, JoinNetwork);
-instruction!(TapeInstruction, SetAuthority);
-instruction!(TapeInstruction, SetNetworkAddress);
-instruction!(TapeInstruction, SetNetworkTls);
-instruction!(TapeInstruction, SetName);
-instruction!(TapeInstruction, SetCommissionRate);
-instruction!(TapeInstruction, ClaimCommission);
-instruction!(TapeInstruction, AddToBlacklist);
-instruction!(TapeInstruction, RemoveFromBlacklist);
-instruction!(TapeInstruction, VoteOnStoragePrice);
-instruction!(TapeInstruction, VoteOnShardSize);
-instruction!(TapeInstruction, VoteOnFeature);
-
-instruction!(TapeInstruction, StakeWithNode);
-instruction!(TapeInstruction, UnstakeFromNode);
-instruction!(TapeInstruction, ClaimStake);
-instruction!(TapeInstruction, SplitStake);
-instruction!(TapeInstruction, MergeStake);
-
-instruction!(TapeInstruction, ReserveTape);
-instruction!(TapeInstruction, BurnTape);
-instruction!(TapeInstruction, SplitTapeByDuration);
-instruction!(TapeInstruction, SplitTapeBySize);
-instruction!(TapeInstruction, MergeTape);
-
-instruction!(TapeInstruction, RegisterBlob);
-instruction!(TapeInstruction, DeleteBlob);
-instruction!(TapeInstruction, CertifyBlob);
-instruction!(TapeInstruction, InvalidateBlob);
-
+//instruction!(ExchangeInstruction, RegisterExchange);
+//instruction!(ExchangeInstruction, SetExchangeRate);
+//instruction!(ExchangeInstruction, DepositTape);
+//instruction!(ExchangeInstruction, DepositSol);
+//instruction!(ExchangeInstruction, WithdrawTape);
+//instruction!(ExchangeInstruction, WithdrawSol);
+//instruction!(ExchangeInstruction, SwapForTape);
+//instruction!(ExchangeInstruction, SwapForSol);
+//
+//instruction!(StakeInstruction, StakeWithNode);
+//instruction!(StakeInstruction, UnstakeFromNode);
+//instruction!(StakeInstruction, ClaimStake);
+//instruction!(StakeInstruction, SplitStake);
+//instruction!(StakeInstruction, MergeStake);
+//
+//instruction!(TapeInstruction, Initialize);
+//instruction!(TapeInstruction, CreateSystem);
+//instruction!(TapeInstruction, ExpandSystem);
+//instruction!(TapeInstruction, CreateEpoch);
+//instruction!(TapeInstruction, AdvanceEpoch);
+//instruction!(TapeInstruction, RegisterFeature);
+//instruction!(TapeInstruction, CertifyFeature);
+//
+//instruction!(TapeInstruction, RegisterNode);
+//instruction!(TapeInstruction, JoinNetwork);
+//instruction!(TapeInstruction, SetAuthority);
+//instruction!(TapeInstruction, SetNetworkAddress);
+//instruction!(TapeInstruction, SetNetworkTls);
+//instruction!(TapeInstruction, SetName);
+//instruction!(TapeInstruction, SetCommissionRate);
+//instruction!(TapeInstruction, ClaimCommission);
+//instruction!(TapeInstruction, AddToBlacklist);
+//instruction!(TapeInstruction, RemoveFromBlacklist);
+//instruction!(TapeInstruction, VoteOnStoragePrice);
+//instruction!(TapeInstruction, VoteOnShardSize);
+//instruction!(TapeInstruction, VoteOnFeature);
+//
+//instruction!(TapeInstruction, ReserveTape);
+//instruction!(TapeInstruction, BurnTape);
+//instruction!(TapeInstruction, SplitTapeByDuration);
+//instruction!(TapeInstruction, SplitTapeBySize);
+//instruction!(TapeInstruction, MergeTape);
+//
+//instruction!(TapeInstruction, RegisterBlob);
+//instruction!(TapeInstruction, DeleteBlob);
+//instruction!(TapeInstruction, CertifyBlob);
+//instruction!(TapeInstruction, InvalidateBlob);
+//

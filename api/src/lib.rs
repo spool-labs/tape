@@ -2,9 +2,9 @@ pub mod cpi;
 pub mod error;
 pub mod event;
 pub mod program;
-//pub mod instruction;
+pub mod instruction;
 pub mod loaders;
-//pub mod state;
+pub mod state;
 pub mod utils;
 mod macros;
 
@@ -15,8 +15,8 @@ pub mod prelude {
     pub use crate::cpi::*;
     pub use crate::error::*;
 //    pub use crate::event::*;
-//    pub use crate::instruction::*;
+    pub use crate::instruction::*;
     pub use crate::loaders::*;
-//    pub use crate::state::*;
+    pub use crate::state::*;
     pub use crate::utils::*;
 }

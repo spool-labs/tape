@@ -10,6 +10,7 @@ pub const PROGRAM_ID: [u8; 32] =
 pub const MINT:      &[u8] = b"mint";
 pub const MINT_SEED: &[u8] = &[152, 68, 212, 200, 25, 113, 221, 71];
 pub const METADATA:  &[u8] = b"metadata";
+pub const TREASURY:  &[u8] = b"treasury";
 
 pub const TOKEN_DECIMALS: u8 = 6;
 pub const ONE_TAPE: u64 = 10u64.pow(TOKEN_DECIMALS as u32);
@@ -45,6 +46,12 @@ pub const METADATA_BUMP: u8 = ed25519::derive_program_address(
     unsafe { &*(&mpl_token_metadata::ID as *const Pubkey as *const [u8; 32]) },
 ).1;
 
+pub const TREASURY_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).0);
+
+pub const TREASURY_BUMP: u8 =
+    ed25519::derive_program_address(&[TREASURY], &PROGRAM_ID).1;
+
 
 #[cfg(debug_assertions)]
 pub fn mint_pda() -> (Pubkey, u8) {
@@ -72,6 +79,18 @@ pub fn metadata_pda() -> (Pubkey, u8) {
     (METADATA_ADDRESS, METADATA_BUMP)
 }
 
+#[cfg(debug_assertions)]
+pub fn treasury_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[TREASURY], &id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn treasury_pda() -> (Pubkey, u8) {
+    (TREASURY_ADDRESS, TREASURY_BUMP)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +109,9 @@ mod tests {
         let (pda, bump) = metadata_pda();
         assert_eq!(pda, METADATA_ADDRESS);
         assert_eq!(bump, METADATA_BUMP);
+
+        let (pda, bump) = treasury_pda();
+        assert_eq!(pda, TREASURY_ADDRESS);
+        assert_eq!(bump, TREASURY_BUMP);
     }
 }

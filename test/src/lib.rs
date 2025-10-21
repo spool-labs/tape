@@ -97,7 +97,7 @@ pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
 
 pub fn mint(supply: u64) -> (Pubkey, Account) {
     let mint_data = Mint {
-        mint_authority: Some(SYSTEM_ADDRESS).into(),
+        mint_authority: Some(TREASURY_ADDRESS).into(),
         supply,
         decimals: TOKEN_DECIMALS,
         is_initialized: true,
@@ -179,16 +179,23 @@ impl TestEnv {
         println!("--------------------------------------------------------------------------------");
         println!("Program: {}", instruction.program_id);
 
-        //if !instruction.data.is_empty() {
-        //    let discriminator = instruction.data[0];
-        //    let ix_type = if let Ok(instruction_type) = TapeInstruction::try_from(discriminator) {
-        //        format!("{:?}", instruction_type)
-        //    } else {
-        //        format!("Invalid (discriminator: {})", discriminator)
-        //    };
-        //
-        //    println!("\nix:\t{:?} ({})", ix_type, discriminator);
-        //}
+        if !instruction.data.is_empty() {
+            let discriminator = instruction.data[0];
+
+            let ix_type = if let Ok(instruction) = TapeInstruction::try_from(discriminator) {
+                format!("TapeInstruction::{:?}", instruction)
+            } else if let Ok(instruction) = StakingInstruction::try_from(discriminator) {
+                format!("StakingInstruction::{:?}", instruction)
+            } else if let Ok(instruction) = ExchangeInstruction::try_from(discriminator) {
+                format!("ExchangeInstruction::{:?}", instruction)
+            } else if let Ok(instruction) = TokenInstruction::try_from(discriminator) {
+                format!("TokenInstruction::{:?}", instruction)
+            } else {
+                format!("Invalid (discriminator: {})", discriminator)
+            };
+
+            println!("\nix:\t{:?} ({})", ix_type, discriminator);
+        }
 
         println!("accounts:");
         for (index, acc_meta) in instruction.accounts.iter().enumerate() {
@@ -211,7 +218,7 @@ pub fn with_programs(programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
 
     mollusk.add_program(&program::exchange::ID, "../../target/deploy/exchange", &DEFAULT_LOADER_KEY);
     mollusk.add_program(&program::staking::ID, "../../target/deploy/staking", &DEFAULT_LOADER_KEY);
-    mollusk.add_program(&program::token::ID, "../../target/deploy/tape", &DEFAULT_LOADER_KEY);
+    mollusk.add_program(&program::token::ID, "../../target/deploy/token", &DEFAULT_LOADER_KEY);
     mollusk.add_program(&program::tapedrive::ID, "../../target/deploy/tapedrive", &DEFAULT_LOADER_KEY);
 
     mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
