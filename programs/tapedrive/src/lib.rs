@@ -45,7 +45,7 @@ pub fn process_instruction(
             // System
             TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
             TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
-            //TapeInstruction::Initialize => process_initialize(accounts, data)?,
+            TapeInstruction::Initialize => process_initialize(accounts, data)?,
             //TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),

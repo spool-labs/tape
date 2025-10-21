@@ -1,7 +1,7 @@
 //mod archive;
 //mod blob;
 //mod committee;
-//mod epoch;
+mod epoch;
 //mod exchange;
 //mod feature;
 //mod node;
@@ -13,7 +13,7 @@ mod treasury;
 //pub use archive::*;
 //pub use blob::*;
 //pub use committee::*;
-//pub use epoch::*;
+pub use epoch::*;
 //pub use exchange::*;
 //pub use feature::*;
 //pub use node::*;
