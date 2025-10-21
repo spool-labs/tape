@@ -1,4 +1,3 @@
-pub mod consts;
 pub mod cpi;
 pub mod error;
 pub mod event;
@@ -13,7 +12,6 @@ pub mod prelude {
     pub use tape_core::prelude::*;
 
     pub use crate::program::*;
-    pub use crate::consts::*;
     pub use crate::cpi::*;
     pub use crate::error::*;
 //    pub use crate::event::*;

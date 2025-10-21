@@ -4,13 +4,13 @@ use const_crypto::ed25519;
 use tape_core::prelude::Hash;
 use super::token::MINT_ADDRESS;
 
-pub const COMMITTEE_SIZE: usize = 128;
+pub const MEMBER_COUNT: usize = 128;
 pub const SEAT_COUNT: usize = 1000;
 pub const FUTURE_EPOCHS: usize = 256;
 
-declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
+declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
 
-const PROGRAM_ID: [u8; 32] = 
+pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
 pub const SYSTEM:    &[u8] = b"system";

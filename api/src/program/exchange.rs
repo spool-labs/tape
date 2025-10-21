@@ -2,9 +2,9 @@ use crate::declare_id;
 use solana_program::pubkey::Pubkey;
 use super::token::MINT_ADDRESS;
 
-declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
+declare_id!("taAfD9hTjxpiVUSjTNx5ezKT6CXW9W2Ya4ky1RMev5f"); 
 
-const PROGRAM_ID: [u8; 32] = 
+pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
 pub const EXCHANGE: &[u8] = b"exchange";

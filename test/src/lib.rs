@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::program;
 use mollusk_svm::{
     program::{keyed_account_for_system_program, loader_keys::LOADER_V2},
     sysvar::Sysvars,
@@ -11,12 +12,15 @@ use mollusk_svm_programs_token::{
 };
 
 use solana_sdk::{
+    bpf_loader_upgradeable,
     account::Account,
     instruction::Instruction,
     program_pack::Pack,
     pubkey::Pubkey,
     rent::Rent,
 };
+
+pub(crate) const DEFAULT_LOADER_KEY: Pubkey = bpf_loader_upgradeable::id();
 
 use solana_program::program_option::COption;
 use pretty_hex::*;
@@ -44,11 +48,11 @@ pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
     })
 }
 
-pub fn pda(key: Pubkey, data: Vec<u8>) -> (Pubkey, Account) {
+pub fn pda(key: Pubkey, data: Vec<u8>, program: Pubkey) -> (Pubkey, Account) {
     (key, Account {
         lamports: Rent::default().minimum_balance(data.len()),
         data,
-        owner: tape_api::ID,
+        owner: program,
         executable: false,
         rent_epoch: 0,
     })
@@ -175,16 +179,16 @@ impl TestEnv {
         println!("--------------------------------------------------------------------------------");
         println!("Program: {}", instruction.program_id);
 
-        if !instruction.data.is_empty() {
-            let discriminator = instruction.data[0];
-            let ix_type = if let Ok(instruction_type) = TapeInstruction::try_from(discriminator) {
-                format!("{:?}", instruction_type)
-            } else {
-                format!("Invalid (discriminator: {})", discriminator)
-            };
-
-            println!("\nix:\t{:?} ({})", ix_type, discriminator);
-        }
+        //if !instruction.data.is_empty() {
+        //    let discriminator = instruction.data[0];
+        //    let ix_type = if let Ok(instruction_type) = TapeInstruction::try_from(discriminator) {
+        //        format!("{:?}", instruction_type)
+        //    } else {
+        //        format!("Invalid (discriminator: {})", discriminator)
+        //    };
+        //
+        //    println!("\nix:\t{:?} ({})", ix_type, discriminator);
+        //}
 
         println!("accounts:");
         for (index, acc_meta) in instruction.accounts.iter().enumerate() {
@@ -196,16 +200,20 @@ impl TestEnv {
     }
 }
 
-pub fn test_env(name: String) -> TestEnv {
-    let name = format!("../target/deploy/{}", name);
-
-    with_programs(&name, &[
+pub fn test_env() -> TestEnv {
+    with_programs(&[
         (&mpl_token_metadata::ID, METAPLEX_ELF),
     ])
 }
 
-pub fn with_programs(program_name: &str, programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
-    let mut mollusk = Mollusk::new(&tape_api::ID, program_name);
+pub fn with_programs(programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
+    let mut mollusk = Mollusk::default();
+
+    mollusk.add_program(&program::exchange::ID, "../../target/deploy/exchange", &DEFAULT_LOADER_KEY);
+    mollusk.add_program(&program::staking::ID, "../../target/deploy/staking", &DEFAULT_LOADER_KEY);
+    mollusk.add_program(&program::token::ID, "../../target/deploy/tape", &DEFAULT_LOADER_KEY);
+    mollusk.add_program(&program::tapedrive::ID, "../../target/deploy/tapedrive", &DEFAULT_LOADER_KEY);
+
     mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
 
     spl_token_program::add_program(&mut mollusk);

@@ -4,7 +4,7 @@ use solana_program::pubkey::Pubkey;
 
 declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
 
-const PROGRAM_ID: [u8; 32] = 
+pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
 pub const MINT:      &[u8] = b"mint";

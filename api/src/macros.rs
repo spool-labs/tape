@@ -3,10 +3,10 @@
 macro_rules! declare_id {
     ($address:expr) => {
         /// The const program ID.
-        const ID: Pubkey = Pubkey::from_str_const($address);
+        pub const ID: Pubkey = Pubkey::from_str_const($address);
 
         /// Returns the program ID.
-        const fn id() -> Pubkey {
+        pub const fn id() -> Pubkey {
             ID
         }
     };

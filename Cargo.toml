@@ -4,7 +4,11 @@ members = [
   "api",
   "core",
   "crypto",
-#  "programs",
+  "test",
+  "programs/exchange",
+  "programs/staking",
+  "programs/tapedrive",
+  "programs/token",
 ]
 
 [workspace.package]
@@ -21,7 +25,7 @@ keywords = ["solana", "crypto", "storage"]
 tape-api = { version = "0.3.0", path = "./api" }
 tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
-#tape-test = { version = "0.3.0", path = "./test" }
+tape-test = { version = "0.3.0", path = "./test" }
 
 # tape-archive = { version = "0.3.0", path = "./tape-archive" }
 # tape-cli = { version = "0.3.0", path = "./tape-cli" }

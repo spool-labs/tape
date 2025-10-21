@@ -1,0 +1,29 @@
+PROGRAMS = exchange staking token tapedrive
+
+# Default target
+.PHONY: all
+all: build
+
+# Build target: run cargo build-sbf in each program directory
+.PHONY: build
+build: $(PROGRAMS)
+	@for dir in $(PROGRAMS); do \
+		echo "Running cargo build-sbf in $$dir..."; \
+    (cd $$dir && cargo build-sbf) || exit $$?; \
+	done
+
+# Test target: run cargo test-sbf in each program directory
+.PHONY: test
+test: $(PROGRAMS)
+	@for dir in $(PROGRAMS); do \
+		echo "Running cargo test-sbf in $$dir..."; \
+		(cd $$dir && cargo test-sbf) || exit $$?; \
+	done
+
+# Clean target: run cargo clean in each program directory
+.PHONY: clean
+clean:
+	@for dir in $(PROGRAMS); do \
+  	echo "Running cargo clean in $$dir..."; \
+    (cd $$dir && cargo clean); \
+	done
