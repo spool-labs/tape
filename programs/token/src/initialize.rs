@@ -150,9 +150,6 @@ mod tests {
         let (mint_address, _) = mint_pda();
         let (metadata_address, _) = metadata_pda();
 
-        // Setup existing accounts
-        // (assuming created and expanded, but not initialized)
-
         let accounts = vec![
             sol(signer, 1_000_000_000),
             empty(signer_ata),
@@ -181,9 +178,9 @@ mod tests {
                 Check::account(&signer_ata).data(
                     token(signer_ata, signer, MAX_SUPPLY).1.data.as_ref()
                 ).build(),
-                //Check::account(&mint_address).data(
-                //    mint(MAX_SUPPLY).1.data.as_ref()
-                //).build(),
+                Check::account(&mint_address).data(
+                    mint(MAX_SUPPLY).1.data.as_ref()
+                ).build(),
             ]
         );
     }

@@ -6,6 +6,10 @@ define_numeric_type!(CommitteeNumber, "committee");
 define_numeric_type!(PoolNumber, "pool");
 define_numeric_type!(SpoolNumber, "spool");
 define_numeric_type!(NodeId, "node");
+define_numeric_type!(VersionId, "version");
+
+// U8 types
+pub type MemberId = u8;
 
 // Generic types
 define_numeric_type!(BasisPoints, "bps");

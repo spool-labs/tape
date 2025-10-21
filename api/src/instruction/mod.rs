@@ -8,7 +8,7 @@ use steel::*;
 //mod feature;
 //mod node;
 //mod stake;
-//mod system;
+mod system;
 //mod tape;
 mod token;
 
@@ -20,7 +20,7 @@ mod token;
 //pub use feature::*;
 //pub use node::*;
 //pub use stake::*;
-//pub use system::*;
+pub use system::*;
 //pub use tape::*;
 pub use token::*;
 
@@ -104,6 +104,10 @@ pub enum TapeInstruction {
 
 
 instruction!(TokenInstruction, InitializeMint);
+
+instruction!(TapeInstruction, CreateSystem);
+instruction!(TapeInstruction, ExpandSystem);
+instruction!(TapeInstruction, Initialize);
 
 //instruction!(ExchangeInstruction, RegisterExchange);
 //instruction!(ExchangeInstruction, SetExchangeRate);

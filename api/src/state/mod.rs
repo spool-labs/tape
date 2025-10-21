@@ -6,7 +6,7 @@
 //mod feature;
 //mod node;
 //mod stake;
-//mod system;
+mod system;
 //mod tape;
 mod treasury;
 //
@@ -18,7 +18,7 @@ mod treasury;
 //pub use feature::*;
 //pub use node::*;
 //pub use stake::*;
-//pub use system::*;
+pub use system::*;
 //pub use tape::*;
 pub use treasury::*;
 
