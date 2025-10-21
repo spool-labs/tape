@@ -1,11 +1,10 @@
 use core::fmt;
 use crate::types::*;
 use crate::bls::*;
-use std::collections::BTreeMap;
 use bytemuck::{Pod, Zeroable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaderSetError {
+pub enum CommitteeError {
     AlreadyPresent { idx: usize },
     Full,
     NotFull,
@@ -14,26 +13,21 @@ pub enum LeaderSetError {
     ZeroStake,
 }
 
-/// Relative NodeId within a committee
-pub type RelativeNodeId = u8;
-
-/// A LeaderSet defines a set of nodes that will be considered for appointment
-/// during an upcoming epoch. Each node has an associated stake, which influences their
-/// likelihood of being assigned seats in the committee.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
-pub struct LeaderSet<const NODES: usize> {
+pub struct Committee<const NODES: usize> {
     pub member_count: u64,
     pub members: [NodeId; NODES],
-    pub keys: [BlsPubkey; NODES],   // (member_index -> bls pubkey)
-    pub stakes: [Coin<TAPE>; NODES], // (member_index -> stake)
+    pub stakes: [Coin<TAPE>; NODES], // (index -> stake)
+    pub keys: [BlsPubkey; NODES],    // (index -> bls pubkey)
 }
 
-unsafe impl<const NODES: usize> Zeroable for LeaderSet<NODES> {}
-unsafe impl<const NODES: usize> Pod for LeaderSet<NODES> {}
+unsafe impl<const NODES: usize> Zeroable for Committee<NODES> {}
+unsafe impl<const NODES: usize> Pod for Committee<NODES> {}
 
-impl<const NODES: usize> LeaderSet<NODES> {
-    /// Number of active members in the leader set.
+impl<const NODES: usize> Committee<NODES> {
+
+    /// Number of active members in the set.
     #[inline]
     pub fn size(&self) -> usize {
         (self.member_count as usize).min(NODES)
@@ -51,7 +45,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
         self.size() == NODES
     }
 
-    /// Checks if the given NodeId is present in the leader set.
+    /// Checks if the given NodeId is present in the set.
     #[inline]
     pub fn contains(&self, node_id: &NodeId) -> bool {
         self.index_of(node_id).is_some()
@@ -72,6 +66,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
 
     /// Helper: find index of minimum stake (among active members).
     pub fn min_stake_index(&self) -> Option<usize> {
+        #[cfg(debug_assertions)]
         debug_assert!(self.is_sorted(), "not sorted");
 
         let count = self.size();
@@ -105,7 +100,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
         &mut self,
         member: &NodeId,
         staked_amount: Coin<TAPE>,
-    ) -> Result<usize, LeaderSetError> {
+    ) -> Result<usize, CommitteeError> {
         if self.is_full() {
             self.replace_if_better(member, staked_amount)
         } else {
@@ -123,9 +118,9 @@ impl<const NODES: usize> LeaderSet<NODES> {
     }
 
     /// Sets the BLS public key for the given member.
-    pub fn set_bls_key(&mut self, member: &NodeId, key: BlsPubkey) -> Result<(), LeaderSetError> {
+    pub fn set_bls_key(&mut self, member: &NodeId, key: BlsPubkey) -> Result<(), CommitteeError> {
         let Some(idx) = self.index_of(member) else {
-            return Err(LeaderSetError::NotFound);
+            return Err(CommitteeError::NotFound);
         };
 
         self.keys[idx] = key;
@@ -138,19 +133,19 @@ impl<const NODES: usize> LeaderSet<NODES> {
         &mut self,
         member: &NodeId, 
         staked_amount: Coin::<TAPE>
-    ) -> Result<usize, LeaderSetError> {
+    ) -> Result<usize, CommitteeError> {
 
         if staked_amount == TAPE::zero() {
-            return Err(LeaderSetError::ZeroStake);
+            return Err(CommitteeError::ZeroStake);
         }
 
         if let Some(idx) = self.index_of(&member) {
-            return Err(LeaderSetError::AlreadyPresent { idx });
+            return Err(CommitteeError::AlreadyPresent { idx });
         }
 
         let count = self.size();
         if count >= NODES {
-            return Err(LeaderSetError::Full);
+            return Err(CommitteeError::Full);
         }
 
         self.members[count] = *member;
@@ -169,26 +164,26 @@ impl<const NODES: usize> LeaderSet<NODES> {
         &mut self,
         member: &NodeId,
         staked_amount: Coin::<TAPE>,
-    ) -> Result<usize, LeaderSetError> {
+    ) -> Result<usize, CommitteeError> {
         if staked_amount == TAPE::zero() {
-            return Err(LeaderSetError::ZeroStake);
+            return Err(CommitteeError::ZeroStake);
         }
 
         if let Some(idx) = self.index_of(&member) {
-            return Err(LeaderSetError::AlreadyPresent { idx });
+            return Err(CommitteeError::AlreadyPresent { idx });
         }
 
         if !self.is_full() {
-            return Err(LeaderSetError::NotFull);
+            return Err(CommitteeError::NotFull);
         }
 
         let Some(min_idx) = self.min_stake_index() else {
-            return Err(LeaderSetError::NotFull);
+            return Err(CommitteeError::NotFull);
         };
 
         let min_val = self.stake_at(min_idx);
         if staked_amount <= min_val {
-            return Err(LeaderSetError::NotBetter { min_idx, min_stake: min_val });
+            return Err(CommitteeError::NotBetter { min_idx, min_stake: min_val });
         }
 
         self.members[min_idx] = *member;
@@ -206,10 +201,10 @@ impl<const NODES: usize> LeaderSet<NODES> {
         &mut self,
         node_id: &NodeId,
         new_stake: Coin::<TAPE>,
-    ) -> Result<Coin<TAPE>, LeaderSetError> {
+    ) -> Result<Coin<TAPE>, CommitteeError> {
 
         let Some(idx) = self.index_of(node_id) else {
-            return Err(LeaderSetError::NotFound);
+            return Err(CommitteeError::NotFound);
         };
 
         let old = self.stake_at(idx);
@@ -222,9 +217,9 @@ impl<const NODES: usize> LeaderSet<NODES> {
 
     /// Removes a node with the given NodeId from the set using unordered swap-remove semantics.
     /// Returns the removed member and its stake.
-    pub fn remove(&mut self, node_id: &NodeId) -> Result<(NodeId, Coin<TAPE>), LeaderSetError> {
+    pub fn remove(&mut self, node_id: &NodeId) -> Result<(NodeId, Coin<TAPE>), CommitteeError> {
         let Some(idx) = self.index_of(node_id) else {
-            return Err(LeaderSetError::NotFound);
+            return Err(CommitteeError::NotFound);
         };
 
         let count = self.size();
@@ -256,24 +251,6 @@ impl<const NODES: usize> LeaderSet<NODES> {
         self.members[..count].iter()
     }
 
-    /// Returns the IDs of the nodes in the set.
-    pub fn leader_ids(&self) -> Vec<NodeId> {
-        let count = self.size();
-        self.members[..count].to_vec()
-    }
-
-    /// Returns parallel vectors of IDs and stake.
-    pub fn leader_ids_and_stake(&self) -> (Vec<NodeId>, Vec<Coin::<TAPE>>) {
-        let count = self.size();
-        let mut ids = Vec::with_capacity(count);
-        let mut stakes = Vec::with_capacity(count);
-        for i in 0..count {
-            ids.push(self.members[i]);
-            stakes.push(self.stake_at(i));
-        }
-        (ids, stakes)
-    }
-
     /// Sorts the active members in-place by descending stake, then ascending NodeId for
     /// determinism.
     #[inline]
@@ -300,6 +277,7 @@ impl<const NODES: usize> LeaderSet<NODES> {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn is_sorted(&self) -> bool {
         let count = self.size();
         for i in 1..count {
@@ -314,10 +292,10 @@ impl<const NODES: usize> LeaderSet<NODES> {
     }
 }
 
-impl<const NODES: usize> fmt::Debug for LeaderSet<NODES> {
+impl<const NODES: usize> fmt::Debug for Committee<NODES> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let count = self.size();
-        f.debug_struct("LeaderSet")
+        f.debug_struct("Committee")
             .field("member_count", &count)
             .field("members", &&self.members[..count])
             .field("keys", &&self.keys[..count])
@@ -326,10 +304,10 @@ impl<const NODES: usize> fmt::Debug for LeaderSet<NODES> {
     }
 }
 
-impl<const NODES: usize> fmt::Display for LeaderSet<NODES> {
+impl<const NODES: usize> fmt::Display for Committee<NODES> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let count = self.size();
-        write!(f, "LeaderSet(size={}, members=[", count)?;
+        write!(f, "Committee(size={}, members=[", count)?;
         for i in 0..count {
             if i > 0 {
                 write!(f, ", ")?;
@@ -339,229 +317,6 @@ impl<const NODES: usize> fmt::Display for LeaderSet<NODES> {
                 "{{ id: {:?}, stake: {:?} }}",
                 self.members[i], self.stakes[i]
             )?;
-        }
-        write!(f, "])")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AppointedSetError {
-    NotFound,
-}
-
-/// An AppointedSet defines a set of committee members and their assigned seats. The number of
-/// seats assigned depends on the originating LeaderSet stakes. More stake usually means more
-/// seats assigned to that member. The number of seats is finite and is distributed using the
-/// Jefferson method (a.k.a. d'Hondt method). A single committee member is likely to be assigned
-/// multiple seats and the seat count influences the weight of that node's signature in the
-/// committee.
-///
-/// Each seat is uniquely identified by its index in the seats array and is not interchangeable.
-/// Seat movement between epochs is minimized to reduce disruption (a pool dropping out and coming
-/// back the next epoch will likely get the same set of seat indicies if all stake remains equal).
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
-pub struct AppointedSet<const NODES: usize, const SEATS: usize> {
-    pub member_count: u64,
-    pub members: [NodeId; NODES],
-    pub keys: [BlsPubkey; NODES],  // (member_index -> bls pubkey)
-    pub seats: [RelativeNodeId; SEATS], // (seat_index -> member_index)
-}
-
-unsafe impl<const NODES: usize, const SEATS: usize> Zeroable for AppointedSet<NODES, SEATS> {}
-unsafe impl<const NODES: usize, const SEATS: usize> Pod for AppointedSet<NODES, SEATS> {}
-
-impl<const NODES: usize, const SEATS: usize> AppointedSet<NODES, SEATS> {
-
-    /// Creates a new, empty AppointedSet.
-    pub fn new() -> Self {
-        debug_assert!(NODES <= u8::MAX as usize);
-
-        Self {
-            member_count: 0,
-            members: [NodeId::zeroed(); NODES],
-            keys: [BlsPubkey::zeroed(); NODES],
-            seats: [0; SEATS],
-        }
-    }
-
-    /// Returns the size of the appointed committee (number of active members).
-    #[inline]
-    pub fn size(&self) -> usize {
-        (self.member_count as usize).min(NODES)
-    }
-
-    /// Checks if a node with the given NodeId is part of the committee.
-    #[inline]
-    pub fn contains(&self, node_id: &NodeId) -> bool {
-        self.index_of(node_id).is_some()
-    }
-
-    /// Returns the index of the node with the given NodeId in the members array, if it exists.
-    #[inline]
-    pub fn index_of(&self, node_id: &NodeId) -> Option<usize> {
-        let count = self.size();
-        self.members[..count]
-            .iter()
-            .position(|m| m == node_id)
-    }
-
-    /// Returns the BLS public key for the given member, if any.
-    pub fn bls_key_of(&self, member: &NodeId) -> Option<BlsPubkey> {
-        let Some(idx) = self.index_of(member) else {
-            return None;
-        };
-
-        Some(self.keys[idx])
-    }
-
-    /// Sets the BLS public key for the given member.
-    pub fn set_bls_key(&mut self, member: &NodeId, key: BlsPubkey) -> Result<(), AppointedSetError> {
-        let Some(idx) = self.index_of(member) else {
-            return Err(AppointedSetError::NotFound);
-        };
-
-        self.keys[idx] = key;
-        Ok(())
-    }
-
-    /// Returns the weight (number of seats) assigned to the node with the given NodeId.
-    pub fn node_weight(&self, node_id: &NodeId) -> u16 {
-        let count = self.size();
-        if count == 0 {
-            return 0;
-        }
-
-        if let Some(idx) = self.index_of(node_id) {
-            assert!(idx <= u8::MAX as usize);
-
-            self.seats
-                .iter()
-                .filter(|&&seat| seat == idx as u8)
-                .count() as u16
-        } else {
-            0
-        }
-    }
-
-    /// Returns a map of NodeId to their assigned weight (number of seats).
-    pub fn weights(&self) -> BTreeMap<NodeId, u16> {
-        let count = self.size();
-
-        // Initialize entries for active members
-        let mut map = BTreeMap::new();
-        for &m in &self.members[..count] {
-            map.entry(m).or_insert(0);
-        }
-
-        // Tally seats that reference valid member indices
-        for &seat in &self.seats {
-            let idx = seat as usize;
-            if idx < count {
-                let id = self.members[idx];
-                let e = map.entry(id).or_insert(0);
-                *e += 1;
-            }
-        }
-
-        map
-    }
-
-    /// Returns a vector of seat counts per active member (in member order).
-    /// Seats that point beyond member_count are ignored.
-    pub fn seat_counts(&self) -> Vec<u16> {
-        let count = self.size();
-        let mut counts = vec![0u16; count];
-        for &seat in &self.seats {
-            let idx = seat as usize;
-            if idx < count {
-                counts[idx] = counts[idx].saturating_add(1);
-            }
-        }
-        counts
-    }
-
-
-    /// Returns a list of seat indices assigned to the node with the given NodeId.
-    pub fn seats_for(&self, node_id: &NodeId) -> Vec<u16> {
-        let count = self.size();
-        if count == 0 {
-            return Vec::new();
-        }
-
-        if let Some(idx) = self.index_of(node_id) {
-            assert!(idx <= u8::MAX as usize);
-
-            let target = idx as u8;
-            let mut out = Vec::new();
-            for (seat_idx, &seat_owner) in self.seats.iter().enumerate() {
-                if seat_owner == target {
-                    out.push(seat_idx as u16);
-                }
-            }
-            out
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Returns an iterator over the node IDs.
-    pub fn iter_members(&self) -> impl Iterator<Item = &NodeId> {
-        let count = self.size();
-        self.members[..count].iter()
-    }
-}
-
-impl<const NODES: usize, const SEATS: usize> fmt::Debug for AppointedSet<NODES, SEATS> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let count = self.size();
-
-        // Only seats pointing to a valid member index are included.
-        let seats: Vec<(usize, _)> = self
-            .seats
-            .iter()
-            .enumerate()
-            .filter_map(|(seat_idx, &owner_idx)| {
-                let idx = owner_idx as usize;
-                if idx < count {
-                    Some((seat_idx, self.members[idx]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        f.debug_struct("AppointedSet")
-            .field("member_count", &count)
-            .field("members", &&self.members[..count])
-            .field("keys", &&self.keys[..count])
-            .field("seats", &seats)
-            .finish()
-    }
-}
-
-impl<const NODES: usize, const SEATS: usize> fmt::Display for AppointedSet<NODES, SEATS> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let count = self.size();
-
-        write!(f, "AppointedSet(size={}, members=[", count)?;
-        for i in 0..count {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{:?}", self.members[i])?;
-        }
-
-        let counts = self.seat_counts();
-
-        write!(f, "], weights=[")?;
-        let mut first = true;
-        for i in 0..count {
-            if !first {
-                write!(f, ", ")?;
-            }
-            first = false;
-            write!(f, "{:?}: {}", self.members[i], counts[i])?;
         }
         write!(f, "])")
     }
@@ -580,9 +335,8 @@ mod tests {
         NodeId::new(n as u64)
     }
 
-    // Helper to create an empty LeaderSet<N>
-    fn empty_leader_set<const N: usize>() -> LeaderSet<N> {
-        LeaderSet {
+    fn empty_set<const N: usize>() -> Committee<N> {
+        Committee {
             member_count: 0,
             members: [NodeId::zeroed(); N],
             keys: [BlsPubkey::zeroed(); N],
@@ -590,15 +344,18 @@ mod tests {
         }
     }
 
-    // Helper: stake for a node (used only in tests)
-    fn stake_for_node<const N: usize>(set: &LeaderSet<N>, node_id: &NodeId) -> Option<Coin<TAPE>> {
+    fn stake_for_node<const N: usize>(set: &Committee<N>, node_id: &NodeId) -> Option<Coin<TAPE>> {
         set.index_of(node_id).map(|i| set.stake_at(i))
     }
 
+    fn get_ids<const N: usize>(set: &Committee<N>) -> Vec<NodeId> {
+        set.iter_members().cloned().collect()
+    }
+
     #[test]
-    fn leader_evict_correct_node_simple() {
+    fn evict_node() {
         const N: usize = 5;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let m1 = node(1);
         let m2 = node(2);
@@ -616,19 +373,15 @@ mod tests {
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
 
-        // Full. Replace min (stake 6) if better with 11.
         let replaced_idx = set.replace_if_better(&m6, tape(11)).expect("should replace min");
         assert_eq!(set.stake_at(replaced_idx), tape(11));
 
         total = total - 6 + 11;
         assert_eq!(set.total_stake(), tape(total));
 
-        let active_ids = set.leader_ids();
+        let active_ids = get_ids(&set);
 
-        // node 5 should not be part of the set
         assert!(!active_ids.contains(&m5));
-
-        // all other nodes should be
         assert!(active_ids.contains(&m1));
         assert!(active_ids.contains(&m2));
         assert!(active_ids.contains(&m3));
@@ -637,9 +390,9 @@ mod tests {
     }
 
     #[test]
-    fn leader_evict_correct_node_with_updates() {
+    fn evict_update() {
         const N: usize = 5;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let nodes = [
             node(1),
@@ -650,7 +403,6 @@ mod tests {
             node(6),
         ];
 
-        // Insert out of order
         assert_eq!(set.insert(&nodes[3], tape(7)), Ok(0));
         assert_eq!(set.insert(&nodes[0], tape(10)), Ok(0));
         assert_eq!(set.insert(&nodes[2], tape(8)), Ok(1));
@@ -660,50 +412,44 @@ mod tests {
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
 
-        // Update node[0] to 12
         let old = set.update_stake(&nodes[0], tape(12)).unwrap();
         assert_eq!(old, tape(10));
         total = total - 10 + 12;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[0]), Some(tape(12)));
 
-        // Update node[2] to 13
         let old = set.update_stake(&nodes[2], tape(13)).unwrap();
         assert_eq!(old, tape(8));
         total = total - 8 + 13;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[2]), Some(tape(13)));
 
-        // Update node[3] to 9
         let old = set.update_stake(&nodes[3], tape(9)).unwrap();
         assert_eq!(old, tape(7));
         total = total - 7 + 9;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[3]), Some(tape(9)));
 
-        // Update node[1] to 10
         let old = set.update_stake(&nodes[1], tape(10)).unwrap();
         assert_eq!(old, tape(9));
         total = total - 9 + 10;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[1]), Some(tape(10)));
 
-        // Update node[4] to 7
         let old = set.update_stake(&nodes[4], tape(7)).unwrap();
         assert_eq!(old, tape(6));
         total = total - 6 + 7;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[4]), Some(tape(7)));
 
-        // Insert node[5] with 11; set is full so use replacement; should evict current min (7)
         let replaced_idx = set.replace_if_better(&nodes[5], tape(11)).expect("should replace min with 11");
         assert_eq!(set.stake_at(replaced_idx), tape(11));
         total = total - 7 + 11;
         assert_eq!(set.total_stake(), tape(total));
         assert_eq!(stake_for_node(&set, &nodes[5]), Some(tape(11)));
 
-        let active_ids = set.leader_ids();
-        assert!(!active_ids.contains(&nodes[4])); // evicted
+        let active_ids = get_ids(&set);
+        assert!(!active_ids.contains(&nodes[4]));
         assert!(active_ids.contains(&nodes[0]));
         assert!(active_ids.contains(&nodes[1]));
         assert!(active_ids.contains(&nodes[2]));
@@ -712,9 +458,9 @@ mod tests {
     }
 
     #[test]
-    fn leader_insert_equal_min_does_not_replace() {
+    fn insert_equal() {
         const N: usize = 4;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
         let b = node(2);
@@ -727,14 +473,12 @@ mod tests {
         assert_eq!(set.insert(&c, tape(8)), Ok(2));
         assert_eq!(set.insert(&d, tape(6)), Ok(3));
 
-        // Full, min = 6. Try to replace with equal stake 6; should NOT replace.
         let err = set.replace_if_better(&e, tape(6)).unwrap_err();
-        assert!(matches!(err, LeaderSetError::NotBetter { .. }));
+        assert!(matches!(err, CommitteeError::NotBetter { .. }));
 
-        // Insert should also fail because full.
-        assert_eq!(set.insert(&e, tape(6)), Err(LeaderSetError::Full));
+        assert_eq!(set.insert(&e, tape(6)), Err(CommitteeError::Full));
 
-        let ids = set.leader_ids();
+        let ids = get_ids(&set);
         assert!(ids.contains(&a));
         assert!(ids.contains(&b));
         assert!(ids.contains(&c));
@@ -743,15 +487,15 @@ mod tests {
     }
 
     #[test]
-    fn leader_update_below_threshold_removes_when_full() {
+    fn update_remove() {
         const N: usize = 5;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
-        let a = node(1); // 10
-        let b = node(2); // 9
-        let c = node(3); // 8
-        let d = node(4); // 7
-        let e = node(5); // 6
+        let a = node(1);
+        let b = node(2);
+        let c = node(3);
+        let d = node(4);
+        let e = node(5);
 
         assert_eq!(set.insert(&a, tape(10)), Ok(0));
         assert_eq!(set.insert(&b, tape(9)), Ok(1));
@@ -762,8 +506,7 @@ mod tests {
         let total_before = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total_before));
 
-        // Emulate old policy explicitly: when full, updating below the current threshold removes.
-        let threshold_before = set.threshold_stake(); // 6
+        let threshold_before = set.threshold_stake();
         let new_stake_for_c = tape(5);
         if new_stake_for_c < threshold_before {
             let (removed_member, removed_stake) = set.remove(&c).expect("c should be removed");
@@ -773,44 +516,16 @@ mod tests {
             let _old = set.update_stake(&c, new_stake_for_c).unwrap();
         }
 
-        let ids = set.leader_ids();
+        let ids = get_ids(&set);
         assert!(!ids.contains(&c));
-        let total_after = total_before - 8; // c removed
+        let total_after = total_before - 8;
         assert_eq!(set.total_stake(), tape(total_after));
     }
 
     #[test]
-    fn leader_ids_and_stake_parallel() {
+    fn nominate_insert() {
         const N: usize = 3;
-        let mut set: LeaderSet<N> = empty_leader_set();
-
-        let a = node(1);
-        let b = node(2);
-        let c = node(3);
-
-        assert_eq!(set.insert(&a, tape(5)), Ok(0));
-        assert_eq!(set.insert(&b, tape(10)), Ok(0));
-        assert_eq!(set.insert(&c, tape(20)), Ok(0));
-
-        let (ids, stakes) = set.leader_ids_and_stake();
-
-        assert_eq!(ids.len(), 3);
-        assert_eq!(stakes.len(), 3);
-
-        // The internal order matches insertion order when not full and no swap-removals occurred
-        assert_eq!(ids[0], c);
-        assert_eq!(ids[1], b);
-        assert_eq!(ids[2], a);
-
-        assert_eq!(stakes[0], tape(20));
-        assert_eq!(stakes[1], tape(10));
-        assert_eq!(stakes[2], tape(5));
-    }
-
-    #[test]
-    fn try_nominate_inserts_when_not_full() {
-        const N: usize = 3;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
         let b = node(2);
@@ -821,20 +536,19 @@ mod tests {
     }
 
     #[test]
-    fn try_join_replaces_when_full_and_better() {
+    fn join_replace() {
         const N: usize = 3;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
         let b = node(2);
         let c = node(3);
-        let d = node(4); // challenger
+        let d = node(4);
 
         assert_eq!(set.try_join(&a, tape(10)), Ok(0));
         assert_eq!(set.try_join(&b, tape(9)), Ok(1));
         assert_eq!(set.try_join(&c, tape(6)), Ok(2));
 
-        // Full now; challenger beats min (6)
         let idx = set.try_join(&d, tape(11)).expect("should replace min");
         assert_eq!(set.stake_at(idx), tape(11));
         assert!(!set.contains(&c));
@@ -842,9 +556,9 @@ mod tests {
     }
 
     #[test]
-    fn try_join_rejects_when_full_and_not_better() {
+    fn join_reject() {
         const N: usize = 2;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
         let b = node(2);
@@ -853,131 +567,41 @@ mod tests {
         assert_eq!(set.try_join(&a, tape(10)), Ok(0));
         assert_eq!(set.try_join(&b, tape(7)), Ok(1));
 
-        // Full; c == min (7) is not strictly better
         let err = set.try_join(&c, tape(7)).unwrap_err();
-        assert!(matches!(err, LeaderSetError::NotBetter { .. }));
+        assert!(matches!(err, CommitteeError::NotBetter { .. }));
         assert!(!set.contains(&c));
     }
 
     #[test]
-    fn try_join_rejects_when_already_present() {
+    fn join_present() {
         const N: usize = 3;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
 
         assert_eq!(set.try_join(&a, tape(10)), Ok(0));
         let err = set.try_join(&a, tape(12)).unwrap_err();
-        assert!(matches!(err, LeaderSetError::AlreadyPresent { .. }));
-        // Stake unchanged by try_join
+        assert!(matches!(err, CommitteeError::AlreadyPresent { .. }));
         let idx = set.index_of(&a).unwrap();
         assert_eq!(set.stake_at(idx), tape(10));
     }
 
     #[test]
-    fn try_join_rejects_zero_stake() {
+    fn join_zero() {
         const N: usize = 2;
-        let mut set: LeaderSet<N> = empty_leader_set();
+        let mut set: Committee<N> = empty_set();
 
         let a = node(1);
         let b = node(2);
 
         let err = set.try_join(&a, TAPE::zero()).unwrap_err();
-        assert!(matches!(err, LeaderSetError::ZeroStake));
+        assert!(matches!(err, CommitteeError::ZeroStake));
 
         assert_eq!(set.try_join(&a, tape(5)), Ok(0));
         assert_eq!(set.try_join(&b, tape(6)), Ok(0));
 
-        // Full; zero still invalid
         let c = node(3);
         let err = set.try_join(&c, TAPE::zero()).unwrap_err();
-        assert!(matches!(err, LeaderSetError::ZeroStake));
-    }
-
-    #[test]
-    fn appointed_weights_and_seats() {
-        const N: usize = 4;
-        const M: usize = 6;
-        let mut app: AppointedSet<N, M> = AppointedSet::new();
-
-        let a = node(1);
-        let b = node(2);
-        let c = node(3);
-
-        app.members[0] = a;
-        app.members[1] = b;
-        app.members[2] = c;
-        app.member_count = 3;
-
-        // Assign seats: 0->a, 1->a, 2->b, 3->c, 4->b, 5->a
-        app.seats = [0, 0, 1, 2, 1, 0];
-
-        assert!(app.contains(&a));
-        assert!(app.contains(&b));
-        assert!(app.contains(&c));
-        assert!(!app.contains(&node(9))); // not present
-
-        assert_eq!(app.node_weight(&a), 3);
-        assert_eq!(app.node_weight(&b), 2);
-        assert_eq!(app.node_weight(&c), 1);
-
-        let weights = app.weights();
-        assert_eq!(weights.get(&a), Some(&3));
-        assert_eq!(weights.get(&b), Some(&2));
-        assert_eq!(weights.get(&c), Some(&1));
-        assert_eq!(weights.len(), 3);
-
-        let a_seats = app.seats_for(&a);
-        let b_seats = app.seats_for(&b);
-        let c_seats = app.seats_for(&c);
-
-        assert_eq!(a_seats, vec![0, 1, 5]);
-        assert_eq!(b_seats, vec![2, 4]);
-        assert_eq!(c_seats, vec![3]);
-    }
-
-    #[test]
-    fn appointed_ignores_invalid_seats() {
-        const N: usize = 3;
-        const M: usize = 5;
-        let mut app: AppointedSet<N, M> = AppointedSet::new();
-
-        let a = node(1);
-        let b = node(2);
-        let c = node(3);
-
-        app.members[0] = a;
-        app.members[1] = b;
-        app.members[2] = c;
-        app.member_count = 3;
-
-        // Two seats reference invalid member index 3 (>= member_count)
-        app.seats = [0, 1, 3, 0, 3];
-
-        // Only seats 0,1,3 should count
-        assert_eq!(app.node_weight(&a), 2);
-        assert_eq!(app.node_weight(&b), 1);
-        assert_eq!(app.node_weight(&c), 0);
-
-        let weights = app.weights();
-        assert_eq!(weights.get(&a), Some(&2));
-        assert_eq!(weights.get(&b), Some(&1));
-        assert_eq!(weights.get(&c), Some(&0));
-    }
-
-    #[test]
-    fn appointed_new_is_empty() {
-        const N: usize = 5;
-        const M: usize = 8;
-        let app: AppointedSet<N, M> = AppointedSet::new();
-
-        assert_eq!(app.size(), 0);
-        assert!(!app.contains(&node(1)));
-
-        assert!(app.seats_for(&node(1)).is_empty());
-        assert_eq!(app.node_weight(&node(1)), 0);
-
-        let weights = app.weights();
-        assert!(weights.is_empty());
+        assert!(matches!(err, CommitteeError::ZeroStake));
     }
 }

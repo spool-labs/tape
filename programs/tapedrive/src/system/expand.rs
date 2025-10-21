@@ -62,9 +62,9 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
          let instruction = build_expand_system_ix(signer);
          let (system_address, _) = system_pda();
 
-         // Create a system account with half the required size
+         // Create a system account that is one byte short.
          let partial_account = System::zeroed()
-             .pack()[..System::get_size()/2].to_vec();
+             .pack()[..System::get_size()-1].to_vec();
 
          let accounts = vec![
              sol(signer, 1_000_000_000),
@@ -88,4 +88,47 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
              ]
          );
      }
+
+    #[test]
+    fn test_system_partial_expand() {
+        let signer = Pubkey::new_unique();
+        let (system_address, _) = system_pda();
+        let instruction = build_expand_system_ix(signer);
+
+        println!("System len: {}", System::zeroed().pack().len());
+        assert!(false);
+        
+        // Create a system account with minimal size (1 byte)
+        let initial_size = 1;
+        let partial_account = System::zeroed()
+            .pack()[0..initial_size].to_vec();
+        
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            pda(system_address, partial_account, tapedrive::ID),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        
+        // Calculate expected size after one expansion
+        let required_size = System::get_size();
+        let expected_size = initial_size
+            .saturating_add(MAX_PERMITTED_DATA_INCREASE)
+            .min(required_size);
+
+        assert!(expected_size > initial_size, "Expected size should be greater than initial size");
+
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&system_address)
+                    .space(expected_size)
+                    .build(),
+            ],
+        );
+    }
  }

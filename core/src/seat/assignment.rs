@@ -1,4 +1,5 @@
 use crate::types::NodeId;
+use bytemuck::{Pod, Zeroable};
 
 pub type SeatMapping = u8;
 pub type SeatIndex = u16;
@@ -18,6 +19,39 @@ pub enum SeatAssignmentError {
     BadIndex,
     NotNext,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seats<const SEATS: usize> {
+    pub seats: [SeatMapping; SEATS],
+}
+
+unsafe impl<const SEATS: usize> Zeroable for Seats<SEATS> {}
+unsafe impl<const SEATS: usize> Pod for Seats<SEATS> {}
+
+impl <const SEATS: usize> Seats<SEATS> {
+
+    pub fn new(seat_map: [SeatMapping; SEATS]) -> Self {
+        Self {
+            seats: seat_map,
+        }
+    }
+
+    pub fn reassign(
+        &self,
+        current_members: &[Member],
+        next_members: &[Member],
+        next_seat_counts: &[SeatCount],
+    ) -> Result<Vec<SeatMapping>, SeatAssignmentError> {
+        reassign_seats(
+            &self.seats,
+            current_members,
+            next_members,
+            next_seat_counts,
+        )
+    }
+}
+
 
 /// Reassign seats from current members to next members with minimal disruption.
 pub fn reassign_seats(
