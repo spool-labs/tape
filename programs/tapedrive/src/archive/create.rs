@@ -36,7 +36,7 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         archive_info,
         system_program_info,
         signer_info,
-        &tape_api::ID,
+        &tapedrive::ID,
         &[ARCHIVE],
     )?;
 
@@ -66,7 +66,7 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let env = test_env("tape".to_string());
+        let env = test_env();
         env.process_instruction(
             &instruction, 
             &accounts,

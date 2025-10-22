@@ -1,19 +1,19 @@
 #![allow(unexpected_cfgs)]
 
-//pub mod archive;
+pub mod archive;
 //pub mod blob;
 //pub mod committee;
-//pub mod epoch;
+pub mod epoch;
 //pub mod exchange;
 //pub mod node;
 //pub mod stake;
 pub mod system;
 //pub mod tape;
 //
-//use archive::*;
+use archive::*;
 //use blob::*;
 //use committee::*;
-//use epoch::*;
+use epoch::*;
 //use exchange::*;
 //use node::*;
 //use stake::*;
@@ -46,6 +46,10 @@ pub fn process_instruction(
             TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
             TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
+
+            TapeInstruction::CreateArchive => process_create_archive(accounts, data)?,
+            TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
+            
             //TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),

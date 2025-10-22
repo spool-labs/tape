@@ -1,9 +1,9 @@
 use steel::*;
 
-//mod archive;
+mod archive;
 //mod blob;
 //mod committee;
-//mod epoch;
+mod epoch;
 //mod exchange;
 //mod feature;
 //mod node;
@@ -12,10 +12,10 @@ mod system;
 //mod tape;
 mod token;
 
-//pub use archive::*;
+pub use archive::*;
 //pub use blob::*;
 //pub use committee::*;
-//pub use epoch::*;
+pub use epoch::*;
 //pub use exchange::*;
 //pub use feature::*;
 //pub use node::*;
@@ -66,10 +66,14 @@ pub enum TapeInstruction {
 
     // System
     Initialize,
+
     CreateSystem,
     ExpandSystem,
+
     CreateEpoch,
     AdvanceEpoch,
+    CreateArchive,
+
     RegisterFeature,
     CertifyFeature,
 
@@ -108,6 +112,11 @@ instruction!(TokenInstruction, InitializeMint);
 instruction!(TapeInstruction, CreateSystem);
 instruction!(TapeInstruction, ExpandSystem);
 instruction!(TapeInstruction, Initialize);
+
+instruction!(TapeInstruction, CreateEpoch);
+instruction!(TapeInstruction, AdvanceEpoch);
+
+instruction!(TapeInstruction, CreateArchive);
 
 //instruction!(ExchangeInstruction, RegisterExchange);
 //instruction!(ExchangeInstruction, SetExchangeRate);

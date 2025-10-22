@@ -1,13 +1,9 @@
 use steel::*;
-use crate::pda::*;
+use crate::program::tapedrive::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CreateEpoch {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ExpandEpoch {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -19,7 +15,7 @@ pub fn build_create_epoch_ix(
     let (epoch_address, _) = epoch_pda();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(epoch_address, false),
@@ -30,37 +26,16 @@ pub fn build_create_epoch_ix(
     }
 }
 
-pub fn build_expand_epoch_ix(
-    signer: Pubkey,
-) -> Instruction {
-    let (epoch_address, _) = epoch_pda();
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: ExpandEpoch {}.to_bytes(),
-    }
-}
-
 pub fn build_advance_epoch_ix(
     signer: Pubkey
 ) ->Instruction {
     let (epoch_address, _) = epoch_pda();
-    let (committee_address, _) = current_committee_pda();
-    let (prev_committee_address, _) = previous_committee_pda();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(epoch_address, false),
-            AccountMeta::new(committee_address, false),
-            AccountMeta::new(prev_committee_address, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),
     }
