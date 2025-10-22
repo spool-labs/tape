@@ -94,9 +94,6 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         let signer = Pubkey::new_unique();
         let (system_address, _) = system_pda();
         let instruction = build_expand_system_ix(signer);
-
-        println!("System len: {}", System::zeroed().pack().len());
-        assert!(false);
         
         // Create a system account with minimal size (1 byte)
         let initial_size = 1;

@@ -14,6 +14,9 @@ pub struct System {
     /// The program version.
     pub version: VersionId,
 
+    /// The number of storage nodes registered.
+    pub total_nodes: u64,
+
     // Committee members are responsible for validating and maintaining the network, they are the
     // stake weighted leaders elected each epoch.
 
@@ -36,21 +39,6 @@ pub struct System {
 
     /// The current seats assigned to members.
     pub seats: Seats<SEAT_COUNT>,
-
-    // Future usage and rewards are tracked for capacity planning and incentive distribution.
-    // Rewards are distributed to committee members based on their stake weight and performance
-    // from the fees collected each epoch.
-
-    /// The storage capacity reserved in future epochs.
-    pub capacity_used: FutureUsage<FUTURE_EPOCHS>,
-
-    /// The fees collected in future epochs.
-    pub fees_collected: FutureRewards<FUTURE_EPOCHS>,
-
-    // Statistics about the network.
-
-    /// The number of storage nodes currently registered.
-    pub total_nodes: u64,
 }
 
 state!(AccountType, System);

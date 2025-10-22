@@ -1,4 +1,4 @@
-//mod archive;
+mod archive;
 //mod blob;
 //mod committee;
 mod epoch;
@@ -10,7 +10,7 @@ mod system;
 //mod tape;
 mod treasury;
 //
-//pub use archive::*;
+pub use archive::*;
 //pub use blob::*;
 //pub use committee::*;
 pub use epoch::*;

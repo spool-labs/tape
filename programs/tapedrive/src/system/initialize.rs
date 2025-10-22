@@ -6,8 +6,9 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         signer_info, 
 
         system_info,
-        system_ata_info,
         epoch_info, 
+        archive_info,
+        archive_ata_info,
         mint_info, 
 
         system_program_info, 
@@ -29,6 +30,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?
         .is_epoch()?;
 
+    archive_info
+        .is_writable()?
+        .is_archive()?;
+
     // Check programs and sysvars.
 
     system_program_info
@@ -44,10 +49,12 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.total_nodes = 0;
-    //system.storage_capacity = StorageUnits(1000); // 1Gb
-    //system.storage_price = TAPE::from("0.0001"); // 1 TAPE per 1Mb
-    //system.future_usage = FutureUsage::new_at(epoch_number);
-    //system.future_rewards = FutureRewards::new_at(epoch_number);
+
+    let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
+    archive.storage_capacity = StorageUnits(1000); // 1Gb
+    archive.storage_price = TAPE::from("0.0001"); // 1 TAPE per 1Mb
+    archive.capacity_used = FutureUsage::new_at(epoch_number);
+    archive.fees_collected = FutureRewards::new_at(epoch_number);
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
     epoch.id = epoch_number;
@@ -56,8 +63,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Create the system_ata token account.
     create_associated_token_account(
         signer_info,
-        system_info,
-        system_ata_info,
+        archive_info,
+        archive_ata_info,
         mint_info,
         system_program_info,
         token_program_info,
@@ -81,11 +88,13 @@ mod tests {
         let instruction = build_initialize_ix(signer);
 
         let (system_address, _) = system_pda();
-        let (system_ata, _) = system_ata();
         let (epoch_address, _) = epoch_pda();
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
 
         let system = System::zeroed();
         let epoch = Epoch::zeroed();
+        let archive = Archive::zeroed();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -93,7 +102,8 @@ mod tests {
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
-            empty(system_ata),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            empty(archive_ata),
             mint(MAX_SUPPLY),
 
             system_program(),
@@ -124,8 +134,16 @@ mod tests {
                         ..epoch
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&system_ata).data(
-                    token(system_ata, system_address, 0).1.data.as_ref()
+                Check::account(&archive_address).data(
+                    Archive {
+                        storage_capacity: StorageUnits(1000),
+                        storage_price: TAPE::from("0.0001"),
+                        fees_collected: FutureRewards::new_at(EpochNumber(1)),
+                        capacity_used: FutureUsage::new_at(EpochNumber(1)),
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&archive_ata).data(
+                    token(archive_ata, archive_address, 0).1.data.as_ref()
                 ).build(),
             ]
         );

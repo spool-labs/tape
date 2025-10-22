@@ -14,6 +14,7 @@ pub const PROGRAM_ID: [u8; 32] =
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
 pub const SYSTEM:    &[u8] = b"system";
+pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
 pub const NODE:      &[u8] = b"node";
 pub const RESOURCE:  &[u8] = b"resource";
@@ -25,10 +26,22 @@ pub const SYSTEM_ADDRESS: Pubkey =
 pub const SYSTEM_BUMP: u8 =
     ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).1;
 
-pub const SYSTEM_ATA: Pubkey = Pubkey::new_from_array(
+pub const EPOCH_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).0);
+
+pub const EPOCH_BUMP: u8 =
+    ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
+
+pub const ARCHIVE_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).0);
+
+pub const ARCHIVE_BUMP: u8 =
+    ed25519::derive_program_address(&[ARCHIVE], &PROGRAM_ID).1;
+
+pub const ARCHIVE_ATA: Pubkey = Pubkey::new_from_array(
     ed25519::derive_program_address(
         &[
-            unsafe { &*(&SYSTEM_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
             unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
             unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
         ],
@@ -37,10 +50,10 @@ pub const SYSTEM_ATA: Pubkey = Pubkey::new_from_array(
     .0,
 );
 
-pub const SYSTEM_ATA_BUMP: u8 = 
+pub const ARCHIVE_ATA_BUMP: u8 = 
     ed25519::derive_program_address(
         &[
-            unsafe { &*(&SYSTEM_ADDRESS as *const Pubkey as *const [u8; 32]) },
+            unsafe { &*(&ARCHIVE_ADDRESS as *const Pubkey as *const [u8; 32]) },
             unsafe { &*(&spl_token::id() as *const Pubkey as *const [u8; 32]) },
             unsafe { &*(&MINT_ADDRESS as *const Pubkey as *const [u8; 32]) },
         ],
@@ -48,12 +61,9 @@ pub const SYSTEM_ATA_BUMP: u8 =
     )
     .1;
 
-pub const EPOCH_ADDRESS: Pubkey =
-    Pubkey::new_from_array(ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).0);
-
-pub const EPOCH_BUMP: u8 =
-    ed25519::derive_program_address(&[EPOCH], &PROGRAM_ID).1;
-
+// ====================================================================
+// PDA Functions
+// ====================================================================
 
 #[cfg(debug_assertions)]
 pub fn system_pda() -> (Pubkey, u8) {
@@ -80,10 +90,22 @@ pub fn epoch_pda() -> (Pubkey, u8) {
 
 #[cfg(debug_assertions)]
 #[inline(always)]
-pub fn system_ata() -> (Pubkey, u8) {
+pub fn archive_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[ARCHIVE], &id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn archive_pda() -> (Pubkey, u8) {
+    (ARCHIVE_ADDRESS, ARCHIVE_BUMP)
+}
+
+#[cfg(debug_assertions)]
+#[inline(always)]
+pub fn archive_ata() -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[
-            SYSTEM_ADDRESS.as_ref(),
+            ARCHIVE_ADDRESS.as_ref(),
             spl_token::ID.as_ref(),
             MINT_ADDRESS.as_ref(),
         ],
@@ -93,9 +115,10 @@ pub fn system_ata() -> (Pubkey, u8) {
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]
-pub fn system_ata() -> (Pubkey, u8) {
-    (SYSTEM_ATA, SYSTEM_ATA_BUMP)
+pub fn archive_ata() -> (Pubkey, u8) {
+    (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
 }
+
 
 #[inline(always)]
 pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
@@ -128,12 +151,16 @@ mod tests {
         assert_eq!(pda, SYSTEM_ADDRESS);
         assert_eq!(bump, SYSTEM_BUMP);
 
-        let (pda, bump) = system_ata();
-        assert_eq!(pda, SYSTEM_ATA);
-        assert_eq!(bump, SYSTEM_ATA_BUMP);
-
         let (pda, bump) = epoch_pda();
         assert_eq!(pda, EPOCH_ADDRESS);
         assert_eq!(bump, EPOCH_BUMP);
+
+        let (pda, bump) = archive_pda();
+        assert_eq!(pda, ARCHIVE_ADDRESS);
+        assert_eq!(bump, ARCHIVE_BUMP);
+
+        let (pda, bump) = archive_ata();
+        assert_eq!(pda, ARCHIVE_ATA);
+        assert_eq!(bump, ARCHIVE_ATA_BUMP);
     }
 }

@@ -54,9 +54,10 @@ pub fn build_initialize_ix(
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
-    let (system_ata, _) = system_ata();
     let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
+    let (archive_address, _) = archive_pda();
+    let (archive_ata, _) = archive_ata();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -64,8 +65,9 @@ pub fn build_initialize_ix(
             AccountMeta::new(signer, true),
 
             AccountMeta::new(system_address, false),
-            AccountMeta::new(system_ata, false),
             AccountMeta::new(epoch_address, false),
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(archive_ata, false),
             AccountMeta::new(mint_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
