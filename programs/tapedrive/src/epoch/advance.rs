@@ -15,61 +15,51 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     signer_info
         .is_signer()?;
 
-    let mut system = system_info
+    let system = system_info
         .is_writable()?
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
 
-    let mut archive = archive_info
+    let archive = archive_info
         .is_writable()?
         .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
-    let mut epoch = epoch_info
+    let epoch = epoch_info
         .is_writable()?
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    // Advance to the next epoch
-    epoch.id = next_epoch(epoch);
+
+    // Seat assignments
+    system.seats.reassign(
+        &system.committee,
+        &system.committee_next,
+    ).map_err(|_| TapeError::UnexpectedState)?;
+
+    // solana_program::msg!("seats: {:?}", system.seats);
 
     // Rotate committees
+    system.seats_prev = system.seats;
+    system.committee_prev = system.committee;
+    system.committee = system.committee_next;
 
-    solana_program::msg!("1");
-    solana_program::log::sol_log_compute_units();
+    // Update future accounting
 
-    //// Save previous committee
-    //previous_committee.inner = committee.inner;
-    //
-    //// Seat allocation for leaders (d’Hondt)
-    //let seats_total = committee.inner.seats.len();
-    //let leader_count = epoch.leaders.size();
-    //let counts = allocate_seats(&epoch.leaders.stakes[..leader_count], seats_total as u16);
-    //
-    //// Active slices
-    //let cur_count = committee.inner.size();
-    //let cur_members = &committee.inner.members[..cur_count];
-    //let lead_members = &epoch.leaders.members[..leader_count];
-    //let lead_counts = &counts[..leader_count];
-    //
-    //// Minimal-churn reassignment
-    //let new_seats = reassign_seats(
-    //    &committee.inner.seats,
-    //    cur_members,
-    //    lead_members,
-    //    lead_counts,
-    //)   
-    //    .map_err(|_| TapeError::UnexpectedState)?
-    //    .try_into()
-    //    .map_err(|_| TapeError::UnexpectedState)?;
-    //
-    //// Install new seats and leaders
-    //committee.inner.seats = new_seats;
-    //committee.inner.members = epoch.leaders.members;
-    //committee.inner.member_count = epoch.leaders.member_count;
+    assert!(archive.fees_collected.current_epoch() == epoch.id);
+    assert!(archive.capacity_used.current_epoch() == epoch.id);
 
-    //solana_program::msg!("after: \n{}", committee.inner);
-    //solana_program::msg!("seats: {:?}", committee.inner.seats);
+    // TODO: maybe this belongs somewhere else?
+    let rewards = archive.fees_collected.advance_epoch();
+    let usage = archive.capacity_used.advance_epoch();
+
+    solana_program::msg!("Rewards for epoch {}: {}", epoch.id.0, rewards);
+    solana_program::msg!("Usage for epoch {}: {}", epoch.id.0, usage);
+
+    solana_program::msg!("Advancing epoch from {} to {}", epoch.id.0, next_epoch(epoch).0);
+
+    // Advance to the next epoch
+    epoch.id = next_epoch(epoch);
 
     // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
     // - Syncing: nodes move recovery symbols based on seat assignments for the new committee
@@ -107,6 +97,14 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn member(id: u64, stake: u64) -> CommitteeMember {
+        CommitteeMember {
+            id: NodeId(id),
+            stake: TAPE(stake),
+            key: BlsPubkey::zeroed(),
+        }
+    }
+
     #[test]
     fn test_advance_epoch() {
         let signer = Pubkey::new_unique();
@@ -120,8 +118,18 @@ mod tests {
         // Setup existing accounts
 
         let mut epoch = Epoch::zeroed();
-        let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        epoch.id = EpochNumber(42);
+
+        system.version = VersionId::default();
+        system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000), ]);
+        system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000), ]);
+        system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000), ]);
+
+        archive.fees_collected.fast_forward_to(epoch.id);
+        archive.capacity_used.fast_forward_to(epoch.id);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),

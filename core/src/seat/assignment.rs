@@ -1,10 +1,11 @@
 use crate::types::NodeId;
+use crate::system::Committee;
+use super::dhondt::allocate_seats;
 use bytemuck::{Pod, Zeroable};
 
 pub type SeatMapping = u8;
 pub type SeatIndex = u16;
 pub type SeatCount = u16;
-pub type Member = NodeId;
 
 const REMOVED: u8 = u8::MAX;
 const MEMBER_LIMIT: usize = u8::MAX as usize;
@@ -31,24 +32,44 @@ unsafe impl<const SEATS: usize> Pod for Seats<SEATS> {}
 
 impl <const SEATS: usize> Seats<SEATS> {
 
+    /// Create a new seat mapping.
     pub fn new(seat_map: [SeatMapping; SEATS]) -> Self {
         Self {
             seats: seat_map,
         }
     }
 
-    pub fn reassign(
-        &self,
-        current_members: &[Member],
-        next_members: &[Member],
-        next_seat_counts: &[SeatCount],
-    ) -> Result<Vec<SeatMapping>, SeatAssignmentError> {
-        reassign_seats(
+    /// Reassign seats from current committee to next committee with minimal disruption.
+    pub fn reassign<const N:usize>(
+        &mut self,
+        current: &Committee<N>,
+        next: &Committee<N>,
+    ) -> Result<(), SeatAssignmentError> {
+
+        let members_current = current.active_members();
+        let members_next    = next.active_members();
+        let stakes_next     = next.active_stakes();
+
+        // Figure out how many seats each member should get.
+        let seat_counts = allocate_seats(
+            stakes_next,
+            SEATS as u16,
+        );
+
+        // Distribute seats with minimal disruption.
+        let seats = reassign_seats(
             &self.seats,
-            current_members,
-            next_members,
-            next_seat_counts,
-        )
+            members_current,
+            members_next,
+            &seat_counts,
+        )?;
+
+        // Update seat mapping
+        for i in 0..SEATS {
+            self.seats[i] = seats[i];
+        }
+
+        Ok(())
     }
 }
 
@@ -56,8 +77,8 @@ impl <const SEATS: usize> Seats<SEATS> {
 /// Reassign seats from current members to next members with minimal disruption.
 pub fn reassign_seats(
     current_seats: &[SeatMapping],
-    current_members: &[Member],
-    next_members: &[Member],
+    current_members: &[NodeId],
+    next_members: &[NodeId],
     next_seat_counts: &[SeatCount],
 ) -> Result<Vec<SeatMapping>, SeatAssignmentError> {
     if current_members.len() >= MEMBER_LIMIT {
@@ -106,8 +127,8 @@ pub fn reassign_seats(
 /// Create a union set of (current + next members), flagging those that are removed. 
 /// Then adjust the next_seat_counts to be relative to that union set.
 fn get_union_set(
-    current_members: &[Member],
-    next_members: &[Member],
+    current_members: &[NodeId],
+    next_members: &[NodeId],
     next_seat_counts: &[SeatCount],
 ) -> Result<(Vec<SeatMapping>, Vec<SeatCount>), SeatAssignmentError> {
 

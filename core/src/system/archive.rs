@@ -21,11 +21,20 @@ impl<const N: usize> FutureUsage<N> {
         Self::new_at(EpochNumber(0))
     }
 
+    /// Create a new FutureUsage starting at the specified epoch.
     pub fn new_at(start_epoch: EpochNumber) -> Self {
         let front = (start_epoch.as_u64() as usize) % N;
         Self {
             usage: RingBuffer::filled_zero_at(front),
             now: start_epoch,
+        }
+    }
+
+    /// Fast forward to a specific epoch, useful for initializing from state.
+    #[cfg(not(target_os = "solana"))]
+    pub fn fast_forward_to(&mut self, target_epoch: EpochNumber) {
+        while self.now < target_epoch {
+            self.advance_epoch();
         }
     }
 
@@ -160,11 +169,20 @@ impl<const N: usize> FutureRewards<N> {
         Self::new_at(EpochNumber(0))
     }
 
+    /// Create a new FutureRewards starting at the specified epoch.
     pub fn new_at(start_epoch: EpochNumber) -> Self {
         let front = (start_epoch.as_u64() as usize) % N;
         Self {
             rewards: RingBuffer::filled_zero_at(front),
             now: start_epoch,
+        }
+    }
+
+    /// Fast forward to a specific epoch, useful for initializing from state.
+    #[cfg(not(target_os = "solana"))]
+    pub fn fast_forward_to(&mut self, target_epoch: EpochNumber) {
+        while self.now < target_epoch {
+            self.advance_epoch();
         }
     }
 
