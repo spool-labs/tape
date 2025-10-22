@@ -29,12 +29,16 @@ pub fn build_create_epoch_ix(
 pub fn build_advance_epoch_ix(
     signer: Pubkey
 ) ->Instruction {
+    let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(archive_address, false),
             AccountMeta::new(epoch_address, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),

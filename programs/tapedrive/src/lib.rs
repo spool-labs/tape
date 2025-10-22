@@ -50,7 +50,7 @@ pub fn process_instruction(
             TapeInstruction::CreateArchive => process_create_archive(accounts, data)?,
             TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
             
-            //TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
+            TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

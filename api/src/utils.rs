@@ -1,7 +1,7 @@
 use steel::*;
 
 use tape_core::types::EpochNumber;
-//use crate::state::Epoch;
+use crate::state::Epoch;
 
 use spl_associated_token_account::get_associated_token_address;
 
@@ -23,12 +23,14 @@ where
     T: AsRef<[u8]>,
 {
     let bytes = val.as_ref();
+
     assert!(
-        bytes.len() <= NAME_LENGTH,
+        bytes.len() == NAME_LENGTH,
         "name too long ({} > {})",
         bytes.len(),
         NAME_LENGTH
     );
+
     padded_array::<NAME_LENGTH>(bytes)
 }
 
@@ -40,17 +42,17 @@ pub fn from_name(val: &[u8; NAME_LENGTH]) -> String {
     String::from_utf8(name_bytes).unwrap()
 }
 
-///// Helper: get the current epoch from an Epoch account
-//#[inline(always)]
-//pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
-//    epoch.id
-//}
-//
-///// Helper: get the next epoch from an Epoch account
-//#[inline(always)]
-//pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
-//    epoch.id.checked_add(EpochNumber::one()).unwrap()
-//}
+/// Helper: get the current epoch from an Epoch account
+#[inline(always)]
+pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
+    epoch.id
+}
+
+/// Helper: get the next epoch from an Epoch account
+#[inline(always)]
+pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
+    epoch.id.checked_add(EpochNumber::one()).unwrap()
+}
 
 /// Helper: get the associated token account
 #[inline(always)]
