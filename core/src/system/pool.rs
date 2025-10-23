@@ -31,35 +31,35 @@ pub struct StakingPool<const N: usize, const M: usize> {
     pub latest_epoch: EpochNumber,
 
     /// The total TAPE held by this pool (excluding commission).
-    pub tape_balance: Coin<TAPE>,
+    pub stake: Coin<TAPE>,
 
     /// The rewards this pool has earned from being active and available to distribute to stakers
-    pub rewards_pool: Coin<TAPE>,
-
-    /// The totlal number of shares issued by this pool.
-    pub count_shares: u64,
+    pub rewards: Coin<TAPE>,
 
     /// The commission (in TAPE) earned by the pool operator, available for withdrawal.
     pub commission: Coin<TAPE>,
+
+    /// The totlal number of shares issued by this pool.
+    pub num_shares: u64,
 
     /// The commission rate (in basis points, 1/100 of a percent) taken from rewards earned by this pool.
     pub commission_rate: BasisPoints,
 
     /// The pending commission rate changes, scheduled for future epochs.
     /// epoch -> u64(bps)
-    pub pending_commission_rate: PendingValues<M>,  
+    pub commission_changes: PendingValues<M>,  
 
     /// The pending stake additions and share withdrawals, scheduled for future epochs.
     /// activation_epoch -> principal
-    pub pending_stake: PendingValues<M>,            
-
-    /// The pending share withdrawals, scheduled for future epochs.
-    /// withdraw_epoch -> shares
-    pub pending_shares_withdraw: PendingValues<M>,  
+    pub incoming_tokens: PendingValues<M>,            
 
     /// The pending pre-active stake cancellations, scheduled for future epochs.
     /// activation_epoch -> principal canceled pre-active
-    pub pre_active_withdrawals: PendingValues<M>,   
+    pub outgoing_tokens: PendingValues<M>,   
+
+    /// The pending share withdrawals, scheduled for future epochs.
+    /// withdraw_epoch -> shares
+    pub outgoing_shares: PendingValues<M>,  
 
     /// Exchange rates (to shares) for epochs this pool was active.
     /// The most recent N rates are kept. 
@@ -74,22 +74,22 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         let latest_epoch = EpochNumber::zero();
         Self {
             latest_epoch,
-            count_shares: 0,
-            tape_balance: Coin::<TAPE>::zero(),
-            rewards_pool: Coin::<TAPE>::zero(),
+            num_shares: 0,
+            stake: Coin::<TAPE>::zero(),
+            rewards: Coin::<TAPE>::zero(),
             commission: Coin::<TAPE>::zero(),
             commission_rate,
-            pending_stake: PendingValues::new(),
-            pending_shares_withdraw: PendingValues::new(),
-            pre_active_withdrawals: PendingValues::new(),
-            pending_commission_rate: PendingValues::new(),
+            incoming_tokens: PendingValues::new(),
+            outgoing_shares: PendingValues::new(),
+            outgoing_tokens: PendingValues::new(),
+            commission_changes: PendingValues::new(),
             history: PreviousRates::new(),
         }
     }
 
     /// Get the most recent rate at or before the given epoch, 
     /// returning None if no such rate exists.
-    pub fn exchange_rate_at_epoch(&self, epoch: EpochNumber) -> Option<ExchangeRate> {
+    pub fn get_exchange_rate(&self, epoch: EpochNumber) -> Option<ExchangeRate> {
         // TODO: add a merkle tree lookup path for older rates. 
         // Shapshots should add to a history root value.
         // (the current desing will work for *years*)
@@ -112,7 +112,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         self.apply_pending_commission_rate(current_epoch);
 
         if rewards_gross > TAPE::zero() {
-            if self.tape_balance == TAPE::zero() {
+            if self.stake == TAPE::zero() {
                 return Err(PoolError::MustHaveStakedTape);
             }
 
@@ -126,10 +126,10 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
             self.commission = self.commission
                 .saturating_add(commission_cut.into());
 
-            self.rewards_pool = self.rewards_pool
+            self.rewards = self.rewards
                 .saturating_add(rewards_net);
 
-            self.tape_balance = self.tape_balance
+            self.stake = self.stake
                 .saturating_add(rewards_net);
         }
 
@@ -147,7 +147,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     ) -> Result<(), PoolError> {
 
         let effective_epoch = current_epoch + EpochNumber(2);
-        self.pending_commission_rate
+        self.commission_changes
             .insert_or_replace(effective_epoch, new_rate.into())
             .map_err(|_| PoolError::FailedToScheduleCommission)?;
 
@@ -156,53 +156,54 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
 
     /// Apply commission rate update if one is scheduled for current_epoch.
     pub fn apply_pending_commission_rate(&mut self, current_epoch: EpochNumber) {
-        if let Some(&new_rate) = self.pending_commission_rate.get(&current_epoch) {
+        if let Some(&new_rate) = self.commission_changes.get(&current_epoch) {
             self.commission_rate = BasisPoints(new_rate);
 
             // Clear all <= current
-            self.pending_commission_rate.flush(current_epoch);
+            self.commission_changes.flush(current_epoch);
         }
     }
 
-    /// Project the tape_balance at a future epoch
-    pub fn tape_balance_at_epoch(&self, epoch: EpochNumber) -> Coin<TAPE> {
-        let current_rate = ExchangeRate::new(
-            self.tape_balance.into(),
-            self.count_shares
-        );
+    /// Project the stake at a future epoch
+    pub fn get_stake_at(&self, epoch: EpochNumber) -> Coin<TAPE> {
+        // Calculate current exchange rate (stake per share)
+        let exchange_rate = ExchangeRate::new(self.stake.into(), self.num_shares);
 
-        let stake_additions = self.pending_stake.value_at(epoch);
-        let canceled_pre_active = self.pre_active_withdrawals.value_at(epoch);
-        let net_additions = stake_additions.saturating_sub(canceled_pre_active);
+        // Calculate net token additions (incoming - outgoing)
+        let incoming = self.incoming_tokens.value_at(epoch);
+        let outgoing = self.outgoing_tokens.value_at(epoch);
+        let net_additions = incoming.saturating_sub(outgoing);
 
-        let shares_withdraw = self.pending_shares_withdraw.value_at(epoch);
-        let withdrawals_tape = current_rate.convert_to_tape_amount(shares_withdraw);
+        // Convert outgoing shares to token amount
+        let outgoing_shares = self.outgoing_shares.value_at(epoch);
+        let outgoing_tokens = exchange_rate.convert_to_tape_amount(outgoing_shares);
 
-        self.tape_balance
+        // Compute final stake: current stake + net additions - outgoing tokens
+        self.stake
             .as_u64()
             .saturating_add(net_additions)
-            .saturating_sub(withdrawals_tape)
+            .saturating_sub(outgoing_tokens)
             .into()
     }
 
     /// Process pending stake/withdrawals for the current_epoch
     pub fn process_pending_stake(&mut self, current_epoch: EpochNumber) -> Result<(), PoolError> {
         let current_rate = ExchangeRate::new(
-            self.tape_balance.into(),
-            self.count_shares
+            self.stake.into(),
+            self.num_shares
         );
 
         self.history.push(current_epoch, current_rate);
 
-        // Handle tape_balance increases (due to pending stake additions)
+        // Handle stake increases (due to pending stake additions)
         self.process_pending_additions(current_epoch)?;
 
-        // Handle tape_balance reductions (due to pending share withdrawals)
+        // Handle stake reductions (due to pending share withdrawals)
         self.process_pending_reductions(current_epoch, current_rate)?;
 
-        // Correct the current number of shares using the newly updated tape_balance
-        self.count_shares = current_rate
-            .convert_to_other_amount(self.tape_balance.into());
+        // Correct the current number of shares using the newly updated stake
+        self.num_shares = current_rate
+            .convert_to_other_amount(self.stake.into());
 
         Ok(())
     }
@@ -210,22 +211,21 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     /// Process pending stake additions and pre-active cancellations for the current_epoch.
     fn process_pending_additions(&mut self, current_epoch: EpochNumber) -> Result<(), PoolError> {
         // Sum all pending stake before or at current_epoch
-        let total_pending = self.pending_stake.flush(current_epoch);
+        let incoming = self.incoming_tokens.flush(current_epoch);
 
         // Sum all pre-active cancellations before or at current_epoch
-        let canceled_pre_active = self.pre_active_withdrawals.flush(current_epoch);
+        let outgoing = self.outgoing_tokens.flush(current_epoch);
 
         // Net pending stake must be non-negative 
         // (this should be guaranteed by scheduling logic)
-        if canceled_pre_active > total_pending {
+        if outgoing > incoming {
             return Err(PoolError::PendingStakeExceeded);
         }
 
-        // Increase tape_balance by net added stake
-        let net_added = total_pending - canceled_pre_active;
-
+        // Increase stake by net added stake
+        let net_added = incoming - outgoing;
         if net_added > 0 {
-            self.tape_balance = self.tape_balance
+            self.stake = self.stake
                 .saturating_add(net_added.into());
         }
 
@@ -240,20 +240,20 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
     ) -> Result<(), PoolError> {
 
         // Sum all pending shares withdrawing before or at current_epoch
-        let total_shares_withdrawing = self.pending_shares_withdraw.flush(current_epoch);
+        let outgoing_shares = self.outgoing_shares.flush(current_epoch);
 
-        // Convert shares to tape at current rate and remove from tape_balance
+        // Convert shares to tape at current rate and remove from stake
         let net_removed = current_rate
-            .convert_to_tape_amount(total_shares_withdrawing);
+            .convert_to_tape_amount(outgoing_shares);
 
         // The net balance to remove must not exceed current balance
         // (this should be guaranteed by scheduling logic)
-        if self.tape_balance < net_removed.into() {
+        if self.stake < net_removed.into() {
             return Err(PoolError::TapeBalanceExceeded);
         }
 
         if net_removed > 0 {
-            self.tape_balance = self.tape_balance
+            self.stake = self.stake
                 .saturating_sub(net_removed.into());
         }
 
@@ -274,7 +274,7 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         // (may be changed later)
         let activation_epoch = current_epoch + EpochNumber(2);
 
-        self.pending_stake
+        self.incoming_tokens
             .insert_or_add(activation_epoch, stake_amount.into())
             .map_err(|e| { println!("{:?}", e); PoolError::FailedToScheduleStake})?;
 
@@ -310,8 +310,8 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
 
         if stake.activation_epoch > current_epoch {
             // Schedule the stake principal to be canceled at activation_epoch. 
-            // The net result is 0 change to tape_balance at that epoch for this stake.
-            self.pre_active_withdrawals
+            // The net result is 0 change to stake at that epoch for this stake.
+            self.outgoing_tokens
                 .insert_or_add(stake.activation_epoch, stake.amount.into())
                 .map_err(|_| PoolError::FailedToScheduleStake)?;
 
@@ -322,18 +322,18 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         // which would calculate rewards at withdraw time.
 
         let stake_activation_rate = self
-            .exchange_rate_at_epoch(stake.activation_epoch)
+            .get_exchange_rate(stake.activation_epoch)
             .ok_or(PoolError::NoSuchRate)?;
 
-        let count_shares = stake_activation_rate
+        let num_shares = stake_activation_rate
             .convert_to_other_amount(stake.amount.into());
 
-        if count_shares == 0 {
+        if num_shares == 0 {
             return Err(PoolError::ZeroShares);
         }
 
-        self.pending_shares_withdraw
-            .insert_or_add(withdraw_epoch, count_shares)
+        self.outgoing_shares
+            .insert_or_add(withdraw_epoch, num_shares)
             .map_err(|_| PoolError::FailedToScheduleWithdraw)?;
 
         Ok(withdraw_epoch)
@@ -378,11 +378,11 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
             stake_withdraw_epoch
         )?;
 
-        if rewards > self.rewards_pool {
-            rewards = self.rewards_pool;
+        if rewards > self.rewards {
+            rewards = self.rewards;
         }
 
-        self.rewards_pool = self.rewards_pool
+        self.rewards = self.rewards
             .saturating_sub(rewards);
 
         Ok(rewards)
@@ -396,10 +396,10 @@ impl<const N: usize, const M: usize> StakingPool<N, M> {
         withdraw_epoch: EpochNumber,
     ) -> Result<Coin<TAPE>, PoolError> {
 
-        let at_activation = self.exchange_rate_at_epoch(activation_epoch)
+        let at_activation = self.get_exchange_rate(activation_epoch)
             .ok_or(PoolError::NoSuchRate)?;
 
-        let at_withdraw = self.exchange_rate_at_epoch(withdraw_epoch)
+        let at_withdraw = self.get_exchange_rate(withdraw_epoch)
             .ok_or(PoolError::NoSuchRate)?;
 
         let shares = at_activation
@@ -431,8 +431,8 @@ mod tests {
     fn new_ok() {
         let p = P::new(BasisPoints(1000));
         assert_eq!(p.latest_epoch, epoch(0));
-        assert_eq!(p.tape_balance, TAPE::zero());
-        assert_eq!(p.count_shares, 0);
+        assert_eq!(p.stake, TAPE::zero());
+        assert_eq!(p.num_shares, 0);
         assert_eq!(p.commission_rate, BasisPoints(1000));
     }
 
@@ -442,14 +442,14 @@ mod tests {
         let s = p.stake_with_pool(epoch(5), tape(700)).unwrap();
         // E+2 scheduling
         assert_eq!(s.activation_epoch, epoch(7));
-        assert_eq!(p.pending_stake.value_at(epoch(6)), 0);
-        assert_eq!(p.pending_stake.value_at(epoch(7)), 700);
+        assert_eq!(p.incoming_tokens.value_at(epoch(6)), 0);
+        assert_eq!(p.incoming_tokens.value_at(epoch(7)), 700);
     }
 
     #[test]
     fn rate_none() {
         let p = P::new(BasisPoints(0));
-        assert!(p.exchange_rate_at_epoch(epoch(4)).is_none());
+        assert!(p.get_exchange_rate(epoch(4)).is_none());
     }
 
     // -------------------- Epoch & commission --------------------
@@ -458,15 +458,15 @@ mod tests {
     fn adv_commission() {
         let mut p = P::new(BasisPoints(1000)); // 10%
         // Activate 1_000 at E1
-        p.pending_stake.insert_or_add(epoch(1), 1_000).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 1_000).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
-        assert_eq!(p.tape_balance, tape(1_000));
+        assert_eq!(p.stake, tape(1_000));
 
         // Add 500 gross at E2 → 10% commission, 450 net
         p.advance_epoch(epoch(2), tape(500)).unwrap();
         assert_eq!(p.commission, tape(50));
-        assert_eq!(p.rewards_pool, tape(450));
-        assert_eq!(p.tape_balance, tape(1_450));
+        assert_eq!(p.rewards, tape(450));
+        assert_eq!(p.stake, tape(1_450));
     }
 
     #[test]
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn epoch_dupe_err() {
         let mut p = P::new(BasisPoints(0));
-        p.pending_stake.insert_or_add(epoch(1), 1).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 1).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
         let err = p.advance_epoch(epoch(1), tape(0)).unwrap_err();
         assert!(matches!(err, PoolError::EpochAlreadyProcessed));
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn set_comm_next() {
         let mut p = P::new(BasisPoints(1000));
-        p.pending_stake.insert_or_add(epoch(1), 100).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 100).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
         p.set_next_commission(epoch(2), BasisPoints(2000)).unwrap(); // applies at E4
         p.advance_epoch(epoch(3), tape(0)).unwrap();
@@ -502,31 +502,31 @@ mod tests {
     #[test]
     fn process_pend() {
         let mut p = P::new(BasisPoints(0));
-        p.pending_stake.insert_or_add(epoch(1), 1000).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 1000).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
-        assert_eq!(p.tape_balance, tape(1000));
-        assert_eq!(p.count_shares, 1000); // flat at first snapshot
+        assert_eq!(p.stake, tape(1000));
+        assert_eq!(p.num_shares, 1000); // flat at first snapshot
     }
 
     #[test]
     fn balance_proj() {
         let mut p = P::new(BasisPoints(0));
-        p.pending_stake.insert_or_add(epoch(1), 1000).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 1000).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap(); // balance=1000, shares=1000
         // Schedule more stake for E5 and a withdraw at E6
-        p.pending_stake.insert_or_add(epoch(5), 600).unwrap();
-        p.pending_shares_withdraw.insert_or_add(epoch(6), 200).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(5), 600).unwrap();
+        p.outgoing_shares.insert_or_add(epoch(6), 200).unwrap();
         // Projection uses current rate (flat 1:1 here)
-        assert_eq!(p.tape_balance_at_epoch(epoch(4)), tape(1000));
-        assert_eq!(p.tape_balance_at_epoch(epoch(5)), tape(1600));
-        assert_eq!(p.tape_balance_at_epoch(epoch(6)), tape(1400));
+        assert_eq!(p.get_stake_at(epoch(4)), tape(1000));
+        assert_eq!(p.get_stake_at(epoch(5)), tape(1600));
+        assert_eq!(p.get_stake_at(epoch(6)), tape(1400));
     }
 
     #[test]
     fn pend_over_cancel_err() {
         let mut p = P::new(BasisPoints(0));
-        p.pre_active_withdrawals.insert_or_add(epoch(3), 200).unwrap();
-        p.pending_stake.insert_or_add(epoch(3), 100).unwrap();
+        p.outgoing_tokens.insert_or_add(epoch(3), 200).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(3), 100).unwrap();
         let err = p.process_pending_stake(epoch(3)).unwrap_err();
         assert!(matches!(err, PoolError::PendingStakeExceeded));
     }
@@ -534,10 +534,10 @@ mod tests {
     #[test]
     fn tape_exceed_err() {
         let mut p = P::new(BasisPoints(0));
-        p.pending_stake.insert_or_add(epoch(1), 1000).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 1000).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
         // current_rate = 1000/1000; withdrawing 1500 shares exceeds balance
-        p.pending_shares_withdraw.insert_or_add(epoch(2), 1500).unwrap();
+        p.outgoing_shares.insert_or_add(epoch(2), 1500).unwrap();
         let err = p.process_pending_stake(epoch(2)).unwrap_err();
         assert!(matches!(err, PoolError::TapeBalanceExceeded));
     }
@@ -551,8 +551,8 @@ mod tests {
         let mut s = p.stake_with_pool(epoch(5), tape(500)).unwrap();
         let we = p.unstake_from_pool(&mut s, epoch(5)).unwrap();
         assert_eq!(we, epoch(7)); // current(5)+2
-        assert_eq!(p.pre_active_withdrawals.value_at(epoch(7)), 500);
-        assert_eq!(p.pending_shares_withdraw.value_at(epoch(7)), 0);
+        assert_eq!(p.outgoing_tokens.value_at(epoch(7)), 500);
+        assert_eq!(p.outgoing_shares.value_at(epoch(7)), 0);
     }
 
     #[test]
@@ -567,7 +567,7 @@ mod tests {
         // Unstake at E3 → withdraw at E5; shares computed from rate at activation (E3)
         let we = p.unstake_from_pool(&mut s, epoch(3)).unwrap();
         assert_eq!(we, epoch(5));
-        assert_eq!(p.pending_shares_withdraw.value_at(epoch(5)), 1000); // flat
+        assert_eq!(p.outgoing_shares.value_at(epoch(5)), 1000); // flat
     }
 
     // -------------------- Reward claiming --------------------
@@ -590,7 +590,7 @@ mod tests {
         let mut p = P::new(BasisPoints(0));
 
         // Seed the pool so rewards can be earned.
-        p.pending_stake.insert_or_add(epoch(1), 100).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 100).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();   // E1: balance=100
         p.advance_epoch(epoch(2), tape(0)).unwrap();   // E2
         p.advance_epoch(epoch(3), tape(0)).unwrap();   // E3: snapshot exists
@@ -603,10 +603,10 @@ mod tests {
         assert_eq!(we, epoch(5));
 
         // Add rewards AFTER activation, so s accrues rewards (E4 only).
-        p.advance_epoch(epoch(4), tape(100)).unwrap(); // now rewards_pool=100, rate increases
+        p.advance_epoch(epoch(4), tape(100)).unwrap(); // now rewards=100, rate increases
 
         // Cap rewards pool to 10 to exercise the payout limit
-        p.rewards_pool = tape(10);
+        p.rewards = tape(10);
 
         // Ensure a snapshot exists at withdraw epoch
         p.advance_epoch(epoch(5), tape(0)).unwrap();
@@ -614,7 +614,7 @@ mod tests {
         // Rewards owed (>10) but we cap at 10
         let paid = p.claim_stake_rewards(&mut s, epoch(5)).unwrap();
         assert_eq!(paid, tape(10));
-        assert_eq!(p.rewards_pool, tape(0));
+        assert_eq!(p.rewards, tape(0));
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
     fn calc_minimal() {
         let mut p = P::new(BasisPoints(0));
         // E1: +100 stake → shares 100
-        p.pending_stake.insert_or_add(epoch(1), 100).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 100).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap();
         // E2: +20 rewards; now rate = 120/100
         p.advance_epoch(epoch(2), tape(20)).unwrap();
@@ -650,7 +650,7 @@ mod tests {
         // Keep only 2 rates
         type PS = PoolN<2, 2>;
         let mut p = PS::new(BasisPoints(0));
-        p.pending_stake.insert_or_add(epoch(1), 100).unwrap();
+        p.incoming_tokens.insert_or_add(epoch(1), 100).unwrap();
         p.advance_epoch(epoch(1), tape(0)).unwrap(); // snapshot E1
         p.advance_epoch(epoch(2), tape(0)).unwrap(); // snapshot E2
         p.advance_epoch(epoch(3), tape(0)).unwrap(); // snapshot E3 (E1 likely evicted)
@@ -728,7 +728,7 @@ mod tests {
         p.advance_epoch(epoch(3), tape(202)).unwrap();   // E3 rewards gross=202 → commission=20, net=182
 
         assert_eq!(p.commission, tape(20));
-        assert_eq!(p.rewards_pool, tape(182));
+        assert_eq!(p.rewards, tape(182));
 
         // Unstake at E3 → withdraw E5; no more rewards
         p.unstake_from_pool(&mut alice, epoch(3)).unwrap();
