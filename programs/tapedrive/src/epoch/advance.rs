@@ -3,7 +3,6 @@ use tape_api::prelude::*;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let now = Clock::get()?.unix_timestamp;
-
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
         signer_info,
@@ -32,6 +31,16 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
+    if !epoch.state.is_next_ready() {
+        return Err(ProgramError::Custom(1));
+        //return Err(TapeError::InvalidEpochState);
+    }
+
+    if epoch.last_epoch_ms + EPOCH_DURATION > now {
+        return Err(ProgramError::Custom(3));
+        //return Err(TapeError::EpochNotYetOver);
+    }
+
     debug_assert!(archive.fees_collected.current_epoch() == epoch.id);
     debug_assert!(archive.capacity_used.current_epoch() == epoch.id);
 
@@ -52,7 +61,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
-    epoch.state.set_syncing(now);
+    epoch.state.set_syncing();
     epoch.last_epoch_ms = now;
 
     // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
@@ -101,6 +110,8 @@ mod tests {
 
     #[test]
     fn test_advance_epoch() {
+        let env = test_env();
+
         let signer = Pubkey::new_unique();
 
         let instruction = build_advance_epoch_ix(signer);
@@ -115,7 +126,11 @@ mod tests {
         let mut archive = Archive::zeroed();
         let mut system = System::zeroed();
 
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
         epoch.id = EpochNumber(42);
+        epoch.state = EpochState::next_ready();
+        epoch.last_epoch_ms = last_epoch;
 
         system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000), ]);
         system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000), ]);
@@ -152,7 +167,6 @@ mod tests {
         let expected_seats = Seats::try_from_slice(seats.as_ref())
             .unwrap();
 
-        let env = test_env();
         env.process_instruction(
             &instruction, 
             &accounts,
@@ -168,17 +182,13 @@ mod tests {
                         ..system
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&epoch_address).data({
-                    let now = env.now();
-                    let mut state = EpochState::new(); 
-                    state.set_syncing(now);
-
+                Check::account(&epoch_address).data(
                     Epoch {
                         id: EpochNumber(43),
-                        state,
-                        last_epoch_ms: now,
+                        state: EpochState::syncing(),
+                        last_epoch_ms: env.now(),
                     }.pack().as_ref()
-                }).build(),
+                ).build(),
                 Check::account(&archive_address).data({
                     let mut fees_collected = FutureRewards::new_at(EpochNumber(43));
                     fees_collected.checked_add(TAPE(1000), EpochNumber(43), EpochNumber(100)).unwrap();
