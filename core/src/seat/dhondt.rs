@@ -62,7 +62,10 @@ pub fn allocate_seats(
         }
     }
 
-    seats.into_iter().map(|x| x as u16).collect()
+    seats
+        .into_iter()
+        .map(|x| x as u16)
+        .collect()
 }
 
 /// Limit the maximum number of seats per node based on the total number of nodes.

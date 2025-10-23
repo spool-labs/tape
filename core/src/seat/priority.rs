@@ -61,6 +61,76 @@ impl Ord for NodePriority {
     }
 }
 
+/// Lightweight, fast binary max-heap without std::collections
+pub struct MaxHeap<T: Ord> {
+    data: Vec<T>,
+}
+
+impl<T: Ord> MaxHeap<T> {
+    #[inline]
+    pub fn with_capacity(cap: usize) -> Self {
+        MaxHeap { data: Vec::with_capacity(cap) }
+    }
+
+    #[inline]
+    pub fn push(&mut self, v: T) {
+        self.data.push(v);
+        self.sift_up(self.data.len() - 1);
+    }
+
+    #[inline]
+    pub fn pop(&mut self) -> Option<T> {
+        let len = self.data.len();
+        if len == 0 {
+            return None;
+        }
+        self.data.swap(0, len - 1);
+        let max = self.data.pop();
+        if !self.data.is_empty() {
+            self.sift_down(0);
+        }
+        max
+    }
+
+    #[inline]
+    pub fn sift_up(&mut self, mut idx: usize) {
+        while idx > 0 {
+            let parent = (idx - 1) >> 1;
+            if self.data[idx] > self.data[parent] {
+                self.data.swap(idx, parent);
+                idx = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn sift_down(&mut self, mut idx: usize) {
+        let len = self.data.len();
+        loop {
+            let left = (idx << 1) + 1;
+            let right = left + 1;
+
+            if left >= len {
+                break;
+            }
+
+            let mut largest = left;
+            if right < len && self.data[right] > self.data[left] {
+                largest = right;
+            }
+
+            if self.data[largest] > self.data[idx] {
+                self.data.swap(idx, largest);
+                idx = largest;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

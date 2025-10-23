@@ -33,6 +33,8 @@ impl<const N: usize> FutureUsage<N> {
     /// Fast forward to a specific epoch, useful for initializing from state.
     #[cfg(not(target_os = "solana"))]
     pub fn fast_forward_to(&mut self, target_epoch: EpochNumber) {
+        debug_assert!(self.usage.len() == N);
+
         while self.now < target_epoch {
             self.advance_epoch();
         }
@@ -45,6 +47,8 @@ impl<const N: usize> FutureUsage<N> {
 
     /// Advance to the next epoch, returning the usage of the current epoch.
     pub fn advance_epoch(&mut self) -> StorageUnits {
+        debug_assert!(self.usage.len() == N);
+
         let current_usage = *self.usage
             .front()
             .unwrap_or(&StorageUnits::zero());
@@ -61,6 +65,8 @@ impl<const N: usize> FutureUsage<N> {
     /// Get the allocated capacity for the provided epoch.
     #[inline]
     pub fn get(&self, epoch: EpochNumber) -> Result<StorageUnits, SystemError> {
+        debug_assert!(self.usage.len() == N);
+
         if epoch < self.now {
             return Err(SystemError::EpochInPast);
         }
@@ -81,6 +87,7 @@ impl<const N: usize> FutureUsage<N> {
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
     ) -> bool {
+        debug_assert!(self.usage.len() == N);
 
         let start = start_epoch.as_u64();
         let end = end_epoch.as_u64();
@@ -103,13 +110,15 @@ impl<const N: usize> FutureUsage<N> {
         true
     }
 
-    /// Reserve capacity in the specified epoch range.
+    /// Reserve capacity in the specified epoch range, units is per epoch.
     pub fn reserve_capacity(
         &mut self,
         units: StorageUnits,
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
     ) -> Result<(), SystemError> {
+        debug_assert!(self.usage.len() == N);
+
         let (start_offset, end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
 
         for i in start_offset..end_offset {
@@ -125,13 +134,15 @@ impl<const N: usize> FutureUsage<N> {
         Ok(())
     }
 
-    /// Cancel previously reserved capacity in the specified epoch range.
+    /// Cancel previously reserved capacity in the specified epoch range, units is per epoch.
     pub fn cancel_capacity(
         &mut self,
+        units: StorageUnits,
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
-        units: StorageUnits,
     ) -> Result<(), SystemError> {
+        debug_assert!(self.usage.len() == N);
+
         let (start_offset, mut end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
 
         // Clamp to current length
@@ -150,6 +161,13 @@ impl<const N: usize> FutureUsage<N> {
         Ok(())
     }
 }
+
+impl<const N: usize> Default for FutureUsage<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -181,6 +199,8 @@ impl<const N: usize> FutureRewards<N> {
     /// Fast forward to a specific epoch, useful for initializing from state.
     #[cfg(not(target_os = "solana"))]
     pub fn fast_forward_to(&mut self, target_epoch: EpochNumber) {
+        debug_assert!(self.rewards.len() == N);
+
         while self.now < target_epoch {
             self.advance_epoch();
         }
@@ -193,12 +213,14 @@ impl<const N: usize> FutureRewards<N> {
 
     /// Advance to the next epoch, returning the rewards of the current epoch.
     pub fn advance_epoch(&mut self) -> Coin::<TAPE> {
+        debug_assert!(self.rewards.len() == N);
+
         let current_rewards = *self.rewards
             .front()
-            .unwrap_or(&Coin::<TAPE>::zero());
+            .unwrap_or(&TAPE::zero());
 
         // Push a new zeroed entry for the new future epoch
-        self.rewards.push(Coin::<TAPE>::zero());
+        self.rewards.push(TAPE::zero());
 
         // Advance the epoch number
         self.now.increment();
@@ -209,6 +231,8 @@ impl<const N: usize> FutureRewards<N> {
     /// Get the rewards for the provided epoch.
     #[inline]
     pub fn get(&self, epoch: EpochNumber) -> Result<Coin::<TAPE>, SystemError> {
+        debug_assert!(self.rewards.len() == N);
+
         if epoch < self.now {
             return Err(SystemError::EpochInPast);
         }
@@ -221,13 +245,15 @@ impl<const N: usize> FutureRewards<N> {
         self.rewards.get(index).copied().ok_or(SystemError::IndexOutOfBounds)
     }
 
-    /// Add rewards in the specified epoch range.
-    pub fn add_rewards(
+    /// Add rewards in the specified epoch range, amount is per epoch.
+    pub fn checked_add(
         &mut self,
         amount: Coin::<TAPE>,
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
     ) -> Result<(), SystemError> {
+        debug_assert!(self.rewards.len() == N);
+
         let (start_offset, end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
 
         for i in start_offset..end_offset {
@@ -243,13 +269,15 @@ impl<const N: usize> FutureRewards<N> {
         Ok(())
     }
 
-    /// Slash rewards in the specified epoch range.
-    pub fn slash_rewards(
+    /// Slash rewards in the specified epoch range, amount is per epoch.
+    pub fn checked_sub(
         &mut self,
+        amount: Coin::<TAPE>,
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
-        amount: Coin::<TAPE>,
     ) -> Result<(), SystemError> {
+        debug_assert!(self.rewards.len() == N);
+
         let (start_offset, mut end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
 
         // Clamp to current length
@@ -267,9 +295,13 @@ impl<const N: usize> FutureRewards<N> {
 
         Ok(())
     }
-
 }
 
+impl<const N: usize> Default for FutureRewards<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -278,346 +310,360 @@ mod tests {
 
     const N: usize = 5;
 
+    // Helper function for creating EpochNumber
+    fn epoch(n: u64) -> EpochNumber {
+        EpochNumber(n)
+    }
+
+    // Helper function for creating StorageUnits
+    fn storage(n: u64) -> StorageUnits {
+        StorageUnits(n)
+    }
+
+    // Helper function for creating Coin::<TAPE>
+    fn tape(n: u64) -> Coin::<TAPE> {
+        TAPE(n)
+    }
+
     #[test]
-    fn test_future_rewards_new() {
+    fn rewards_new() {
         let db: FutureRewards<N> = FutureRewards::new();
-        assert_eq!(db.now, EpochNumber(0));
+        assert_eq!(db.now, epoch(0));
         assert_eq!(db.rewards.len(), N);
 
         for i in 0..N {
             assert_eq!(
-                db.get(EpochNumber(i as u64)).unwrap(),
-                Coin::<TAPE>::zero()
+                db.get(epoch(i as u64)).unwrap(),
+                tape(0)
             );
         }
     }
 
     #[test]
-    fn test_future_rewards_get_rewards_at() {
+    fn rewards_get() {
         let db: FutureRewards<N> = FutureRewards::new();
 
         // Valid ranges
         for i in 0..N as u64 {
-            assert_eq!(db.get(EpochNumber(i)).unwrap(), Coin::<TAPE>::zero());
+            assert_eq!(db.get(epoch(i)).unwrap(), tape(0));
         }
 
         // Errors
         assert_eq!(
-            db.get(EpochNumber(u64::MAX)),
+            db.get(epoch(u64::MAX)),
             Err(SystemError::EpochTooFar)
         );
     }
 
     #[test]
-    fn test_future_rewards_advance_epoch() {
+    fn rewards_advance() {
         let mut db: FutureRewards<N> = FutureRewards::new();
 
         for _ in 0..10 {
             let current = db.advance_epoch();
-            assert_eq!(current, Coin::<TAPE>::zero());
+            assert_eq!(current, tape(0));
             assert_eq!(db.rewards.len(), N);
         }
 
-        assert_eq!(db.now, EpochNumber(10));
+        assert_eq!(db.now, epoch(10));
         for i in 0..N as u64 {
             assert_eq!(
-                db.get(EpochNumber(10 + i)).unwrap(),
-                Coin::<TAPE>::zero()
+                db.get(epoch(10 + i)).unwrap(),
+                tape(0)
             );
         }
     }
 
     #[test]
-    fn test_future_rewards_add_and_slash_rewards() {
+    fn rewards_modify() {
         let mut db: FutureRewards<N> = FutureRewards::new();
-        let amount = TAPE::new(100);
+        let amount = tape(100);
 
         // Add in epochs 1 to 3
-        db.add_rewards(amount, EpochNumber(1), EpochNumber(3))
+        db.checked_add(amount, epoch(1), epoch(3))
             .unwrap();
 
-        assert_eq!(db.get(EpochNumber(0)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), Coin::<TAPE>::zero());
+        assert_eq!(db.get(epoch(0)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(1)).unwrap(), amount);
+        assert_eq!(db.get(epoch(2)).unwrap(), amount);
+        assert_eq!(db.get(epoch(3)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(4)).unwrap(), tape(0));
 
         // Slash
-        db.slash_rewards(EpochNumber(1), EpochNumber(3), amount)
+        db.checked_sub(amount, epoch(1), epoch(3))
             .unwrap();
 
         for i in 0..N as u64 {
-            assert_eq!(db.get(EpochNumber(i)).unwrap(), Coin::<TAPE>::zero());
+            assert_eq!(db.get(epoch(i)).unwrap(), tape(0));
         }
     }
 
     #[test]
-    fn test_future_rewards_add_errors() {
+    fn rewards_add_error() {
         let mut db: FutureRewards<N> = FutureRewards::new();
-        let amount = TAPE::new(100);
+        let amount = tape(100);
 
         // Invalid ranges
         assert_eq!(
-            db.add_rewards(amount, EpochNumber(0), EpochNumber(0)),
+            db.checked_add(amount, epoch(0), epoch(0)),
             Err(SystemError::EndNotAfterStart)
         );
         assert_eq!(
-            db.add_rewards(amount, EpochNumber(0), EpochNumber(N as u64 + 1)),
+            db.checked_add(amount, epoch(0), epoch(N as u64 + 1)),
             Err(SystemError::RangeTooLarge)
         );
         assert_eq!(
-            db.add_rewards(amount, EpochNumber(N as u64), EpochNumber(N as u64 + 1)),
+            db.checked_add(amount, epoch(N as u64), epoch(N as u64 + 1)),
             Err(SystemError::ExceedsFutureEpochs)
         );
 
         // Overflow: assume max, add 1
-        let max_amount = TAPE(u64::MAX);
-        db.add_rewards(max_amount, EpochNumber(0), EpochNumber(1))
+        let max_amount = tape(u64::MAX);
+        db.checked_add(max_amount, epoch(0), epoch(1))
             .unwrap();
         assert_eq!(
-            db.add_rewards(TAPE::new(1), EpochNumber(0), EpochNumber(1)),
+            db.checked_add(tape(1), epoch(0), epoch(1)),
             Err(SystemError::Overflow)
         );
     }
 
     #[test]
-    fn test_future_rewards_slash_errors() {
+    fn rewards_slash_error() {
         let mut db: FutureRewards<N> = FutureRewards::new();
-        let amount = TAPE::new(100);
+        let amount = tape(100);
 
         // Underflow
         assert_eq!(
-            db.slash_rewards(EpochNumber(0), EpochNumber(1), amount),
+            db.checked_sub(amount, epoch(0), epoch(1)),
             Err(SystemError::Underflow)
         );
 
         // Invalid ranges
         assert_eq!(
-            db.slash_rewards(EpochNumber(0), EpochNumber(0), amount),
+            db.checked_sub(amount, epoch(0), epoch(0)),
             Err(SystemError::EndNotAfterStart)
         );
     }
 
     #[test]
-    fn test_future_rewards_advance_with_additions() {
+    fn rewards_advance_add() {
         let mut db: FutureRewards<N> = FutureRewards::new();
-        let amount = TAPE::new(100);
+        let amount = tape(100);
 
         // Add in future epochs 2-4
-        db.add_rewards(amount, EpochNumber(2), EpochNumber(4))
+        db.checked_add(amount, epoch(2), epoch(4))
             .unwrap();
 
-        assert_eq!(db.get(EpochNumber(0)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), Coin::<TAPE>::zero());
+        assert_eq!(db.get(epoch(0)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(1)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(2)).unwrap(), amount);
+        assert_eq!(db.get(epoch(3)).unwrap(), amount);
+        assert_eq!(db.get(epoch(4)).unwrap(), tape(0));
 
         // Advance once: return 0, now=1, new for 5=0
         let ret = db.advance_epoch();
-        assert_eq!(ret, Coin::<TAPE>::zero());
-        assert_eq!(db.now, EpochNumber(1));
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), amount);
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), Coin::<TAPE>::zero());
-        assert_eq!(db.get(EpochNumber(5)).unwrap(), Coin::<TAPE>::zero());
+        assert_eq!(ret, tape(0));
+        assert_eq!(db.now, epoch(1));
+        assert_eq!(db.get(epoch(1)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(2)).unwrap(), amount);
+        assert_eq!(db.get(epoch(3)).unwrap(), amount);
+        assert_eq!(db.get(epoch(4)).unwrap(), tape(0));
+        assert_eq!(db.get(epoch(5)).unwrap(), tape(0));
 
         // Advance again: return 0, now=2
         let ret = db.advance_epoch();
-        assert_eq!(ret, Coin::<TAPE>::zero());
-        assert_eq!(db.now, EpochNumber(2));
+        assert_eq!(ret, tape(0));
+        assert_eq!(db.now, epoch(2));
 
         // Advance again: return amount, now=3
         let ret = db.advance_epoch();
         assert_eq!(ret, amount);
-        assert_eq!(db.now, EpochNumber(3));
+        assert_eq!(db.now, epoch(3));
     }
 
-
     #[test]
-    fn test_future_usage_new() {
+    fn usage_new() {
         let db: FutureUsage<N> = FutureUsage::new();
-        assert_eq!(db.now, EpochNumber(0));
+        assert_eq!(db.now, epoch(0));
         assert_eq!(db.usage.len(), N);
 
         for i in 0..N {
             assert_eq!(
-                db.get(EpochNumber(i as u64)).unwrap(),
-                StorageUnits::zero()
+                db.get(epoch(i as u64)).unwrap(),
+                storage(0)
             );
         }
     }
 
     #[test]
-    fn test_future_usage_get_usage_at() {
+    fn usage_get() {
         let db: FutureUsage<N> = FutureUsage::new();
 
         // Valid ranges
         for i in 0..N as u64 {
-            assert_eq!(db.get(EpochNumber(i)).unwrap(), StorageUnits::zero());
+            assert_eq!(db.get(epoch(i)).unwrap(), storage(0));
         }
 
         // Errors
         assert_eq!(
-            db.get(EpochNumber(u64::MAX)),
+            db.get(epoch(u64::MAX)),
             Err(SystemError::EpochTooFar)
         );
     }
 
     #[test]
-    fn test_future_usage_advance_epoch() {
+    fn usage_advance() {
         let mut db: FutureUsage<N> = FutureUsage::new();
 
         for _ in 0..10 {
             let current = db.advance_epoch();
-            assert_eq!(current, StorageUnits::zero());
+            assert_eq!(current, storage(0));
             assert_eq!(db.usage.len(), N);
         }
 
         // After advances, now is updated, usages still zero
-        assert_eq!(db.now, EpochNumber(10));
+        assert_eq!(db.now, epoch(10));
         for i in 0..N as u64 {
             assert_eq!(
-                db.get(EpochNumber(10 + i)).unwrap(),
-                StorageUnits::zero()
+                db.get(epoch(10 + i)).unwrap(),
+                storage(0)
             );
         }
     }
 
     #[test]
-    fn test_future_usage_reserve_and_cancel_capacity() {
+    fn usage_modify() {
         let mut db: FutureUsage<N> = FutureUsage::new();
-        let units = StorageUnits(100);
+        let units = storage(100);
 
         // Reserve in epochs 1 to 3 (exclusive, so 1,2)
-        db.reserve_capacity(units, EpochNumber(1), EpochNumber(3))
+        db.reserve_capacity(units, epoch(1), epoch(3))
             .unwrap();
 
-        assert_eq!(db.get(EpochNumber(0)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), StorageUnits::zero());
+        assert_eq!(db.get(epoch(0)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(1)).unwrap(), units);
+        assert_eq!(db.get(epoch(2)).unwrap(), units);
+        assert_eq!(db.get(epoch(3)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(4)).unwrap(), storage(0));
 
         // Cancel
-        db.cancel_capacity(EpochNumber(1), EpochNumber(3), units)
+        db.cancel_capacity(units, epoch(1), epoch(3))
             .unwrap();
 
         for i in 0..N as u64 {
-            assert_eq!(db.get(EpochNumber(i)).unwrap(), StorageUnits::zero());
+            assert_eq!(db.get(epoch(i)).unwrap(), storage(0));
         }
     }
 
     #[test]
-    fn test_future_usage_reserve_errors() {
+    fn usage_reserve_error() {
         let mut db: FutureUsage<N> = FutureUsage::new();
-        let units = StorageUnits(100);
+        let units = storage(100);
 
         // Invalid ranges
         assert_eq!(
-            db.reserve_capacity(units, EpochNumber(0), EpochNumber(0)),
+            db.reserve_capacity(units, epoch(0), epoch(0)),
             Err(SystemError::EndNotAfterStart)
         );
         assert_eq!(
-            db.reserve_capacity(units, EpochNumber(0), EpochNumber(N as u64 + 1)),
+            db.reserve_capacity(units, epoch(0), epoch(N as u64 + 1)),
             Err(SystemError::RangeTooLarge)
         );
         assert_eq!(
-            db.reserve_capacity(units, EpochNumber(N as u64), EpochNumber(N as u64 + 1)),
+            db.reserve_capacity(units, epoch(N as u64), epoch(N as u64 + 1)),
             Err(SystemError::ExceedsFutureEpochs)
         );
 
         // Overflow: assume max u64 -1, then add 2
-        let max_units = StorageUnits(u64::MAX);
-        db.reserve_capacity(max_units, EpochNumber(0), EpochNumber(1))
+        let max_units = storage(u64::MAX);
+        db.reserve_capacity(max_units, epoch(0), epoch(1))
             .unwrap();
         assert_eq!(
-            db.reserve_capacity(StorageUnits(1), EpochNumber(0), EpochNumber(1)),
+            db.reserve_capacity(storage(1), epoch(0), epoch(1)),
             Err(SystemError::Overflow)
         );
     }
 
     #[test]
-    fn test_future_usage_cancel_errors() {
+    fn usage_cancel_error() {
         let mut db: FutureUsage<N> = FutureUsage::new();
-        let units = StorageUnits(100);
+        let units = storage(100);
 
         // Underflow
         assert_eq!(
-            db.cancel_capacity(EpochNumber(0), EpochNumber(1), units),
+            db.cancel_capacity(units, epoch(0), epoch(1)),
             Err(SystemError::Underflow)
         );
 
         // Invalid ranges (same as reserve)
         assert_eq!(
-            db.cancel_capacity(EpochNumber(0), EpochNumber(0), units),
+            db.cancel_capacity(units, epoch(0), epoch(0)),
             Err(SystemError::EndNotAfterStart)
         );
     }
 
     #[test]
-    fn test_future_usage_has_capacity_for() {
+    fn usage_capacity() {
         let mut db: FutureUsage<N> = FutureUsage::new();
-        let max_cap = StorageUnits(200);
-        let add_units = StorageUnits(100);
+        let max_cap = storage(200);
+        let add_units = storage(100);
 
         // Initially all zero, should have capacity
-        assert!(db.has_capacity_for(add_units, max_cap, EpochNumber(0), EpochNumber(N as u64)));
+        assert!(db.has_capacity_for(add_units, max_cap, epoch(0), epoch(N as u64)));
 
-        db.reserve_capacity(add_units, EpochNumber(0), EpochNumber(N as u64))
+        db.reserve_capacity(add_units, epoch(0), epoch(N as u64))
             .unwrap();
 
         // Now used=100, add 50 <=200 ok, add 101 >200 no
-        assert!(db.has_capacity_for(StorageUnits(50), max_cap, EpochNumber(0), EpochNumber(N as u64)));
-        assert!(!db.has_capacity_for(StorageUnits(101), max_cap, EpochNumber(0), EpochNumber(N as u64)));
+        assert!(db.has_capacity_for(storage(50), max_cap, epoch(0), epoch(N as u64)));
+        assert!(!db.has_capacity_for(storage(101), max_cap, epoch(0), epoch(N as u64)));
 
         // Out of range
-        assert!(!db.has_capacity_for(add_units, max_cap, EpochNumber(0), EpochNumber(N as u64 + 1)));
-        assert!(!db.has_capacity_for(add_units, max_cap, EpochNumber(u64::MAX - 1), EpochNumber(u64::MAX)));
+        assert!(!db.has_capacity_for(add_units, max_cap, epoch(0), epoch(N as u64 + 1)));
+        assert!(!db.has_capacity_for(add_units, max_cap, epoch(u64::MAX - 1), epoch(u64::MAX)));
 
         // Overflow case
-        assert!(!db.has_capacity_for(StorageUnits(u64::MAX), max_cap, EpochNumber(0), EpochNumber(1)));
+        assert!(!db.has_capacity_for(storage(u64::MAX), max_cap, epoch(0), epoch(1)));
     }
 
     #[test]
-    fn test_future_usage_advance_with_reservations() {
+    fn usage_advance_reserve() {
         let mut db: FutureUsage<N> = FutureUsage::new();
-        let units = StorageUnits(100);
+        let units = storage(100);
 
         // Reserve in future epochs 2-4
-        db.reserve_capacity(units, EpochNumber(2), EpochNumber(4))
+        db.reserve_capacity(units, epoch(2), epoch(4))
             .unwrap();
 
-        assert_eq!(db.get(EpochNumber(0)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), StorageUnits::zero());
+        assert_eq!(db.get(epoch(0)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(1)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(2)).unwrap(), units);
+        assert_eq!(db.get(epoch(3)).unwrap(), units);
+        assert_eq!(db.get(epoch(4)).unwrap(), storage(0));
 
         // Advance once: return 0, now=1, buffer shifts, new for 5=0
         let ret = db.advance_epoch();
-        assert_eq!(ret, StorageUnits::zero());
-        assert_eq!(db.now, EpochNumber(1));
-        assert_eq!(db.get(EpochNumber(1)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(5)).unwrap(), StorageUnits::zero());
+        assert_eq!(ret, storage(0));
+        assert_eq!(db.now, epoch(1));
+        assert_eq!(db.get(epoch(1)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(2)).unwrap(), units);
+        assert_eq!(db.get(epoch(3)).unwrap(), units);
+        assert_eq!(db.get(epoch(4)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(5)).unwrap(), storage(0));
 
         // Advance again: return 0 (old 1), now=2, new for 6=0
         let ret = db.advance_epoch();
-        assert_eq!(ret, StorageUnits::zero());
-        assert_eq!(db.now, EpochNumber(2));
-        assert_eq!(db.get(EpochNumber(2)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(3)).unwrap(), units);
-        assert_eq!(db.get(EpochNumber(4)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(5)).unwrap(), StorageUnits::zero());
-        assert_eq!(db.get(EpochNumber(6)).unwrap(), StorageUnits::zero());
+        assert_eq!(ret, storage(0));
+        assert_eq!(db.now, epoch(2));
+        assert_eq!(db.get(epoch(2)).unwrap(), units);
+        assert_eq!(db.get(epoch(3)).unwrap(), units);
+        assert_eq!(db.get(epoch(4)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(5)).unwrap(), storage(0));
+        assert_eq!(db.get(epoch(6)).unwrap(), storage(0));
 
         // Advance again: return units (old 2), now=3
         let ret = db.advance_epoch();
         assert_eq!(ret, units);
-        assert_eq!(db.now, EpochNumber(3));
+        assert_eq!(db.now, epoch(3));
     }
 }

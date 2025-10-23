@@ -2,6 +2,8 @@ use steel::*;
 use tape_api::prelude::*;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let now = Clock::get()?.unix_timestamp;
+
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
         signer_info,
@@ -30,36 +32,28 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
+    debug_assert!(archive.fees_collected.current_epoch() == epoch.id);
+    debug_assert!(archive.capacity_used.current_epoch() == epoch.id);
 
     // Seat assignments
+    system.seats_prev = system.seats;
     system.seats.reassign(
         &system.committee,
         &system.committee_next,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
-    // solana_program::msg!("seats: {:?}", system.seats);
-
     // Rotate committees
-    system.seats_prev = system.seats;
     system.committee_prev = system.committee;
     system.committee = system.committee_next;
 
     // Update future accounting
-
-    assert!(archive.fees_collected.current_epoch() == epoch.id);
-    assert!(archive.capacity_used.current_epoch() == epoch.id);
-
-    // TODO: maybe this belongs somewhere else?
-    let rewards = archive.fees_collected.advance_epoch();
-    let usage = archive.capacity_used.advance_epoch();
-
-    solana_program::msg!("Rewards for epoch {}: {}", epoch.id.0, rewards);
-    solana_program::msg!("Usage for epoch {}: {}", epoch.id.0, usage);
-
-    solana_program::msg!("Advancing epoch from {} to {}", epoch.id.0, next_epoch(epoch).0);
+    archive.recent_fees = archive.fees_collected.advance_epoch();
+    archive.recent_usage = archive.capacity_used.advance_epoch();
 
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
+    epoch.state.set_syncing(now);
+    epoch.last_epoch_ms = now;
 
     // Epoch phases: Syncing -> Active -> NextEpoch (this instruction)
     // - Syncing: nodes move recovery symbols based on seat assignments for the new committee
@@ -123,13 +117,16 @@ mod tests {
 
         epoch.id = EpochNumber(42);
 
-        system.version = VersionId::default();
         system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000), ]);
         system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000), ]);
         system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000), ]);
 
-        archive.fees_collected.fast_forward_to(epoch.id);
-        archive.capacity_used.fast_forward_to(epoch.id);
+        // Pre-fill archive usage and fees
+        archive.capacity_used = FutureUsage::new_at(epoch.id);
+        archive.capacity_used.reserve_capacity(StorageUnits(500), epoch.id, EpochNumber(100)).unwrap();
+
+        archive.fees_collected = FutureRewards::new_at(epoch.id);
+        archive.fees_collected.checked_add(TAPE(1000), epoch.id, EpochNumber(100)).unwrap();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -138,12 +135,65 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
+        // Expected seat allocation
+
+        let seat_count = allocate_seats(
+            &system.committee_next.active_stakes(),
+            SEAT_COUNT as u16,
+        );
+
+        let seats = reassign_seats(
+            &system.seats.seats,
+            &system.committee.active_members(),
+            &system.committee_next.active_members(),
+            &seat_count,
+        ).expect("seat reassignment failed");
+
+        let expected_seats = Seats::try_from_slice(seats.as_ref())
+            .unwrap();
+
         let env = test_env();
         env.process_instruction(
             &instruction, 
             &accounts,
             &[
                 Check::success(),
+                Check::account(&system_address).data(
+                    System { 
+                        seats: expected_seats,
+                        seats_prev: system.seats,
+                        committee_prev: system.committee,
+                        committee: system.committee_next,
+                        committee_next: system.committee_next,
+                        ..system
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&epoch_address).data({
+                    let now = env.now();
+                    let mut state = EpochState::new(); 
+                    state.set_syncing(now);
+
+                    Epoch {
+                        id: EpochNumber(43),
+                        state,
+                        last_epoch_ms: now,
+                    }.pack().as_ref()
+                }).build(),
+                Check::account(&archive_address).data({
+                    let mut fees_collected = FutureRewards::new_at(EpochNumber(43));
+                    fees_collected.checked_add(TAPE(1000), EpochNumber(43), EpochNumber(100)).unwrap();
+
+                    let mut capacity_used = FutureUsage::new_at(EpochNumber(43));
+                    capacity_used.reserve_capacity(StorageUnits(500), EpochNumber(43), EpochNumber(100)).unwrap();
+
+                    Archive {
+                        fees_collected,
+                        capacity_used,
+                        recent_fees: TAPE(1000),
+                        recent_usage: StorageUnits(500),
+                        ..archive
+                    }.pack().as_ref()
+                }).build(),
             ]
         );
     }

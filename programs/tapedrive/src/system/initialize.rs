@@ -43,22 +43,18 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    // Start at epoch 1, previous epoch is 0.
-    let epoch_number = EpochNumber(1);
-    //let prev_epoch_number = EpochNumber(0);
-
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.total_nodes = 0;
 
+    let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
+    epoch.id = EpochNumber(1);
+    epoch.last_epoch_ms = 0;
+
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
-    archive.storage_price = TAPE::from("0.0001"); // 1 TAPE per 1Mb
-    archive.capacity_used = FutureUsage::new_at(epoch_number);
-    archive.fees_collected = FutureRewards::new_at(epoch_number);
-
-    let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
-    epoch.id = epoch_number;
-    epoch.last_epoch_ms = 0;
+    archive.storage_price = TAPE::from("0.0001");  // 1 TAPE per 1Mb
+    archive.capacity_used = FutureUsage::new_at(epoch.id);
+    archive.fees_collected = FutureRewards::new_at(epoch.id);
 
     // Create the system_ata token account.
     create_associated_token_account(
@@ -121,10 +117,6 @@ mod tests {
                 Check::account(&system_address).data(
                     System { 
                         total_nodes: 0,
-                        //storage_capacity: StorageUnits(1000),
-                        //storage_price: TAPE::from("0.0001"),
-                        //future_rewards: FutureRewards::new_at(EpochNumber(1)),
-                        //future_usage: FutureUsage::new_at(EpochNumber(1)),
                         ..system
                     }.pack().as_ref()
                 ).build(),
@@ -140,6 +132,7 @@ mod tests {
                         storage_price: TAPE::from("0.0001"),
                         fees_collected: FutureRewards::new_at(EpochNumber(1)),
                         capacity_used: FutureUsage::new_at(EpochNumber(1)),
+                        ..archive
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&archive_ata).data(

@@ -16,10 +16,12 @@ pub enum EpochPhase {
 pub struct EpochState {
     /// The phase of the epoch.
     pub phase: u64,
+
     /// The attested weight during Syncing phase.
     pub attested_weight: u64,
+
     /// The timestamp (in milliseconds) of the last epoch change for Active or NextEpochReady.
-    pub last_change_ms: u64,
+    pub last_change_ms: i64,
 }
 
 impl EpochState {
@@ -38,16 +40,16 @@ impl EpochState {
         EpochPhase::try_from(self.phase).ok()
     }
 
-    /// Sets the phase to Syncing with the given attested weight.
-    pub fn set_syncing(&mut self, attested_weight: u64) -> &mut Self {
+    /// Sets the phase to Syncing with the given timestamp.
+    pub fn set_syncing(&mut self, timestamp_ms: i64) -> &mut Self {
         self.phase = EpochPhase::Syncing.into();
-        self.attested_weight = attested_weight;
-        self.last_change_ms = 0;
+        self.attested_weight = 0;
+        self.last_change_ms = timestamp_ms;
         self
     }
 
     /// Sets the phase to Active with the given timestamp.
-    pub fn set_active(&mut self, last_change_ms: u64) -> &mut Self {
+    pub fn set_active(&mut self, last_change_ms: i64) -> &mut Self {
         self.phase = EpochPhase::Active.into();
         self.attested_weight = 0;
         self.last_change_ms = last_change_ms;
@@ -55,7 +57,7 @@ impl EpochState {
     }
 
     /// Sets the phase to NextEpochReady with the given timestamp.
-    pub fn set_next_epoch_ready(&mut self, last_change_ms: u64) -> &mut Self {
+    pub fn set_next_epoch_ready(&mut self, last_change_ms: i64) -> &mut Self {
         self.phase = EpochPhase::NextEpochReady.into();
         self.attested_weight = 0;
         self.last_change_ms = last_change_ms;
@@ -87,7 +89,7 @@ impl EpochState {
     }
 
     /// Gets the timestamp if in Active or NextEpochReady phase.
-    pub fn last_change_ms(&self) -> Option<u64> {
+    pub fn last_change_ms(&self) -> Option<i64> {
         if self.is_active() || self.is_next_epoch_ready() {
             Some(self.last_change_ms)
         } else {
@@ -101,7 +103,7 @@ impl EpochState {
         &mut self, 
         additional_weight: u64, 
         total: u64, 
-        timestamp_ms: u64
+        timestamp_ms: i64
     ) -> bool {
         if !self.is_syncing() {
             return false;
@@ -124,6 +126,9 @@ impl EpochState {
 mod tests {
     use super::*;
 
+    // Helper to provide explicit timestamp values
+    fn time(ms: i64) -> i64 { ms }
+
     #[test]
     fn new_zero() {
         let s = EpochState::new();
@@ -140,8 +145,13 @@ mod tests {
     #[test]
     fn set_sync() {
         let mut s = EpochState::new();
-        s.set_syncing(5);
+        s.set_syncing(time(100));
         assert!(s.is_syncing());
+        assert_eq!(s.attested_weight(), Some(0));
+        assert_eq!(s.last_change_ms(), None);
+
+        // Add attestation
+        s.attest_weight(5, 10, time(100));
         assert_eq!(s.attested_weight(), Some(5));
         assert_eq!(s.last_change_ms(), None);
     }
@@ -149,58 +159,59 @@ mod tests {
     #[test]
     fn set_act_next() {
         let mut s = EpochState::new();
-        s.set_active(123);
+        s.set_active(time(123));
         assert!(s.is_active());
         assert_eq!(s.attested_weight(), None);
-        assert_eq!(s.last_change_ms(), Some(123));
+        assert_eq!(s.last_change_ms(), Some(time(123)));
 
-        s.set_next_epoch_ready(456);
+        s.set_next_epoch_ready(time(456));
         assert!(s.is_next_epoch_ready());
         assert_eq!(s.attested_weight(), None);
-        assert_eq!(s.last_change_ms(), Some(456));
+        assert_eq!(s.last_change_ms(), Some(time(456)));
     }
 
     #[test]
     fn attest_flow() {
         // total = 10, supermajority needs w >= 7
         let mut s = EpochState::new();
-        s.set_syncing(3);
+        s.set_syncing(time(100));
 
-        let r1 = s.attest_weight(3, 10, 1);
+        let r1 = s.attest_weight(3, 10, time(1));
         assert!(!r1);
         assert!(s.is_syncing());
-        assert_eq!(s.attested_weight(), Some(6));
+        assert_eq!(s.attested_weight(), Some(3));
         assert_eq!(s.last_change_ms(), None);
 
-        let r2 = s.attest_weight(1, 10, 42);
+        let r2 = s.attest_weight(4, 10, time(42));
         assert!(r2);
         assert!(s.is_active());
         assert_eq!(s.attested_weight(), None);
-        assert_eq!(s.last_change_ms(), Some(42));
+        assert_eq!(s.last_change_ms(), Some(time(42)));
 
         // further attest does nothing in Active
-        let r3 = s.attest_weight(5, 10, 100);
+        let r3 = s.attest_weight(5, 10, time(100));
         assert!(!r3);
         assert!(s.is_active());
-        assert_eq!(s.last_change_ms(), Some(42));
+        assert_eq!(s.last_change_ms(), Some(time(42)));
     }
 
     #[test]
     fn attest_edge() {
         // total = 7, supermajority threshold: 5
         let mut s = EpochState::new();
-        s.set_syncing(4);
-        let r = s.attest_weight(1, 7, 9);
+        s.set_syncing(time(100));
+        s.attest_weight(4, 7, time(9));
+        let r = s.attest_weight(1, 7, time(9));
         assert!(r);
         assert!(s.is_active());
-        assert_eq!(s.last_change_ms(), Some(9));
+        assert_eq!(s.last_change_ms(), Some(time(9)));
     }
 
     #[test]
     fn attest_nsync() {
         let mut s = EpochState::new();
         // Unknown phase: should do nothing
-        let r1 = s.attest_weight(3, 10, 1);
+        let r1 = s.attest_weight(3, 10, time(1));
         assert!(!r1);
         assert!(!s.is_syncing());
         assert!(!s.is_active());
@@ -208,11 +219,11 @@ mod tests {
         assert_eq!(s.last_change_ms(), None);
 
         // Active: should do nothing
-        s.set_active(5);
-        let r2 = s.attest_weight(3, 10, 6);
+        s.set_active(time(5));
+        let r2 = s.attest_weight(3, 10, time(6));
         assert!(!r2);
         assert!(s.is_active());
-        assert_eq!(s.last_change_ms(), Some(5));
+        assert_eq!(s.last_change_ms(), Some(time(5)));
     }
 
     #[test]

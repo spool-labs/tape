@@ -205,6 +205,11 @@ impl TestEnv {
         println!("\ndata:\n\t{:?}", instruction.data);
         println!("\n\n{}\n", pretty_hex(&instruction.data));
     }
+
+    pub fn now(&self) -> i64 {
+        self.mollusk.sysvars.clock.unix_timestamp
+    }
+
 }
 
 pub fn test_env() -> TestEnv {

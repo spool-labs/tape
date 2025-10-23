@@ -39,6 +39,30 @@ impl <const SEATS: usize> Seats<SEATS> {
         }
     }
 
+    /// Create a seat map from a slice.
+    pub fn try_from_slice(seat_map: &[SeatMapping]) -> Result<Self, SeatAssignmentError> {
+        if seat_map.len() != SEATS {
+            return Err(SeatAssignmentError::TotalMismatch);
+        }
+
+        let mut seats = [0u8; SEATS];
+        for i in 0..SEATS {
+            seats[i] = seat_map[i];
+        }
+
+        Ok(Self {
+            seats,
+        })
+    }
+
+    /// Create an initial seat map from seat counts, assigning seats contiguously.
+    pub fn try_from_counts(
+        seat_counts: &[SeatCount],
+    ) -> Result<Self, SeatAssignmentError> {
+        let seat_map = to_seat_map(seat_counts);
+        Self::try_from_slice(&seat_map)
+    }
+
     /// Reassign seats from current committee to next committee with minimal disruption.
     pub fn reassign<const N:usize>(
         &mut self,
@@ -70,6 +94,21 @@ impl <const SEATS: usize> Seats<SEATS> {
         }
 
         Ok(())
+    }
+
+    /// Returns the voting weight for a given member based on how many seats they hold.
+    pub fn weight(&self, member_index: u8) -> u16 {
+        let mut count = 0u16;
+        for i in 0..SEATS {
+            if self.seats[i] == member_index {
+                count += 1;
+            }
+        }
+        count
+        // self.seats
+        //     .iter()
+        //     .filter(|&&seat_owner| seat_owner as usize == member_index)
+        //     .count() as u16
     }
 }
 
