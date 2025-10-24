@@ -6,7 +6,7 @@
 ![image](https://github.com/user-attachments/assets/bf674eb1-512d-47e7-a9c5-e0d0e44c6edb)
 
 > [!Important]
-> Tapedrive is very much still in development, it is **not deployed** to mainnet yet.
+> Tapedrive is very much still in development, it is **not deployed** to mainnet yet. A [new version](https://x.com/zelimir__/status/1975304835064078660) is in the works.
 > 
 > [Sign up](https://tapedrive.io/#sign-up) to receive updates on network milestones and product releases. Join us on [Discord](https://discord.gg/dVa9TWA45X) to engage with our devs.
 
