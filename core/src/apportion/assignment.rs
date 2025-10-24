@@ -1,117 +1,8 @@
 use crate::types::NodeId;
-use crate::system::Committee;
-use super::dhondt::allocate_seats;
-use bytemuck::{Pod, Zeroable};
-
-pub type SeatMapping = u8;
-pub type SeatIndex = u16;
-pub type SeatCount = u16;
+use super::seat::*;
 
 const REMOVED: u8 = u8::MAX;
 const MEMBER_LIMIT: usize = u8::MAX as usize;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SeatAssignmentError {
-    CountMismatch,
-    MemberLimit,
-    TotalMismatch,
-    BalanceMismatch,
-    InsufficientFree,
-    BadIndex,
-    NotNext,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seats<const SEATS: usize> {
-    pub seats: [SeatMapping; SEATS],
-}
-
-unsafe impl<const SEATS: usize> Zeroable for Seats<SEATS> {}
-unsafe impl<const SEATS: usize> Pod for Seats<SEATS> {}
-
-impl <const SEATS: usize> Seats<SEATS> {
-
-    /// Create a new seat mapping.
-    pub fn new(seat_map: [SeatMapping; SEATS]) -> Self {
-        Self {
-            seats: seat_map,
-        }
-    }
-
-    /// Create a seat map from a slice.
-    pub fn try_from_slice(seat_map: &[SeatMapping]) -> Result<Self, SeatAssignmentError> {
-        if seat_map.len() != SEATS {
-            return Err(SeatAssignmentError::TotalMismatch);
-        }
-
-        let mut seats = [0u8; SEATS];
-        for i in 0..SEATS {
-            seats[i] = seat_map[i];
-        }
-
-        Ok(Self {
-            seats,
-        })
-    }
-
-    /// Create an initial seat map from seat counts, assigning seats contiguously.
-    pub fn try_from_counts(
-        seat_counts: &[SeatCount],
-    ) -> Result<Self, SeatAssignmentError> {
-        let seat_map = to_seat_map(seat_counts);
-        Self::try_from_slice(&seat_map)
-    }
-
-    /// Reassign seats from current committee to next committee with minimal disruption.
-    pub fn reassign<const N:usize>(
-        &mut self,
-        current: &Committee<N>,
-        next: &Committee<N>,
-    ) -> Result<(), SeatAssignmentError> {
-
-        let members_current = current.active_members();
-        let members_next    = next.active_members();
-        let stakes_next     = next.active_stakes();
-
-        // Figure out how many seats each member should get.
-        let seat_counts = allocate_seats(
-            stakes_next,
-            SEATS as u16,
-        );
-
-        // Distribute seats with minimal disruption.
-        let seats = reassign_seats(
-            &self.seats,
-            members_current,
-            members_next,
-            &seat_counts,
-        )?;
-
-        // Update seat mapping
-        for i in 0..SEATS {
-            self.seats[i] = seats[i];
-        }
-
-        Ok(())
-    }
-
-    /// Returns the voting weight for a given member based on how many seats they hold.
-    pub fn weight(&self, member_index: u8) -> u16 {
-        let mut count = 0u16;
-        for i in 0..SEATS {
-            if self.seats[i] == member_index {
-                count += 1;
-            }
-        }
-        count
-        // self.seats
-        //     .iter()
-        //     .filter(|&&seat_owner| seat_owner as usize == member_index)
-        //     .count() as u16
-    }
-}
-
 
 /// Reassign seats from current members to next members with minimal disruption.
 pub fn reassign_seats(
@@ -316,7 +207,7 @@ pub fn to_seat_map(
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashSet};
-    use crate::seat::dhondt::allocate_seats;
+    use crate::apportion::dhondt::*;
     use crate::types::*;
 
     // Common helpers
@@ -347,7 +238,7 @@ mod tests {
 
     fn dhondt_counts_for(next: &[NodeId], stake_map: &BTreeMap<NodeId, u64>, seats: u16) -> Vec<u16> {
         let stakes: Vec<_> = next.iter().map(|id| stake_map[id].into()).collect();
-        allocate_seats(&stakes, seats)
+        dhondt_allocate(&stakes, seats)
     }
 
     fn counts_map(next: &[NodeId], counts: &[u16]) -> BTreeMap<NodeId, u16> {

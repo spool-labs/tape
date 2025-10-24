@@ -2,10 +2,9 @@ use steel::*;
 
 use tape_core::types::EpochNumber;
 use crate::state::Epoch;
+use crate::consts::NAME_LENGTH;
 
 use spl_associated_token_account::get_associated_token_address;
-
-pub const NAME_LENGTH: usize = 32;
 
 /// Helper: convert a slice to a fixed-size array, truncating or padding with zeros as needed
 #[inline(always)]
@@ -25,7 +24,7 @@ where
     let bytes = val.as_ref();
 
     assert!(
-        bytes.len() == NAME_LENGTH,
+        bytes.len() <= NAME_LENGTH,
         "name too long ({} > {})",
         bytes.len(),
         NAME_LENGTH

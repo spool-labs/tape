@@ -1,7 +1,7 @@
 use steel::*;
-use crate::{pda::*, consts::*};
+use crate::program::tapedrive::*;
+use crate::consts::NAME_LENGTH;
 use tape_core::prelude::*;
-
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -92,7 +92,7 @@ pub fn build_register_node_ix(
     let commission_rate = commission_rate.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(system_address, false),
@@ -112,21 +112,21 @@ pub fn build_register_node_ix(
     }
 }
 
-pub fn build_join_network_ix(
-    signer: Pubkey,
-) -> Instruction {
-    let (epoch_address, _) = epoch_pda();
-    let (node_address, _) = node_pda(signer);
-
-    Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(epoch_address, false),
-            AccountMeta::new(node_address, false),
-            AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
-        ],
-        data: JoinNetwork {}.to_bytes(),
-    }
-}
+//pub fn build_join_network_ix(
+//    signer: Pubkey,
+//) -> Instruction {
+//    let (epoch_address, _) = epoch_pda();
+//    let (node_address, _) = node_pda(signer);
+//
+//    Instruction {
+        //program_id: crate::program::tapedrive::ID,
+//        accounts: vec![
+//            AccountMeta::new(signer, true),
+//            AccountMeta::new(epoch_address, false),
+//            AccountMeta::new(node_address, false),
+//            AccountMeta::new_readonly(system_program::ID, false),
+//            AccountMeta::new_readonly(sysvar::rent::ID, false),
+//        ],
+//        data: JoinNetwork {}.to_bytes(),
+//    }
+//}

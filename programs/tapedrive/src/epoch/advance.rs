@@ -152,7 +152,7 @@ mod tests {
 
         // Expected seat allocation
 
-        let seat_count = allocate_seats(
+        let seat_count = dhondt_allocate(
             &system.committee_next.active_stakes(),
             SEAT_COUNT as u16,
         );
