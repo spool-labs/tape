@@ -73,11 +73,11 @@ impl<const N: usize> StakingPool<N> {
 
         // Calculate net token additions (incoming - outgoing)
         let incoming = self.schedule.incoming_sum(epoch);
-        let outgoing = self.schedule.cancel_sum(epoch);
+        let outgoing = self.schedule.outgoing_sum(epoch);
         let net_additions = incoming.saturating_sub(outgoing);
 
         // Convert outgoing shares to token amount
-        let outgoing_shares = self.schedule.withdraw_shares_sum(epoch);
+        let outgoing_shares = self.schedule.outgoing_shares_sum(epoch);
         let outgoing_tokens = exchange_rate.convert_to_tape_amount(outgoing_shares);
 
         // Compute final stake: current stake + net additions - outgoing tokens
@@ -112,7 +112,7 @@ impl<const N: usize> StakingPool<N> {
         let incoming = self.schedule.take_incoming(current_epoch);
 
         // Sum all pre-active cancellations before or at current_epoch
-        let outgoing = self.schedule.take_cancels(current_epoch);
+        let outgoing = self.schedule.take_outgoing(current_epoch);
 
         // Net pending stake must be non-negative
         if outgoing > incoming {
@@ -135,7 +135,7 @@ impl<const N: usize> StakingPool<N> {
         epoch_rate: ExchangeRate,
     ) -> Result<(), PoolError> {
         // Sum all pending shares withdrawing before or at current_epoch
-        let outgoing_shares = self.schedule.take_withdraw_shares(current_epoch);
+        let outgoing_shares = self.schedule.take_outgoing_shares(current_epoch);
 
         // Convert shares to tape at provided epoch rate and remove from stake
         let net_removed = epoch_rate.convert_to_tape_amount(outgoing_shares);
@@ -460,8 +460,8 @@ mod tests {
         let we = p.unstake(&mut s, epoch(5), ExchangeRate::new(0, 1)).unwrap();
 
         assert_eq!(we, epoch(7)); // current(5)+2
-        assert_eq!(p.schedule.cancel_sum(epoch(7)), 500);
-        assert_eq!(p.schedule.withdraw_shares_sum(epoch(7)), 0);
+        assert_eq!(p.schedule.outgoing_sum(epoch(7)), 500);
+        assert_eq!(p.schedule.outgoing_shares_sum(epoch(7)), 0);
     }
 
     #[test]
@@ -481,7 +481,7 @@ mod tests {
         let we = p.unstake(&mut s, epoch(3), activation_rate).unwrap();
 
         assert_eq!(we, epoch(5));
-        assert_eq!(p.schedule.withdraw_shares_sum(epoch(5)), 1000); // flat
+        assert_eq!(p.schedule.outgoing_shares_sum(epoch(5)), 1000); // flat
     }
 
     #[test]

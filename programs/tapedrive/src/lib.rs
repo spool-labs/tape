@@ -53,6 +53,7 @@ pub fn process_instruction(
 
             // Node
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
+            TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

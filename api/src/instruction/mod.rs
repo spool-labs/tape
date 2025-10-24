@@ -142,7 +142,7 @@ instruction!(TapeInstruction, CreateArchive);
 //instruction!(TapeInstruction, CertifyFeature);
 //
 instruction!(TapeInstruction, RegisterNode);
-//instruction!(TapeInstruction, JoinNetwork);
+instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, SetAuthority);
 //instruction!(TapeInstruction, SetNetworkAddress);
 //instruction!(TapeInstruction, SetNetworkTls);

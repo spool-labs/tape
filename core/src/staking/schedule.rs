@@ -33,6 +33,7 @@ impl<const N: usize> PoolSchedule<N> {
         }
     }
 
+    #[inline]
     pub fn set_commission(
         &mut self,
         epoch: EpochNumber,
@@ -43,6 +44,7 @@ impl<const N: usize> PoolSchedule<N> {
             .map_err(|_| ScheduleError::ScheduleFailed)
     }
 
+    #[inline]
     pub fn add_stake(
         &mut self,
         epoch: EpochNumber,
@@ -53,6 +55,7 @@ impl<const N: usize> PoolSchedule<N> {
             .map_err(|_| ScheduleError::ScheduleFailed)
     }
 
+    #[inline]
     pub fn add_cancel(
         &mut self,
         epoch: EpochNumber,
@@ -63,6 +66,7 @@ impl<const N: usize> PoolSchedule<N> {
             .map_err(|_| ScheduleError::ScheduleFailed)
     }
 
+    #[inline]
     pub fn add_unstake(
         &mut self,
         epoch: EpochNumber,
@@ -74,28 +78,33 @@ impl<const N: usize> PoolSchedule<N> {
     }
 
     /// Get the commission rate change scheduled exactly at `epoch` (if any).
+    #[inline]
     pub fn commission_at(&self, epoch: EpochNumber) -> Option<BasisPoints> {
         self.commission_changes.get_at(epoch).map(BasisPoints)
     }
 
     /// Sum of incoming stake scheduled at or before `epoch`.
+    #[inline]
     pub fn incoming_sum(&self, epoch: EpochNumber) -> u64 {
         self.incoming_tokens.sum_through(epoch)
     }
 
     /// Sum of pre-activation cancels scheduled at or before `epoch`.
-    pub fn cancel_sum(&self, epoch: EpochNumber) -> u64 {
+    #[inline]
+    pub fn outgoing_sum(&self, epoch: EpochNumber) -> u64 {
         self.outgoing_tokens.sum_through(epoch)
     }
 
     /// Sum of share withdrawals scheduled at or before `epoch`.
-    pub fn withdraw_shares_sum(&self, epoch: EpochNumber) -> u64 {
+    #[inline]
+    pub fn outgoing_shares_sum(&self, epoch: EpochNumber) -> u64 {
         self.outgoing_shares.sum_through(epoch)
     }
 
     /// If there is a commission rate change scheduled exactly at `epoch`,
     /// return it and clear all commission entries with e <= epoch.
     /// If there is no exact entry, do nothing and return None.
+    #[inline]
     pub fn take_commission_change(&mut self, epoch: EpochNumber) -> Option<BasisPoints> {
         let exact = self.commission_changes.get_at(epoch);
         if exact.is_some() {
@@ -106,24 +115,34 @@ impl<const N: usize> PoolSchedule<N> {
     }
 
     /// Drain and sum all incoming stake with e <= epoch.
+    #[inline]
     pub fn take_incoming(&mut self, epoch: EpochNumber) -> u64 {
         self.incoming_tokens.drain_through(epoch)
     }
 
     /// Drain and sum all cancels with e <= epoch.
-    pub fn take_cancels(&mut self, epoch: EpochNumber) -> u64 {
+    #[inline]
+    pub fn take_outgoing(&mut self, epoch: EpochNumber) -> u64 {
         self.outgoing_tokens.drain_through(epoch)
     }
 
     /// Drain and sum all outgoing shares with e <= epoch.
-    pub fn take_withdraw_shares(&mut self, epoch: EpochNumber) -> u64 {
+    #[inline]
+    pub fn take_outgoing_shares(&mut self, epoch: EpochNumber) -> u64 {
         self.outgoing_shares.drain_through(epoch)
     }
 
+    #[inline]
     pub fn commission_count(&self) -> usize { self.commission_changes.len() }
+
+    #[inline]
     pub fn incoming_count(&self) -> usize { self.incoming_tokens.len() }
-    pub fn cancel_count(&self) -> usize { self.outgoing_tokens.len() }
-    pub fn withdraw_count(&self) -> usize { self.outgoing_shares.len() }
+
+    #[inline]
+    pub fn outgoing_count(&self) -> usize { self.outgoing_tokens.len() }
+
+    #[inline]
+    pub fn outgoing_shares_count(&self) -> usize { self.outgoing_shares.len() }
 }
 
 unsafe impl<const N: usize> Zeroable for PoolSchedule<N> {}
@@ -142,8 +161,8 @@ mod tests {
 
         assert_eq!(s.commission_count(), 0);
         assert_eq!(s.incoming_count(), 0);
-        assert_eq!(s.cancel_count(), 0);
-        assert_eq!(s.withdraw_count(), 0);
+        assert_eq!(s.outgoing_count(), 0);
+        assert_eq!(s.outgoing_shares_count(), 0);
     }
 
     #[test]
@@ -174,7 +193,7 @@ mod tests {
         assert_eq!(s.incoming_sum(epoch(3)), 0);
         assert_eq!(s.incoming_sum(epoch(4)), 100);
         assert_eq!(s.incoming_sum(epoch(6)), 150);
-        assert_eq!(s.cancel_sum(epoch(6)), 20);
+        assert_eq!(s.outgoing_sum(epoch(6)), 20);
 
         // drain incoming up to 5 keeps epoch 6
         let res = s.take_incoming(epoch(5));
@@ -184,9 +203,9 @@ mod tests {
         assert_eq!(s.incoming_sum(epoch(6)), 50);
 
         // drain cancels up to 6 clears that entry
-        let res = s.take_cancels(epoch(6));
+        let res = s.take_outgoing(epoch(6));
         assert_eq!(res, 20);
-        assert_eq!(s.cancel_sum(epoch(6)), 0);
+        assert_eq!(s.outgoing_sum(epoch(6)), 0);
     }
 
     #[test]

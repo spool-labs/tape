@@ -4,6 +4,7 @@ use bytemuck::{Pod, Zeroable};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpochValuesError {
     Full,
+    SizeMismatch,
     NotFound,
     Underflow,
 }
@@ -27,6 +28,24 @@ impl<const N: usize> EpochValues<N> {
             keys: [EpochNumber(0); N],
             values: [0; N],
         }
+    }
+
+    /// Creates a new EpochValues from keys and values slices.
+    pub fn try_from(keys: &[EpochNumber], values: &[u64]) 
+        -> Result<Self, EpochValuesError> {
+        let len = keys.len();
+        if len != values.len() || len > N {
+            return Err(EpochValuesError::SizeMismatch);
+        }
+
+        let mut ev = Self::new();
+        for i in 0..len {
+            ev.keys[i] = keys[i];
+            ev.values[i] = values[i];
+        }
+
+        ev.len = len as u64;
+        Ok(ev)
     }
 
     /// Number of stored epochs.
