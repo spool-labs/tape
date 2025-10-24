@@ -27,6 +27,9 @@ pub struct Node {
 
     /// The epoch when this node was registered.
     pub registered_epoch: EpochNumber,
+
+    /// The last epoch this node was updated.
+    pub latest_epoch: EpochNumber,
 }
 
 

@@ -18,9 +18,6 @@ pub enum PoolError {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StakingPool<const N: usize> {
-    /// The latest epoch for this pool was updated.
-    pub latest_epoch: EpochNumber,
-
     /// The total number of shares issued by this pool.
     pub num_shares: u64,
 
@@ -46,7 +43,6 @@ unsafe impl<const N: usize> Pod for StakingPool<N> {}
 impl<const N: usize> StakingPool<N> {
     pub fn new(commission_rate: BasisPoints) -> Self {
         Self {
-            latest_epoch: EpochNumber::zero(),
             num_shares: 0,
             stake: Coin::<TAPE>::zero(),
             rewards: Coin::<TAPE>::zero(),
@@ -159,9 +155,6 @@ impl<const N: usize> StakingPool<N> {
         rewards_gross: Coin<TAPE>,
         prev_rate: ExchangeRate,
     ) -> Result<ExchangeRate, PoolError> {
-        if current_epoch <= self.latest_epoch {
-            return Err(PoolError::EpochInvalid);
-        }
 
         // Apply scheduled commission changes
         self.apply_commission_change(current_epoch);
@@ -194,8 +187,6 @@ impl<const N: usize> StakingPool<N> {
         // Process scheduled stake/withdrawals using this epoch's exchange rate
         self.process_pending_stake(current_epoch, epoch_rate)?;
 
-        // Mark latest epoch and return the rate to be recorded by the caller
-        self.latest_epoch = current_epoch;
         Ok(epoch_rate)
     }
 
@@ -327,7 +318,6 @@ mod tests {
     fn new_ok() {
         let p = StakingPool::<2>::new(BasisPoints(1000));
 
-        assert_eq!(p.latest_epoch, epoch(0));
         assert_eq!(p.stake, TAPE::zero());
         assert_eq!(p.num_shares, 0);
         assert_eq!(p.commission_rate, BasisPoints(1000));

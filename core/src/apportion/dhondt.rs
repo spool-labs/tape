@@ -1,5 +1,6 @@
 use super::priority::{ SeatPriority, NodePriority };
 use super::heap::MaxHeap;
+use super::seat::SeatCount;
 use crate::types::*;
 
 const MAX_SEAT_ALLOCATION: u64 = 20; // No committee member may have more than 20 seats (2% of the 1000)
@@ -10,7 +11,7 @@ const MIN_MEMBER_COUNT: u64 = 32;    // Minimum committee size needed to enforce
 pub fn dhondt_allocate(
     stake_weight: &[Coin<TAPE>],
     seat_count: u16, 
-) -> Vec<u16> {
+) -> Vec<SeatCount> {
     let node_count = stake_weight.len();
     if node_count == 0 {
         return Vec::new();

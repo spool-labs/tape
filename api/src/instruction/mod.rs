@@ -69,10 +69,11 @@ pub enum TapeInstruction {
 
     CreateSystem,
     ExpandSystem,
+    CreateArchive,
 
     CreateEpoch,
     AdvanceEpoch,
-    CreateArchive,
+    SyncEpoch,
 
     RegisterFeature,
     CertifyFeature,
@@ -109,14 +110,14 @@ pub enum TapeInstruction {
 
 instruction!(TokenInstruction, InitializeMint);
 
+instruction!(TapeInstruction, Initialize);
 instruction!(TapeInstruction, CreateSystem);
 instruction!(TapeInstruction, ExpandSystem);
-instruction!(TapeInstruction, Initialize);
-
+instruction!(TapeInstruction, CreateArchive);
 instruction!(TapeInstruction, CreateEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
+instruction!(TapeInstruction, SyncEpoch);
 
-instruction!(TapeInstruction, CreateArchive);
 
 //instruction!(ExchangeInstruction, RegisterExchange);
 //instruction!(ExchangeInstruction, SetExchangeRate);

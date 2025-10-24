@@ -54,6 +54,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.id                   = NodeId::new(system.total_nodes);
     node.authority            = *signer_info.key;
     node.registered_epoch     = current_epoch(epoch);
+    node.latest_epoch         = current_epoch(epoch);
 
     let commission_rate = BasisPoints::unpack(args.commission_rate);
     node.pool = StakingPool::new(commission_rate);
@@ -154,6 +155,7 @@ mod tests {
                             bls_pubkey,
                         },
                         registered_epoch: epoch.id,
+                        latest_epoch: epoch.id,
                     }.pack().as_ref()
                 ).build(),
             ]

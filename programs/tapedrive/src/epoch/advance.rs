@@ -164,7 +164,7 @@ mod tests {
             &seat_count,
         ).expect("seat reassignment failed");
 
-        let expected_seats = Seats::try_from_slice(seats.as_ref())
+        let expected_seats = Seats::try_from(seats.as_ref())
             .unwrap();
 
         env.process_instruction(

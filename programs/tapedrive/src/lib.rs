@@ -49,7 +49,9 @@ pub fn process_instruction(
 
             TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
+
             TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
+            TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,
 
             // Node
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
