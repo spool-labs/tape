@@ -8,7 +8,7 @@ pub const MEMBER_COUNT: usize = 128;
 pub const SEAT_COUNT: usize = 1000;
 pub const FUTURE_EPOCHS: usize = 256;
 pub const EPOCH_HISTORY: usize = 256;
-pub const PENDING_VALUES: usize = 2;
+pub const EPOCH_VALUES: usize = 3; // Epoch N, N+1, N+2
 pub const EPOCH_DURATION: i64 = 7 * 24 * 60 * 60 * 1000; // 1 week in milliseconds
 
 declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
