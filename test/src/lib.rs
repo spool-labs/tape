@@ -50,12 +50,24 @@ pub fn sol(key: Pubkey, lamports: u64) -> (Pubkey, Account) {
 
 pub fn pda(key: Pubkey, data: Vec<u8>, program: Pubkey) -> (Pubkey, Account) {
     (key, Account {
-        lamports: Rent::default().minimum_balance(data.len()),
+        lamports: rent(data.len()),
         data,
         owner: program,
         executable: false,
         rent_epoch: 0,
     })
+}
+
+pub fn rent(space: usize) -> u64 {
+    Rent::default().minimum_balance(space)
+}
+
+pub fn rent_token() -> u64 {
+    rent(Token::LEN)
+}
+
+pub fn rent_mint() -> u64 {
+    rent(Mint::LEN)
 }
 
 pub fn empty(key: Pubkey) -> (Pubkey, Account) {
@@ -87,7 +99,7 @@ pub fn token(address: Pubkey, owner: Pubkey, amount: u64) -> (Pubkey, Account) {
     Token::pack(state, &mut data).unwrap();
 
     (address, Account {
-        lamports: Rent::default().minimum_balance(Token::LEN),
+        lamports: rent_token(),
         data,
         owner: spl_token_program::ID,
         executable: false,
@@ -108,7 +120,7 @@ pub fn mint(supply: u64) -> (Pubkey, Account) {
     Mint::pack(mint_data, &mut data).unwrap();
 
     (MINT_ADDRESS, Account {
-        lamports: Rent::default().minimum_balance(Mint::LEN),
+        lamports: rent_mint(),
         data,
         owner: spl_token_program::ID,
         executable: false,

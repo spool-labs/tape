@@ -122,8 +122,8 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&vault_address)
-                    .space(0)
+                Check::account(&signer)
+                    .lamports(1_000_000_000 - rent_token())
                     .build(),
                 Check::account(&signer_ata).data(
                     token(signer_ata, signer, initial_token_balance - amount).1.data.as_ref()

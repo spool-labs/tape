@@ -117,7 +117,7 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&signer)
-                    .lamports(1002039280).build(),
+                    .lamports(1_000_000_000 + rent_token()).build(),
                 Check::account(&vault_address)
                     .space(0)
                     .build(),

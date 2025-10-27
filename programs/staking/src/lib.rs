@@ -2,13 +2,13 @@
 
 pub mod stake;
 pub mod unstake;
-//pub mod split;
-//pub mod merge;
+pub mod split;
+pub mod merge;
 
 use stake::*;
 use unstake::*;
-//use split::*;
-//use merge::*;
+use split::*;
+use merge::*;
 
 use tape_api::prelude::*;
 use tape_api::program::staking;
@@ -37,9 +37,8 @@ pub fn process_instruction(
 
             StakingInstruction::StakeTokens => process_stake_tokens(accounts, data)?,
             StakingInstruction::UnstakeTokens => process_unstake_tokens(accounts, data)?,
-            //StakingInstruction::SplitStake => process_split_stake(accounts, data)?,
-            //StakingInstruction::MergeStake => process_merge_stake(accounts, data)?,
-
+            StakingInstruction::SplitStake => process_split_stake(accounts, data)?,
+            StakingInstruction::MergeStake => process_merge_stake(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }
