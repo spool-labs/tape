@@ -10,8 +10,8 @@ pub const PROGRAM_ID: [u8; 32] =
 pub const VAULT: &[u8] = b"vault";
 
 #[inline(always)]
-pub fn vault_pda(authority: Pubkey, stake: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[VAULT, authority.as_ref(), stake.as_ref()], &id())
+pub fn vault_pda(stake: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[VAULT, stake.as_ref()], &id())
 }
 
 #[inline(always)]

@@ -7,7 +7,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         signer_info,
         signer_ata_info,
 
-        stake_info,
+        pool_info,
         vault_info,
         vault_ata_info,
 
@@ -26,11 +26,12 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    stake_info
+    pool_info
         .not_empty()?
         .has_owner(&tapedrive::ID)?;
 
-    let (vault_address, bump)  = vault_pda(*signer_info.key, *stake_info.key);
+    let (stake_address, _)     = stake_pda(*signer_info.key, *pool_info.key);
+    let (vault_address, bump)  = vault_pda(stake_address);
     let (vault_ata, _)         = vault_ata(vault_address);
 
     vault_info
@@ -58,7 +59,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         signer_ata_info,
         token_program_info,
         amount,
-        &[VAULT, signer_info.key.as_ref(), stake_info.key.as_ref()],
+        &[VAULT, stake_address.as_ref()],
         bump,
     )?;
 
@@ -67,7 +68,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         signer_info, 
         vault_info, 
         token_program_info, 
-        &[VAULT, signer_info.key.as_ref(), stake_info.key.as_ref()],
+        &[VAULT, stake_address.as_ref()],
         bump,
     )?;
 
@@ -85,21 +86,22 @@ mod tests {
         let amount: u64 = 1000;
 
         let signer = Pubkey::new_unique();
-        let stake_address = Pubkey::new_unique();
+        let pool_address = Pubkey::new_unique();
 
-        let instruction = build_unstake_ix(signer, stake_address);
+        let instruction = build_unstake_ix(signer, pool_address);
 
-        let (vault_address, _) = vault_pda(signer, stake_address);
+        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (vault_address, _) = vault_pda(stake_address);
         let vault_ata = ata_address(&vault_address);
         let signer_ata = ata_address(&signer);
 
-        let stake = Stake::zeroed();
+        let pool = Node::zeroed();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, 0),
 
-            pda(stake_address, stake.pack(), tapedrive::ID),
+            pda(pool_address, pool.pack(), tapedrive::ID),
             empty(vault_address),
             token(vault_ata, vault_address, amount),
 

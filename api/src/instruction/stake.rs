@@ -26,12 +26,13 @@ pub struct MergeStake {}
 
 pub fn build_stake_ix(
     signer: Pubkey,
-    stake: Pubkey,
+    pool: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
     let (mint_address, _) = mint_pda();
-    let (vault_address, _) = vault_pda(signer, stake);
+    let (stake_address, _) = stake_pda(signer, pool);
+    let (vault_address, _) = vault_pda(stake_address);
     let vault_ata = ata(&vault_address);
     let signer_ata = ata(&signer);
 
@@ -43,7 +44,7 @@ pub fn build_stake_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
 
-            AccountMeta::new_readonly(stake, false),
+            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
             AccountMeta::new(vault_ata, false),
             AccountMeta::new_readonly(mint_address, false),
@@ -61,10 +62,11 @@ pub fn build_stake_ix(
 
 pub fn build_unstake_ix(
     signer: Pubkey,
-    stake: Pubkey,
+    pool: Pubkey,
 ) -> Instruction {
 
-    let (vault_address, _) = vault_pda(signer, stake);
+    let (stake_address, _) = stake_pda(signer, pool);
+    let (vault_address, _) = vault_pda(stake_address);
     let vault_ata = ata(&vault_address);
     let signer_ata = ata(&signer);
 
@@ -74,7 +76,7 @@ pub fn build_unstake_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
 
-            AccountMeta::new_readonly(stake, false),
+            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
             AccountMeta::new(vault_ata, false),
 
