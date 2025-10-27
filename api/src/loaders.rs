@@ -49,3 +49,16 @@ impl AccountInfoLoader for AccountInfo<'_> {
             .is_type::<Treasury>(&tapedrive::ID)
     }
 }
+
+pub trait AccountInfoHelper {
+    fn not_empty(&self) -> Result<&Self, ProgramError>;
+}
+
+impl AccountInfoHelper for AccountInfo<'_> {
+    fn not_empty(&self) -> Result<&Self, ProgramError> {
+        if self.data_is_empty() {
+            return Err( ProgramError::AccountAlreadyInitialized);
+        }
+        Ok(self)
+    }
+}

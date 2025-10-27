@@ -144,7 +144,6 @@ pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

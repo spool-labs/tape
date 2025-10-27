@@ -1,14 +1,27 @@
 use crate::declare_id;
 use solana_program::pubkey::Pubkey;
+use super::token::MINT_ADDRESS;
 
 declare_id!("taQ4ccnpwKHP9SxPxda76YrwxhDwsCMYg8vjf6KRiNh"); 
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
-pub const STAKE: &[u8] = b"stake";
+pub const VAULT: &[u8] = b"vault";
 
 #[inline(always)]
-pub fn stake_ata(authority: Pubkey, pool: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[STAKE, authority.as_ref(), pool.as_ref()], &id())
+pub fn vault_pda(authority: Pubkey, stake: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[VAULT, authority.as_ref(), stake.as_ref()], &id())
+}
+
+#[inline(always)]
+pub fn vault_ata(vault: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            vault.as_ref(),
+            spl_token::ID.as_ref(),
+            MINT_ADDRESS.as_ref(),
+        ],
+        &spl_associated_token_account::ID,
+    )
 }

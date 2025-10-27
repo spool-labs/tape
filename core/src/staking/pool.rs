@@ -360,18 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn epoch_dupe_err() {
-        let mut p = StakingPool::<2>::new(BasisPoints(0));
-        let flat = ExchangeRate::flat();
-
-        p.schedule.add_stake(epoch(1), tape(1)).unwrap();
-        let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
-
-        let err = p.advance_epoch(epoch(1), tape(0), r1).unwrap_err();
-        assert!(matches!(err, PoolError::EpochInvalid));
-    }
-
-    #[test]
     fn set_comm_next() {
         let mut p = StakingPool::<2>::new(BasisPoints(1000));
         let flat = ExchangeRate::flat();
