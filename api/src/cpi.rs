@@ -1,5 +1,6 @@
 use steel::*;
 use solana_program::{
+    program_pack::Pack,
     system_instruction, 
     rent::Rent, 
 };
@@ -11,16 +12,21 @@ pub fn create_account_with_size<'a, 'info, T: Discriminator + Pod>(
     size: usize,
     owner: &Pubkey,
     seeds: &[&[u8]],
+    bump: u8,
 ) -> ProgramResult {
 
-    // Allocate space.
-    allocate_account(
+    // Note: we're using the "with_bump" variant as the address may be in a PDA space that is *not*
+    // in the owner's space. The "allocate_account" function assumes the PDA will be in the same
+    // space.
+
+    allocate_account_with_bump(
         target_account,
         system_program,
         payer,
         size,
         owner,
         seeds,
+        bump
     )?;
 
     // Set discriminator.
@@ -59,4 +65,46 @@ pub fn resize_account<'info>(
     target_account.realloc(new_size, false)?;
 
     Ok(())
+}
+
+pub fn create_token_account<'info>(
+    funder_info: &AccountInfo<'info>,
+    target_info: &AccountInfo<'info>,
+    mint_info: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    rent_sysvar: &AccountInfo<'info>,
+    seeds: &[&[u8]],
+    bump: u8,
+) -> ProgramResult {
+
+    // Note: similar to create_account_with_size, we use the "with_bump" variant but here we're
+    // definitely creating an account outside of our program's space since it's owned by the SPL
+    // Token program.
+
+    allocate_account_with_bump(
+        target_info,
+        system_program,
+        funder_info,
+        spl_token::state::Account::LEN,
+        &spl_token::id(), // <- owned by the SPL Token program, not our program
+        seeds,
+        bump,
+    )?;
+
+    // Initialize as a Token account.
+    solana_program::program::invoke_signed(
+        &spl_token::instruction::initialize_account(
+            &spl_token::id(),
+            target_info.key,
+            mint_info.key,
+            target_info.key,
+        ).unwrap(),
+        &[
+            target_info.clone(),
+            mint_info.clone(),
+            target_info.clone(),
+            rent_sysvar.clone(),
+        ],
+        &[seeds],
+    )
 }

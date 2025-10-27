@@ -144,18 +144,6 @@ pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
 }
 
-#[inline(always)]
-pub fn stake_ata(stake: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            stake.as_ref(),
-            spl_token::ID.as_ref(),
-            MINT_ADDRESS.as_ref(),
-        ],
-        &spl_associated_token_account::ID,
-    )
-}
-
 
 #[cfg(test)]
 mod tests {

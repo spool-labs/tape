@@ -35,6 +35,7 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         size,
         &tapedrive::ID,
         &[EPOCH],
+        EPOCH_BUMP,
     )?;
 
     Ok(())

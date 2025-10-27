@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::program::staking::STAKE;
 use steel::*;
 
 pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -6,12 +7,12 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let [
         signer_info,
         signer_ata_info,
-        vault_info,
-        vault_ata_info,
+
         pool_info,
+        stake_ata_info,
         mint_info,
+
         token_program_info,
-        associated_token_program_info,
         system_program_info, 
         rent_info,
     ] = accounts else {
@@ -27,27 +28,21 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    let (vault_address, _)     = vault_pda(*signer_info.key, *pool_info.key);
-    let (vault_ata_address, _) = vault_ata(vault_address);
-
-    vault_info
-        .has_address(&vault_address)?;
-
-    vault_ata_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&vault_ata_address)?;
+    mint_info
+        .is_mint()?;
 
     pool_info
         .is_type::<Node>(&tapedrive::ID)?;
 
-    mint_info
-        .is_mint()?;
+    let (stake_ata, bump) = stake_ata(*signer_info.key, *pool_info.key);
+
+    stake_ata_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&stake_ata)?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
     system_program_info
         .is_program(&system_program::ID)?;
     rent_info
@@ -55,20 +50,20 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let amount = TAPE::unpack(args.amount);
 
-    create_associated_token_account(
+    create_token_account(
         signer_info,
-        vault_info,
-        vault_ata_info,
+        stake_ata_info,
         mint_info,
         system_program_info,
-        token_program_info,
-        associated_token_program_info,
+        rent_info,
+        &[STAKE, signer_info.key.as_ref(), pool_info.key.as_ref()],
+        bump
     )?;
 
     transfer(
         signer_info,
         signer_ata_info,
-        vault_ata_info,
+        stake_ata_info,
         token_program_info,
         amount.into(),
     )?;
@@ -90,9 +85,8 @@ mod tests {
 
         let instruction = build_stake_ix(signer, pool, amount.into());
 
-        let (vault_address, _) = vault_pda(signer, pool);
-        let vault_ata = ata_address(&vault_address);
         let signer_ata = ata_address(&signer);
+        let (stake_ata, _) = stake_ata(signer, pool);
 
         let node = Node::zeroed();
 
@@ -101,14 +95,12 @@ mod tests {
         let accounts = vec![
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, initial_token_balance),
-            empty(vault_address),
-            empty(vault_ata),
 
             pda(pool, node.pack(), tapedrive::ID),
+            empty(stake_ata),
             mint(0),
 
             token_program(),
-            ata_program(),
             system_program(),
             rent_sysvar(),
         ];
@@ -119,14 +111,11 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&vault_address)
-                    .space(0)
-                    .build(),
                 Check::account(&signer_ata).data(
                     token(signer_ata, signer, initial_token_balance - amount).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_ata).data(
-                    token(vault_ata, vault_address, amount).1.data.as_ref()
+                Check::account(&stake_ata).data(
+                    token(stake_ata, stake_ata, amount).1.data.as_ref()
                 ).build(),
             ]
         );

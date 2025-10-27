@@ -35,6 +35,7 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         size,
         &tapedrive::ID,
         &[SYSTEM],
+        SYSTEM_BUMP,
     )?;
 
     Ok(())
