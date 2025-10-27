@@ -12,7 +12,6 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         vault_ata_info,
 
         token_program_info,
-        system_program_info, 
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -26,9 +25,8 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    pool_info
-        .not_empty()?
-        .has_owner(&tapedrive::ID)?;
+    // No check done against "pool_info" to reduce risks of stake being locked due to parent
+    // program changes
 
     let (stake_address, _)     = stake_pda(*signer_info.key, *pool_info.key);
     let (vault_address, bump)  = vault_pda(stake_address);
@@ -46,8 +44,6 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     token_program_info
         .is_program(&spl_token::ID)?;
-    system_program_info
-        .is_program(&system_program::ID)?;
 
     let amount = vault_ata_info
         .as_token_account()?

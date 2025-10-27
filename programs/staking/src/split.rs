@@ -28,9 +28,8 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     signer_info
         .is_signer()?;
 
-    pool_info
-        .not_empty()?
-        .has_owner(&tapedrive::ID)?;
+    // No check done against "pool_info" to reduce risks of stake being locked due to parent
+    // program changes
 
     mint_info
         .is_mint()?;

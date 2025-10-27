@@ -37,6 +37,9 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let (vault_address, _)     = vault_pda(stake_address);
     let (vault_ata, _)         = vault_ata(vault_address);
 
+    vault_info
+        .has_address(&vault_address)?;
+
     vault_ata_info
         .is_empty()?
         .is_writable()?
@@ -55,6 +58,9 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_sysvar(&sysvar::rent::ID)?;
 
     let amount = TAPE::unpack(args.amount);
+    if amount == TAPE::zero() {
+        return Err(ProgramError::InvalidArgument);
+    }
 
     create_associated_token_account(
         signer_info,

@@ -81,7 +81,6 @@ pub fn build_unstake_ix(
             AccountMeta::new(vault_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: UnstakeTokens {
         }.to_bytes(),
@@ -163,7 +162,6 @@ pub fn build_merge_stake_ix(
             AccountMeta::new(dest_vault_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: MergeStake {}.to_bytes(),
     }
