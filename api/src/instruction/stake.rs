@@ -1,21 +1,21 @@
 use steel::*;
-use crate::pda::*;
-use crate::utils::ata;
 use tape_core::prelude::*;
+use crate::utils::ata;
+use crate::program::{
+    tapedrive::*,
+    staking::*,
+    token::*,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct StakeWithNode {
+pub struct StakeTokens {
     pub amount: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UnstakeFromNode {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ClaimStake {}
+pub struct UnstakeTokens {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -34,23 +34,21 @@ pub fn build_stake_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
 
-    let (epoch_address, _) = epoch_pda();
     let (mint_address, _) = mint_pda();
-    let (stake_address, _) = stake_pda(signer, node_address);
-    let stake_ata = ata(&stake_address);
+    let (vault_address, _) = vault_pda(signer, node_address);
+    let vault_ata = ata(&vault_address);
     let signer_ata = ata(&signer);
 
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::staking::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
-            AccountMeta::new(stake_address, false),
-            AccountMeta::new(stake_ata, false),
+            AccountMeta::new(vault_address, false),
+            AccountMeta::new(vault_ata, false),
 
-            AccountMeta::new(epoch_address, false),
             AccountMeta::new(node_address, false),
             AccountMeta::new(mint_address, false),
 
@@ -59,10 +57,35 @@ pub fn build_stake_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: StakeWithNode {
+        data: StakeTokens {
             amount
         }.to_bytes(),
     }
 }
 
+pub fn build_unstake_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+) -> Instruction {
 
+    let (vault_address, _) = vault_pda(signer, node_address);
+    let vault_ata = ata(&vault_address);
+    let signer_ata = ata(&signer);
+
+    Instruction {
+        program_id: crate::program::staking::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(vault_address, false),
+            AccountMeta::new(vault_ata, false),
+
+            AccountMeta::new(node_address, false),
+
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: UnstakeTokens {
+        }.to_bytes(),
+    }
+}

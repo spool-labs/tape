@@ -2,6 +2,7 @@ use crate::types::*;
 use bytemuck::{Pod, Zeroable};
 
 use super::schedule::*;
+use super::state::*;
 use crate::system::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

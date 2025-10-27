@@ -22,6 +22,7 @@ pub const EPOCH:     &[u8] = b"epoch";
 pub const NODE:      &[u8] = b"node";
 pub const RESOURCE:  &[u8] = b"resource";
 pub const BLOB:      &[u8] = b"blob";
+pub const STAKE:     &[u8] = b"stake";
 
 pub const SYSTEM_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);
@@ -136,6 +137,23 @@ pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
 #[inline(always)]
 pub fn blob_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[BLOB, authority.as_ref(), hash.as_ref()], &id())
+}
+
+#[inline(always)]
+pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
+}
+
+#[inline(always)]
+pub fn stake_ata(stake: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            stake.as_ref(),
+            spl_token::ID.as_ref(),
+            MINT_ADDRESS.as_ref(),
+        ],
+        &spl_associated_token_account::ID,
+    )
 }
 
 

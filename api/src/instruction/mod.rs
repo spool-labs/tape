@@ -7,7 +7,7 @@ mod epoch;
 //mod exchange;
 //mod feature;
 mod node;
-//mod stake;
+mod stake;
 mod system;
 //mod tape;
 mod token;
@@ -19,7 +19,7 @@ pub use epoch::*;
 //pub use exchange::*;
 //pub use feature::*;
 pub use node::*;
-//pub use stake::*;
+pub use stake::*;
 pub use system::*;
 //pub use tape::*;
 pub use token::*;
@@ -50,11 +50,10 @@ pub enum ExchangeInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum StakingInstruction {
-    Unknown = 30,
+    Unknown = 20,
 
-    StakeWithNode,
-    UnstakeFromNode,
-    ClaimStake,
+    StakeTokens,
+    UnstakeTokens,
     SplitStake,
     MergeStake,
 }
@@ -62,7 +61,7 @@ pub enum StakingInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum TapeInstruction {
-    Unknown = 20,
+    Unknown = 30,
 
     // System
     Initialize,
@@ -92,6 +91,8 @@ pub enum TapeInstruction {
     VoteOnStoragePrice,
     VoteOnShardSize,
     VoteOnFeature,
+    StakeWithNode,
+    UnstakeFromNode,
 
     // Storage
     ReserveTape,
@@ -127,13 +128,12 @@ instruction!(TapeInstruction, SyncEpoch);
 //instruction!(ExchangeInstruction, WithdrawSol);
 //instruction!(ExchangeInstruction, SwapForTape);
 //instruction!(ExchangeInstruction, SwapForSol);
-//
-//instruction!(StakeInstruction, StakeWithNode);
-//instruction!(StakeInstruction, UnstakeFromNode);
-//instruction!(StakeInstruction, ClaimStake);
-//instruction!(StakeInstruction, SplitStake);
-//instruction!(StakeInstruction, MergeStake);
-//
+
+instruction!(StakingInstruction, StakeTokens);
+instruction!(StakingInstruction, UnstakeTokens);
+instruction!(StakingInstruction, SplitStake);
+instruction!(StakingInstruction, MergeStake);
+
 //instruction!(TapeInstruction, Initialize);
 //instruction!(TapeInstruction, CreateSystem);
 //instruction!(TapeInstruction, ExpandSystem);

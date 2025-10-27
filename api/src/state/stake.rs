@@ -10,12 +10,10 @@ pub struct Stake {
     pub authority: Pubkey,
 
     /// The pool this stake is associated with.
-    pub node: Pubkey,
+    pub pool: Pubkey,
 
     /// The staking details (amount, activation, state, etc).
     pub inner: StakedTape,
 }
 
 state!(AccountType, Stake);
-
-
