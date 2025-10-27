@@ -128,22 +128,17 @@ mod tests {
         let pool = Node::zeroed();
 
         let accounts = vec![
-            // signer, recipient
             sol(signer, 1_000_000_000),
             sol(recipient, 0),
 
-            // pool
             pda(pool_address, pool.pack(), tapedrive::ID),
 
-            // source vault and ATA
             empty(source_vault_address),
             token(source_vault_ata, source_vault_address, initial_source_balance),
 
-            // destination vault and ATA (ATA must be empty and will be created)
             empty(dest_vault_address),
             empty(dest_vault_ata),
 
-            // mint and programs
             mint(0),
             token_program(),
             ata_program(),
