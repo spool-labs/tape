@@ -327,7 +327,8 @@ mod tests {
 
         let accounts = vec![
             sol(signer, initial_signer_lamports),
-            (exchange_address, account)
+            (exchange_address, account),
+            rent_sysvar(),
         ];
 
         let instruction = build_withdraw_sol_ix(signer, exchange_address, amount);
@@ -447,6 +448,7 @@ mod tests {
             (exchange_address, account),
             token(exchange_ata, exchange_address, initial_exchange_ata_balance),
             token_program(),
+            rent_sysvar(),
         ];
 
         let expected_exchange = Exchange {

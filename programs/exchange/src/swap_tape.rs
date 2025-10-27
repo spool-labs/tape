@@ -21,6 +21,8 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .is_signer()?;
 
+    let (exchange_ata, _) = exchange_ata(*exchange_info.key);
+
     let exchange = exchange_info
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
@@ -32,6 +34,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     exchange_ata_info
         .is_writable()?
+        .has_address(&exchange_ata)?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
 

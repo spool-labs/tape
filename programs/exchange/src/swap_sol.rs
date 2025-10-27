@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use solana_program::sysvar::rent::Rent;
 
 pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForSol::try_from_bytes(data)?;
@@ -9,6 +10,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         exchange_info,
         exchange_ata_info,
         token_program_info,
+        rent_info,
     ] = accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -17,6 +19,8 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     signer_info
         .is_writable()?
         .is_signer()?;
+
+    let (exchange_ata, _) = exchange_ata(*exchange_info.key);
 
     let exchange = exchange_info
         .is_writable()?
@@ -29,11 +33,14 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     exchange_ata_info
         .is_writable()?
+        .has_address(&exchange_ata)?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
+    rent_info
+        .is_sysvar(&sysvar::rent::ID)?;
 
     // Amount in TAPE from user
     let amount_in_tape = TAPE::unpack(args.amount_tape);
@@ -64,12 +71,20 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     )?;
 
     // Transfer SOL from exchange to signer
+    let rent_exempt_reserve = Rent::get()?
+        .minimum_balance(exchange_info.data_len());
+
+    // Transfer lamports
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount_out_sol)
         .ok_or(TapeError::Underflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
         .checked_add(amount_out_sol)
         .ok_or(TapeError::Overflow)?;
+
+    if new_exchange_lamports < rent_exempt_reserve {
+        return Err(TapeError::InsufficientFunds.into());
+    }
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
     **signer_info.try_borrow_mut_lamports()? = new_signer_lamports;

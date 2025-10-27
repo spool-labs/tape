@@ -21,9 +21,17 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
 
+    let (exchange_ata, _) = exchange_ata(*exchange_info.key);
+
     let exchange = exchange_info
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
+
+    exchange_ata_info
+        .is_writable()?
+        .has_address(&exchange_ata)?
+        .as_token_account()?
+        .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
 
     token_program_info
         .is_program(&spl_token::ID)?;

@@ -106,6 +106,7 @@ pub fn build_withdraw_sol_ix(
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(exchange, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: WithdrawSol {
             amount,
@@ -221,6 +222,7 @@ pub fn build_swap_for_sol_ix(
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: SwapForSol { amount_tape }.to_bytes(),
     }

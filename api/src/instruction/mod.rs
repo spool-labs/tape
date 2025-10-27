@@ -132,15 +132,9 @@ instruction!(TapeInstruction, CreateArchive);
 instruction!(TapeInstruction, CreateEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
 instruction!(TapeInstruction, SyncEpoch);
-
-//instruction!(TapeInstruction, Initialize);
-//instruction!(TapeInstruction, CreateSystem);
-//instruction!(TapeInstruction, ExpandSystem);
-//instruction!(TapeInstruction, CreateEpoch);
-//instruction!(TapeInstruction, AdvanceEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
-//
+
 instruction!(TapeInstruction, RegisterNode);
 instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, SetAuthority);

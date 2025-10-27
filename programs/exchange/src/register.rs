@@ -16,10 +16,15 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    signer_info
+        .is_writable()?
+        .is_signer()?;
+
     mint_info
         .has_address(&MINT_ADDRESS)?;
 
     let (exchange_address, _) = exchange_pda(*signer_info.key);
+    let (exchange_ata, _) = exchange_ata(exchange_address);
 
     exchange_info
         .is_empty()?
@@ -28,7 +33,8 @@ pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     exchange_ata_info
         .is_empty()?
-        .is_writable()?;
+        .is_writable()?
+        .has_address(&exchange_ata)?;
 
     // Check programs and sysvars.
     system_program_info
