@@ -4,7 +4,7 @@ mod archive;
 //mod blob;
 //mod committee;
 mod epoch;
-//mod exchange;
+mod exchange;
 //mod feature;
 mod node;
 mod stake;
@@ -16,7 +16,7 @@ pub use archive::*;
 //pub use blob::*;
 //pub use committee::*;
 pub use epoch::*;
-//pub use exchange::*;
+pub use exchange::*;
 //pub use feature::*;
 pub use node::*;
 pub use stake::*;
@@ -27,7 +27,7 @@ pub use token::*;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum TokenInstruction {
-    Unknown = 0,
+    Unknown = 0x0,
 
     InitializeMint,
 }
@@ -35,7 +35,7 @@ pub enum TokenInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum ExchangeInstruction {
-    Unknown = 10,
+    Unknown = 0x20,
 
     RegisterExchange,
     SetExchangeRate,
@@ -50,7 +50,7 @@ pub enum ExchangeInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum StakingInstruction {
-    Unknown = 20,
+    Unknown = 0x30,
 
     StakeTokens,
     UnstakeTokens,
@@ -61,7 +61,7 @@ pub enum StakingInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum TapeInstruction {
-    Unknown = 30,
+    Unknown = 0x30,
 
     // System
     Initialize,
@@ -111,6 +111,20 @@ pub enum TapeInstruction {
 
 instruction!(TokenInstruction, InitializeMint);
 
+instruction!(ExchangeInstruction, RegisterExchange);
+instruction!(ExchangeInstruction, SetExchangeRate);
+instruction!(ExchangeInstruction, DepositTape);
+instruction!(ExchangeInstruction, DepositSol);
+instruction!(ExchangeInstruction, WithdrawTape);
+instruction!(ExchangeInstruction, WithdrawSol);
+instruction!(ExchangeInstruction, SwapForTape);
+instruction!(ExchangeInstruction, SwapForSol);
+
+instruction!(StakingInstruction, StakeTokens);
+instruction!(StakingInstruction, UnstakeTokens);
+instruction!(StakingInstruction, SplitStake);
+instruction!(StakingInstruction, MergeStake);
+
 instruction!(TapeInstruction, Initialize);
 instruction!(TapeInstruction, CreateSystem);
 instruction!(TapeInstruction, ExpandSystem);
@@ -118,21 +132,6 @@ instruction!(TapeInstruction, CreateArchive);
 instruction!(TapeInstruction, CreateEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
 instruction!(TapeInstruction, SyncEpoch);
-
-
-//instruction!(ExchangeInstruction, RegisterExchange);
-//instruction!(ExchangeInstruction, SetExchangeRate);
-//instruction!(ExchangeInstruction, DepositTape);
-//instruction!(ExchangeInstruction, DepositSol);
-//instruction!(ExchangeInstruction, WithdrawTape);
-//instruction!(ExchangeInstruction, WithdrawSol);
-//instruction!(ExchangeInstruction, SwapForTape);
-//instruction!(ExchangeInstruction, SwapForSol);
-
-instruction!(StakingInstruction, StakeTokens);
-instruction!(StakingInstruction, UnstakeTokens);
-instruction!(StakingInstruction, SplitStake);
-instruction!(StakingInstruction, MergeStake);
 
 //instruction!(TapeInstruction, Initialize);
 //instruction!(TapeInstruction, CreateSystem);

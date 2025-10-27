@@ -1,6 +1,6 @@
 use steel::*;
-use crate::pda::*;
 use tape_core::prelude::*;
+use crate::program::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -59,7 +59,7 @@ pub fn build_register_exchange_ix(
     let (exchange_ata, _) = exchange_ata(exchange_address);
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(exchange_address, false),
@@ -82,7 +82,7 @@ pub fn build_deposit_sol_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(exchange, false),
@@ -102,7 +102,7 @@ pub fn build_withdraw_sol_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(exchange, false),
@@ -123,7 +123,7 @@ pub fn build_deposit_tape_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
@@ -147,7 +147,7 @@ pub fn build_withdraw_tape_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
@@ -168,7 +168,7 @@ pub fn build_set_exchange_rate_ix(
     sol: u64,
 ) -> Instruction {
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(exchange, false),
@@ -191,7 +191,7 @@ pub fn build_swap_for_tape_ix(
     let amount_sol = amount_sol.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
@@ -214,7 +214,7 @@ pub fn build_swap_for_sol_ix(
     let amount_tape = amount_tape.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::exchange::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),

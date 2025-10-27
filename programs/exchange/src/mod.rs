@@ -1,5 +1,3 @@
-#![allow(unexpected_cfgs)]
-
 mod deposit_sol;
 mod deposit_tape;
 mod register;
@@ -17,51 +15,6 @@ pub use swap_sol::*;
 pub use swap_tape::*;
 pub use withdraw_sol::*;
 pub use withdraw_tape::*;
-
-use tape_api::prelude::*;
-use tape_api::program::exchange;
-use steel::*;
-
-pub fn process_instruction(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    data: &[u8],
-) -> ProgramResult {
-    let (discriminator, data) = parse_instruction(&exchange::ID, program_id, data)?;
-
-    solana_program::msg!("Exchange Program ID: {}", exchange::id());
-
-    let ix_type = if let Ok(instruction) = ExchangeInstruction::try_from_primitive(discriminator) {
-        format!("{:?}", instruction)
-    } else {
-        format!("Invalid (discriminator: {})", discriminator)
-    };
-
-    solana_program::msg!("Instruction: {}", ix_type);
-
-    if let Ok(ix) = ExchangeInstruction::try_from_primitive(discriminator) {
-        match ix {
-
-            ExchangeInstruction::RegisterExchange => process_register_exchange(accounts, data)?,
-            ExchangeInstruction::SetExchangeRate => process_set_exchange_rate(accounts, data)?,
-            ExchangeInstruction::DepositSol => process_deposit_sol(accounts, data)?,
-            ExchangeInstruction::DepositTape => process_deposit_tape(accounts, data)?,
-            ExchangeInstruction::WithdrawSol => process_withdraw_sol(accounts, data)?,
-            ExchangeInstruction::WithdrawTape => process_withdraw_tape(accounts, data)?,
-            ExchangeInstruction::SwapForTape => process_swap_for_tape(accounts, data)?,
-            ExchangeInstruction::SwapForSol => process_swap_for_sol(accounts, data)?,
-
-            _ => return Err(ProgramError::InvalidInstructionData),
-        }
-    } else {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-
-    Ok(())
-}
-
-entrypoint!(process_instruction);
-
 
 #[cfg(test)]
 mod tests {
@@ -89,7 +42,7 @@ mod tests {
     }
 
     fn create_account(address: Pubkey, data: &Exchange) -> Account {
-        let mut account = pda(address, data.pack(), exchange::ID).1;
+        let mut account = pda(address, data.pack()).1;
         account.lamports += data.balance_sol.as_u64();
         account
     }
@@ -114,7 +67,7 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction, 
             &accounts,
@@ -157,7 +110,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -200,7 +153,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -245,7 +198,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -294,7 +247,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -337,7 +290,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -394,7 +347,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,
@@ -455,7 +408,7 @@ mod tests {
             ..exchange
         };
 
-        let env = test_env();
+        let env = test_env("tape".to_string());
         env.process_instruction(
             &instruction,
             &accounts,

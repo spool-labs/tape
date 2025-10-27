@@ -45,7 +45,7 @@ pub fn build_stake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new(vault_address, false),
+            AccountMeta::new_readonly(vault_address, false),
             AccountMeta::new(vault_ata, false),
             AccountMeta::new_readonly(mint_address, false),
 
@@ -77,10 +77,11 @@ pub fn build_unstake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new(vault_address, false),
+            AccountMeta::new_readonly(vault_address, false),
             AccountMeta::new(vault_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: UnstakeTokens {
         }.to_bytes(),
@@ -115,10 +116,10 @@ pub fn build_split_stake_ix(
 
             AccountMeta::new_readonly(pool, false),
 
-            AccountMeta::new(source_vault_address, false),
+            AccountMeta::new_readonly(source_vault_address, false),
             AccountMeta::new(source_vault_ata, false),
 
-            AccountMeta::new(dest_vault_address, false),
+            AccountMeta::new_readonly(dest_vault_address, false),
             AccountMeta::new(dest_vault_ata, false),
 
             AccountMeta::new_readonly(mint_address, false),
@@ -155,13 +156,14 @@ pub fn build_merge_stake_ix(
 
             AccountMeta::new_readonly(pool, false),
 
-            AccountMeta::new(source_vault_address, false),
+            AccountMeta::new_readonly(source_vault_address, false),
             AccountMeta::new(source_vault_ata, false),
 
-            AccountMeta::new(dest_vault_address, false),
+            AccountMeta::new_readonly(dest_vault_address, false),
             AccountMeta::new(dest_vault_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: MergeStake {}.to_bytes(),
     }

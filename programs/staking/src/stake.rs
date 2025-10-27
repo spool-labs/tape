@@ -58,7 +58,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_sysvar(&sysvar::rent::ID)?;
 
     let amount = TAPE::unpack(args.amount);
-    if amount == TAPE::zero() {
+    if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }
 

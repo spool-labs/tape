@@ -16,6 +16,7 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         dest_vault_ata_info,
 
         token_program_info,
+        system_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -28,6 +29,8 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     token_program_info
         .is_program(&spl_token::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
 
     // Source vault/ATA
     let (source_stake_address, _)     = stake_pda(*signer_info.key, *pool_info.key);
@@ -125,6 +128,7 @@ mod tests {
             token(dest_vault_ata, dest_vault_address, initial_balance),
 
             token_program(),
+            system_program(),
         ];
 
         let env = test_env();

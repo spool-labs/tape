@@ -72,7 +72,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .has_address(&dest_vault_ata)?;
 
     let amount = TAPE::unpack(args.amount);
-    if amount == TAPE::zero() {
+    if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }
 

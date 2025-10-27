@@ -12,6 +12,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         vault_ata_info,
 
         token_program_info,
+        system_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -44,6 +45,8 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     token_program_info
         .is_program(&spl_token::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
 
     let amount = vault_ata_info
         .as_token_account()?
@@ -103,7 +106,6 @@ mod tests {
 
             token_program(),
             system_program(),
-            rent_sysvar(),
         ];
 
         let env = test_env();
