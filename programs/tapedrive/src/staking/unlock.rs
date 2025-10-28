@@ -29,9 +29,11 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     let stake = stake_info
         .has_address(&stake_address)?
         .is_writable()?
-        .as_account_mut::<Stake>(&tapedrive::ID)?
-        .assert_mut(|a| a.authority.eq(signer_info.key))?
-        .assert_mut(|a| a.pool.eq(node_info.key))?;
+        .as_account_mut::<Stake>(&tapedrive::ID)?;
+
+    if stake.authority != *signer_info.key || stake.pool != *node_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     let staked_tape = &mut stake.inner;
     let activation_rate = node.history

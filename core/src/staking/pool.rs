@@ -301,7 +301,8 @@ impl<const N: usize> StakingPool<N> {
             owed_rewards
         };
 
-        self.rewards = self.rewards.saturating_sub(pay);
+        self.rewards = self.rewards
+            .saturating_sub(pay);
 
         Ok(pay)
     }

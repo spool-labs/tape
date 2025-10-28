@@ -116,6 +116,15 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .has_address(&dest_vault_address)?
         .is_writable()?;
 
+    // TODO: potential issue
+    //
+    //External split can create destination vault without proving a matching Stake exists
+    //
+    //External process_split_stake will create a dest vault PDA derived from (recipient, pool)
+    //without requiring the corresponding Stake account. That’s fine from a token-custody angle,
+    //but it allows users to create “orphan” vaults unrelated to a real Stake state if they invoke
+    //the external program directly.
+    
     // CPI into staking program to split the underlying vaults
     solana_program::program::invoke(
         &build_split_stake_ix(

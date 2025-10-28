@@ -28,6 +28,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
+
     token_program_info
         .is_program(&spl_token::ID)?;
     staking_program_info
@@ -45,24 +46,22 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 
-    stake_info
+    let stake = stake_info
         .has_address(&stake_address)?
         .is_writable()?
-        .is_type::<Stake>(&tapedrive::ID)?;
+        .as_account_mut::<Stake>(&tapedrive::ID)?;
+
+    if stake.authority != *signer_info.key || stake.pool != *node_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     vault_info
         .has_address(&vault_address)?
         .is_writable()?;
 
-    let stake = stake_info
-        .as_account_mut::<Stake>(&tapedrive::ID)?
-        .assert_mut(|a| a.authority.eq(signer_info.key))?
-        .assert_mut(|a| a.pool.eq(node_info.key))?;
-
     let staked_tape = &mut stake.inner;
 
     // Must be in withdrawing state and withdraw epoch must have arrived
-
     if !staked_tape.is_withdrawing() {
         return Err(ProgramError::Custom(0));
     }
@@ -87,7 +86,9 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .rate_at(withdraw_epoch)
         .ok_or(ProgramError::Custom(3))?;
 
-    // Convert principal (TAPE) -> shares at activation, then shares -> TAPE at withdraw
+    // Convert principal (TAPE) -> shares at activation, 
+    // then shares -> TAPE at withdraw
+
     let shares = activation_rate
         .convert_to_other_amount(staked_tape.amount.into());
 
@@ -102,7 +103,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .saturating_sub(staked_tape.amount.into());
 
     // Update pool accounting and stake state
-    node.pool
+    // TODO: pay the rewards from pool rewards balance
+    let _total_rewards = node.pool
         .unstake(staked_tape, current_epoch(epoch), owed_rewards.into())
         .map_err(|_| ProgramError::Custom(5))?;
 
