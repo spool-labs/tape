@@ -92,9 +92,6 @@ pub enum Commands {
     Mine {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
-
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
-        name: Option<String>,
     },
     Web {
         #[arg(help = "Port to run the web RPC service on")]
@@ -184,9 +181,6 @@ pub enum InfoCommands {
     Miner {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
-
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
-        name: Option<String>,
     },
 
     Archive {},
@@ -303,4 +297,7 @@ impl Context{
         self.config.solana.max_transaction_retries
     }
 
+    pub fn miner_name_owned(&self) -> String {
+        self.config.mining.miner_name.clone()
+    }
 }
