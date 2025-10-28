@@ -56,6 +56,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .is_writable()?
         .has_address(&dest_vault_address)?;
 
+    // If the PDA token account doesn't exist yet, create it; otherwise validate it.
     if dest_vault_info.is_empty().is_ok() {
 
         create_token_account(
@@ -73,6 +74,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
             .as_token_account()?
             .assert(|t| t.owner() == *dest_vault_info.key)?
             .assert(|t| t.mint() == MINT_ADDRESS)?;
+
     }
 
     transfer_signed_with_bump(

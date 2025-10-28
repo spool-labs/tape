@@ -31,10 +31,10 @@ pub fn build_stake_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
 
-    let (mint_address, _)        = mint_pda();
-    let (stake_address, _)       = stake_pda(signer, pool);
-    let (vault_token_address, _) = vault_pda(stake_address);
-    let signer_ata = ata(&signer);
+    let (mint_address, _)  = mint_pda();
+    let (stake_address, _) = stake_pda(signer, pool);
+    let (vault_address, _) = vault_pda(stake_address);
+    let signer_ata         = ata(&signer);
 
     let amount = amount.pack();
 
@@ -45,7 +45,7 @@ pub fn build_stake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new(vault_token_address, false),
+            AccountMeta::new(vault_address, false),
             AccountMeta::new_readonly(mint_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
@@ -60,9 +60,9 @@ pub fn build_unstake_ix(
     pool: Pubkey,
 ) -> Instruction {
 
-    let (stake_address, _)       = stake_pda(signer, pool);
-    let (vault_token_address, _) = vault_pda(stake_address);
-    let signer_ata = ata(&signer);
+    let (stake_address, _) = stake_pda(signer, pool);
+    let (vault_address, _) = vault_pda(stake_address);
+    let signer_ata         = ata(&signer);
 
     Instruction {
         program_id: crate::program::staking::ID,
@@ -71,7 +71,7 @@ pub fn build_unstake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new(vault_token_address, false),
+            AccountMeta::new(vault_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
