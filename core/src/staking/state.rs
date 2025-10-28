@@ -7,7 +7,7 @@ use crate::types::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum StakePhase {
     Active = 0,
-    Unstaking,
+    Unlocking,
     Withdrawn,
 }
 
@@ -17,7 +17,7 @@ pub struct StakeState {
     /// The phase of this stake.
     pub phase: u64,
 
-    /// The epoch unstaking can be initiated (0 if not unstaking).
+    /// The epoch unstaking can be initiated (0 if not unlocking).
     pub unstake_epoch: EpochNumber,
 }
 
@@ -44,19 +44,19 @@ impl StakeState {
     }
 
     pub fn is_withdrawing(&self) -> bool {
-        matches!(self.state_enum(), Some(StakePhase::Unstaking))
+        matches!(self.state_enum(), Some(StakePhase::Unlocking))
     }
 
     pub fn withdraw_epoch(&self) -> Option<EpochNumber> {
         match self.state_enum() {
-            Some(StakePhase::Unstaking) => Some(self.unstake_epoch),
+            Some(StakePhase::Unlocking) => Some(self.unstake_epoch),
             _ => None,
         }
     }
 
     pub fn set_withdrawing(&mut self, epoch: EpochNumber) -> &mut Self {
         assert!(self.is_active(), "can only withdraw from staked phase");
-        self.set_state(StakePhase::Unstaking);
+        self.set_state(StakePhase::Unlocking);
         self.unstake_epoch = epoch;
         self
     }

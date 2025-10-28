@@ -63,6 +63,27 @@ pub fn build_stake_with_pool_ix(
     }
 }
 
+pub fn build_request_stake_unlock_ix(
+    signer: Pubkey,
+    pool: Pubkey,
+) -> Instruction {
+
+    let (epoch_address, _) = epoch_pda();
+    let (stake_address, _) = stake_pda(signer, pool);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+
+            AccountMeta::new(stake_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(pool, false),
+        ],
+        data: RequestStakeUnlock {}.to_bytes(),
+    }
+}
+
 pub fn build_unstake_from_pool_ix(
     signer: Pubkey,
     pool: Pubkey,
