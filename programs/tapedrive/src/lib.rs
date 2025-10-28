@@ -61,6 +61,9 @@ pub fn process_instruction(
             // Staking
             TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,
             TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,
+            TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,
+            TapeInstruction::MergePoolStake => process_merge_pool_stake(accounts, data)?,
+            TapeInstruction::SplitPoolStake => process_split_pool_stake(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

@@ -248,7 +248,8 @@ impl<const N: usize> StakingPool<N> {
         // Otherwise, this is an active stake withdraw, so we need to schedule a share removal
         // which would calculate rewards at withdraw time.
 
-        let shares = stake_activation_rate.convert_to_other_amount(stake.amount.into());
+        let shares = stake_activation_rate
+            .convert_to_other_amount(stake.amount.into());
 
         if shares == 0 {
             return Err(PoolError::ZeroShares);

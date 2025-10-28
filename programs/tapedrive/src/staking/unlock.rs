@@ -29,7 +29,9 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     let stake = stake_info
         .has_address(&stake_address)?
         .is_writable()?
-        .as_account_mut::<Stake>(&tapedrive::ID)?;
+        .as_account_mut::<Stake>(&tapedrive::ID)?
+        .assert_mut(|a| a.authority.eq(signer_info.key))?
+        .assert_mut(|a| a.pool.eq(node_info.key))?;
 
     let staked_tape = &mut stake.inner;
     let activation_rate = node.history
