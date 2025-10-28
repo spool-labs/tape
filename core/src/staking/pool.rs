@@ -20,7 +20,7 @@ pub enum PoolError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StakingPool<const N: usize> {
     /// The total number of shares issued by this pool.
-    pub num_shares: u64,
+    pub shares: u64,
 
     /// The total stake held by this pool (excluding commission).
     pub stake: Coin<TAPE>,
@@ -44,7 +44,7 @@ unsafe impl<const N: usize> Pod for StakingPool<N> {}
 impl<const N: usize> StakingPool<N> {
     pub fn new(commission_rate: BasisPoints) -> Self {
         Self {
-            num_shares: 0,
+            shares: 0,
             stake: Coin::<TAPE>::zero(),
             rewards: Coin::<TAPE>::zero(),
             commission: Coin::<TAPE>::zero(),
@@ -65,7 +65,7 @@ impl<const N: usize> StakingPool<N> {
         // Calculate current exchange rate (stake per share)
         let exchange_rate = ExchangeRate::new(
             self.stake.into(),
-            self.num_shares
+            self.shares
         );
 
         // Calculate net token additions (incoming - outgoing)
@@ -98,7 +98,7 @@ impl<const N: usize> StakingPool<N> {
         self.process_pending_reductions(current_epoch, epoch_rate)?;
 
         // Correct the current number of shares using the newly updated stake
-        self.num_shares = epoch_rate.convert_to_other_amount(self.stake.into());
+        self.shares = epoch_rate.convert_to_other_amount(self.stake.into());
 
         Ok(())
     }
@@ -162,7 +162,7 @@ impl<const N: usize> StakingPool<N> {
 
         // Split rewards into commission and net, then add to pool stake
         if rewards_gross > TAPE::zero() {
-            if self.stake == TAPE::zero() {
+            if self.stake.is_zero() {
                 return Err(PoolError::StakeInvalid);
             }
 
@@ -179,10 +179,10 @@ impl<const N: usize> StakingPool<N> {
 
         // Determine the exchange rate to use for this epoch (post-rewards).
         // If we have no shares yet, fall back to the provided prev_rate.
-        let epoch_rate = if self.num_shares == 0 {
+        let epoch_rate = if self.shares == 0 {
             prev_rate
         } else {
-            ExchangeRate::new(self.stake.into(), self.num_shares)
+            ExchangeRate::new(self.stake.into(), self.shares)
         };
 
         // Process scheduled stake/withdrawals using this epoch's exchange rate
@@ -197,7 +197,7 @@ impl<const N: usize> StakingPool<N> {
         current_epoch: EpochNumber,
         stake_amount: Coin<TAPE>,
     ) -> Result<StakedTape, PoolError> {
-        if stake_amount == TAPE::zero() {
+        if stake_amount.is_zero() {
             return Err(PoolError::ZeroStake);
         }
 
@@ -225,7 +225,7 @@ impl<const N: usize> StakingPool<N> {
             return Err(PoolError::StakeInvalid);
         }
 
-        if stake.amount == TAPE::zero() {
+        if stake.amount.is_zero() {
             return Err(PoolError::StakeInvalid);
         }
 
@@ -248,14 +248,14 @@ impl<const N: usize> StakingPool<N> {
         // Otherwise, this is an active stake withdraw, so we need to schedule a share removal
         // which would calculate rewards at withdraw time.
 
-        let num_shares = stake_activation_rate.convert_to_other_amount(stake.amount.into());
+        let shares = stake_activation_rate.convert_to_other_amount(stake.amount.into());
 
-        if num_shares == 0 {
+        if shares == 0 {
             return Err(PoolError::ZeroShares);
         }
 
         self.schedule
-            .add_unstake(withdraw_epoch, num_shares)
+            .add_unstake(withdraw_epoch, shares)
             .map_err(|_| PoolError::ScheduleFailed)?;
 
         Ok(withdraw_epoch)
@@ -282,7 +282,7 @@ impl<const N: usize> StakingPool<N> {
             return Err(PoolError::EpochInvalid);
         }
 
-        if stake.amount == TAPE::zero() {
+        if stake.amount.is_zero() {
             return Err(PoolError::StakeInvalid);
         }
 
@@ -320,7 +320,7 @@ mod tests {
         let p = StakingPool::<2>::new(BasisPoints(1000));
 
         assert_eq!(p.stake, TAPE::zero());
-        assert_eq!(p.num_shares, 0);
+        assert_eq!(p.shares, 0);
         assert_eq!(p.commission_rate, BasisPoints(1000));
     }
 
@@ -385,7 +385,7 @@ mod tests {
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
 
         assert_eq!(p.stake, tape(1000));
-        assert_eq!(p.num_shares, r1.convert_to_other_amount(p.stake.into()));
+        assert_eq!(p.shares, r1.convert_to_other_amount(p.stake.into()));
     }
 
     #[test]

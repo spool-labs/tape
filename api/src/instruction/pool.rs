@@ -56,8 +56,8 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
             AccountMeta::new_readonly(crate::program::staking::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: StakeWithPool { amount }.to_bytes(),
     }

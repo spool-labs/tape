@@ -46,8 +46,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?;
 
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
-    if vault_info.is_empty().is_ok() {
-
+    if vault_info.data_is_empty() {
         create_token_account(
             signer_info,
             vault_info,
@@ -56,14 +55,11 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
             &[VAULT, stake_address.as_ref()],
             bump,
         )?;
-
     } else {
-
         vault_info
             .as_token_account()?
             .assert(|t| t.owner() == *vault_info.key)?
             .assert(|t| t.mint() == MINT_ADDRESS)?;
-
     }
 
     let amount = TAPE::unpack(args.amount);

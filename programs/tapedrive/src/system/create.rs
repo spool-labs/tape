@@ -1,6 +1,5 @@
 use steel::*;
 use tape_api::prelude::*;
-use crate::error::*;
 use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
