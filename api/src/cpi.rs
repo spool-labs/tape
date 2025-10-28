@@ -72,28 +72,22 @@ pub fn create_token_account<'info>(
     target_info: &AccountInfo<'info>,
     mint_info: &AccountInfo<'info>,
     system_program: &AccountInfo<'info>,
-    rent_sysvar: &AccountInfo<'info>,
     seeds: &[&[u8]],
     bump: u8,
 ) -> ProgramResult {
-
-    // Note: similar to create_account_with_size, we use the "with_bump" variant but here we're
-    // definitely creating an account outside of our program's space since it's owned by the SPL
-    // Token program.
 
     allocate_account_with_bump(
         target_info,
         system_program,
         funder_info,
         spl_token::state::Account::LEN,
-        &spl_token::id(), // <- owned by the SPL Token program, not our program
+        &spl_token::id(),
         seeds,
         bump,
     )?;
 
-    // Initialize as a Token account.
-    solana_program::program::invoke_signed(
-        &spl_token::instruction::initialize_account(
+    solana_program::program::invoke(
+        &spl_token::instruction::initialize_account3(
             &spl_token::id(),
             target_info.key,
             mint_info.key,
@@ -102,9 +96,6 @@ pub fn create_token_account<'info>(
         &[
             target_info.clone(),
             mint_info.clone(),
-            target_info.clone(),
-            rent_sysvar.clone(),
         ],
-        &[seeds],
     )
 }

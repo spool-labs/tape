@@ -9,13 +9,10 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
         pool_info,
         vault_info,
-        vault_ata_info,
-        mint_info,
 
+        mint_info,
         token_program_info,
-        associated_token_program_info,
-        system_program_info, 
-        rent_info,
+        system_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -33,49 +30,51 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .not_empty()?
         .has_owner(&tapedrive::ID)?;
 
-    let (stake_address, _)     = stake_pda(*signer_info.key, *pool_info.key);
-    let (vault_address, _)     = vault_pda(stake_address);
-    let (vault_ata, _)         = vault_ata(vault_address);
-
-    vault_info
-        .has_address(&vault_address)?;
-
-    vault_ata_info
-        .is_empty()?
-        .is_writable()?
-        .has_address(&vault_ata)?;
-
     mint_info
         .is_mint()?;
 
     token_program_info
         .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
     system_program_info
         .is_program(&system_program::ID)?;
-    rent_info
-        .is_sysvar(&sysvar::rent::ID)?;
+
+    let (stake_address, _)      = stake_pda(*signer_info.key, *pool_info.key);
+    let (vault_address, bump)   = vault_pda(stake_address);
+
+    vault_info
+        .has_address(&vault_address)?
+        .is_writable()?;
+
+    // If the PDA token account doesn't exist yet, create it; otherwise validate it.
+    if vault_info.is_empty().is_ok() {
+
+        create_token_account(
+            signer_info,
+            vault_info,
+            mint_info,
+            system_program_info,
+            &[VAULT, stake_address.as_ref()],
+            bump,
+        )?;
+
+    } else {
+
+        vault_info
+            .as_token_account()?
+            .assert(|t| t.owner() == *vault_info.key)?
+            .assert(|t| t.mint() == MINT_ADDRESS)?;
+
+    }
 
     let amount = TAPE::unpack(args.amount);
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }
 
-    create_associated_token_account(
-        signer_info,
-        vault_info,
-        vault_ata_info,
-        mint_info,
-        system_program_info,
-        token_program_info,
-        associated_token_program_info,
-    )?;
-
     transfer(
         signer_info,
         signer_ata_info,
-        vault_ata_info,
+        vault_info,
         token_program_info,
         amount.into(),
     )?;
@@ -100,7 +99,6 @@ mod tests {
 
         let (stake_address, _) = stake_pda(signer, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
-        let vault_ata = ata_address(&vault_address);
         let signer_ata = ata_address(&signer);
 
         let pool = Node::zeroed();
@@ -113,13 +111,10 @@ mod tests {
 
             pda(pool_address, pool.pack(), tapedrive::ID),
             empty(vault_address),
-            empty(vault_ata),
             mint(0),
 
             token_program(),
-            ata_program(),
             system_program(),
-            rent_sysvar(),
         ];
 
         let env = test_env();
@@ -132,10 +127,18 @@ mod tests {
                     .lamports(1_000_000_000 - rent_token())
                     .build(),
                 Check::account(&signer_ata).data(
-                    token(signer_ata, signer, initial_token_balance - amount).1.data.as_ref()
+                    token(
+                        signer_ata,
+                        signer,
+                        initial_token_balance - amount
+                    ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_ata).data(
-                    token(vault_ata, vault_address, amount).1.data.as_ref()
+                Check::account(&vault_address).data(
+                    token(
+                        vault_address,
+                        vault_address,
+                        amount
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );

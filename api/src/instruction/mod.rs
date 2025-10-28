@@ -61,7 +61,7 @@ pub enum StakingInstruction {
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum TapeInstruction {
-    Unknown = 0x30,
+    Unknown = 0x40,
 
     // System
     Initialize,

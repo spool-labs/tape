@@ -1,3 +1,4 @@
+
 use steel::*;
 use tape_core::prelude::*;
 use crate::utils::ata;
@@ -23,17 +24,14 @@ pub struct SplitStake {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MergeStake {}
 
-
 pub fn build_stake_ix(
     signer: Pubkey,
     pool: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
-
     let (mint_address, _) = mint_pda();
     let (stake_address, _) = stake_pda(signer, pool);
-    let (vault_address, _) = vault_pda(stake_address);
-    let vault_ata = ata(&vault_address);
+    let (vault_token_address, _) = vault_pda(stake_address);
     let signer_ata = ata(&signer);
 
     let amount = amount.pack();
@@ -45,18 +43,13 @@ pub fn build_stake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new_readonly(vault_address, false),
-            AccountMeta::new(vault_ata, false),
+            AccountMeta::new(vault_token_address, false),
             AccountMeta::new_readonly(mint_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: StakeTokens {
-            amount
-        }.to_bytes(),
+        data: StakeTokens { amount }.to_bytes(),
     }
 }
 
@@ -64,10 +57,8 @@ pub fn build_unstake_ix(
     signer: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
-
     let (stake_address, _) = stake_pda(signer, pool);
-    let (vault_address, _) = vault_pda(stake_address);
-    let vault_ata = ata(&vault_address);
+    let (vault_token_address, _) = vault_pda(stake_address);
     let signer_ata = ata(&signer);
 
     Instruction {
@@ -77,14 +68,11 @@ pub fn build_unstake_ix(
             AccountMeta::new(signer_ata, false),
 
             AccountMeta::new_readonly(pool, false),
-            AccountMeta::new_readonly(vault_address, false),
-            AccountMeta::new(vault_ata, false),
+            AccountMeta::new(vault_token_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(system_program::ID, false),
         ],
-        data: UnstakeTokens {
-        }.to_bytes(),
+        data: UnstakeTokens {}.to_bytes(),
     }
 }
 
@@ -94,15 +82,13 @@ pub fn build_split_stake_ix(
     recipient: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
-    // Source (signer) stake and vault
+    // Source (signer) stake/vault token PDA
     let (source_stake_address, _) = stake_pda(signer, pool);
-    let (source_vault_address, _) = vault_pda(source_stake_address);
-    let source_vault_ata = ata(&source_vault_address);
+    let (source_vault_token_address, _) = vault_pda(source_stake_address);
 
-    // Destination (recipient) stake and vault
+    // Destination (recipient) stake/vault token PDA
     let (dest_stake_address, _) = stake_pda(recipient, pool);
-    let (dest_vault_address, _) = vault_pda(dest_stake_address);
-    let dest_vault_ata = ata(&dest_vault_address);
+    let (dest_vault_token_address, _) = vault_pda(dest_stake_address);
 
     let (mint_address, _) = mint_pda();
 
@@ -116,18 +102,13 @@ pub fn build_split_stake_ix(
 
             AccountMeta::new_readonly(pool, false),
 
-            AccountMeta::new_readonly(source_vault_address, false),
-            AccountMeta::new(source_vault_ata, false),
-
-            AccountMeta::new_readonly(dest_vault_address, false),
-            AccountMeta::new(dest_vault_ata, false),
+            AccountMeta::new(source_vault_token_address, false),
+            AccountMeta::new(dest_vault_token_address, false),
 
             AccountMeta::new_readonly(mint_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: SplitStake { amount }.to_bytes(),
     }
@@ -138,15 +119,13 @@ pub fn build_merge_stake_ix(
     pool: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
-    // Source (donor) stake and vault
+    // Source (donor) stake/vault token PDA
     let (source_stake_address, _) = stake_pda(signer, pool);
-    let (source_vault_address, _) = vault_pda(source_stake_address);
-    let source_vault_ata = ata(&source_vault_address);
+    let (source_vault_token_address, _) = vault_pda(source_stake_address);
 
-    // Destination (recipient) stake and vault
+    // Destination (recipient) stake/vault token PDA
     let (dest_stake_address, _) = stake_pda(recipient, pool);
-    let (dest_vault_address, _) = vault_pda(dest_stake_address);
-    let dest_vault_ata = ata(&dest_vault_address);
+    let (dest_vault_token_address, _) = vault_pda(dest_stake_address);
 
     Instruction {
         program_id: crate::program::staking::ID,
@@ -156,14 +135,10 @@ pub fn build_merge_stake_ix(
 
             AccountMeta::new_readonly(pool, false),
 
-            AccountMeta::new_readonly(source_vault_address, false),
-            AccountMeta::new(source_vault_ata, false),
-
-            AccountMeta::new_readonly(dest_vault_address, false),
-            AccountMeta::new(dest_vault_ata, false),
+            AccountMeta::new(source_vault_token_address, false),
+            AccountMeta::new(dest_vault_token_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(system_program::ID, false),
         ],
         data: MergeStake {}.to_bytes(),
     }

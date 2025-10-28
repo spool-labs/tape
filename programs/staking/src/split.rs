@@ -8,19 +8,12 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         recipient_info,
 
         pool_info,
-
         source_vault_info,
-        source_vault_ata_info,
-
         dest_vault_info,
-        dest_vault_ata_info,
 
         mint_info,
-
         token_program_info,
-        associated_token_program_info,
         system_program_info,
-        rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -36,64 +29,51 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     token_program_info
         .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
     system_program_info
         .is_program(&system_program::ID)?;
-    rent_info
-        .is_sysvar(&sysvar::rent::ID)?;
 
-    // Source vault/ATA validation
-    let (source_stake_address, _)     = stake_pda(*signer_info.key, *pool_info.key);
-    let (source_vault_address, bump)  = vault_pda(source_stake_address);
-    let (source_vault_ata, _)         = vault_ata(source_vault_address);
+    // Source vault token account
+    let (source_stake_address, _)           = stake_pda(*signer_info.key, *pool_info.key);
+    let (source_vault_address, source_bump) = vault_pda(source_stake_address);
 
     source_vault_info
-        .has_address(&source_vault_address)?;
-
-    source_vault_ata_info
+        .has_address(&source_vault_address)?
         .is_writable()?
-        .has_address(&source_vault_ata)?
         .as_token_account()?
         .assert(|t| t.owner() == *source_vault_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    // Destination must be empty
-    let (dest_stake_address, _) = stake_pda(*recipient_info.key, *pool_info.key);
-    let (dest_vault_address, _) = vault_pda(dest_stake_address);
-    let (dest_vault_ata, _)     = vault_ata(dest_vault_address);
+    // Destination vault token account must be empty; we'll create it
+    let (dest_stake_address, _)             = stake_pda(*recipient_info.key, *pool_info.key);
+    let (dest_vault_address, dest_bump)     = vault_pda(dest_stake_address);
 
     dest_vault_info
-        .has_address(&dest_vault_address)?;
-
-    dest_vault_ata_info
+        .has_address(&dest_vault_address)?
         .is_empty()?
-        .is_writable()?
-        .has_address(&dest_vault_ata)?;
+        .is_writable()?;
 
     let amount = TAPE::unpack(args.amount);
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
     }
 
-    create_associated_token_account(
+    create_token_account(
         signer_info,
         dest_vault_info,
-        dest_vault_ata_info,
         mint_info,
         system_program_info,
-        token_program_info,
-        associated_token_program_info,
+        &[VAULT, dest_stake_address.as_ref()],
+        dest_bump,
     )?;
 
     transfer_signed_with_bump(
         source_vault_info,
-        source_vault_ata_info,
-        dest_vault_ata_info,
+        source_vault_info,
+        dest_vault_info,
         token_program_info,
         amount.into(),
         &[VAULT, source_stake_address.as_ref()],
-        bump,
+        source_bump,
     )?;
 
     Ok(())
@@ -116,14 +96,11 @@ mod tests {
 
         let instruction = build_split_stake_ix(signer, pool_address, recipient, amount.into());
 
-        // Derive source and destination vaults/ATAs
         let (source_stake_address, _) = stake_pda(signer, pool_address);
         let (source_vault_address, _) = vault_pda(source_stake_address);
-        let source_vault_ata = ata_address(&source_vault_address);
 
         let (dest_stake_address, _) = stake_pda(recipient, pool_address);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
-        let dest_vault_ata = ata_address(&dest_vault_address);
 
         let pool = Node::zeroed();
 
@@ -133,17 +110,12 @@ mod tests {
 
             pda(pool_address, pool.pack(), tapedrive::ID),
 
-            empty(source_vault_address),
-            token(source_vault_ata, source_vault_address, initial_source_balance),
-
+            token(source_vault_address, source_vault_address, initial_source_balance),
             empty(dest_vault_address),
-            empty(dest_vault_ata),
 
             mint(0),
             token_program(),
-            ata_program(),
             system_program(),
-            rent_sysvar(),
         ];
 
         let env = test_env();
@@ -155,11 +127,19 @@ mod tests {
                 Check::account(&signer)
                     .lamports(1_000_000_000 - rent_token())
                     .build(),
-                Check::account(&source_vault_ata).data(
-                    token(source_vault_ata, source_vault_address, initial_source_balance - amount).1.data.as_ref(),
+                Check::account(&source_vault_address).data(
+                    token(
+                        source_vault_address, 
+                        source_vault_address, 
+                        initial_source_balance - amount
+                    ).1.data.as_ref(),
                 ).build(),
-                Check::account(&dest_vault_ata).data(
-                    token(dest_vault_ata, dest_vault_address, amount).1.data.as_ref(),
+                Check::account(&dest_vault_address).data(
+                    token(
+                        dest_vault_address, 
+                        dest_vault_address,
+                        amount
+                    ).1.data.as_ref(),
                 ).build(),
             ],
         );
