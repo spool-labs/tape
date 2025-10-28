@@ -298,5 +298,9 @@ impl Context{
     pub fn payer(&self) -> &Keypair{
         &self.payer
     }
+    
+    pub fn max_transaction_retries(&self) -> u32 {
+        self.config.solana.max_transaction_retries
+    }
 
 }

@@ -7,10 +7,7 @@ use solana_sdk::{
 };
 use tape_api::instruction::tape::build_write_ix;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use crate::{
-    consts::*,
-    utils::*,
-};
+use crate::utils::*;
 
 pub async fn write_to_tape(
     client: &Arc<RpcClient>,
@@ -18,6 +15,7 @@ pub async fn write_to_tape(
     tape_address: Pubkey,
     writer_address: Pubkey,
     data: &[u8],
+    max_transaction_retries: u32
 ) -> Result<Signature> {
 
     let instruction = build_write_ix(
@@ -27,7 +25,6 @@ pub async fn write_to_tape(
         data,
     );
 
-    let sig = send_with_retry(client, &instruction, signer, MAX_RETRIES).await?;
+    let sig = send_with_retry(client, &instruction, signer, max_transaction_retries).await?;
     Ok(sig)
 }
-
