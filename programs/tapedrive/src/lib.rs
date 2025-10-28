@@ -7,7 +7,7 @@ pub mod archive;
 pub mod epoch;
 //pub mod exchange;
 pub mod node;
-//pub mod stake;
+pub mod staking;
 pub mod system;
 //pub mod tape;
 
@@ -17,7 +17,7 @@ use archive::*;
 use epoch::*;
 //use exchange::*;
 use node::*;
-//use stake::*;
+use staking::*;
 use system::*;
 //use tape::*;
 
@@ -57,6 +57,9 @@ pub fn process_instruction(
             // Node
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
             TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,
+
+            // Staking
+            TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

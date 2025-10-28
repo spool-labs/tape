@@ -154,6 +154,50 @@ pub fn mpl_program() -> (Pubkey, Account) {
     )
 }
 
+const TOKEN_ELF : &[u8] = program_elf!("../target/deploy/token.so");
+pub fn tape_program() -> (Pubkey, Account) {
+    let account = mollusk_svm::program::create_program_account_loader_v2(TOKEN_ELF);
+    (program::token::ID, account)
+}
+
+const EXCHANGE_ELF : &[u8] = program_elf!("../target/deploy/exchange.so");
+pub fn exchange_program() -> (Pubkey, Account) {
+    let account = mollusk_svm::program::create_program_account_loader_v2(EXCHANGE_ELF);
+    (program::exchange::ID, account)
+}
+
+const STAKING_ELF : &[u8] = program_elf!("../target/deploy/staking.so");
+pub fn staking_program() -> (Pubkey, Account) {
+    let account = mollusk_svm::program::create_program_account_loader_v2(STAKING_ELF);
+    (program::staking::ID, account)
+}
+
+const TAPEDRIVE_ELF : &[u8] = program_elf!("../target/deploy/tapedrive.so");
+pub fn tapedrive_program() -> (Pubkey, Account) {
+    let account = mollusk_svm::program::create_program_account_loader_v2(TAPEDRIVE_ELF);
+    (program::tapedrive::ID, account)
+}
+
+pub fn with_programs(programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
+    let mut mollusk = Mollusk::default();
+
+    mollusk.add_program_with_elf_and_loader(&program::exchange::ID, EXCHANGE_ELF, &DEFAULT_LOADER_KEY);
+    mollusk.add_program_with_elf_and_loader(&program::staking::ID, STAKING_ELF, &DEFAULT_LOADER_KEY);
+    mollusk.add_program_with_elf_and_loader(&program::tapedrive::ID, TAPEDRIVE_ELF, &DEFAULT_LOADER_KEY);
+    mollusk.add_program_with_elf_and_loader(&program::token::ID, TOKEN_ELF, &DEFAULT_LOADER_KEY);
+
+    mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
+
+    spl_token_program::add_program(&mut mollusk);
+    spl_ata_program::add_program(&mut mollusk);
+
+    for (id, elf) in programs {
+        mollusk.add_program_with_elf_and_loader(id, elf, &LOADER_V2);
+    }
+
+    TestEnv { mollusk }
+}
+
 // Test environment
 
 pub struct TestEnv {
@@ -224,30 +268,11 @@ impl TestEnv {
 
 }
 
+
 pub fn test_env() -> TestEnv {
     with_programs(&[
         (&mpl_token_metadata::ID, METAPLEX_ELF),
     ])
-}
-
-pub fn with_programs(programs: &[(&Pubkey, &'static [u8])]) -> TestEnv {
-    let mut mollusk = Mollusk::default();
-
-    mollusk.add_program(&program::exchange::ID, "../../target/deploy/exchange", &DEFAULT_LOADER_KEY);
-    mollusk.add_program(&program::staking::ID, "../../target/deploy/staking", &DEFAULT_LOADER_KEY);
-    mollusk.add_program(&program::token::ID, "../../target/deploy/token", &DEFAULT_LOADER_KEY);
-    mollusk.add_program(&program::tapedrive::ID, "../../target/deploy/tapedrive", &DEFAULT_LOADER_KEY);
-
-    mollusk.logger = Some(solana_log_collector::LogCollector::new_ref());
-
-    spl_token_program::add_program(&mut mollusk);
-    spl_ata_program::add_program(&mut mollusk);
-
-    for (id, elf) in programs {
-        mollusk.add_program_with_elf_and_loader(id, elf, &LOADER_V2);
-    }
-
-    TestEnv { mollusk }
 }
 
 // ELF helpers

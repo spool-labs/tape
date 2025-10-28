@@ -1,27 +1,29 @@
 use steel::*;
 
-mod archive;
 //mod blob;
 //mod committee;
+//mod feature;
+//mod tape;
+mod archive;
 mod epoch;
 mod exchange;
-//mod feature;
 mod node;
+mod pool;
 mod stake;
 mod system;
-//mod tape;
 mod token;
 
-pub use archive::*;
 //pub use blob::*;
 //pub use committee::*;
+//pub use feature::*;
+//pub use tape::*;
+pub use archive::*;
 pub use epoch::*;
 pub use exchange::*;
-//pub use feature::*;
 pub use node::*;
+pub use pool::*;
 pub use stake::*;
 pub use system::*;
-//pub use tape::*;
 pub use token::*;
 
 #[repr(u8)]
@@ -77,6 +79,13 @@ pub enum TapeInstruction {
     RegisterFeature,
     CertifyFeature,
 
+    // Pool
+    StakeWithPool,
+    RequestStakeWithdraw,
+    UnstakeFromPool,
+    SplitPoolStake,
+    MergePoolStake,
+
     // Operator
     RegisterNode,
     JoinNetwork,
@@ -91,8 +100,6 @@ pub enum TapeInstruction {
     VoteOnStoragePrice,
     VoteOnShardSize,
     VoteOnFeature,
-    StakeWithNode,
-    UnstakeFromNode,
 
     // Storage
     ReserveTape,
@@ -135,6 +142,11 @@ instruction!(TapeInstruction, SyncEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
 
+instruction!(TapeInstruction, StakeWithPool);
+instruction!(TapeInstruction, UnstakeFromPool);
+instruction!(TapeInstruction, SplitPoolStake);
+instruction!(TapeInstruction, MergePoolStake);
+
 instruction!(TapeInstruction, RegisterNode);
 instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, SetAuthority);
@@ -159,4 +171,3 @@ instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, DeleteBlob);
 //instruction!(TapeInstruction, CertifyBlob);
 //instruction!(TapeInstruction, InvalidateBlob);
-//
