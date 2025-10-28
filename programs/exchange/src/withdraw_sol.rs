@@ -1,6 +1,7 @@
 use steel::*;
-use tape_api::prelude::*;
 use solana_program::sysvar::rent::Rent;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = WithdrawSol::try_from_bytes(data)?;
@@ -29,7 +30,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Check if the exchange has enough balance 
     // (without dipping into rent-exempt reserve)
     if amount > exchange.balance_sol {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     // If amount is zero, withdraw the entire balance
@@ -43,13 +44,13 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Transfer lamports
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount.as_u64())
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
         .checked_add(amount.as_u64())
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     if new_exchange_lamports < rent_exempt_reserve {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
@@ -58,7 +59,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Update exchange state
     exchange.balance_sol = exchange.balance_sol
         .checked_sub(amount)
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
 
     Ok(())
 }

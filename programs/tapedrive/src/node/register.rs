@@ -1,3 +1,4 @@
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 

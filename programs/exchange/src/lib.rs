@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+mod error;
 mod deposit_sol;
 mod deposit_tape;
 mod register;
@@ -19,7 +20,6 @@ pub use withdraw_sol::*;
 pub use withdraw_tape::*;
 
 use tape_api::prelude::*;
-use tape_api::program::exchange;
 use steel::*;
 
 pub fn process_instruction(

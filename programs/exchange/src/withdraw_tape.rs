@@ -1,3 +1,4 @@
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -42,7 +43,7 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Check if the exchange has enough balance
     if amount > exchange.balance_tape {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     // If amount is zero, withdraw the entire balance
@@ -61,7 +62,7 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     exchange.balance_tape = exchange.balance_tape
         .checked_sub(amount)
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
 
     Ok(())
 }

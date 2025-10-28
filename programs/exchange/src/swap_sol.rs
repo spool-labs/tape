@@ -1,6 +1,7 @@
 use steel::*;
-use tape_api::prelude::*;
 use solana_program::sysvar::rent::Rent;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForSol::try_from_bytes(data)?;
@@ -45,20 +46,20 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Amount in TAPE from user
     let amount_in_tape = TAPE::unpack(args.amount_tape);
     if amount_in_tape.is_zero() {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(ExchangeError::UnexpectedState.into());
     }
 
     // Validate rate
     let rate = exchange.rate;
     if rate.other == 0 || rate.tape == 0 {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(ExchangeError::UnexpectedState.into());
     }
 
     let amount_out_sol = exchange.rate
         .convert_to_other_amount(amount_in_tape.as_u64());
 
     if amount_out_sol > exchange.balance_sol.as_u64() {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     // Transfer TAPE from signer to exchange_ata
@@ -77,13 +78,13 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Transfer lamports
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount_out_sol)
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
     let new_signer_lamports = (**signer_info.lamports.borrow())
         .checked_add(amount_out_sol)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     if new_exchange_lamports < rent_exempt_reserve {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
@@ -93,13 +94,13 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     exchange.balance_tape = exchange
         .balance_tape
         .checked_add(amount_in_tape)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     let amount_out_sol: SOL = amount_out_sol.into();
     exchange.balance_sol = exchange
         .balance_sol
         .checked_sub(amount_out_sol)
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
 
     Ok(())
 }

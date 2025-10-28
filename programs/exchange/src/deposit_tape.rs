@@ -1,3 +1,4 @@
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -48,7 +49,7 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     exchange.balance_tape = exchange.balance_tape
         .checked_add(amount)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     Ok(())
 }

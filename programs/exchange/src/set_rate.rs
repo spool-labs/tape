@@ -1,3 +1,4 @@
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -24,7 +25,7 @@ pub fn process_set_exchange_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let sol_per_unit = SOL::unpack(args.sol).as_u64();
 
     if tape_per_unit == 0 || sol_per_unit == 0 {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(ExchangeError::UnexpectedState.into());
     }
 
     exchange.rate = ExchangeRate {

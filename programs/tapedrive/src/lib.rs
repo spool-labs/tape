@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+pub mod error;
 pub mod archive;
 //pub mod blob;
 //pub mod committee;
@@ -9,7 +10,7 @@ pub mod node;
 //pub mod stake;
 pub mod system;
 //pub mod tape;
-//
+
 use archive::*;
 //use blob::*;
 //use committee::*;

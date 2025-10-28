@@ -1,5 +1,6 @@
 use solana_program::{system_instruction, program::invoke};
 
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -41,7 +42,7 @@ pub fn process_deposit_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     exchange.balance_sol = exchange.balance_sol
         .checked_add(amount)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     Ok(())
 }

@@ -1,4 +1,5 @@
 use solana_program::{program::invoke, system_instruction};
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -44,13 +45,13 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Amount in SOL from user
     let amount_in_sol = SOL::unpack(args.amount_sol);
     if amount_in_sol.is_zero() {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(ExchangeError::UnexpectedState.into());
     }
 
     // Validate rate
     let rate = exchange.rate;
     if rate.other == 0 || rate.tape == 0 {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(ExchangeError::UnexpectedState.into());
     }
 
     // Compute tape out: amount_out = amount_in * tape / sol
@@ -58,7 +59,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .convert_to_tape_amount(amount_in_sol.as_u64());
 
     if amount_out_tape > exchange.balance_tape.as_u64() {
-        return Err(TapeError::InsufficientFunds.into());
+        return Err(ExchangeError::InsufficientFunds.into());
     }
 
     // Transfer SOL from signer to exchange (CPI to system program)
@@ -89,14 +90,14 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     exchange.balance_sol = exchange
         .balance_sol
         .checked_add(amount_in_sol)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ExchangeError::Overflow)?;
 
     // Convert output u64 to TAPE coin and subtract
     let amount_out_tape: TAPE = amount_out_tape.into();
     exchange.balance_tape = exchange
         .balance_tape
         .checked_sub(amount_out_tape)
-        .ok_or(TapeError::Underflow)?;
+        .ok_or(ExchangeError::Underflow)?;
 
     Ok(())
 }
