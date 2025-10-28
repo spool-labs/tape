@@ -143,4 +143,61 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_stake_existing() {
+        let amount: u64 = 2_000;
+
+        let signer = Pubkey::new_unique();
+        let pool_address = Pubkey::new_unique();
+
+        let instruction = build_stake_ix(signer, pool_address, amount.into());
+
+        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (vault_address, _) = vault_pda(stake_address);
+        let signer_ata = ata_address(&signer);
+
+        let pool = Node::zeroed();
+
+        let initial_token_balance: u64 = 10_000_000;
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            token(signer_ata, signer, initial_token_balance),
+
+            pda(pool_address, pool.pack(), tapedrive::ID),
+            token(vault_address, vault_address, 0),
+            mint(0),
+
+            token_program(),
+            system_program(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction, 
+            &accounts,
+            &[
+                Check::success(),
+                // No rent change since the vault already existed
+                Check::account(&signer)
+                    .lamports(1_000_000_000)
+                    .build(),
+                Check::account(&signer_ata).data(
+                    token(
+                        signer_ata,
+                        signer,
+                        initial_token_balance - amount
+                    ).1.data.as_ref()
+                ).build(),
+                Check::account(&vault_address).data(
+                    token(
+                        vault_address,
+                        vault_address,
+                        amount
+                    ).1.data.as_ref()
+                ).build(),
+            ]
+        );
+    }
 }

@@ -32,6 +32,11 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     system_program_info
         .is_program(&system_program::ID)?;
 
+    let amount = TAPE::unpack(args.amount);
+    if amount.is_zero() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     // Source vault token account
     let (source_stake_address, _)           = stake_pda(*signer_info.key, *pool_info.key);
     let (source_vault_address, source_bump) = vault_pda(source_stake_address);
@@ -48,23 +53,27 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let (dest_vault_address, dest_bump)     = vault_pda(dest_stake_address);
 
     dest_vault_info
-        .has_address(&dest_vault_address)?
-        .is_empty()?
-        .is_writable()?;
+        .is_writable()?
+        .has_address(&dest_vault_address)?;
 
-    let amount = TAPE::unpack(args.amount);
-    if amount.is_zero() {
-        return Err(ProgramError::InvalidArgument);
+    if dest_vault_info.is_empty().is_ok() {
+
+        create_token_account(
+            signer_info,
+            dest_vault_info,
+            mint_info,
+            system_program_info,
+            &[VAULT, dest_stake_address.as_ref()],
+            dest_bump,
+        )?;
+
+    } else {
+
+        dest_vault_info
+            .as_token_account()?
+            .assert(|t| t.owner() == *dest_vault_info.key)?
+            .assert(|t| t.mint() == MINT_ADDRESS)?;
     }
-
-    create_token_account(
-        signer_info,
-        dest_vault_info,
-        mint_info,
-        system_program_info,
-        &[VAULT, dest_stake_address.as_ref()],
-        dest_bump,
-    )?;
 
     transfer_signed_with_bump(
         source_vault_info,
@@ -139,6 +148,76 @@ mod tests {
                         dest_vault_address, 
                         dest_vault_address,
                         amount
+                    ).1.data.as_ref(),
+                ).build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_split_existing() {
+        let amount: u64 = 1_000;
+        let initial_source_balance: u64 = 5_000;
+        let initial_dest_balance: u64 = 1_500;
+
+        let signer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let pool_address = Pubkey::new_unique();
+
+        let instruction = build_split_stake_ix(signer, pool_address, recipient, amount.into());
+
+        let (source_stake_address, _) = stake_pda(signer, pool_address);
+        let (source_vault_address, _) = vault_pda(source_stake_address);
+
+        let (dest_stake_address, _) = stake_pda(recipient, pool_address);
+        let (dest_vault_address, _) = vault_pda(dest_stake_address);
+
+        let pool = Node::zeroed();
+
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+            sol(recipient, 0),
+
+            pda(pool_address, pool.pack(), tapedrive::ID),
+
+            token(
+                source_vault_address,
+                source_vault_address,
+                initial_source_balance
+            ),
+            token(
+                dest_vault_address,
+                dest_vault_address,
+                initial_dest_balance
+            ),
+
+            mint(0),
+            token_program(),
+            system_program(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                // No rent change since destination already existed
+                Check::account(&signer)
+                    .lamports(1_000_000_000)
+                    .build(),
+                Check::account(&source_vault_address).data(
+                    token(
+                        source_vault_address, 
+                        source_vault_address, 
+                        initial_source_balance - amount
+                    ).1.data.as_ref(),
+                ).build(),
+                Check::account(&dest_vault_address).data(
+                    token(
+                        dest_vault_address, 
+                        dest_vault_address,
+                        initial_dest_balance + amount
                     ).1.data.as_ref(),
                 ).build(),
             ],

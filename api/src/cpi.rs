@@ -86,6 +86,7 @@ pub fn create_token_account<'info>(
         bump,
     )?;
 
+    // Initialize the token account (requires no signers)
     solana_program::program::invoke(
         &spl_token::instruction::initialize_account3(
             &spl_token::id(),

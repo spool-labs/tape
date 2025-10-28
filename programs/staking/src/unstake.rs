@@ -112,7 +112,9 @@ mod tests {
                         amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&vault_address).closed().build(),
+                Check::account(&vault_address)
+                    .closed()
+                    .build(),
             ]
         );
     }
