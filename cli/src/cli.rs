@@ -4,7 +4,6 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
-use std::str::FromStr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -188,43 +187,6 @@ pub enum InfoCommands {
     Block {},
 }
 
-#[derive(Debug, Clone)]
-pub enum Cluster {
-    Localnet,
-    Mainnet,
-    Devnet,
-    Testnet,
-    Custom(String),
-}
-
-impl Cluster {
-    pub fn rpc_url(&self) -> String {
-        match self {
-            Cluster::Localnet => "http://127.0.0.1:8899".to_string(),
-            Cluster::Mainnet => "https://api.mainnet-beta.solana.com".to_string(),
-            Cluster::Devnet => "https://api.devnet.solana.com".to_string(),
-            Cluster::Testnet => "https://api.testnet.solana.com".to_string(),
-            Cluster::Custom(url) => url.clone(),
-        }
-    }
-}
-
-impl FromStr for Cluster {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "l" => Ok(Cluster::Localnet),
-            "m" => Ok(Cluster::Mainnet),
-            "d" => Ok(Cluster::Devnet),
-            "t" => Ok(Cluster::Testnet),
-            s if s.starts_with("http://") || s.starts_with("https://") => Ok(Cluster::Custom(s.to_string())),
-            _ => Err(format!(
-                "Invalid cluster value: '{s}'. Use l, m, d, t, or a valid RPC URL (http:// or https://)"
-            )),
-        }
-    }
-}
 
 pub struct Context {
     pub config: Arc<TapeConfig>,
