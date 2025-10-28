@@ -122,6 +122,7 @@ mod tests {
                 Check::account(&signer)
                     .lamports(1_000_000_000 + rent_token()).build(),
                 Check::account(&source_vault_address)
+                    .lamports(0)
                     .closed()
                     .build(),
                 Check::account(&dest_vault_address).data(

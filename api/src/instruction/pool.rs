@@ -11,7 +11,7 @@ pub struct StakeWithPool {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct RequestStakeWithdraw {}
+pub struct RequestStakeUnlock {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

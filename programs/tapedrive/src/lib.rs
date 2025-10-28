@@ -60,6 +60,7 @@ pub fn process_instruction(
 
             // Staking
             TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,
+            //TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

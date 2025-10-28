@@ -6,8 +6,7 @@ use crate::types::*;
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum StakePhase {
-    Unknown = 0,
-    Active,
+    Active = 0,
     Unstaking,
     Withdrawn,
 }

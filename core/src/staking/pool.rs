@@ -355,6 +355,7 @@ mod tests {
     fn adv_no_stake_err() {
         let mut p = StakingPool::<2>::new(BasisPoints(0));
         let flat = ExchangeRate::flat();
+
         let err = p.advance_epoch(epoch(1), tape(10), flat).unwrap_err();
         assert!(matches!(err, PoolError::StakeInvalid));
     }
@@ -385,7 +386,7 @@ mod tests {
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
 
         assert_eq!(p.stake, tape(1000));
-        assert_eq!(p.shares, r1.convert_to_other_amount(p.stake.into()));
+        assert_eq!(p.num_shares, r1.convert_to_other_amount(p.stake.into()));
     }
 
     #[test]

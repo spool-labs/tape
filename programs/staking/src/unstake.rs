@@ -113,6 +113,7 @@ mod tests {
                     ).1.data.as_ref()
                 ).build(),
                 Check::account(&vault_address)
+                    .lamports(0)
                     .closed()
                     .build(),
             ]

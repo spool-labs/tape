@@ -81,7 +81,7 @@ pub enum TapeInstruction {
 
     // Pool
     StakeWithPool,
-    RequestStakeWithdraw,
+    RequestStakeUnlock,
     UnstakeFromPool,
     SplitPoolStake,
     MergePoolStake,
@@ -143,6 +143,7 @@ instruction!(TapeInstruction, SyncEpoch);
 //instruction!(TapeInstruction, CertifyFeature);
 
 instruction!(TapeInstruction, StakeWithPool);
+instruction!(TapeInstruction, RequestStakeUnlock);
 instruction!(TapeInstruction, UnstakeFromPool);
 instruction!(TapeInstruction, SplitPoolStake);
 instruction!(TapeInstruction, MergePoolStake);

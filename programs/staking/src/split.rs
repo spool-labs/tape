@@ -58,7 +58,6 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
     if dest_vault_info.is_empty().is_ok() {
-
         create_token_account(
             signer_info,
             dest_vault_info,
@@ -67,14 +66,11 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
             &[VAULT, dest_stake_address.as_ref()],
             dest_bump,
         )?;
-
     } else {
-
         dest_vault_info
             .as_token_account()?
             .assert(|t| t.owner() == *dest_vault_info.key)?
             .assert(|t| t.mint() == MINT_ADDRESS)?;
-
     }
 
     transfer_signed_with_bump(
@@ -204,7 +200,6 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                // No rent change since destination already existed
                 Check::account(&signer)
                     .lamports(1_000_000_000)
                     .build(),
