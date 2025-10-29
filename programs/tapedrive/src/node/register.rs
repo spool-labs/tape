@@ -6,22 +6,35 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let args = RegisterNode::try_from_bytes(data)?;
     let [
         signer_info,
+
         system_info,
         epoch_info,
         node_info,
+        node_ata_info,
+
+        mint_info,
         system_program_info, 
-        rent_info,
+        token_program_info, 
+        associated_token_program_info,
+        rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
     signer_info.is_signer()?;
 
-    let (node_address, _bump) = node_pda(*signer_info.key);
+    let (node_address, _) = node_pda(*signer_info.key);
+    let (node_ata, _) = node_ata(node_address);
+
     node_info
         .is_empty()?
         .is_writable()?
         .has_address(&node_address)?;
+
+    node_ata_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&node_ata)?;
 
     let epoch = epoch_info
         .is_epoch()?
@@ -32,8 +45,17 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
+    mint_info
+        .is_mint()?;
+
+    system_program_info
+        .is_program(&system_program::ID)?;
+    token_program_info
+        .is_program(&spl_token::ID)?;
+    associated_token_program_info
+        .is_program(&spl_associated_token_account::ID)?;
+    rent_sysvar_info
+        .is_sysvar(&sysvar::rent::ID)?;
 
     let bls_pubkey = args.bls_pubkey;
     let bls_signature = args.bls_pop;
@@ -73,6 +95,16 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .checked_add(1)
         .ok_or(TapeError::Overflow)?;
 
+    create_associated_token_account(
+        signer_info,
+        node_info,
+        node_ata_info,
+        mint_info,
+        system_program_info,
+        token_program_info,
+        associated_token_program_info,
+    )?;
+
     Ok(())
 }
 
@@ -107,6 +139,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (node_address, _) = node_pda(signer);
+        let (node_ata, _) = node_ata(node_address);
 
         // Setup existing accounts
 
@@ -119,10 +152,16 @@ mod tests {
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
+
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             empty(node_address),
+            empty(node_ata),
+
+            mint(MAX_SUPPLY),
             system_program(),
+            token_program(),
+            ata_program(),
             rent_sysvar(),
         ];
 
@@ -158,6 +197,13 @@ mod tests {
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,
                     }.pack().as_ref()
+                ).build(),
+                Check::account(&node_ata).data(
+                    token(
+                        node_ata, 
+                        node_address, 
+                        0
+                    ).1.data.as_ref()
                 ).build(),
             ]
         );

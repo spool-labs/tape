@@ -40,6 +40,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_program(&system_program::ID)?;
     token_program_info
         .is_program(&spl_token::ID)?;
+    associated_token_program_info
+        .is_program(&spl_associated_token_account::ID)?;
     rent_sysvar_info
         .is_sysvar(&sysvar::rent::ID)?;
 
@@ -56,7 +58,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     archive.capacity_used = FutureUsage::new_at(epoch.id);
     archive.fees_collected = FutureRewards::new_at(epoch.id);
 
-    // Create the system_ata token account.
     create_associated_token_account(
         signer_info,
         archive_info,
@@ -100,8 +101,8 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             empty(archive_ata),
-            mint(MAX_SUPPLY),
 
+            mint(MAX_SUPPLY),
             system_program(),
             token_program(),
             ata_program(),

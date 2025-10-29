@@ -89,10 +89,12 @@ pub fn build_unstake_from_pool_ix(
     signer: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
-    let (stake_address, _) = stake_pda(signer, pool);
-    let (vault_address, _) = vault_pda(stake_address);
+
     let signer_ata         = ata(&signer);
     let (epoch_address, _) = epoch_pda();
+    let (stake_address, _) = stake_pda(signer, pool);
+    let (vault_address, _) = vault_pda(stake_address);
+    let pool_ata           = ata(&pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -104,6 +106,7 @@ pub fn build_unstake_from_pool_ix(
             AccountMeta::new(vault_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
+            AccountMeta::new(pool_ata, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(crate::program::staking::ID, false),

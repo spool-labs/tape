@@ -1,4 +1,5 @@
 use steel::*;
+use crate::program::token::*;
 use crate::program::tapedrive::*;
 use crate::consts::NAME_LENGTH;
 use tape_core::prelude::*;
@@ -85,9 +86,11 @@ pub fn build_register_node_ix(
     bls_pop: BlsSignature,
 ) -> Instruction {
 
+    let (mint_address, _) = mint_pda();
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (node_address, _) = node_pda(signer);
+    let (node_ata, _) = node_ata(node_address);
 
     let commission_rate = commission_rate.pack();
 
@@ -95,10 +98,16 @@ pub fn build_register_node_ix(
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
+
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(node_address, false),
+            AccountMeta::new(node_ata, false),
+
+            AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(spl_associated_token_account::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: RegisterNode {

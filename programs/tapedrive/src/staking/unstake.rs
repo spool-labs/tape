@@ -11,6 +11,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         vault_info,
         epoch_info,
         node_info,
+        node_ata_info,
 
         token_program_info,
         staking_program_info,
@@ -28,7 +29,6 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-
     token_program_info
         .is_program(&spl_token::ID)?;
     staking_program_info
@@ -42,6 +42,19 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
+    let (node_address, _) = node_pda(node.authority);
+    let (node_ata, _) = node_ata(node_address);
+
+    if node_address != *node_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    node_ata_info
+        .is_writable()?
+        .has_address(&node_ata)?
+        .as_token_account()?
+        .assert(|t| t.owner() == *node_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
@@ -103,17 +116,28 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .saturating_sub(staked_tape.amount.into());
 
     // Update pool accounting and stake state
-    // TODO: pay the rewards from pool rewards balance
-    let _total_rewards = node.pool
+    let total_rewards = node.pool
         .unstake(staked_tape, current_epoch(epoch), owed_rewards.into())
         .map_err(|_| ProgramError::Custom(5))?;
 
-    // Unstake the entire vault amount, which may include tokens sent
-    // there by accident or maliciously
+    solana_program::msg!(
+        "Unstaking {} (owed rewards: {}, total rewards paid: {})",
+        staked_tape.amount,
+        owed_rewards,
+        total_rewards,
+    );
 
-    // CPI into staking program to move tokens from 
-    // vault -> signer ATA and close the vault
+    // Transfer owed rewards from pool to signer ATA
+    transfer_signed(
+        node_info,
+        node_ata_info,
+        signer_ata_info,
+        token_program_info,
+        total_rewards.into(),
+        &[NODE, node.authority.as_ref()],
+    )?;
 
+    // Transfer out the principal, and close vault
     solana_program::program::invoke(
         &build_unstake_ix(*signer_info.key, *node_info.key),
         &[
@@ -124,6 +148,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         ],
     )?;
 
+    // Close the Stake account
     close_account(
         stake_info,
         signer_info,
@@ -139,18 +164,18 @@ mod tests {
 
     #[test]
     fn test_unstake_from_pool() {
-        // Principal and rates
-        let principal: u64 = 1_000;
 
         let signer = Pubkey::new_unique();
-        let pool_address = Pubkey::new_unique();
-
-        let instruction = build_unstake_from_pool_ix(signer, pool_address);
+        let pool_owner = Pubkey::new_unique();
 
         let signer_ata = ata_address(&signer);
         let (epoch_address, _) = epoch_pda();
+        let (pool_address, _)  = node_pda(pool_owner);
+        let (pool_ata, _)      = node_ata(pool_address);
         let (stake_address, _) = stake_pda(signer, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
+
+        let instruction = build_unstake_from_pool_ix(signer, pool_address);
 
         // Epoch timeline
         let e0: EpochNumber = EpochNumber(42);     // activation epoch
@@ -165,25 +190,30 @@ mod tests {
 
         let mut node = Node::zeroed();
         node.id = NodeId(7);
+        node.authority = pool_owner;
 
-        // History: rate at activation and withdraw
-        // arbitrary but consistent values
         let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
         let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
 
         node.history.push(e0, activation_rate);
         node.history.push(e4, withdraw_rate);
 
-        // Compute expected owed rewards for assertion
+        // 1000 tokens purchased at activation rate, sold at withdraw rate should yield:
+        // = <shares> = 1000 * 9000 / 1000 = 9000
+        // = <tokens at withdraw> = 9000 * 1200 / 8800 = 1227
+        // = <rewards> = 1227 - 1000 
+        // = 227
+
+        let principal: u64 = 1_000;
         let shares = activation_rate
             .convert_to_other_amount(TAPE(principal).into());
         let tokens_at_withdraw = withdraw_rate
             .convert_to_tape_amount(shares);
-        let owed_rewards = tokens_at_withdraw
+        let reward = tokens_at_withdraw
             .saturating_sub(principal);
 
         // Fund rewards so we can pay fully
-        node.pool.rewards = owed_rewards.into();
+        node.pool.rewards = reward.into();
 
         // Stake account prepared in "unlocking" state with withdraw at e4
         let stake = Stake {
@@ -207,6 +237,7 @@ mod tests {
             token(vault_address, vault_address, principal),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
+            token(pool_ata, pool_address, 1_000_000_000),
 
             token_program(),
             staking_program(),
@@ -236,17 +267,20 @@ mod tests {
                     token(
                         signer_ata,
                         signer,
-                        principal
+                        principal + reward
                     ).1.data.as_ref()
                 ).build(),
 
-                //// Pool rewards reduced by owed_rewards (cap was exact)
-                //Check::account(&pool_address).data(
-                //    Node {
-                //        // TODO
-                //        ..node
-                //    }.pack().as_ref()
-                //).build(),
+                // Pool rewards reduced by owed_rewards (cap was exact)
+                Check::account(&pool_address).data(
+                    Node {
+                        pool: StakingPool {
+                            rewards: node.pool.rewards - TAPE(reward),
+                            ..node.pool
+                        },
+                        ..node
+                    }.pack().as_ref()
+                ).build(),
 
             ],
         );

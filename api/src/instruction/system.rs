@@ -68,8 +68,8 @@ pub fn build_initialize_ix(
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(archive_ata, false),
-            AccountMeta::new(mint_address, false),
 
+            AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(spl_associated_token_account::ID, false),
