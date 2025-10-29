@@ -80,6 +80,7 @@ pub enum TapeInstruction {
     CertifyFeature,
 
     // Pool
+    AdvancePool,
     StakeWithPool,
     RequestStakeUnlock,
     UnstakeFromPool,
@@ -142,6 +143,7 @@ instruction!(TapeInstruction, SyncEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
 
+instruction!(TapeInstruction, AdvancePool);
 instruction!(TapeInstruction, StakeWithPool);
 instruction!(TapeInstruction, RequestStakeUnlock);
 instruction!(TapeInstruction, UnstakeFromPool);

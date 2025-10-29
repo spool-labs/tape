@@ -5,6 +5,10 @@ use crate::program::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct AdvancePool {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct StakeWithPool {
     pub amount: [u8; 8],
 }
@@ -27,6 +31,28 @@ pub struct SplitPoolStake {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MergePoolStake {}
 
+pub fn build_advance_pool_ix(
+    signer: Pubkey,
+    pool: Pubkey,
+) -> Instruction {
+
+    let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
+    let (epoch_address, _)  = epoch_pda();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+
+            AccountMeta::new_readonly(system_address, false),
+            AccountMeta::new_readonly(archive_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(pool, false),
+        ],
+        data: AdvancePool { }.to_bytes(),
+    }
+}
 
 pub fn build_stake_with_pool_ix(
     signer: Pubkey,
@@ -34,11 +60,12 @@ pub fn build_stake_with_pool_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
 
-    let (epoch_address, _) = epoch_pda();
-    let (mint_address, _)  = mint_pda();
-    let (stake_address, _) = stake_pda(signer, pool);
-    let (vault_address, _) = vault_pda(stake_address);
-    let signer_ata         = ata(&signer);
+    let (system_address, _) = system_pda();
+    let (epoch_address, _)  = epoch_pda();
+    let (mint_address, _)   = mint_pda();
+    let (stake_address, _)  = stake_pda(signer, pool);
+    let (vault_address, _)  = vault_pda(stake_address);
+    let signer_ata          = ata(&signer);
 
     let amount = amount.pack();
 
@@ -48,10 +75,11 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
 
-            AccountMeta::new(stake_address, false),
-            AccountMeta::new(vault_address, false),
+            AccountMeta::new(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
+            AccountMeta::new(stake_address, false),
+            AccountMeta::new(vault_address, false),
 
             AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),

@@ -214,6 +214,7 @@ impl<const NODES: usize> Committee<NODES> {
             return Err(CommitteeError::ZeroStake);
         }
 
+        // TODO: this seems like a bug. 
         if let Some(idx) = self.index_of(&member) {
             return Err(CommitteeError::AlreadyPresent { idx });
         }

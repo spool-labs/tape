@@ -106,10 +106,12 @@ impl<const N: usize> StakingPool<N> {
     /// Process pending stake additions and pre-active cancellations for the current_epoch.
     fn process_pending_additions(&mut self, current_epoch: EpochNumber) -> Result<(), PoolError> {
         // Sum all pending stake before or at current_epoch
-        let incoming = self.schedule.take_incoming(current_epoch);
+        let incoming = self.schedule
+            .take_incoming(current_epoch);
 
         // Sum all pre-active cancellations before or at current_epoch
-        let outgoing = self.schedule.take_outgoing(current_epoch);
+        let outgoing = self.schedule
+            .take_outgoing(current_epoch);
 
         // Net pending stake must be non-negative
         if outgoing > incoming {
@@ -132,17 +134,20 @@ impl<const N: usize> StakingPool<N> {
         epoch_rate: ExchangeRate,
     ) -> Result<(), PoolError> {
         // Sum all pending shares withdrawing before or at current_epoch
-        let outgoing_shares = self.schedule.take_outgoing_shares(current_epoch);
+        let outgoing_shares = self.schedule
+            .take_outgoing_shares(current_epoch);
 
         // Convert shares to tape at provided epoch rate and remove from stake
-        let net_removed = epoch_rate.convert_to_tape_amount(outgoing_shares);
+        let net_removed = epoch_rate
+            .convert_to_tape_amount(outgoing_shares);
 
         if self.stake < net_removed.into() {
             return Err(PoolError::BalanceExceeded);
         }
 
         if net_removed > 0 {
-            self.stake = self.stake.saturating_sub(net_removed.into());
+            self.stake = self.stake
+                .saturating_sub(net_removed.into());
         }
 
         Ok(())
@@ -153,7 +158,7 @@ impl<const N: usize> StakingPool<N> {
     pub fn advance_epoch(
         &mut self,
         current_epoch: EpochNumber,
-        rewards_gross: Coin<TAPE>,
+        prev_rewards: Coin<TAPE>,
         prev_rate: ExchangeRate,
     ) -> Result<ExchangeRate, PoolError> {
 
@@ -161,16 +166,16 @@ impl<const N: usize> StakingPool<N> {
         self.apply_commission_change(current_epoch);
 
         // Split rewards into commission and net, then add to pool stake
-        if rewards_gross > TAPE::zero() {
+        if prev_rewards > TAPE::zero() {
             if self.stake.is_zero() {
                 return Err(PoolError::StakeInvalid);
             }
 
             let commission_cut = (
-                rewards_gross.as_u128() * self.commission_rate.as_u128() / BasisPoints::MAX as u128
+                prev_rewards.as_u128() * self.commission_rate.as_u128() / BasisPoints::MAX as u128
             ) as u64;
 
-            let rewards_net = rewards_gross.saturating_sub(commission_cut.into());
+            let rewards_net = prev_rewards.saturating_sub(commission_cut.into());
 
             self.commission = self.commission.saturating_add(commission_cut.into());
             self.rewards = self.rewards.saturating_add(rewards_net);
