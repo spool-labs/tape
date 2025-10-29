@@ -8,7 +8,6 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         signer_info,
         signer_ata_info,
 
-        system_info,
         epoch_info,
         node_info,
         stake_info,
@@ -31,10 +30,6 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .as_token_account()?
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
-
-    let system = system_info
-        .is_writable()?
-        .as_account_mut::<System>(&tapedrive::ID)?;
 
     let epoch = epoch_info
         .is_epoch()?
@@ -115,21 +110,6 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         ],
     )?;
 
-    // Ugh.. this stake can't affect the next committee (stake is at E+2), so the logic below is
-    // not needed.
-    //
-    // If this node is part of the next committee, update its stake there too
-    if system.committee_next.contains(&node.id) {
-
-        let next_stake = node.pool
-            .stake_at(next_epoch(epoch));
-
-        system.committee_next
-            .update_stake(&node.id, next_stake)
-            .map_err(|_| ProgramError::Custom(1))?;
-            //.map_err(|_| TapeError::CommitteeUpdateFailed)?;
-    }
-
     // TODO: update/advance the node's state?
 
     Ok(())
@@ -140,14 +120,6 @@ mod tests {
     use super::*;
     use tape_test::*;
 
-    fn member(id: u64, stake: u64) -> CommitteeMember {
-        CommitteeMember {
-            id: NodeId(id),
-            stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
-        }
-    }
-
     #[test]
     fn test_stake_with_node() {
         let signer = Pubkey::new_unique();
@@ -157,20 +129,14 @@ mod tests {
         let instruction = build_stake_with_pool_ix(signer, pool_address, amount.into());
 
         let signer_ata = ata_address(&signer);
-        let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (stake_address, _) = stake_pda(signer, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
 
         // Setup existing accounts
 
-        let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
-
-        system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000), ]);
-        system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000), ]);
-        system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000), ]);
 
         epoch.id = EpochNumber(42);
 
@@ -200,7 +166,6 @@ mod tests {
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, initial_token_balance),
 
-            pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
             empty(stake_address),
@@ -219,16 +184,6 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&system_address).data(
-                    System { 
-                        committee_next: {
-                            let mut committee = system.committee_next;
-                            committee.update_stake(&node.id, TAPE(5900)).expect("update stake");
-                            committee
-                        },
-                        ..system
-                    }.pack().as_ref()
-                ).build(),
                 Check::account(&stake_address).data(
                     Stake {
                         authority: signer,
