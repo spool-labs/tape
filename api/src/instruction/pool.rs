@@ -131,13 +131,11 @@ pub fn build_split_pool_stake_ix(
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new_readonly(recipient, false),
-
-            AccountMeta::new(source_stake, false),
-            AccountMeta::new(dest_stake, false),
+            AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new(pool, false),
-
+            AccountMeta::new(source_stake, false),
+            AccountMeta::new(dest_stake, false),
             AccountMeta::new(source_vault, false),
             AccountMeta::new(dest_vault, false),
 
@@ -165,13 +163,11 @@ pub fn build_merge_pool_stake_ix(
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
-            AccountMeta::new_readonly(recipient, false),
-
-            AccountMeta::new(source_stake, false),
-            AccountMeta::new(dest_stake, false),
+            AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new(pool, false),
-
+            AccountMeta::new(source_stake, false),
+            AccountMeta::new(dest_stake, false),
             AccountMeta::new(source_vault, false),
             AccountMeta::new(dest_vault, false),
 

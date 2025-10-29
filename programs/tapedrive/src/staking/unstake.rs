@@ -47,8 +47,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let (vault_address, _) = vault_pda(stake_address);
 
     let stake = stake_info
-        .has_address(&stake_address)?
         .is_writable()?
+        .has_address(&stake_address)?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
     if stake.authority != *signer_info.key || stake.pool != *node_info.key {
@@ -108,6 +108,9 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .unstake(staked_tape, current_epoch(epoch), owed_rewards.into())
         .map_err(|_| ProgramError::Custom(5))?;
 
+    // Unstake the entire vault amount, which may include tokens sent
+    // there by accident or maliciously
+
     // CPI into staking program to move tokens from 
     // vault -> signer ATA and close the vault
 
@@ -116,10 +119,14 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         &[
             signer_info.clone(),
             signer_ata_info.clone(),
-
             node_info.clone(),
             vault_info.clone(),
         ],
+    )?;
+
+    close_account(
+        stake_info,
+        signer_info,
     )?;
 
     Ok(())
@@ -212,17 +219,25 @@ mod tests {
             &[
                 Check::success(),
 
-                // Stake state moved to Withdrawn
-                Check::account(&stake_address).data(
-                    Stake {
-                        authority: signer,
-                        pool: pool_address,
-                        inner: StakedTape {
-                            amount: TAPE(principal),
-                            activation_epoch: e0,
-                            state: *StakeState::new().set_withdrawn(),
-                        },
-                    }.pack().as_ref()
+                Check::account(&signer)
+                    .lamports(1_000_000_000 + rent_token() + rent(Stake::get_size()))
+                    .build(),
+                Check::account(&stake_address)
+                    .lamports(0)
+                    .closed()
+                    .build(),
+                Check::account(&vault_address)
+                    .lamports(0)
+                    .closed()
+                    .build(),
+
+                // Signer gets principal tokens and vault gets closed, rent refunded
+                Check::account(&signer_ata).data(
+                    token(
+                        signer_ata,
+                        signer,
+                        principal
+                    ).1.data.as_ref()
                 ).build(),
 
                 //// Pool rewards reduced by owed_rewards (cap was exact)
@@ -233,21 +248,6 @@ mod tests {
                 //    }.pack().as_ref()
                 //).build(),
 
-                // Signer gets principal tokens and vault gets closed, rent refunded
-                Check::account(&signer_ata).data(
-                    token(
-                        signer_ata,
-                        signer,
-                        principal
-                    ).1.data.as_ref()
-                ).build(),
-                Check::account(&vault_address)
-                    .lamports(0)
-                    .closed()
-                    .build(),
-                Check::account(&signer)
-                    .lamports(1_000_000_000 + rent_token())
-                    .build(),
             ],
         );
     }

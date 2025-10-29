@@ -7,11 +7,9 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         signer_info,
         recipient_info,
 
+        node_info,
         source_stake_info,
         dest_stake_info,
-
-        node_info,
-
         source_vault_info,
         dest_vault_info,
 
@@ -23,6 +21,9 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     };
 
     signer_info
+        .is_signer()?;
+
+    recipient_info
         .is_signer()?;
 
     token_program_info
@@ -108,6 +109,11 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         ],
     )?;
 
+    close_account(
+        source_stake_info,
+        signer_info,
+    )?;
+
     Ok(())
 }
 
@@ -164,11 +170,9 @@ mod tests {
             sol(signer, 1_000_000_000),
             sol(recipient, 0),
 
+            pda(pool_address, node.pack(), tapedrive::ID),
             pda(source_stake_address, source_stake.pack(), tapedrive::ID),
             pda(dest_stake_address, dest_stake.pack(), tapedrive::ID),
-
-            pda(pool_address, node.pack(), tapedrive::ID),
-
             token(source_vault_address, source_vault_address, amount),
             token(dest_vault_address, dest_vault_address, initial_dest_balance),
 
@@ -183,6 +187,18 @@ mod tests {
             &[
                 Check::success(),
 
+                Check::account(&signer)
+                    .lamports(1_000_000_000 + rent_token() + rent(source_stake.pack().len()))
+                    .build(),
+                Check::account(&source_stake_address)
+                    .lamports(0)
+                    .closed()
+                    .build(),
+                Check::account(&source_vault_address)
+                    .lamports(0)
+                    .closed()
+                    .build(),
+
                 // Destination stake receives principal; source amount becomes zero
                 Check::account(&dest_stake_address).data(
                     Stake {
@@ -190,17 +206,6 @@ mod tests {
                         pool: pool_address,
                         inner: StakedTape {
                             amount: TAPE(initial_dest_balance + amount),
-                            activation_epoch: e0,
-                            state: *StakeState::new().set_staked(),
-                        },
-                    }.pack().as_ref()
-                ).build(),
-                Check::account(&source_stake_address).data(
-                    Stake {
-                        authority: signer,
-                        pool: pool_address,
-                        inner: StakedTape {
-                            amount: TAPE(0),
                             activation_epoch: e0,
                             state: *StakeState::new().set_staked(),
                         },
@@ -215,13 +220,6 @@ mod tests {
                         initial_dest_balance + amount
                     ).1.data.as_ref()
                 ).build(),
-                Check::account(&source_vault_address)
-                    .lamports(0)
-                    .closed()
-                    .build(),
-                Check::account(&signer)
-                    .lamports(1_000_000_000 + rent_token())
-                    .build(),
             ],
         );
     }

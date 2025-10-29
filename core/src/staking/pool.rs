@@ -287,8 +287,6 @@ impl<const N: usize> StakingPool<N> {
             return Err(PoolError::StakeInvalid);
         }
 
-        stake.set_withdrawn();
-
         // If the withdraw epoch is before or at activation, then no rewards are due.
         if stake_withdraw_epoch <= stake.activation_epoch {
             return Ok(TAPE::zero());
@@ -303,6 +301,8 @@ impl<const N: usize> StakingPool<N> {
 
         self.rewards = self.rewards
             .saturating_sub(pay);
+
+        stake.set_withdrawn();
 
         Ok(pay)
     }

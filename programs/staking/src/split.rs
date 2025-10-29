@@ -21,6 +21,9 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     signer_info
         .is_signer()?;
 
+    recipient_info
+        .is_signer()?;
+
     // No check done against "pool_info" to reduce risks of stake being locked due to parent
     // program changes
 

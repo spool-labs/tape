@@ -7,11 +7,9 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         signer_info,
         recipient_info,
 
+        node_info,
         source_stake_info,
         dest_stake_info,
-
-        node_info,
-
         source_vault_info,
         dest_vault_info,
 
@@ -25,6 +23,9 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     };
 
     signer_info
+        .is_signer()?;
+
+    recipient_info
         .is_signer()?;
 
     token_program_info
@@ -108,7 +109,8 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     };
 
     // Reduce the source amount
-    source_stake.inner.amount = source_stake.inner.amount.saturating_sub(amount);
+    source_stake.inner.amount = source_stake.inner.amount
+        .saturating_sub(amount);
 
     // Validate destination vault
     // It may be empty (will be created by the staking program CPI) or already exist.
@@ -116,15 +118,6 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .has_address(&dest_vault_address)?
         .is_writable()?;
 
-    // TODO: potential issue
-    //
-    //External split can create destination vault without proving a matching Stake exists
-    //
-    //External process_split_stake will create a dest vault PDA derived from (recipient, pool)
-    //without requiring the corresponding Stake account. That’s fine from a token-custody angle,
-    //but it allows users to create “orphan” vaults unrelated to a real Stake state if they invoke
-    //the external program directly.
-    
     // CPI into staking program to split the underlying vaults
     solana_program::program::invoke(
         &build_split_stake_ix(
@@ -190,11 +183,11 @@ mod tests {
             sol(signer, 1_000_000_000),
             sol(recipient, 0),
 
+            pda(pool_address, node.pack(), tapedrive::ID),
+
             // Stake state accounts
             pda(source_stake_address, source_stake.pack(), tapedrive::ID),
             empty(dest_stake_address),
-
-            pda(pool_address, node.pack(), tapedrive::ID),
 
             // Vaults
             token(source_vault_address, source_vault_address, initial_source_balance),
