@@ -136,7 +136,7 @@ pub fn build_split_pool_stake_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new_readonly(recipient, true),
 
-            AccountMeta::new(pool, false),
+            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(source_stake, false),
             AccountMeta::new(dest_stake, false),
             AccountMeta::new(source_vault, false),
@@ -168,7 +168,7 @@ pub fn build_merge_pool_stake_ix(
             AccountMeta::new(signer, true),
             AccountMeta::new_readonly(recipient, true),
 
-            AccountMeta::new(pool, false),
+            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(source_stake, false),
             AccountMeta::new(dest_stake, false),
             AccountMeta::new(source_vault, false),

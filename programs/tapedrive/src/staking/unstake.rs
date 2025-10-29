@@ -99,9 +99,6 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .rate_at(withdraw_epoch)
         .ok_or(ProgramError::Custom(3))?;
 
-    // Convert principal (TAPE) -> shares at activation, 
-    // then shares -> TAPE at withdraw
-
     let shares = activation_rate
         .convert_to_other_amount(staked_tape.amount.into());
 
@@ -153,6 +150,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         stake_info,
         signer_info,
     )?;
+
+    // TODO: update/advance the node's state?
 
     Ok(())
 }

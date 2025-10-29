@@ -48,6 +48,8 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .map_err(|_| ProgramError::Custom(1))?;
     //  .map_err(|_| TapeError::StakingFailed)?;
 
+    // TODO: update/advance the node's state?
+
     Ok(())
 }
 

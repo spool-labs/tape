@@ -110,6 +110,8 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         ],
     )?;
 
+    // TODO: update/advance the node's state?
+
     Ok(())
 }
 
