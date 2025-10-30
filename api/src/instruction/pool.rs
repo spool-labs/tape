@@ -46,7 +46,7 @@ pub fn build_advance_pool_ix(
             AccountMeta::new(signer, true),
 
             AccountMeta::new_readonly(system_address, false),
-            AccountMeta::new_readonly(archive_address, false),
+            AccountMeta::new(archive_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
         ],

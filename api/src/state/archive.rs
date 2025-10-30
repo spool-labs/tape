@@ -19,14 +19,17 @@ pub struct Archive {
     /// The fees collected in future epochs.
     pub fees_collected: FutureRewards<FUTURE_EPOCHS>,
 
+    /// The fees collected in the last epoch including carry over.
+    pub rewards_pool: Coin<TAPE>,
+
+    /// The rewards paid out so far in this epoch.
+    pub rewards_paid: Coin<TAPE>,
+
     /// The capacity reserved in the last epoch.
-    pub recent_reserved: StorageUnits,
+    pub recent_usage: StorageUnits,
 
-    /// The data stored in the last epoch.
-    pub recent_stored: StorageUnits,
-
-    /// The fees collected in the last epoch.
-    pub recent_fees: Coin<TAPE>,
+    /// A weighted score used to distribute rewards.
+    pub recent_score: [u8; 16],
 }
 
 state!(AccountType, Archive);
