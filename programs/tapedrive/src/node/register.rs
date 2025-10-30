@@ -72,6 +72,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[NODE, signer_info.key.as_ref()],
     )?;
 
+    let commission_rate = BasisPoints::unpack(args.commission_rate);
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
     node.id                   = NodeId::new(system.total_nodes);
@@ -79,7 +80,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.registered_epoch     = current_epoch(epoch);
     node.latest_epoch         = current_epoch(epoch);
 
-    let commission_rate = BasisPoints::unpack(args.commission_rate);
+    node.blacklist = Blacklist::new();
     node.pool = StakingPool::new(commission_rate);
 
     node.metadata = NodeMetadata {
@@ -186,6 +187,7 @@ mod tests {
                         authority: signer,
                         pool: StakingPool::new(commission_rate),
                         history: PoolHistory::new(),
+                        blacklist: Blacklist::new(),
                         metadata: NodeMetadata {
                             name,
                             storage_capacity: 0,

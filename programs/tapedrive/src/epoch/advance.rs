@@ -58,7 +58,26 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Update future accounting
     archive.recent_fees = archive.fees_collected.advance_epoch();
-    archive.recent_usage = archive.capacity_used.advance_epoch();
+    archive.recent_reserved = archive.capacity_used.advance_epoch();
+
+    // Sum up recent stored capacity Sum(reserved - blacklisted)
+    // (used for reward distribution, roughly less than member count * recent_reserved)
+    archive.recent_stored = system.committee_prev
+        .iter()
+        .map(|member| archive.recent_reserved.saturating_sub(member.blacklist))
+        .fold(StorageUnits(0), |acc, x| acc.saturating_add(x));
+
+    //let mut recent_weighted_stored: u128 = 0;
+    //    for (i, member) in system.committee_prev.iter().enumerate() {
+    //        let w = system.seats_prev.weight(i) as u128;
+    //        let stored_i = archive
+    //            .recent_reserved
+    //            .saturating_sub(member.blacklist)
+    //            .as_u128();
+    //
+    //        recent_weighted_stored = recent_weighted_stored
+    //            .saturating_add(w.saturating_mul(stored_i));
+    //}
 
     // Advance to the next epoch
     epoch.id = next_epoch(epoch);
@@ -106,6 +125,7 @@ mod tests {
             id: NodeId(id),
             stake: TAPE(stake),
             key: BlsPubkey::zeroed(),
+            blacklist: StorageUnits(0),
         }
     }
 
@@ -201,7 +221,8 @@ mod tests {
                         fees_collected,
                         capacity_used,
                         recent_fees: TAPE(1000),
-                        recent_usage: StorageUnits(500),
+                        recent_reserved: StorageUnits(500),
+                        recent_stored: StorageUnits(500 * 3), // three members in previous committee
                         ..archive
                     }.pack().as_ref()
                 }).build(),

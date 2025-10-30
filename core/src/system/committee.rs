@@ -19,6 +19,7 @@ pub struct CommitteeMember {
     pub id: NodeId,
     pub stake: Coin<TAPE>,
     pub key: BlsPubkey,
+    pub blacklist: StorageUnits,
 }
 
 #[repr(C)]
@@ -26,8 +27,9 @@ pub struct CommitteeMember {
 pub struct Committee<const NODES: usize> {
     pub member_count: u64,
     pub members: [NodeId; NODES],
-    pub stakes: [Coin<TAPE>; NODES], // (index -> stake)
-    pub keys: [BlsPubkey; NODES],    // (index -> bls pubkey)
+    pub stakes: [Coin<TAPE>; NODES],       // (index -> stake)
+    pub blacklist: [StorageUnits; NODES],  // (index -> blacklist size)
+    pub keys: [BlsPubkey; NODES],          // (index -> bls pubkey)
 }
 
 unsafe impl<const NODES: usize> Zeroable for Committee<NODES> {}
@@ -41,6 +43,7 @@ impl<const NODES: usize> Committee<NODES> {
             member_count: 0,
             members: [NodeId::zeroed(); NODES],
             stakes: [TAPE::zero(); NODES],
+            blacklist: [StorageUnits::zeroed(); NODES],
             keys: [BlsPubkey::zeroed(); NODES],
         }
     }
@@ -172,6 +175,31 @@ impl<const NODES: usize> Committee<NODES> {
         Ok(())
     }
 
+    /// Returns the blacklist size for the given member, if any.
+    #[inline]
+    pub fn blacklist_of(&self, member: &NodeId) -> Option<StorageUnits> {
+        let Some(idx) = self.index_of(member) else {
+            return None;
+        };
+
+        Some(self.blacklist[idx])
+    }
+
+    /// Sets the blacklist size for the given member.
+    #[inline]
+    pub fn set_blacklist(
+        &mut self,
+        member: &NodeId,
+        size: StorageUnits,
+    ) -> Result<(), CommitteeError> {
+        let Some(idx) = self.index_of(member) else {
+            return Err(CommitteeError::NotFound);
+        };
+
+        self.blacklist[idx] = size;
+        Ok(())
+    }
+
     /// Inserts a new node if there is capacity. Never evicts.
     /// Returns the index where the member was inserted.
     pub fn insert(
@@ -289,6 +317,23 @@ impl<const NODES: usize> Committee<NODES> {
         self.sort_active_desc();
 
         Ok((removed_member, removed_stake))
+    }
+
+    /// Returns an iterator over CommitteeMembers.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = CommitteeMember> + '_ {
+        let count = self.size();
+        self.members[..count]
+            .iter()
+            .zip(self.keys[..count].iter())
+            .zip(self.stakes[..count].iter())
+            .zip(self.blacklist[..count].iter())
+            .map(|(((m, k), s), b)| CommitteeMember {
+                id: *m,
+                key: *k,
+                stake: *s,
+                blacklist: *b,
+            })
     }
 
     /// Returns an iterator over the node IDs.

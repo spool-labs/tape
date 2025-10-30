@@ -19,8 +19,11 @@ pub struct Archive {
     /// The fees collected in future epochs.
     pub fees_collected: FutureRewards<FUTURE_EPOCHS>,
 
-    /// The capacity used in the last epoch.
-    pub recent_usage: StorageUnits,
+    /// The capacity reserved in the last epoch.
+    pub recent_reserved: StorageUnits,
+
+    /// The data stored in the last epoch.
+    pub recent_stored: StorageUnits,
 
     /// The fees collected in the last epoch.
     pub recent_fees: Coin<TAPE>,

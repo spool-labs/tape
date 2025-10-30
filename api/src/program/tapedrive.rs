@@ -10,6 +10,7 @@ pub const FUTURE_EPOCHS: usize = 256;
 pub const EPOCH_HISTORY: usize = 256;
 pub const EPOCH_VALUES: usize = 3; // Epoch N, N+1, N+2
 pub const EPOCH_DURATION: i64 = 7 * 24 * 60 * 60 * 1000; // 1 week in milliseconds
+pub const BLACKLIST_SIZE: usize = 24; // 2^24 blob entries in blocklist
 
 declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
 

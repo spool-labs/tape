@@ -55,6 +55,7 @@ pub fn process_instruction(
             TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,
 
             // Node
+            TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
             TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,
 

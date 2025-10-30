@@ -1,4 +1,5 @@
 mod accounting;
+mod blacklist;
 mod blob;
 mod committee;
 mod epoch;
@@ -7,6 +8,7 @@ mod node;
 mod utils;
 
 pub use accounting::*;
+pub use blacklist::*;
 pub use blob::*;
 pub use committee::*;
 pub use epoch::*;

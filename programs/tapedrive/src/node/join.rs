@@ -53,6 +53,7 @@ mod tests {
             id: NodeId(id),
             stake: TAPE(stake),
             key: BlsPubkey::zeroed(),
+            blacklist: StorageUnits(0),
         }
     }
 
