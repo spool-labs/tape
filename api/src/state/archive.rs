@@ -27,9 +27,6 @@ pub struct Archive {
 
     /// The capacity reserved in the last epoch.
     pub recent_usage: StorageUnits,
-
-    /// A weighted score used to distribute rewards.
-    pub recent_score: [u8; 16],
 }
 
 state!(AccountType, Archive);

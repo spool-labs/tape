@@ -67,20 +67,6 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Snapshot usage for previous epoch
     archive.recent_usage = usage_prev;
 
-    // Compute weighted score using previous committee and previous seats
-    let mut score: u128 = 0;
-    for (i, member) in system.committee_prev.iter().enumerate() {
-        let weight = system.seats_prev.weight(i) as u128;
-
-        let stored_i = usage_prev
-            .saturating_sub(member.blacklist)
-            .as_u128();
-
-        score = score
-            .saturating_add(weight.saturating_mul(stored_i));
-    }
-    archive.recent_score = score.to_le_bytes();
-
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);
     epoch.state.set_syncing();
@@ -161,21 +147,11 @@ mod tests {
 
         let expected_seats = Seats::try_from(seats.as_ref()).unwrap();
 
-        // Build expected archive post-advance
-        // fees_collected/capacity_used are rotated to current=E+1
         let mut fees_collected = FutureRewards::new_at(EpochNumber(43));
-        fees_collected.checked_add(TAPE(1000), EpochNumber(43), EpochNumber(100)).unwrap();
-
         let mut capacity_used = FutureUsage::new_at(EpochNumber(43));
-        capacity_used.reserve_capacity(StorageUnits(500), EpochNumber(43), EpochNumber(100)).unwrap();
 
-        // Compute expected recent_score using previous committee and seats_prev (which equals system.seats here)
-        let mut expected_recent_score: u128 = 0;
-        for (i, m) in system.committee_prev.iter().enumerate() {
-            let w = system.seats.weight(i) as u128; // seats_prev = system.seats before reassign
-            let stored_i = StorageUnits(500).saturating_sub(m.blacklist).as_u128();
-            expected_recent_score = expected_recent_score.saturating_add(w.saturating_mul(stored_i));
-        }
+        fees_collected.checked_add(TAPE(1000), EpochNumber(43), EpochNumber(100)).unwrap();
+        capacity_used.reserve_capacity(StorageUnits(500), EpochNumber(43), EpochNumber(100)).unwrap();
 
         env.process_instruction(
             &instruction, 
@@ -207,7 +183,6 @@ mod tests {
                         rewards_pool: TAPE(1000),      // fees_prev + leftover(=0)
                         rewards_paid: TAPE(0),         // reset
                         recent_usage: StorageUnits(500),
-                        recent_score: expected_recent_score.to_le_bytes(),
 
                         ..archive
                     }.pack().as_ref()
