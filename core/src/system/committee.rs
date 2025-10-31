@@ -87,12 +87,12 @@ impl<const NODES: usize> Committee<NODES> {
 
     /// Get a member with the given NodeId, if any.
     #[inline]
-    pub fn get_member(&self, node_id: &NodeId) -> Option<CommitteeMember> {
+    pub fn get_member(&self, node_id: &NodeId) -> Option<(CommitteeMember, usize)> {
         let Some(idx) = self.index_of(node_id) else {
             return None;
         };
 
-        Some(self.members[idx])
+        Some((self.members[idx], idx))
     }
 
     /// Helper: get stake for NodeId, if any.

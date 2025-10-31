@@ -46,17 +46,15 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Compute previous-epoch rewards for this node using prev committee/seats snapshot
     let reward_pool = archive.rewards_pool;
+
     let recent_score = u128::from_le_bytes(archive.recent_score);
 
     let prev_rewards: u64 = if recent_score == 0 || reward_pool.is_zero() {
         0
-    } else if let Some(i) = system.committee_prev.index_of(&node.id) {
+    } else if let Some((member, index)) = system.committee_prev.get_member(&node.id) {
         // Use previous seats weight and previous committee's blacklist snapshot
 
-        let weight = system.seats_prev.weight(i) as u128;
-        //let blacklist = system.committee_prev
-        //    .blacklist_of(&node.id).unwrap();
-        let member = system.committee_prev.get_member(&node.id).unwrap();
+        let weight = system.seats_prev.weight(index) as u128;
         let blacklist = member.blacklist;
 
         let stored = archive
@@ -219,7 +217,7 @@ mod tests {
         // Pre-compute expected payout for node 2
         let idx = system.committee_prev.index_of(&node.id).expect("member in prev committee");
         let w2 = system.seats_prev.weight(idx) as u128;
-        let b2 = system.committee_prev.get_member(&node.id).unwrap().blacklist;
+        let b2 = system.committee_prev.get_member(&node.id).unwrap().0.blacklist;
         let stored2 = archive.recent_usage.saturating_sub(b2).as_u128(); // 1000-50=950
         let node_score = w2.saturating_mul(stored2);
 

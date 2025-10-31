@@ -5,6 +5,7 @@ mod committee;
 mod epoch;
 mod exchange;
 mod node;
+mod rewards;
 mod utils;
 
 pub use accounting::*;
@@ -14,6 +15,7 @@ pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use node::*;
+pub use rewards::*;
 pub use utils::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
