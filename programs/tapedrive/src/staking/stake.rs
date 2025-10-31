@@ -25,20 +25,6 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     signer_info
         .is_signer()?;
 
-    signer_ata_info
-        .is_writable()?
-        .as_token_account()?
-        .assert(|t| t.owner() == *signer_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
-
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
-
-    let node = node_info
-        .is_writable()?
-        .as_account_mut::<Node>(&tapedrive::ID)?;
-
     mint_info
         .is_mint()?;
 
@@ -51,9 +37,23 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
 
-    let amount = TAPE::unpack(args.amount);
-    if amount.is_zero() {
-        return Err(ProgramError::InvalidArgument);
+    let epoch = epoch_info
+        .is_epoch()?
+        .as_account::<Epoch>(&tapedrive::ID)?;
+
+    let node = node_info
+        .is_writable()?
+        .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    signer_ata_info
+        .is_writable()?
+        .as_token_account()?
+        .assert(|t| t.owner() == *signer_info.key)?
+        .assert(|t| t.mint() == MINT_ADDRESS)?;
+
+    if node.latest_epoch >= prev_epoch(epoch) {
+        return Err(ProgramError::Custom(0));
+        // return Err(TapeError::NodeNotUpdated);
     }
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
@@ -71,6 +71,11 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_empty()?
         .is_writable()?
         .has_address(&vault_address)?;
+
+    let amount = TAPE::unpack(args.amount);
+    if amount.is_zero() {
+        return Err(ProgramError::InvalidArgument);
+    }
 
     let staked_tape = node.pool
         .stake(current_epoch(epoch), amount.into())
@@ -120,6 +125,9 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    fn tape(v: u64) -> Coin<TAPE> { TAPE(v) }
+    fn shares(v: u64) -> ShareAmount { ShareAmount(v) }
+
     #[test]
     fn test_stake_with_node() {
         let signer = Pubkey::new_unique();
@@ -145,20 +153,16 @@ mod tests {
         let e2: EpochNumber = e1 + EpochNumber(1);
 
         node.id = NodeId(4);
-        node.pool.stake = TAPE(5000);
-        node.pool.schedule.incoming_tokens = EpochValues::try_from(
-            &[e1, e2],
-            &[1000, 200],
-        ).expect("schedule incoming");
+        node.pool.stake = tape(5000);
 
-        node.pool.schedule.outgoing_tokens = EpochValues::try_from(
-            &[e1, e2],
-            &[100, 50],
-        ).expect("schedule outgoing");
+        node.pool.schedule.stake(e1, tape(1000)).expect("stake");
+        node.pool.schedule.stake(e2, tape(200)).expect("stake");
+        node.pool.schedule.unstake(e1, shares(100)).expect("stake");
+        node.pool.schedule.unstake(e2, shares(50)).expect("stake");
 
-        assert_eq!(node.pool.stake_at(e0), TAPE(5000));
-        assert_eq!(node.pool.stake_at(e1), TAPE(5900));
-        assert_eq!(node.pool.stake_at(e2), TAPE(6050));
+        assert_eq!(node.pool.stake_at(e0), tape(5000));
+        assert_eq!(node.pool.stake_at(e1), tape(5900));
+        assert_eq!(node.pool.stake_at(e2), tape(6050));
 
         let initial_token_balance: u64 = 1_000_000_000;
 

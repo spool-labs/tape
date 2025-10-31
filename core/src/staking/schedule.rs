@@ -34,18 +34,7 @@ impl<const N: usize> PoolSchedule<N> {
     }
 
     #[inline]
-    pub fn set_commission(
-        &mut self,
-        epoch: EpochNumber,
-        new_rate: BasisPoints,
-    ) -> Result<(), ScheduleError> {
-        self.commission_changes
-            .set_at(epoch, new_rate.into())
-            .map_err(|_| ScheduleError::ScheduleFailed)
-    }
-
-    #[inline]
-    pub fn add_stake(
+    pub fn stake(
         &mut self,
         epoch: EpochNumber,
         amount: Coin<TAPE>,
@@ -56,7 +45,7 @@ impl<const N: usize> PoolSchedule<N> {
     }
 
     #[inline]
-    pub fn add_cancel(
+    pub fn cancel(
         &mut self,
         epoch: EpochNumber,
         amount: Coin<TAPE>,
@@ -67,13 +56,24 @@ impl<const N: usize> PoolSchedule<N> {
     }
 
     #[inline]
-    pub fn add_unstake(
+    pub fn unstake(
         &mut self,
         epoch: EpochNumber,
-        shares: u64,
+        shares: ShareAmount,
     ) -> Result<(), ScheduleError> {
         self.outgoing_shares
-            .add_at(epoch, shares)
+            .add_at(epoch, shares.into())
+            .map_err(|_| ScheduleError::ScheduleFailed)
+    }
+
+    #[inline]
+    pub fn set_commission(
+        &mut self,
+        epoch: EpochNumber,
+        new_rate: BasisPoints,
+    ) -> Result<(), ScheduleError> {
+        self.commission_changes
+            .set_at(epoch, new_rate.into())
             .map_err(|_| ScheduleError::ScheduleFailed)
     }
 
@@ -85,20 +85,20 @@ impl<const N: usize> PoolSchedule<N> {
 
     /// Sum of incoming stake scheduled at or before `epoch`.
     #[inline]
-    pub fn incoming_sum(&self, epoch: EpochNumber) -> u64 {
-        self.incoming_tokens.sum_through(epoch)
+    pub fn stake_sum(&self, epoch: EpochNumber) -> Coin<TAPE> {
+        self.incoming_tokens.sum_through(epoch).into()
     }
 
     /// Sum of pre-activation cancels scheduled at or before `epoch`.
     #[inline]
-    pub fn outgoing_sum(&self, epoch: EpochNumber) -> u64 {
-        self.outgoing_tokens.sum_through(epoch)
+    pub fn cancel_sum(&self, epoch: EpochNumber) -> Coin<TAPE> {
+        self.outgoing_tokens.sum_through(epoch).into()
     }
 
     /// Sum of share withdrawals scheduled at or before `epoch`.
     #[inline]
-    pub fn outgoing_shares_sum(&self, epoch: EpochNumber) -> u64 {
-        self.outgoing_shares.sum_through(epoch)
+    pub fn unstake_sum(&self, epoch: EpochNumber) -> ShareAmount {
+        self.outgoing_shares.sum_through(epoch).into()
     }
 
     /// If there is a commission rate change scheduled exactly at `epoch`,
@@ -116,20 +116,20 @@ impl<const N: usize> PoolSchedule<N> {
 
     /// Drain and sum all incoming stake with e <= epoch.
     #[inline]
-    pub fn take_incoming(&mut self, epoch: EpochNumber) -> u64 {
-        self.incoming_tokens.drain_through(epoch)
+    pub fn take_incoming(&mut self, epoch: EpochNumber) -> Coin<TAPE> {
+        self.incoming_tokens.drain_through(epoch).into()
     }
 
     /// Drain and sum all cancels with e <= epoch.
     #[inline]
-    pub fn take_outgoing(&mut self, epoch: EpochNumber) -> u64 {
-        self.outgoing_tokens.drain_through(epoch)
+    pub fn take_outgoing(&mut self, epoch: EpochNumber) -> Coin<TAPE> {
+        self.outgoing_tokens.drain_through(epoch).into()
     }
 
     /// Drain and sum all outgoing shares with e <= epoch.
     #[inline]
-    pub fn take_outgoing_shares(&mut self, epoch: EpochNumber) -> u64 {
-        self.outgoing_shares.drain_through(epoch)
+    pub fn take_outgoing_shares(&mut self, epoch: EpochNumber) -> ShareAmount {
+        self.outgoing_shares.drain_through(epoch).into()
     }
 
     #[inline]
@@ -154,6 +154,7 @@ mod tests {
 
     fn epoch(n: u64) -> EpochNumber { EpochNumber(n) }
     fn tape(v: u64) -> Coin<TAPE> { TAPE(v) }
+    fn shares(v: u64) -> ShareAmount { ShareAmount(v) }
 
     #[test]
     fn new_ok() {
@@ -186,26 +187,26 @@ mod tests {
     fn schedule_and_drain() {
         let mut s = PoolSchedule::<8>::new();
 
-        s.add_stake(epoch(4), tape(100)).unwrap();
-        s.add_stake(epoch(6), tape(50)).unwrap();
-        s.add_cancel(epoch(6), tape(20)).unwrap();
+        s.stake(epoch(4), tape(100)).unwrap();
+        s.stake(epoch(6), tape(50)).unwrap();
+        s.cancel(epoch(6), tape(20)).unwrap();
 
-        assert_eq!(s.incoming_sum(epoch(3)), 0);
-        assert_eq!(s.incoming_sum(epoch(4)), 100);
-        assert_eq!(s.incoming_sum(epoch(6)), 150);
-        assert_eq!(s.outgoing_sum(epoch(6)), 20);
+        assert_eq!(s.stake_sum(epoch(3)), tape(0));
+        assert_eq!(s.stake_sum(epoch(4)), tape(100));
+        assert_eq!(s.stake_sum(epoch(6)), tape(150));
+        assert_eq!(s.cancel_sum(epoch(6)), tape(20));
 
         // drain incoming up to 5 keeps epoch 6
         let res = s.take_incoming(epoch(5));
 
-        assert_eq!(res, 100);
-        assert_eq!(s.incoming_sum(epoch(4)), 0);
-        assert_eq!(s.incoming_sum(epoch(6)), 50);
+        assert_eq!(res, tape(100));
+        assert_eq!(s.stake_sum(epoch(4)), tape(0));
+        assert_eq!(s.stake_sum(epoch(6)), tape(50));
 
         // drain cancels up to 6 clears that entry
         let res = s.take_outgoing(epoch(6));
-        assert_eq!(res, 20);
-        assert_eq!(s.outgoing_sum(epoch(6)), 0);
+        assert_eq!(res, tape(20));
+        assert_eq!(s.cancel_sum(epoch(6)), tape(0));
     }
 
     #[test]
@@ -213,8 +214,8 @@ mod tests {
         // With capacity 1, two distinct epochs should exceed capacity
         let mut s = PoolSchedule::<1>::new();
 
-        s.add_unstake(epoch(10), 123).unwrap();
-        let err = s.add_unstake(epoch(11), 1).unwrap_err();
+        s.unstake(epoch(10), shares(123)).unwrap();
+        let err = s.unstake(epoch(11), shares(1)).unwrap_err();
         assert!(matches!(err, ScheduleError::ScheduleFailed));
     }
 }

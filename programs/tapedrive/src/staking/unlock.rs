@@ -16,7 +16,6 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     signer_info
         .is_signer()?;
 
-    let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
 
     let epoch = epoch_info
         .is_epoch()?
@@ -25,6 +24,13 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    if node.latest_epoch >= prev_epoch(epoch) {
+        return Err(ProgramError::Custom(0));
+        // return Err(TapeError::NodeNotUpdated);
+    }
+
+    let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
 
     let stake = stake_info
         .has_address(&stake_address)?

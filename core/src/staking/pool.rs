@@ -20,7 +20,7 @@ pub enum PoolError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StakingPool<const N: usize> {
     /// The total number of shares issued by this pool.
-    pub shares: u64,
+    pub shares: ShareAmount,
 
     /// The total stake held by this pool (excluding commission).
     pub stake: Coin<TAPE>,
@@ -44,7 +44,7 @@ unsafe impl<const N: usize> Pod for StakingPool<N> {}
 impl<const N: usize> StakingPool<N> {
     pub fn new(commission_rate: BasisPoints) -> Self {
         Self {
-            shares: 0,
+            shares: ShareAmount::zero(),
             stake: Coin::<TAPE>::zero(),
             rewards: Coin::<TAPE>::zero(),
             commission: Coin::<TAPE>::zero(),
@@ -65,24 +65,24 @@ impl<const N: usize> StakingPool<N> {
         // Calculate current exchange rate (stake per share)
         let exchange_rate = ExchangeRate::new(
             self.stake.into(),
-            self.shares
+            self.shares.into()
         );
 
         // Calculate net token additions (incoming - outgoing)
-        let incoming = self.schedule.incoming_sum(epoch);
-        let outgoing = self.schedule.outgoing_sum(epoch);
+        let incoming = self.schedule.stake_sum(epoch);
+        let outgoing = self.schedule.cancel_sum(epoch);
         let net_additions = incoming.saturating_sub(outgoing);
 
         // Convert outgoing shares to token amount
-        let outgoing_shares = self.schedule.outgoing_shares_sum(epoch);
-        let outgoing_tokens = exchange_rate.convert_to_tape_amount(outgoing_shares);
+        let outgoing_shares = self.schedule.unstake_sum(epoch);
+        let outgoing_tokens = exchange_rate
+            .convert_to_tape_amount(outgoing_shares.into())
+            .into();
 
         // Compute final stake: current stake + net additions - outgoing tokens
         self.stake
-            .as_u64()
             .saturating_add(net_additions)
             .saturating_sub(outgoing_tokens)
-            .into()
     }
 
     /// Process pending stake/withdrawals for the current_epoch, using the provided epoch exchange rate.
@@ -98,7 +98,9 @@ impl<const N: usize> StakingPool<N> {
         self.process_pending_reductions(current_epoch, epoch_rate)?;
 
         // Correct the current number of shares using the newly updated stake
-        self.shares = epoch_rate.convert_to_other_amount(self.stake.into());
+        self.shares = epoch_rate
+            .convert_to_other_amount(self.stake.into())
+            .into();
 
         Ok(())
     }
@@ -120,7 +122,7 @@ impl<const N: usize> StakingPool<N> {
 
         // Increase stake by net added stake
         let net_added = incoming - outgoing;
-        if net_added > 0 {
+        if net_added > TAPE::zero() {
             self.stake = self.stake.saturating_add(net_added.into());
         }
 
@@ -139,7 +141,7 @@ impl<const N: usize> StakingPool<N> {
 
         // Convert shares to tape at provided epoch rate and remove from stake
         let net_removed = epoch_rate
-            .convert_to_tape_amount(outgoing_shares);
+            .convert_to_tape_amount(outgoing_shares.into());
 
         if self.stake < net_removed.into() {
             return Err(PoolError::BalanceExceeded);
@@ -184,10 +186,13 @@ impl<const N: usize> StakingPool<N> {
 
         // Determine the exchange rate to use for this epoch (post-rewards).
         // If we have no shares yet, fall back to the provided prev_rate.
-        let epoch_rate = if self.shares == 0 {
+        let epoch_rate = if self.shares.is_zero() {
             prev_rate
         } else {
-            ExchangeRate::new(self.stake.into(), self.shares)
+            ExchangeRate::new(
+                self.stake.into(),
+                self.shares.into()
+            )
         };
 
         // Process scheduled stake/withdrawals using this epoch's exchange rate
@@ -208,7 +213,7 @@ impl<const N: usize> StakingPool<N> {
 
         let activation_epoch = current_epoch + EpochNumber(2);
         self.schedule
-            .add_stake(activation_epoch, stake_amount)
+            .stake(activation_epoch, stake_amount)
             .map_err(|_| PoolError::ScheduleFailed)?;
 
         Ok(StakedTape {
@@ -244,7 +249,7 @@ impl<const N: usize> StakingPool<N> {
             // Schedule the stake principal to be canceled at activation_epoch.
             // The net result is 0 change to tape_balance at that epoch for this stake.
             self.schedule
-                .add_cancel(stake.activation_epoch, stake.amount)
+                .cancel(stake.activation_epoch, stake.amount)
                 .map_err(|_| PoolError::ScheduleFailed)?;
 
             return Ok(withdraw_epoch);
@@ -253,15 +258,16 @@ impl<const N: usize> StakingPool<N> {
         // Otherwise, this is an active stake withdraw, so we need to schedule a share removal
         // which would calculate rewards at withdraw time.
 
-        let shares = stake_activation_rate
-            .convert_to_other_amount(stake.amount.into());
+        let shares : ShareAmount = stake_activation_rate
+            .convert_to_other_amount(stake.amount.into())
+            .into();
 
-        if shares == 0 {
+        if shares.is_zero() {
             return Err(PoolError::ZeroShares);
         }
 
         self.schedule
-            .add_unstake(withdraw_epoch, shares)
+            .unstake(withdraw_epoch, shares)
             .map_err(|_| PoolError::ScheduleFailed)?;
 
         Ok(withdraw_epoch)
@@ -321,13 +327,14 @@ mod tests {
 
     fn epoch(n: u64) -> EpochNumber { EpochNumber(n) }
     fn tape(v: u64) -> Coin<TAPE> { TAPE(v) }
+    fn shares(v: u64) -> ShareAmount { ShareAmount(v) }
 
     #[test]
     fn new_ok() {
         let p = StakingPool::<2>::new(BasisPoints(1000));
 
         assert_eq!(p.stake, TAPE::zero());
-        assert_eq!(p.shares, 0);
+        assert_eq!(p.shares, shares(0));
         assert_eq!(p.commission_rate, BasisPoints(1000));
     }
 
@@ -337,8 +344,8 @@ mod tests {
         let s = p.stake(epoch(5), tape(700)).unwrap();
 
         assert_eq!(s.activation_epoch, epoch(7));
-        assert_eq!(p.schedule.incoming_sum(epoch(6)), 0);
-        assert_eq!(p.schedule.incoming_sum(epoch(7)), 700);
+        assert_eq!(p.schedule.stake_sum(epoch(6)), tape(0));
+        assert_eq!(p.schedule.stake_sum(epoch(7)), tape(700));
     }
 
     #[test]
@@ -347,7 +354,7 @@ mod tests {
         let flat = ExchangeRate::flat();
 
         // Activate 1_000 at E1 (raw insert for immediate activation)
-        p.schedule.add_stake(epoch(1), tape(1_000)).unwrap();
+        p.schedule.stake(epoch(1), tape(1_000)).unwrap();
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
         assert_eq!(p.stake, tape(1_000));
 
@@ -372,7 +379,7 @@ mod tests {
         let mut p = StakingPool::<2>::new(BasisPoints(1000));
         let flat = ExchangeRate::flat();
 
-        p.schedule.add_stake(epoch(1), tape(100)).unwrap();
+        p.schedule.stake(epoch(1), tape(100)).unwrap();
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
 
         p.schedule.set_commission(epoch(4), BasisPoints(2000)).unwrap(); // applies at E4
@@ -389,11 +396,11 @@ mod tests {
         let mut p = StakingPool::<2>::new(BasisPoints(0));
         let flat = ExchangeRate::flat();
 
-        p.schedule.add_stake(epoch(1), tape(1000)).unwrap();
+        p.schedule.stake(epoch(1), tape(1000)).unwrap();
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
 
         assert_eq!(p.stake, tape(1000));
-        assert_eq!(p.shares, r1.convert_to_other_amount(p.stake.into()));
+        assert_eq!(p.shares, r1.convert_to_other_amount(p.stake.into()).into());
     }
 
     #[test]
@@ -401,12 +408,12 @@ mod tests {
         let mut p = StakingPool::<2>::new(BasisPoints(0));
         let flat = ExchangeRate::flat();
 
-        p.schedule.add_stake(epoch(1), tape(1000)).unwrap();
+        p.schedule.stake(epoch(1), tape(1000)).unwrap();
         p.advance_epoch(epoch(1), tape(0), flat).unwrap(); // balance=1000
 
         // Schedule more stake for E5 and a withdraw at E6
-        p.schedule.add_stake(epoch(5), tape(600)).unwrap();
-        p.schedule.add_unstake(epoch(6), 200).unwrap();
+        p.schedule.stake(epoch(5), tape(600)).unwrap();
+        p.schedule.unstake(epoch(6), shares(200)).unwrap();
 
         // Projection uses current rate (flat 1:1 here)
         assert_eq!(p.stake_at(epoch(4)), tape(1000));
@@ -419,8 +426,8 @@ mod tests {
         let mut p = StakingPool::<2>::new(BasisPoints(0));
         let flat = ExchangeRate::flat();
 
-        p.schedule.add_cancel(epoch(3), tape(200)).unwrap();
-        p.schedule.add_stake(epoch(3), tape(100)).unwrap();
+        p.schedule.cancel(epoch(3), tape(200)).unwrap();
+        p.schedule.stake(epoch(3), tape(100)).unwrap();
         let err = p.advance_epoch(epoch(3), tape(0), flat).unwrap_err();
         assert!(matches!(err, PoolError::BalanceExceeded));
     }
@@ -430,9 +437,9 @@ mod tests {
         let mut p = StakingPool::<2>::new(BasisPoints(0));
         let flat = ExchangeRate::flat();
 
-        p.schedule.add_stake(epoch(1), tape(1000)).unwrap();
+        p.schedule.stake(epoch(1), tape(1000)).unwrap();
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();
-        p.schedule.add_unstake(epoch(2), 1500).unwrap();
+        p.schedule.unstake(epoch(2), shares(1500)).unwrap();
         let err = p.advance_epoch(epoch(2), tape(0), r1).unwrap_err();
         assert!(matches!(err, PoolError::BalanceExceeded));
     }
@@ -447,8 +454,8 @@ mod tests {
         let we = p.request_withdraw(&mut s, epoch(5), ExchangeRate::new(0, 1)).unwrap();
 
         assert_eq!(we, epoch(7)); // current(5)+2
-        assert_eq!(p.schedule.outgoing_sum(epoch(7)), 500);
-        assert_eq!(p.schedule.outgoing_shares_sum(epoch(7)), 0);
+        assert_eq!(p.schedule.cancel_sum(epoch(7)), tape(500));
+        assert_eq!(p.schedule.unstake_sum(epoch(7)), shares(0));
     }
 
     #[test]
@@ -468,7 +475,7 @@ mod tests {
         let we = p.request_withdraw(&mut s, epoch(3), activation_rate).unwrap();
 
         assert_eq!(we, epoch(5));
-        assert_eq!(p.schedule.outgoing_shares_sum(epoch(5)), 1000); // flat
+        assert_eq!(p.schedule.unstake_sum(epoch(5)), shares(1000));
     }
 
     #[test]
@@ -495,7 +502,7 @@ mod tests {
         let flat = ExchangeRate::flat();
 
         // Seed the pool so rewards can be earned.
-        p.schedule.add_stake(epoch(1), tape(100)).unwrap();
+        p.schedule.stake(epoch(1), tape(100)).unwrap();
         let r1 = p.advance_epoch(epoch(1), tape(0), flat).unwrap();   // E1: balance=100
         let r2 = p.advance_epoch(epoch(2), tape(0), r1).unwrap();     // E2
         let r3 = p.advance_epoch(epoch(3), tape(0), r2).unwrap();     // E3: snapshot exists

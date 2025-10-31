@@ -50,7 +50,13 @@ pub fn current_epoch(epoch: &Epoch) -> EpochNumber {
 /// Helper: get the next epoch from an Epoch account
 #[inline(always)]
 pub fn next_epoch(epoch: &Epoch) -> EpochNumber {
-    epoch.id.checked_add(EpochNumber::one()).unwrap()
+    epoch.id.saturating_add(EpochNumber::one())
+}
+
+/// Helper: get the next epoch from an Epoch account
+#[inline(always)]
+pub fn prev_epoch(epoch: &Epoch) -> EpochNumber {
+    epoch.id.saturating_sub(EpochNumber::one())
 }
 
 /// Helper: get the associated token account

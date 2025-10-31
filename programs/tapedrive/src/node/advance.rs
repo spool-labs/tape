@@ -16,7 +16,8 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     };
 
     // Signer does not need to be the pool authority
-    signer_info.is_signer()?;
+    signer_info
+        .is_signer()?;
 
     let system = system_info
         .is_system()?
@@ -35,14 +36,13 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
+    if epoch.state.is_syncing() {
+        return Err(ProgramError::Custom(2));
+    }
+
     if node.latest_epoch >= epoch.id {
         return Err(ProgramError::Custom(0));
     }
-
-    solana_program::msg!("commission {:?}", node.pool.commission);
-    solana_program::msg!("stake {:?}", node.pool.stake);
-    solana_program::msg!("shares {:?}", node.pool.shares);
-    solana_program::msg!("rewards {:?}", node.pool.rewards);
 
     // Compute previous-epoch rewards for this node using prev committee/seats snapshot
     let pot = archive.rewards_pool;
@@ -92,11 +92,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     node.history.push(current_epoch(epoch), new_rate);
 
-    solana_program::msg!("commission {:?}", node.pool.commission);
-    solana_program::msg!("stake {:?}", node.pool.stake);
-    solana_program::msg!("shares {:?}", node.pool.shares);
-    solana_program::msg!("rewards {:?}", node.pool.rewards);
-
     solana_program::msg!("rewards_pool {:?}", pot);
     solana_program::msg!("prev rate: {:?}", prev_rate);
     solana_program::msg!(
@@ -120,83 +115,6 @@ mod tests {
             blacklist: StorageUnits(bl),
         }
     }
-
-    //#[test]
-    //fn test_advance_pool() {
-    //    let signer = Pubkey::new_unique();
-    //    let pool_owner = Pubkey::new_unique();
-    //
-    //    let (system_address, _) = system_pda();
-    //    let (archive_address, _) = archive_pda();
-    //    let (epoch_address, _) = epoch_pda();
-    //    let (pool_address, _)  = node_pda(pool_owner);
-    //
-    //    let instruction = build_advance_pool_ix(signer, pool_address);
-    //
-    //    let mut system = System::zeroed();
-    //    let mut archive = Archive::zeroed();
-    //    let mut epoch = Epoch::zeroed();
-    //    let mut node = Node::zeroed();
-    //
-    //    system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000) ]);
-    //    system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000) ]);
-    //    system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000) ]);
-    //
-    //    // Set archive snapshots and pool for distribution
-    //    archive.rewards_pool = TAPE(10_000);
-    //    archive.rewards_paid = TAPE(0);
-    //    archive.recent_usage = StorageUnits(1_000);
-    //    // If seats_prev are zeroed, recent_score can be zero; that’s fine for this test.
-    //    //archive.recent_score = [0u8; 16];
-    //
-    //    epoch.id = EpochNumber(42);
-    //
-    //    let e0: EpochNumber = epoch.id;
-    //    let e1: EpochNumber = e0 + EpochNumber(1);
-    //    let e2: EpochNumber = e1 + EpochNumber(1);
-    //
-    //    let rate = ExchangeRate { tape: 1000, other: 9000 };
-    //    node.id = NodeId(2);
-    //    node.authority = pool_owner;
-    //    node.history.push(EpochNumber(30), rate);
-    //    node.pool.rewards = TAPE(500);
-    //    node.pool.stake = TAPE(5000);
-    //    node.pool.commission_rate = BasisPoints(500); // 5%
-    //    node.pool.shares = rate.convert_to_other_amount(node.pool.stake.into());
-    //    node.blacklist.size = StorageUnits(50);
-    //
-    //    node.pool.schedule.incoming_tokens = EpochValues::try_from(
-    //        &[e0, e2],
-    //        &[1000, 200],
-    //    ).expect("schedule incoming");
-    //
-    //    node.pool.schedule.outgoing_tokens = EpochValues::try_from(
-    //        &[e0, e2],
-    //        &[100, 50],
-    //    ).expect("schedule outgoing");
-    //
-    //    assert_eq!(node.pool.stake_at(e0), TAPE(5900));
-    //    assert_eq!(node.pool.stake_at(e1), TAPE(5900));
-    //    assert_eq!(node.pool.stake_at(e2), TAPE(6050));
-    //
-    //    let accounts = vec![
-    //        sol(signer, 1_000_000_000),
-    //
-    //        pda(system_address, system.pack(), tapedrive::ID),
-    //        pda(archive_address, archive.pack(), tapedrive::ID),
-    //        pda(epoch_address, epoch.pack(), tapedrive::ID),
-    //        pda(pool_address, node.pack(), tapedrive::ID),
-    //    ];
-    //
-    //    let env = test_env();
-    //    env.process_instruction(
-    //        &instruction,
-    //        &accounts,
-    //        &[
-    //            Check::success(),
-    //        ],
-    //    );
-    //}
 
 
     #[test]
@@ -265,6 +183,7 @@ mod tests {
         archive.recent_score = score_u128.to_le_bytes();
 
         epoch.id = EpochNumber(42);
+        epoch.state.set_active();
 
         // Node/pool setup
         let rate = ExchangeRate { tape: 1000, other: 9000 };
@@ -274,12 +193,13 @@ mod tests {
         node.pool.rewards = TAPE(500);
         node.pool.stake = TAPE(5000);
         node.pool.commission_rate = BasisPoints(500); // 5%
-        node.pool.shares = rate.convert_to_other_amount(node.pool.stake.into());
+        node.pool.shares = rate.convert_to_other_amount(node.pool.stake.into()).into();
         node.blacklist.size = StorageUnits(50);
 
         // Pending I/O
         let e0 = epoch.id;
         let e2 = e0 + EpochNumber(2);
+
         node.pool
             .schedule
             .incoming_tokens = EpochValues::try_from(&[e0, e2], &[1000, 200])
