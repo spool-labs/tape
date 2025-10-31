@@ -74,15 +74,15 @@ impl <const SEATS: usize> Seats<SEATS> {
 
         // Figure out how many seats each member should get.
         let seat_counts = dhondt_allocate(
-            stakes_next,
+            &stakes_next,
             SEATS as u16,
         );
 
         // Distribute seats with minimal disruption.
         let seats = reassign_seats(
             &self.seats,
-            members_current,
-            members_next,
+            &members_current,
+            &members_next,
             &seat_counts,
         )?;
 

@@ -20,9 +20,9 @@ pub enum BlacklistError {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blacklist<const N: usize> {
-    pub state: MerkleTree<N>,
-    pub size: StorageUnits,
-    pub count: u64,
+    state: MerkleTree<N>,
+    size: StorageUnits,
+    count: u64,
 }
 
 unsafe impl<const N: usize> Zeroable for Blacklist<N> {}

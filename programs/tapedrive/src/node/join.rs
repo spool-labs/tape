@@ -32,12 +32,15 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let activation_epoch = next_epoch(epoch);
     let balance = node.pool.stake_at(activation_epoch);
 
-    system.committee_next
-        .try_join(&node.id, balance)
-        .map_err(|_| TapeError::UnexpectedState)?;
+    let member = CommitteeMember {
+        id: node.id,
+        stake: balance,
+        key: node.metadata.bls_pubkey,
+        blacklist: node.blacklist.total_size(),
+    };
 
     system.committee_next
-        .set_bls_key(&node.id, node.metadata.bls_pubkey)
+        .try_join(&member)
         .map_err(|_| TapeError::UnexpectedState)?;
 
     Ok(())

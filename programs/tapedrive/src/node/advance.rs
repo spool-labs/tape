@@ -45,17 +45,19 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     // Compute previous-epoch rewards for this node using prev committee/seats snapshot
-    let pot = archive.rewards_pool;
-    let denom = u128::from_le_bytes(archive.recent_score);
+    let reward_pool = archive.rewards_pool;
+    let recent_score = u128::from_le_bytes(archive.recent_score);
 
-    let prev_rewards: u64 = if denom == 0 || pot.is_zero() {
+    let prev_rewards: u64 = if recent_score == 0 || reward_pool.is_zero() {
         0
     } else if let Some(i) = system.committee_prev.index_of(&node.id) {
         // Use previous seats weight and previous committee's blacklist snapshot
 
         let weight = system.seats_prev.weight(i) as u128;
-        let blacklist = system.committee_prev
-            .blacklist_of(&node.id).unwrap();
+        //let blacklist = system.committee_prev
+        //    .blacklist_of(&node.id).unwrap();
+        let member = system.committee_prev.get_member(&node.id).unwrap();
+        let blacklist = member.blacklist;
 
         let stored = archive
             .recent_usage
@@ -64,10 +66,10 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
         let node_score = weight.saturating_mul(stored);
 
-        // rewards = floor(pot * node_score / denom)
-        let r = pot.as_u128()
+        // rewards = floor(reward_pool * node_score / recent_score)
+        let r = reward_pool.as_u128()
             .saturating_mul(node_score)
-            .checked_div(denom)
+            .checked_div(recent_score)
             .unwrap_or(0);
 
         r.min(u64::MAX as u128) as u64
@@ -78,7 +80,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Accumulate paid amount for carry-over dust
     if prev_rewards > 0 {
         archive.rewards_paid = archive.rewards_paid
-            .saturating_add(TAPE(prev_rewards));
+            .saturating_add(prev_rewards.into());
     }
 
     // Use previous exchange rate snapshot for pool advancement
@@ -92,7 +94,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     node.history.push(current_epoch(epoch), new_rate);
 
-    solana_program::msg!("rewards_pool {:?}", pot);
+    solana_program::msg!("rewards_pool {:?}", reward_pool);
     solana_program::msg!("prev rate: {:?}", prev_rate);
     solana_program::msg!(
         "Advanced pool {}, earned: {}, new rate: {:?}",
@@ -194,7 +196,7 @@ mod tests {
         node.pool.stake = TAPE(5000);
         node.pool.commission_rate = BasisPoints(500); // 5%
         node.pool.shares = rate.convert_to_other_amount(node.pool.stake.into()).into();
-        node.blacklist.size = StorageUnits(50);
+        node.blacklist.add(Hash::zeroed(), StorageUnits(50)).expect("blacklist add");
 
         // Pending I/O
         let e0 = epoch.id;
@@ -217,7 +219,7 @@ mod tests {
         // Pre-compute expected payout for node 2
         let idx = system.committee_prev.index_of(&node.id).expect("member in prev committee");
         let w2 = system.seats_prev.weight(idx) as u128;
-        let b2 = system.committee_prev.blacklist_of(&node.id).unwrap();
+        let b2 = system.committee_prev.get_member(&node.id).unwrap().blacklist;
         let stored2 = archive.recent_usage.saturating_sub(b2).as_u128(); // 1000-50=950
         let node_score = w2.saturating_mul(stored2);
 

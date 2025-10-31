@@ -14,7 +14,7 @@ pub enum CommitteeError {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Zeroable, Pod)]
+#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug)]
 pub struct CommitteeMember {
     pub id: NodeId,
     pub stake: Coin<TAPE>,
@@ -25,26 +25,19 @@ pub struct CommitteeMember {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct Committee<const NODES: usize> {
-    pub member_count: u64,
-    pub members: [NodeId; NODES],
-    pub stakes: [Coin<TAPE>; NODES],       // (index -> stake)
-    pub blacklist: [StorageUnits; NODES],  // (index -> blacklist size)
-    pub keys: [BlsPubkey; NODES],          // (index -> bls pubkey)
+    member_count: u64,
+    members: [CommitteeMember; NODES],
 }
 
 unsafe impl<const NODES: usize> Zeroable for Committee<NODES> {}
 unsafe impl<const NODES: usize> Pod for Committee<NODES> {}
 
 impl<const NODES: usize> Committee<NODES> {
-
     /// Creates a new, empty Committee.
     pub fn new() -> Self {
         Committee {
             member_count: 0,
-            members: [NodeId::zeroed(); NODES],
-            stakes: [TAPE::zero(); NODES],
-            blacklist: [StorageUnits::zeroed(); NODES],
-            keys: [BlsPubkey::zeroed(); NODES],
+            members: [CommitteeMember::zeroed(); NODES],
         }
     }
 
@@ -52,15 +45,12 @@ impl<const NODES: usize> Committee<NODES> {
     pub fn from_members(members: &[CommitteeMember]) -> Self {
         let mut committee = Self::new();
 
-        for member in members.iter().take(NODES) {
-            committee.members[committee.member_count as usize] = member.id;
-            committee.stakes[committee.member_count as usize] = member.stake;
-            committee.keys[committee.member_count as usize] = member.key;
+        for (i, member) in members.iter().take(NODES).enumerate() {
+            committee.members[i] = *member;
             committee.member_count += 1;
         }
 
         committee.sort_active_desc();
-
         committee
     }
 
@@ -92,19 +82,23 @@ impl<const NODES: usize> Committee<NODES> {
     #[inline]
     pub fn index_of(&self, node_id: &NodeId) -> Option<usize> {
         let count = self.size();
-        self.members[..count].iter().position(|m| m == node_id)
+        self.members[..count].iter().position(|m| &m.id == node_id)
     }
 
-    /// Helper: get stake at index as u64.
+    /// Get a member with the given NodeId, if any.
     #[inline]
-    pub fn stake_at(&self, idx: usize) -> Coin<TAPE> {
-        self.stakes[idx]
+    pub fn get_member(&self, node_id: &NodeId) -> Option<CommitteeMember> {
+        let Some(idx) = self.index_of(node_id) else {
+            return None;
+        };
+
+        Some(self.members[idx])
     }
 
     /// Helper: get stake for NodeId, if any.
     #[inline]
-    pub fn get_stake_for(&self, node_id: &NodeId) -> Option<Coin<TAPE>> {
-        self.index_of(node_id).map(|i| self.stake_at(i))
+    pub fn get_stake(&self, node_id: &NodeId) -> Option<Coin<TAPE>> {
+        self.index_of(node_id).map(|i| self.members[i].stake)
     }
 
     /// Helper: find index of minimum stake (among active members).
@@ -117,7 +111,6 @@ impl<const NODES: usize> Committee<NODES> {
         if count == 0 {
             return None;
         }
-
         Some(count - 1)
     }
 
@@ -125,7 +118,7 @@ impl<const NODES: usize> Committee<NODES> {
     #[inline]
     pub fn threshold_stake(&self) -> Coin<TAPE> {
         self.min_stake_index()
-            .map(|i| self.stake_at(i))
+            .map(|i| self.members[i].stake)
             .unwrap_or(TAPE::zero())
     }
 
@@ -134,7 +127,7 @@ impl<const NODES: usize> Committee<NODES> {
         let count = self.size();
         let mut sum = TAPE::zero();
         for i in 0..count {
-            sum = sum.saturating_add(self.stake_at(i));
+            sum = sum.saturating_add(self.members[i].stake);
         }
         sum
     }
@@ -144,75 +137,29 @@ impl<const NODES: usize> Committee<NODES> {
     #[inline]
     pub fn try_join(
         &mut self,
-        member: &NodeId,
-        staked_amount: Coin<TAPE>,
+        member: &CommitteeMember
     ) -> Result<usize, CommitteeError> {
         if self.is_full() {
-            self.replace_if_better(member, staked_amount)
+            self.replace_if_better(member)
         } else {
-            self.insert(member, staked_amount)
+            self.insert(member)
         }
-    }
-
-    /// Returns the BLS public key for the given member, if any.
-    #[inline]
-    pub fn bls_key_of(&self, member: &NodeId) -> Option<BlsPubkey> {
-        let Some(idx) = self.index_of(member) else {
-            return None;
-        };
-
-        Some(self.keys[idx])
-    }
-
-    /// Sets the BLS public key for the given member.
-    #[inline]
-    pub fn set_bls_key(&mut self, member: &NodeId, key: BlsPubkey) -> Result<(), CommitteeError> {
-        let Some(idx) = self.index_of(member) else {
-            return Err(CommitteeError::NotFound);
-        };
-
-        self.keys[idx] = key;
-        Ok(())
-    }
-
-    /// Returns the blacklist size for the given member, if any.
-    #[inline]
-    pub fn blacklist_of(&self, member: &NodeId) -> Option<StorageUnits> {
-        let Some(idx) = self.index_of(member) else {
-            return None;
-        };
-
-        Some(self.blacklist[idx])
-    }
-
-    /// Sets the blacklist size for the given member.
-    #[inline]
-    pub fn set_blacklist(
-        &mut self,
-        member: &NodeId,
-        size: StorageUnits,
-    ) -> Result<(), CommitteeError> {
-        let Some(idx) = self.index_of(member) else {
-            return Err(CommitteeError::NotFound);
-        };
-
-        self.blacklist[idx] = size;
-        Ok(())
     }
 
     /// Inserts a new node if there is capacity. Never evicts.
     /// Returns the index where the member was inserted.
     pub fn insert(
         &mut self,
-        member: &NodeId, 
-        staked_amount: Coin::<TAPE>
+        member: &CommitteeMember
     ) -> Result<usize, CommitteeError> {
+        let id = member.id;
+        let staked_amount = member.stake;
 
         if staked_amount == TAPE::zero() {
             return Err(CommitteeError::ZeroStake);
         }
 
-        if let Some(idx) = self.index_of(&member) {
+        if let Some(idx) = self.index_of(&id) {
             return Err(CommitteeError::AlreadyPresent { idx });
         }
 
@@ -222,28 +169,31 @@ impl<const NODES: usize> Committee<NODES> {
         }
 
         self.members[count] = *member;
-        self.keys[count] = BlsPubkey::zeroed();
-        self.stakes[count] = staked_amount;
         self.member_count = (count + 1) as u64;
 
         self.sort_active_desc();
 
-        Ok(self.index_of(&member).expect("just inserted"))
+        let new_index = self
+            .index_of(&id)
+            .expect("just inserted");
+
+        Ok(new_index)
     }
 
     /// Replaces the current minimum-stake member if the set is full and the new stake is strictly larger.
     /// Returns the index replaced on success.
     pub fn replace_if_better(
         &mut self,
-        member: &NodeId,
-        staked_amount: Coin::<TAPE>,
+        member: &CommitteeMember
     ) -> Result<usize, CommitteeError> {
+        let id = member.id;
+        let staked_amount = member.stake;
+
         if staked_amount == TAPE::zero() {
             return Err(CommitteeError::ZeroStake);
         }
 
-        // TODO: this seems like a bug. 
-        if let Some(idx) = self.index_of(&member) {
+        if let Some(idx) = self.index_of(&id) {
             return Err(CommitteeError::AlreadyPresent { idx });
         }
 
@@ -255,18 +205,19 @@ impl<const NODES: usize> Committee<NODES> {
             return Err(CommitteeError::NotFull);
         };
 
-        let min_val = self.stake_at(min_idx);
+        let min_val = self.members[min_idx].stake;
         if staked_amount <= min_val {
             return Err(CommitteeError::NotBetter { min_idx, min_stake: min_val });
         }
 
         self.members[min_idx] = *member;
-        self.keys[min_idx] = BlsPubkey::zeroed();
-        self.stakes[min_idx] = staked_amount;
-
         self.sort_active_desc();
 
-        Ok(self.index_of(&member).expect("just inserted"))
+        let new_index = self
+            .index_of(&id)
+            .expect("just inserted");
+
+        Ok(new_index)
     }
 
     /// Updates the staked amount of the node with the given NodeId.
@@ -276,13 +227,12 @@ impl<const NODES: usize> Committee<NODES> {
         node_id: &NodeId,
         new_stake: Coin::<TAPE>,
     ) -> Result<Coin<TAPE>, CommitteeError> {
-
         let Some(idx) = self.index_of(node_id) else {
             return Err(CommitteeError::NotFound);
         };
 
-        let old = self.stake_at(idx);
-        self.stakes[idx] = new_stake;
+        let old = self.members[idx].stake;
+        self.members[idx].stake = new_stake;
 
         self.sort_active_desc();
 
@@ -299,87 +249,51 @@ impl<const NODES: usize> Committee<NODES> {
         let count = self.size();
         debug_assert!(idx < count);
 
-        let removed_member = self.members[idx];
-        let removed_stake = self.stake_at(idx);
+        let removed = self.members[idx];
 
         let last = count - 1;
         if idx != last {
             self.members[idx] = self.members[last];
-            self.keys[idx] = self.keys[last];
-            self.stakes[idx] = self.stakes[last];
         }
 
-        self.members[last] = NodeId::zeroed();
-        self.keys[last] = BlsPubkey::zeroed();
-        self.stakes[last] = TAPE::zero();
+        self.members[last] = CommitteeMember::zeroed();
         self.member_count = count as u64 - 1;
 
         self.sort_active_desc();
 
-        Ok((removed_member, removed_stake))
+        Ok((removed.id, removed.stake))
     }
 
     /// Returns an iterator over CommitteeMembers.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = CommitteeMember> + '_ {
         let count = self.size();
-        self.members[..count]
-            .iter()
-            .zip(self.keys[..count].iter())
-            .zip(self.stakes[..count].iter())
-            .zip(self.blacklist[..count].iter())
-            .map(|(((m, k), s), b)| CommitteeMember {
-                id: *m,
-                key: *k,
-                stake: *s,
-                blacklist: *b,
-            })
+        self.members[..count].iter().copied()
     }
 
-    /// Returns an iterator over the node IDs.
+    /// Array of active member NodeIds (sorted by descending stake).
     #[inline]
-    pub fn iter_members(&self) -> impl Iterator<Item = &NodeId> {
+    pub fn active_members(&self) -> Vec<NodeId> {
         let count = self.size();
-        self.members[..count].iter()
+        let mut ids: Vec<NodeId> = Vec::with_capacity(count);
+        for i in 0..count {
+            ids.push(self.members[i].id);
+        }
+        ids
     }
 
-    /// Returns an iterator over the stakes.
+    /// Array of active member stakes (sorted by descending stake).
     #[inline]
-    pub fn iter_stakes(&self) -> impl Iterator<Item = &Coin<TAPE>> {
+    pub fn active_stakes(&self) -> Vec<Coin<TAPE>> {
         let count = self.size();
-        self.stakes[..count].iter()
+        let mut stakes: Vec<Coin<TAPE>> = Vec::with_capacity(count);
+        for i in 0..count {
+            stakes.push(self.members[i].stake);
+        }
+        stakes
     }
 
-    /// Returns an iterator over the BLS public keys.
-    #[inline]
-    pub fn iter_bls_keys(&self) -> impl Iterator<Item = &BlsPubkey> {
-        let count = self.size();
-        self.keys[..count].iter()
-    }
-
-    /// Returns a slice of active members (sorted by descending stake).
-    #[inline]
-    pub fn active_members(&self) -> &[NodeId] {
-        let count = self.size();
-        &self.members[..count]
-    }
-
-    /// Returns a slice of active stakes (sorted by descending stake).
-    #[inline]
-    pub fn active_stakes(&self) -> &[Coin<TAPE>] {
-        let count = self.size();
-        &self.stakes[..count]
-    }
-
-    /// Returns a slice of active BLS public keys (sorted by descending stake).
-    #[inline]
-    pub fn active_bls_keys(&self) -> &[BlsPubkey] {
-        let count = self.size();
-        &self.keys[..count]
-    }
-
-    /// Sorts the active members in-place by descending stake, then ascending NodeId for
-    /// determinism.
+    /// Sorts the active members in-place by descending stake, then ascending NodeId for determinism.
     #[inline]
     fn sort_active_desc(&mut self) {
         let count = self.size();
@@ -387,20 +301,15 @@ impl<const NODES: usize> Committee<NODES> {
             return;
         }
 
-        // Collect active entries, sort by stake desc, then NodeId asc for determinism
-        let mut entries: Vec<(NodeId, BlsPubkey, Coin<TAPE>)> =
-            (0..count).map(|i| (self.members[i], self.keys[i], self.stakes[i])).collect();
+        let mut entries: Vec<CommitteeMember> = (0..count).map(|i| self.members[i]).collect();
 
-        entries.sort_by(|(ma, _ka, sa), (mb, _kb, sb)| {
-            // Highest stake first
-            sb.cmp(sa).then(ma.cmp(mb))
+        entries.sort_by(|a, b| {
+            // Highest stake first, then NodeId ascending
+            b.stake.cmp(&a.stake).then(a.id.cmp(&b.id))
         });
 
-        // Write back
         for i in 0..count {
-            self.members[i] = entries[i].0;
-            self.keys[i] = entries[i].1;
-            self.stakes[i] = entries[i].2;
+            self.members[i] = entries[i];
         }
     }
 
@@ -408,9 +317,8 @@ impl<const NODES: usize> Committee<NODES> {
     fn is_sorted(&self) -> bool {
         let count = self.size();
         for i in 1..count {
-            let a = self.stakes[i - 1];
-            let b = self.stakes[i];
-
+            let a = self.members[i - 1].stake;
+            let b = self.members[i].stake;
             if a < b {
                 return false;
             }
@@ -424,9 +332,7 @@ impl<const NODES: usize> fmt::Debug for Committee<NODES> {
         let count = self.size();
         f.debug_struct("Committee")
             .field("member_count", &count)
-            .field("members", &&self.members[..count])
-            .field("keys", &&self.keys[..count])
-            .field("stakes", &&self.stakes[..count])
+            .field("members", &self.iter().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -435,15 +341,11 @@ impl<const NODES: usize> fmt::Display for Committee<NODES> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let count = self.size();
         write!(f, "Committee(size={}, members=[", count)?;
-        for i in 0..count {
+        for (i, m) in self.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(
-                f,
-                "{{ id: {:?}, stake: {:?} }}",
-                self.members[i], self.stakes[i]
-            )?;
+            write!(f, "{{ id: {:?}, stake: {:?} }}", m.id, m.stake)?;
         }
         write!(f, "])")
     }
@@ -453,16 +355,16 @@ impl<const NODES: usize> fmt::Display for Committee<NODES> {
 mod tests {
     use super::*;
 
-    fn tape(v: u64) -> Coin<TAPE> {
-        TAPE::new(v)
-    }
-
-    fn node(n: u8) -> NodeId {
-        NodeId::new(n as u64)
-    }
-
-    fn empty_set<const N: usize>() -> Committee<N> {
-        Committee::new()
+    fn tape(v: u64) -> Coin<TAPE> { TAPE::new(v) }
+    fn node(n: u8) -> NodeId { NodeId::new(n as u64) }
+    fn empty_set<const N: usize>() -> Committee<N> { Committee::new() }
+    fn member(id: NodeId, stake: u64) -> CommitteeMember {
+        CommitteeMember {
+            id,
+            stake: TAPE(stake),
+            key: BlsPubkey::zeroed(),
+            blacklist: StorageUnits::zeroed(),
+        }
     }
 
     #[test]
@@ -477,22 +379,24 @@ mod tests {
         let m5 = node(5);
         let m6 = node(6);
 
-        assert_eq!(set.insert(&m1, tape(10)), Ok(0));
-        assert_eq!(set.insert(&m2, tape(9)), Ok(1));
-        assert_eq!(set.insert(&m3, tape(8)), Ok(2));
-        assert_eq!(set.insert(&m4, tape(7)), Ok(3));
-        assert_eq!(set.insert(&m5, tape(6)), Ok(4));
+        assert_eq!(set.insert(&member(m1, 10)), Ok(0));
+        assert_eq!(set.insert(&member(m2, 9)), Ok(1));
+        assert_eq!(set.insert(&member(m3, 8)), Ok(2));
+        assert_eq!(set.insert(&member(m4, 7)), Ok(3));
+        assert_eq!(set.insert(&member(m5, 6)), Ok(4));
 
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
 
-        let replaced_idx = set.replace_if_better(&m6, tape(11)).expect("should replace min");
-        assert_eq!(set.stake_at(replaced_idx), tape(11));
+        let replaced_idx = set.replace_if_better(&member(m6, 11)).expect("should replace min");
+        let replaced = set.iter().nth(replaced_idx).unwrap();
+        assert_eq!(replaced.id, m6);
+        assert_eq!(replaced.stake, tape(11));
 
         total = total - 6 + 11;
         assert_eq!(set.total_stake(), tape(total));
 
-        let active_ids = set.active_members().to_vec();
+        let active_ids: Vec<_> = set.active_members();
 
         assert!(!active_ids.contains(&m5));
         assert!(active_ids.contains(&m1));
@@ -516,11 +420,11 @@ mod tests {
             node(6),
         ];
 
-        assert_eq!(set.insert(&nodes[3], tape(7)), Ok(0));
-        assert_eq!(set.insert(&nodes[0], tape(10)), Ok(0));
-        assert_eq!(set.insert(&nodes[2], tape(8)), Ok(1));
-        assert_eq!(set.insert(&nodes[1], tape(9)), Ok(1));
-        assert_eq!(set.insert(&nodes[4], tape(6)), Ok(4));
+        assert_eq!(set.insert(&member(nodes[3], 7)), Ok(0));
+        assert_eq!(set.insert(&member(nodes[0], 10)), Ok(0));
+        assert_eq!(set.insert(&member(nodes[2], 8)), Ok(1));
+        assert_eq!(set.insert(&member(nodes[1], 9)), Ok(1));
+        assert_eq!(set.insert(&member(nodes[4], 6)), Ok(4));
 
         let mut total = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total));
@@ -529,39 +433,42 @@ mod tests {
         assert_eq!(old, tape(10));
         total = total - 10 + 12;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[0]), Some(tape(12)));
+        assert_eq!(set.get_stake(&nodes[0]), Some(tape(12)));
 
         let old = set.update_stake(&nodes[2], tape(13)).unwrap();
         assert_eq!(old, tape(8));
         total = total - 8 + 13;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[2]), Some(tape(13)));
+        assert_eq!(set.get_stake(&nodes[2]), Some(tape(13)));
 
         let old = set.update_stake(&nodes[3], tape(9)).unwrap();
         assert_eq!(old, tape(7));
         total = total - 7 + 9;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[3]), Some(tape(9)));
+        assert_eq!(set.get_stake(&nodes[3]), Some(tape(9)));
 
         let old = set.update_stake(&nodes[1], tape(10)).unwrap();
         assert_eq!(old, tape(9));
         total = total - 9 + 10;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[1]), Some(tape(10)));
+        assert_eq!(set.get_stake(&nodes[1]), Some(tape(10)));
 
         let old = set.update_stake(&nodes[4], tape(7)).unwrap();
         assert_eq!(old, tape(6));
         total = total - 6 + 7;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[4]), Some(tape(7)));
+        assert_eq!(set.get_stake(&nodes[4]), Some(tape(7)));
 
-        let replaced_idx = set.replace_if_better(&nodes[5], tape(11)).expect("should replace min with 11");
-        assert_eq!(set.stake_at(replaced_idx), tape(11));
+        let replaced_idx = set.replace_if_better(&member(nodes[5], 11)).expect("should replace min with 11");
+        let replaced = set.iter().nth(replaced_idx).unwrap();
+        assert_eq!(replaced.id, nodes[5]);
+        assert_eq!(replaced.stake, tape(11));
+
         total = total - 7 + 11;
         assert_eq!(set.total_stake(), tape(total));
-        assert_eq!(set.get_stake_for(&nodes[5]), Some(tape(11)));
+        assert_eq!(set.get_stake(&nodes[5]), Some(tape(11)));
 
-        let active_ids = set.active_members().to_vec();
+        let active_ids: Vec<_> = set.active_members();
         assert!(!active_ids.contains(&nodes[4]));
         assert!(active_ids.contains(&nodes[0]));
         assert!(active_ids.contains(&nodes[1]));
@@ -581,17 +488,17 @@ mod tests {
         let d = node(4);
         let e = node(5);
 
-        assert_eq!(set.insert(&a, tape(10)), Ok(0));
-        assert_eq!(set.insert(&b, tape(9)), Ok(1));
-        assert_eq!(set.insert(&c, tape(8)), Ok(2));
-        assert_eq!(set.insert(&d, tape(6)), Ok(3));
+        assert_eq!(set.insert(&member(a, 10)), Ok(0));
+        assert_eq!(set.insert(&member(b, 9)), Ok(1));
+        assert_eq!(set.insert(&member(c, 8)), Ok(2));
+        assert_eq!(set.insert(&member(d, 6)), Ok(3));
 
-        let err = set.replace_if_better(&e, tape(6)).unwrap_err();
+        let err = set.replace_if_better(&member(e, 6)).unwrap_err();
         assert!(matches!(err, CommitteeError::NotBetter { .. }));
 
-        assert_eq!(set.insert(&e, tape(6)), Err(CommitteeError::Full));
+        assert_eq!(set.insert(&member(e, 6)), Err(CommitteeError::Full));
 
-        let ids = set.active_members().to_vec();
+        let ids: Vec<_> = set.active_members();
         assert!(ids.contains(&a));
         assert!(ids.contains(&b));
         assert!(ids.contains(&c));
@@ -610,11 +517,11 @@ mod tests {
         let d = node(4);
         let e = node(5);
 
-        assert_eq!(set.insert(&a, tape(10)), Ok(0));
-        assert_eq!(set.insert(&b, tape(9)), Ok(1));
-        assert_eq!(set.insert(&c, tape(8)), Ok(2));
-        assert_eq!(set.insert(&d, tape(7)), Ok(3));
-        assert_eq!(set.insert(&e, tape(6)), Ok(4));
+        assert_eq!(set.insert(&member(a, 10)), Ok(0));
+        assert_eq!(set.insert(&member(b, 9)), Ok(1));
+        assert_eq!(set.insert(&member(c, 8)), Ok(2));
+        assert_eq!(set.insert(&member(d, 7)), Ok(3));
+        assert_eq!(set.insert(&member(e, 6)), Ok(4));
 
         let total_before = 10 + 9 + 8 + 7 + 6;
         assert_eq!(set.total_stake(), tape(total_before));
@@ -629,7 +536,7 @@ mod tests {
             let _old = set.update_stake(&c, new_stake_for_c).unwrap();
         }
 
-        let ids = set.active_members().to_vec();
+        let ids: Vec<_> = set.active_members();
         assert!(!ids.contains(&c));
         let total_after = total_before - 8;
         assert_eq!(set.total_stake(), tape(total_after));
@@ -643,9 +550,10 @@ mod tests {
         let a = node(1);
         let b = node(2);
 
-        assert_eq!(set.try_join(&a, tape(10)), Ok(0));
-        assert_eq!(set.try_join(&b, tape(5)), Ok(1));
-        assert!(set.contains(&a) && set.contains(&b));
+        assert_eq!(set.try_join(&member(a, 10)), Ok(0));
+        assert_eq!(set.try_join(&member(b, 5)), Ok(1));
+        let ids: Vec<_> = set.active_members();
+        assert!(ids.contains(&a) && ids.contains(&b));
     }
 
     #[test]
@@ -658,14 +566,18 @@ mod tests {
         let c = node(3);
         let d = node(4);
 
-        assert_eq!(set.try_join(&a, tape(10)), Ok(0));
-        assert_eq!(set.try_join(&b, tape(9)), Ok(1));
-        assert_eq!(set.try_join(&c, tape(6)), Ok(2));
+        assert_eq!(set.try_join(&member(a, 10)), Ok(0));
+        assert_eq!(set.try_join(&member(b, 9)), Ok(1));
+        assert_eq!(set.try_join(&member(c, 6)), Ok(2));
 
-        let idx = set.try_join(&d, tape(11)).expect("should replace min");
-        assert_eq!(set.stake_at(idx), tape(11));
-        assert!(!set.contains(&c));
-        assert!(set.contains(&d));
+        let idx = set.try_join(&member(d, 11)).expect("should replace min");
+        let replaced = set.iter().nth(idx).unwrap();
+        assert_eq!(replaced.id, d);
+        assert_eq!(replaced.stake, tape(11));
+
+        let ids: Vec<_> = set.active_members();
+        assert!(!ids.contains(&c));
+        assert!(ids.contains(&d));
     }
 
     #[test]
@@ -677,12 +589,13 @@ mod tests {
         let b = node(2);
         let c = node(3);
 
-        assert_eq!(set.try_join(&a, tape(10)), Ok(0));
-        assert_eq!(set.try_join(&b, tape(7)), Ok(1));
+        assert_eq!(set.try_join(&member(a, 10)), Ok(0));
+        assert_eq!(set.try_join(&member(b, 7)), Ok(1));
 
-        let err = set.try_join(&c, tape(7)).unwrap_err();
+        let err = set.try_join(&member(c, 7)).unwrap_err();
         assert!(matches!(err, CommitteeError::NotBetter { .. }));
-        assert!(!set.contains(&c));
+        let ids: Vec<_> = set.active_members();
+        assert!(!ids.contains(&c));
     }
 
     #[test]
@@ -692,11 +605,12 @@ mod tests {
 
         let a = node(1);
 
-        assert_eq!(set.try_join(&a, tape(10)), Ok(0));
-        let err = set.try_join(&a, tape(12)).unwrap_err();
+        assert_eq!(set.try_join(&member(a, 10)), Ok(0));
+        let err = set.try_join(&member(a, 12)).unwrap_err();
         assert!(matches!(err, CommitteeError::AlreadyPresent { .. }));
         let idx = set.index_of(&a).unwrap();
-        assert_eq!(set.stake_at(idx), tape(10));
+        let m = set.iter().nth(idx).unwrap();
+        assert_eq!(m.stake, tape(10));
     }
 
     #[test]
@@ -707,14 +621,14 @@ mod tests {
         let a = node(1);
         let b = node(2);
 
-        let err = set.try_join(&a, TAPE::zero()).unwrap_err();
+        let err = set.try_join(&member(a, 0)).unwrap_err();
         assert!(matches!(err, CommitteeError::ZeroStake));
 
-        assert_eq!(set.try_join(&a, tape(5)), Ok(0));
-        assert_eq!(set.try_join(&b, tape(6)), Ok(0));
+        assert_eq!(set.try_join(&member(a, 5)), Ok(0));
+        assert_eq!(set.try_join(&member(b, 6)), Ok(0));
 
         let c = node(3);
-        let err = set.try_join(&c, TAPE::zero()).unwrap_err();
+        let err = set.try_join(&member(c, 0)).unwrap_err();
         assert!(matches!(err, CommitteeError::ZeroStake));
     }
 }
