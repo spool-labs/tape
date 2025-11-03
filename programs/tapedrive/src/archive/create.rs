@@ -110,6 +110,9 @@ mod tests {
                 Check::account(&archive_address).data(
                     Archive::zeroed().pack().as_ref()
                 ).build(),
+                Check::account(&archive_ata).data(
+                    token(archive_ata, archive_address, 0).1.data.as_ref()
+                ).build(),
             ]
         );
     }

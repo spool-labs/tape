@@ -1,12 +1,12 @@
 use steel::*;
 use tape_api::prelude::*;
-use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = CreateEpoch::try_from_bytes(data)?;
     let [
         signer_info, 
         epoch_info,
+
         system_program_info, 
         rent_sysvar_info,
     ] = accounts else {
@@ -25,17 +25,12 @@ pub fn process_create_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .has_address(&epoch_address)?;
 
-    let size = MAX_PERMITTED_DATA_INCREASE
-        .min(Epoch::get_size());
-    
-    create_account_with_size::<Epoch>(
+    create_program_account::<Epoch>(
         epoch_info,
         system_program_info,
         signer_info,
-        size,
         &tapedrive::ID,
         &[EPOCH],
-        EPOCH_BUMP,
     )?;
 
     Ok(())
@@ -61,20 +56,19 @@ mod tests {
             rent_sysvar(),
         ];
 
-        let size = MAX_PERMITTED_DATA_INCREASE
-            .min(Epoch::get_size());
-
         let env = test_env();
         env.process_instruction(
             &instruction, 
             &accounts,
             &[
                 Check::success(),
-                Check::account(&epoch_address)
-                    .space(size)
-                    .owner(&tapedrive::ID)
-                    .data_slice(0, &[Epoch::discriminator()])
-                    .build(),
+
+                Check::account(&epoch_address).data(
+                    Epoch { 
+                        id: EpochNumber(0),
+                        ..Epoch::zeroed()
+                    }.pack().as_ref()
+                ).build(),
             ]
         );
     }

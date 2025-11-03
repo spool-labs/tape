@@ -120,7 +120,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     // Update pool accounting and stake state
     let total_rewards = node.pool
-        .unstake(staked_tape, current_epoch(epoch), owed_rewards.into())
+        .unstake_from_pool(staked_tape, current_epoch(epoch), owed_rewards.into())
         .map_err(|_| ProgramError::Custom(5))?;
 
     solana_program::msg!(

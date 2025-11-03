@@ -29,6 +29,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.total_nodes = 0;
 
+    solana_program::msg!("committee size {}", core::mem::size_of::<Committee<MEMBER_COUNT>>());
+
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
     epoch.id = EpochNumber(1);
     epoch.last_epoch_ms = 0;

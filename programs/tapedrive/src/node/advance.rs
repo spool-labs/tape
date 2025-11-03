@@ -1,4 +1,4 @@
-use crate::error::*;
+//use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -36,14 +36,17 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
+    // Can't advance if epoch is syncing (i.e., not active)
     if epoch.state.is_syncing() {
         return Err(ProgramError::Custom(2));
     }
 
+    // If this pool is already updated for this epoch, can't advance again
     if node.latest_epoch >= epoch.id {
         return Err(ProgramError::Custom(0));
     }
 
+    // Calculate rewards owed based on recent usage snapshot
     let reward_pool = archive.rewards_pool;
     let allocated = archive.recent_usage;
 
@@ -68,22 +71,16 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         // return Err(TapeError::RewardsOverflow);
     }
 
-    let prev_rate = node.history
-        .rate_at(current_epoch(epoch))
-        .ok_or(ProgramError::Custom(0))?;
+    node.pool
+        .advance_epoch(current_epoch(epoch), rewards_owed)
+        .map_err(|_| ProgramError::Custom(1))?;
 
     let new_rate = node.pool
-        .advance_epoch(current_epoch(epoch), rewards_owed, prev_rate)
-        .map_err(|_| ProgramError::Custom(1))?;
+        .get_current_rate();
 
     node.history.push(current_epoch(epoch), new_rate);
 
     archive.rewards_paid = rewards_paid;
-
-    solana_program::msg!("rewards_owed {:?}", rewards_owed);
-    solana_program::msg!("rewards_paid {:?}", rewards_paid);
-    solana_program::msg!("prev rate: {:?}", prev_rate);
-    solana_program::msg!("new rate: {:?}", new_rate);
 
     Ok(())
 }
@@ -104,7 +101,7 @@ mod tests {
 
 
     #[test]
-    fn test_advance_pool_non_zero_payout() {
+    fn test_advance_pool() {
         let signer = Pubkey::new_unique();
         let pool_owner = Pubkey::new_unique();
 
@@ -118,73 +115,65 @@ mod tests {
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
         let mut epoch = Epoch::zeroed();
-        let mut node = Node::zeroed();
-
-        // Prev committee: two members; give node 2 a blacklist of 50 to make stored differ
-        system.committee_prev = Committee::from_members(&[
-            member(2, 2_000, 50),
-            member(1, 1_000, 0),
-        ]);
-        // Current/next committees not used in this test, but fill for completeness
-        system.committee = Committee::from_members(&[
-            member(3, 3_000, 0),
-            member(2, 2_000, 0),
-            member(1, 1_000, 0),
-        ]);
-        system.committee_next = Committee::from_members(&[
-            member(3, 3_500, 0),
-            member(4, 2_100, 0),
-            member(2, 2_000, 0),
-            member(1, 1_000, 0),
-        ]);
-
-        // Construct seats_prev for committee_prev deterministically using D'Hondt
-        let seat_count_prev = dhondt_allocate(
-            &system.committee_prev.active_stakes(),
-            SEAT_COUNT as u16,
-        );
-        let seats_prev_vec = reassign_seats(
-            &system.seats.seats, // zeroed base ok
-            &system.committee_prev.active_members(),
-            &system.committee_prev.active_members(),
-            &seat_count_prev,
-        )
-        .expect("seats_prev assign failed");
-        system.seats_prev = Seats::try_from(seats_prev_vec.as_ref()).unwrap();
-
-        // Set archive snapshot and pool for distribution
-        archive.rewards_pool = TAPE(10_000);
-        archive.rewards_paid = TAPE(0);
-        archive.recent_usage = StorageUnits(1_000);
 
         epoch.id = EpochNumber(42);
         epoch.state.set_active();
 
-        // Node/pool setup
-        let rate = ExchangeRate { tape: 1000, other: 9000 };
-        node.id = NodeId(2);
-        node.authority = pool_owner;
-        node.history.push(EpochNumber(30), rate);
-        node.pool.rewards = TAPE(500);
-        node.pool.stake = TAPE(5000);
-        node.pool.commission_rate = BasisPoints(500); // 5%
-        node.pool.shares = rate.convert_to_other_amount(node.pool.stake.into()).into();
-        node.blacklist.add(Hash::zeroed(), StorageUnits(50)).expect("blacklist add");
-
         // Pending I/O
         let e0 = epoch.id;
-        let e2 = e0 + EpochNumber(2);
+        let e1 = e0 + EpochNumber(1);
+        let e2 = e1 + EpochNumber(1);
+
+        let mut node = Node {
+            id: NodeId(2),
+            authority: pool_owner,
+            pool: StakingPool {
+                stake: TAPE(5000),
+                rewards: TAPE(500),
+                commission: TAPE(10),
+                commission_rate: BasisPoints(500), // 5%
+                shares: ShareAmount(123),
+                ..StakingPool::zeroed()
+            },
+            ..Node::zeroed()
+        };
+
+        let rate = node.pool.get_current_rate();
+
+        //node.history.push(EpochNumber(30), node.pool.get_current_rate());
+        node.blacklist.add(Hash::zeroed(), StorageUnits(50)).expect("blacklist add");
 
         node.pool.schedule.stake(e0, TAPE(1000)).expect("schedule stake");
         node.pool.schedule.stake(e2, TAPE(200)).expect("schedule stake");
         node.pool.schedule.cancel(e0, TAPE(100)).expect("schedule cancel");
         node.pool.schedule.cancel(e2, TAPE(50)).expect("schedule cancel");
+        node.pool.schedule.unstake(e1, ShareAmount(50)).expect("schedule unstake");
 
-        // Sanity projections unchanged
-        assert_eq!(node.pool.stake_at(e0), TAPE(5900));
-        assert_eq!(node.pool.stake_at(e0 + EpochNumber(1)), TAPE(5900));
-        assert_eq!(node.pool.stake_at(e2), TAPE(6050));
+        // Sanity check scheduled stake/unstake
+        let e1_unstake_tape: Coin<TAPE> =
+            rate.convert_to_tape_amount(ShareAmount(50).into()).into();
 
+        assert_eq!(e1_unstake_tape, TAPE(2032)); // sanity
+
+        assert_eq!(node.pool.calculate_stake_at(e0), TAPE(5900)); // 5000 + 1000 - 100
+        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900) - e1_unstake_tape); // 5900 - unstake
+        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050) - e1_unstake_tape); // 5900 - unstake + 200 - 50
+
+        // Set previous committee and seats in system, ignore the current/next ones in this test
+        system.committee_prev = Committee::from_members(&[
+            member(node.id.into(), 3_000, 50),
+            member(2, 2_000, 0),
+            member(1, 1_000, 0),
+        ]);
+
+        // Arbitrary seat counts for testing
+        system.seats_prev = Seats::try_from_counts(
+            &[500, 300, 200]
+        ).unwrap();
+
+        archive.rewards_pool = TAPE(10_000);
+        archive.rewards_paid = TAPE(0);
+        archive.recent_usage = StorageUnits(1_000);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -194,9 +183,6 @@ mod tests {
             pda(pool_address, node.pack(), tapedrive::ID),
         ];
 
-        // After instruction, archive.rewards_paid should equal expected_rewards_paid
-        // We don't assert full node state (pending I/O mutates stake/shares), but we can at least
-        // assert the snapshot rate recorded for this epoch.
         let env = test_env();
         env.process_instruction(
             &instruction,

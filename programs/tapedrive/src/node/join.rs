@@ -30,7 +30,7 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Find the stake balance at activation epoch (1 epoch from now)
     let activation_epoch = next_epoch(epoch);
-    let balance = node.pool.stake_at(activation_epoch);
+    let balance = node.pool.calculate_stake_at(activation_epoch);
 
     let member = CommitteeMember {
         id: node.id,
@@ -89,6 +89,7 @@ mod tests {
         let e2: EpochNumber = e1 + EpochNumber(1);
 
         node.pool.stake = TAPE(5000);
+        node.pool.shares = ShareAmount(5000);
         node.pool.schedule.incoming_tokens = EpochValues::try_from(
             &[e1, e2],
             &[1000, 200],
@@ -99,9 +100,9 @@ mod tests {
             &[100, 50],
         ).expect("schedule outgoing");
 
-        assert_eq!(node.pool.stake_at(e0), TAPE(5000));
-        assert_eq!(node.pool.stake_at(e1), TAPE(5900));
-        assert_eq!(node.pool.stake_at(e2), TAPE(6050));
+        assert_eq!(node.pool.calculate_stake_at(e0), TAPE(5000));
+        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900));
+        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050));
 
         let accounts = vec![
             sol(signer, 1_000_000_000),

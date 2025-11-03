@@ -78,7 +78,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     }
 
     let staked_tape = node.pool
-        .stake(current_epoch(epoch), amount.into())
+        .stake_with_pool(current_epoch(epoch), amount.into())
         .map_err(|_| TapeError::StakingFailed)?;
 
     // Create the state account
@@ -154,15 +154,16 @@ mod tests {
 
         node.id = NodeId(4);
         node.pool.stake = tape(5000);
+        node.pool.shares = shares(5000);
 
         node.pool.schedule.stake(e1, tape(1000)).expect("stake");
         node.pool.schedule.stake(e2, tape(200)).expect("stake");
         node.pool.schedule.unstake(e1, shares(100)).expect("stake");
         node.pool.schedule.unstake(e2, shares(50)).expect("stake");
 
-        assert_eq!(node.pool.stake_at(e0), tape(5000));
-        assert_eq!(node.pool.stake_at(e1), tape(5900));
-        assert_eq!(node.pool.stake_at(e2), tape(6050));
+        assert_eq!(node.pool.calculate_stake_at(e0), tape(5000));
+        assert_eq!(node.pool.calculate_stake_at(e1), tape(5900));
+        assert_eq!(node.pool.calculate_stake_at(e2), tape(6050));
 
         let initial_token_balance: u64 = 1_000_000_000;
 
