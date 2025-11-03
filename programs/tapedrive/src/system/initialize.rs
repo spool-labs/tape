@@ -3,24 +3,16 @@ use tape_api::prelude::*;
 
 pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
-        signer_info, 
+        _signer_info, 
 
         system_info,
         epoch_info, 
         archive_info,
-        archive_ata_info,
-        mint_info, 
-
-        system_program_info, 
-        token_program_info, 
-        associated_token_program_info,
-        rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    mint_info
-        .is_mint()?;
+    // TODO: this should NOT be re-entrant
 
     system_info
         .is_writable()?
@@ -34,17 +26,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
         .is_writable()?
         .is_archive()?;
 
-    // Check programs and sysvars.
-
-    system_program_info
-        .is_program(&system_program::ID)?;
-    token_program_info
-        .is_program(&spl_token::ID)?;
-    associated_token_program_info
-        .is_program(&spl_associated_token_account::ID)?;
-    rent_sysvar_info
-        .is_sysvar(&sysvar::rent::ID)?;
-
     let system = system_info.as_account_mut::<System>(&tapedrive::ID)?;
     system.total_nodes = 0;
 
@@ -57,16 +38,6 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     archive.storage_price = TAPE::from("0.0001");  // 1 TAPE per 1Mb
     archive.capacity_used = FutureUsage::new_at(epoch.id);
     archive.fees_collected = FutureRewards::new_at(epoch.id);
-
-    create_associated_token_account(
-        signer_info,
-        archive_info,
-        archive_ata_info,
-        mint_info,
-        system_program_info,
-        token_program_info,
-        associated_token_program_info,
-    )?;
 
     Ok(())
 }
@@ -87,7 +58,6 @@ mod tests {
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
-        let (archive_ata, _) = archive_ata();
 
         let system = System::zeroed();
         let epoch = Epoch::zeroed();
@@ -100,13 +70,6 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
-            empty(archive_ata),
-
-            mint(MAX_SUPPLY),
-            system_program(),
-            token_program(),
-            ata_program(),
-            rent_sysvar(),
         ];
 
         let env = test_env();
@@ -135,9 +98,6 @@ mod tests {
                         capacity_used: FutureUsage::new_at(EpochNumber(1)),
                         ..archive
                     }.pack().as_ref()
-                ).build(),
-                Check::account(&archive_ata).data(
-                    token(archive_ata, archive_address, 0).1.data.as_ref()
                 ).build(),
             ]
         );

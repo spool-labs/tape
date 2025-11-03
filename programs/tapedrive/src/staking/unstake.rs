@@ -7,11 +7,13 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         signer_info,
         signer_ata_info,
 
+        archive_info,
+        archive_ata_info,
+
         stake_info,
         vault_info,
         epoch_info,
         node_info,
-        node_ata_info,
 
         token_program_info,
         staking_program_info,
@@ -29,6 +31,13 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
+    archive_info
+        .is_archive()?;
+
+    archive_ata_info
+        .is_writable()?
+        .is_archive_ata()?;
+
     token_program_info
         .is_program(&spl_token::ID)?;
     staking_program_info
@@ -42,19 +51,16 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
+    if node.latest_epoch >= prev_epoch(epoch) {
+        return Err(ProgramError::Custom(0));
+        // return Err(TapeError::NodeNotUpdated);
+    }
+
     let (node_address, _) = node_pda(node.authority);
-    let (node_ata, _) = node_ata(node_address);
 
     if node_address != *node_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
-
-    node_ata_info
-        .is_writable()?
-        .has_address(&node_ata)?
-        .as_token_account()?
-        .assert(|t| t.owner() == *node_info.key)?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
@@ -124,14 +130,14 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         total_rewards,
     );
 
-    // Transfer owed rewards from pool to signer ATA
+    // Transfer owed rewards from archive to signer ATA
     transfer_signed(
-        node_info,
-        node_ata_info,
+        archive_info,
+        archive_ata_info,
         signer_ata_info,
         token_program_info,
         total_rewards.into(),
-        &[NODE, node.authority.as_ref()],
+        &[ARCHIVE],
     )?;
 
     // Transfer out the principal, and close vault
@@ -168,9 +174,10 @@ mod tests {
         let pool_owner = Pubkey::new_unique();
 
         let signer_ata = ata_address(&signer);
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
         let (epoch_address, _) = epoch_pda();
         let (pool_address, _)  = node_pda(pool_owner);
-        let (pool_ata, _)      = node_ata(pool_address);
         let (stake_address, _) = stake_pda(signer, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
 
@@ -185,9 +192,11 @@ mod tests {
 
         // Existing accounts
         let mut epoch = Epoch::zeroed();
+        let archive = Archive::zeroed();
+        let mut node = Node::zeroed();
+
         epoch.id = e4; // current epoch equals withdraw epoch
 
-        let mut node = Node::zeroed();
         node.id = NodeId(7);
         node.authority = pool_owner;
 
@@ -232,11 +241,14 @@ mod tests {
             sol(signer, 1_000_000_000),
             token(signer_ata, signer, 0),
 
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            token(archive_ata, archive_address, reward),
+
             pda(stake_address, stake.pack(), tapedrive::ID),
             token(vault_address, vault_address, principal),
+
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
-            token(pool_ata, pool_address, 1_000_000_000),
 
             token_program(),
             staking_program(),
@@ -260,6 +272,14 @@ mod tests {
                     .lamports(0)
                     .closed()
                     .build(),
+
+                Check::account(&archive_ata).data(
+                    token(
+                        archive_ata,
+                        archive_address,
+                        0
+                    ).1.data.as_ref()
+                ).build(),
 
                 // Signer gets principal tokens and vault gets closed, rent refunded
                 Check::account(&signer_ata).data(

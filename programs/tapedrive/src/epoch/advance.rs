@@ -55,17 +55,15 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee = system.committee_next;
 
     // Update future accounting
-    let fees_prev = archive.fees_collected.advance_epoch();
-    let usage_prev = archive.capacity_used.advance_epoch();
+    let fees = archive.fees_collected.advance_epoch();
+    let usage = archive.capacity_used.advance_epoch();
 
-    // Build rewards pool with carry-over dust from last epoch
+    // Carry-over dust from last epoch
     let leftover = archive.rewards_pool
         .saturating_sub(archive.rewards_paid);
-    archive.rewards_pool = fees_prev.saturating_add(leftover);
+    archive.rewards_pool = fees.saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
-
-    // Snapshot usage for previous epoch
-    archive.recent_usage = usage_prev;
+    archive.recent_usage = usage;
 
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);

@@ -57,6 +57,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     if rewards_owed.is_zero() {
         return Err(ProgramError::Custom(0));
+        // return Err(TapeError::NoRewardsOwed);
     }
 
     let rewards_paid = archive.rewards_paid
@@ -64,6 +65,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     if rewards_paid > archive.rewards_pool {
         return Err(ProgramError::Custom(3));
+        // return Err(TapeError::RewardsOverflow);
     }
 
     let prev_rate = node.history
@@ -155,16 +157,6 @@ mod tests {
         archive.rewards_paid = TAPE(0);
         archive.recent_usage = StorageUnits(1_000);
 
-        // Compute recent_score from seats_prev and committee_prev
-        let mut score_u128: u128 = 0;
-        for (i, m) in system.committee_prev.iter().enumerate() {
-            let w = system.seats_prev.weight(i) as u128;
-            let stored_i = archive.recent_usage.saturating_sub(m.blacklist).as_u128();
-            score_u128 = score_u128.saturating_add(w.saturating_mul(stored_i));
-        }
-        // Make sure we actually have a non-zero score in this test
-        assert!(score_u128 > 0, "recent_score unexpectedly zero");
-
         epoch.id = EpochNumber(42);
         epoch.state.set_active();
 
@@ -183,52 +175,15 @@ mod tests {
         let e0 = epoch.id;
         let e2 = e0 + EpochNumber(2);
 
-        node.pool
-            .schedule
-            .incoming_tokens = EpochValues::try_from(&[e0, e2], &[1000, 200])
-            .expect("incoming");
-        node.pool
-            .schedule
-            .outgoing_tokens = EpochValues::try_from(&[e0, e2], &[100, 50])
-            .expect("outgoing");
+        node.pool.schedule.stake(e0, TAPE(1000)).expect("schedule stake");
+        node.pool.schedule.stake(e2, TAPE(200)).expect("schedule stake");
+        node.pool.schedule.cancel(e0, TAPE(100)).expect("schedule cancel");
+        node.pool.schedule.cancel(e2, TAPE(50)).expect("schedule cancel");
 
         // Sanity projections unchanged
         assert_eq!(node.pool.stake_at(e0), TAPE(5900));
         assert_eq!(node.pool.stake_at(e0 + EpochNumber(1)), TAPE(5900));
         assert_eq!(node.pool.stake_at(e2), TAPE(6050));
-
-        // Pre-compute expected payout for node 2
-        let idx = system.committee_prev.index_of(&node.id).expect("member in prev committee");
-        let w2 = system.seats_prev.weight(idx) as u128;
-        let b2 = system.committee_prev.get_member(&node.id).unwrap().0.blacklist;
-        let stored2 = archive.recent_usage.saturating_sub(b2).as_u128(); // 1000-50=950
-        let node_score = w2.saturating_mul(stored2);
-
-        //let denom = u128::from_le_bytes(archive.recent_score);
-        //let pot_u128 = archive.rewards_pool.as_u128();
-        //let expected_prev_rewards_u128 = pot_u128
-        //    .saturating_mul(node_score)
-        //    .checked_div(denom)
-        //    .unwrap_or(0);
-        //assert!(expected_prev_rewards_u128 > 0, "expected rewards zero unexpectedly");
-        //let expected_prev_rewards = expected_prev_rewards_u128 as u64;
-        //
-        //// Expected rewards accounting in archive
-        //let expected_rewards_paid = TAPE(expected_prev_rewards);
-
-        // Expected new rate snapshot returned by advance_epoch (post-rewards, pre-pending-IO)
-        //let commission_cut = (expected_prev_rewards_u128 * (node.pool.commission_rate.as_u128()))
-        //    / (BasisPoints::MAX as u128);
-        //let rewards_net_u128 = expected_prev_rewards_u128.saturating_sub(commission_cut);
-        //let stake_after_rewards = node.pool.stake.as_u128().saturating_add(rewards_net_u128) as u64;
-        //let expected_rate = ExchangeRate {
-        //    tape: stake_after_rewards,
-        //    other: node.pool.shares, // shares unchanged at the snapshot moment
-        //};
-        //
-        //println!("expected_prev_rewards: {}", TAPE(expected_prev_rewards));
-        //println!("expected_rewards_paid: {}", expected_rewards_paid);
-        //println!("expected_rate: {:?}", expected_rate);
 
 
         let accounts = vec![

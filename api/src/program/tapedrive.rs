@@ -131,18 +131,6 @@ pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn node_ata(node: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            node.as_ref(),
-            spl_token::ID.as_ref(),
-            MINT_ADDRESS.as_ref(),
-        ],
-        &spl_associated_token_account::ID,
-    )
-}
-
-#[inline(always)]
 pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[RESOURCE, authority.as_ref()], &id())
 }
