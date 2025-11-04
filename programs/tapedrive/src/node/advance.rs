@@ -63,14 +63,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         // return Err(TapeError::NoRewardsOwed);
     }
 
-    let rewards_paid = archive.rewards_paid
-        .saturating_add(rewards_owed.into());
-
-    if rewards_paid > archive.rewards_pool {
-        return Err(ProgramError::Custom(3));
-        // return Err(TapeError::RewardsOverflow);
-    }
-
     node.pool
         .advance_epoch(current_epoch(epoch), rewards_owed)
         .map_err(|_| ProgramError::Custom(1))?;
@@ -79,6 +71,14 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .get_current_rate();
 
     node.history.push(current_epoch(epoch), new_rate);
+
+    let rewards_paid = archive.rewards_paid
+        .saturating_add(rewards_owed.into());
+
+    if rewards_paid > archive.rewards_pool {
+        return Err(ProgramError::Custom(3));
+        // return Err(TapeError::RewardsOverflow);
+    }
 
     archive.rewards_paid = rewards_paid;
 
@@ -138,11 +138,9 @@ mod tests {
             ..Node::zeroed()
         };
 
-        let rate = node.pool.get_current_rate();
+        let before_rate = node.pool.get_current_rate();
 
-        //node.history.push(EpochNumber(30), node.pool.get_current_rate());
         node.blacklist.add(Hash::zeroed(), StorageUnits(50)).expect("blacklist add");
-
         node.pool.schedule.stake(e0, TAPE(1000)).expect("schedule stake");
         node.pool.schedule.stake(e2, TAPE(200)).expect("schedule stake");
         node.pool.schedule.cancel(e0, TAPE(100)).expect("schedule cancel");
@@ -150,14 +148,11 @@ mod tests {
         node.pool.schedule.unstake(e1, ShareAmount(50)).expect("schedule unstake");
 
         // Sanity check scheduled stake/unstake
-        let e1_unstake_tape: Coin<TAPE> =
-            rate.convert_to_tape_amount(ShareAmount(50).into()).into();
-
-        assert_eq!(e1_unstake_tape, TAPE(2032)); // sanity
-
+        let e1_unstake = before_rate.convert_to_tape_amount(ShareAmount(50).into());
+        assert_eq!(TAPE(2032), e1_unstake.into()); // sanity
         assert_eq!(node.pool.calculate_stake_at(e0), TAPE(5900)); // 5000 + 1000 - 100
-        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900) - e1_unstake_tape); // 5900 - unstake
-        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050) - e1_unstake_tape); // 5900 - unstake + 200 - 50
+        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900) - e1_unstake.into()); // 5900 - unstake
+        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050) - e1_unstake.into()); // 5900 - unstake + 200 - 50
 
         // Set previous committee and seats in system, ignore the current/next ones in this test
         system.committee_prev = Committee::from_members(&[
@@ -183,28 +178,41 @@ mod tests {
             pda(pool_address, node.pack(), tapedrive::ID),
         ];
 
+        let rewards_owed = calc_rewards(
+            node.id, 
+            archive.recent_usage, 
+            &system.committee_prev, 
+            &system.seats_prev, 
+            archive.rewards_pool
+        );
+
+        archive.rewards_paid = archive.rewards_paid
+            .saturating_add(rewards_owed.into());
+
+        node.pool.advance_epoch(e0, rewards_owed)
+            .expect("advance epoch");
+
+        let after_rate = node.pool.get_current_rate();
+        node.history.push(e0, after_rate);
+
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[
                 Check::success(),
-                //Check::account(&archive_address).data({
-                //    let mut a = archive;
-                //    a.rewards_paid = expected_rewards_paid;
-                //    a.pack().as_ref()
-                //}).build(),
-                // Optional: assert the node's recorded rate snapshot for current epoch
-                // by rebuilding the expected node with updated history only.
-                // If your Node::pack encodes full pool state (including schedules after mutation),
-                // this check can be brittle; uncomment if your encoding allows it.
-                //
-                //Check::account(&pool_address).data({
-                //    let mut n = node;
-                //    n.history.push(epoch.id, expected_rate);
-                //
-                //    n.pack().as_ref()
-                //}).build(),
+                Check::account(&archive_address).data(
+                    Archive {
+                        // updated: rewards_paid
+                        ..archive
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&pool_address).data({
+                    Node {
+                        // updated: history, latest_epoch, pool (stake, shares, rewards, schedule)
+                        ..node
+                    }.pack().as_ref()
+                }).build(),
             ],
         );
     }
