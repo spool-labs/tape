@@ -108,7 +108,11 @@ mod tests {
 
         let last_epoch = env.now() - (EPOCH_DURATION + 100);
 
-        epoch.id = EpochNumber(42);
+        let e0 = EpochNumber(42);
+        let e1 = e0 + EpochNumber(1);
+        let e100 = e0 + EpochNumber(100);
+
+        epoch.id = e0;
         epoch.state = EpochState::next_ready();
         epoch.last_epoch_ms = last_epoch;
 
@@ -118,10 +122,10 @@ mod tests {
 
         // Pre-fill archive usage and fees
         archive.capacity_used = FutureUsage::new_at(epoch.id);
-        archive.capacity_used.reserve_capacity(StorageUnits(500), epoch.id, EpochNumber(100)).unwrap();
+        archive.capacity_used.reserve_capacity(StorageUnits(500), e0, e100).unwrap();
 
         archive.fees_collected = FutureRewards::new_at(epoch.id);
-        archive.fees_collected.checked_add(TAPE(1000), epoch.id, EpochNumber(100)).unwrap();
+        archive.fees_collected.checked_add(TAPE(1000), e0, e100).unwrap();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -130,7 +134,7 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // Expected seat allocation (for system.seats after reassignment)
+        // Expected state after instruction
         let seat_count = dhondt_allocate(
             &system.committee_next.active_stakes(),
             SEAT_COUNT as u16,
@@ -145,11 +149,11 @@ mod tests {
 
         let expected_seats = Seats::try_from(seats.as_ref()).unwrap();
 
-        let mut fees_collected = FutureRewards::new_at(EpochNumber(43));
-        let mut capacity_used = FutureUsage::new_at(EpochNumber(43));
+        let mut fees_collected = FutureRewards::new_at(e1);
+        let mut capacity_used = FutureUsage::new_at(e1);
 
-        fees_collected.checked_add(TAPE(1000), EpochNumber(43), EpochNumber(100)).unwrap();
-        capacity_used.reserve_capacity(StorageUnits(500), EpochNumber(43), EpochNumber(100)).unwrap();
+        fees_collected.checked_add(TAPE(1000), e1, e100).unwrap();
+        capacity_used.reserve_capacity(StorageUnits(500), e1, e100).unwrap();
 
         env.process_instruction(
             &instruction, 
@@ -168,7 +172,7 @@ mod tests {
                 ).build(),
                 Check::account(&epoch_address).data(
                     Epoch {
-                        id: EpochNumber(43),
+                        id: e1,
                         state: EpochState::syncing(),
                         last_epoch_ms: env.now(),
                     }.pack().as_ref()

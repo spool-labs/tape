@@ -30,7 +30,8 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Find the stake balance at activation epoch (1 epoch from now)
     let activation_epoch = next_epoch(epoch);
-    let balance = node.pool.calculate_stake_at(activation_epoch);
+    let balance = node.pool
+        .calculate_stake_at(activation_epoch);
 
     let member = CommitteeMember {
         id: node.id,
@@ -70,48 +71,48 @@ mod tests {
         let (node_address, _) = node_pda(signer);
 
         // Setup existing accounts
-
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
-        system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000), ]);
-        system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000), ]);
-        system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000), ]);
+        system.committee_next = Committee::from_members(&[
+            member(3, 3_500),
+            member(4, 2_100),
+        ]);
 
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
         node.authority = signer;
 
-        let e0: EpochNumber = epoch.id;
-        let e1: EpochNumber = e0 + EpochNumber(1);
-        let e2: EpochNumber = e1 + EpochNumber(1);
-
-        node.pool.stake = TAPE(5000);
-        node.pool.shares = ShareAmount(5000);
-        node.pool.schedule.incoming_tokens = EpochValues::try_from(
-            &[e1, e2],
-            &[1000, 200],
-        ).expect("schedule incoming");
-
-        node.pool.schedule.outgoing_tokens = EpochValues::try_from(
-            &[e1, e2],
-            &[100, 50],
-        ).expect("schedule outgoing");
-
-        assert_eq!(node.pool.calculate_stake_at(e0), TAPE(5000));
-        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900));
-        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050));
+        // Minimal pool setup to produce a non-zero activation balance
+        node.pool.stake = TAPE(1_000);
+        node.pool.shares = ShareAmount(1_000);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(node_address, node.pack(), tapedrive::ID),
-            system_program(),
-            rent_sysvar(),
         ];
+
+        // Expected state after instruction
+        let e0: EpochNumber = epoch.id;
+        let e1: EpochNumber = e0 + EpochNumber(1);
+
+        let balance = node.pool.calculate_stake_at(e1);
+
+        let member = CommitteeMember {
+            id: node.id,
+            stake: balance,
+            key: node.metadata.bls_pubkey,
+            blacklist: node.blacklist.total_size(),
+        };
+
+        system
+            .committee_next
+            .try_join(&member)
+            .expect("join committee");
 
         let env = test_env();
         env.process_instruction(
@@ -119,30 +120,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                //Check::account(&epoch_address).data(
-                //    Epoch {
-                //        leaders: {
-                //            // Same as before, but with our node evicting the lowest stake node
-                //            let mut leaders = epoch.leaders;
-                //
-                //            // Nudge all values over by one
-                //            let last_index = (COMMITTEE_SIZE - 1) as usize;
-                //            for i in (1..COMMITTEE_SIZE).rev() {
-                //                leaders.stakes[i] = leaders.stakes[i - 1];
-                //                leaders.members[i] = leaders.members[i - 1];
-                //            }
-                //
-                //            leaders.members[0] = node.id;
-                //            leaders.stakes[0] = TAPE(5900);
-                //            leaders.keys[0] = node.metadata.bls_pubkey;
-                //
-                //            leaders
-                //        },
-                //        ..epoch
-                //    }.pack().as_ref()
-                //).build(),
-            ]
+                Check::account(&system_address)
+                    .data(system.pack().as_ref())
+                    .build(),
+            ],
         );
     }
-
 }

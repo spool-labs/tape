@@ -382,6 +382,45 @@ mod tests {
     }
 
     #[test]
+    fn rate_empty_flat() {
+        let p = TestPool::new(BasisPoints(0));
+        assert_eq!(p.get_current_rate(), ExchangeRate::flat());
+    }
+
+    #[test]
+    fn cancel_after_active_err() {
+        let mut p = TestPool::new(BasisPoints(0));
+
+        // Stake at E1 -> activate at E3
+        let mut s = p.stake_with_pool(epoch(1), tape(700)).unwrap();
+
+        // Walk to activation and make stake active
+        p.advance_epoch(epoch(1), tape(0)).unwrap();
+        p.advance_epoch(epoch(2), tape(0)).unwrap();
+        p.advance_epoch(epoch(3), tape(0)).unwrap();
+
+        // Cancel after activation should error
+        let err = p.request_cancel(&mut s, epoch(3)).unwrap_err();
+        assert!(matches!(err, PoolError::StakeActive));
+    }
+
+    #[test]
+    fn withdraw_zero_amount_err() {
+        let mut p = TestPool::new(BasisPoints(0));
+
+        // Synthetic active stake with zero amount
+        let mut s = StakedTape {
+            amount: tape(0),
+            activation_epoch: epoch(2),
+            state: StakeState::new(),
+        };
+
+        // Current >= activation to avoid StakeNotActive
+        let err = p.request_withdraw(&mut s, epoch(2), ExchangeRate::flat()).unwrap_err();
+        assert!(matches!(err, PoolError::StakeInvalid));
+    }
+
+    #[test]
     fn advance_commission() {
         let mut p = TestPool::new(BasisPoints(1000)); // 10%
 

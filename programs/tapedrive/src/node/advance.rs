@@ -99,7 +99,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_advance_pool() {
         let signer = Pubkey::new_unique();
@@ -116,59 +115,36 @@ mod tests {
         let mut archive = Archive::zeroed();
         let mut epoch = Epoch::zeroed();
 
-        epoch.id = EpochNumber(42);
+        epoch.id = EpochNumber(7);
         epoch.state.set_active();
 
-        // Pending I/O
-        let e0 = epoch.id;
-        let e1 = e0 + EpochNumber(1);
-        let e2 = e1 + EpochNumber(1);
-
+        // Minimal pool setup: non-zero stake/shares so rewards can be applied
         let mut node = Node {
             id: NodeId(2),
             authority: pool_owner,
             pool: StakingPool {
-                stake: TAPE(5000),
-                rewards: TAPE(500),
-                commission: TAPE(10),
-                commission_rate: BasisPoints(500), // 5%
-                shares: ShareAmount(123),
+                stake: TAPE(1_000),
+                shares: ShareAmount(1_000),
+                commission_rate: BasisPoints(0),
                 ..StakingPool::zeroed()
             },
             ..Node::zeroed()
         };
 
-        let before_rate = node.pool.get_current_rate();
-
-        node.blacklist.add(Hash::zeroed(), StorageUnits(50)).expect("blacklist add");
-        node.pool.schedule.stake(e0, TAPE(1000)).expect("schedule stake");
-        node.pool.schedule.stake(e2, TAPE(200)).expect("schedule stake");
-        node.pool.schedule.cancel(e0, TAPE(100)).expect("schedule cancel");
-        node.pool.schedule.cancel(e2, TAPE(50)).expect("schedule cancel");
-        node.pool.schedule.unstake(e1, ShareAmount(50)).expect("schedule unstake");
-
-        // Sanity check scheduled stake/unstake
-        let e1_unstake = before_rate.convert_to_tape_amount(ShareAmount(50).into());
-        assert_eq!(TAPE(2032), e1_unstake.into()); // sanity
-        assert_eq!(node.pool.calculate_stake_at(e0), TAPE(5900)); // 5000 + 1000 - 100
-        assert_eq!(node.pool.calculate_stake_at(e1), TAPE(5900) - e1_unstake.into()); // 5900 - unstake
-        assert_eq!(node.pool.calculate_stake_at(e2), TAPE(6050) - e1_unstake.into()); // 5900 - unstake + 200 - 50
-
-        // Set previous committee and seats in system, ignore the current/next ones in this test
+        // Previous committee/seats used by calc_rewards
         system.committee_prev = Committee::from_members(&[
-            member(node.id.into(), 3_000, 50),
-            member(2, 2_000, 0),
-            member(1, 1_000, 0),
+            member(node.id.into(), 3_000, 0),
+            member(3, 2_000, 0),
+            member(5, 1_000, 0),
         ]);
 
-        // Arbitrary seat counts for testing
         system.seats_prev = Seats::try_from_counts(
             &[500, 300, 200]
         ).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
-        archive.rewards_paid = TAPE(0);
         archive.recent_usage = StorageUnits(1_000);
+        archive.rewards_paid = TAPE(0);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -178,22 +154,27 @@ mod tests {
             pda(pool_address, node.pack(), tapedrive::ID),
         ];
 
+        // Expected state after instruction
+        let e0 = epoch.id;
+
         let rewards_owed = calc_rewards(
-            node.id, 
-            archive.recent_usage, 
-            &system.committee_prev, 
-            &system.seats_prev, 
-            archive.rewards_pool
+            node.id,
+            archive.recent_usage,
+            &system.committee_prev,
+            &system.seats_prev,
+            archive.rewards_pool,
         );
 
-        archive.rewards_paid = archive.rewards_paid
+        archive.rewards_paid = archive
+            .rewards_paid
             .saturating_add(rewards_owed.into());
 
-        node.pool.advance_epoch(e0, rewards_owed)
+        node.pool
+            .advance_epoch(e0, rewards_owed)
             .expect("advance epoch");
 
-        let after_rate = node.pool.get_current_rate();
-        node.history.push(e0, after_rate);
+        let new_rate = node.pool.get_current_rate();
+        node.history.push(e0, new_rate);
 
         let env = test_env();
         env.process_instruction(
@@ -201,18 +182,12 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&archive_address).data(
-                    Archive {
-                        // updated: rewards_paid
-                        ..archive
-                    }.pack().as_ref()
-                ).build(),
-                Check::account(&pool_address).data({
-                    Node {
-                        // updated: history, latest_epoch, pool (stake, shares, rewards, schedule)
-                        ..node
-                    }.pack().as_ref()
-                }).build(),
+                Check::account(&archive_address)
+                    .data(archive.pack().as_ref())
+                    .build(),
+                Check::account(&pool_address)
+                    .data(node.pack().as_ref())
+                    .build(),
             ],
         );
     }

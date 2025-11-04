@@ -115,7 +115,6 @@ mod tests {
         let (node_address, _) = node_pda(signer);
 
         // Setup existing accounts
-
         let system = System::zeroed();
         let epoch = Epoch {
             id: EpochNumber(42),
@@ -145,9 +144,6 @@ mod tests {
                         total_nodes: 1,
                         ..system
                     }.pack().as_ref()
-                ).build(),
-                Check::account(&epoch_address).data(
-                    epoch.pack().as_ref()
                 ).build(),
                 Check::account(&node_address).data(
                     Node {

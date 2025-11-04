@@ -218,4 +218,25 @@ mod tests {
         let err = s.unstake(epoch(11), shares(1)).unwrap_err();
         assert!(matches!(err, ScheduleError::ScheduleFailed));
     }
+
+    #[test]
+    fn drain_outgoing_shares() {
+        let mut s = PoolSchedule::<8>::new();
+
+        s.unstake(epoch(3), shares(50)).unwrap();
+        s.unstake(epoch(5), shares(30)).unwrap();
+        s.unstake(epoch(7), shares(20)).unwrap();
+
+        // Before drain
+        assert_eq!(s.unstake_sum(epoch(2)), shares(0));
+        assert_eq!(s.unstake_sum(epoch(5)), shares(80));
+
+        // Drain shares with e <= 5
+        let drained = s.take_outgoing_shares(epoch(5));
+        assert_eq!(drained, shares(80));
+
+        // Entries <= 5 cleared; only epoch 7 remains
+        assert_eq!(s.unstake_sum(epoch(5)), shares(0));
+        assert_eq!(s.unstake_sum(epoch(7)), shares(20));
+    }
 }

@@ -113,4 +113,30 @@ mod tests {
         let err = h.calculate_rewards(tape(100), epoch(1), epoch(1)).unwrap_err();
         assert!(matches!(err, HistoryError::RateMissing));
     }
+
+    #[test]
+    fn zero_window_no_rewards() {
+        let mut h = PoolHistory::<8>::new();
+        h.push(epoch(5), rate(200, 100));
+
+        // activation == withdraw -> no rewards
+        let r = h.calculate_rewards(tape(100), epoch(5), epoch(5)).unwrap();
+        assert_eq!(r, tape(0));
+    }
+
+    #[test]
+    fn calculate_rewards_on_or_before() {
+        let mut h = PoolHistory::<8>::new();
+
+        // Snapshots exist at E2 and E5, but we query E4 and E6
+        h.push(epoch(2), rate(200, 100));
+        h.push(epoch(5), rate(500, 200));
+
+        // Uses on_or_before(E4)=E2 and on_or_before(E6)=E5
+        // shares = floor(100 * 100 / 200) = 50
+        // tape_at_withdraw = floor(50 * 500 / 200) = 125
+        // rewards = 125 - 100 = 25
+        let r = h.calculate_rewards(tape(100), epoch(4), epoch(6)).unwrap();
+        assert_eq!(r, tape(25));
+    }
 }
