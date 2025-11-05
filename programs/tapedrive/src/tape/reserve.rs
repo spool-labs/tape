@@ -91,32 +91,22 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let current_capacity = archive.storage_capacity;
     let fee_per_epoch = TAPE(single_epoch_price);
 
-    if archive.capacity_used.current_epoch() != current_epoch {
+    if archive.schedule.current_epoch() != current_epoch {
         return Err(ProgramError::Custom(0));
         //return Err(TapeError::UnexpectedState.into());
     }
 
-    if archive.fees_collected.current_epoch() != current_epoch {
-        return Err(ProgramError::Custom(0));
-        //return Err(TapeError::UnexpectedState.into());
-    }
-
-    if !archive.capacity_used.has_capacity_for(
+    if !archive.schedule.has_capacity_for(
         total_units, current_capacity, start_epoch, end_epoch) {
         return Err(ProgramError::Custom(1));
         //return Err(TapeError::InsufficientCapacity.into());
     }
     
-    archive.capacity_used
-        .reserve_capacity(total_units, start_epoch, end_epoch)
+    archive.schedule
+        .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
         .map_err(|_| ProgramError::Custom(2))?;
         //.map_err(|_| TapeError::UnexpectedState)?;
 
-
-    archive.fees_collected
-        .checked_add(fee_per_epoch, start_epoch, end_epoch)
-        .map_err(|_| ProgramError::Custom(3))?;
-        //.map_err(|_| TapeError::UnexpectedState)?;
 
     create_program_account::<Tape>(
         tape_info,
@@ -175,8 +165,7 @@ mod tests {
         let archive = Archive {
             storage_capacity: StorageUnits(1000), // 1000 MB capacity
             storage_price: price_per_unit,
-            capacity_used: FutureUsage::new(),
-            fees_collected: FutureRewards::new(),
+            schedule: EpochSchedule::new(),
             ..Archive::zeroed()
         };
 
@@ -190,13 +179,8 @@ mod tests {
 
         let mut expected_archive = archive.clone();
         expected_archive
-            .capacity_used
-            .reserve_capacity(storage_units, start_epoch, end_epoch)
-            .unwrap();
-
-        expected_archive
-            .fees_collected
-            .checked_add(fee_per_epoch, start_epoch, end_epoch)
+            .schedule
+            .reserve_capacity(storage_units, fee_per_epoch, start_epoch, end_epoch)
             .unwrap();
 
         let initial_token_balance: u64 = 1_000_000;

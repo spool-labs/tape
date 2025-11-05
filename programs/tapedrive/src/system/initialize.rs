@@ -38,8 +38,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
     archive.storage_price = TAPE::from("0.0001");  // 1 TAPE per 1Mb
-    archive.capacity_used = FutureUsage::new_at(epoch.id);
-    archive.fees_collected = FutureRewards::new_at(epoch.id);
+    archive.schedule = EpochSchedule::new_at(epoch.id);
 
     Ok(())
 }
@@ -96,8 +95,7 @@ mod tests {
                     Archive {
                         storage_capacity: StorageUnits(1000),
                         storage_price: TAPE::from("0.0001"),
-                        fees_collected: FutureRewards::new_at(EpochNumber(1)),
-                        capacity_used: FutureUsage::new_at(EpochNumber(1)),
+                        schedule: EpochSchedule::new_at(EpochNumber(1)),
                         ..archive
                     }.pack().as_ref()
                 ).build(),

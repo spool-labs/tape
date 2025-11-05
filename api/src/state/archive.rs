@@ -13,11 +13,8 @@ pub struct Archive {
     /// The price per unit of storage in TAPE.
     pub storage_price: Coin<TAPE>,
 
-    /// The storage capacity reserved in future epochs.
-    pub capacity_used: FutureUsage<FUTURE_EPOCHS>,
-
-    /// The fees collected in future epochs.
-    pub fees_collected: FutureRewards<FUTURE_EPOCHS>,
+    /// The archive schedule for future epochs.
+    pub schedule: EpochSchedule<FUTURE_EPOCHS>,
 
     /// The capacity reserved in the last epoch.
     pub recent_usage: StorageUnits,

@@ -40,8 +40,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::Custom(3));
     }
 
-    debug_assert!(archive.fees_collected.current_epoch() == epoch.id);
-    debug_assert!(archive.capacity_used.current_epoch() == epoch.id);
+    debug_assert!(archive.schedule.current_epoch() == epoch.id);
 
     // Save previous seats, then reassign for the next committee
     system.seats_prev = system.seats;
@@ -55,15 +54,16 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee = system.committee_next;
 
     // Update future accounting
-    let fees = archive.fees_collected.advance_epoch();
-    let usage = archive.capacity_used.advance_epoch();
+    let epoch_usage = archive.schedule.advance_epoch();
 
     // Carry-over dust from last epoch
     let leftover = archive.rewards_pool
         .saturating_sub(archive.rewards_paid);
-    archive.rewards_pool = fees.saturating_add(leftover);
+
     archive.rewards_paid = TAPE::zero();
-    archive.recent_usage = usage;
+    archive.rewards_pool = epoch_usage.paid()
+        .saturating_add(leftover);
+    archive.recent_usage = epoch_usage.reserved();
 
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);
@@ -121,11 +121,11 @@ mod tests {
         system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000) ]);
 
         // Pre-fill archive usage and fees
-        archive.capacity_used = FutureUsage::new_at(epoch.id);
-        archive.capacity_used.reserve_capacity(StorageUnits(500), e0, e100).unwrap();
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+        archive.schedule.reserve_capacity(
+            StorageUnits(500), TAPE(1000), e0, e100
+        ).expect("reserve capacity");
 
-        archive.fees_collected = FutureRewards::new_at(epoch.id);
-        archive.fees_collected.checked_add(TAPE(1000), e0, e100).unwrap();
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -149,11 +149,11 @@ mod tests {
 
         let expected_seats = Seats::try_from(seats.as_ref()).unwrap();
 
-        let mut fees_collected = FutureRewards::new_at(e1);
-        let mut capacity_used = FutureUsage::new_at(e1);
+        let mut schedule = EpochSchedule::new_at(e1);
+        schedule.reserve_capacity(
+            StorageUnits(500), TAPE(1000), e1, e100
+        ).expect("reserve capacity");
 
-        fees_collected.checked_add(TAPE(1000), e1, e100).unwrap();
-        capacity_used.reserve_capacity(StorageUnits(500), e1, e100).unwrap();
 
         env.process_instruction(
             &instruction, 
@@ -179,8 +179,7 @@ mod tests {
                 ).build(),
                 Check::account(&archive_address).data({
                     Archive {
-                        fees_collected,
-                        capacity_used,
+                        schedule,
 
                         rewards_pool: TAPE(1000),      // fees_prev + leftover(=0)
                         rewards_paid: TAPE(0),         // reset
