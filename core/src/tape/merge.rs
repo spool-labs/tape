@@ -9,66 +9,45 @@ pub type MergeResult = (
 
 /// Computes the outcome of merging two tapes.
 pub fn merge_tapes(
-    source_active_epoch: EpochNumber,
-    source_expiry_epoch: EpochNumber,
+    source_active: EpochNumber,
+    source_expiry: EpochNumber,
     source_capacity: StorageUnits,
     source_used: StorageUnits,
-    dest_active_epoch: EpochNumber,
-    dest_expiry_epoch: EpochNumber,
+    dest_active: EpochNumber,
+    dest_expiry: EpochNumber,
     dest_capacity: StorageUnits,
     dest_used: StorageUnits,
 ) -> Option<MergeResult> {
 
-    // Basic invariants: each tape's used must not exceed its own capacity
     if source_used > source_capacity || dest_used > dest_capacity {
         return None;
     }
 
-    // Case 1: identical windows -> increase capacity (sum capacity and used)
-    if source_active_epoch == dest_active_epoch && source_expiry_epoch == dest_expiry_epoch {
-        let combined_capacity = dest_capacity
-            .checked_add(source_capacity)?;
-        let combined_used = dest_used
-            .checked_add(source_used)?;
+    let total_capacity = dest_capacity
+        .checked_add(source_capacity)?;
 
-        if combined_used > combined_capacity {
+    let max_used = source_used
+        .max(dest_used);
+
+    // Identical windows
+    if source_active == dest_active && source_expiry == dest_expiry {
+        let total_used = dest_used.checked_add(source_used)?;
+        if total_used > total_capacity {
             return None;
         }
-
-        return Some((dest_active_epoch, dest_expiry_epoch, combined_capacity, combined_used));
+        return Some((dest_active, dest_expiry, total_capacity, total_used));
     }
 
-    // Case 2: touching windows, source before dest -> extend backward
-    if source_expiry_epoch == dest_active_epoch {
-
-        let combined_capacity = dest_capacity
-            .checked_add(source_capacity)?;
-
-        let merged_used = if source_used > dest_used {
-            source_used 
-        } else { 
-            dest_used 
-        };
-
-        return Some((source_active_epoch, dest_expiry_epoch, combined_capacity, merged_used));
+    // Touching windows; source before dest
+    if source_expiry == dest_active {
+        return Some((source_active, dest_expiry, total_capacity, max_used));
     }
 
-    // Case 3: touching windows, dest before source -> extend forward
-    if dest_expiry_epoch == source_active_epoch {
-
-        let combined_capacity = dest_capacity
-            .checked_add(source_capacity)?;
-
-        let merged_used = if source_used > dest_used { 
-            source_used 
-        } else { 
-            dest_used 
-        };
-
-        return Some((dest_active_epoch, source_expiry_epoch, combined_capacity, merged_used));
+    // Touching windows; dest before source
+    if dest_expiry == source_active {
+        return Some((dest_active, source_expiry, total_capacity, max_used));
     }
 
-    // Overlap or gap -> reject
     None
 }
 
