@@ -15,51 +15,56 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
-    recipient_info.is_signer()?;
+    signer_info
+        .is_signer()?;
+    recipient_info
+        .is_signer()?;
 
-    system_program_info.is_program(&system_program::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
 
-    // Derive PDAs
     let (source_tape_address, _) = tape_pda(*signer_info.key);
     let (dest_tape_address, _)   = tape_pda(*recipient_info.key);
 
-    // Load/validate
-    source_tape_info
+    let source_tape = source_tape_info
+        .is_writable()?
         .has_address(&source_tape_address)?
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
+
+    let dest_tape   = dest_tape_info
         .is_writable()?
-        .is_type::<Tape>(&tapedrive::ID)?;
-    dest_tape_info
         .has_address(&dest_tape_address)?
-        .is_writable()?
-        .is_type::<Tape>(&tapedrive::ID)?;
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    let source_tape = source_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
-    let dest_tape   = dest_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
-
-    if source_tape.authority != *signer_info.key || dest_tape.authority != *recipient_info.key {
+    // Require correct authorities
+    if source_tape.authority != *signer_info.key || 
+       dest_tape.authority != *recipient_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Require identical epoch windows
-    if source_tape.active_epoch != dest_tape.active_epoch ||
-       source_tape.expiry_epoch != dest_tape.expiry_epoch {
-        return Err(ProgramError::Custom(20)); // incompatible epochs
-    }
+    // Merge tapes together if possible
+    let Some((new_active_epoch, new_expiry_epoch, new_capacity, new_used)) =
+        merge_tapes(
+            source_tape.active_epoch,
+            source_tape.expiry_epoch,
+            source_tape.capacity,
+            source_tape.used,
+            dest_tape.active_epoch,
+            dest_tape.expiry_epoch,
+            dest_tape.capacity,
+            dest_tape.used,
+        )
+    else {
+        return Err(ProgramError::Custom(20));
+    };
 
-    // Compute merged stats with checks
-    let new_capacity = dest_tape.capacity.checked_add(source_tape.capacity).ok_or(ProgramError::Custom(21))?;
-    let new_used     = dest_tape.used.checked_add(source_tape.used).ok_or(ProgramError::Custom(22))?;
+    // Apply common result
+    dest_tape.active_epoch = new_active_epoch;
+    dest_tape.expiry_epoch = new_expiry_epoch;
+    dest_tape.capacity     = new_capacity;
+    dest_tape.used         = new_used;
 
-    if new_used > new_capacity {
-        return Err(ProgramError::InvalidArgument);
-    }
-
-    // Apply to destination
-    dest_tape.capacity = new_capacity;
-    dest_tape.used     = new_used;
-
-    // Close source tape (rent refunded to signer)
+    // Close source (common)
     close_account(source_tape_info, signer_info)?;
 
     Ok(())

@@ -14,28 +14,31 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
-    system_program_info.is_program(&system_program::ID)?;
+    signer_info
+        .is_signer()?;
 
-    // Load tape
-    tape_info
+    system_program_info
+        .is_program(&system_program::ID)?;
+
+    let tape = tape_info
         .is_writable()?
-        .is_type::<Tape>(&tapedrive::ID)?;
-    let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
+        .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     if tape.authority != *signer_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Current epoch gating
+    // Require the tape to be expired
     let epoch = epoch_info
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
+
     let now = current_epoch(epoch);
 
     if now < tape.expiry_epoch {
         return Err(ProgramError::Custom(30)); // not expired
     }
+
     if !tape.used.is_zero() {
         return Err(ProgramError::Custom(31)); // still used
     }
