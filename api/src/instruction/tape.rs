@@ -72,3 +72,97 @@ pub fn build_reserve_tape_ix(
         }.to_bytes(),
     }
 }
+
+pub fn build_split_tape_by_size_ix(
+    signer: Pubkey,
+    recipient: Pubkey,
+    size: StorageUnits,
+) -> Instruction {
+    let (source_tape_address, _) = tape_pda(signer);
+    let (dest_tape_address, _) = tape_pda(recipient);
+
+    let size = size.pack();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(recipient, true),
+
+            AccountMeta::new(source_tape_address, false),
+            AccountMeta::new(dest_tape_address, false),
+
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: SplitTapeBySize { size }.to_bytes(),
+    }
+}
+
+pub fn build_split_tape_by_epoch_ix(
+    signer: Pubkey,
+    recipient: Pubkey,
+    split_epoch: EpochNumber,
+) -> Instruction {
+    let (source_tape_address, _) = tape_pda(signer);
+    let (dest_tape_address, _) = tape_pda(recipient);
+
+    let epoch = split_epoch.pack();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(recipient, true),
+
+            AccountMeta::new(source_tape_address, false),
+            AccountMeta::new(dest_tape_address, false),
+
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: SplitTapeByEpoch { epoch }.to_bytes(),
+    }
+}
+
+pub fn build_merge_tape_ix(
+    signer: Pubkey,
+    recipient: Pubkey,
+) -> Instruction {
+    let (source_tape_address, _) = tape_pda(signer);
+    let (dest_tape_address, _) = tape_pda(recipient);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(recipient, true),
+
+            AccountMeta::new(source_tape_address, false),
+            AccountMeta::new(dest_tape_address, false),
+
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: MergeTape {}.to_bytes(),
+    }
+}
+
+pub fn build_destroy_tape_ix(
+    signer: Pubkey,
+) -> Instruction {
+    let (tape_address, _) = tape_pda(signer);
+    let (epoch_address, _) = epoch_pda();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+
+            AccountMeta::new(tape_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: DestroyTape {}.to_bytes(),
+    }
+}

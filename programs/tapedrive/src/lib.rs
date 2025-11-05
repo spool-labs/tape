@@ -62,6 +62,11 @@ pub fn process_instruction(
 
             // Tape
             TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
+            TapeInstruction::DestroyTape => process_destroy_tape(accounts, data)?,
+            TapeInstruction::SplitTapeByEpoch => process_split_tape_by_epoch(accounts, data)?,
+            TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
+            TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
+
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }
