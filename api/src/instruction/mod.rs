@@ -1,9 +1,5 @@
 use steel::*;
 
-//mod blob;
-//mod committee;
-//mod feature;
-//mod tape;
 mod archive;
 mod epoch;
 mod exchange;
@@ -11,12 +7,10 @@ mod node;
 mod pool;
 mod stake;
 mod system;
+mod tape;
 mod token;
+mod track;
 
-//pub use blob::*;
-//pub use committee::*;
-//pub use feature::*;
-//pub use tape::*;
 pub use archive::*;
 pub use epoch::*;
 pub use exchange::*;
@@ -24,7 +18,9 @@ pub use node::*;
 pub use pool::*;
 pub use stake::*;
 pub use system::*;
+pub use tape::*;
 pub use token::*;
+pub use track::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
@@ -102,16 +98,23 @@ pub enum TapeInstruction {
     VoteOnShardSize,
     VoteOnFeature,
 
-    // Storage
+    // Tape
     ReserveTape,
-    BurnTape,
-    SplitTapeByDuration,
+    DestroyTape,
+    SplitTapeByEpoch,
     SplitTapeBySize,
     MergeTape,
 
+    // Track
+    RegisterTrack,
+    DeleteTrack,
+
+    // Stream
+    AppendStreamSegment,
+    UpdateStreamSegment,
+    FinalizeStream,
+
     // Blob
-    RegisterBlob,
-    DeleteBlob,
     CertifyBlob,
     InvalidateBlob,
 }
@@ -164,11 +167,11 @@ instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, VoteOnShardSize);
 //instruction!(TapeInstruction, VoteOnFeature);
 //
-//instruction!(TapeInstruction, ReserveTape);
-//instruction!(TapeInstruction, BurnTape);
-//instruction!(TapeInstruction, SplitTapeByDuration);
-//instruction!(TapeInstruction, SplitTapeBySize);
-//instruction!(TapeInstruction, MergeTape);
+instruction!(TapeInstruction, ReserveTape);
+instruction!(TapeInstruction, DestroyTape);
+instruction!(TapeInstruction, SplitTapeByEpoch);
+instruction!(TapeInstruction, SplitTapeBySize);
+instruction!(TapeInstruction, MergeTape);
 //
 //instruction!(TapeInstruction, RegisterBlob);
 //instruction!(TapeInstruction, DeleteBlob);

@@ -1,27 +1,31 @@
 use steel::*;
-use crate::pda::*;
-use crate::utils::ata;
 use tape_core::prelude::*;
+use crate::utils::ata;
+use crate::program::tapedrive::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ReserveTape {
     pub storage_units: [u8; 8],
-    pub start_epoch: [u8; 8],
-    pub end_epoch: [u8; 8],
+    pub activation_epoch: [u8; 8],
+    pub expiry_epoch: [u8; 8],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct BurnTape {}
+pub struct DestroyTape {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitTapeByDuration {}
+pub struct SplitTapeByEpoch {
+    pub epoch: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SplitTapeBySize {}
+pub struct SplitTapeBySize {
+    pub size: [u8; 8],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -31,29 +35,29 @@ pub struct MergeTape {}
 pub fn build_reserve_tape_ix(
     signer: Pubkey,
     storage_units: StorageUnits,
-    start_epoch: EpochNumber,
-    end_epoch: EpochNumber,
+    activation_epoch: EpochNumber,
+    expiry_epoch: EpochNumber,
 ) -> Instruction {
 
+    let signer_ata = ata(&signer);
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
     let (archive_ata, _) = archive_ata();
 
     let (tape_address, _) = tape_pda(signer);
-    let signer_ata = ata(&signer);
 
     let storage_units = storage_units.pack();
-    let start_epoch = start_epoch.pack();
-    let end_epoch = end_epoch.pack();
+    let activation_epoch = activation_epoch.pack();
+    let expiry_epoch = expiry_epoch.pack();
 
     Instruction {
-        program_id: crate::ID,
+        program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(signer_ata, false),
-            AccountMeta::new(tape_address, false),
 
-            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(tape_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(archive_ata, false),
 
@@ -63,8 +67,8 @@ pub fn build_reserve_tape_ix(
         ],
         data: ReserveTape {
             storage_units,
-            start_epoch,
-            end_epoch,
+            activation_epoch,
+            expiry_epoch,
         }.to_bytes(),
     }
 }

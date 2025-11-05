@@ -1,29 +1,23 @@
 #![allow(unexpected_cfgs)]
 
-pub mod error;
 pub mod archive;
-//pub mod blob;
-//pub mod committee;
 pub mod epoch;
-//pub mod exchange;
+pub mod error;
 pub mod node;
 pub mod staking;
 pub mod system;
-//pub mod tape;
+pub mod tape;
 
 use archive::*;
-//use blob::*;
-//use committee::*;
 use epoch::*;
-//use exchange::*;
 use node::*;
 use staking::*;
 use system::*;
-//use tape::*;
+use tape::*;
 
+use steel::*;
 use tape_api::prelude::*;
 use tape_api::program::tapedrive;
-use steel::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,
@@ -65,6 +59,9 @@ pub fn process_instruction(
             TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,
             TapeInstruction::MergePoolStake => process_merge_pool_stake(accounts, data)?,
             TapeInstruction::SplitPoolStake => process_split_pool_stake(accounts, data)?,
+
+            // Tape
+            TapeInstruction::ReserveTape => process_reserve_tape(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

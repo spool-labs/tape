@@ -6,6 +6,7 @@ pub mod apportion;
 pub mod staking;
 pub mod system;
 pub mod types;
+pub mod tape;
 mod macros;
 
 pub mod prelude {
@@ -15,6 +16,7 @@ pub mod prelude {
     pub use crate::staking::*;
     pub use crate::system::*;
     pub use crate::types::*;
+    pub use crate::tape::*;
 
     pub use tape_crypto::*;
     pub use tape_crypto::hash::Hash;

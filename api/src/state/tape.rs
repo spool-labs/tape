@@ -6,7 +6,7 @@ use crate::state;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Tape {
-    /// The authority that owns this resource.
+    /// The authority that owns this tape.
     pub authority: Pubkey,
 
     /// The amount of storage reserved.
@@ -21,8 +21,14 @@ pub struct Tape {
     /// The epoch when this resource expires.
     pub expiry_epoch: EpochNumber,
 
-    /// The count of blobs stored in this resource.
-    pub total_blobs: u64,
+    /// The slot of the first track on this tape.
+    pub first_track: SlotNumber,
+
+    /// The slot of the last track of this tape.
+    pub last_track: SlotNumber,
+
+    /// The count of tracks on this tape.
+    pub total_tracks: u64,
 }
 
 state!(AccountType, Tape);

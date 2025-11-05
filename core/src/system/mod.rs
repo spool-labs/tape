@@ -1,6 +1,5 @@
 mod accounting;
 mod blacklist;
-mod blob;
 mod committee;
 mod epoch;
 mod exchange;
@@ -10,7 +9,6 @@ mod utils;
 
 pub use accounting::*;
 pub use blacklist::*;
-pub use blob::*;
 pub use committee::*;
 pub use epoch::*;
 pub use exchange::*;
