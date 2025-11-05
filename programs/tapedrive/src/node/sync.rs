@@ -1,5 +1,4 @@
 use tape_api::prelude::*;
-
 use steel::*;
 
 pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -13,7 +12,8 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
+    signer_info
+        .is_signer()?;
 
     let system = system_info
         .is_system()?
@@ -26,8 +26,11 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     let node = node_info
         .is_writable()?
-        .as_account_mut::<Node>(&tapedrive::ID)?
-        .assert_mut(|n| n.authority.eq(signer_info.key))?;
+        .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    if node.authority != *signer_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     if !epoch.state.is_syncing() {
         return Err(ProgramError::Custom(1));
@@ -69,7 +72,10 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let weight = seats.len() as u64;
     let total = SEAT_COUNT as u64;
 
-    epoch.state.add_weight(weight, total);
+    // Attest our weight for this epoch sync
+    epoch.state
+        .add_weight(weight, total);
+
     node.latest_epoch = current_epoch(epoch);
 
     Ok(())

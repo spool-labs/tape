@@ -54,7 +54,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee = system.committee_next;
 
     // Update future accounting
-    let epoch_usage = archive.schedule.advance_epoch();
+    let epoch_usage = archive.schedule
+        .advance_epoch();
 
     // Carry-over dust from last epoch
     let leftover = archive.rewards_pool
