@@ -58,13 +58,11 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::Custom(20));
     };
 
-    // Apply common result
     dest_tape.active_epoch = new_active_epoch;
     dest_tape.expiry_epoch = new_expiry_epoch;
     dest_tape.capacity     = new_capacity;
     dest_tape.used         = new_used;
 
-    // Close source (common)
     close_account(source_tape_info, signer_info)?;
 
     Ok(())
@@ -116,7 +114,7 @@ mod tests {
             system_program(),
         ];
 
-        let expected_dest = Tape {
+        let expected = Tape {
             authority: recipient,
             capacity: StorageUnits(300),
             used: StorageUnits(50),
@@ -131,8 +129,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&dest_tape_address).data(expected_dest.pack().as_ref()).build(),
-                Check::account(&source_tape_address).lamports(0).closed().build(),
+                Check::account(&dest_tape_address)
+                    .data(expected.pack().as_ref()).build(),
+                Check::account(&source_tape_address)
+                    .lamports(0).closed().build(),
             ],
         );
     }

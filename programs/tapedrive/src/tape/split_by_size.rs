@@ -144,8 +144,10 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&dest_tape_address).data(expected_dest.pack().as_ref()).build(),
-                Check::account(&source_tape_address).data(expected_source.pack().as_ref()).build(),
+                Check::account(&dest_tape_address)
+                    .data(expected_dest.pack().as_ref()).build(),
+                Check::account(&source_tape_address)
+                    .data(expected_source.pack().as_ref()).build(),
             ],
         );
     }
