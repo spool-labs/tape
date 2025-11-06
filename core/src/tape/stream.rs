@@ -33,3 +33,14 @@ pub struct StreamData<const H: usize> {
 unsafe impl<const H: usize> Zeroable for StreamData<H> {}
 unsafe impl<const H: usize> Pod for StreamData<H> {}
 
+impl<const H: usize> StreamData<H> {
+    #[inline]
+    pub const fn size() -> usize {
+        core::mem::size_of::<StreamData::<{H}>>()
+    }
+
+    #[inline]
+    pub fn get_state(&self) -> StreamState {
+        StreamState::try_from(self.state).unwrap_or(StreamState::Unknown)
+    }
+}

@@ -62,3 +62,83 @@ impl AccountInfoHelper for AccountInfo<'_> {
         Ok(self)
     }
 }
+
+pub trait FromAccountSlice {
+    fn from_slice<T>(
+        &self,
+        program_id: &Pubkey,
+        offset: usize,
+        len: usize,
+    ) -> Result<&T, ProgramError>
+    where
+        T: AccountDeserialize + Pod;
+
+    fn from_slice_mut<T>(
+        &self,
+        program_id: &Pubkey,
+        offset: usize,
+        len: usize,
+    ) -> Result<&mut T, ProgramError>
+    where
+        T: AccountDeserialize + Pod;
+}
+
+impl FromAccountSlice for AccountInfo<'_> {
+    #[track_caller]
+    fn from_slice<T>(
+        &self,
+        program_id: &Pubkey,
+        offset: usize,
+        len: usize,
+    ) -> Result<&T, ProgramError>
+    where
+        T: AccountDeserialize + Pod,
+    {
+        unsafe {
+            // Validate account owner.
+            self.has_owner(program_id)?;
+
+            // Skip discriminator
+            let offset = offset + 8; 
+
+            // Get account data
+            let data = self.try_borrow_data()?;
+            let slice = core::slice::from_raw_parts(
+                data.as_ptr().add(offset), len);
+
+            // Try into desired type
+            bytemuck::try_from_bytes::<T>(slice).or(Err(
+                ProgramError::InvalidAccountData
+            ))
+        }
+    }
+
+    #[track_caller]
+    fn from_slice_mut<T>(
+        &self,
+        program_id: &Pubkey,
+        offset: usize,
+        len: usize,
+    ) -> Result<&mut T, ProgramError>
+    where
+        T: AccountDeserialize + Pod,
+    {
+        unsafe {
+            // Validate account owner.
+            self.has_owner(program_id)?;
+
+            // Skip discriminator
+            let offset = offset + 8; 
+
+            // Get account data
+            let mut data = self.try_borrow_mut_data()?;
+            let slice = core::slice::from_raw_parts_mut(
+                data.as_mut_ptr().add(offset), len);
+
+            // Try into desired type
+            bytemuck::try_from_bytes_mut::<T>(slice).or(Err(
+                ProgramError::InvalidAccountData
+            ))
+        }
+    }
+}

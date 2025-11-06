@@ -21,12 +21,6 @@ pub struct Tape {
     /// The epoch when this resource expires.
     pub expiry_epoch: EpochNumber,
 
-    /// The slot of the first track on this tape.
-    pub first_track: SlotNumber,
-
-    /// The slot of the last track of this tape.
-    pub last_track: SlotNumber,
-
     /// The count of tracks on this tape.
     pub total_tracks: u64,
 }

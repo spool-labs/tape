@@ -34,4 +34,14 @@ pub struct BlobData {
     pub num_data: u64,
 }
 
+impl BlobData {
+    #[inline]
+    pub const fn size() -> usize {
+        core::mem::size_of::<BlobData>()
+    }
 
+    #[inline]
+    pub fn get_state(&self) -> BlobState {
+        BlobState::try_from(self.state).unwrap_or(BlobState::Unknown)
+    }
+}

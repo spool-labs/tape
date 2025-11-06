@@ -7,6 +7,7 @@ pub mod node;
 pub mod staking;
 pub mod system;
 pub mod tape;
+pub mod track;
 
 use archive::*;
 use epoch::*;
@@ -14,6 +15,7 @@ use node::*;
 use staking::*;
 use system::*;
 use tape::*;
+use track::*;
 
 use steel::*;
 use tape_api::prelude::*;
@@ -67,6 +69,8 @@ pub fn process_instruction(
             TapeInstruction::SplitTapeBySize => process_split_tape_by_size(accounts, data)?,
             TapeInstruction::MergeTape => process_merge_tape(accounts, data)?,
 
+            // Track
+            TapeInstruction::RegisterTrack => process_register_track(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

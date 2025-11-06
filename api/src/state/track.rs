@@ -10,8 +10,8 @@ pub struct Track {
     /// The tape this track is stored on.
     pub tape: Pubkey,
 
-    /// The track number.
-    pub number: TrackNumber,
+    /// The track key.
+    pub key: Hash,
 
     /// The track kind.
     pub kind: u64,
@@ -19,11 +19,11 @@ pub struct Track {
     /// The size of the track in bytes.
     pub size: StorageUnits,
 
-    /// The merkle root of the raw data.
+    /// The merkle root of the track data.
     pub root: Hash,
 
-    /// Track metadata, either of StreamData or BlobData size.
-    pub data: PhantomData<[u8]>,
+    /// Track data.
+    pub data: BlobData,
 }
 
 

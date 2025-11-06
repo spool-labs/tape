@@ -23,7 +23,7 @@ pub const ARCHIVE:   &[u8] = b"archive";
 pub const EPOCH:     &[u8] = b"epoch";
 pub const NODE:      &[u8] = b"node";
 pub const RESOURCE:  &[u8] = b"resource";
-pub const BLOB:      &[u8] = b"blob";
+pub const TRACK:     &[u8] = b"track";
 pub const STAKE:     &[u8] = b"stake";
 
 pub const SYSTEM_ADDRESS: Pubkey =
@@ -137,8 +137,8 @@ pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn blob_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[BLOB, authority.as_ref(), hash.as_ref()], &id())
+pub fn track_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[TRACK, authority.as_ref(), hash.as_ref()], &id())
 }
 
 #[inline(always)]

@@ -172,7 +172,10 @@ instruction!(TapeInstruction, DestroyTape);
 instruction!(TapeInstruction, SplitTapeByEpoch);
 instruction!(TapeInstruction, SplitTapeBySize);
 instruction!(TapeInstruction, MergeTape);
-//
+
+instruction!(TapeInstruction, RegisterTrack);
+instruction!(TapeInstruction, DeleteTrack);
+
 //instruction!(TapeInstruction, RegisterBlob);
 //instruction!(TapeInstruction, DeleteBlob);
 //instruction!(TapeInstruction, CertifyBlob);
