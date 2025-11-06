@@ -14,21 +14,19 @@ pub struct RegisterTrack {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct DeleteTrack {
-    pub id: Hash,
+pub struct DeleteTrack {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CertifyTrack {
+    pub bitmap: [u8; (MEMBER_COUNT+7) / 8],
+    pub signature: BlsSignature,
 }
 
-// Blob
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct CertifyBlob {}
+pub struct InvalidateTrack {}
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct InvalidateBlob {}
-
-// Stream
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -103,8 +101,35 @@ pub fn build_delete_track_ix(
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
-        data: DeleteTrack {
-            id,
+        data: DeleteTrack {}.to_bytes(),
+    }
+}
+
+pub fn build_certify_track_ix(
+    signer: Pubkey,
+    id: Hash,
+    bitmap: [u8; (MEMBER_COUNT+7) / 8],
+    signature: BlsSignature,
+) -> Instruction {
+
+    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
+    let (tape_address, _) = tape_pda(signer);
+    let (track_address, _) = track_pda(signer, id);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+
+            AccountMeta::new(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(tape_address, false),
+            AccountMeta::new(track_address, false),
+        ],
+        data: CertifyTrack {
+            bitmap,
+            signature,
         }.to_bytes(),
     }
 }

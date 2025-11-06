@@ -2,7 +2,7 @@ use tape_api::prelude::*;
 use steel::*;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let args = DeleteTrack::try_from_bytes(data)?;
+    let _args = DeleteTrack::try_from_bytes(data)?;
     let [
         signer_info,
 
@@ -15,36 +15,36 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
+    signer_info
+        .is_signer()?;
 
     system_program_info.is_program(&system_program::ID)?;
     rent_info.is_sysvar(&sysvar::rent::ID)?;
 
-    let (tape_address, _) = tape_pda(*signer_info.key);
-    let (track_address, _) = track_pda(*signer_info.key, args.id);
-
     let tape = tape_info
         .is_writable()?
-        .has_address(&tape_address)?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     let track = track_info
         .is_writable()?
-        .has_address(&track_address)?
-        .as_account::<Track>(&tapedrive::ID)?;
+        .as_account_mut::<Track>(&tapedrive::ID)?;
 
-    // Authority check
+    let (tape_address, _) = tape_pda(tape.authority);
+    let (track_address, _) = track_pda(tape.authority, track.key);
+
     if tape.authority != *signer_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Ensure track belongs to this tape
-    if track.tape != tape_address {
+    if tape_address != *tape_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Ensure track id matches
-    if track.key != args.id {
+    if track_address != *track_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if track.tape != tape_address {
         return Err(ProgramError::InvalidAccountData);
     }
 

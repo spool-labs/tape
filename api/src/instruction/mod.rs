@@ -108,15 +108,13 @@ pub enum TapeInstruction {
     // Track
     RegisterTrack,
     DeleteTrack,
+    CertifyTrack,
+    InvalidateTrack,
 
     // Stream
     AppendStreamSegment,
     UpdateStreamSegment,
     FinalizeStream,
-
-    // Blob
-    CertifyBlob,
-    InvalidateBlob,
 }
 
 
@@ -175,6 +173,8 @@ instruction!(TapeInstruction, MergeTape);
 
 instruction!(TapeInstruction, RegisterTrack);
 instruction!(TapeInstruction, DeleteTrack);
+instruction!(TapeInstruction, CertifyTrack);
+instruction!(TapeInstruction, InvalidateTrack);
 
 //instruction!(TapeInstruction, RegisterBlob);
 //instruction!(TapeInstruction, DeleteBlob);
