@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use bytemuck::{Pod, Zeroable};
 
 pub const HASH_BYTES: usize = 32;
@@ -33,6 +35,11 @@ impl Hash {
         Hash {
             value: <[u8; HASH_BYTES]>::try_from(hash_slice).unwrap(),
         }
+    }
+
+    #[cfg(not(target_os = "solana"))]
+    pub fn new_unique() -> Self {
+        solana_program::pubkey::Pubkey::new_unique().to_bytes().into()
     }
 
     pub const fn new_from_array(hash_array: [u8; HASH_BYTES]) -> Self {

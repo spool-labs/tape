@@ -1,14 +1,17 @@
-use core::num::NonZeroU64;
 
 /// Returns the BFT tolerance bound floor((n − 1)/3) for a non-zero participant count.
-pub fn max_faulty(total: NonZeroU64) -> u64 {
-    let n = total.get();
+pub const fn max_faulty(total: u64) -> u64 {
+    debug_assert!(total > 0);
+
+    let n = total;
     (n - 1) / 3
 }
 
 /// Returns the minimum number of correct participants, computed as n minus floor((n − 1)/3).
-pub fn min_correct(total: NonZeroU64) -> u64 {
-    let n = total.get();
+pub const fn min_correct(total: u64) -> u64 {
+    debug_assert!(total > 0);
+
+    let n = total;
     let f = max_faulty(total);
     let result = n - f;
     debug_assert!(result > 0, "result must be non-zero");
@@ -16,7 +19,7 @@ pub fn min_correct(total: NonZeroU64) -> u64 {
 }
 
 /// Returns true when weight is at least two thirds of total.
-pub fn is_supermajority(weight: u64, total: u64) -> bool {
+pub const fn is_supermajority(weight: u64, total: u64) -> bool {
     3 * weight >= 2 * total + 1
 }
 
@@ -25,14 +28,16 @@ pub fn is_supermajority(weight: u64, total: u64) -> bool {
 ///
 /// Input is (value, weight). 
 /// Returns highest value such that a quorum voted >= this.
-pub fn quorum_above(pairs: &[(u64, u64)], total: NonZeroU64) -> u64 {
+pub fn quorum_above(pairs: &[(u64, u64)], total: u64) -> u64 {
+    debug_assert!(total > 0);
+
     let mut items: Vec<(u64, u64)> = pairs.to_vec();
     items.sort_by(|a, b| b.0.cmp(&a.0)); // descending by value
 
     let mut sum: u64 = 0;
     for (value, weight) in items {
         sum = sum.saturating_add(weight as u64);
-        if is_supermajority(sum, total.get()) {
+        if is_supermajority(sum, total) {
             return value;
         }
     }
@@ -44,14 +49,16 @@ pub fn quorum_above(pairs: &[(u64, u64)], total: NonZeroU64) -> u64 {
 ///
 /// Input is (value, weight).
 /// Returns lowest value such that a quorum voted < this.
-pub fn quorum_below(pairs: &[(u64, u64)], total: NonZeroU64) -> u64 {
+pub fn quorum_below(pairs: &[(u64, u64)], total: u64) -> u64 {
+    debug_assert!(total > 0);
+
     let mut items: Vec<(u64, u64)> = pairs.to_vec();
     items.sort_by(|a, b| b.0.cmp(&a.0)); // descending by value
 
-    let mut sum: u64 = total.get();
+    let mut sum: u64 = total;
     for (value, weight) in items {
         sum = sum.saturating_sub(weight as u64);
-        if !is_supermajority(sum, total.get()) {
+        if !is_supermajority(sum, total) {
             return value;
         }
     }
@@ -61,18 +68,12 @@ pub fn quorum_below(pairs: &[(u64, u64)], total: NonZeroU64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::num::NonZeroU64;
-
-    fn nz(n: u64) -> NonZeroU64 {
-        NonZeroU64::new(n).unwrap()
-    }
 
     #[test]
     fn bft_bounds() {
-        for n in 1..=200u64 {
-            let t = nz(n);
-            let f = max_faulty(t);
-            let m = min_correct(t);
+        for n in 1..=100u64 {
+            let f = max_faulty(n);
+            let m = min_correct(n);
 
             assert_eq!(f, (n - 1) / 3);
             assert_eq!(m, n - f);
@@ -97,63 +98,52 @@ mod tests {
 
     #[test]
     fn high_pass() {
-        let t = nz(10);
         let ps = vec![(10, 2), (20, 3), (15, 1), (8, 4)];
-        assert_eq!(quorum_above(&ps, t), 8);
+        assert_eq!(quorum_above(&ps, 10), 8);
 
-        let t2 = nz(9);
         let ps2 = vec![(30, 5), (20, 2), (10, 2)];
-        assert_eq!(quorum_above(&ps2, t2), 20);
+        assert_eq!(quorum_above(&ps2, 9), 20);
 
-        let t3 = nz(10);
         let ps3 = vec![(100, 2), (50, 2), (25, 2)];
-        assert_eq!(quorum_above(&ps3, t3), 0);
+        assert_eq!(quorum_above(&ps3, 10), 0);
 
-        let t4 = nz(10);
         let empty: Vec<(u64, u64)> = vec![];
-        assert_eq!(quorum_above(&empty, t4), 0);
+        assert_eq!(quorum_above(&empty, 10), 0);
     }
 
     #[test]
     fn low_fail() {
-        let t = nz(10);
         let ps = vec![(10, 2), (20, 3), (15, 1), (8, 4)];
-        assert_eq!(quorum_below(&ps, t), 15);
+        assert_eq!(quorum_below(&ps, 10), 15);
 
-        let t2 = nz(10);
         let ps2 = vec![(100, 4), (50, 3), (25, 3)];
-        assert_eq!(quorum_below(&ps2, t2), 100);
+        assert_eq!(quorum_below(&ps2, 10), 100);
 
-        let t3 = nz(10);
         let ps3 = vec![(100, 1), (50, 1)];
-        assert_eq!(quorum_below(&ps3, t3), 0);
+        assert_eq!(quorum_below(&ps3, 10), 0);
 
-        let t4 = nz(7);
         let empty: Vec<(u64, u64)> = vec![];
-        assert_eq!(quorum_below(&empty, t4), 0);
+        assert_eq!(quorum_below(&empty, 7), 0);
     }
 
     #[test]
     fn sat_sub() {
-        let t = nz(10);
         let ps = vec![(999, 12)];
-        assert_eq!(quorum_below(&ps, t), 999);
+        assert_eq!(quorum_below(&ps, 10), 999);
     }
 
     #[test]
     fn sort_order() {
-        let t = nz(7);
         let ps = vec![(5, 1), (8, 2), (7, 1), (9, 2), (7, 1)];
-        assert_eq!(quorum_above(&ps, t), 7);
-        assert_eq!(quorum_below(&ps, t), 8);
+        assert_eq!(quorum_above(&ps, 7), 7);
+        assert_eq!(quorum_below(&ps, 7), 8);
     }
 
     #[test]
     fn hp_lf_rel() {
-        let t = nz(10);
         let ps = vec![(10, 2), (20, 3), (15, 1), (8, 4)];
-        let hp = quorum_above(&ps, t);
-        let lf = quorum_below(&ps, t);
+        let hp = quorum_above(&ps, 10);
+        let lf = quorum_below(&ps, 10);
         assert!(hp > 0);
         assert!(lf > 0);
         assert!(lf >= hp);

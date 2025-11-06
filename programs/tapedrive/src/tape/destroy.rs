@@ -89,7 +89,13 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&tape_address).lamports(0).closed().build(),
+                Check::account(&signer)
+                    .lamports(1_000_000_000 + rent(Tape::get_size()))
+                    .build(),
+                Check::account(&tape_address)
+                    .lamports(0)
+                    .closed()
+                    .build(),
             ],
         );
     }

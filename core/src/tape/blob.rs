@@ -1,47 +1,156 @@
-use bytemuck::{ Pod, Zeroable };
-use num_enum::{ IntoPrimitive, TryFromPrimitive };
+use bytemuck::{Pod, Zeroable};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tape_crypto::hash::Hash;
 use crate::types::EpochNumber;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum BlobState {
-    Unknown = 0,
-    Registered,   // Data is being synced to the network
-    Certified,    // The blob is certified and available
-    Invalidated,  // The network has found an inconsistency with the blob
+pub enum BlobPhase {
+    Registered = 0,
+    Certified,
+    Invalidated,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct BlobState {
+    /// Current phase of the blob
+    pub phase: u64,
+
+    /// Epoch when certification happened (0 if not certified yet)
+    pub certified_epoch: EpochNumber,
+}
+
+impl BlobState {
+    pub const fn new() -> Self {
+        Self {
+            phase: BlobPhase::Registered as u64,
+            certified_epoch: EpochNumber::zero(),
+        }
+    }
+
+    #[inline]
+    fn phase_enum(&self) -> Option<BlobPhase> {
+        BlobPhase::try_from(self.phase).ok()
+    }
+
+    #[inline]
+    fn set_phase(&mut self, p: BlobPhase) {
+        self.phase = p.into();
+    }
+
+    // --- Phase checks ---
+    pub fn is_registered(&self) -> bool {
+        matches!(self.phase_enum(), Some(BlobPhase::Registered))
+    }
+
+    pub fn is_certified(&self) -> bool {
+        matches!(self.phase_enum(), Some(BlobPhase::Certified))
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        matches!(self.phase_enum(), Some(BlobPhase::Invalidated))
+    }
+
+    // --- Certified epoch access ---
+    pub fn certified_epoch(&self) -> Option<EpochNumber> {
+        match self.phase_enum() {
+            Some(BlobPhase::Certified) => {
+                if self.certified_epoch.is_zero() {
+                    None
+                } else {
+                    Some(self.certified_epoch)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    // --- State transitions ---
+    pub fn set_registered(&mut self) -> &mut Self {
+        self.set_phase(BlobPhase::Registered);
+        self.certified_epoch = EpochNumber::zero();
+        self
+    }
+
+    pub fn set_certified(&mut self, epoch: EpochNumber) -> &mut Self {
+        assert!(self.is_registered(), "can only certify from Registered phase");
+        self.set_phase(BlobPhase::Certified);
+        self.certified_epoch = epoch;
+        self
+    }
+
+    pub fn set_invalidated(&mut self) -> &mut Self {
+        self.set_phase(BlobPhase::Invalidated);
+        self.certified_epoch = EpochNumber::zero();
+        self
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct BlobData {
-    /// The state of this blob.
-    pub state: u64,
+    /// Full state machine for the blob
+    pub state: BlobState,
 
-    /// The epoch when this blob was registered.
+    /// Epoch when this blob was first registered
     pub registered_epoch: EpochNumber,
 
-    /// The epoch when this blob was certified.
-    pub certified_epoch: EpochNumber,
-
-    /// The merkle root of the erasure coded data.
+    /// Merkle root of the erasure coded data
     pub commitment_hash: Hash,
 
-    /// The number of parity segments.
+    /// Number of parity segments
     pub num_parity: u64,
 
-    /// The number of data segments.
+    /// Number of data segments
     pub num_data: u64,
 }
 
 impl BlobData {
-    #[inline]
-    pub const fn size() -> usize {
-        core::mem::size_of::<BlobData>()
+    pub const fn new(
+        registered_epoch: EpochNumber,
+        commitment_hash: Hash,
+        num_parity: u64,
+        num_data: u64,
+    ) -> Self {
+        Self {
+            state: BlobState::new(),
+            registered_epoch,
+            commitment_hash,
+            num_parity,
+            num_data,
+        }
     }
 
-    #[inline]
-    pub fn get_state(&self) -> BlobState {
-        BlobState::try_from(self.state).unwrap_or(BlobState::Unknown)
+    pub fn is_registered(&self) -> bool {
+        self.state.is_registered()
+    }
+
+    pub fn is_certified(&self) -> bool {
+        self.state.is_certified()
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        self.state.is_invalidated()
+    }
+
+    pub fn certified_epoch(&self) -> Option<EpochNumber> {
+        self.state.certified_epoch()
+    }
+
+    pub fn set_registered(&mut self, epoch: EpochNumber) -> &mut Self {
+        self.registered_epoch = epoch;
+        self.state.set_registered();
+        self
+    }
+
+    pub fn set_certified(&mut self, epoch: EpochNumber) -> &mut Self {
+        self.state.set_certified(epoch);
+        self
+    }
+
+    pub fn set_invalidated(&mut self) -> &mut Self {
+        self.state.set_invalidated();
+        self
     }
 }

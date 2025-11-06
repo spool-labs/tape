@@ -1,5 +1,4 @@
 use steel::*;
-use core::marker::PhantomData;
 use tape_core::prelude::*;
 use super::AccountType;
 use crate::state;
@@ -12,9 +11,6 @@ pub struct Track {
 
     /// The track key.
     pub key: Hash,
-
-    /// The track kind.
-    pub kind: u64,
 
     /// The size of the track in bytes.
     pub size: StorageUnits,

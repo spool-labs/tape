@@ -71,6 +71,7 @@ pub fn process_instruction(
 
             // Track
             TapeInstruction::RegisterTrack => process_register_track(accounts, data)?,
+            TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

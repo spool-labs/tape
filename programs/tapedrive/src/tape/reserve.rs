@@ -28,23 +28,25 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
+    token_program_info
+        .is_program(&spl_token::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
+    rent_info
+        .is_sysvar(&sysvar::rent::ID)?;
+
     let epoch = epoch_info
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
-    let (archive_address, _) = archive_pda();
-    let (archive_ata_address, _) = archive_ata();
-
     let archive = archive_info
         .is_writable()?
-        .has_address(&archive_address)?
+        .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
     archive_ata_info
         .is_writable()?
-        .has_address(&archive_ata_address)?
-        .as_token_account()?
-        .assert(|t| t.mint() == MINT_ADDRESS)?;
+        .is_archive_ata()?;
 
     let (tape_address, _)  = tape_pda(*signer_info.key);
 
@@ -52,13 +54,6 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_empty()?
         .is_writable()?
         .has_address(&tape_address)?;
-
-    token_program_info
-        .is_program(&spl_token::ID)?;
-    system_program_info
-        .is_program(&system_program::ID)?;
-    rent_info
-        .is_sysvar(&sysvar::rent::ID)?;
 
     let start_epoch = EpochNumber::unpack(args.activation_epoch);
     let end_epoch = EpochNumber::unpack(args.expiry_epoch);
