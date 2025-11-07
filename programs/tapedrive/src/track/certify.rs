@@ -52,21 +52,17 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    solana_program::log::sol_log_compute_units();
-    //let weight : usize = indices.iter()
-    //    .map(|&i| system.seats.seats_for_member(i).len())
-    //    .sum();
+    let mut weight : u64 = 0;
+    for &i in system.seats.iter() {
+        if args.bitmap.is_set(i as usize) {
+            weight += 1;
+        }
+    }
 
-    let weight : usize = system.seats
-        .iter()
-        .map(|member_index| args.bitmap.is_set(*member_index as usize).then(|| 1usize).unwrap_or(0))
-        .sum();
-
-    solana_program::log::msg!("weight: {} / {}", weight, SEAT_COUNT);
-    if !is_supermajority(weight as u64, SEAT_COUNT as u64) {
+    if !is_supermajority(weight, SEAT_COUNT as u64) {
+        solana_program::msg!("Insufficient weight: {} / {} for supermajority", weight, SEAT_COUNT);
         return Err(ProgramError::Custom(0));
     }
-    solana_program::log::sol_log_compute_units();
 
     let committee_size = system.committee.size();
     let indices = args.bitmap.indices(committee_size);
@@ -116,10 +112,10 @@ mod tests {
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        const COMMITTEE_SIZE: usize = 128;
-        const SIGNERS: usize = 85;
+        const SIGNERS: usize = 75;
 
-        let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..COMMITTEE_SIZE)
+        // Generate keypairs
+        let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..MEMBER_COUNT)
             .map(|_| {
                 let sk = BlsPrivateKey::from_random();
                 let pk = sk.public_key().unwrap();
@@ -127,36 +123,23 @@ mod tests {
             })
             .collect();
 
-        // Create bitmap for signers
-        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
-        let bitmap = CommitteeBitmap::from_indices(&signed_indices, COMMITTEE_SIZE);
-
-        // Create aggregate signature
-        let message = track_address.as_ref();
-        let partials: Vec<BlsSignature> = signed_indices
-            .iter()
-            .map(|&i| committee[i].0.sign(message).unwrap())
-            .collect();
-
-        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
-
-        // On-chain committee
+        // Build on-chain committee and seats (this may reorder members)
         let mut system = System::zeroed();
         system.committee = Committee::from_members(
+            // Will be reordered to stake order
             &committee
                 .iter()
                 .enumerate()
                 .map(|(i, (_, pk))| CommitteeMember {
                     id: NodeId::from(i as u64),
-                    //stake: TAPE(1_000 + i as u64),
-                    stake: TAPE(1_000),
+                    stake: TAPE(1_000 * (i * i) as u64), // non-linear stake distribution
                     key: *pk,
                     blacklist: StorageUnits(0),
                 })
                 .collect::<Vec<_>>(),
         );
 
-        // Allocate seats
+        // Allocate seats based on stake
         let stakes = system.committee.active_stakes();
         let seat_counts = dhondt_allocate(
             &stakes, 
@@ -165,8 +148,20 @@ mod tests {
         system.seats = Seats::try_from_counts(&seat_counts)
             .expect("seats from counts");
 
+        //println!("Committee members and stakes:");
+        //for (i, member) in system.committee.members.iter().enumerate() {
+        //    let seats_for_member = system.seats.seats_for_member(i);
+        //    println!(
+        //        "Member {}: stake = {}, seats = {:?}",
+        //        i,
+        //        member.stake.0,
+        //        seats_for_member,
+        //    );
+        //}
+
+        // Accounts/state
         let tape = Tape {
-            authority: signer, 
+            authority: signer,
             ..Tape::zeroed()
         };
 
@@ -181,12 +176,40 @@ mod tests {
             ..Epoch::zeroed()
         };
 
+        // Build bitmap and aggregate signature using the on-chain committee order
+        let committee_size = system.committee.size();
+        assert!(SIGNERS <= committee_size);
+
+        // Choose the first SIGNERS in the on-chain order. If the committee is sorted by stake,
+        // this picks the highest-stake members, which helps pass the seat-weighted supermajority.
+        let mut signed_indices: Vec<usize> = (0..SIGNERS).collect();
+        signed_indices[0] = MEMBER_COUNT - 1; // non-trivial ordering
+        let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
+
+        // Aggregate signature for the same post-order members
+        let message = track_address.as_ref();
+        let partials: Vec<BlsSignature> = signed_indices
+            .iter()
+            .map(|&i| {
+                // Find the SK whose PK matches the on-chain member at index i
+                let member_pk = system.committee.members[i].key;
+                let sk = committee
+                    .iter()
+                    .find(|(_, pk)| *pk == member_pk)
+                    .expect("matching sk for pk").0
+                    .clone();
+                sk.sign(message).unwrap()
+            })
+            .collect();
+
+        let agg_sig = BlsSignature::aggregate(&partials).unwrap();
+
+        // Instruction and accounts
         let instruction = build_certify_track_ix(
             signer, bucket_hash, bitmap, agg_sig);
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
-
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
@@ -209,8 +232,11 @@ mod tests {
                             ..track.data
                         },
                         ..track
-                    }.pack().as_ref()
-                ).build(),
+                    }
+                    .pack()
+                    .as_ref(),
+                )
+                .build(),
             ],
         );
     }

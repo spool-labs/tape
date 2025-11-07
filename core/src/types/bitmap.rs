@@ -40,16 +40,26 @@ impl<const BYTES: usize> Bitmap<BYTES> {
         (self.0[byte_idx] >> bit_idx) & 1 == 1
     }
 
+    /// Clears the bit at the given index.
+    pub fn clear(&mut self, index: usize) {
+        assert!(index < BYTES * 8, "index out of range");
+        let byte_idx = index / 8;
+        let bit_idx = index % 8;
+        self.0[byte_idx] &= !(1u8 << bit_idx);
+    }
+
     /// Returns the number of set bits in the bitmap.
     pub fn count_ones(&self) -> usize {
         self.0.iter().map(|&b| b.count_ones() as usize).sum()
     }
 }
 
+/// Returns the number of bytes needed to store n bits.
 pub const fn bytes_for_members(n: usize) -> usize {
     (n + 7) / 8
 }
 
+/// Returns the indices of set bits in the given bitmap up to n bits.
 pub fn bitmap_indices(bitmap: &[u8], n: usize) -> Vec<usize> {
     assert!(n <= bitmap.len() * 8, "bitmap too small for n");
     let mut out = Vec::with_capacity(bitmap.len() * 4);
@@ -65,6 +75,7 @@ pub fn bitmap_indices(bitmap: &[u8], n: usize) -> Vec<usize> {
     out
 }
 
+/// Creates a bitmap from a list of indices for n bits.
 pub fn indices_to_bitmap(indices: &[usize], n: usize) -> Vec<u8> {
     let byte_len = (n + 7) / 8;
     let mut bitmap = vec![0u8; byte_len];
