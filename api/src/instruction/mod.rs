@@ -6,6 +6,7 @@ mod exchange;
 mod node;
 mod pool;
 mod stake;
+mod stream;
 mod system;
 mod tape;
 mod token;
@@ -17,6 +18,7 @@ pub use exchange::*;
 pub use node::*;
 pub use pool::*;
 pub use stake::*;
+pub use stream::*;
 pub use system::*;
 pub use tape::*;
 pub use token::*;
@@ -112,8 +114,11 @@ pub enum TapeInstruction {
     InvalidateTrack,
 
     // Stream
-    AppendStreamSegment,
-    UpdateStreamSegment,
+    CreateStream,
+    RegisterStream,
+    DeleteStream,
+    AppendToStream,
+    UpdateStream,
     FinalizeStream,
 }
 
@@ -164,7 +169,7 @@ instruction!(TapeInstruction, JoinNetwork);
 //instruction!(TapeInstruction, VoteOnStoragePrice);
 //instruction!(TapeInstruction, VoteOnShardSize);
 //instruction!(TapeInstruction, VoteOnFeature);
-//
+
 instruction!(TapeInstruction, ReserveTape);
 instruction!(TapeInstruction, DestroyTape);
 instruction!(TapeInstruction, SplitTapeByEpoch);
@@ -176,7 +181,9 @@ instruction!(TapeInstruction, DeleteTrack);
 instruction!(TapeInstruction, CertifyTrack);
 instruction!(TapeInstruction, InvalidateTrack);
 
-//instruction!(TapeInstruction, RegisterBlob);
-//instruction!(TapeInstruction, DeleteBlob);
-//instruction!(TapeInstruction, CertifyBlob);
-//instruction!(TapeInstruction, InvalidateBlob);
+//instruction!(TapeInstruction, CreateStream);
+//instruction!(TapeInstruction, RegisterStream);
+//instruction!(TapeInstruction, DeleteStream);
+//instruction!(TapeInstruction, AppendToStream);
+//instruction!(TapeInstruction, UpdateStream);
+//instruction!(TapeInstruction, FinalizeStream);

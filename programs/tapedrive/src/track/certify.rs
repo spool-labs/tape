@@ -48,11 +48,16 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Verify the BLS signature over the track address using the 
-    // committee members indicated in the bitmap
+    if !track.data.is_registered() {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     let committee_size = system.committee.size();
-    let indices = bitmap_indices(&args.bitmap, committee_size);
+    if args.bitmap.count_ones() >= min_correct(committee_size as u64) as usize {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -76,6 +81,9 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &decompressed_sig,
     ).map_err(|_| ProgramError::InvalidInstructionData)?;
 
+    track.data.set_certified(
+        current_epoch(epoch),
+    );
 
     Ok(())
 }
@@ -96,7 +104,7 @@ mod tests {
         let (epoch_address, _) = epoch_pda();
 
         const COMMITTEE_SIZE: usize = 128;
-        const SIGNERS: usize = 92;
+        const SIGNERS: usize = 85;
 
         let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..COMMITTEE_SIZE)
             .map(|_| {
@@ -108,12 +116,7 @@ mod tests {
 
         // Create bitmap for signers
         let signed_indices: Vec<usize> = (0..SIGNERS).collect();
-        let bitmap: [u8; 16] = {
-            let vec = indices_to_bitmap(&signed_indices, COMMITTEE_SIZE);
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(&vec);
-            arr
-        };
+        let bitmap = CommitteeBitmap::from_indices(&signed_indices, COMMITTEE_SIZE);
 
         // Create aggregate signature
         let message = track_address.as_ref();
@@ -124,7 +127,7 @@ mod tests {
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
-        // On-chain committee: full 128 members
+        // On-chain committee
         let mut system = System::zeroed();
         system.committee = Committee::from_members(
             &committee
@@ -132,7 +135,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (_, pk))| CommitteeMember {
                     id: NodeId::from(i as u64),
-                    stake: TAPE(1_000),
+                    stake: TAPE(1_000 * i),
                     key: *pk,
                     blacklist: StorageUnits(0),
                 })
@@ -150,24 +153,42 @@ mod tests {
             ..Track::zeroed()
         };
 
-        let epoch = Epoch::zeroed();
+        let epoch = Epoch {
+            id: EpochNumber(42),
+            ..Epoch::zeroed()
+        };
 
         let instruction = build_certify_track_ix(
             signer, bucket_hash, bitmap, agg_sig);
 
-        // Execute
+        let accounts = vec![
+            sol(signer, 1_000_000_000),
+
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(tape_address, tape.pack(), tapedrive::ID),
+            pda(track_address, track.pack(), tapedrive::ID),
+        ];
+
         let env = test_env();
         env.process_instruction(
             &instruction,
+            &accounts,
             &[
-                sol(signer, 1_000_000_000),
-                pda(system_address, system.pack(), tapedrive::ID),
-                pda(epoch_address, epoch.pack(), tapedrive::ID),
-                pda(tape_address, tape.pack(), tapedrive::ID),
-                pda(track_address, track.pack(), tapedrive::ID),
+                Check::success(),
+                Check::account(&track_address).data(
+                    Track {
+                        data: BlobData {
+                            state: BlobState {
+                                phase: BlobPhase::Certified.into(),
+                                certified_epoch: EpochNumber(42),
+                            },
+                            ..track.data
+                        },
+                        ..track
+                    }.pack().as_ref()
+                ).build(),
             ],
-            &[Check::success()],
         );
-
     }
 }

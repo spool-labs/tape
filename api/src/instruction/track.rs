@@ -1,4 +1,3 @@
-use core::marker::PhantomData;
 use tape_core::prelude::*;
 use crate::program::tapedrive::*;
 use steel::*;
@@ -26,27 +25,6 @@ pub struct CertifyTrack {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InvalidateTrack {}
-
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AppendStreamSegment {
-    pub size: [u8; 8],
-    pub data: PhantomData<[u8]>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct UpdateStreamSegment {
-    pub segment_number: [u8; 8],
-    //pub old_data: [u8; SEGMENT_SIZE],
-    //pub new_data: [u8; SEGMENT_SIZE],
-    //pub proof: ProofPath,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct FinalizeStream {}
 
 
 pub fn build_register_track_ix(
