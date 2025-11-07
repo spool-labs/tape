@@ -52,34 +52,47 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let committee_size = system.committee.size();
-    if args.bitmap.count_ones() >= min_correct(committee_size as u64) as usize {
-        return Err(ProgramError::InvalidAccountData);
-    }
+    solana_program::log::sol_log_compute_units();
+    //let weight : usize = indices.iter()
+    //    .map(|&i| system.seats.seats_for_member(i).len())
+    //    .sum();
 
+    let weight : usize = system.seats
+        .iter()
+        .map(|member_index| args.bitmap.is_set(*member_index as usize).then(|| 1usize).unwrap_or(0))
+        .sum();
+
+    solana_program::log::msg!("weight: {} / {}", weight, SEAT_COUNT);
+    if !is_supermajority(weight as u64, SEAT_COUNT as u64) {
+        return Err(ProgramError::Custom(0));
+    }
+    solana_program::log::sol_log_compute_units();
+
+    let committee_size = system.committee.size();
     let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
-        return Err(ProgramError::InvalidInstructionData);
+        return Err(ProgramError::Custom(1));
     }
 
     let mut pubkeys = Vec::with_capacity(indices.len());
-    for idx in indices {
-        if idx >= committee_size {
-            return Err(ProgramError::InvalidInstructionData);
+    for member_index in indices {
+        if member_index >= committee_size {
+            return Err(ProgramError::Custom(2));
         }
-        let pk = system.committee.members[idx].key.0;
+
+        let pk = system.committee.members[member_index].key.0;
         pubkeys.push(pk);
     }
 
     let decompressed_sig = G1Point::try_from(&args.signature.0)
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
+        .map_err(|_| ProgramError::Custom(3))?;
 
     let message = track_address.as_ref();
     verify_aggregate(
         message,
         &pubkeys,
         &decompressed_sig,
-    ).map_err(|_| ProgramError::InvalidInstructionData)?;
+    ).map_err(|_| ProgramError::Custom(4))?;
 
     track.data.set_certified(
         current_epoch(epoch),
@@ -135,12 +148,22 @@ mod tests {
                 .enumerate()
                 .map(|(i, (_, pk))| CommitteeMember {
                     id: NodeId::from(i as u64),
-                    stake: TAPE(1_000 * i),
+                    //stake: TAPE(1_000 + i as u64),
+                    stake: TAPE(1_000),
                     key: *pk,
                     blacklist: StorageUnits(0),
                 })
                 .collect::<Vec<_>>(),
         );
+
+        // Allocate seats
+        let stakes = system.committee.active_stakes();
+        let seat_counts = dhondt_allocate(
+            &stakes, 
+            SEAT_COUNT as u16
+        );
+        system.seats = Seats::try_from_counts(&seat_counts)
+            .expect("seats from counts");
 
         let tape = Tape {
             authority: signer, 

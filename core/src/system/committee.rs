@@ -351,6 +351,7 @@ impl<const NODES: usize> fmt::Display for Committee<NODES> {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

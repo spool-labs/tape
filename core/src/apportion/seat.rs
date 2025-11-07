@@ -119,6 +119,12 @@ impl <const SEATS: usize> Seats<SEATS> {
         }
         seat_indices
     }
+
+
+    /// Returns an iterator over the seat mappings.
+    pub fn iter(&self) -> impl Iterator<Item = &SeatMapping> {
+        self.seats.iter()
+    }
 }
 
 pub fn get_seat_hash(seats: &[SeatIndex]) -> Hash {
