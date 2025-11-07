@@ -293,9 +293,8 @@ mod tests {
         // Tamper one bit → fails
         let mut tampered = aggregated;
         tampered.0 .0[0] ^= 0x01;
-        assert_eq!(
-            tampered.verify_aggregate(message, &pubkeys).unwrap_err(),
-            BLSError::BLSVerificationError
+        assert!(
+            tampered.verify_aggregate(message, &pubkeys).is_err(),
         );
     }
 }

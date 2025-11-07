@@ -1,7 +1,7 @@
 use crate::declare_id;
 use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
-use tape_core::prelude::Hash;
+use tape_core::prelude::{Bitmap, Hash};
 use super::token::MINT_ADDRESS;
 
 pub const MEMBER_COUNT: usize = 128;
@@ -25,6 +25,8 @@ pub const NODE:      &[u8] = b"node";
 pub const RESOURCE:  &[u8] = b"resource";
 pub const TRACK:     &[u8] = b"track";
 pub const STAKE:     &[u8] = b"stake";
+
+pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
 pub const SYSTEM_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[SYSTEM], &PROGRAM_ID).0);

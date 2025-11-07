@@ -19,7 +19,7 @@ pub struct DeleteTrack {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CertifyTrack {
-    pub bitmap: [u8; (MEMBER_COUNT+7) / 8],
+    pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
 }
 
@@ -108,7 +108,7 @@ pub fn build_delete_track_ix(
 pub fn build_certify_track_ix(
     signer: Pubkey,
     id: Hash,
-    bitmap: [u8; (MEMBER_COUNT+7) / 8],
+    bitmap: CommitteeBitmap,
     signature: BlsSignature,
 ) -> Instruction {
 

@@ -114,34 +114,6 @@ fn check_no_duplicate_pubkeys(pubkeys: &[G2Point]) -> bool {
     true
 }
 
-pub fn bitmap_indices(bitmap: &[u8], n: usize) -> Vec<usize> {
-    assert!(n <= bitmap.len() * 8, "bitmap too small for n");
-    let mut out = Vec::with_capacity(bitmap.len() * 4);
-
-    for i in 0..n {
-        let byte_idx = i / 8;
-        let bit_idx = i % 8;
-        let b = bitmap[byte_idx];
-        if ((b >> bit_idx) & 1) == 1 {
-            out.push(i);
-        }
-    }
-    out
-}
-
-pub fn indices_to_bitmap(indices: &[usize], n: usize) -> Vec<u8> {
-    let byte_len = (n + 7) / 8;
-    let mut bitmap = vec![0u8; byte_len];
-
-    for &i in indices {
-        assert!(i < n, "index {} out of range for n={}", i, n);
-        let byte_idx = i / 8;
-        let bit_idx = i % 8;
-        bitmap[byte_idx] |= 1u8 << bit_idx;
-    }
-    bitmap
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -151,6 +123,34 @@ mod tests {
     use crate::bls12254::min_sig::privkey::PrivKey;
     use crate::bls12254::errors::BLSError;
     use rand::RngCore;
+
+    fn bitmap_indices(bitmap: &[u8], n: usize) -> Vec<usize> {
+        assert!(n <= bitmap.len() * 8, "bitmap too small for n");
+        let mut out = Vec::with_capacity(bitmap.len() * 4);
+
+        for i in 0..n {
+            let byte_idx = i / 8;
+            let bit_idx = i % 8;
+            let b = bitmap[byte_idx];
+            if ((b >> bit_idx) & 1) == 1 {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    fn indices_to_bitmap(indices: &[usize], n: usize) -> Vec<u8> {
+        let byte_len = (n + 7) / 8;
+        let mut bitmap = vec![0u8; byte_len];
+
+        for &i in indices {
+            assert!(i < n, "index {} out of range for n={}", i, n);
+            let byte_idx = i / 8;
+            let bit_idx = i % 8;
+            bitmap[byte_idx] |= 1u8 << bit_idx;
+        }
+        bitmap
+    }
 
     struct CommitteeMember {
         index: usize,

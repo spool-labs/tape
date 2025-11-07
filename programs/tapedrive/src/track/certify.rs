@@ -1,6 +1,5 @@
 use tape_api::prelude::*;
-use tape_crypto::bls12254::min_sig::aggregate::*;
-use tape_crypto::bls12254::min_sig::g1::*;
+use tape_crypto::bls12254::min_sig::*;
 use steel::*;
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
