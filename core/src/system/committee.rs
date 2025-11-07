@@ -25,8 +25,8 @@ pub struct CommitteeMember {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct Committee<const NODES: usize> {
-    pub member_count: u64,
-    pub members: [CommitteeMember; NODES],
+    member_count: u64,
+    members: [CommitteeMember; NODES],
 }
 
 unsafe impl<const NODES: usize> Zeroable for Committee<NODES> {}
@@ -83,6 +83,12 @@ impl<const NODES: usize> Committee<NODES> {
     pub fn index_of(&self, node_id: &NodeId) -> Option<usize> {
         let count = self.size();
         self.members[..count].iter().position(|m| &m.id == node_id)
+    }
+
+    /// Retruns the member at the given index.
+    #[inline]
+    pub fn member_at(&self, index: usize) -> CommitteeMember {
+        self.members[index]
     }
 
     /// Get a member with the given NodeId, if any.

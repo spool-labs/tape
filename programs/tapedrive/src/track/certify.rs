@@ -60,7 +60,6 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     if !is_supermajority(weight, SEAT_COUNT as u64) {
-        solana_program::msg!("Insufficient weight: {} / {} for supermajority", weight, SEAT_COUNT);
         return Err(ProgramError::Custom(0));
     }
 
@@ -76,7 +75,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             return Err(ProgramError::Custom(2));
         }
 
-        let pk = system.committee.members[member_index].key.0;
+        let pk = system.committee.member_at(member_index).key.0;
         pubkeys.push(pk);
     }
 
@@ -192,7 +191,7 @@ mod tests {
             .iter()
             .map(|&i| {
                 // Find the SK whose PK matches the on-chain member at index i
-                let member_pk = system.committee.members[i].key;
+                let member_pk = system.committee.member_at(i).key;
                 let sk = committee
                     .iter()
                     .find(|(_, pk)| *pk == member_pk)
@@ -210,6 +209,7 @@ mod tests {
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
+
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
