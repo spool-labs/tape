@@ -1,4 +1,6 @@
 use tape_api::prelude::*;
+use tape_crypto::bls12254::min_sig::aggregate::*;
+use tape_crypto::bls12254::min_sig::g1::*;
 use steel::*;
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -47,46 +49,34 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Verify the BLS signature over the track address using the committee members indicated in the
-    // bitmap
+    // Verify the BLS signature over the track address using the 
+    // committee members indicated in the bitmap
 
-    let committee = &system.committee;
-    let member_count = committee.size();
-
-    if member_count == 0 {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
-    // Must have exactly 16 bytes for 128-bit bitmap
-    if args.bitmap.len() != 16 {
+    let committee_size = system.committee.size();
+    let indices = bitmap_indices(&args.bitmap, committee_size);
+    if indices.is_empty() {
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    // Build signer pubkey list from bitmap
-    let bitmap = &args.bitmap;
-    let mut signer_pubkeys = Vec::with_capacity(member_count);
-
-    for i in 0..committee.size() {
-        if i >= 128 { break; }
-        let byte_idx = i / 8;
-        let bit_idx = i % 8;
-        if (bitmap[byte_idx] >> bit_idx) & 1 == 1 {
-            if let Some(member) = committee.iter().nth(i) {
-                signer_pubkeys.push(member.key);
-            } else {
-                return Err(ProgramError::InvalidAccountData);
-            }
+    let mut pubkeys = Vec::with_capacity(indices.len());
+    for idx in indices {
+        if idx >= committee_size {
+            return Err(ProgramError::InvalidInstructionData);
         }
+        let pk = system.committee.members[idx].key.0;
+        pubkeys.push(pk);
     }
 
-    if signer_pubkeys.is_empty() {
-        return Err(ProgramError::InvalidInstructionData);
-    }
+    let decompressed_sig = G1Point::try_from(&args.signature.0)
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
 
     let message = track_address.as_ref();
-    args.signature
-        .verify_aggregate(message, &signer_pubkeys)
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    verify_aggregate(
+        message,
+        &pubkeys,
+        &decompressed_sig,
+    ).map_err(|_| ProgramError::InvalidInstructionData)?;
+
 
     Ok(())
 }
@@ -95,7 +85,6 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 mod tests {
     use super::*;
     use tape_test::*;
-    use tape_crypto::bls12254::min_sig::aggregate::*;
 
     #[test]
     fn test_certify_track() {
@@ -108,7 +97,7 @@ mod tests {
         let (epoch_address, _) = epoch_pda();
 
         const COMMITTEE_SIZE: usize = 128;
-        const SIGNERS: usize = 32;
+        const SIGNERS: usize = 92;
 
         let committee: Vec<(BlsPrivateKey, BlsPubkey)> = (0..COMMITTEE_SIZE)
             .map(|_| {
@@ -181,27 +170,5 @@ mod tests {
             &[Check::success()],
         );
 
-        //// Negative: wrong message fails
-        //let wrong_sig = {
-        //    let wrong_msg = b"wrong message";
-        //    let wrong_partials: Vec<_> = signed_indices
-        //        .iter()
-        //        .map(|&i| committee[i].0.sign(wrong_msg).expect("sign"))
-        //        .collect();
-        //    BlsSignature::aggregate(&wrong_partials).unwrap()
-        //};
-        //
-        //let bad_ix = build_certify_track_ix(signer, bitmap, wrong_sig);
-        //env.process_instruction(
-        //    &bad_ix,
-        //    &[
-        //        sol(signer, 1_000_000_000),
-        //        pda(system_address, system.pack(), tapedrive::ID),
-        //        pda(epoch_address, epoch.pack(), tapedrive::ID),
-        //        pda(tape_address, tape.pack(), tapedrive::ID),
-        //        pda(track_address, track.pack(), tapedrive::ID),
-        //    ],
-        //    &[Check::failure(ProgramError::InvalidInstructionData)], // or BLSVerificationError
-        //);
     }
 }

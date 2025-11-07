@@ -25,8 +25,8 @@ pub struct CommitteeMember {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct Committee<const NODES: usize> {
-    member_count: u64,
-    members: [CommitteeMember; NODES],
+    pub member_count: u64,
+    pub members: [CommitteeMember; NODES],
 }
 
 unsafe impl<const NODES: usize> Zeroable for Committee<NODES> {}
