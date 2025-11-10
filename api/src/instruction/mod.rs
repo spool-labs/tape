@@ -165,7 +165,7 @@ instruction!(TapeInstruction, SetBlsPubkey);
 instruction!(TapeInstruction, SetNetworkAddress);
 instruction!(TapeInstruction, SetNetworkTls);
 instruction!(TapeInstruction, SetCommissionRate);
-//instruction!(TapeInstruction, ClaimCommission);
+instruction!(TapeInstruction, ClaimCommission);
 //instruction!(TapeInstruction, AddToBlacklist);
 //instruction!(TapeInstruction, RemoveFromBlacklist);
 //instruction!(TapeInstruction, VoteOnStoragePrice);

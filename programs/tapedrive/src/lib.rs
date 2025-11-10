@@ -59,6 +59,7 @@ pub fn process_instruction(
             TapeInstruction::SetNetworkAddress => process_set_network_address(accounts, data)?,
             TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
             TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
+            TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
  
             // Staking
             TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,

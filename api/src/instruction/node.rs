@@ -2,6 +2,7 @@ use steel::*;
 use crate::program::tapedrive::*;
 use crate::consts::NAME_LENGTH;
 use crate::utils::to_name;
+use crate::utils::ata;
 use tape_core::prelude::*;
 
 #[repr(C)]
@@ -288,5 +289,31 @@ pub fn build_set_commission_ix(
         data: SetCommissionRate {
             commission_rate,
         }.to_bytes(),
+    }
+}
+
+pub fn build_claim_commission_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+) -> Instruction {
+
+    let signer_ata           = ata(&signer);
+    let (archive_address, _) = archive_pda();
+    let (archive_ata, _)     = archive_ata();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(signer_ata, false),
+
+            AccountMeta::new(archive_address, false),
+            AccountMeta::new(archive_ata, false),
+
+            AccountMeta::new(node_address, false),
+
+            AccountMeta::new_readonly(spl_token::ID, false),
+        ],
+        data: ClaimCommission {}.to_bytes(),
     }
 }

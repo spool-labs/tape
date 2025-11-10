@@ -16,6 +16,7 @@ pub enum PoolError {
     StakeNotActive,
     ZeroShares,
     ZeroStake,
+    ZeroCommission,
 }
 
 #[repr(C)]
@@ -92,6 +93,20 @@ impl<const N: usize> StakingPool<N> {
         self.stake
             .saturating_add(net_additions)
             .saturating_sub(outgoing_tokens)
+    }
+
+    /// Claim the full accumulated commission. Returns the amount and zeroes the commission
+    /// balance.
+    pub fn claim_commission(&mut self) -> Result<Coin<TAPE>, PoolError> {
+        if self.commission.is_zero() {
+            return Err(PoolError::ZeroCommission);
+        }
+
+        let amount = self.commission;
+
+        self.commission = TAPE::zero();
+
+        Ok(amount)
     }
 
     /// Add rewards for previous epoch, apply commission, and process pending I/O.
@@ -997,5 +1012,24 @@ mod tests {
         // Basic sanity: both > 0, reflect different active windows
         assert!(ra > TAPE(0));
         assert!(rb > TAPE(0));
+    }
+
+    #[test]
+    fn claim_commission_full() {
+        let mut p = TestPool::new(BasisPoints(1000));
+        p.commission = TAPE(1_234);
+
+        let claimed = p.claim_commission().expect("claim commission");
+
+        assert_eq!(claimed, TAPE(1_234));
+        assert_eq!(p.commission, TAPE(0));
+    }
+
+    #[test]
+    fn claim_commission_empty_err() {
+        let mut p = TestPool::new(BasisPoints(1000));
+        let err = p.claim_commission().unwrap_err();
+
+        assert!(matches!(err, PoolError::ZeroCommission));
     }
 }

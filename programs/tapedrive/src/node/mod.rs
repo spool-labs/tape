@@ -1,4 +1,5 @@
 pub mod advance;
+pub mod claim_commission;
 pub mod join;
 pub mod register;
 pub mod set_authority;
@@ -10,6 +11,7 @@ pub mod set_network_tls;
 pub mod sync;
 
 pub use advance::*;
+pub use claim_commission::*;
 pub use join::*;
 pub use register::*;
 pub use set_authority::*;
