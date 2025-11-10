@@ -17,7 +17,8 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
+    signer_info
+        .is_signer()?;
 
     let (node_address, _) = node_pda(*signer_info.key);
 
@@ -73,6 +74,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         network_address: args.network_address,
         network_tls: args.network_tls,
         bls_pubkey: args.bls_pubkey,
+        next_bls_pubkey: args.bls_pubkey,
     };
 
     system.total_nodes = system.total_nodes
@@ -159,6 +161,7 @@ mod tests {
                             network_address,
                             network_tls,
                             bls_pubkey,
+                            next_bls_pubkey: bls_pubkey,
                         },
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,

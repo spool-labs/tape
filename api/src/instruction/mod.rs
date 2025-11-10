@@ -89,9 +89,10 @@ pub enum TapeInstruction {
     JoinNetwork,
     SyncEpoch,
     SetAuthority,
+    SetName,
+    SetBlsPubkey,
     SetNetworkAddress,
     SetNetworkTls,
-    SetName,
     SetCommissionRate,
     ClaimCommission,
     AddToBlacklist,
@@ -159,9 +160,10 @@ instruction!(TapeInstruction, RegisterNode);
 instruction!(TapeInstruction, JoinNetwork);
 instruction!(TapeInstruction, SyncEpoch);
 instruction!(TapeInstruction, SetAuthority);
+instruction!(TapeInstruction, SetName);
+instruction!(TapeInstruction, SetBlsPubkey);
 instruction!(TapeInstruction, SetNetworkAddress);
 instruction!(TapeInstruction, SetNetworkTls);
-instruction!(TapeInstruction, SetName);
 instruction!(TapeInstruction, SetCommissionRate);
 //instruction!(TapeInstruction, ClaimCommission);
 //instruction!(TapeInstruction, AddToBlacklist);

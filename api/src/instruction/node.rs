@@ -44,6 +44,13 @@ pub struct SetNetworkTls {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetBlsPubkey {
+    pub bls_pubkey: BlsPubkey,
+    pub bls_pop: BlsSignature,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetName {
     pub name: [u8; NAME_LENGTH],
 }
@@ -187,6 +194,45 @@ pub fn build_set_authority_ix(
     }
 }
 
+pub fn build_set_bls_pubkey_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    bls_pubkey: BlsPubkey,
+    bls_pop: BlsSignature,
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetBlsPubkey {
+            bls_pubkey,
+            bls_pop,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_name_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    name: &str,
+) -> Instruction {
+    let name = to_name(&name);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetName {
+            name,
+        }.to_bytes(),
+    }
+}
+
 pub fn build_set_network_address_ix(
     signer: Pubkey,
     node_address: Pubkey,
@@ -223,26 +269,6 @@ pub fn build_set_network_tls_ix(
     }
 }
 
-
-pub fn build_set_name_ix(
-    signer: Pubkey,
-    node_address: Pubkey,
-    name: &str,
-) -> Instruction {
-    let name = to_name(&name);
-
-    Instruction {
-        program_id: crate::program::tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(node_address, false),
-        ],
-        data: SetName {
-            name,
-        }.to_bytes(),
-    }
-}
-
 pub fn build_set_commission_ix(
     signer: Pubkey,
     node_address: Pubkey,
@@ -251,16 +277,13 @@ pub fn build_set_commission_ix(
     let commission_rate = commission_rate.pack();
 
     let (epoch_address, _) = epoch_pda();
-    let (system_address, _) = system_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(signer, true),
             AccountMeta::new(node_address, false),
-            AccountMeta::new(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
-
         ],
         data: SetCommissionRate {
             commission_rate,

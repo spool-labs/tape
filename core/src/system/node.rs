@@ -23,4 +23,7 @@ pub struct NodeMetadata {
 
     /// The BLS public key of this node.
     pub bls_pubkey: BlsPubkey,
+
+    /// The next BLS public key of this node, same as bls_pubkey if not scheduled to change.
+    pub next_bls_pubkey: BlsPubkey,
 }

@@ -46,6 +46,11 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::Custom(0));
     }
 
+    // Rotate BLS key if needed
+    if node.metadata.bls_pubkey.ne(&node.metadata.next_bls_pubkey) {
+        node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
+    }
+
     // Calculate rewards owed based on recent usage snapshot
     let reward_pool = archive.rewards_pool;
     let allocated = archive.recent_usage;
@@ -128,6 +133,11 @@ mod tests {
                 commission_rate: BasisPoints(0),
                 ..StakingPool::zeroed()
             },
+            metadata: NodeMetadata {
+                bls_pubkey: BlsPubkey::new_unique(),
+                next_bls_pubkey: BlsPubkey::new_unique(),
+                ..NodeMetadata::zeroed()
+            },
             ..Node::zeroed()
         };
 
@@ -175,6 +185,7 @@ mod tests {
 
         let new_rate = node.pool.get_current_rate();
         node.history.push(e0, new_rate);
+        node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
 
         let env = test_env();
         env.process_instruction(

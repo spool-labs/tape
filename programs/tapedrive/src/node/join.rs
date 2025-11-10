@@ -25,8 +25,11 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     let node = node_info
-        .as_account::<Node>(&tapedrive::ID)?
-        .assert(|n| n.authority.eq(signer_info.key))?;
+        .as_account::<Node>(&tapedrive::ID)?;
+
+    if node.authority != *signer_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
 
     // Find the stake balance at activation epoch (1 epoch from now)
     let activation_epoch = next_epoch(epoch);

@@ -58,6 +58,12 @@ impl G2Point {
             Err(BLSError::AltBN128PairingError)
         }
     }
+
+    #[cfg(not(target_os = "solana"))]
+    pub fn new_unique() -> Self {
+        let priv_key = super::privkey::PrivKey::from_random();
+        Self::try_from(&priv_key).expect("Failed to generate unique G2Point")
+    }
 }
 
 impl G2CompressedPoint {

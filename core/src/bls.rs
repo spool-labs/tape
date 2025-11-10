@@ -97,6 +97,11 @@ impl BlsSignature {
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
 
 impl BlsPubkey {
+    #[cfg(not(target_os = "solana"))]
+    pub fn new_unique() -> Self {
+        BlsPubkey(G2Point::new_unique())
+    }
+
     /// Verify a proof of possession (PoP) against this public key.
     pub fn is_valid(&self, pop: BlsSignature) -> bool {
         let pubkey = G2Point::try_from(self.0);

@@ -54,6 +54,7 @@ pub fn process_instruction(
             TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,
             TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,
             TapeInstruction::SetAuthority => process_set_authority(accounts, data)?,
+            TapeInstruction::SetBlsPubkey => process_set_bls_pubkey(accounts, data)?,
             TapeInstruction::SetName => process_set_name(accounts, data)?,
             TapeInstruction::SetNetworkAddress => process_set_network_address(accounts, data)?,
             TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
