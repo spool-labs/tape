@@ -64,11 +64,12 @@ mod tests {
     #[test]
     fn test_join_network() {
         let signer = Pubkey::new_unique();
-        let instruction = build_join_network_ix(signer);
 
+        let (node_address, _) = node_pda(signer);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(signer);
+
+        let instruction = build_join_network_ix(signer, node_address);
 
         // Setup existing accounts
         let mut system = System::zeroed();
@@ -122,6 +123,12 @@ mod tests {
                 Check::success(),
                 Check::account(&system_address)
                     .data(system.pack().as_ref())
+                    .build(),
+                Check::account(&epoch_address) // unchanged
+                    .data(epoch.pack().as_ref())
+                    .build(),
+                Check::account(&node_address) // unchanged
+                    .data(node.pack().as_ref())
                     .build(),
             ],
         );

@@ -127,6 +127,7 @@ mod tests {
 
         let instruction = build_epoch_sync_ix(
             signer,
+            node_address,
             epoch.id,
             &system.seats.seats_for_member(1) // index 1
         );
@@ -194,6 +195,7 @@ mod tests {
 
         let instruction = build_epoch_sync_ix(
             signer,
+            node_address,
             epoch.id,
             &system.seats.seats_for_member(1)
         );

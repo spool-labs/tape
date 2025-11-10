@@ -20,6 +20,13 @@ pub struct JoinNetwork {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SyncEpoch {
+    pub epoch: [u8; 8],
+    pub seats: Hash,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetAuthority {}
 
 #[repr(C)]
@@ -116,10 +123,12 @@ pub fn build_register_node_ix(
 
 pub fn build_join_network_ix(
     signer: Pubkey,
+    node_address: Pubkey,
 ) -> Instruction {
+
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-    let (node_address, _) = node_pda(signer);
+    //let (node_address, _) = node_pda(signer);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -132,3 +141,51 @@ pub fn build_join_network_ix(
         data: JoinNetwork {}.to_bytes(),
     }
 }
+
+pub fn build_epoch_sync_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    epoch: EpochNumber,
+    seats: &[SeatIndex],
+) ->Instruction {
+
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+    //let (node_address, _) = node_pda(signer);
+
+    let epoch = epoch.pack();
+    let seats = get_seat_hash(seats);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new_readonly(system_address, false),
+            AccountMeta::new(epoch_address, false),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SyncEpoch {
+            epoch,
+            seats,
+        }.to_bytes(),
+    }
+}
+
+//pub fn build_set_authority_ix(
+//    signer: Pubkey,
+//    node_address: Pubkey,
+//    new_authority: Pubkey,
+//) -> Instruction {
+//
+//    //let (node_address, _) = node_pda(signer);
+//
+//    Instruction {
+//        program_id: crate::program::tapedrive::ID,
+//        accounts: vec![
+//            AccountMeta::new(signer, true),
+//            AccountMeta::new_readonly(new_authority, false),
+//            AccountMeta::new_readonly(node_address, false),
+//        ],
+//        data: SetAuthority {}.to_bytes(),
+//    }
+//}
