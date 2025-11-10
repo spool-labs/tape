@@ -1,9 +1,19 @@
 pub mod advance;
 pub mod join;
 pub mod register;
+pub mod set_authority;
+pub mod set_commission_rate;
+pub mod set_name;
+pub mod set_network_address;
+pub mod set_network_tls;
 pub mod sync;
 
 pub use advance::*;
 pub use join::*;
 pub use register::*;
+pub use set_authority::*;
+pub use set_commission_rate::*;
+pub use set_name::*;
+pub use set_network_address::*;
+pub use set_network_tls::*;
 pub use sync::*;

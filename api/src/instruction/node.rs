@@ -1,6 +1,7 @@
 use steel::*;
 use crate::program::tapedrive::*;
 use crate::consts::NAME_LENGTH;
+use crate::utils::to_name;
 use tape_core::prelude::*;
 
 #[repr(C)]
@@ -128,7 +129,6 @@ pub fn build_join_network_ix(
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-    //let (node_address, _) = node_pda(signer);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -151,7 +151,6 @@ pub fn build_epoch_sync_ix(
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
-    //let (node_address, _) = node_pda(signer);
 
     let epoch = epoch.pack();
     let seats = get_seat_hash(seats);
@@ -171,21 +170,100 @@ pub fn build_epoch_sync_ix(
     }
 }
 
-//pub fn build_set_authority_ix(
-//    signer: Pubkey,
-//    node_address: Pubkey,
-//    new_authority: Pubkey,
-//) -> Instruction {
-//
-//    //let (node_address, _) = node_pda(signer);
-//
-//    Instruction {
-//        program_id: crate::program::tapedrive::ID,
-//        accounts: vec![
-//            AccountMeta::new(signer, true),
-//            AccountMeta::new_readonly(new_authority, false),
-//            AccountMeta::new_readonly(node_address, false),
-//        ],
-//        data: SetAuthority {}.to_bytes(),
-//    }
-//}
+pub fn build_set_authority_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    new_authority: Pubkey,
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new_readonly(new_authority, false),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetAuthority {}.to_bytes(),
+    }
+}
+
+pub fn build_set_network_address_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    network_address: NetworkAddress,
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetNetworkAddress {
+            network_address,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_network_tls_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    network_tls: Pubkey,
+) -> Instruction {
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetNetworkTls {
+            network_tls,
+        }.to_bytes(),
+    }
+}
+
+
+pub fn build_set_name_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    name: &str,
+) -> Instruction {
+    let name = to_name(&name);
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetName {
+            name,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_commission_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    commission_rate: BasisPoints,
+) -> Instruction {
+    let commission_rate = commission_rate.pack();
+
+    let (epoch_address, _) = epoch_pda();
+    let (system_address, _) = system_pda();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+            AccountMeta::new(system_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+
+        ],
+        data: SetCommissionRate {
+            commission_rate,
+        }.to_bytes(),
+    }
+}

@@ -14,7 +14,9 @@ pub const fn min_correct(total: u64) -> u64 {
     let n = total;
     let f = max_faulty(total);
     let result = n - f;
+
     debug_assert!(result > 0, "result must be non-zero");
+
     result
 }
 

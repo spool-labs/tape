@@ -27,12 +27,24 @@ impl Default for NetworkAddress {
 
 impl NetworkAddress {
     #[inline]
-    pub fn new(flags: u16, port_le: u16, ip: [u8; 16]) -> Self {
+    fn new(flags: u16, port_le: u16, ip: [u8; 16]) -> Self {
         let mut na = Self::default();
         na.set_flags(flags);
         na.set_port_le(port_le);
         na.set_ip(ip);
         na
+    }
+
+    #[inline]
+    pub fn new_ipv4(ipv4: [u8; 4], port: u16) -> Self {
+        let mut ip = [0u8; 16];
+        ip[..4].copy_from_slice(&ipv4);
+        Self::new(0, port.to_le(), ip)
+    }
+
+    #[inline]
+    pub fn new_ipv6(ipv6: [u8; 16], port: u16) -> Self {
+        Self::new(1, port.to_le(), ipv6)
     }
 
     #[inline]

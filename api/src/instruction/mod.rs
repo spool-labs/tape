@@ -72,7 +72,6 @@ pub enum TapeInstruction {
 
     CreateEpoch,
     AdvanceEpoch,
-    SyncEpoch,
 
     RegisterFeature,
     CertifyFeature,
@@ -88,6 +87,7 @@ pub enum TapeInstruction {
     // Operator
     RegisterNode,
     JoinNetwork,
+    SyncEpoch,
     SetAuthority,
     SetNetworkAddress,
     SetNetworkTls,
@@ -145,7 +145,6 @@ instruction!(TapeInstruction, ExpandSystem);
 instruction!(TapeInstruction, CreateArchive);
 instruction!(TapeInstruction, CreateEpoch);
 instruction!(TapeInstruction, AdvanceEpoch);
-instruction!(TapeInstruction, SyncEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
 
@@ -158,11 +157,12 @@ instruction!(TapeInstruction, MergePoolStake);
 
 instruction!(TapeInstruction, RegisterNode);
 instruction!(TapeInstruction, JoinNetwork);
-//instruction!(TapeInstruction, SetAuthority);
-//instruction!(TapeInstruction, SetNetworkAddress);
-//instruction!(TapeInstruction, SetNetworkTls);
-//instruction!(TapeInstruction, SetName);
-//instruction!(TapeInstruction, SetCommissionRate);
+instruction!(TapeInstruction, SyncEpoch);
+instruction!(TapeInstruction, SetAuthority);
+instruction!(TapeInstruction, SetNetworkAddress);
+instruction!(TapeInstruction, SetNetworkTls);
+instruction!(TapeInstruction, SetName);
+instruction!(TapeInstruction, SetCommissionRate);
 //instruction!(TapeInstruction, ClaimCommission);
 //instruction!(TapeInstruction, AddToBlacklist);
 //instruction!(TapeInstruction, RemoveFromBlacklist);
