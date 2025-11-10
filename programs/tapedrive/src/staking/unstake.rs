@@ -56,12 +56,6 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         // return Err(TapeError::NodeNotUpdated);
     }
 
-    let (node_address, _) = node_pda(node.authority);
-
-    if node_address != *node_info.key {
-        return Err(ProgramError::InvalidAccountData);
-    }
-
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 

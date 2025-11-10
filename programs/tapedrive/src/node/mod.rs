@@ -9,6 +9,8 @@ pub mod set_name;
 pub mod set_network_address;
 pub mod set_network_tls;
 pub mod sync;
+pub mod blacklist_add;
+pub mod blacklist_remove;
 
 pub use advance::*;
 pub use claim_commission::*;
@@ -21,3 +23,5 @@ pub use set_name::*;
 pub use set_network_address::*;
 pub use set_network_tls::*;
 pub use sync::*;
+pub use blacklist_add::*;
+pub use blacklist_remove::*;

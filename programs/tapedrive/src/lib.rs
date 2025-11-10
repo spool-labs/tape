@@ -60,6 +60,8 @@ pub fn process_instruction(
             TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
             TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
             TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
+            TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
+            TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
  
             // Staking
             TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,

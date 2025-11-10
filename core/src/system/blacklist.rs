@@ -5,7 +5,7 @@ use tape_crypto::{
     Hash,
 };
 
-const BLACKLIST: &[u8] = b"blacklist";
+pub const BLACKLIST: &[u8] = b"blacklist";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlacklistError {
