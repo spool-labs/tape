@@ -2,6 +2,7 @@
 
 pub mod bft;
 pub mod bls;
+pub mod cert;
 pub mod apportion;
 pub mod staking;
 pub mod system;
@@ -12,6 +13,7 @@ mod macros;
 pub mod prelude {
     pub use crate::bft::*;
     pub use crate::bls::*;
+    pub use crate::cert::*;
     pub use crate::apportion::*;
     pub use crate::staking::*;
     pub use crate::system::*;

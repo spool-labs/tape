@@ -18,6 +18,9 @@ num_enum.workspace = true
 solana-program.workspace = true
 five8.workspace = true
 
+[dev-dependencies]
+solana-keypair.workspace = true
+
 [lib]
 crate-type = ["cdylib", "lib"]
 
