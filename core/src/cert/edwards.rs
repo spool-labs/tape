@@ -46,20 +46,7 @@ impl<const BYTES: usize> EdwardsCertificate<BYTES> {
     }
 
     /// Verify an ed25519 signature over this certificate's message and mark the signer bit.
-    ///
-    /// Parameters:
-    /// - committee_epoch: the epoch whose committee we’re using; must equal self.epoch
-    /// - committee_index: which member index to mark in the bitmap (membership checked by caller)
-    /// - ed25519_pubkey_32: signer public key (32 bytes)
-    /// - ed25519_signature_64: signature (64 bytes)
-    ///
-    /// Returns:
-    /// - Ok(()) on success (bit set)
-    /// - Err(CertificateError::EpochMismatch) if committee_epoch != self.epoch
-    /// - Err(CertificateError::AlreadySigned) if bit already set
-    /// - Err(CertificateError::SignatureInvalid) if verification fails
-    /// - Panics if committee_index exceeds bitmap capacity (consistent with Bitmap behavior)
-    pub fn try_sign(
+    pub fn try_add_signature(
         &mut self,
         committee_epoch: EpochNumber,
         committee_index: usize,
@@ -127,7 +114,7 @@ mod tests {
         let epoch = EpochNumber(10);
         let mut cert = EdwardsCertificate::<2>::new(message, epoch);
 
-        cert.try_sign(epoch, 0, &pubkey, &sig64)
+        cert.try_add_signature(epoch, 0, &pubkey, &sig64)
             .expect("valid ed25519 signature should mark bit");
 
         assert!(cert.has_signed(0));
@@ -143,7 +130,7 @@ mod tests {
         let dummy_pk = [0u8; 32];
         let dummy_sig = [0u8; 64];
 
-        let err = cert.try_sign(EpochNumber(6), 0, &dummy_pk, &dummy_sig).unwrap_err();
+        let err = cert.try_add_signature(EpochNumber(6), 0, &dummy_pk, &dummy_sig).unwrap_err();
         assert_eq!(err, CertificateError::EpochMismatch);
     }
 

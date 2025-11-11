@@ -1,6 +1,7 @@
 mod archive;
 mod epoch;
 mod exchange;
+mod feature;
 mod node;
 mod stake;
 mod system;

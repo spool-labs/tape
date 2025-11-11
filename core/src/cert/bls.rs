@@ -48,20 +48,7 @@ impl<const BYTES: usize> BlsCertificate<BYTES> {
     }
 
     /// Verify a single-signer BLS signature over this certificate's message and set the signer bit.
-    ///
-    /// Parameters:
-    /// - committee_epoch: epoch whose committee is used; must equal self.epoch
-    /// - committee_index: which member index to mark (membership verified by caller)
-    /// - signer_pubkey: member's BLS G2 public key (on-chain from committee)
-    /// - signature: signer's G1 compressed signature over this.message
-    ///
-    /// Returns:
-    /// - Ok(()) on success (bit set)
-    /// - Err(CertificateError::EpochMismatch) if committee_epoch != self.epoch
-    /// - Err(CertificateError::AlreadySigned) if bit already set
-    /// - Err(CertificateError::SignatureInvalid) if verification fails
-    /// - Panics if committee_index exceeds bitmap capacity (consistent with Bitmap behavior)
-    pub fn try_sign(
+    pub fn try_add_signature(
         &mut self,
         committee_epoch: EpochNumber,
         committee_index: usize,
@@ -71,16 +58,50 @@ impl<const BYTES: usize> BlsCertificate<BYTES> {
         if committee_epoch != self.epoch {
             return Err(CertificateError::EpochMismatch);
         }
+
         if self.signers.is_set(committee_index) {
             return Err(CertificateError::AlreadySigned);
         }
 
         // Decompress signature then verify with this certificate's message
-        let sig_point = G1Point::try_from(&signature.0).map_err(|_| CertificateError::SignatureInvalid)?;
-        signer_pubkey.0.verify(&sig_point, self.message.as_ref())
+        let sig_point = G1Point::try_from(&signature.0)
+            .map_err(|_| CertificateError::SignatureInvalid)?;
+
+        signer_pubkey.0
+            .verify(&sig_point, self.message.as_ref())
             .map_err(|_| CertificateError::SignatureInvalid)?;
 
         self.signers.set(committee_index);
+        Ok(())
+    }
+
+    /// Verify an aggregated BLS signature over this certificate's message and set multiple signer
+    /// bits.
+    pub fn try_add_aggregate(
+        &mut self,
+        committee_epoch: EpochNumber,
+        new_indices: &[usize],
+        signer_pubkeys: &[BlsPubkey],
+        aggregated: BlsSignature,
+    ) -> Result<(), CertificateError> {
+
+        if committee_epoch != self.epoch {
+            return Err(CertificateError::EpochMismatch);
+        }
+
+        if new_indices.is_empty() || new_indices.len() != signer_pubkeys.len() {
+            return Err(CertificateError::BadIndex);
+        }
+
+        // Verify once
+        aggregated
+            .verify_aggregate(self.message_bytes(), signer_pubkeys)
+            .map_err(|_| CertificateError::SignatureInvalid)?;
+
+        // Set bits
+        for &i in new_indices {
+            self.signers.set(i);
+        }
         Ok(())
     }
 
@@ -126,7 +147,7 @@ mod tests {
         // Create cert and verify/mark
         let mut cert = BlsCertificate::<2>::new(message, epoch);
         assert_eq!(cert.signer_count(), 0);
-        cert.try_sign(epoch, 1, pk, sig).expect("mark ok");
+        cert.try_add_signature(epoch, 1, pk, sig).expect("mark ok");
 
         assert!(cert.has_signed(1));
         assert_eq!(cert.signer_count(), 1);
@@ -140,7 +161,7 @@ mod tests {
         let sig = sk.sign(msg.as_ref()).unwrap();
 
         let mut cert = BlsCertificate::<1>::new(msg, EpochNumber(5));
-        let err = cert.try_sign(EpochNumber(6), 0, pk, sig).unwrap_err();
+        let err = cert.try_add_signature(EpochNumber(6), 0, pk, sig).unwrap_err();
         assert_eq!(err, CertificateError::EpochMismatch);
     }
 
