@@ -65,19 +65,16 @@ pub enum TapeInstruction {
 
     // System
     Initialize,
-
     CreateSystem,
     ExpandSystem,
     CreateArchive,
-
     CreateEpoch,
     AdvanceEpoch,
-
-    RegisterFeature,
-    CertifyFeature,
+    //RegisterFeature,
+    //CertifyFeature,
 
     // Pool
-    AdvancePool,
+    AdvancePool = 0x50,
     StakeWithPool,
     RequestStakeUnlock,
     UnstakeFromPool,
@@ -85,7 +82,7 @@ pub enum TapeInstruction {
     MergePoolStake,
 
     // Operator
-    RegisterNode,
+    RegisterNode = 0x60,
     JoinNetwork,
     SyncEpoch,
     SetAuthority,
@@ -94,33 +91,45 @@ pub enum TapeInstruction {
     SetNetworkAddress,
     SetNetworkTls,
     SetCommissionRate,
+    SetStoragePrice,
+    SetStorageCapacity,
     ClaimCommission,
     AddToBlacklist,
     RemoveFromBlacklist,
-    VoteOnStoragePrice,
-    VoteOnShardSize,
-    VoteOnFeature,
+    //VoteOnStoragePrice,
+    //VoteOnShardSize,
+    //VoteOnFeature,
+    //VoteOnSlash,
+
+    // Certificate
+    CreateBlsCert = 0x80,
+    SignBlsCert,
+    GroupSignBlsCert,
+    DestroyBlsCert,
+    //CreateEdwardCert,
+    //SignEdwardCert,
+    //DestroyEdwardCert,
 
     // Tape
-    ReserveTape,
+    ReserveTape = 0x90,
     DestroyTape,
     SplitTapeByEpoch,
     SplitTapeBySize,
     MergeTape,
 
     // Track
-    RegisterTrack,
+    RegisterTrack = 0xA0,
     DeleteTrack,
     CertifyTrack,
     InvalidateTrack,
 
     // Stream
-    CreateStream,
-    RegisterStream,
-    DeleteStream,
-    AppendToStream,
-    UpdateStream,
-    FinalizeStream,
+    //CreateStream = 0xB0,
+    //RegisterStream,
+    //DeleteStream,
+    //AppendToStream,
+    //UpdateStream,
+    //FinalizeStream,
 }
 
 
@@ -159,13 +168,15 @@ instruction!(TapeInstruction, MergePoolStake);
 instruction!(TapeInstruction, RegisterNode);
 instruction!(TapeInstruction, JoinNetwork);
 instruction!(TapeInstruction, SyncEpoch);
+instruction!(TapeInstruction, ClaimCommission);
 instruction!(TapeInstruction, SetAuthority);
 instruction!(TapeInstruction, SetName);
 instruction!(TapeInstruction, SetBlsPubkey);
 instruction!(TapeInstruction, SetNetworkAddress);
 instruction!(TapeInstruction, SetNetworkTls);
 instruction!(TapeInstruction, SetCommissionRate);
-instruction!(TapeInstruction, ClaimCommission);
+instruction!(TapeInstruction, SetStoragePrice);
+instruction!(TapeInstruction, SetStorageCapacity);
 instruction!(TapeInstruction, AddToBlacklist);
 instruction!(TapeInstruction, RemoveFromBlacklist);
 //instruction!(TapeInstruction, VoteOnStoragePrice);
@@ -182,6 +193,7 @@ instruction!(TapeInstruction, RegisterTrack);
 instruction!(TapeInstruction, DeleteTrack);
 instruction!(TapeInstruction, CertifyTrack);
 instruction!(TapeInstruction, InvalidateTrack);
+
 
 //instruction!(TapeInstruction, CreateStream);
 //instruction!(TapeInstruction, RegisterStream);

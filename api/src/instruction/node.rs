@@ -58,6 +58,18 @@ pub struct SetName {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetStoragePrice {
+    pub price: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetStorageCapacity {
+    pub size: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommissionRate {
     pub commission_rate: [u8; 8],
 }
@@ -77,22 +89,6 @@ pub struct RemoveFromBlacklist {
     pub size: [u8; 8],
     pub proof: [Hash; BLACKLIST_SIZE]
 }
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteOnStoragePrice {
-    pub price: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteOnShardSize {
-    pub size: [u8; 8],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct VoteOnFeature {}
 
 
 pub fn build_register_node_ix(
@@ -359,6 +355,44 @@ pub fn build_remove_from_blacklist_ix(
             hash,
             size,
             proof,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_storage_price_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    price: Coin<TAPE>,
+) -> Instruction {
+    let price = price.pack();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetStoragePrice {
+            price,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_storage_capacity_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    size: StorageUnits,
+) -> Instruction {
+    let size = size.pack();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetStorageCapacity {
+            size,
         }.to_bytes(),
     }
 }

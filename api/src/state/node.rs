@@ -23,7 +23,7 @@ pub struct Node {
     /// The staking pool associated with this node.
     pub pool: StakingPool<EPOCH_VALUES>,
 
-    /// The staking pool associated with this node.
+    /// The share price history of this node.
     pub history: PoolHistory<EPOCH_HISTORY>,
 
     /// Blacklist for this node.
@@ -34,7 +34,6 @@ pub struct Node {
 
     /// The last epoch this node was updated.
     pub latest_epoch: EpochNumber,
-
 }
 
 

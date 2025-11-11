@@ -9,12 +9,6 @@ pub struct NodeMetadata {
     /// The name of this node storage node.
     pub name: [u8; 32],
 
-    /// The storage capacity of the node in bytes.
-    pub storage_capacity: u64,
-
-    /// The storage used by the node in bytes.
-    pub storage_used: u64,
-
     /// The SocketAddr of the node
     pub network_address: NetworkAddress,
 
@@ -26,4 +20,10 @@ pub struct NodeMetadata {
 
     /// The next BLS public key of this node, same as bls_pubkey if not scheduled to change.
     pub next_bls_pubkey: BlsPubkey,
+
+    /// The preferred storage size per seat.
+    pub preferred_storage_size: StorageUnits,
+
+    /// The preferred storage price per seat.
+    pub preferred_storage_price: Coin<TAPE>,
 }

@@ -69,8 +69,6 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     node.metadata = NodeMetadata {
         name: args.name,
-        storage_capacity: 0,
-        storage_used: 0,
         network_address: args.network_address,
         network_tls: args.network_tls,
         bls_pubkey: args.bls_pubkey,
@@ -156,8 +154,6 @@ mod tests {
                         blacklist: Blacklist::new(),
                         metadata: NodeMetadata {
                             name,
-                            storage_capacity: 0,
-                            storage_used: 0,
                             network_address,
                             network_tls,
                             bls_pubkey,
@@ -165,6 +161,7 @@ mod tests {
                         },
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,
+                        ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),
             ]

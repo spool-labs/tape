@@ -1,3 +1,5 @@
+/// A type alias for a (value, weight) pair.
+pub type ValueAndWeight = (u64, u64);
 
 /// Returns the BFT tolerance bound floor((n − 1)/3) for a non-zero participant count.
 pub const fn max_faulty(total: u64) -> u64 {
@@ -30,7 +32,7 @@ pub const fn is_supermajority(weight: u64, total: u64) -> bool {
 ///
 /// Input is (value, weight). 
 /// Returns highest value such that a quorum voted >= this.
-pub fn quorum_above(pairs: &[(u64, u64)], total: u64) -> u64 {
+pub fn quorum_above(pairs: &[ValueAndWeight], total: u64) -> u64 {
     debug_assert!(total > 0);
 
     let mut items: Vec<(u64, u64)> = pairs.to_vec();
@@ -46,12 +48,12 @@ pub fn quorum_above(pairs: &[(u64, u64)], total: u64) -> u64 {
     0
 }
 
-/// Returns the smallest value below which the remaining weight loses the supermajority, or 0 if it
-/// never fails.
+/// Returns the smallest value below which the remaining weight loses the supermajority, 
+/// or 0 if it never fails.
 ///
 /// Input is (value, weight).
 /// Returns lowest value such that a quorum voted < this.
-pub fn quorum_below(pairs: &[(u64, u64)], total: u64) -> u64 {
+pub fn quorum_below(pairs: &[ValueAndWeight], total: u64) -> u64 {
     debug_assert!(total > 0);
 
     let mut items: Vec<(u64, u64)> = pairs.to_vec();
