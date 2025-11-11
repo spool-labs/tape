@@ -5782,10 +5782,13 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
  "bytemuck",
+ "curve25519-dalek 4.1.3",
  "dashu",
  "num 0.4.3",
  "rand 0.8.5",
+ "sha2 0.10.9",
  "solana-bn254",
+ "solana-curve25519",
  "solana-nostd-sha256",
  "solana-program",
 ]

@@ -1,4 +1,5 @@
 pub mod bls12254;
+pub mod ed25519;
 pub mod hash;
 pub mod merkle;
 
