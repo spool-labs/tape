@@ -58,6 +58,8 @@ pub fn process_instruction(
             TapeInstruction::SetName => process_set_name(accounts, data)?,
             TapeInstruction::SetNetworkAddress => process_set_network_address(accounts, data)?,
             TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
+            TapeInstruction::SetStoragePrice => process_set_storage_price(accounts, data)?,
+            TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
             TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
             TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
             TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,

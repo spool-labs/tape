@@ -82,8 +82,6 @@ mod tests {
             data: BlobData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
-                min_correct(SEAT_COUNT as u64),
-                max_faulty(SEAT_COUNT as u64),
             ),
         };
 

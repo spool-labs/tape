@@ -40,6 +40,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::Custom(3));
     }
 
+    // Ensure the archive schedule is aligned with the current epoch
     debug_assert!(archive.schedule.current_epoch() == epoch.id);
 
     // Save previous seats, then reassign for the next committee
@@ -50,8 +51,14 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     ).map_err(|_| TapeError::UnexpectedState)?;
 
     // Rotate committees
-    system.committee_prev = system.committee;
-    system.committee = system.committee_next;
+    system.committee_prev = system.committee.clone();
+    system.committee = system.committee_next.clone();
+
+    system.committee
+        .apply_weights_from_seats(&system.seats);
+
+    // The next committee should never have any weights assigned
+    debug_assert!(system.committee_next.iter().all(|m| m.weight == 0));
 
     // Update future accounting
     let epoch_usage = archive.schedule
@@ -71,6 +78,35 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.state.set_syncing();
     epoch.last_epoch_ms = now;
 
+    // Update the archive storage price and capacity based on the new committee preferences
+    let mut storage_prices : Vec<ValueAndWeight> = vec![];
+    let mut storage_capacities : Vec<ValueAndWeight> = vec![];
+    let mut total_weight = 0u64;
+
+    system.committee.iter().for_each(|member| {
+        let weight = member.weight as u64;
+        let preferences = &member.preferences;
+
+        storage_prices
+            .push((preferences.storage_price.into(), weight));
+        storage_capacities
+            .push((preferences.storage_capacity.into(), weight));
+
+        total_weight = total_weight.saturating_add(weight);
+    });
+
+    archive.storage_capacity = 
+        quorum_above(&storage_capacities, total_weight).into();
+    archive.storage_price = 
+        quorum_below(&storage_prices, total_weight).into();
+
+    solana_program::msg!(
+        "Advanced to {}, capacity: {}, price: {}",
+        epoch.id,
+        archive.storage_capacity,
+        archive.storage_price,
+    );
+
     Ok(())
 }
 
@@ -80,13 +116,11 @@ mod tests {
     use super::*;
     use tape_test::*;
 
-    fn member(id: u64, stake: u64) -> CommitteeMember {
-        CommitteeMember {
-            id: NodeId(id),
-            stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits(0),
-        }
+    fn member(id: u64, stake: u64, size: u64, price: u64) -> CommitteeMember {
+        let mut m = CommitteeMember::new(NodeId(id), TAPE(stake));
+        m.preferences.storage_capacity = StorageUnits(size);
+        m.preferences.storage_price = TAPE(price);
+        m
     }
 
     #[test]
@@ -117,16 +151,26 @@ mod tests {
         epoch.state = EpochState::next_ready();
         epoch.last_epoch_ms = last_epoch;
 
-        system.committee_prev = Committee::from_members(&[ member(2, 2_000), member(1, 1_000) ]);
-        system.committee      = Committee::from_members(&[ member(3, 3_000), member(2, 2_000), member(1, 1_000) ]);
-        system.committee_next = Committee::from_members(&[ member(3, 3_500), member(4, 2_100), member(2, 2_000), member(1, 1_000) ]);
+        system.committee_prev = Committee::from_members(&[
+            member(2, 2_000, 8_000_000, 950),
+            member(1, 1_000, 9_000_000, 1150),
+        ]);
+        system.committee = Committee::from_members(&[
+            member(3, 3_000, 8_050_000, 1050),
+            member(2, 2_000, 9_050_000, 1250),
+            member(1, 1_000, 9_000_000, 1150),
+        ]);
+        system.committee_next = Committee::from_members(&[
+            member(3, 3_500, 1_500_000, 850),
+            member(4, 2_100, 9_000_000, 1250),
+            member(2, 2_000, 1_300_000, 1050),
+            member(1, 1_000, 1_100_000, 1150),
+        ]);
 
-        // Pre-fill archive usage and fees
         archive.schedule = EpochSchedule::new_at(epoch.id);
         archive.schedule.reserve_capacity(
             StorageUnits(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
-
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -150,11 +194,33 @@ mod tests {
 
         let expected_seats = Seats::try_from(seats.as_ref()).unwrap();
 
+        let mut expected_committee = system.committee_next.clone();
+        expected_committee
+            .apply_weights_from_seats(&expected_seats);
+
         let mut schedule = EpochSchedule::new_at(e1);
         schedule.reserve_capacity(
             StorageUnits(500), TAPE(1000), e1, e100
         ).expect("reserve capacity");
 
+        // Compute expected archive capacity/price via quorum functions
+        let total_weight: u64 = expected_committee
+            .iter()
+            .map(|m| m.weight as u64)
+            .sum();
+
+        let price_pairs: Vec<(u64, u64)> = expected_committee
+            .iter()
+            .map(|m| (m.preferences.storage_price.as_u64(), m.weight as u64))
+            .collect();
+
+        let cap_pairs: Vec<(u64, u64)> = expected_committee
+            .iter()
+            .map(|m| (m.preferences.storage_capacity.as_u64(), m.weight as u64))
+            .collect();
+
+        let storage_capacity = quorum_above(&cap_pairs, total_weight).into();
+        let storage_price    = quorum_below(&price_pairs, total_weight).into();
 
         env.process_instruction(
             &instruction, 
@@ -166,8 +232,7 @@ mod tests {
                         seats: expected_seats,
                         seats_prev: system.seats,
                         committee_prev: system.committee,
-                        committee: system.committee_next,
-                        committee_next: system.committee_next,
+                        committee: expected_committee,
                         ..system
                     }.pack().as_ref()
                 ).build(),
@@ -185,6 +250,9 @@ mod tests {
                         rewards_pool: TAPE(1000),      // fees_prev + leftover(=0)
                         rewards_paid: TAPE(0),         // reset
                         recent_usage: StorageUnits(500),
+
+                        storage_capacity,
+                        storage_price,
 
                         ..archive
                     }.pack().as_ref()

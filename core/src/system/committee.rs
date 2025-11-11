@@ -1,6 +1,8 @@
 use core::fmt;
+use super::node::*;
 use crate::types::*;
 use crate::bls::*;
+use crate::apportion::Seats;
 use bytemuck::{Pod, Zeroable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,19 @@ pub struct CommitteeMember {
     pub stake: Coin<TAPE>,
     pub key: BlsPubkey,
     pub blacklist: StorageUnits,
+    pub preferences: NodePreferences,
+    pub weight: u64,
+}
+
+impl CommitteeMember {
+    /// Creates a new CommitteeMember with id and stake, zeroed other fields.
+    pub fn new(id: NodeId, stake: Coin<TAPE>) -> Self {
+        CommitteeMember {
+            id,
+            stake,
+            ..CommitteeMember::zeroed()
+        }
+    }
 }
 
 #[repr(C)]
@@ -87,8 +102,11 @@ impl<const NODES: usize> Committee<NODES> {
 
     /// Retruns the member at the given index.
     #[inline]
-    pub fn member_at(&self, index: usize) -> CommitteeMember {
-        self.members[index]
+    pub fn member_at(&self, index: usize) -> Option<CommitteeMember> {
+        if index >= self.size() {
+            return None;
+        }
+        Some(self.members[index])
     }
 
     /// Get a member with the given NodeId, if any.
@@ -331,6 +349,30 @@ impl<const NODES: usize> Committee<NODES> {
         }
         true
     }
+
+    /// Zero the weight field for all active members.
+    pub fn clear_weights(&mut self) {
+        let n = self.size();
+        for i in 0..n {
+            self.members[i].weight = 0;
+        }
+    }
+
+    /// Apply weights from a Seats mapping by counting seats per member index.
+    /// Any seat pointing outside the active member range is ignored.
+    pub fn apply_weights_from_seats<const S: usize>(&mut self, seats: &Seats<S>) {
+        self.clear_weights();
+
+        let n = self.size();
+        for &owner in seats.iter() {
+            let idx = owner as usize;
+            if idx < n {
+                self.members[idx].weight = self.members[idx].weight
+                    .saturating_add(1);
+            }
+        }
+    }
+
 }
 
 impl<const NODES: usize> fmt::Debug for Committee<NODES> {
@@ -366,12 +408,7 @@ mod tests {
     fn node(n: u8) -> NodeId { NodeId::new(n as u64) }
     fn empty_set<const N: usize>() -> Committee<N> { Committee::new() }
     fn member(id: NodeId, stake: u64) -> CommitteeMember {
-        CommitteeMember {
-            id,
-            stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits::zeroed(),
-        }
+        CommitteeMember::new(id, tape(stake))
     }
 
     #[test]

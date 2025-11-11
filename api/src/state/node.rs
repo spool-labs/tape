@@ -20,6 +20,9 @@ pub struct Node {
     /// Metadata about this storage node.
     pub metadata: NodeMetadata,
 
+    /// Preferences for this storage node.
+    pub preferences: NodePreferences,
+
     /// The staking pool associated with this node.
     pub pool: StakingPool<EPOCH_VALUES>,
 

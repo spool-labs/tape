@@ -57,7 +57,7 @@ mod tests {
         node.authority = signer;
         node.blacklist = Blacklist::new();
 
-        // Prepare a track (we only read it)
+        // Prepare a track
         let track = Track {
             tape: tape_address,
             key: blob_hash,
@@ -66,9 +66,7 @@ mod tests {
             data: BlobData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
-                min_correct(SEAT_COUNT as u64),
-                max_faulty(SEAT_COUNT as u64),
-            ),
+            )
         };
 
         // Build accounts

@@ -71,12 +71,11 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let mut pubkeys = Vec::with_capacity(indices.len());
     for member_index in indices {
-        if member_index >= committee_size {
+        if let Some(member) = system.committee.member_at(member_index) {
+            pubkeys.push(member.key.0);
+        } else {
             return Err(ProgramError::Custom(2));
         }
-
-        let pk = system.committee.member_at(member_index).key.0;
-        pubkeys.push(pk);
     }
 
     let decompressed_sig = G1Point::try_from(&args.signature.0)
@@ -133,7 +132,7 @@ mod tests {
                     id: NodeId::from(i as u64),
                     stake: TAPE(1_000 * (i * i) as u64), // non-linear stake distribution
                     key: *pk,
-                    blacklist: StorageUnits(0),
+                    ..CommitteeMember::zeroed()
                 })
                 .collect::<Vec<_>>(),
         );
@@ -191,7 +190,9 @@ mod tests {
             .iter()
             .map(|&i| {
                 // Find the SK whose PK matches the on-chain member at index i
-                let member_pk = system.committee.member_at(i).key;
+                let member_pk = system.committee
+                    .member_at(i)
+                    .expect("member at index").key;
                 let sk = committee
                     .iter()
                     .find(|(_, pk)| *pk == member_pk)

@@ -8,6 +8,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         signer_info,
 
         system_info,
+        archive_info,
         epoch_info,
         node_info,
 
@@ -27,14 +28,18 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .has_address(&node_address)?;
 
-    let epoch = epoch_info
-        .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
-
     let system = system_info
         .is_writable()?
         .is_system()?
         .as_account_mut::<System>(&tapedrive::ID)?;
+
+    let archive = archive_info
+        .is_archive()?
+        .as_account::<Archive>(&tapedrive::ID)?;
+
+    let epoch = epoch_info
+        .is_epoch()?
+        .as_account::<Epoch>(&tapedrive::ID)?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -75,6 +80,11 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         next_bls_pubkey: args.bls_pubkey,
     };
 
+    node.preferences = NodePreferences {
+        storage_price: archive.storage_price,
+        storage_capacity: archive.storage_capacity,
+    };
+
     system.total_nodes = system.total_nodes
         .checked_add(1)
         .ok_or(TapeError::Overflow)?;
@@ -111,11 +121,17 @@ mod tests {
         );
 
         let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
         let (node_address, _) = node_pda(signer);
 
         // Setup existing accounts
         let system = System::zeroed();
+        let archive = Archive {
+            storage_price: TAPE(100),
+            storage_capacity: StorageUnits(1_000_000),
+            ..Archive::zeroed()
+        };
         let epoch = Epoch {
             id: EpochNumber(42),
             state: EpochState::new(),
@@ -126,6 +142,7 @@ mod tests {
             sol(signer, 1_000_000_000),
 
             pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             empty(node_address),
 
@@ -158,6 +175,10 @@ mod tests {
                             network_tls,
                             bls_pubkey,
                             next_bls_pubkey: bls_pubkey,
+                        },
+                        preferences: NodePreferences {
+                            storage_price: TAPE(100),
+                            storage_capacity: StorageUnits(1_000_000),
                         },
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,

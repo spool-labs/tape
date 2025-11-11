@@ -102,6 +102,7 @@ pub fn build_register_node_ix(
 ) -> Instruction {
 
     let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
     let (node_address, _) = node_pda(signer);
 
@@ -113,7 +114,8 @@ pub fn build_register_node_ix(
             AccountMeta::new(signer, true),
 
             AccountMeta::new(system_address, false),
-            AccountMeta::new(epoch_address, false),
+            AccountMeta::new_readonly(archive_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(node_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
@@ -359,6 +361,25 @@ pub fn build_remove_from_blacklist_ix(
     }
 }
 
+pub fn build_set_storage_capacity_ix(
+    signer: Pubkey,
+    node_address: Pubkey,
+    size: StorageUnits,
+) -> Instruction {
+    let size = size.pack();
+
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(node_address, false),
+        ],
+        data: SetStorageCapacity {
+            size,
+        }.to_bytes(),
+    }
+}
+
 pub fn build_set_storage_price_ix(
     signer: Pubkey,
     node_address: Pubkey,
@@ -378,21 +399,3 @@ pub fn build_set_storage_price_ix(
     }
 }
 
-pub fn build_set_storage_capacity_ix(
-    signer: Pubkey,
-    node_address: Pubkey,
-    size: StorageUnits,
-) -> Instruction {
-    let size = size.pack();
-
-    Instruction {
-        program_id: crate::program::tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(node_address, false),
-        ],
-        data: SetStorageCapacity {
-            size,
-        }.to_bytes(),
-    }
-}

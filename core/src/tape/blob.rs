@@ -39,7 +39,6 @@ impl BlobState {
         self.phase = p.into();
     }
 
-    // --- Phase checks ---
     pub fn is_registered(&self) -> bool {
         matches!(self.phase_enum(), Some(BlobPhase::Registered))
     }
@@ -52,7 +51,6 @@ impl BlobState {
         matches!(self.phase_enum(), Some(BlobPhase::Invalidated))
     }
 
-    // --- Certified epoch access ---
     pub fn certified_epoch(&self) -> Option<EpochNumber> {
         match self.phase_enum() {
             Some(BlobPhase::Certified) => {
@@ -66,7 +64,6 @@ impl BlobState {
         }
     }
 
-    // --- State transitions ---
     pub fn set_registered(&mut self) -> &mut Self {
         self.set_phase(BlobPhase::Registered);
         self.certified_epoch = EpochNumber::zero();
@@ -98,27 +95,17 @@ pub struct BlobData {
 
     /// Merkle root of the erasure coded data
     pub commitment_hash: Hash,
-
-    /// Number of parity segments
-    pub num_parity: u64,
-
-    /// Number of data segments
-    pub num_data: u64,
 }
 
 impl BlobData {
     pub const fn new(
         registered_epoch: EpochNumber,
         commitment_hash: Hash,
-        num_parity: u64,
-        num_data: u64,
     ) -> Self {
         Self {
             state: BlobState::new(),
             registered_epoch,
             commitment_hash,
-            num_parity,
-            num_data,
         }
     }
 

@@ -41,6 +41,8 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         stake: balance,
         key: node.metadata.bls_pubkey,
         blacklist: node.blacklist.total_size(),
+        preferences: node.preferences.clone(),
+        weight: 0,
     };
 
     system.committee_next
@@ -56,12 +58,7 @@ mod tests {
     use tape_test::*;
 
     fn member(id: u64, stake: u64) -> CommitteeMember {
-        CommitteeMember {
-            id: NodeId(id),
-            stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits(0),
-        }
+        CommitteeMember::new(NodeId(id), TAPE(stake))
     }
 
     #[test]
@@ -92,6 +89,10 @@ mod tests {
         // Minimal pool setup to produce a non-zero activation balance
         node.pool.stake = TAPE(1_000);
         node.pool.shares = ShareAmount(1_000);
+        node.preferences = NodePreferences {
+            storage_price: TAPE(10),
+            storage_capacity: StorageUnits(1_000_000),
+        };
 
         let accounts = vec![
             sol(signer, 1_000_000_000),
@@ -111,6 +112,8 @@ mod tests {
             stake: balance,
             key: node.metadata.bls_pubkey,
             blacklist: node.blacklist.total_size(),
+            preferences: node.preferences.clone(),
+            ..CommitteeMember::zeroed()
         };
 
         system

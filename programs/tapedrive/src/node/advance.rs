@@ -99,8 +99,8 @@ mod tests {
         CommitteeMember {
             id: NodeId(id),
             stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
             blacklist: StorageUnits(bl),
+            ..CommitteeMember::zeroed()
         }
     }
 

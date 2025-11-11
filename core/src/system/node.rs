@@ -20,10 +20,14 @@ pub struct NodeMetadata {
 
     /// The next BLS public key of this node, same as bls_pubkey if not scheduled to change.
     pub next_bls_pubkey: BlsPubkey,
+}
 
-    /// The preferred storage size per seat.
-    pub preferred_storage_size: StorageUnits,
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug)]
+pub struct NodePreferences {
+    /// The preferred total archive size.
+    pub storage_capacity: StorageUnits,
 
-    /// The preferred storage price per seat.
-    pub preferred_storage_price: Coin<TAPE>,
+    /// The preferred price per storage unit.
+    pub storage_price: Coin<TAPE>,
 }

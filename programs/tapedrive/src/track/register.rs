@@ -60,8 +60,6 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     track.data = BlobData::new(
         current_epoch(epoch),
         args.commitment,
-        min_correct(SEAT_COUNT as u64),
-        max_faulty(SEAT_COUNT as u64),
     );
 
     tape.used = tape.used
@@ -139,8 +137,6 @@ mod tests {
                         data: BlobData::new(
                             EpochNumber(0),
                             erasure_root,
-                            min_correct(SEAT_COUNT as u64),
-                            max_faulty(SEAT_COUNT as u64),
                         ),
                     }.pack().as_ref()
                 ).build(),

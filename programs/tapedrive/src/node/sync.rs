@@ -87,12 +87,7 @@ mod tests {
     use tape_test::*;
 
     fn member(id: u64, stake: u64) -> CommitteeMember {
-        CommitteeMember {
-            id: NodeId(id),
-            stake: TAPE(stake),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits(0),
-        }
+        CommitteeMember::new(NodeId(id), TAPE(stake))
     }
 
     #[test]
