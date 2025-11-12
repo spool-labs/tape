@@ -100,7 +100,7 @@ impl<const NODES: usize> Committee<NODES> {
         self.members[..count].iter().position(|m| &m.id == node_id)
     }
 
-    /// Retruns the member at the given index.
+    /// Returns the member at the given index.
     #[inline]
     pub fn member_at(&self, index: usize) -> Option<CommitteeMember> {
         if index >= self.size() {
@@ -111,12 +111,12 @@ impl<const NODES: usize> Committee<NODES> {
 
     /// Get a member with the given NodeId, if any.
     #[inline]
-    pub fn get_member(&self, node_id: &NodeId) -> Option<(CommitteeMember, usize)> {
+    pub fn get_member(&self, node_id: &NodeId) -> Option<(&CommitteeMember, usize)> {
         let Some(idx) = self.index_of(node_id) else {
             return None;
         };
 
-        Some((self.members[idx], idx))
+        Some((&self.members[idx], idx))
     }
 
     /// Helper: get stake for NodeId, if any.
@@ -290,9 +290,9 @@ impl<const NODES: usize> Committee<NODES> {
 
     /// Returns an iterator over CommitteeMembers.
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = CommitteeMember> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = &CommitteeMember> + '_ {
         let count = self.size();
-        self.members[..count].iter().copied()
+        self.members[..count].iter()
     }
 
     /// Array of active member NodeIds (sorted by descending stake).

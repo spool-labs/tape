@@ -1,7 +1,7 @@
 use crate::declare_id;
 use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
-use tape_core::prelude::{Bitmap, Hash};
+use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
 use super::token::MINT_ADDRESS;
 
 pub const MEMBER_COUNT: usize = 128;
@@ -18,13 +18,14 @@ declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W");
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
-pub const SYSTEM:    &[u8] = b"system";
-pub const ARCHIVE:   &[u8] = b"archive";
-pub const EPOCH:     &[u8] = b"epoch";
-pub const NODE:      &[u8] = b"node";
-pub const RESOURCE:  &[u8] = b"resource";
-pub const TRACK:     &[u8] = b"track";
-pub const STAKE:     &[u8] = b"stake";
+pub const SYSTEM:       &[u8] = b"system";
+pub const ARCHIVE:      &[u8] = b"archive";
+pub const EPOCH:        &[u8] = b"epoch";
+pub const NODE:         &[u8] = b"node";
+pub const RESOURCE:     &[u8] = b"resource";
+pub const TRACK:        &[u8] = b"track";
+pub const STAKE:        &[u8] = b"stake";
+pub const CERTIFICATE:  &[u8] = b"certificate";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
@@ -139,13 +140,18 @@ pub fn tape_pda(authority: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
+pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
+}
+
+#[inline(always)]
 pub fn track_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[TRACK, authority.as_ref(), hash.as_ref()], &id())
 }
 
 #[inline(always)]
-pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
+pub fn cert_pda(parent: Pubkey, message: Hash, epoch: EpochNumber) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()], &id())
 }
 
 #[cfg(test)]

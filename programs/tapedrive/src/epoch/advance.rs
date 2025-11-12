@@ -95,6 +95,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         total_weight = total_weight.saturating_add(weight);
     });
 
+    // We select the lowest price that achieves quorum 
+    // and the highest capacity that achieves quorum
+
     archive.storage_capacity = 
         quorum_above(&storage_capacities, total_weight).into();
     archive.storage_price = 
@@ -180,6 +183,7 @@ mod tests {
         ];
 
         // Expected state after instruction
+
         let seat_count = dhondt_allocate(
             &system.committee_next.active_stakes(),
             SEAT_COUNT as u16,
@@ -203,7 +207,6 @@ mod tests {
             StorageUnits(500), TAPE(1000), e1, e100
         ).expect("reserve capacity");
 
-        // Compute expected archive capacity/price via quorum functions
         let total_weight: u64 = expected_committee
             .iter()
             .map(|m| m.weight as u64)
