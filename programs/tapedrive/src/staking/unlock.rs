@@ -9,13 +9,15 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         stake_info,
         epoch_info,
         node_info,
+        history_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    let (history_address, _) = history_pda(*node_info.key);
+
     signer_info
         .is_signer()?;
-
 
     let epoch = epoch_info
         .is_epoch()?
@@ -24,6 +26,11 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    let history = history_info
+        .has_address(&history_address)?
+        .as_account::<History>(&tapedrive::ID)?
+        .assert(|h| h.node == *node_info.key)?;
 
     if node.latest_epoch >= prev_epoch(epoch) {
         return Err(ProgramError::Custom(0));
@@ -42,7 +49,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     }
 
     let staked_tape = &mut stake.inner;
-    let activation_rate = node.history
+    let activation_rate = history.inner
         .rate_at(staked_tape.activation_epoch)
         .ok_or(ProgramError::Custom(0))?;
     //  .ok_or(TapeError::MissingExchangeRate)?;
@@ -73,11 +80,13 @@ mod tests {
 
         let (epoch_address, _) = epoch_pda();
         let (stake_address, _) = stake_pda(signer, pool_address);
+        let (history_address, _) = history_pda(pool_address);
 
         // Setup existing accounts
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
         let mut stake = Stake::zeroed();
+        let mut history = History::zeroed();
 
         let e0: EpochNumber = EpochNumber(42);     // stake activation epoch
         let e1: EpochNumber = e0 + EpochNumber(1);
@@ -89,16 +98,18 @@ mod tests {
 
         node.id = NodeId(5);
         node.pool.stake = TAPE(5000);
-        node.history.push(e0, ExchangeRate { tape: 1000, other: 9000 });
-        node.history.push(e1, ExchangeRate { tape: 1100, other: 8900 });
-        node.history.push(e2, ExchangeRate { tape: 1200, other: 8800 });
+
+        history.node = pool_address;
+        history.inner.push(e0, ExchangeRate { tape: 1000, other: 9000 });
+        history.inner.push(e1, ExchangeRate { tape: 1100, other: 8900 });
+        history.inner.push(e2, ExchangeRate { tape: 1200, other: 8800 });
 
         stake.authority = signer;
         stake.pool = pool_address;
         stake.inner = StakedTape::new(TAPE(1000), e0);
 
         // Calculate shares at activation
-        let shares = node.history.rate_at(e0)
+        let shares = history.inner.rate_at(e0)
             .expect("rate at activation")
             .convert_to_other_amount(stake.inner.amount.into());
 
@@ -107,6 +118,7 @@ mod tests {
             pda(stake_address, stake.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
         ];
 
         let env = test_env();
@@ -142,6 +154,12 @@ mod tests {
                         ..node
                     }.pack().as_ref()
                 ).build(),
+                Check::account(&epoch_address) // unchanged
+                    .data(epoch.pack().as_ref())
+                    .build(),
+                Check::account(&history_address) // unchanged
+                    .data(history.pack().as_ref())
+                    .build(),
             ]
         );
     }

@@ -49,7 +49,7 @@ unsafe impl<const N: usize> Pod for PreviousRates<N> {}
 
 impl<const N: usize> PreviousRates<N> {
     pub fn new() -> Self {
-        Self(RingBuffer::new())
+        Self(RingBuffer::zeroed())
     }
 
     /// Push a new rate for the given epoch.

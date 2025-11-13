@@ -11,6 +11,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         archive_info,
         epoch_info,
         node_info,
+        history_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -35,6 +36,11 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    let history = history_info
+        .is_writable()?
+        .as_account_mut::<History>(&tapedrive::ID)?
+        .assert_mut(|h| h.node == *node_info.key)?;
 
     // Can't advance if epoch is syncing (i.e., not active)
     if epoch.state.is_syncing() {
@@ -68,14 +74,22 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         // return Err(TapeError::NoRewardsOwed);
     }
 
+    // Update node
+
+    node.latest_epoch = current_epoch(epoch);
     node.pool
         .advance_epoch(current_epoch(epoch), rewards_owed)
         .map_err(|_| ProgramError::Custom(1))?;
 
+    // Update history
+
     let new_rate = node.pool
         .get_current_rate();
 
-    node.history.push(current_epoch(epoch), new_rate);
+    history.latest_epoch = node.latest_epoch;
+    history.inner.push(current_epoch(epoch), new_rate);
+
+    // Update archive
 
     let rewards_paid = archive.rewards_paid
         .saturating_add(rewards_owed.into());
@@ -113,6 +127,7 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
         let (pool_address, _) = node_pda(pool_owner);
+        let (history_address, _) = history_pda(pool_address);
 
         let instruction = build_advance_pool_ix(signer, pool_address);
 
@@ -138,7 +153,14 @@ mod tests {
                 next_bls_pubkey: BlsPubkey::new_unique(),
                 ..NodeMetadata::zeroed()
             },
+            latest_epoch: EpochNumber(6),
             ..Node::zeroed()
+        };
+        let mut history = History {
+            node: pool_address,
+            latest_epoch: EpochNumber(6),
+            inner: PoolHistory::new(),
+            ..History::zeroed()
         };
 
         // Previous committee/seats used by calc_rewards
@@ -162,6 +184,7 @@ mod tests {
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
         ];
 
         // Expected state after instruction
@@ -179,13 +202,16 @@ mod tests {
             .rewards_paid
             .saturating_add(rewards_owed.into());
 
+        node.latest_epoch = e0;
         node.pool
             .advance_epoch(e0, rewards_owed)
             .expect("advance epoch");
 
         let new_rate = node.pool.get_current_rate();
-        node.history.push(e0, new_rate);
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
+
+        history.inner.push(e0, new_rate);
+        history.latest_epoch = node.latest_epoch;
 
         let env = test_env();
         env.process_instruction(
@@ -198,6 +224,9 @@ mod tests {
                     .build(),
                 Check::account(&pool_address)
                     .data(node.pack().as_ref())
+                    .build(),
+                Check::account(&history_address)
+                    .data(history.pack().as_ref())
                     .build(),
             ],
         );

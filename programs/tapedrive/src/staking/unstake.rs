@@ -14,6 +14,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         vault_info,
         epoch_info,
         node_info,
+        history_info,
 
         token_program_info,
         staking_program_info,
@@ -21,6 +22,8 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    let (history_address, _) = history_pda(*node_info.key);
 
     signer_info
         .is_signer()?;
@@ -50,6 +53,11 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
+
+    let history = history_info
+        .has_address(&history_address)?
+        .as_account::<History>(&tapedrive::ID)?
+        .assert(|h| h.node == *node_info.key)?;
 
     if node.latest_epoch >= prev_epoch(epoch) {
         return Err(ProgramError::Custom(0));
@@ -91,11 +99,11 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Compute owed rewards based on activation and withdraw exchange rates
     // Note: If withdraw <= activation, owed = 0 (per StakingPool::unstake)
 
-    let activation_rate = node.history
+    let activation_rate = history.inner
         .rate_at(staked_tape.activation_epoch)
         .ok_or(ProgramError::Custom(2))?;
 
-    let withdraw_rate = node.history
+    let withdraw_rate = history.inner
         .rate_at(withdraw_epoch)
         .ok_or(ProgramError::Custom(3))?;
 
@@ -172,6 +180,7 @@ mod tests {
         let (archive_ata, _) = archive_ata();
         let (epoch_address, _) = epoch_pda();
         let (pool_address, _)  = node_pda(pool_owner);
+        let (history_address, _) = history_pda(pool_address);
         let (stake_address, _) = stake_pda(signer, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
 
@@ -188,6 +197,7 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         let archive = Archive::zeroed();
         let mut node = Node::zeroed();
+        let mut history = History::zeroed();
 
         epoch.id = e4; // current epoch equals withdraw epoch
 
@@ -197,8 +207,9 @@ mod tests {
         let activation_rate = ExchangeRate { tape: 1000, other: 9000 };
         let withdraw_rate   = ExchangeRate { tape: 1200, other: 8800 };
 
-        node.history.push(e0, activation_rate);
-        node.history.push(e4, withdraw_rate);
+        history.node = pool_address;
+        history.inner.push(e0, activation_rate);
+        history.inner.push(e4, withdraw_rate);
 
         // 1000 tokens purchased at activation rate, sold at withdraw rate should yield:
         // = <shares> = 1000 * 9000 / 1000 = 9000
@@ -243,6 +254,7 @@ mod tests {
 
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
 
             token_program(),
             staking_program(),
@@ -295,6 +307,13 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
 
+                Check::account(&epoch_address) // unchanged
+                    .data(epoch.pack().as_ref())
+                    .build(),
+
+                Check::account(&history_address) // unchanged
+                    .data(history.pack().as_ref())
+                    .build(),
             ],
         );
     }

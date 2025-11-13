@@ -39,6 +39,7 @@ pub fn build_advance_pool_ix(
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (epoch_address, _)  = epoch_pda();
+    let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -49,6 +50,7 @@ pub fn build_advance_pool_ix(
             AccountMeta::new(archive_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
+            AccountMeta::new(history_address, false),
         ],
         data: AdvancePool { }.to_bytes(),
     }
@@ -96,6 +98,7 @@ pub fn build_request_stake_unlock_ix(
 
     let (epoch_address, _) = epoch_pda();
     let (stake_address, _) = stake_pda(signer, pool);
+    let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -105,6 +108,7 @@ pub fn build_request_stake_unlock_ix(
             AccountMeta::new(stake_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
+            AccountMeta::new_readonly(history_address, false),
         ],
         data: RequestStakeUnlock {}.to_bytes(),
     }
@@ -122,6 +126,7 @@ pub fn build_unstake_from_pool_ix(
     let (epoch_address, _)   = epoch_pda();
     let (stake_address, _)   = stake_pda(signer, pool);
     let (vault_address, _)   = vault_pda(stake_address);
+    let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -136,6 +141,7 @@ pub fn build_unstake_from_pool_ix(
             AccountMeta::new(vault_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
+            AccountMeta::new_readonly(history_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(crate::program::staking::ID, false),

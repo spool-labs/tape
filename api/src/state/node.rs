@@ -4,7 +4,6 @@ use super::AccountType;
 use crate::state;
 use crate::program::{
     EPOCH_VALUES,
-    EPOCH_HISTORY,
     BLACKLIST_SIZE,
 };
 
@@ -25,9 +24,6 @@ pub struct Node {
 
     /// The staking pool associated with this node.
     pub pool: StakingPool<EPOCH_VALUES>,
-
-    /// The share price history of this node.
-    pub history: PoolHistory<EPOCH_HISTORY>,
 
     /// Blacklist for this node.
     pub blacklist: Blacklist<BLACKLIST_SIZE>,

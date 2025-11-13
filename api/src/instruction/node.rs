@@ -93,6 +93,7 @@ pub fn build_register_node_ix(
     let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
     let (node_address, _) = node_pda(signer);
+    let (history_address, _) = history_pda(node_address);
 
     let commission_rate = commission_rate.pack();
 
@@ -105,6 +106,7 @@ pub fn build_register_node_ix(
             AccountMeta::new_readonly(archive_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(node_address, false),
+            AccountMeta::new(history_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),

@@ -22,6 +22,7 @@ pub const SYSTEM:       &[u8] = b"system";
 pub const ARCHIVE:      &[u8] = b"archive";
 pub const EPOCH:        &[u8] = b"epoch";
 pub const NODE:         &[u8] = b"node";
+pub const HISTORY:      &[u8] = b"history";
 pub const RESOURCE:     &[u8] = b"resource";
 pub const TRACK:        &[u8] = b"track";
 pub const STAKE:        &[u8] = b"stake";
@@ -132,6 +133,11 @@ pub fn archive_ata() -> (Pubkey, u8) {
 #[inline(always)]
 pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[NODE, authority.as_ref()], &id())
+}
+
+#[inline(always)]
+pub fn history_pda(node: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[HISTORY, node.as_ref()], &id())
 }
 
 #[inline(always)]

@@ -11,6 +11,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         archive_info,
         epoch_info,
         node_info,
+        history_info,
 
         system_program_info, 
         rent_sysvar_info,
@@ -22,11 +23,17 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_signer()?;
 
     let (node_address, _) = node_pda(*signer_info.key);
+    let (history_address, _) = history_pda(node_address);
 
     node_info
         .is_empty()?
         .is_writable()?
         .has_address(&node_address)?;
+
+    history_info
+        .is_empty()?
+        .is_writable()?
+        .has_address(&history_address)?;
 
     let system = system_info
         .is_writable()?
@@ -61,10 +68,16 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &[NODE, signer_info.key.as_ref()],
     )?;
 
+    let node_number = system.total_nodes;
+    system.total_nodes = system.total_nodes
+        .checked_add(1)
+        .ok_or(TapeError::Overflow)?;
+
     let commission_rate = BasisPoints::unpack(args.commission_rate);
+
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
-    node.id                   = NodeId::new(system.total_nodes);
+    node.id                   = node_number.into();
     node.authority            = *signer_info.key;
     node.registered_epoch     = current_epoch(epoch);
     node.latest_epoch         = current_epoch(epoch);
@@ -85,9 +98,20 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         storage_capacity: archive.storage_capacity,
     };
 
-    system.total_nodes = system.total_nodes
-        .checked_add(1)
-        .ok_or(TapeError::Overflow)?;
+    create_program_account::<History>(
+        history_info,
+        system_program_info,
+        signer_info,
+        &tapedrive::ID,
+        &[HISTORY, node_address.as_ref()],
+    )?;
+
+    let history = history_info.as_account_mut::<History>(&tapedrive::ID)?;
+
+    history.node              = node_address;
+    history.registered_epoch  = node.registered_epoch;
+    history.latest_epoch      = node.latest_epoch;
+    history.inner             = PoolHistory::new();
 
     Ok(())
 }
@@ -124,6 +148,7 @@ mod tests {
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
         let (node_address, _) = node_pda(signer);
+        let (history_address, _) = history_pda(node_address);
 
         // Setup existing accounts
         let system = System::zeroed();
@@ -145,6 +170,7 @@ mod tests {
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             empty(node_address),
+            empty(history_address),
 
             system_program(),
             rent_sysvar(),
@@ -167,7 +193,6 @@ mod tests {
                         id: NodeId::new(0),
                         authority: signer,
                         pool: StakingPool::new(commission_rate),
-                        history: PoolHistory::new(),
                         blacklist: Blacklist::new(),
                         metadata: NodeMetadata {
                             name,
@@ -183,6 +208,14 @@ mod tests {
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,
                         ..Node::zeroed()
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&history_address).data(
+                    History {
+                        node: node_address,
+                        registered_epoch: epoch.id,
+                        latest_epoch: epoch.id,
+                        inner: PoolHistory::new(),
                     }.pack().as_ref()
                 ).build(),
             ]

@@ -2,6 +2,7 @@ mod archive;
 mod epoch;
 mod exchange;
 mod feature;
+mod history;
 mod node;
 mod stake;
 mod system;
@@ -12,6 +13,7 @@ mod treasury;
 pub use archive::*;
 pub use epoch::*;
 pub use exchange::*;
+pub use history::*;
 pub use node::*;
 pub use stake::*;
 pub use system::*;
@@ -35,6 +37,7 @@ pub enum AccountType {
 
     Exchange,
     Node,
+    History,
     Stake,
 
     Tape,
