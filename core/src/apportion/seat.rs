@@ -21,20 +21,16 @@ pub enum SeatAssignmentError {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seats<const SEATS: usize> {
-    pub seats: [SeatMapping; SEATS],
-}
+pub struct Seats<const SEATS: usize>(pub [SeatMapping; SEATS]);
 
 unsafe impl<const SEATS: usize> Zeroable for Seats<SEATS> {}
 unsafe impl<const SEATS: usize> Pod for Seats<SEATS> {}
 
 impl <const SEATS: usize> Seats<SEATS> {
 
-    /// Create a new seat mapping.
-    pub fn new(seat_map: [SeatMapping; SEATS]) -> Self {
-        Self {
-            seats: seat_map,
-        }
+    /// Create a new seat map from an array.
+    pub fn new(seats: [SeatMapping; SEATS]) -> Self {
+        Self(seats)
     }
 
     /// Create a seat map from a slice.
@@ -48,9 +44,7 @@ impl <const SEATS: usize> Seats<SEATS> {
             seats[i] = seat_map[i];
         }
 
-        Ok(Self {
-            seats,
-        })
+        Ok(Self(seats))
     }
 
     /// Create an initial seat map from seat counts, assigning seats contiguously.
@@ -80,7 +74,7 @@ impl <const SEATS: usize> Seats<SEATS> {
 
         // Distribute seats with minimal disruption.
         let seats = reassign_seats(
-            &self.seats,
+            &self.0,
             &members_current,
             &members_next,
             &seat_counts,
@@ -88,7 +82,7 @@ impl <const SEATS: usize> Seats<SEATS> {
 
         // Update seat mapping
         for i in 0..SEATS {
-            self.seats[i] = seats[i];
+            self.0[i] = seats[i];
         }
 
         Ok(())
@@ -100,7 +94,7 @@ impl <const SEATS: usize> Seats<SEATS> {
 
         let mut count = 0u16;
         for i in 0..SEATS {
-            if self.seats[i] as usize == member_index {
+            if self.0[i] as usize == member_index {
                 count += 1;
             }
         }
@@ -113,7 +107,7 @@ impl <const SEATS: usize> Seats<SEATS> {
 
         let mut seat_indices = Vec::new();
         for i in 0..SEATS {
-            if self.seats[i] as usize == member_index {
+            if self.0[i] as usize == member_index {
                 seat_indices.push(i as SeatIndex);
             }
         }
@@ -122,7 +116,7 @@ impl <const SEATS: usize> Seats<SEATS> {
 
     /// Returns an iterator over the seat mappings.
     pub fn iter(&self) -> impl Iterator<Item = &SeatMapping> {
-        self.seats.iter()
+        self.0.iter()
     }
 }
 
@@ -138,7 +132,7 @@ mod tests {
     #[test]
     fn from_slice_okay() {
         let s = Seats::<4>::try_from(&[0u8, 1, 1, 0]).unwrap();
-        assert_eq!(s.seats, [0, 1, 1, 0]);
+        assert_eq!(s.0, [0, 1, 1, 0]);
     }
 
     #[test]
@@ -152,7 +146,7 @@ mod tests {
         let counts: &[SeatCount] = &[2, 1, 3];
         let seats = Seats::<6>::try_from_counts(counts).unwrap();
 
-        assert_eq!(seats.seats, [0, 0, 1, 2, 2, 2]);
+        assert_eq!(seats.0, [0, 0, 1, 2, 2, 2]);
         assert_eq!(seats.weight(0), 2);
         assert_eq!(seats.weight(1), 1);
         assert_eq!(seats.weight(2), 3);
@@ -179,7 +173,7 @@ mod tests {
     fn empty_weight() {
         let seats = Seats::<0>::new([]);
         assert_eq!(seats.weight(0), 0);
-        assert_eq!(Seats::<0>::try_from(&[]).unwrap().seats, []);
+        assert_eq!(Seats::<0>::try_from(&[]).unwrap().0, []);
     }
 
     #[test]

@@ -190,7 +190,7 @@ mod tests {
         );
 
         let seats = reassign_seats(
-            &system.seats.seats,
+            &system.seats.0,
             &system.committee.active_members(),
             &system.committee_next.active_members(),
             &seat_count,
