@@ -9,6 +9,7 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
 
         source_tape_info,
         dest_tape_info,
+        archive_info,
 
         system_program_info,
         rent_info,
@@ -16,11 +17,24 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
-    recipient_info.is_signer()?;
+    signer_info
+        .is_signer()?;
+    recipient_info
+        .is_signer()?;
 
-    system_program_info.is_program(&system_program::ID)?;
-    rent_info.is_sysvar(&sysvar::rent::ID)?;
+    system_program_info
+        .is_program(&system_program::ID)?;
+    rent_info
+        .is_sysvar(&sysvar::rent::ID)?;
+
+    let archive = archive_info
+        .is_writable()?
+        .is_archive()?
+        .as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    archive.tape_count = archive.tape_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // Derive PDAs
     let (source_tape_address, _) = tape_pda(*signer_info.key);
@@ -86,6 +100,7 @@ mod tests {
 
         let (source_tape_address, _) = tape_pda(signer);
         let (dest_tape_address, _)   = tape_pda(recipient);
+        let (archive_address, _)     = archive_pda();
 
         // Source: 500 capacity, used 123, epochs [40, 50)
         let source_tape = Tape {
@@ -97,6 +112,11 @@ mod tests {
             ..Tape::zeroed()
         };
 
+        let archive = Archive {
+            tape_count: 100,
+            ..Archive::zeroed()
+        };
+
         let split_epoch = EpochNumber(45);
         let instruction = build_split_tape_by_epoch_ix(signer, recipient, split_epoch);
 
@@ -106,6 +126,7 @@ mod tests {
 
             pda(source_tape_address, source_tape.pack(), tapedrive::ID),
             empty(dest_tape_address),
+            pda(archive_address, archive.pack(), tapedrive::ID),
 
             system_program(),
             rent_sysvar(),
@@ -127,6 +148,10 @@ mod tests {
             expiry_epoch: EpochNumber(45),
             ..Tape::zeroed()
         };
+        let expected_archive = Archive {
+            tape_count: 99,
+            ..archive
+        };
 
         let env = test_env();
         env.process_instruction(
@@ -138,6 +163,9 @@ mod tests {
                     .data(expected_dest.pack().as_ref()).build(),
                 Check::account(&source_tape_address)
                     .data(expected_source.pack().as_ref()).build(),
+                Check::account(&archive_address)
+                    .data(expected_archive.pack().as_ref())
+                    .build(),
             ],
         );
     }

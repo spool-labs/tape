@@ -1,10 +1,11 @@
 use crate::define_numeric_type;
 
 // Index types
-define_numeric_type!(SlotNumber, "slot");
 define_numeric_type!(EpochNumber, "epoch");
+define_numeric_type!(SlotNumber, "slot");
+define_numeric_type!(TapeNumber, "tape");
+define_numeric_type!(TrackNumber, "track");
 define_numeric_type!(CommitteeNumber, "committee");
-define_numeric_type!(PoolNumber, "pool");
 define_numeric_type!(NodeId, "node");
 define_numeric_type!(VersionId, "version");
 define_numeric_type!(ShareAmount, "shares");

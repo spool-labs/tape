@@ -9,6 +9,7 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
         source_tape_info,
         dest_tape_info,
+        archive_info,
 
         system_program_info,
     ] = accounts else {
@@ -22,6 +23,15 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     system_program_info
         .is_program(&system_program::ID)?;
+
+    let archive = archive_info
+        .is_writable()?
+        .is_archive()?
+        .as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    archive.tape_count = archive.tape_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let (source_tape_address, _) = tape_pda(*signer_info.key);
     let (dest_tape_address, _)   = tape_pda(*recipient_info.key);
@@ -80,6 +90,7 @@ mod tests {
 
         let (source_tape_address, _) = tape_pda(signer);
         let (dest_tape_address, _)   = tape_pda(recipient);
+        let (archive_address, _)     = archive_pda();
 
         // Two tapes with identical epochs
         let e0 = EpochNumber(100);
@@ -102,6 +113,11 @@ mod tests {
             ..Tape::zeroed()
         };
 
+        let archive = Archive {
+            tape_count: 100,
+            ..Archive::zeroed()
+        };
+
         let instruction = build_merge_tape_ix(signer, recipient);
 
         let accounts = vec![
@@ -110,17 +126,23 @@ mod tests {
 
             pda(source_tape_address, source_tape.pack(), tapedrive::ID),
             pda(dest_tape_address, dest_tape.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
 
             system_program(),
         ];
 
-        let expected = Tape {
+        let expected_tape = Tape {
             authority: recipient,
             capacity: StorageUnits(300),
             used: StorageUnits(50),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()
+        };
+
+        let expected_archive = Archive {
+            tape_count: 99,
+            ..Archive::zeroed()
         };
 
         let env = test_env();
@@ -130,9 +152,11 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&dest_tape_address)
-                    .data(expected.pack().as_ref()).build(),
+                    .data(expected_tape.pack().as_ref()).build(),
                 Check::account(&source_tape_address)
                     .lamports(0).closed().build(),
+                Check::account(&archive_address)
+                    .data(expected_archive.pack().as_ref()).build(),
             ],
         );
     }

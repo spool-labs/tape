@@ -80,6 +80,7 @@ pub fn build_split_tape_by_size_ix(
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(signer);
     let (dest_tape_address, _) = tape_pda(recipient);
+    let (archive_address, _) = archive_pda();
 
     let size = size.pack();
 
@@ -91,6 +92,7 @@ pub fn build_split_tape_by_size_ix(
 
             AccountMeta::new(source_tape_address, false),
             AccountMeta::new(dest_tape_address, false),
+            AccountMeta::new(archive_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -106,6 +108,7 @@ pub fn build_split_tape_by_epoch_ix(
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(signer);
     let (dest_tape_address, _) = tape_pda(recipient);
+    let (archive_address, _) = archive_pda();
 
     let epoch = split_epoch.pack();
 
@@ -117,6 +120,7 @@ pub fn build_split_tape_by_epoch_ix(
 
             AccountMeta::new(source_tape_address, false),
             AccountMeta::new(dest_tape_address, false),
+            AccountMeta::new(archive_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
@@ -131,6 +135,7 @@ pub fn build_merge_tape_ix(
 ) -> Instruction {
     let (source_tape_address, _) = tape_pda(signer);
     let (dest_tape_address, _) = tape_pda(recipient);
+    let (archive_address, _) = archive_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -140,6 +145,7 @@ pub fn build_merge_tape_ix(
 
             AccountMeta::new(source_tape_address, false),
             AccountMeta::new(dest_tape_address, false),
+            AccountMeta::new(archive_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -152,6 +158,7 @@ pub fn build_destroy_tape_ix(
 ) -> Instruction {
     let (tape_address, _) = tape_pda(signer);
     let (epoch_address, _) = epoch_pda();
+    let (archive_address, _) = archive_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -160,6 +167,7 @@ pub fn build_destroy_tape_ix(
 
             AccountMeta::new(tape_address, false),
             AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(archive_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
         ],

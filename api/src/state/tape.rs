@@ -6,6 +6,9 @@ use crate::state;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Tape {
+    /// The unique identifier for this tape.
+    pub id: TapeNumber,
+
     /// The authority that owns this tape.
     pub authority: Pubkey,
 
@@ -22,7 +25,7 @@ pub struct Tape {
     pub expiry_epoch: EpochNumber,
 
     /// The count of tracks on this tape.
-    pub total_tracks: u64,
+    pub track_count: u64,
 }
 
 state!(AccountType, Tape);

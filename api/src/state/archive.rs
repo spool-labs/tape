@@ -24,6 +24,9 @@ pub struct Archive {
 
     /// The rewards paid out so far in this epoch.
     pub rewards_paid: Coin<TAPE>,
+
+    /// The total number of tapes in the archive.
+    pub tape_count: u64,
 }
 
 state!(AccountType, Archive);

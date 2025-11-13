@@ -6,6 +6,9 @@ use crate::state;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Track {
+    /// The unique identifier for this track.
+    pub id: TrackNumber,
+
     /// The tape this track is stored on.
     pub tape: Pubkey,
 

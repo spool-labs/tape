@@ -52,7 +52,7 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .checked_sub(track.size)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    tape.total_tracks = tape.total_tracks
+    tape.track_count = tape.track_count
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
@@ -75,6 +75,7 @@ mod tests {
         let (track_address, _) = track_pda(signer, bucket_hash);
 
         let track = Track {
+            id: TrackNumber(100),
             tape: tape_address,
             key: bucket_hash,
             size: StorageUnits(250),
@@ -89,9 +90,9 @@ mod tests {
             authority: signer,
             capacity: StorageUnits(1000),
             used: StorageUnits(250),
-            total_tracks: 1,
             active_epoch: EpochNumber(15),
             expiry_epoch: EpochNumber(100),
+            track_count: 1,
             ..Tape::zeroed()
         };
 
@@ -123,7 +124,7 @@ mod tests {
                 Check::account(&tape_address).data(
                     Tape {
                         used: StorageUnits(0),
-                        total_tracks: 0,
+                        track_count: 0,
                         ..tape
                     }.pack().as_ref()
                 ).build(),

@@ -59,6 +59,7 @@ mod tests {
 
         // Prepare a track
         let track = Track {
+            id: TrackNumber(69),
             tape: tape_address,
             key: blob_hash,
             size: StorageUnits(500),

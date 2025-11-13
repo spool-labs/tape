@@ -51,8 +51,14 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         &[TRACK, signer_info.key.as_ref(), args.id.as_ref()],
     )?;
 
+    let track_number = tape.track_count;
+    tape.track_count = tape.track_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+
     let track = track_info.as_account_mut::<Track>(&tapedrive::ID)?;
 
+    track.id = track_number.into();
     track.tape = tape_address;
     track.key = args.id;
     track.size = total_units;
@@ -66,10 +72,6 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .checked_add(total_units)
         .ok_or(ProgramError::Custom(9))?;
     //.ok_or(TapeError::InsufficientStorage.into())?;
-
-    tape.total_tracks = tape.total_tracks
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     Ok(())
 }
@@ -108,6 +110,7 @@ mod tests {
             capacity: StorageUnits(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
+            track_count: 100,
             ..Tape::zeroed()
         };
 
@@ -130,6 +133,7 @@ mod tests {
                 Check::success(),
                 Check::account(&track_address).data(
                     Track {
+                        id: TrackNumber(100),
                         tape: tape_address,
                         key: bucket_hash,
                         size: storage_units,
@@ -147,7 +151,8 @@ mod tests {
                         used: storage_units,
                         active_epoch: tape.active_epoch,
                         expiry_epoch: tape.expiry_epoch,
-                        total_tracks: 1,
+                        track_count: 101,
+                        ..Tape::zeroed()
                     }.pack().as_ref()
                 ).build(),
             ]

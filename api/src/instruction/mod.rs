@@ -1,6 +1,7 @@
 use steel::*;
 
 mod archive;
+mod blacklist;
 mod epoch;
 mod exchange;
 mod node;
@@ -13,6 +14,7 @@ mod token;
 mod track;
 
 pub use archive::*;
+pub use blacklist::*;
 pub use epoch::*;
 pub use exchange::*;
 pub use node::*;

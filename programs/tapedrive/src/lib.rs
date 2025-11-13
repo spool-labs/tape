@@ -1,6 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 pub mod archive;
+pub mod blacklist;
 pub mod epoch;
 pub mod error;
 pub mod node;
@@ -10,6 +11,7 @@ pub mod tape;
 pub mod track;
 
 use archive::*;
+use blacklist::*;
 use epoch::*;
 use node::*;
 use staking::*;
@@ -62,6 +64,8 @@ pub fn process_instruction(
             TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
             TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
             TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
+
+            // Blacklist
             TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
             TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
  

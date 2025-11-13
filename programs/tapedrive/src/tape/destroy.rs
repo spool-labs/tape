@@ -8,6 +8,7 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
         tape_info,
         epoch_info,
+        archive_info,
 
         system_program_info,
     ] = accounts else {
@@ -19,6 +20,15 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     system_program_info
         .is_program(&system_program::ID)?;
+
+    let archive = archive_info
+        .is_writable()?
+        .is_archive()?
+        .as_account_mut::<Archive>(&tapedrive::ID)?;
+
+    archive.tape_count = archive.tape_count
+        .checked_sub(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let tape = tape_info
         .is_writable()?
@@ -58,6 +68,7 @@ mod tests {
         let signer = Pubkey::new_unique();
         let (tape_address, _) = tape_pda(signer);
         let (epoch_address, _) = epoch_pda();
+        let (archive_address, _) = archive_pda();
 
         // Tape expired at 50, used = 0
         let tape = Tape {
@@ -72,6 +83,11 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         epoch.id = EpochNumber(60);
 
+        let archive = Archive {
+            tape_count: 100,
+            ..Archive::zeroed()
+        };
+
         let instruction = build_destroy_tape_ix(signer);
 
         let accounts = vec![
@@ -79,9 +95,15 @@ mod tests {
 
             pda(tape_address, tape.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
 
             system_program(),
         ];
+
+        let expected_archive = Archive {
+            tape_count: 99,
+            ..archive
+        };
 
         let env = test_env();
         env.process_instruction(
@@ -95,6 +117,9 @@ mod tests {
                 Check::account(&tape_address)
                     .lamports(0)
                     .closed()
+                    .build(),
+                Check::account(&archive_address)
+                    .data(expected_archive.pack().as_ref())
                     .build(),
             ],
         );

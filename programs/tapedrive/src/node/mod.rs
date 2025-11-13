@@ -11,8 +11,6 @@ pub mod set_network_tls;
 pub mod set_storage_price;
 pub mod set_storage_capacity;
 pub mod sync;
-pub mod blacklist_add;
-pub mod blacklist_remove;
 
 pub use advance::*;
 pub use claim_commission::*;
@@ -27,5 +25,3 @@ pub use set_network_tls::*;
 pub use set_storage_price::*;
 pub use set_storage_capacity::*;
 pub use sync::*;
-pub use blacklist_add::*;
-pub use blacklist_remove::*;
