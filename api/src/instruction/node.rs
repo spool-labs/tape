@@ -24,7 +24,7 @@ pub struct JoinNetwork {}
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SyncEpoch {
     pub epoch: [u8; 8],
-    pub seats: Hash,
+    pub spools: Hash,
 }
 
 #[repr(C)]
@@ -146,14 +146,14 @@ pub fn build_epoch_sync_ix(
     signer: Pubkey,
     node_address: Pubkey,
     epoch: EpochNumber,
-    seats: &[SeatIndex],
+    spools: &[SpoolIndex],
 ) ->Instruction {
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
 
     let epoch = epoch.pack();
-    let seats = get_seat_hash(seats);
+    let spools = get_spool_hash(spools);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -165,7 +165,7 @@ pub fn build_epoch_sync_ix(
         ],
         data: SyncEpoch {
             epoch,
-            seats,
+            spools,
         }.to_bytes(),
     }
 }

@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::apportion::Seats;
+use crate::spooler::SpoolAssignment;
 use super::Committee;
 
 pub fn get_pool_score(
@@ -24,13 +24,13 @@ pub fn get_pool_score(
 pub fn get_committee_score<const N: usize, const S: usize>(
     allocated: StorageUnits,
     committee: &Committee<N>,
-    seats: &Seats<S>,
+    spools: &SpoolAssignment<S>,
 ) -> u128 {
     let mut score: u128 = 0;
 
     for (i, member) in committee.iter().enumerate() {
         let blacklist = member.blacklist;
-        let weight = seats.weight(i);
+        let weight = spools.weight(i);
 
         if blacklist >= allocated {
             continue;
@@ -57,7 +57,7 @@ pub fn calc_rewards<const N: usize, const S: usize>(
     id: NodeId,
     allocated: StorageUnits,
     committee: &Committee<N>,
-    seats: &Seats<S>,
+    spools: &SpoolAssignment<S>,
     reward_pool: Coin<TAPE>,
 ) -> Coin<TAPE> {
     if allocated.is_zero() {
@@ -65,10 +65,10 @@ pub fn calc_rewards<const N: usize, const S: usize>(
     }
     
     if let Some((member, index)) = committee.get_member(&id) {
-        let weight = seats.weight(index);
+        let weight = spools.weight(index);
         let blacklist = member.blacklist;
 
-        // No rewards if weight is zero (pool is not assigned any seats)
+        // No rewards if weight is zero (pool is not assigned any spools)
         if weight == 0 {
             return TAPE::zero();
         }
@@ -89,7 +89,7 @@ pub fn calc_rewards<const N: usize, const S: usize>(
         let total_score = get_committee_score(
             allocated,
             committee,
-            seats,
+            spools,
         );
 
         // rewards = floor(reward_pool * pool_score / total_score)

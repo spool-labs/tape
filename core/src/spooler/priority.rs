@@ -1,23 +1,23 @@
 use core::cmp::Ordering;
 
-/// A struct representing a priority score (numerator/denominator) for seat allocation.
+/// A struct representing a priority score (numerator/denominator) for spool allocation.
 #[derive(Clone, Debug)]
-pub struct SeatPriority {
+pub struct SpoolPriority {
     pub n: u64,
     pub d: u64,
 }
 
-impl SeatPriority {
+impl SpoolPriority {
     pub fn from(n: u64, d: u64) -> Self {
         assert!(d > 0, "Denominator must be > 0");
         Self { n, d }
     }
 }
 
-/// A priority queue entry for a node's seat allocation
+/// A priority queue entry for a node's spool allocation
 #[derive(Clone, Debug)]
 pub struct NodePriority {
-    pub priority: SeatPriority,
+    pub priority: SpoolPriority,
     pub tie_breaker: u64,
     pub index: usize,
 }
@@ -40,14 +40,14 @@ impl PartialOrd for NodePriority {
 
 impl Ord for NodePriority {
     fn cmp(&self, other: &Self) -> Ordering {
-        match compare_seat_priorities(&self.priority, &other.priority) {
+        match compare_spool_priorities(&self.priority, &other.priority) {
             Ordering::Equal => tie_break(self.tie_breaker, self.index, other.tie_breaker, other.index),
             ord => ord,
         }
     }
 }
 
-pub fn compare_seat_priorities(a: &SeatPriority, b: &SeatPriority) -> Ordering {
+pub fn compare_spool_priorities(a: &SpoolPriority, b: &SpoolPriority) -> Ordering {
     let left = a.n.saturating_mul(b.d);
     let right = b.n.saturating_mul(a.d);
     left.cmp(&right)
@@ -66,18 +66,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_seat_priority() {
-        let q1 = SeatPriority::from(1, 2); // 0.5
-        let q2 = SeatPriority::from(2, 3); // ~0.6667
-        let q3 = SeatPriority::from(3, 4); // 0.75
-        let q4 = SeatPriority::from(4, 5); // 0.8
-        let q5 = SeatPriority::from(1, 2); // 0.5 (same as q1)
+    fn test_spool_priority() {
+        let q1 = SpoolPriority::from(1, 2); // 0.5
+        let q2 = SpoolPriority::from(2, 3); // ~0.6667
+        let q3 = SpoolPriority::from(3, 4); // 0.75
+        let q4 = SpoolPriority::from(4, 5); // 0.8
+        let q5 = SpoolPriority::from(1, 2); // 0.5 (same as q1)
 
-        assert_eq!(compare_seat_priorities(&q1, &q2), Ordering::Less);
-        assert_eq!(compare_seat_priorities(&q2, &q1), Ordering::Greater);
-        assert_eq!(compare_seat_priorities(&q1, &q5), Ordering::Equal);
-        assert_eq!(compare_seat_priorities(&q3, &q4), Ordering::Less);
-        assert_eq!(compare_seat_priorities(&q4, &q3), Ordering::Greater);
+        assert_eq!(compare_spool_priorities(&q1, &q2), Ordering::Less);
+        assert_eq!(compare_spool_priorities(&q2, &q1), Ordering::Greater);
+        assert_eq!(compare_spool_priorities(&q1, &q5), Ordering::Equal);
+        assert_eq!(compare_spool_priorities(&q3, &q4), Ordering::Less);
+        assert_eq!(compare_spool_priorities(&q4, &q3), Ordering::Greater);
     }
 
     #[test]

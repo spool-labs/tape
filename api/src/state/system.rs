@@ -4,7 +4,7 @@ use super::AccountType;
 use crate::state;
 use crate::program::{
     MEMBER_COUNT,
-    SEAT_COUNT
+    SPOOL_COUNT
 };
 
 #[repr(C)]
@@ -25,11 +25,11 @@ pub struct System {
     /// The committee members for the upcoming epoch.
     pub committee_next: Committee<MEMBER_COUNT>,
 
-    /// The previous seats assigned to members.
-    pub seats_prev: Seats<SEAT_COUNT>,
+    /// The previous spool assignment.
+    pub spools_prev: SpoolAssignment<SPOOL_COUNT>,
 
-    /// The current seats assigned to members.
-    pub seats: Seats<SEAT_COUNT>,
+    /// The current spool assignment.
+    pub spools: SpoolAssignment<SPOOL_COUNT>,
 }
 
 state!(AccountType, System);

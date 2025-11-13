@@ -65,7 +65,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         node.id, 
         allocated, 
         &system.committee_prev, 
-        &system.seats_prev, 
+        &system.spools_prev, 
         reward_pool
     );
 
@@ -163,15 +163,15 @@ mod tests {
             ..History::zeroed()
         };
 
-        // Previous committee/seats used by calc_rewards
+        // Previous committee/spools used by calc_rewards
         system.committee_prev = Committee::from_members(&[
             member(node.id.into(), 3_000, 0),
             member(3, 2_000, 0),
             member(5, 1_000, 0),
         ]);
 
-        system.seats_prev = Seats::try_from_counts(
-            &[500, 300, 200]
+        system.spools_prev = SpoolAssignment::try_from_counts(
+            &[500, 300, 224]
         ).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
@@ -194,7 +194,7 @@ mod tests {
             node.id,
             archive.recent_usage,
             &system.committee_prev,
-            &system.seats_prev,
+            &system.spools_prev,
             archive.rewards_pool,
         );
 

@@ -51,13 +51,13 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     assert!(member_index < MEMBER_COUNT);
 
-    // Find the seats this member holds
-    let seats = system.seats
-        .seats_for_member(member_index);
+    // Find the spools this member is assigned
+    let spools = system.spools
+        .spools_for_member(member_index);
 
     // Verify the seat hash matches
-    let seat_hash = get_seat_hash(&seats);
-    if seat_hash != args.seats {
+    let seat_hash = get_spool_hash(&spools);
+    if seat_hash != args.spools {
         return Err(ProgramError::Custom(3));
         //return Err(TapeError::InvalidSeatHash);
     }
@@ -69,8 +69,8 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         //return Err(TapeError::InvalidEpochId);
     }
 
-    let weight = seats.len() as u64;
-    let total = SEAT_COUNT as u64;
+    let weight = spools.len() as u64;
+    let total = SPOOL_COUNT as u64;
 
     // Attest our weight for this epoch sync
     epoch.state
@@ -113,9 +113,9 @@ mod tests {
             member(node.id.into(), 2_000),  // index 1
             member(1, 1_000)
         ]);
-        system.seats = Seats::try_from_counts(
-            &[700, 250, 50]
-        ).expect("seats");
+        system.spools = SpoolAssignment::try_from_counts(
+            &[700, 250, 74]
+        ).expect("spools");
 
         epoch.id = EpochNumber(42);
         epoch.state = EpochState::syncing();
@@ -124,7 +124,7 @@ mod tests {
             signer,
             node_address,
             epoch.id,
-            &system.seats.seats_for_member(1) // index 1
+            &system.spools.spools_for_member(1) // index 1
         );
 
         let accounts = vec![
@@ -183,16 +183,17 @@ mod tests {
         // Test: above threshold sync (should go to active)
 
         node.latest_epoch = EpochNumber(7);
-        system.seats = Seats::try_from_counts(
-            &[250, 700, 50]
-        ).expect("seats");
+        system.spools = SpoolAssignment::try_from_counts(
+            &[250, 700, 74]
+        ).expect("spools");
+
         epoch.state = EpochState::syncing();
 
         let instruction = build_epoch_sync_ix(
             signer,
             node_address,
             epoch.id,
-            &system.seats.seats_for_member(1)
+            &system.spools.spools_for_member(1)
         );
 
         let accounts = vec![

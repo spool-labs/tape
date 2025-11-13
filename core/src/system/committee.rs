@@ -2,7 +2,7 @@ use core::fmt;
 use super::node::*;
 use crate::types::*;
 use crate::bls::*;
-use crate::apportion::Seats;
+use crate::spooler::SpoolAssignment;
 use bytemuck::{Pod, Zeroable};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,13 +358,13 @@ impl<const NODES: usize> Committee<NODES> {
         }
     }
 
-    /// Apply weights from a Seats mapping by counting seats per member index.
+    /// Apply weights from a spool assignment by counting spools per member index.
     /// Any seat pointing outside the active member range is ignored.
-    pub fn apply_weights_from_seats<const S: usize>(&mut self, seats: &Seats<S>) {
+    pub fn apply_weights_from_spools<const S: usize>(&mut self, spools: &SpoolAssignment<S>) {
         self.clear_weights();
 
         let n = self.size();
-        for &owner in seats.iter() {
+        for &owner in spools.iter() {
             let idx = owner as usize;
             if idx < n {
                 self.members[idx].weight = self.members[idx].weight

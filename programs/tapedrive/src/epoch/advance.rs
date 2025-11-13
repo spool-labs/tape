@@ -43,9 +43,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Ensure the archive schedule is aligned with the current epoch
     debug_assert!(archive.schedule.current_epoch() == epoch.id);
 
-    // Save previous seats, then reassign for the next committee
-    system.seats_prev = system.seats;
-    system.seats.reassign(
+    // Save previous spools, then reassign for the next committee
+    system.spools_prev = system.spools;
+    system.spools.reassign(
         &system.committee,
         &system.committee_next,
     ).map_err(|_| TapeError::UnexpectedState)?;
@@ -55,7 +55,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee = system.committee_next.clone();
 
     system.committee
-        .apply_weights_from_seats(&system.seats);
+        .apply_weights_from_spools(&system.spools);
 
     // The next committee should never have any weights assigned
     debug_assert!(system.committee_next.iter().all(|m| m.weight == 0));
@@ -186,21 +186,21 @@ mod tests {
 
         let seat_count = dhondt_allocate(
             &system.committee_next.active_stakes(),
-            SEAT_COUNT as u16,
+            SPOOL_COUNT as u16,
         );
 
-        let seats = reassign_seats(
-            &system.seats.0,
+        let spools = reassign_spools(
+            &system.spools.0,
             &system.committee.active_members(),
             &system.committee_next.active_members(),
             &seat_count,
         ).expect("seat reassignment failed");
 
-        let expected_seats = Seats::try_from(seats.as_ref()).unwrap();
+        let expected_seats = SpoolAssignment::try_from(spools.as_ref()).unwrap();
 
         let mut expected_committee = system.committee_next.clone();
         expected_committee
-            .apply_weights_from_seats(&expected_seats);
+            .apply_weights_from_spools(&expected_seats);
 
         let mut schedule = EpochSchedule::new_at(e1);
         schedule.reserve_capacity(
@@ -232,8 +232,8 @@ mod tests {
                 Check::success(),
                 Check::account(&system_address).data(
                     System { 
-                        seats: expected_seats,
-                        seats_prev: system.seats,
+                        spools: expected_seats,
+                        spools_prev: system.spools,
                         committee_prev: system.committee,
                         committee: expected_committee,
                         ..system

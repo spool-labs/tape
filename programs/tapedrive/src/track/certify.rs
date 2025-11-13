@@ -53,13 +53,13 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     let mut weight : u64 = 0;
-    for &i in system.seats.iter() {
+    for &i in system.spools.iter() {
         if args.bitmap.is_set(i as usize) {
             weight += 1;
         }
     }
 
-    if !is_supermajority(weight, SEAT_COUNT as u64) {
+    if !is_supermajority(weight, SPOOL_COUNT as u64) {
         return Err(ProgramError::Custom(0));
     }
 
@@ -121,7 +121,7 @@ mod tests {
             })
             .collect();
 
-        // Build on-chain committee and seats (this may reorder members)
+        // Build on-chain committee and spools (this may reorder members)
         let mut system = System::zeroed();
         system.committee = Committee::from_members(
             // Will be reordered to stake order
@@ -137,25 +137,14 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
 
-        // Allocate seats based on stake
+        // Allocate spools based on stake
         let stakes = system.committee.active_stakes();
         let seat_counts = dhondt_allocate(
             &stakes, 
-            SEAT_COUNT as u16
+            SPOOL_COUNT as u16
         );
-        system.seats = Seats::try_from_counts(&seat_counts)
-            .expect("seats from counts");
-
-        //println!("Committee members and stakes:");
-        //for (i, member) in system.committee.members.iter().enumerate() {
-        //    let seats_for_member = system.seats.seats_for_member(i);
-        //    println!(
-        //        "Member {}: stake = {}, seats = {:?}",
-        //        i,
-        //        member.stake.0,
-        //        seats_for_member,
-        //    );
-        //}
+        system.spools = SpoolAssignment::try_from_counts(&seat_counts)
+            .expect("spools from counts");
 
         // Accounts/state
         let tape = Tape {
