@@ -55,9 +55,9 @@ pub fn compare_spool_priorities(a: &SpoolPriority, b: &SpoolPriority) -> Orderin
 
 pub fn tie_break(t1: u64, i1: usize, t2: u64, i2: usize) -> Ordering {
     match t1.cmp(&t2) {
-        Ordering::Greater => Ordering::Greater,
-        Ordering::Less => Ordering::Less,
-        Ordering::Equal => i2.cmp(&i1),
+        core::cmp::Ordering::Greater => core::cmp::Ordering::Greater,
+        core::cmp::Ordering::Less => core::cmp::Ordering::Less,
+        core::cmp::Ordering::Equal => i2.cmp(&i1),
     }
 }
 
@@ -73,19 +73,19 @@ mod tests {
         let q4 = SpoolPriority::from(4, 5); // 0.8
         let q5 = SpoolPriority::from(1, 2); // 0.5 (same as q1)
 
-        assert_eq!(compare_spool_priorities(&q1, &q2), Ordering::Less);
-        assert_eq!(compare_spool_priorities(&q2, &q1), Ordering::Greater);
-        assert_eq!(compare_spool_priorities(&q1, &q5), Ordering::Equal);
-        assert_eq!(compare_spool_priorities(&q3, &q4), Ordering::Less);
-        assert_eq!(compare_spool_priorities(&q4, &q3), Ordering::Greater);
+        assert_eq!(compare_spool_priorities(&q1, &q2), core::cmp::Ordering::Less);
+        assert_eq!(compare_spool_priorities(&q2, &q1), core::cmp::Ordering::Greater);
+        assert_eq!(compare_spool_priorities(&q1, &q5), core::cmp::Ordering::Equal);
+        assert_eq!(compare_spool_priorities(&q3, &q4), core::cmp::Ordering::Less);
+        assert_eq!(compare_spool_priorities(&q4, &q3), core::cmp::Ordering::Greater);
     }
 
     #[test]
     fn test_tie_break() {
-        assert_eq!(tie_break(5, 1, 3, 2), Ordering::Greater);
-        assert_eq!(tie_break(3, 1, 5, 2), Ordering::Less);
-        assert_eq!(tie_break(4, 1, 4, 2), Ordering::Greater); // i2 > i1
-        assert_eq!(tie_break(4, 2, 4, 1), Ordering::Less);    // i1 > i2
-        assert_eq!(tie_break(4, 1, 4, 1), Ordering::Equal);   // same
+        assert_eq!(tie_break(5, 1, 3, 2), core::cmp::Ordering::Greater);
+        assert_eq!(tie_break(3, 1, 5, 2), core::cmp::Ordering::Less);
+        assert_eq!(tie_break(4, 1, 4, 2), core::cmp::Ordering::Greater); // i2 > i1
+        assert_eq!(tie_break(4, 2, 4, 1), core::cmp::Ordering::Less);    // i1 > i2
+        assert_eq!(tie_break(4, 1, 4, 1), core::cmp::Ordering::Equal);   // same
     }
 }

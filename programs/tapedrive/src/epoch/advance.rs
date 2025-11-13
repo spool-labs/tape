@@ -45,7 +45,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
-    system.spools.reassign(
+    system.spools.migrate_dhondt(
         &system.committee,
         &system.committee_next,
     ).map_err(|_| TapeError::UnexpectedState)?;
@@ -189,7 +189,7 @@ mod tests {
             SPOOL_COUNT as u16,
         );
 
-        let spools = reassign_spools(
+        let spools = migrate_spools(
             &system.spools.0,
             &system.committee.active_members(),
             &system.committee_next.active_members(),
