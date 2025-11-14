@@ -49,7 +49,10 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .ok_or(ProgramError::Custom(2))?;
     //  .ok_or(TapeError::NodeNotInCommittee)?;
 
-    assert!(member_index < MEMBER_COUNT);
+    if member_index >= MEMBER_COUNT {
+        return Err(ProgramError::Custom(2));
+        //return Err(TapeError::NodeNotInCommittee);
+    }
 
     // Find the spools this member is assigned
     let spools = system.spools

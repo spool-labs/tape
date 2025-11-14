@@ -31,10 +31,6 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     staking_program_info
         .is_program(&staking::ID)?;
 
-    //let node = node_info
-    //    .is_writable()?
-    //    .as_account_mut::<Node>(&tapedrive::ID)?;
-
     // Derive addresses
     let (source_stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
     let (dest_stake_address, _)   = stake_pda(*recipient_info.key, *node_info.key);
@@ -106,6 +102,8 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
             node_info.clone(),
             source_vault_info.clone(),
             dest_vault_info.clone(),
+
+            token_program_info.clone(),
         ],
     )?;
 

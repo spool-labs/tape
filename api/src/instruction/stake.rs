@@ -45,8 +45,8 @@ pub fn build_stake_ix(
 
             AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
-            AccountMeta::new_readonly(mint_address, false),
 
+            AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],

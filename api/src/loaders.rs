@@ -57,7 +57,7 @@ pub trait AccountInfoHelper {
 impl AccountInfoHelper for AccountInfo<'_> {
     fn not_empty(&self) -> Result<&Self, ProgramError> {
         if self.data_is_empty() {
-            return Err( ProgramError::AccountAlreadyInitialized);
+            return Err(ProgramError::UninitializedAccount);
         }
         Ok(self)
     }

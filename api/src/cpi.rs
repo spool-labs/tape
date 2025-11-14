@@ -32,6 +32,7 @@ pub fn create_account_with_size<'a, 'info, T: Discriminator + Pod>(
     // Set discriminator.
     let mut data = target_account.data.borrow_mut();
     data[0] = T::discriminator();
+    data[1..8].fill(0); // zero out the rest of the discriminator bytes
 
     Ok(())
 }
@@ -62,7 +63,7 @@ pub fn resize_account<'info>(
         )?;
     }
 
-    target_account.realloc(new_size, false)?;
+    target_account.realloc(new_size, true)?;
 
     Ok(())
 }

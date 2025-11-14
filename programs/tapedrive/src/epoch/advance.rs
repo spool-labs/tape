@@ -36,12 +36,14 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::Custom(1));
     }
 
-    if epoch.last_epoch_ms + EPOCH_DURATION > now {
+    if epoch.last_epoch + EPOCH_DURATION > now {
         return Err(ProgramError::Custom(3));
     }
 
     // Ensure the archive schedule is aligned with the current epoch
-    debug_assert!(archive.schedule.current_epoch() == epoch.id);
+    if archive.schedule.current_epoch() != epoch.id {
+        return Err(ProgramError::Custom(4));
+    }
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
@@ -76,7 +78,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);
     epoch.state.set_syncing();
-    epoch.last_epoch_ms = now;
+    epoch.last_epoch = now;
 
     // Update the archive storage price and capacity based on the new committee preferences
     let mut storage_prices : Vec<ValueAndWeight> = vec![];
@@ -152,7 +154,7 @@ mod tests {
 
         epoch.id = e0;
         epoch.state = EpochState::next_ready();
-        epoch.last_epoch_ms = last_epoch;
+        epoch.last_epoch = last_epoch;
 
         system.committee_prev = Committee::from_members(&[
             member(2, 2_000, 8_000_000, 950),
@@ -243,7 +245,7 @@ mod tests {
                     Epoch {
                         id: e1,
                         state: EpochState::syncing(),
-                        last_epoch_ms: env.now(),
+                        last_epoch: env.now(),
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&archive_address).data({

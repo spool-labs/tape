@@ -95,7 +95,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
     epoch.id = EpochNumber(1);
-    epoch.last_epoch_ms = 0;
+    epoch.last_epoch = 0;
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
@@ -164,7 +164,7 @@ mod tests {
                 Check::account(&epoch_address).data(
                     Epoch {
                         id: EpochNumber(1),
-                        last_epoch_ms: 0,
+                        last_epoch: 0,
                         ..Epoch::zeroed()
                     }.pack().as_ref()
                 ).build(),

@@ -41,6 +41,10 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_writable()?
         .has_address(&track_address)?;
 
+    if tape.expiry_epoch <= current_epoch(epoch) {
+        return Err(ProgramError::Custom(0));
+    }
+
     let total_units = StorageUnits::unpack(args.size);
 
     create_program_account::<Track>(
@@ -68,10 +72,15 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         args.commitment,
     );
 
-    tape.used = tape.used
-        .checked_add(total_units)
-        .ok_or(ProgramError::Custom(9))?;
-    //.ok_or(TapeError::InsufficientStorage.into())?;
+    let new_used = tape.used
+         .checked_add(total_units)
+         .ok_or(ProgramError::ArithmeticOverflow)?;
+
+     if new_used > tape.capacity { 
+         return Err(ProgramError::Custom(/* e.g., InsufficientStorage */ 9)); 
+     }
+
+    tape.used = new_used;
 
     Ok(())
 }

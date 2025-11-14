@@ -51,7 +51,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .assert(|t| t.owner() == *signer_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    if node.latest_epoch >= prev_epoch(epoch) {
+    if node.latest_epoch < prev_epoch(epoch) {
         return Err(ProgramError::Custom(0));
         // return Err(TapeError::NodeNotUpdated);
     }
@@ -111,7 +111,10 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
             signer_ata_info.clone(),
             node_info.clone(),
             vault_info.clone(),
+
             mint_info.clone(),
+            token_program_info.clone(),
+            system_program_info.clone(),
         ],
     )?;
 
@@ -153,6 +156,7 @@ mod tests {
         let e2: EpochNumber = e1 + EpochNumber(1);
 
         node.id = NodeId(4);
+        node.latest_epoch = epoch.id;
         node.pool.stake = tape(5000);
         node.pool.shares = shares(5000);
 

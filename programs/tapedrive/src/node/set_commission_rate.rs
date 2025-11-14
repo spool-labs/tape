@@ -63,7 +63,7 @@ mod tests {
         let epoch = Epoch {
             id: EpochNumber(42),
             state: EpochState::new(),
-            last_epoch_ms: 0,
+            last_epoch: 0,
         };
 
         let mut node = Node {

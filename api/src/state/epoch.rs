@@ -12,8 +12,8 @@ pub struct Epoch {
     /// The state of the current epoch.
     pub state: EpochState,
 
-    /// The timestamp (in milliseconds) of the last epoch.
-    pub last_epoch_ms: i64,
+    /// The timestamp (in seconds) of the last epoch.
+    pub last_epoch: i64,
 }
 
 state!(AccountType, Epoch);

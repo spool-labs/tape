@@ -37,10 +37,6 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     mint_info
         .is_mint()?;
 
-    //let node = node_info
-    //    .is_writable()?
-    //    .as_account_mut::<Node>(&tapedrive::ID)?;
-
     let amount = TAPE::unpack(args.amount);
     if amount.is_zero() {
         return Err(ProgramError::InvalidArgument);
@@ -135,6 +131,8 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
             dest_vault_info.clone(),
 
             mint_info.clone(),
+            token_program_info.clone(),
+            system_program_info.clone(),
         ],
     )?;
 

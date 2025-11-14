@@ -59,7 +59,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .as_account::<History>(&tapedrive::ID)?
         .assert(|h| h.node == *node_info.key)?;
 
-    if node.latest_epoch >= prev_epoch(epoch) {
+    if node.latest_epoch < prev_epoch(epoch) {
         return Err(ProgramError::Custom(0));
         // return Err(TapeError::NodeNotUpdated);
     }
@@ -144,12 +144,17 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     // Transfer out the principal, and close vault
     solana_program::program::invoke(
-        &build_unstake_ix(*signer_info.key, *node_info.key),
+        &build_unstake_ix(
+            *signer_info.key, 
+            *node_info.key
+        ),
         &[
             signer_info.clone(),
             signer_ata_info.clone(),
             node_info.clone(),
             vault_info.clone(),
+
+            token_program_info.clone(),
         ],
     )?;
 
@@ -202,6 +207,7 @@ mod tests {
         epoch.id = e4; // current epoch equals withdraw epoch
 
         node.id = NodeId(7);
+        node.latest_epoch = e3;
         node.authority = pool_owner;
 
         let activation_rate = ExchangeRate { tape: 1000, other: 9000 };

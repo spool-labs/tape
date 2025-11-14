@@ -4,14 +4,14 @@ use const_crypto::ed25519;
 use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
 use super::token::MINT_ADDRESS;
 
-pub const MEMBER_COUNT: usize = 128;
-pub const SPOOL_COUNT: usize = 1024;
-pub const FUTURE_EPOCHS: usize = 256;
-pub const EPOCH_HISTORY: usize = 256;
-pub const EPOCH_VALUES: usize = 4; // Epoch N, N+1, N+2, N+3
-pub const EPOCH_DURATION: i64 = 7 * 24 * 60 * 60 * 1000; // 1 week in milliseconds
-pub const BLACKLIST_SIZE: usize = 24; // 2^24 blob entries in blocklist
-pub const STREAM_SEGMENTS: usize = 18; // 2^18 = 262,144 segments (32MiB with 128B segments)
+pub const MEMBER_COUNT:        usize = 128;
+pub const SPOOL_COUNT:         usize = 1024;
+pub const FUTURE_EPOCHS:       usize = 256;
+pub const EPOCH_HISTORY:       usize = 256;
+pub const EPOCH_VALUES:        usize = 4;                  // Epoch N, N+1, N+2, N+3
+pub const EPOCH_DURATION:        i64 = 7 * 24 * 60 * 60;   // 1 week in seconds
+pub const BLACKLIST_SIZE:      usize = 24;                 // 2^24 blob entries in blocklist
+pub const STREAM_SEGMENTS:     usize = 18;                 // 2^18 = 262,144 segments (32MiB with 128B segments)
 
 declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
 
