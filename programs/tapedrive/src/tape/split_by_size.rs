@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitTapeBySize::try_from_bytes(data)?;
@@ -78,7 +79,7 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     let used_for_source = source_tape
         .used
         .checked_sub(used_for_dest)
-        .ok_or(ProgramError::Custom(3))?;
+        .ok_or(TapeError::UnexpectedState)?;
 
     // Initialize destination tape
     dest_tape.authority    = *recipient_info.key;
@@ -91,7 +92,7 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     source_tape.capacity = source_tape
         .capacity
         .checked_sub(split_size)
-        .ok_or(ProgramError::Custom(4))?;
+        .ok_or(TapeError::UnexpectedState)?;
     source_tape.used = used_for_source;
 
     Ok(())

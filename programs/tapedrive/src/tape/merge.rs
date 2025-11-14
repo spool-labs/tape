@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergeTape::try_from_bytes(data)?;
@@ -65,7 +66,7 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
             dest_tape.used,
         )
     else {
-        return Err(ProgramError::Custom(20));
+        return Err(TapeError::CannotMerge.into());
     };
 
     dest_tape.active_epoch = new_active_epoch;

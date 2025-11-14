@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitPoolStake::try_from_bytes(data)?;
@@ -64,7 +65,7 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Only allow splitting an actively staked position for now
     if !source_stake.inner.is_staked() {
-        return Err(ProgramError::Custom(10));
+        return Err(TapeError::NotStaked.into());
     }
 
     if source_stake.inner.amount < amount {

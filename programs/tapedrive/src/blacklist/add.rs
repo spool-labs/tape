@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AddToBlacklist::try_from_bytes(data)?;
@@ -29,7 +30,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // Add to blacklist as (track_hash, units) = (track.key, track.size)
     node.blacklist
         .add(track.key, track.size)
-        .map_err(|_| ProgramError::Custom(1))?;
+        .map_err(|_| TapeError::ListFull)?;
 
     Ok(())
 }

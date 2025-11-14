@@ -1,6 +1,6 @@
-//use crate::error::*;
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AdvancePool::try_from_bytes(data)?;
@@ -44,12 +44,12 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Can't advance if epoch is syncing (i.e., not active)
     if epoch.state.is_syncing() {
-        return Err(ProgramError::Custom(2));
+        return Err(TapeError::BadEpochState.into());
     }
 
     // If this pool is already updated for this epoch, can't advance again
     if node.latest_epoch >= epoch.id {
-        return Err(ProgramError::Custom(0));
+        return Err(TapeError::AlreadyAdvanced.into());
     }
 
     // Rotate BLS key if needed
@@ -70,8 +70,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     );
 
     if rewards_owed.is_zero() {
-        return Err(ProgramError::Custom(0));
-        // return Err(TapeError::NoRewardsOwed);
+        return Err(TapeError::NoRewards.into());
     }
 
     // Update node
@@ -95,8 +94,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .saturating_add(rewards_owed.into());
 
     if rewards_paid > archive.rewards_pool {
-        return Err(ProgramError::Custom(3));
-        // return Err(TapeError::RewardsOverflow);
+        return Err(TapeError::RewardsOverflow.into());
     }
 
     archive.rewards_paid = rewards_paid;

@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = ClaimCommission::try_from_bytes(data)?;
@@ -46,7 +47,7 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // Claim full commission from pool (errors if none)
     let commission: TAPE = node.pool
         .claim_commission()
-        .map_err(|_| ProgramError::Custom(1))?;
+        .map_err(|_| TapeError::NoCommission)?;
 
     // Pay out from Archive ATA to signer ATA
     transfer_signed(

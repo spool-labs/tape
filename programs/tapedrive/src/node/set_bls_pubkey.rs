@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_set_bls_pubkey(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetBlsPubkey::try_from_bytes(data)?;
@@ -24,8 +25,7 @@ pub fn process_set_bls_pubkey(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let bls_pubkey = args.bls_pubkey;
     let bls_signature = args.bls_pop;
     if !bls_pubkey.is_valid(bls_signature) {
-        return Err(ProgramError::Custom(1));
-        //return Err(TapeError::InvalidBlsProofOfPossession);
+        return Err(TapeError::BadBlsProof.into());
     }
 
     node.metadata.next_bls_pubkey = args.bls_pubkey;

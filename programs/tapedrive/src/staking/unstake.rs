@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = UnstakeFromPool::try_from_bytes(data)?;
@@ -60,8 +61,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .assert(|h| h.node == *node_info.key)?;
 
     if node.latest_epoch < prev_epoch(epoch) {
-        return Err(ProgramError::Custom(0));
-        // return Err(TapeError::NodeNotUpdated);
+        return Err(TapeError::NodeStale.into());
     }
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
@@ -84,7 +84,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     // Must be in withdrawing state and withdraw epoch must have arrived
     if !staked_tape.is_withdrawing() {
-        return Err(ProgramError::Custom(0));
+        return Err(TapeError::BadStakeState.into());
     }
 
     let withdraw_epoch = staked_tape
@@ -93,7 +93,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .ok_or(ProgramError::InvalidInstructionData)?;
 
     if withdraw_epoch > current_epoch(epoch) {
-        return Err(ProgramError::Custom(1)); // Epoch not reached
+        return Err(TapeError::EpochNotReached.into());
     }
 
     // Compute owed rewards based on activation and withdraw exchange rates
@@ -101,17 +101,17 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     let activation_rate = history.inner
         .rate_at(staked_tape.activation_epoch)
-        .ok_or(ProgramError::Custom(2))?;
+        .ok_or(TapeError::RateMissing)?;
 
     let withdraw_rate = history.inner
         .rate_at(withdraw_epoch)
-        .ok_or(ProgramError::Custom(3))?;
+        .ok_or(TapeError::RateMissing)?;
 
     let shares = activation_rate
         .convert_to_other_amount(staked_tape.amount.into());
 
     if shares == 0 {
-        return Err(ProgramError::Custom(4)); // Zero shares
+        return Err(TapeError::ZeroShares.into());
     }
 
     let tokens_at_withdraw = withdraw_rate
@@ -123,7 +123,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Update pool accounting and stake state
     let total_rewards = node.pool
         .unstake_from_pool(staked_tape, current_epoch(epoch), owed_rewards.into())
-        .map_err(|_| ProgramError::Custom(5))?;
+        .map_err(|_| TapeError::StakingFailed)?;
 
     solana_program::msg!(
         "Unstaking {} (owed rewards: {}, total rewards paid: {})",

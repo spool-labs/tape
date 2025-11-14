@@ -1,6 +1,6 @@
-use crate::error::*;
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinNetwork::try_from_bytes(data)?;

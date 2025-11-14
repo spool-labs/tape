@@ -1,6 +1,7 @@
+use steel::*;
 use tape_api::prelude::*;
 use tape_crypto::bls12254::min_sig::*;
-use steel::*;
+use crate::error::*;
 
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CertifyTrack::try_from_bytes(data)?;
@@ -60,13 +61,13 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     if !is_supermajority(weight, SPOOL_COUNT as u64) {
-        return Err(ProgramError::Custom(0));
+        return Err(TapeError::NoQuorum.into());
     }
 
     let committee_size = system.committee.size();
     let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
-        return Err(ProgramError::Custom(1));
+        return Err(TapeError::NoSigners.into());
     }
 
     let mut pubkeys = Vec::with_capacity(indices.len());
@@ -74,19 +75,19 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         if let Some(member) = system.committee.member_at(member_index) {
             pubkeys.push(member.key.0);
         } else {
-            return Err(ProgramError::Custom(2));
+            return Err(TapeError::BadMember.into());
         }
     }
 
     let decompressed_sig = G1Point::try_from(&args.signature.0)
-        .map_err(|_| ProgramError::Custom(3))?;
+        .map_err(|_| TapeError::BadSignature)?;
 
     let message = track_address.as_ref();
     verify_aggregate(
         message,
         &pubkeys,
         &decompressed_sig,
-    ).map_err(|_| ProgramError::Custom(4))?;
+    ).map_err(|_| TapeError::BadSignature)?;
 
     track.data.set_certified(
         current_epoch(epoch),

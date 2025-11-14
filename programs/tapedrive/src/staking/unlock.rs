@@ -1,4 +1,4 @@
-//use crate::error::*;
+use crate::error::*;
 use tape_api::prelude::*;
 use steel::*;
 
@@ -33,8 +33,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .assert(|h| h.node == *node_info.key)?;
 
     if node.latest_epoch < prev_epoch(epoch) {
-        return Err(ProgramError::Custom(0));
-        // return Err(TapeError::NodeNotUpdated);
+        return Err(TapeError::NodeStale.into());
     }
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
@@ -51,15 +50,13 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     let staked_tape = &mut stake.inner;
     let activation_rate = history.inner
         .rate_at(staked_tape.activation_epoch)
-        .ok_or(ProgramError::Custom(0))?;
-    //  .ok_or(TapeError::MissingExchangeRate)?;
+        .ok_or(TapeError::RateMissing)?;
 
     solana_program::msg!("Activation rate: {:?}", activation_rate);
 
     node.pool
         .request_withdraw(staked_tape, current_epoch(epoch), activation_rate)
-        .map_err(|_| ProgramError::Custom(1))?;
-    //  .map_err(|_| TapeError::StakingFailed)?;
+        .map_err(|_| TapeError::StakingFailed)?;
 
     // TODO: update/advance the node's state?
 

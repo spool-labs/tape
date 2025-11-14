@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = DestroyTape::try_from_bytes(data)?;
@@ -46,11 +47,11 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let now = current_epoch(epoch);
 
     if now < tape.expiry_epoch {
-        return Err(ProgramError::Custom(30)); // not expired
+        return Err(TapeError::NotExpired.into());
     }
 
     if !tape.used.is_zero() {
-        return Err(ProgramError::Custom(31)); // still used
+        return Err(TapeError::NotEmpty.into());
     }
 
     close_account(tape_info, signer_info)?;

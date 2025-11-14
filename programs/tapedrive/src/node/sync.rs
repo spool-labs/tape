@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncEpoch::try_from_bytes(data)?;
@@ -33,25 +34,21 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     }
 
     if !epoch.state.is_syncing() {
-        return Err(ProgramError::Custom(1));
-        //return Err(TapeError::InvalidEpochState);
+        return Err(TapeError::BadEpochState.into());
     }
 
     if node.latest_epoch >= epoch.id {
-        return Err(ProgramError::Custom(5));
-        //return Err(TapeError::SyncAlreadyPerformed);
+        return Err(TapeError::AlreadySynced.into());
     }
 
     // Find our member index in the committee
     let member_index = system
         .committee
         .index_of(&node.id)
-        .ok_or(ProgramError::Custom(2))?;
-    //  .ok_or(TapeError::NodeNotInCommittee)?;
+        .ok_or(TapeError::NotInCommittee)?;
 
     if member_index >= MEMBER_COUNT {
-        return Err(ProgramError::Custom(2));
-        //return Err(TapeError::NodeNotInCommittee);
+        return Err(TapeError::NotInCommittee.into());
     }
 
     // Find the spools this member is assigned
@@ -61,15 +58,13 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     // Verify the seat hash matches
     let seat_hash = get_spool_hash(&spools);
     if seat_hash != args.spools {
-        return Err(ProgramError::Custom(3));
-        //return Err(TapeError::InvalidSeatHash);
+        return Err(TapeError::BadSeatHash.into());
     }
 
     // Verify the epoch ID matches
     let epoch_number = EpochNumber::unpack(args.epoch);
     if epoch.id != epoch_number {
-        return Err(ProgramError::Custom(4));
-        //return Err(TapeError::InvalidEpochId);
+        return Err(TapeError::BadEpochId.into());
     }
 
     let weight = spools.len() as u64;
@@ -179,7 +174,7 @@ mod tests {
             &instruction,
             &accounts,
             &[
-                Check::err(ProgramError::Custom(5)), // SyncAlreadyPerformed
+                Check::err(TapeError::AlreadySynced.into()),
             ]
         );
 

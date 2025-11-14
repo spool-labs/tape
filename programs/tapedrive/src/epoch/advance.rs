@@ -33,16 +33,16 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
     if !epoch.state.is_next_ready() {
-        return Err(ProgramError::Custom(1));
+        return Err(TapeError::BadEpochState.into());
     }
 
     if epoch.last_epoch + EPOCH_DURATION > now {
-        return Err(ProgramError::Custom(3));
+        return Err(TapeError::TooSoon.into());
     }
 
     // Ensure the archive schedule is aligned with the current epoch
     if archive.schedule.current_epoch() != epoch.id {
-        return Err(ProgramError::Custom(4));
+        return Err(TapeError::BadSchedule.into());
     }
 
     // Save previous spools, then reassign for the next committee

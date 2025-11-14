@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterTrack::try_from_bytes(data)?;
@@ -42,7 +43,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .has_address(&track_address)?;
 
     if tape.expiry_epoch <= current_epoch(epoch) {
-        return Err(ProgramError::Custom(0));
+        return Err(TapeError::TapeExpired.into());
     }
 
     let total_units = StorageUnits::unpack(args.size);
@@ -77,7 +78,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
          .ok_or(ProgramError::ArithmeticOverflow)?;
 
      if new_used > tape.capacity { 
-         return Err(ProgramError::Custom(/* e.g., InsufficientStorage */ 9)); 
+         return Err(TapeError::NoSpace.into()); 
      }
 
     tape.used = new_used;

@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RemoveFromBlacklist::try_from_bytes(data)?;
@@ -30,7 +31,7 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
     // Remove from blacklist using provided Merkle proof
     node.blacklist
         .remove(&args.proof, blob_hash, units)
-        .map_err(|_| ProgramError::Custom(1))?;
+        .map_err(|_| TapeError::BadProof)?;
 
     Ok(())
 }
@@ -142,7 +143,7 @@ mod tests {
             &instruction,
             &accounts,
             &[
-                Check::err(ProgramError::Custom(1)),
+                Check::err(TapeError::BadProof.into()),
             ],
         );
     }

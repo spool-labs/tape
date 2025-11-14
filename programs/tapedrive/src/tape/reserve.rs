@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
@@ -87,20 +88,17 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let fee_per_epoch = TAPE(single_epoch_price);
 
     if archive.schedule.current_epoch() != current_epoch {
-        return Err(ProgramError::Custom(0));
-        //return Err(TapeError::UnexpectedState.into());
+        return Err(TapeError::UnexpectedState.into());
     }
 
     if !archive.schedule.has_capacity_for(
         total_units, current_capacity, start_epoch, end_epoch) {
-        return Err(ProgramError::Custom(1));
-        //return Err(TapeError::InsufficientCapacity.into());
+        return Err(TapeError::NoCapacity.into());
     }
     
     archive.schedule
         .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
-        .map_err(|_| ProgramError::Custom(2))?;
-        //.map_err(|_| TapeError::UnexpectedState)?;
+        .map_err(|_| TapeError::UnexpectedState)?;
 
 
     create_program_account::<Tape>(

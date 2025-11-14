@@ -1,5 +1,6 @@
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergePoolStake::try_from_bytes(data)?;
@@ -66,11 +67,11 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // For now, only allow merging staked positions with same activation epoch/state
     if !source_stake.inner.is_staked() || !dest_stake.inner.is_staked() {
-        return Err(ProgramError::Custom(20));
+        return Err(TapeError::NotStaked.into());
     }
 
     if source_stake.inner.activation_epoch != dest_stake.inner.activation_epoch {
-        return Err(ProgramError::Custom(21));
+        return Err(TapeError::EpochMismatch.into());
     }
 
     // Validate vaults
@@ -222,4 +223,3 @@ mod tests {
         );
     }
 }
-

@@ -1,6 +1,6 @@
-use crate::error::*;
-use tape_api::prelude::*;
 use steel::*;
+use tape_api::prelude::*;
+use crate::error::*;
 
 pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = StakeWithPool::try_from_bytes(data)?;
@@ -52,8 +52,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     if node.latest_epoch < prev_epoch(epoch) {
-        return Err(ProgramError::Custom(0));
-        // return Err(TapeError::NodeNotUpdated);
+        return Err(TapeError::NodeStale.into());
     }
 
     let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);

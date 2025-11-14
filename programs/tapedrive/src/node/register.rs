@@ -1,6 +1,6 @@
+use steel::*;
 use crate::error::*;
 use tape_api::prelude::*;
-use steel::*;
 
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterNode::try_from_bytes(data)?;
@@ -56,8 +56,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let bls_pubkey = args.bls_pubkey;
     let bls_signature = args.bls_pop;
     if !bls_pubkey.is_valid(bls_signature) {
-        return Err(ProgramError::Custom(1));
-        //return Err(TapeError::InvalidBlsProofOfPossession);
+        return Err(TapeError::BadBlsProof.into());
     }
 
     create_program_account::<Node>(
@@ -71,7 +70,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let node_number = system.total_nodes;
     system.total_nodes = system.total_nodes
         .checked_add(1)
-        .ok_or(TapeError::Overflow)?;
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     let commission_rate = BasisPoints::unpack(args.commission_rate);
 
