@@ -6,7 +6,6 @@ pub mod epoch;
 pub mod error;
 pub mod node;
 pub mod staking;
-pub mod system;
 pub mod tape;
 pub mod track;
 
@@ -15,7 +14,6 @@ use blacklist::*;
 use epoch::*;
 use node::*;
 use staking::*;
-use system::*;
 use tape::*;
 use track::*;
 
@@ -43,9 +41,6 @@ pub fn process_instruction(
 
             // System
             TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
-            TapeInstruction::CreateArchive => process_create_archive(accounts, data)?,
-            TapeInstruction::CreateEpoch => process_create_epoch(accounts, data)?,
-
             TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
             TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,

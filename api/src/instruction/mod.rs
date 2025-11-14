@@ -8,7 +8,6 @@ mod node;
 mod pool;
 mod stake;
 mod stream;
-mod system;
 mod tape;
 mod token;
 mod track;
@@ -21,7 +20,6 @@ pub use node::*;
 pub use pool::*;
 pub use stake::*;
 pub use stream::*;
-pub use system::*;
 pub use tape::*;
 pub use token::*;
 pub use track::*;
@@ -66,11 +64,9 @@ pub enum TapeInstruction {
     Unknown = 0x40,
 
     // System
-    Initialize,
     CreateSystem,
     ExpandSystem,
-    CreateArchive,
-    CreateEpoch,
+    Initialize,
     AdvanceEpoch,
     //RegisterFeature,
     //CertifyFeature,
@@ -151,11 +147,9 @@ instruction!(StakingInstruction, UnstakeTokens);
 instruction!(StakingInstruction, SplitStake);
 instruction!(StakingInstruction, MergeStake);
 
-instruction!(TapeInstruction, Initialize);
 instruction!(TapeInstruction, CreateSystem);
 instruction!(TapeInstruction, ExpandSystem);
-instruction!(TapeInstruction, CreateArchive);
-instruction!(TapeInstruction, CreateEpoch);
+instruction!(TapeInstruction, Initialize);
 instruction!(TapeInstruction, AdvanceEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
@@ -181,8 +175,6 @@ instruction!(TapeInstruction, SetStoragePrice);
 instruction!(TapeInstruction, SetStorageCapacity);
 instruction!(TapeInstruction, AddToBlacklist);
 instruction!(TapeInstruction, RemoveFromBlacklist);
-//instruction!(TapeInstruction, VoteOnStoragePrice);
-//instruction!(TapeInstruction, VoteOnShardSize);
 //instruction!(TapeInstruction, VoteOnFeature);
 
 instruction!(TapeInstruction, ReserveTape);
@@ -195,7 +187,6 @@ instruction!(TapeInstruction, RegisterTrack);
 instruction!(TapeInstruction, DeleteTrack);
 instruction!(TapeInstruction, CertifyTrack);
 instruction!(TapeInstruction, InvalidateTrack);
-
 
 //instruction!(TapeInstruction, CreateStream);
 //instruction!(TapeInstruction, RegisterStream);
