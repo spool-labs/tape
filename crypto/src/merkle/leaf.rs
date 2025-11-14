@@ -3,37 +3,37 @@ use crate::hash::{Hash, hashv, HASH_BYTES};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug, Pod, Zeroable)]
-pub struct Leaf(Hash);
+pub struct MerkleLeaf(Hash);
 
-impl From<[u8; HASH_BYTES]> for Leaf {
+impl From<[u8; HASH_BYTES]> for MerkleLeaf {
     fn from(from: [u8; 32]) -> Self {
         Self(Hash { value: from })
     }
 }
 
-impl AsRef<[u8]> for Leaf {
+impl AsRef<[u8]> for MerkleLeaf {
     fn as_ref(&self) -> &[u8] {
         &self.0.value
     }
 }
 
-impl From<Leaf> for Hash {
-    fn from(leaf: Leaf) -> Self {
+impl From<MerkleLeaf> for Hash {
+    fn from(leaf: MerkleLeaf) -> Self {
         leaf.0
     }
 }
 
 impl Hash {
-    pub fn as_leaf(self) -> Leaf {
-        Leaf(self)
+    pub fn as_leaf(self) -> MerkleLeaf {
+        MerkleLeaf(self)
     }
 }
 
-impl Leaf {
+impl MerkleLeaf {
     pub fn new(data: &[&[u8]]) -> Self {
         let mut inputs = vec![b"LEAF".as_ref()];
         inputs.extend(data);
-        Leaf(hashv(&inputs))
+        MerkleLeaf(hashv(&inputs))
     }
 
     pub fn to_bytes(self) -> [u8; HASH_BYTES] {

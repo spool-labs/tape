@@ -1,6 +1,6 @@
 use crate::hash::Hash;
 use bytemuck::{Pod, Zeroable};
-use super::{MerkleTree, Leaf, get_merkle_proof, utils};
+use super::{MerkleTree, MerkleLeaf, get_merkle_proof, utils};
 
 /// Generates a Merkle proof using a cached layer and a closure to fetch only the required leaves
 /// by index.
@@ -9,7 +9,7 @@ pub fn get_canopy_merkle_proof<const TREE_HEIGHT: usize>(
     leaf_index: usize,
     cached_layer_number: usize,
     cached_layer_nodes: &[Hash],
-    fetch_leaf: impl Fn(usize) -> Option<Leaf>,
+    fetch_leaf: impl Fn(usize) -> Option<MerkleLeaf>,
 ) -> Vec<Hash> {
 
     assert!(cached_layer_number <= TREE_HEIGHT, "cached_layer_number exceeds tree height");
@@ -23,7 +23,7 @@ pub fn get_canopy_merkle_proof<const TREE_HEIGHT: usize>(
     let end = subtree.leaf_start + subtree.leaf_count;
 
     // Should be way smaller than the total leaf count unless the root layer is chosen.
-    let lower_leaves: Vec<Leaf> = (start..end)
+    let lower_leaves: Vec<MerkleLeaf> = (start..end)
         .map(|i| fetch_leaf(i).unwrap_or(zero))
         .collect();
 
@@ -61,7 +61,7 @@ impl Subtree {
         &self,
         tree: &MerkleTree<TREE_HEIGHT>,
         target_leaf_relative: usize,
-        lower_leaves: &[Leaf],
+        lower_leaves: &[MerkleLeaf],
         cached_layer: &[Hash],
     ) -> Vec<Hash> {
         get_proof_with_metadata(
@@ -109,7 +109,7 @@ fn get_proof_with_metadata<const TREE_HEIGHT: usize>(
     meta: &Subtree,
     tree: &MerkleTree<TREE_HEIGHT>,
     target_leaf_relative: usize,
-    lower_leaves: &[Leaf],
+    lower_leaves: &[MerkleLeaf],
     cached_layer: &[Hash],
 ) -> Vec<Hash> {
     assert_eq!(
@@ -129,7 +129,7 @@ fn get_proof_with_metadata<const TREE_HEIGHT: usize>(
         meta.lower_height,
     );
 
-    let upper_leaves_as_leaf: Vec<Leaf> =
+    let upper_leaves_as_leaf: Vec<MerkleLeaf> =
         cached_layer.iter().map(|h| h.as_leaf()).collect();
 
     let upper_proof = get_merkle_proof(
@@ -191,18 +191,18 @@ mod tests {
 
         let mut leaves_by_index = std::collections::HashMap::new();
         for i in 0..=FILLED {
-            leaves_by_index.insert(i, Leaf::new(&[format!("val_{i}").as_bytes()]));
+            leaves_by_index.insert(i, MerkleLeaf::new(&[format!("val_{i}").as_bytes()]));
         }
         let fetch = |idx: usize| leaves_by_index.get(&idx).copied();
         let zero  = tree.zero_values[0].as_leaf();
 
-        let leaves: Vec<Leaf> = (0..=FILLED).map(|i| fetch(i).unwrap()).collect();
+        let leaves: Vec<MerkleLeaf> = (0..=FILLED).map(|i| fetch(i).unwrap()).collect();
         let cached_layer = tree.get_layer_nodes(&leaves, layer_number);
 
         println!("cached_layer len: {:?}", cached_layer.len());
 
         let meta = compute_subtree_metadata(leaf_index, layer_number, TREE_HEIGHT);
-        let lower: Vec<Leaf> = (meta.leaf_start .. meta.leaf_start + meta.leaf_count)
+        let lower: Vec<MerkleLeaf> = (meta.leaf_start .. meta.leaf_start + meta.leaf_count)
             .map(|g| fetch(g).unwrap_or(zero))
             .collect();
 
@@ -232,7 +232,7 @@ mod tests {
 
         for i in 0..FILLED {
             let bytes = (i as u64).to_le_bytes();
-            let leaf  = Leaf::new(&[&bytes]);
+            let leaf  = MerkleLeaf::new(&[&bytes]);
             leaves_by_index.insert(i, leaf);
             tree.try_add_leaf(leaf).unwrap();
         }
@@ -240,7 +240,7 @@ mod tests {
         let fetch = |idx: usize| leaves_by_index.get(&idx).copied();
         let zero  = tree.zero_values[0].as_leaf();
 
-        let leaves: Vec<Leaf> = (0..FILLED).map(|i| fetch(i).unwrap()).collect();
+        let leaves: Vec<MerkleLeaf> = (0..FILLED).map(|i| fetch(i).unwrap()).collect();
         let cached_layer = tree.get_layer_nodes(&leaves, layer_number);
 
         // only 4 nodes in layer 10 are actually non-zero; a fully filled tree would have 256

@@ -94,8 +94,6 @@ pub enum TapeInstruction {
     ClaimCommission,
     AddToBlacklist,
     RemoveFromBlacklist,
-    //VoteOnStoragePrice,
-    //VoteOnShardSize,
     //VoteOnFeature,
     //VoteOnSlash,
 

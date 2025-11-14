@@ -135,7 +135,7 @@ impl From<TreeError> for BlacklistError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_crypto::merkle::Leaf;
+    use tape_crypto::merkle::MerkleLeaf;
 
     #[test]
     fn test_blacklist() {
@@ -151,7 +151,7 @@ mod tests {
 
         // Build leaf and proof for index 0
         let bytes = units.pack();
-        let leaf = Leaf::new(&[blob.as_ref(), bytes.as_ref()]);
+        let leaf = MerkleLeaf::new(&[blob.as_ref(), bytes.as_ref()]);
         let leaves = [leaf];
         let proof = bl.state.get_proof(&leaves, 0);
 

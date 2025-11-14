@@ -40,7 +40,7 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
 mod tests {
     use super::*;
     use tape_test::*;
-    use tape_crypto::merkle::{Leaf, MerkleTree};
+    use tape_crypto::merkle::{MerkleLeaf, MerkleTree};
 
     // Helper to convert Vec<Hash> into a fixed-size array required by the IX builder
     fn vec_to_fixed<const N: usize>(v: Vec<Hash>) -> [Hash; N] {
@@ -65,7 +65,7 @@ mod tests {
         node.blacklist.add(blob_hash, units).expect("add");
 
         // Build Merkle proof for that single entry (client-side)
-        let leaf = Leaf::new(&[blob_hash.as_ref(), units.pack().as_ref()]);
+        let leaf = MerkleLeaf::new(&[blob_hash.as_ref(), units.pack().as_ref()]);
         let leaves = [leaf];
         let tree = MerkleTree::<BLACKLIST_SIZE>::new(&[BLACKLIST]);
         let proof_vec = tree.get_proof(&leaves, 0);
