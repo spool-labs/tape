@@ -1,5 +1,5 @@
 pub mod advance;
-pub mod claim_commission;
+pub mod claim;
 pub mod join;
 pub mod register;
 pub mod set_authority;
@@ -13,7 +13,7 @@ pub mod set_storage_capacity;
 pub mod sync;
 
 pub use advance::*;
-pub use claim_commission::*;
+pub use claim::*;
 pub use join::*;
 pub use register::*;
 pub use set_authority::*;
