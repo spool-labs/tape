@@ -3,17 +3,17 @@ use crate::hash::{Hash, hashv, HASH_BYTES};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug, Pod, Zeroable)]
-pub struct MerkleLeaf(Hash);
+pub struct MerkleLeaf(pub Hash);
 
 impl From<[u8; HASH_BYTES]> for MerkleLeaf {
-    fn from(from: [u8; 32]) -> Self {
-        Self(Hash { value: from })
+    fn from(value: [u8; 32]) -> Self {
+        Self(Hash(value))
     }
 }
 
 impl AsRef<[u8]> for MerkleLeaf {
     fn as_ref(&self) -> &[u8] {
-        &self.0.value
+        self.0.as_ref()
     }
 }
 
@@ -37,6 +37,6 @@ impl MerkleLeaf {
     }
 
     pub fn to_bytes(self) -> [u8; HASH_BYTES] {
-        self.0.value
+        self.0.to_bytes()
     }
 }
