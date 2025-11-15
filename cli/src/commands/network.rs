@@ -21,14 +21,17 @@ pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
     log::print_divider();
 
     match cli.command {
-        Commands::Web { port } => {
-            handle_web(context, port).await?;
+        Commands::Web { port, trusted_peer, miner_address } => {
+            handle_archive(&context, trusted_peer, miner_address).await?;
+            handle_web(&context, port).await?;
+
         }
         Commands::Archive { trusted_peer, miner_address } => {
-            handle_archive(context, trusted_peer, miner_address).await?;
+            handle_archive(&context, trusted_peer, miner_address).await?;
         }
-        Commands::Mine { pubkey, name } => {
-            handle_mine(context, pubkey, name).await?;
+        Commands::Mine { pubkey, name, trusted_peer, miner_address } => {
+            handle_archive(&context, trusted_peer, miner_address).await?;
+            handle_mine(&context, pubkey, name).await?;
         }
         Commands::Register { name } => {
             handle_register(context, name).await?;
@@ -38,7 +41,7 @@ pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
+pub async fn handle_web(context: &Context, port: Option<u16>) -> Result<()> {
     let port = port.unwrap_or(3000);
 
     log::print_info("Starting web RPC service...");
@@ -49,7 +52,7 @@ pub async fn handle_web(context: Context, port: Option<u16>) -> Result<()> {
 }
 
 pub async fn handle_archive(
-    context: Context,
+    context: &Context,
     trusted_peer: Option<String>,
     miner_address: Option<String>
 ) -> Result<()> {
@@ -82,7 +85,7 @@ pub async fn handle_archive(
 }
 
 pub async fn handle_mine(
-    context: Context,
+    context: &Context,
     miner_address: Option<String>,
     miner_name: Option<String>
 ) -> Result<()> {
