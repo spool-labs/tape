@@ -178,7 +178,7 @@ mod tests {
         a.signers.set(3);
         b.signers.set(13);
 
-        // Merge → OR
+        // Merge signers
         a.merge_signers_from(&b);
 
         assert!(a.has_signed(3));
