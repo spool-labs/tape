@@ -1,14 +1,20 @@
 # TAPEDRIVE
 [![crates.io](https://img.shields.io/crates/v/tapedrive-cli.svg?style=flat)](https://crates.io/crates/tapedrive-cli)
 
-**Decentralized object storage** on Solana. It works by compressing your data into tiny on-chain proofs. A network of miners then solve challenges in parallel to secure your data. It's entirely on Solana, so there's no need for side-chains or consensus overhead.
+**Decentralized object storage** on Solana. Tapedrive turns unused storage into a global, verifiable cloud—lower cost, higher integrity, with no lock-in.
 
 ![image](https://github.com/user-attachments/assets/bf674eb1-512d-47e7-a9c5-e0d0e44c6edb)
 
+--------------------------------------
+
 > [!Important]
-> Tapedrive is very much still in development, it is **not deployed** to mainnet yet. A [new version](https://x.com/zelimir__/status/1975304835064078660) is in the works.
+> Tapedrive is very much still in development, it is **not deployed** or public yet. 
+> 
+> This repository contains a proof-of-concept of **TapeReplay**, the [official version](https://x.com/zelimir__/status/1975304835064078660) is in the works but invite only at the moment.
 > 
 > [Sign up](https://tapedrive.io/#sign-up) to receive updates on network milestones and product releases. Join us on [Discord](https://discord.gg/dVa9TWA45X) to engage with our devs.
+
+--------------------------------------
 
 ## Quick Start
 
