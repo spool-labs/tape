@@ -101,10 +101,22 @@ pub enum Commands {
 
         #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
         name: Option<String>,
+
+        #[arg(help = "Trusted peer to connect to", short = 'p', long = "peer")]
+        trusted_peer: Option<String>,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
     Web {
         #[arg(help = "Port to run the web RPC service on")]
         port: Option<u16>,
+
+        #[arg(help = "Trusted peer to connect to", short = 'p', long = "peer")]
+        trusted_peer: Option<String>,
+
+        #[arg(help = "Miner account public key", short = 'm', long = "miner")]
+        miner_address: Option<String>,
     },
 
     // Admin Commands
