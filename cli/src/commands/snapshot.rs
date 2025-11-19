@@ -73,7 +73,7 @@ async fn handle_resync(
         context.rpc(), 
         context.payer(), 
         miner_address, 
-        None, 
+        context.miner_name_owned(), 
         false
     ).await?;
     log::print_message(&format!("Using miner address: {miner_pubkey}"));
@@ -125,7 +125,7 @@ async fn handle_get_tape(
         context.rpc(), 
         context.payer(), 
         miner_address, 
-        None, 
+        context.miner_name_owned(), 
         false
     ).await?;
     let miner_bytes = miner_pubkey.to_bytes();
@@ -193,7 +193,7 @@ async fn handle_get_segment(
         context.rpc(), 
         context.payer(), 
         miner_address, 
-        None, 
+        context.miner_name_owned(), 
         false
     ).await?;
     let miner_bytes = miner_pubkey.to_bytes();

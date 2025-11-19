@@ -1,15 +1,14 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
-use std::str::FromStr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::keypair::{get_keypair_path, get_payer};
+use crate::keypair::get_payer;
+use crate::config::TapeConfig;
 
 #[derive(Parser)]
 #[command(
@@ -22,17 +21,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
+    #[arg(short = 'c', long = "config", help = "Path to config file (overrides default)", global = true)]
+    pub config: Option<PathBuf>,
+
     #[arg(short = 'k', long = "keypair", global = true)]
     pub keypair_path: Option<PathBuf>,
-
-    #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
-        global = true,
-        help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
-    )]
-    pub cluster: Cluster,
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
@@ -98,9 +91,6 @@ pub enum Commands {
     Mine {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
-
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
-        name: Option<String>,
     },
     Web {
         #[arg(help = "Port to run the web RPC service on")]
@@ -190,9 +180,6 @@ pub enum InfoCommands {
     Miner {
         #[arg(help = "Miner account public key", conflicts_with = "name")]
         pubkey: Option<String>,
-
-        #[arg(help = "Name of the miner you're mining with", conflicts_with = "pubkey", short = 'n', long = "name")]
-        name: Option<String>,
     },
 
     Archive {},
@@ -200,70 +187,39 @@ pub enum InfoCommands {
     Block {},
 }
 
-#[derive(Debug, Clone)]
-pub enum Cluster {
-    Localnet,
-    Mainnet,
-    Devnet,
-    Testnet,
-    Custom(String),
-}
-
-impl Cluster {
-    pub fn rpc_url(&self) -> String {
-        match self {
-            Cluster::Localnet => "http://127.0.0.1:8899".to_string(),
-            Cluster::Mainnet => "https://api.mainnet-beta.solana.com".to_string(),
-            Cluster::Devnet => "https://api.devnet.solana.com".to_string(),
-            Cluster::Testnet => "https://api.testnet.solana.com".to_string(),
-            Cluster::Custom(url) => url.clone(),
-        }
-    }
-}
-
-impl FromStr for Cluster {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "l" => Ok(Cluster::Localnet),
-            "m" => Ok(Cluster::Mainnet),
-            "d" => Ok(Cluster::Devnet),
-            "t" => Ok(Cluster::Testnet),
-            s if s.starts_with("http://") || s.starts_with("https://") => Ok(Cluster::Custom(s.to_string())),
-            _ => Err(format!(
-                "Invalid cluster value: '{s}'. Use l, m, d, t, or a valid RPC URL (http:// or https://)"
-            )),
-        }
-    }
-}
 
 pub struct Context {
+    pub config: Arc<TapeConfig>,
     pub rpc: Arc<RpcClient>,
-    pub keypair_path: PathBuf,
     pub payer: Keypair
 }
 
 impl Context{
     pub fn try_build(cli:&Cli) -> Result<Self> {
-        let rpc_url = cli.cluster.rpc_url();
+        
+        // loading up configs
+        let config = Arc::new(TapeConfig::load(&cli.config)?);
+
+        let rpc_url = config.solana.rpc_url.to_string();
+        let commitment_level = config.solana.commitment.to_commitment_config();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            commitment_level)
         );
-        let keypair_path = get_keypair_path(cli.keypair_path.clone());
+
+        let keypair_path = config.solana.keypair_path();
         let payer = get_payer(keypair_path.clone())?;
         
         Ok(Self {
+             config,
              rpc,
-             keypair_path,
              payer
         })
 
     }
 
-    pub fn keyapir_path(&self) -> &PathBuf{
-        &self.keypair_path
+    pub fn keypair_path(&self) -> PathBuf {
+        self.config.solana.keypair_path()
     }
 
     pub fn rpc(&self) -> &Arc<RpcClient>{
@@ -271,24 +227,39 @@ impl Context{
     }
 
     pub fn open_primary_store_conn(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::primary()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::primary(&rocksdb_config.primary_path)?)
     }
 
     pub fn open_secondary_store_conn_mine(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::secondary_mine()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::secondary_mine(&rocksdb_config.primary_path, &rocksdb_config.secondary_path_mine)?)
     }
 
     pub fn open_secondary_store_conn_web(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::secondary_web()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::secondary_web(&rocksdb_config.primary_path, &rocksdb_config.secondary_path_web)?)
     }
 
     pub fn open_read_only_store_conn(&self) -> Result<TapeStore> {
-        Ok(tape_network::store::read_only()?)
+        let rocksdb_config = self.config.storage.rocksdb.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB config not found"))?;
+        Ok(tape_network::store::read_only(&rocksdb_config.primary_path)?)
     }
 
 
     pub fn payer(&self) -> &Keypair{
         &self.payer
     }
+    
+    pub fn max_transaction_retries(&self) -> u32 {
+        self.config.solana.max_transaction_retries
+    }
 
+    pub fn miner_name_owned(&self) -> String {
+        self.config.mining.miner_name.clone()
+    }
 }

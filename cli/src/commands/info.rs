@@ -80,8 +80,8 @@ pub async fn handle_info_commands(cli: Cli, context: Context) -> Result<()> {
                 log::print_divider();
             }
 
-            InfoCommands::Miner { pubkey, name } => {
-                let miner_address = get_or_create_miner(context.rpc(), context.payer(), pubkey, name, false).await?;
+            InfoCommands::Miner { pubkey } => {
+                let miner_address = get_or_create_miner(context.rpc(), context.payer(), pubkey,context.miner_name_owned(), false).await?;
                 let (miner, _) = tapedrive::get_miner_account(context.rpc(), &miner_address).await?;
                 log::print_section_header("Miner Account");
                 log::print_message(&format!("Name: {}", from_name(&miner.name)));

@@ -77,6 +77,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         }
 
 
+        let max_transaction_retries = context.max_transaction_retries();
         let Context{
             rpc,
             payer,
@@ -101,7 +102,7 @@ pub async fn handle_write_command(cli: Cli, context: Context) -> Result<()> {
         let (tape_address, writer_address, _sig) =
             create_tape(&rpc, &payer, &tape_name).await?;
 
-        write_chunks(&rpc, &payer, tape_address, writer_address, chunks, &pb).await?;
+        write_chunks(&rpc, &payer, tape_address, writer_address, chunks, &pb, max_transaction_retries).await?;
 
         pb.set_message("finalizing tape...");
         tokio::time::sleep(Duration::from_secs(32)).await;
@@ -173,6 +174,7 @@ async fn write_chunks(
     writer_address: Pubkey,
     chunks: Vec<Vec<u8>>,
     pb: &ProgressBar,
+    max_transaction_retries: u32
 ) -> Result<()> {
     pb.set_message("");
     pb.set_style(
@@ -197,6 +199,7 @@ async fn write_chunks(
                 tape_address,
                 writer_address,
                 &chunk,
+                max_transaction_retries
             )
             .await?;
             pb_clone.inc(1);
@@ -291,4 +294,3 @@ fn read_from_stdin() -> std::io::Result<Vec<u8>> {
     std::io::stdin().read_to_end(&mut buffer)?;
     Ok(buffer)
 }
-
