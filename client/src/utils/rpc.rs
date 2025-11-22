@@ -127,7 +127,7 @@ pub async fn send_with_retry(
             recent_blockhash,
         );
 
-        match send(client, &tx).await {
+        match send_and_confirm(client, &tx).await {
             Ok(signature) => return Ok(signature),
             Err(e) if attempts < max_retries => {
                 attempts += 1;
