@@ -97,7 +97,6 @@ impl<const N: usize> MerkleTree<N> {
         Self::default()
     }
 
-    // Add raw bytes leaf (convenience).
     pub fn add_leaf(&mut self, leaf: &[u8]) -> Result<u64, MerkleError> {
         if self.next_index >= Self::capacity() {
             return Err(MerkleError::TreeFull);
