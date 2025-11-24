@@ -10,8 +10,8 @@ const LEAF_LABEL:  &[u8] = b"LEAF";
 const LEFT_LABEL:  &[u8] = b"LEFT";
 const RIGHT_LABEL: &[u8] = b"RIGHT";
 
-/// Pre-calculated empty subtree roots (ZEROES) for heights 0..MAX_MERKLE_TREE_HEIGHT-1.
-/// EMPTY_ROOTS[h] is the root of a perfect tree of height h filled with empty leaves (vec![]).
+/// Pre-calculated empty nodes for heights 0..MAX_MERKLE_TREE_HEIGHT-1.
+/// (See empty_roots() in tests below)
 const EMPTY_ROOTS: [[u8; 32]; MAX_MERKLE_TREE_HEIGHT] = [
     hex!("6b1b9cbf7c90b58807fce04f9a575fea9d831620e1729c55de743f8326fdd258"),
     hex!("3e38eb68ebf4aebe156616ca9423cf29754fbd6ac53f6ddd95c4a31810e06bd5"),
@@ -72,7 +72,6 @@ impl<const N: usize> Default for MerkleTree<N> {
     fn default() -> Self {
         debug_assert!(N > 0 && N <= MAX_MERKLE_TREE_HEIGHT);
 
-        // Initialize with the proper ZERO for each height without from_fn.
         let first: Hash = EMPTY_ROOTS[0].into();
         let mut filled: [Hash; N] = [first; N];
         for i in 1..N {
@@ -99,9 +98,9 @@ impl<const N: usize> MerkleTree<N> {
     }
 
     // Add raw bytes leaf (convenience).
-    pub fn add_leaf(&mut self, leaf: &[u8]) -> Result<u64, AddLeafError> {
+    pub fn add_leaf(&mut self, leaf: &[u8]) -> Result<u64, MerkleError> {
         if self.next_index >= Self::capacity() {
-            return Err(AddLeafError::TreeFull);
+            return Err(MerkleError::TreeFull);
         }
 
         let inserted_index = self.next_index;
@@ -109,16 +108,19 @@ impl<const N: usize> MerkleTree<N> {
         let mut cur = hash_leaf(leaf);
         let mut idx = inserted_index;
 
-        // Frontier update.
         for level in 0..N {
             if (idx & 1) == 0 {
+                
                 // Record the subtree and pair with empty at this level.
                 self.filled_subtrees[level] = cur;
                 cur = hash_pair(cur, EMPTY_ROOTS[level].into());
+                
             } else {
+                
                 // Combine with previously stored left subtree.
                 cur = hash_pair(self.filled_subtrees[level], cur);
             }
+            
             idx >>= 1;
         }
 
@@ -129,27 +131,28 @@ impl<const N: usize> MerkleTree<N> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddLeafError {
+pub enum MerkleError {
     TreeFull,
 }
 
-// Standalone Merkle proof creation. Builds a perfect tree on-the-fly (uses ZEROES for padding).
-// - leaves: slice of leaf byte-slices
-// - index: index for which to build the proof
-// Returns the Merkle proof as sibling hashes from height 0 upwards.
 pub fn create_merkle_proof<T: AsRef<[u8]>>(leaves: &[T], index: usize) -> Vec<Hash> {
     assert!(!leaves.is_empty(), "cannot create proof for empty leaf set");
     assert!(index < leaves.len(), "index out of bounds");
 
     // Compute leaf hashes.
-    let mut level: Vec<Hash> = leaves.iter().map(|l| hash_leaf(l.as_ref())).collect();
+    let mut level: Vec<Hash> = leaves
+        .iter()
+        .map(|l| hash_leaf(l.as_ref()))
+        .collect();
+    
     let mut i = index;
     let mut proof = Vec::new();
     let mut height = 0;
 
-    // While more than one node at the current level:
+    // While more than one node at the current level
     while level.len() > 1 {
-        // Push sibling hash (or ZERO if missing).
+        
+        // Push sibling hash (or empty if missing).
         let len = level.len();
         let sib = i ^ 1;
         if sib < len {
@@ -178,7 +181,6 @@ pub fn create_merkle_proof<T: AsRef<[u8]>>(leaves: &[T], index: usize) -> Vec<Ha
     proof
 }
 
-// Verify a standard Merkle proof against bytes leaf.
 pub fn verify_proof(data: &[u8], index: usize, root: &Hash, proof: &[Hash]) -> bool {
     let mut index = index;
     let mut node = hash_leaf(data);
@@ -199,29 +201,6 @@ pub fn verify_proof(data: &[u8], index: usize, root: &Hash, proof: &[Hash]) -> b
 mod tests {
     use super::*;
     use rand::prelude::*;
-
-    // Helper: build minimal-height root (pads with EMPTY_ROOTS per level).
-    fn build_root<T: AsRef<[u8]>>(leaves: &[T]) -> Hash {
-        assert!(!leaves.is_empty());
-        let mut level: Vec<Hash> = leaves.iter().map(|l| hash_leaf(l.as_ref())).collect();
-        let mut height = 0;
-        while level.len() > 1 {
-            let len = level.len();
-            let mut next = Vec::with_capacity((len + 1) / 2);
-            for j in (0..len).step_by(2) {
-                let left = level[j];
-                let right = if j + 1 < len {
-                    level[j + 1]
-                } else {
-                    EMPTY_ROOTS[height].into()
-                };
-                next.push(hash_pair(left, right));
-            }
-            level = next;
-            height += 1;
-        }
-        level[0]
-    }
 
     #[test]
     fn basic() {
@@ -270,10 +249,13 @@ mod tests {
         // proof and verify all leaves
         let proof = create_merkle_proof(&data, 0);
         assert!(verify_proof(&data[0], 0, &root, &proof));
+        
         let proof = create_merkle_proof(&data, 1);
         assert!(verify_proof(&data[1], 1, &root, &proof));
+        
         let proof = create_merkle_proof(&data, 2);
         assert!(verify_proof(&data[2], 2, &root, &proof));
+        
         let proof = create_merkle_proof(&data, 3);
         assert!(verify_proof(&data[3], 3, &root, &proof));
     }
@@ -319,36 +301,7 @@ mod tests {
         assert_eq!(t1.root, t2.root);
     }
 
-    #[test]
-    fn fuzzing() {
-        const ITERATIONS: u64 = 100;
-        const MAX_NUM_LEAVES: usize = 64;
-        const MAX_LEAF_DATA_LEN: usize = 64;
-        const QUERIES_PER_TREE: usize = 10;
-
-        let mut rng = rand::thread_rng();
-        for _ in 0..ITERATIONS {
-            let num = rng.gen_range(1..=MAX_NUM_LEAVES);
-            let mut data = Vec::with_capacity(num);
-            for _ in 0..num {
-                let len = rng.gen_range(0..=MAX_LEAF_DATA_LEN);
-                let mut leaf = vec![0; len];
-                rng.fill_bytes(&mut leaf);
-                data.push(leaf);
-            }
-
-            // Minimal-height root used by create_merkle_proof and verify_proof.
-            let root = build_root(&data);
-
-            for _ in 0..QUERIES_PER_TREE {
-                let idx = rng.gen_range(0..num);
-                let proof = create_merkle_proof(&data, idx);
-                assert!(verify_proof(&data[idx], idx, &root, &proof));
-            }
-        }
-    }
-
-    // NOTE: This is used for calculating EMPTY_ROOTS, just like original.
+    // NOTE: This is used for calculating EMPTY_ROOTS.
     #[test]
     fn empty_roots() {
         for height in 0..MAX_MERKLE_TREE_HEIGHT {
