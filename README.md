@@ -20,7 +20,7 @@
 
 --------------------------------------
 
-Cloud platforms succeeded not by being simple to configure, but by being convenient to start and operate: no hardware to buy, minimal friction, and predictable workflows. By contrast, most decentralized storage systems impose conceptual overhead, operational burden, or unreliable performance that prevents mainstream use.
+Cloud platforms succeeded not by being cheap, but by being convenient to start and operate: no hardware to buy, minimal friction, and predictable workflows. By contrast, most decentralized storage systems impose conceptual overhead, operational burden, or unreliable performance that prevents mainstream use.
 
 Tapedrive addresses this gap. Our objective is to deliver a decentralized storage network that "just works", with a product experience closer to AWS S3 while retaining verifiable integrity and open participation. We focus on simplicity, convenience, and scalability.
 
