@@ -39,13 +39,13 @@ Tapedrive is the storage layer of the Tape Network, designed to minimize operato
 
 <img width="1191" height="497" alt="image" src="https://github.com/user-attachments/assets/8bc74066-3ee9-48da-b8e9-b99c9ab68d88" />
 
-**Control plane (Solana).** Our onchain programs maintain node comitteees, track commitments, enforce consensus. The design operates within Solana’s runtime despite tighter compute/state limits and the absence of BLS12-381.
+**Control plane** Our onchain programs maintain node comitteees, stake weight, track commitments, enforce consensus. The design operates within Solana’s runtime despite tighter compute/state limits and the absence of BLS12-381.
 
-**Data plane.** Objects are erasure coded; fragments are distributed across nodes to tolerate failures while enabling efficient reconstruction. Read paths retrieve the minimal set of fragments with caching for hot objects.
+**Data plane** Objects are erasure coded; fragments are distributed across nodes to tolerate failures while enabling efficient reconstruction. Read paths retrieve the minimal set of fragments with caching for hot objects.
 
-**Small-object pipeline.** TapeReplay provides efficient metadata handling for small files, addressing a common weakness in decentralized storage systems.
+**TapeReplay** Our small-object pipeline, TapeReplay, provides efficient metadata handling, addressing a common weakness in decentralized storage systems.
 
-**Attestations.** We use a similar scheme to Alpenglow with a custom aggregate signature scheme over [curve-254](https://hackmd.io/@jpw/bn254) to compresses many node attestations into compact on-chain proofs, reducing control-plane transaction volume. We may switch over to BLS12-381 if `min_pk` becomes possible within the SVM at some future point.
+**Consensus** We use a similar scheme to Alpenglow with a custom aggregate signature scheme over [curve-254](https://hackmd.io/@jpw/bn254) to compresses many node attestations into compact on-chain proofs, reducing control-plane transaction volume. We may switch over to BLS12-381 if `min_pk` becomes possible within the SVM at some future point.
 
 ## Want to run a node?
 
