@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::signature::Keypair;
 use tape_network::store::TapeStore;
 use std::env;
@@ -26,9 +26,9 @@ pub struct Cli {
     pub keypair_path: Option<PathBuf>,
 
     #[arg(
-        short = 'u', 
-        long = "cluster", 
-        default_value = "l", 
+        short = 'u',
+        long = "cluster",
+        default_value = "l",
         global = true,
         help = "Cluster to use: l (localnet), m (mainnet), d (devnet), t (testnet),\n or a custom RPC URL"
     )]
@@ -36,8 +36,24 @@ pub struct Cli {
 
     #[arg(short = 'v', long = "verbose", help = "Print verbose output", global = true)]
     pub verbose: bool,
+
+    #[arg(
+        long = "commitment",
+        default_value = "finalized",
+        global = true,
+    )]
+    pub commitment: CommitmentLevel
+}
+impl Cli {
+	pub fn commitment_time(&self)-> u64 {
+    match self.commitment {
+        CommitmentLevel::Confirmed => 32,
+        CommitmentLevel::Finalized => 16,
+        CommitmentLevel::Processed => 8,
+    }
 }
 
+}
 #[derive(Subcommand)]
 pub enum Commands {
 
@@ -249,11 +265,11 @@ impl Context{
         let rpc_url = cli.cluster.rpc_url();
         let rpc = Arc::new(
             RpcClient::new_with_commitment(rpc_url.clone(),
-            CommitmentConfig::finalized())
+            CommitmentConfig { commitment: cli.commitment.clone() })
         );
         let keypair_path = get_keypair_path(cli.keypair_path.clone());
         let payer = get_payer(keypair_path.clone())?;
-        
+
         Ok(Self {
              rpc,
              keypair_path,
