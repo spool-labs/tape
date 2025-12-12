@@ -25,8 +25,8 @@ impl TapeStore {
         Ok(Self { db })
     }
 
-    pub fn try_init_store() -> Result<(), StoreError> {
-        if let Ok(_store) = super::helpers::primary() {
+    pub fn try_init_store(tape_store_primary_db: &str) -> Result<(), StoreError> {
+        if let Ok(_store) = super::helpers::primary(tape_store_primary_db) {
             log::debug!("Primary store initialized successfully");
         }
         Ok(())
@@ -74,4 +74,3 @@ impl Drop for TapeStore {
         // RocksDB handles cleanup automatically
     }
 }
-

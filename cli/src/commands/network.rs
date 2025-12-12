@@ -27,8 +27,8 @@ pub async fn handle_network_commands(cli: Cli, context: Context) -> Result<()> {
         Commands::Archive { trusted_peer, miner_address } => {
             handle_archive(context, trusted_peer, miner_address).await?;
         }
-        Commands::Mine { pubkey, name } => {
-            handle_mine(context, pubkey, name).await?;
+        Commands::Mine { pubkey } => {
+            handle_mine(context, pubkey).await?;
         }
         Commands::Register { name } => {
             handle_register(context, name).await?;
@@ -67,7 +67,7 @@ pub async fn handle_archive(
         context.rpc(), 
         context.payer(), 
         miner_address, 
-        None, 
+        context.miner_name_owned(), 
         true
     ).await?;
 
@@ -84,13 +84,12 @@ pub async fn handle_archive(
 pub async fn handle_mine(
     context: Context,
     miner_address: Option<String>,
-    miner_name: Option<String>
 ) -> Result<()> {
 
     log::print_info("Starting mining service...");
 
     let miner_address = get_or_create_miner(
-        context.rpc(), context.payer(), miner_address, miner_name, true).await?;
+        context.rpc(), context.payer(), miner_address, context.miner_name_owned(), true).await?;
 
     log::print_message(&format!("Using miner address: {miner_address}"));
 
@@ -129,14 +128,12 @@ pub async fn get_or_create_miner(
     client: &Arc<RpcClient>,
     payer: &Keypair,
     pubkey_opt: Option<String>,
-    name_opt: Option<String>,
+    name_opt: String,
     auto_register: bool,
 ) -> Result<Pubkey> {
-    let (miner_address, name) = match (pubkey_opt, name_opt) {
-        (Some(_), Some(_)) => bail!("Cannot provide both pubkey and name"),
-        (Some(p), None) => (Pubkey::from_str(&p)?, None),
-        (None, Some(n)) => (miner_pda(payer.pubkey(), to_name(&n)).0, Some(n)),
-        (None, None) => (miner_pda(payer.pubkey(), to_name("default")).0, Some("default".to_string())),
+    let (miner_address, name) = match pubkey_opt {
+        Some(p) => (Pubkey::from_str(&p)?, None),
+        None =>  (miner_pda(payer.pubkey(), to_name(&name_opt)).0, Some(name_opt))
     };
 
     let miner_account = get_miner_account(client, &miner_address).await;

@@ -1,0 +1,25 @@
+[mining]
+num_cores = 4                    
+max_memory_mb = 16384            
+max_poa_threads = 4
+max_pow_threads = 4
+
+[solana]
+keypair_path = "~/.config/solana/id.json"
+rpc_url = "https://api.mainnet-beta.solana.com"
+ws_url = "wss://api.mainnet-beta.solana.com/"
+commitment = "finalized"
+priority_fee_lamports = 2000
+max_transaction_retries = 5
+
+[storage]
+backend = "rocksdb"
+
+[storage.rocksdb]
+primary_path = "./data/primary"
+secondary_path = "./data/secondary"
+cache_size_mb = 512
+
+[logging]
+log_level = "debug"
+log_path = "./test.log"
