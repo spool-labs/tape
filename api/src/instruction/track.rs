@@ -5,7 +5,7 @@ use steel::*;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RegisterTrack {
-    pub id: Hash,
+    pub key: Hash,
     pub root: Hash,       // Merkle root of original data
     pub commitment: Hash, // Erasure coding commitment
     pub size: [u8; 8],    // Size in bytes (including parity data)
@@ -32,12 +32,12 @@ pub fn build_register_track_ix(
     storage_units: StorageUnits,
     root: Hash,         // Data merkle root
     commitment: Hash,   // Erasure coding root
-    id: Hash,           // Track identifier (e.g., file path hash)
+    key: Hash,          // Track identifier (e.g., file path hash)
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(signer);
-    let (track_address, _) = track_pda(signer, id);
+    let (track_address, _) = track_pda(signer, key);
 
     let size = storage_units.pack();
 
@@ -54,7 +54,7 @@ pub fn build_register_track_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: RegisterTrack {
-            id,
+            key,
             root,
             commitment,
             size,

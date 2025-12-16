@@ -30,7 +30,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .as_account::<Epoch>(&tapedrive::ID)?;
 
     let (tape_address, _) = tape_pda(*signer_info.key);
-    let (track_address, _) = track_pda(*signer_info.key, args.id);
+    let (track_address, _) = track_pda(*signer_info.key, args.key);
 
     let tape = tape_info
         .is_writable()?
@@ -53,7 +53,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         system_program_info,
         signer_info,
         &tapedrive::ID,
-        &[TRACK, signer_info.key.as_ref(), args.id.as_ref()],
+        &[TRACK, signer_info.key.as_ref(), args.key.as_ref()],
     )?;
 
     let track_number = tape.track_count;
@@ -63,9 +63,9 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
 
     let track = track_info.as_account_mut::<Track>(&tapedrive::ID)?;
 
-    track.id = track_number.into();
+    track.id   = track_number.into();
     track.tape = tape_address;
-    track.key = args.id;
+    track.key  = args.key;
     track.size = total_units;
     track.root = args.root;
     track.data = BlobData::new(
