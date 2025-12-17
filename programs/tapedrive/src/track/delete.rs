@@ -79,8 +79,7 @@ mod tests {
             tape: tape_address,
             key: bucket_hash,
             size: StorageUnits(250),
-            root: Hash::new_unique(),
-            data: BlobData::new(
+            data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
             ),

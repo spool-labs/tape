@@ -215,9 +215,9 @@ mod tests {
                 Check::success(),
                 Check::account(&track_address).data(
                     Track {
-                        data: BlobData {
-                            state: BlobState {
-                                phase: BlobPhase::Certified.into(),
+                        data: TrackData {
+                            state: TrackState {
+                                phase: TrackPhase::Certified.into(),
                                 certified_epoch: EpochNumber(42),
                             },
                             ..track.data

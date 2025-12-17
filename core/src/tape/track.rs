@@ -1,60 +1,143 @@
+use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use tape_crypto::hash::Hash;
+use crate::types::EpochNumber;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum TrackKind {
-    Unknown = 0,
-    Blob,   // An immutable blob of const data
-    Stream, // A mutable stream of data
+pub enum TrackPhase {
+    Registered = 0,
+    Certified,
+    Invalidated,
 }
 
-impl TrackKind {
-    #[inline]
-    pub fn pack(self) -> [u8; 8] {
-        let kind: u64 = self.into();
-        kind.to_le_bytes()
-    }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct TrackState {
+    /// Current phase of the track
+    pub phase: u64,
 
-    pub fn unpack(bytes: [u8; 8]) -> Result<Self, num_enum::TryFromPrimitiveError<Self>> {
-        let kind = u64::from_le_bytes(bytes);
-        Self::try_from(kind)
-    }
+    /// Epoch when certification happened (0 if not certified yet)
+    pub certified_epoch: EpochNumber,
 }
 
-// ---------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------
-#[cfg(test)]
-mod tests {
-    use super::TrackKind;
-
-    #[test]
-    fn pack_unpack_roundtrip() {
-        let cases = [
-            TrackKind::Unknown,
-            TrackKind::Blob,
-            TrackKind::Stream,
-        ];
-
-        for &original in &cases {
-            let packed = original.pack();
-            let unpacked = TrackKind::unpack(packed)
-                .expect("valid track kind");
-
-            assert_eq!(original, unpacked);
+impl TrackState {
+    pub const fn new() -> Self {
+        Self {
+            phase: TrackPhase::Registered as u64,
+            certified_epoch: EpochNumber::zero(),
         }
     }
 
-    #[test]
-    fn pack_known_values() {
-        assert_eq!(TrackKind::Unknown.pack(), [0u8; 8]);
-        assert_eq!(TrackKind::Blob.pack(), [1, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(TrackKind::Stream.pack(), [2, 0, 0, 0, 0, 0, 0, 0]);
+    #[inline]
+    fn phase_enum(&self) -> Option<TrackPhase> {
+        TrackPhase::try_from(self.phase).ok()
     }
 
-    #[test]
-    fn unpack_invalid_returns_err() {
-        let invalid = [3, 0, 0, 0, 0, 0, 0, 0]; // 3 is not a valid variant
-        assert!(TrackKind::unpack(invalid).is_err());
+    #[inline]
+    fn set_phase(&mut self, p: TrackPhase) {
+        self.phase = p.into();
+    }
+
+    pub fn is_registered(&self) -> bool {
+        matches!(self.phase_enum(), Some(TrackPhase::Registered))
+    }
+
+    pub fn is_certified(&self) -> bool {
+        matches!(self.phase_enum(), Some(TrackPhase::Certified))
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        matches!(self.phase_enum(), Some(TrackPhase::Invalidated))
+    }
+
+    pub fn certified_epoch(&self) -> Option<EpochNumber> {
+        match self.phase_enum() {
+            Some(TrackPhase::Certified) => {
+                if self.certified_epoch.is_zero() {
+                    None
+                } else {
+                    Some(self.certified_epoch)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn set_registered(&mut self) -> &mut Self {
+        self.set_phase(TrackPhase::Registered);
+        self.certified_epoch = EpochNumber::zero();
+        self
+    }
+
+    pub fn set_certified(&mut self, epoch: EpochNumber) -> &mut Self {
+        assert!(self.is_registered(), "can only certify from Registered phase");
+        self.set_phase(TrackPhase::Certified);
+        self.certified_epoch = epoch;
+        self
+    }
+
+    pub fn set_invalidated(&mut self) -> &mut Self {
+        self.set_phase(TrackPhase::Invalidated);
+        self.certified_epoch = EpochNumber::zero();
+        self
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub struct TrackData {
+    /// Full state machine for the track
+    pub state: TrackState,
+
+    /// Epoch when this track was first registered
+    pub registered_epoch: EpochNumber,
+
+    /// Merkle root of the erasure coded data
+    pub commitment_hash: Hash,
+}
+
+impl TrackData {
+    pub const fn new(
+        registered_epoch: EpochNumber,
+        commitment_hash: Hash,
+    ) -> Self {
+        Self {
+            state: TrackState::new(),
+            registered_epoch,
+            commitment_hash,
+        }
+    }
+
+    pub fn is_registered(&self) -> bool {
+        self.state.is_registered()
+    }
+
+    pub fn is_certified(&self) -> bool {
+        self.state.is_certified()
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        self.state.is_invalidated()
+    }
+
+    pub fn certified_epoch(&self) -> Option<EpochNumber> {
+        self.state.certified_epoch()
+    }
+
+    pub fn set_registered(&mut self, epoch: EpochNumber) -> &mut Self {
+        self.registered_epoch = epoch;
+        self.state.set_registered();
+        self
+    }
+
+    pub fn set_certified(&mut self, epoch: EpochNumber) -> &mut Self {
+        self.state.set_certified(epoch);
+        self
+    }
+
+    pub fn set_invalidated(&mut self) -> &mut Self {
+        self.state.set_invalidated();
+        self
     }
 }

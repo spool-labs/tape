@@ -67,8 +67,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     track.tape = tape_address;
     track.key  = args.key;
     track.size = total_units;
-    track.root = args.root;
-    track.data = BlobData::new(
+    track.data = TrackData::new(
         current_epoch(epoch),
         args.commitment,
     );
@@ -147,8 +146,7 @@ mod tests {
                         tape: tape_address,
                         key: bucket_hash,
                         size: storage_units,
-                        root: data_root,
-                        data: BlobData::new(
+                        data: TrackData::new(
                             EpochNumber(0),
                             erasure_root,
                         ),

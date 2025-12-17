@@ -18,11 +18,8 @@ pub struct Track {
     /// The size of the track in bytes.
     pub size: StorageUnits,
 
-    /// The merkle root of the track data.
-    pub root: Hash,
-
-    /// Track data.
-    pub data: BlobData,
+    /// The data associated with this track.
+    pub data: TrackData,
 }
 
 
