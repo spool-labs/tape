@@ -133,11 +133,61 @@ impl<const N: usize> MerkleTree<N> {
         self.next_index += 1;
         Ok(inserted_index)
     }
+
+    /// Replaces a leaf in the tree with a new leaf using the provided proof.
+    pub fn update_leaf(
+        &mut self,
+        proof: &[Hash],
+        old_leaf: &[u8],
+        new_leaf: &[u8],
+    ) -> Result<(), MerkleError> {
+        if proof.len() != N {
+            return Err(MerkleError::InvalidProof);
+        }
+
+        let original_leaf_hash = hash_leaf(old_leaf);
+        let new_leaf_hash = hash_leaf(new_leaf);
+
+        let original_path = compute_path(proof, original_leaf_hash);
+        let new_path = compute_path(proof, new_leaf_hash);
+
+        if *original_path.last().unwrap() != self.root {
+            return Err(MerkleError::InvalidProof);
+        }
+
+        for i in 0..N {
+            if original_path[i] == self.filled_subtrees[i] {
+                self.filled_subtrees[i] = new_path[i];
+            }
+        }
+        self.root = *new_path.last().unwrap();
+        Ok(())
+    }
+
+    pub fn contains(&self, proof: &[Hash], leaf: &[u8]) -> bool {
+        verify_proof(leaf, &self.root, proof)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MerkleError {
     TreeFull,
+    InvalidProof,
+}
+
+/// Computes the path from the leaf to the root using the provided proof.
+pub fn compute_path(proof: &[Hash], leaf: Hash) -> Vec<Hash> {
+    let mut computed_path = Vec::with_capacity(proof.len() + 1);
+    let mut computed_hash = leaf;
+
+    computed_path.push(computed_hash);
+
+    for &proof_element in proof.iter() {
+        computed_hash = hash_pair(computed_hash, proof_element);
+        computed_path.push(computed_hash);
+    }
+
+    computed_path
 }
 
 pub fn create_merkle_proof<T: AsRef<[u8]>>(leaves: &[T], index: usize) -> Vec<Hash> {
@@ -297,6 +347,107 @@ mod tests {
 
         // missing leaves should be equivalent to empty leaves
         assert_eq!(t1.root, t2.root);
+    }
+
+    #[test]
+    fn add_and_replace() {
+        let mut tree = MerkleTree::<3>::new();
+        let empty_value: &[u8] = &[];
+        let empty: Hash = EMPTY_ROOTS[0].into();
+
+        // Tree structure:
+        //
+        //              root
+        //            /     \
+        //         m           n
+        //       /   \       /   \
+        //      i     j     k     l
+        //     / \   / \   / \   / \
+        //    a  b  c  d  e  f  g  h
+
+        let val1 = b"val1";
+        let val2 = b"val2";
+        let val3 = b"val3";
+
+        let a = hash_leaf(val1);
+        let b = hash_leaf(val2);
+        let c = hash_leaf(val3);
+
+        let d = empty;
+        let e = empty;
+        let f = empty;
+        let g = empty;
+        let h = empty;
+
+        let i = hash_pair(a, b);
+        let j = hash_pair(c, d);
+        let k = hash_pair(e, f);
+        let l = hash_pair(g, h);
+        let m = hash_pair(i, j);
+        let n = hash_pair(k, l);
+        let root = hash_pair(m, n);
+
+        tree.add_leaf(val1).unwrap();
+        assert_eq!(tree.filled_subtrees[0], a);
+
+        tree.add_leaf(val2).unwrap();
+        assert_eq!(tree.filled_subtrees[0], a);
+
+        tree.add_leaf(val3).unwrap();
+        assert_eq!(tree.filled_subtrees[0], c);
+
+        assert_eq!(tree.filled_subtrees[1], i);
+        assert_eq!(tree.filled_subtrees[2], m);
+        assert_eq!(tree.root, root);
+
+        let leaf1_proof = vec![b, j, n];
+        let leaf2_proof = vec![a, j, n];
+        let leaf3_proof = vec![d, i, n];
+
+        // Check filled leaves
+        assert!(tree.contains(&leaf1_proof, val1));
+        assert!(tree.contains(&leaf2_proof, val2));
+        assert!(tree.contains(&leaf3_proof, val3));
+
+        // Check empty leaves
+        assert!(tree.contains(&[c, i, n], empty_value));
+        assert!(tree.contains(&[f, l, m], empty_value));
+        assert!(tree.contains(&[e, l, m], empty_value));
+        assert!(tree.contains(&[h, k, m], empty_value));
+        assert!(tree.contains(&[g, k, m], empty_value));
+
+        // Replace leaf2 with empty (simulate remove)
+        tree.update_leaf(&leaf2_proof, val2, empty_value).unwrap();
+
+        // Update the expected tree structure
+        let i_new = hash_pair(a, empty);
+        let m_new = hash_pair(i_new, j);
+        let root_new = hash_pair(m_new, n);
+
+        assert_eq!(tree.root, root_new);
+
+        let leaf1_proof_new = vec![empty, j, n];
+        let leaf3_proof_new = vec![d, i_new, n];
+
+        assert!(tree.contains(&leaf1_proof_new, val1));
+        assert!(tree.contains(&leaf2_proof, empty_value));
+        assert!(tree.contains(&leaf3_proof_new, val3));
+
+        // Check that leaf2 is no longer in the tree
+        assert!(!tree.contains(&leaf2_proof, val2));
+
+        // Insert leaf4 into the tree
+        let leaf4 = b"leaf4";
+        tree.add_leaf(leaf4).unwrap();
+        assert_eq!(tree.filled_subtrees[0], c);
+
+        // Update the expected tree structure
+        let d_new = hash_leaf(leaf4);
+        let j_new = hash_pair(c, d_new);
+        let m_new2 = hash_pair(i_new, j_new);
+        let root_new2 = hash_pair(m_new2, n);
+
+        assert_eq!(tree.root, root_new2);
     }
 
     // NOTE: This is used for calculating EMPTY_ROOTS.
