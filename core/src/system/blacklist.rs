@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use crate::types::*;
 use tape_crypto::{
-    merkle2::{MerkleTree, MerkleError},
+    merkle::{MerkleTree, MerkleError},
     Hash,
 };
 
