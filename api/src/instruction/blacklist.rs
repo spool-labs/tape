@@ -9,8 +9,9 @@ pub struct AddToBlacklist {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RemoveFromBlacklist {
-    pub hash: Hash,
+    pub index: [u8; 8],
     pub size: [u8; 8],
+    pub hash: Hash,
     pub proof: [Hash; BLACKLIST_SIZE]
 }
 
@@ -34,12 +35,14 @@ pub fn build_add_to_blacklist_ix(
 pub fn build_remove_from_blacklist_ix(
     signer: Pubkey,
     node_address: Pubkey,
+    index: u64,
     hash: Hash,
     size: StorageUnits,
     proof: [Hash; BLACKLIST_SIZE],
 ) -> Instruction {
 
     let size = size.pack();
+    let index = index.to_le_bytes();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -48,6 +51,7 @@ pub fn build_remove_from_blacklist_ix(
             AccountMeta::new(node_address, false),
         ],
         data: RemoveFromBlacklist {
+            index,
             hash,
             size,
             proof,

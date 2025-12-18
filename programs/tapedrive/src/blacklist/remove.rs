@@ -27,10 +27,11 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
     // (track may not exist any more, so we take these from the args)
     let blob_hash: Hash = args.hash;
     let units: StorageUnits = StorageUnits::unpack(args.size);
+    let index: u64 = u64::from_le_bytes(args.index);
 
     // Remove from blacklist using provided Merkle proof
     node.blacklist
-        .remove(&args.proof, blob_hash, units)
+        .remove(index, &args.proof, blob_hash, units)
         .map_err(|_| TapeError::BadProof)?;
 
     Ok(())
@@ -40,7 +41,6 @@ pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) 
 mod tests {
     use super::*;
     use tape_test::*;
-    use tape_crypto::merkle::{MerkleLeaf, MerkleTree};
 
     // Helper to convert Vec<Hash> into a fixed-size array required by the IX builder
     fn vec_to_fixed<const N: usize>(v: Vec<Hash>) -> [Hash; N] {
@@ -65,19 +65,20 @@ mod tests {
         node.blacklist.add(blob_hash, units).expect("add");
 
         // Build Merkle proof for that single entry (client-side)
-        let leaf = MerkleLeaf::new(&[blob_hash.as_ref(), units.pack().as_ref()]);
+
+        let leaf = blacklist_entry(blob_hash, units);
         let leaves = [leaf];
-        let tree = MerkleTree::<BLACKLIST_SIZE>::new(&[BLACKLIST]);
-        let proof_vec = tree.get_proof(&leaves, 0);
+        let proof_vec = node.blacklist.state.create_proof(&leaves, 0).unwrap();
         let proof = vec_to_fixed::<BLACKLIST_SIZE>(proof_vec);
 
         // Test the merkle proof is valid
-        assert!(node.blacklist.contains(&proof, blob_hash, units));
+        assert!(node.blacklist.contains(0, &proof, blob_hash, units));
 
         // Build instruction
         let instruction = build_remove_from_blacklist_ix(
             signer,
             node_address,
+            0,
             blob_hash,
             units,
             proof,
@@ -92,7 +93,7 @@ mod tests {
         // Expected node after removal
 
         node.blacklist
-            .remove(&proof, blob_hash, units)
+            .remove(0, &proof, blob_hash, units)
             .expect("remove");
 
         let env = test_env();
@@ -128,6 +129,7 @@ mod tests {
         let instruction = build_remove_from_blacklist_ix(
             signer,
             node_address,
+            0,
             blob_hash,
             units,
             bad_proof,

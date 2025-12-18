@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use crate::types::*;
 use tape_crypto::{
-    merkle::{MerkleTree, TreeError},
+    merkle2::{MerkleTree, MerkleError},
     Hash,
 };
 
@@ -20,9 +20,9 @@ pub enum BlacklistError {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blacklist<const N: usize> {
-    state: MerkleTree<N>,
-    size: StorageUnits,
-    count: u64,
+    pub state: MerkleTree<N>,
+    pub size: StorageUnits,
+    pub count: u64,
 }
 
 unsafe impl<const N: usize> Zeroable for Blacklist<N> {}
@@ -31,18 +31,18 @@ unsafe impl<const N: usize> Pod for Blacklist<N> {}
 impl<const N: usize> Blacklist<N> {
     pub fn new() -> Self {
         Self {
-            state: MerkleTree::new(&[BLACKLIST]),
+            state: MerkleTree::default(),
             size: StorageUnits::zero(),
             count: 0,
         }
     }
 
     pub fn root(&self) -> Hash {
-        self.state.get_root()
+        self.state.root()
     }
 
     pub fn capacity(&self) -> u64 {
-        self.state.get_capacity()
+        MerkleTree::<N>::capacity()
     }
 
     pub fn items(&self) -> u64 {
@@ -55,13 +55,10 @@ impl<const N: usize> Blacklist<N> {
 
     /// Adds a new blacklist entry (blob_hash, units).
     pub fn add(&mut self, blob_hash: Hash, units: StorageUnits) -> Result<(), BlacklistError> {
-        let units_bytes = units.pack();
-        let parts: [&[u8]; 2] = [
-            blob_hash.as_ref(), 
-            units_bytes.as_ref()
-        ];
+        let leaf = blacklist_entry(blob_hash, units);
 
-        self.state.try_add(&parts).map_err(BlacklistError::from)?;
+        self.state.add_leaf(&leaf)
+            .map_err(BlacklistError::from)?;
 
         self.count = self
             .count
@@ -79,19 +76,19 @@ impl<const N: usize> Blacklist<N> {
     /// Removes an existing blacklist entry using a Merkle proof.
     /// The proof must correspond to the (blob_hash, units) pair.
     pub fn remove<P>(
-        &mut self, proof: &[P], blob_hash: Hash, units: StorageUnits
+        &mut self, 
+        index: u64, 
+        proof: &[P], 
+        blob_hash: Hash, 
+        units: StorageUnits
     ) -> Result<(), BlacklistError>
     where
         P: Into<Hash> + Copy,
     {
-        let units_bytes = units.pack();
-        let parts: [&[u8]; 2] = [
-            blob_hash.as_ref(), 
-            units_bytes.as_ref()
-        ];
+        let leaf = blacklist_entry(blob_hash, units);
 
         self.state
-            .try_remove(proof, &parts)
+            .remove_leaf(index, proof, &leaf)
             .map_err(BlacklistError::from)?;
 
         self.count = self
@@ -108,62 +105,72 @@ impl<const N: usize> Blacklist<N> {
     }
 
     /// Checks membership using a provided Merkle proof.
-    pub fn contains<P>(&self, proof: &[P], blob_hash: Hash, units: StorageUnits) -> bool
+    pub fn contains<P>(
+        &self, 
+        index: u64,
+        proof: &[P], 
+        blob_hash: Hash, 
+        units: StorageUnits
+        ) -> bool
     where
         P: Into<Hash> + Copy,
     {
-        let units_bytes = units.pack();
-        let parts: [&[u8]; 2] = [
-            blob_hash.as_ref(), 
-            units_bytes.as_ref()
-        ];
-        self.state.contains(proof, &parts)
+        let leaf = blacklist_entry(blob_hash, units);
+
+        self.state.contains(index, proof, &leaf)
     }
 }
 
-impl From<TreeError> for BlacklistError {
-    fn from(e: TreeError) -> Self {
+impl From<MerkleError> for BlacklistError {
+    fn from(e: MerkleError) -> Self {
         match e {
-            TreeError::InvalidArgument => BlacklistError::BadArgument,
-            TreeError::TreeFull => BlacklistError::TreeFull,
-            TreeError::InvalidProof => BlacklistError::BadProof,
-            TreeError::ProofLength => BlacklistError::BadLength,
+            MerkleError::TreeFull => BlacklistError::TreeFull,
+            MerkleError::InvalidProof => BlacklistError::BadProof,
+            MerkleError::InvalidIndex => BlacklistError::BadArgument,
+            MerkleError::ProofLength => BlacklistError::BadLength,
         }
     }
+}
+
+/// Creates a leaf node from (blob_hash, units).
+pub fn blacklist_entry(blob_hash: Hash, units: StorageUnits) -> Vec<u8> {
+    let units_bytes = units.pack();
+    [
+        blob_hash.as_ref(), 
+        units_bytes.as_ref()
+    ].concat()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_crypto::merkle::MerkleLeaf;
 
     #[test]
     fn test_blacklist() {
         let mut bl = Blacklist::<3>::new();
 
-        let blob = Hash::from([7u8; 32]);
+        let blob_hash = Hash::from([7u8; 32]);
         let units = StorageUnits::from_bytes(1); // 1 byte => 1 unit (ceiling)
 
         // Add
-        bl.add(blob, units).unwrap();
+        bl.add(blob_hash, units).unwrap();
         assert_eq!(bl.items(), 1);
         assert_eq!(bl.total_size(), units);
 
         // Build leaf and proof for index 0
-        let bytes = units.pack();
-        let leaf = MerkleLeaf::new(&[blob.as_ref(), bytes.as_ref()]);
+        let leaf = blacklist_entry(blob_hash, units);
         let leaves = [leaf];
-        let proof = bl.state.get_proof(&leaves, 0);
+        let proof = bl.state.create_proof(&leaves, 0).unwrap();
 
         // Contains
-        assert!(bl.contains(&proof, blob, units));
+        assert!(bl.contains(0, &proof, blob_hash, units));
 
         // Remove
-        bl.remove(&proof, blob, units).unwrap();
+        bl.remove(0, &proof, blob_hash, units).unwrap();
         assert_eq!(bl.items(), 0);
         assert_eq!(bl.total_size(), StorageUnits::zero());
 
         // No longer contained
-        assert!(!bl.contains(&proof, blob, units));
+        assert!(!bl.contains(0, &proof, blob_hash, units));
     }
 }
