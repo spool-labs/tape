@@ -68,8 +68,8 @@ mod tests {
 
         let leaf = blacklist_entry(blob_hash, units);
         let leaves = [leaf];
-        let proof_vec = node.blacklist.state.create_proof(&leaves, 0).unwrap();
-        let proof = vec_to_fixed::<BLACKLIST_SIZE>(proof_vec);
+        let proof = node.blacklist.state.create_proof(&leaves, 0).unwrap();
+        let proof = vec_to_fixed::<BLACKLIST_SIZE>(proof);
 
         // Test the merkle proof is valid
         assert!(node.blacklist.contains(0, &proof, blob_hash, units));
