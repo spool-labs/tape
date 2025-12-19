@@ -423,4 +423,83 @@ mod tests {
         let out = coder.decode(&shards).expect("decode ok");
         assert!(out.is_empty(), "decoded payload should be empty");
     }
+
+
+    #[test]
+    fn size_table() {
+        // Keep this short so it’s readable on the terminal.
+
+        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let sizes = [
+            0usize,
+            1,
+            DATA_SLICES / 2,
+            DATA_SLICES - 1,
+            DATA_SLICES,
+            DATA_SLICES + 1,
+            10_000,
+            50_000,
+            100_000,
+            250_000,
+            1_000_000,
+        ];
+
+        println!(
+            "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
+            "payload", "shard", "k", "r", "n", "total_bytes", "ratio", "ok"
+        );
+        println!(
+            "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
+            "(bytes)", "(bytes)", "", "", "", "(bytes)", "", ""
+        );
+
+        for &sz in &sizes {
+            let payload = make_payload(sz);
+            let raw = coder.encode(&payload).expect("encode ok");
+
+            // All shards have equal length (by construction)
+            let shard_len = raw.data[0].len();
+            let n = DATA_SLICES + CODING_SLICES;
+            let total_bytes = n * shard_len;
+            let ratio_str = if sz > 0 {
+                format!("{:.3}", total_bytes as f64 / sz as f64)
+            } else {
+                "-".to_string()
+            };
+
+            // Build full shard set and round trip
+            let mut shards: [Option<Shard>; TOTAL_SLICES] = std::array::from_fn(|_| None);
+            for (i, d) in raw.data.iter().enumerate() {
+                shards[i] = Some(Shard {
+                    index: ShardIndex::new(i).unwrap(),
+                    data: d.clone(),
+                });
+            }
+            for (j, c) in raw.coding.iter().enumerate() {
+                let idx = DATA_SLICES + j;
+                shards[idx] = Some(Shard {
+                    index: ShardIndex::new(idx).unwrap(),
+                    data: c.clone(),
+                });
+            }
+
+            let out = coder.decode(&shards).expect("decode ok");
+            let ok = out == payload;
+
+            println!(
+                "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
+                sz,
+                shard_len,
+                DATA_SLICES,
+                CODING_SLICES,
+                n,
+                total_bytes,
+                ratio_str,
+                if ok { "ok" } else { "FAIL" }
+            );
+
+            // Keep the test meaningful
+            assert!(ok, "round-trip failed for size {}", sz);
+        }
+    }
 }
