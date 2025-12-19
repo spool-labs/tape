@@ -1,0 +1,31 @@
+[package]
+name = "tape-slicer"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
+
+documentation = "https://docs.rs/tape-core"
+
+[dependencies]
+tape-crypto.workspace = true
+bytemuck.workspace = true
+num_enum.workspace = true
+reed-solomon-simd = "3"
+thiserror = "1.0"
+
+[dev-dependencies]
+solana-keypair.workspace = true
+rand = "0.8"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+std = []
+solana = []

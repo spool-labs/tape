@@ -9,6 +9,7 @@ members = [
   "programs/staking",
   "programs/tapedrive",
   "programs/token",
+  "tapedrive/slicer",
 ]
 
 [workspace.package]
