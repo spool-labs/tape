@@ -6081,7 +6081,6 @@ dependencies = [
  "serde",
  "serde_json",
  "solana-keypair",
- "static_assertions",
  "tape-crypto",
  "thiserror 1.0.69",
  "wincode",

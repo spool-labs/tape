@@ -1,7 +1,6 @@
 use super::{CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
 use super::Shard;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
-use static_assertions::const_assert;
 use thiserror::Error;
 
 /// This is the maximum shard size we allow the encoder/decoder to handle.
@@ -38,14 +37,6 @@ pub struct RawSlices {
 
 /// Reed-Solomon coder for 3f+1 layout (k = data, r = coding).
 /// This is a thin wrapper around reed_solomon_simd. It reuses working buffers across calls.
-///
-/// Padding scheme:
-/// - Add a single 0x80 byte and then as many 0x00 bytes as needed so the total payload
-///   length is a multiple of 2 * DATA_SLICES.
-/// - Split into DATA_SLICES shards of equal size (last ones padded).
-/// - Generate CODING_SLICES parity shards.
-/// - On decode, reconstruct and remove padding by scanning from the end for zeros
-///   followed by a single 0x80 at the boundary.
 pub struct ReedSolomonCoder {
     k_data: usize,
     r_coding: usize,
@@ -54,11 +45,12 @@ pub struct ReedSolomonCoder {
 }
 
 impl ReedSolomonCoder {
-    /// n = k + r must fit the field limits (reed_solomon_simd supports up to 65536 shards).
+
     pub fn new(k_data: usize, r_coding: usize) -> Self {
-        const_assert!(u16::MAX as usize >= 65535);
+        assert!(u16::MAX as usize >= 65535);
         assert!(k_data > 0, "k_data must be > 0");
         assert!(r_coding > 0, "r_coding must be > 0");
+
         let n_total = k_data + r_coding;
         assert!(n_total <= 65536, "too many total shards for RS field");
         assert!(k_data == DATA_SLICES, "k_data must match DATA_SLICES");
@@ -139,11 +131,6 @@ impl ReedSolomonCoder {
     /// Reconstructs the raw payload bytes from optional shards (data and coding).
     /// Layout: data shards are indices [0..k), coding shards are indices [k..k+r).
     /// At least k total shards (data+coding) are required.
-    ///
-    /// Returns:
-    /// - NotEnoughShards if fewer than k provided.
-    /// - InvalidLayout if shard indices are inconsistent or inconsistent sizes are found.
-    /// - TooMuchData/InvalidPadding per the padding rules.
     pub fn decode(
         &mut self,
         shards: &[Option<Shard>; TOTAL_SLICES],

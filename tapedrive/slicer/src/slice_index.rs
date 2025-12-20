@@ -3,10 +3,6 @@ use std::fmt::Display;
 use std::mem::MaybeUninit;
 use wincode::{SchemaRead, SchemaWrite};
 
-/// A logical index for a stripe (a group of 1024 slices).
-/// The maximum number of stripes per blob is not fixed in this module,
-/// because the client/tool orchestrating slicing decides how to stripe.
-/// We keep this type small and well-formed for serialization/validation.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
 pub struct SliceIndex(u64);
