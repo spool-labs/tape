@@ -1,0 +1,29 @@
+[package]
+name = "tape-metrics"
+description = "Shared Prometheus metrics infrastructure for Tape"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+# Core metrics collection (no HTTP server)
+metrics = ["prometheus", "once_cell"]
+# HTTP endpoint for metrics exposition
+http = ["metrics", "axum", "tokio"]
+
+[dependencies]
+# Metrics (optional)
+prometheus = { workspace = true, optional = true }
+once_cell = { workspace = true, optional = true }
+
+# HTTP endpoint (optional)
+axum = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true
+tower = { version = "0.5", features = ["util"] }
