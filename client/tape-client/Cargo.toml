@@ -1,0 +1,37 @@
+[package]
+name = "tape-client"
+description = "High-level client for tape network programs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[dependencies]
+# Local workspace dependencies
+tape-rpc = { version = "0.3.0", path = "../tape-rpc" }
+tape-api.workspace = true
+tape-metrics = { workspace = true, optional = true }
+
+# Solana dependencies
+solana-sdk.workspace = true
+solana-client.workspace = true
+solana-account-decoder.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Serialization
+bytemuck.workspace = true
+
+# Logging (optional)
+tracing = { version = "0.1", optional = true }
+
+[features]
+default = []
+metrics = ["tape-metrics/metrics", "tape-rpc/metrics"]
