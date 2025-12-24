@@ -11,6 +11,8 @@ members = [
   "programs/tapedrive",
   "programs/token",
   "tapedrive/slicer",
+  "tapedrive/archive/store",
+  "tapedrive/archive/store-rocks",
   "client/tape-rpc",
   "client/tape-client",
 ]
