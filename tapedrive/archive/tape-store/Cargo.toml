@@ -1,0 +1,17 @@
+[package]
+name = "tape-store"
+version = "0.1.0"
+edition = "2021"
+description = "Application-specific storage layer for distributed tape storage nodes"
+
+[dependencies]
+store = { path = "../store" }
+store-rocks = { path = "../store-rocks" }
+rocksdb = "0.23.0"
+wincode = "0.1"
+wincode-derive = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"
