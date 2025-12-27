@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Application-specific storage layer for distributed tape storage nodes"
 
 [dependencies]
+tape-api.workspace = true
 tape-core.workspace = true
 tape-crypto.workspace = true
 solana-program.workspace = true

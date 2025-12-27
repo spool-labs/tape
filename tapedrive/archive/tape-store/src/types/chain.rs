@@ -6,6 +6,8 @@
 
 use super::impls::Pubkey;
 use serde::{Deserialize, Serialize};
+use tape_api::state::{Tape, Track};
+use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -48,4 +50,130 @@ pub struct CommitteeData {
     pub epoch: EpochNumber,
     pub members: Vec<CommitteeMemberData>,
     pub total_stake: u64,
+}
+
+// ============================================================================
+// From implementations: API types -> Store types
+// ============================================================================
+
+impl From<&Tape> for TapeData {
+    fn from(tape: &Tape) -> Self {
+        Self {
+            id: tape.id,
+            authority: tape.authority.into(),
+            capacity: tape.capacity.0,
+            used: tape.used.0,
+            active_epoch: tape.active_epoch,
+            expiry_epoch: tape.expiry_epoch,
+            track_count: tape.track_count,
+        }
+    }
+}
+
+impl From<Tape> for TapeData {
+    fn from(tape: Tape) -> Self {
+        Self::from(&tape)
+    }
+}
+
+impl From<&Track> for TrackData {
+    fn from(track: &Track) -> Self {
+        Self {
+            id: track.id,
+            tape: track.tape.into(),
+            key: track.key,
+            size: track.size.0,
+            registered_epoch: track.data.registered_epoch,
+            certified_epoch: track.data.state.certified_epoch,
+            commitment_hash: track.data.commitment_hash,
+        }
+    }
+}
+
+impl From<Track> for TrackData {
+    fn from(track: Track) -> Self {
+        Self::from(&track)
+    }
+}
+
+impl From<&CommitteeMember> for CommitteeMemberData {
+    fn from(member: &CommitteeMember) -> Self {
+        Self {
+            id: member.id,
+            stake: member.stake.0,
+            weight: member.weight,
+        }
+    }
+}
+
+impl From<CommitteeMember> for CommitteeMemberData {
+    fn from(member: CommitteeMember) -> Self {
+        Self::from(&member)
+    }
+}
+
+impl CommitteeData {
+    /// Create CommitteeData from a Committee and epoch
+    pub fn from_committee<const N: usize>(committee: &Committee<N>, epoch: EpochNumber) -> Self {
+        let members: Vec<CommitteeMemberData> = committee.iter().map(|m| m.into()).collect();
+        let total_stake = committee.total_stake().0;
+        Self {
+            epoch,
+            members,
+            total_stake,
+        }
+    }
+}
+
+// ============================================================================
+// From implementations: Store types -> API types
+// ============================================================================
+
+impl From<&TapeData> for Tape {
+    fn from(data: &TapeData) -> Self {
+        use tape_core::types::StorageUnits;
+        Self {
+            id: data.id,
+            authority: solana_program::pubkey::Pubkey::new_from_array(data.authority.0),
+            capacity: StorageUnits(data.capacity),
+            used: StorageUnits(data.used),
+            active_epoch: data.active_epoch,
+            expiry_epoch: data.expiry_epoch,
+            track_count: data.track_count,
+        }
+    }
+}
+
+impl From<TapeData> for Tape {
+    fn from(data: TapeData) -> Self {
+        Self::from(&data)
+    }
+}
+
+impl From<&TrackData> for Track {
+    fn from(data: &TrackData) -> Self {
+        use tape_core::tape::TrackData as CoreTrackData;
+        use tape_core::tape::TrackState;
+        use tape_core::types::StorageUnits;
+        Self {
+            id: data.id,
+            tape: solana_program::pubkey::Pubkey::new_from_array(data.tape.0),
+            key: data.key,
+            size: StorageUnits(data.size),
+            data: CoreTrackData {
+                state: TrackState {
+                    phase: 0,
+                    certified_epoch: data.certified_epoch,
+                },
+                registered_epoch: data.registered_epoch,
+                commitment_hash: data.commitment_hash,
+            },
+        }
+    }
+}
+
+impl From<TrackData> for Track {
+    fn from(data: TrackData) -> Self {
+        Self::from(&data)
+    }
 }
