@@ -1,17 +1,20 @@
 [package]
 name = "tape-store"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Application-specific storage layer for distributed tape storage nodes"
 
 [dependencies]
-store = { path = "../store" }
-store-rocks = { path = "../store-rocks" }
-rocksdb = "0.23.0"
+tape-core.workspace = true
+tape-crypto.workspace = true
+solana-program.workspace = true
+store.workspace = true
+store-rocks.workspace = true
+rocksdb.workspace = true
 wincode = "0.1"
 wincode-derive = "0.1"
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
+serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10"

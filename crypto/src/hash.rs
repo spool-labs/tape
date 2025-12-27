@@ -1,11 +1,13 @@
 #![allow(unexpected_cfgs)]
 
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 pub const HASH_BYTES: usize = 32;
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct Hash(pub [u8; HASH_BYTES]);
 
 impl From<Hash> for [u8; HASH_BYTES] {

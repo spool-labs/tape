@@ -15,9 +15,9 @@
 //! let store = TapeStore::new(MemoryStore::new());
 //!
 //! // Store a tape
-//! let tape = Tape {
+//! let tape = TapeData {
 //!     id: TapeNumber(1),
-//!     authority: Pubkey::ZERO,
+//!     authority: StoredPubkey::new_unique(),
 //!     capacity: 1_000_000,
 //!     used: 0,
 //!     active_epoch: EpochNumber(100),
@@ -239,9 +239,9 @@ mod tests {
     fn test_tape_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(1),
-            authority: Pubkey::ZERO,
+            authority: StoredPubkey::new_unique(),
             capacity: 1_000_000,
             used: 500_000,
             active_epoch: EpochNumber(100),
@@ -258,14 +258,14 @@ mod tests {
     fn test_track_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(1),
-            tape: Pubkey::ZERO,
-            key: Hash::ZERO,
+            tape: StoredPubkey::new_unique(),
+            key: Hash::new_unique(),
             size: 1024,
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash: Hash::new_unique(),
         };
 
         store.put::<TracksById>(&TrackKey(TrackNumber(1)), &track).unwrap();
@@ -279,8 +279,8 @@ mod tests {
 
         let meta = SliceMeta {
             len: 1024,
-            leaf_hash: Hash::ZERO,
-            content_digest: Hash::ZERO,
+            leaf_hash: Hash::new_unique(),
+            content_digest: Hash::new_unique(),
             compression: Compression::Lz4,
             last_verified_at: 123456789,
             flags: 0,
@@ -296,16 +296,17 @@ mod tests {
     fn test_slice_state_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
+        let owner = StoredPubkey::new_unique();
         let state = SliceState {
             current_epoch: EpochNumber(100),
             status: SliceStatus::Verified,
-            prev_owner: Pubkey::ZERO,
-            current_owner: Pubkey::ZERO,
-            next_owner: Pubkey::ZERO,
-            repair_from: Pubkey::ZERO,
+            prev_owner: owner,
+            current_owner: owner,
+            next_owner: owner,
+            repair_from: owner,
             repair_last_attempt: 0,
             repair_retries: 0,
-            handoff_to: Pubkey::ZERO,
+            handoff_to: owner,
             handoff_last_attempt: 0,
             handoff_retries: 0,
             gc_at: 0,
@@ -349,15 +350,15 @@ mod tests {
     fn test_committee_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let committee = Committee {
+        let committee = CommitteeData {
             epoch: EpochNumber(100),
             members: vec![
-                CommitteeMember {
+                CommitteeMemberData {
                     id: NodeId(1),
                     stake: 1000,
                     weight: 100,
                 },
-                CommitteeMember {
+                CommitteeMemberData {
                     id: NodeId(2),
                     stake: 2000,
                     weight: 200,
@@ -412,17 +413,19 @@ mod tests {
     #[test]
     fn test_big_endian_ordering() {
         let store = TapeStore::new(MemoryStore::new());
+        let tape = StoredPubkey::new_unique();
+        let hash = Hash::new_unique();
 
         // Insert tracks in non-sequential order
         for id in [100u64, 1, 50, 200, 25] {
-            let track = Track {
+            let track = TrackData {
                 id: TrackNumber(id),
-                tape: Pubkey::ZERO,
-                key: Hash::ZERO,
+                tape,
+                key: hash,
                 size: id,
                 registered_epoch: EpochNumber(0),
                 certified_epoch: EpochNumber(0),
-                commitment_hash: Hash::ZERO,
+                commitment_hash: hash,
             };
             store.put::<TracksById>(&TrackKey(TrackNumber(id)), &track).unwrap();
         }
@@ -430,7 +433,7 @@ mod tests {
         // Verify they come back in sorted order due to BE encoding
         let mut collected = Vec::new();
         for (key, _track) in store.iter::<TracksById>().unwrap() {
-            collected.push(key.0.0);
+            collected.push(key.0 .0);
         }
 
         assert_eq!(collected, vec![1, 25, 50, 100, 200]);
@@ -447,9 +450,9 @@ mod tests {
         // Create primary and write some data
         {
             let store = TapeStore::open_primary(&path).unwrap();
-            let tape = Tape {
+            let tape = TapeData {
                 id: TapeNumber(1),
-                authority: Pubkey::ZERO,
+                authority: StoredPubkey::new_unique(),
                 capacity: 1_000_000,
                 used: 500_000,
                 active_epoch: EpochNumber(100),
@@ -487,9 +490,9 @@ mod tests {
         // Create primary and write initial data
         {
             let store = TapeStore::open_primary(&primary_path).unwrap();
-            let tape = Tape {
+            let tape = TapeData {
                 id: TapeNumber(1),
-                authority: Pubkey::ZERO,
+                authority: StoredPubkey::new_unique(),
                 capacity: 1_000_000,
                 used: 0,
                 active_epoch: EpochNumber(100),
@@ -526,9 +529,9 @@ mod tests {
         // Create and keep primary open
         let primary = TapeStore::open_primary(&primary_path).unwrap();
 
-        let tape1 = Tape {
+        let tape1 = TapeData {
             id: TapeNumber(1),
-            authority: Pubkey::ZERO,
+            authority: StoredPubkey::new_unique(),
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -546,9 +549,9 @@ mod tests {
         assert!(secondary.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap().is_some());
 
         // Write more data to primary
-        let tape2 = Tape {
+        let tape2 = TapeData {
             id: TapeNumber(2),
-            authority: Pubkey::ZERO,
+            authority: StoredPubkey::new_unique(),
             capacity: 2_000_000,
             used: 0,
             active_epoch: EpochNumber(101),
@@ -573,12 +576,14 @@ mod tests {
         let primary_path = dir.path().join("primary");
         let secondary_path = dir.path().join("secondary");
 
+        let authority = StoredPubkey::new_unique();
+
         // Create primary and use high-level operations
         {
             let primary = TapeStore::open_primary(&primary_path).unwrap();
-            let tape = Tape {
+            let tape = TapeData {
                 id: TapeNumber(1),
-                authority: Pubkey::ZERO,
+                authority,
                 capacity: 1_000_000,
                 used: 0,
                 active_epoch: EpochNumber(100),
@@ -597,7 +602,7 @@ mod tests {
             secondary.catch_up_with_primary().unwrap();
 
             // Use operation trait to read by address
-            let found = secondary.get_tape_by_address(&Pubkey::ZERO).unwrap();
+            let found = secondary.get_tape_by_address(&authority).unwrap();
             assert!(found.is_some());
             assert_eq!(found.unwrap().id.0, 1);
         }

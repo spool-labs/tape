@@ -1,7 +1,9 @@
 //! Slice storage types
 
-use super::ids::{EpochNumber, Hash, Pubkey};
+use super::impls::StoredPubkey;
 use serde::{Deserialize, Serialize};
+use tape_core::types::EpochNumber;
+use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 /// Metadata for a slice
@@ -29,13 +31,13 @@ pub enum Compression {
 pub struct SliceState {
     pub current_epoch: EpochNumber,
     pub status: SliceStatus,
-    pub prev_owner: Pubkey,
-    pub current_owner: Pubkey,
-    pub next_owner: Pubkey,
-    pub repair_from: Pubkey,
+    pub prev_owner: StoredPubkey,
+    pub current_owner: StoredPubkey,
+    pub next_owner: StoredPubkey,
+    pub repair_from: StoredPubkey,
     pub repair_last_attempt: i64,
     pub repair_retries: u16,
-    pub handoff_to: Pubkey,
+    pub handoff_to: StoredPubkey,
     pub handoff_last_attempt: i64,
     pub handoff_retries: u16,
     pub gc_at: i64,

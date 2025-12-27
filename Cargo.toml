@@ -13,6 +13,7 @@ members = [
   "tapedrive/slicer",
   "tapedrive/archive/store",
   "tapedrive/archive/store-rocks",
+  "tapedrive/archive/tape-store",
   "client/tape-rpc",
   "client/tape-client",
 ]
@@ -37,12 +38,15 @@ tape-rpc = { version = "0.3.0", path = "./client/tape-rpc" }
 tape-client = { version = "0.3.0", path = "./client/tape-client" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 
+tape-store = { version = "0.3.0", path = "./tapedrive/archive/tape-store" }
+store = { version = "0.3.0", path = "./tapedrive/archive/store" }
+store-rocks = { version = "0.3.0", path = "./tapedrive/archive/store-rocks" }
+
 # tape-archive = { version = "0.3.0", path = "./tape-archive" }
 # tape-cli = { version = "0.3.0", path = "./tape-cli" }
 # tape-network = { version = "0.3.0", path = "./tape-node" }
 # tape-program = { version = "0.3.0", path = "./tape-program" }
 # tape-solana = { version = "0.3.0", path = "./tape-solana" }
-# tape-store = { version = "0.3.0", path = "./tape-store" }
 # tape-utils = { version = "0.3.0", path = "./tape-utils" }
 
 # program dependencies
@@ -96,6 +100,10 @@ mime = "0.3"
 mime_guess = "2.0"
 log = "0.4"
 env_logger = "0.11"
+
+# storage-specific
+wincode = "0.1"
+wincode-derive = "0.1"
 
 # network-specific
 futures = "0.3"

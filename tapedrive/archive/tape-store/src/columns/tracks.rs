@@ -1,6 +1,6 @@
 //! Track column families
 
-use crate::types::{Hash, Pubkey, TapeKey, Track, TrackKey, TrackNumber};
+use crate::types::{Hash, StoredPubkey, TapeKey, TrackData, TrackKey, TrackNumber};
 use std::mem::MaybeUninit;
 use store::Column;
 use wincode::{io::{Reader, Writer}, ReadResult, SchemaRead, SchemaWrite, WriteResult};
@@ -11,7 +11,7 @@ pub struct TracksById;
 impl Column for TracksById {
     const CF_NAME: &'static str = "tracks/by_id";
     type Key = TrackKey;
-    type Value = Track;
+    type Value = TrackData;
 }
 
 /// Tracks indexed by on-chain address
@@ -19,7 +19,7 @@ pub struct TracksByAddress;
 
 impl Column for TracksByAddress {
     const CF_NAME: &'static str = "tracks/by_address";
-    type Key = Pubkey;
+    type Key = StoredPubkey;
     type Value = TrackNumber;
 }
 

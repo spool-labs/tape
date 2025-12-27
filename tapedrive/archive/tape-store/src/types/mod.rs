@@ -1,13 +1,20 @@
 //! Type definitions for tape-store
 
 pub mod chain;
-pub mod ids;
+mod impls;
 pub mod keys;
 pub mod slice;
 
-// Re-export commonly used types
-pub use chain::{Committee, CommitteeMember, Tape, Track};
-pub use ids::{EpochNumber, Hash, NodeId, Pubkey, TapeNumber, TrackNumber};
+// Re-export core types
+pub use solana_program::pubkey::Pubkey;
+pub use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
+pub use tape_crypto::Hash;
+
+// Re-export storage wrapper types
+pub use impls::StoredPubkey;
+
+// Re-export storage types
+pub use chain::{CommitteeData, CommitteeMemberData, TapeData, TrackData};
 pub use keys::{GcKey, RecoveryKey, SliceKey, SpoolKey, TapeKey, TrackKey};
 pub use slice::{
     AssignmentStatus, Compression, SliceMeta, SliceState, SliceStatus, SyncPhase, SyncProgress,

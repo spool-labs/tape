@@ -26,7 +26,7 @@ macro_rules! define_u64_type {
     ($type_name:ident) => {
 
         /// A type-safe wrapper around a `u64` value for $type_name.
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize, wincode_derive::SchemaRead, wincode_derive::SchemaWrite)]
         #[repr(transparent)]
         pub struct $type_name(pub u64);
 

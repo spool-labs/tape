@@ -28,9 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create tapes
     for i in 1..=3 {
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(i),
-            authority: Pubkey([i as u8; 32]),
+            authority: StoredPubkey::new([i as u8; 32]),
             capacity: 10_000_000 * i, // 10 MB * i
             used: 0,
             active_epoch: EpochNumber(100),
@@ -60,14 +60,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create tracks
     for i in 1..=5 {
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(i),
-            tape: Pubkey([1; 32]), // All on tape 1
-            key: Hash([i as u8; 32]),
+            tape: StoredPubkey::new([1; 32]), // All on tape 1
+            key: Hash::from([i as u8; 32]),
             size: 1024 * 1024 * i, // 1 MB * i
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash: Hash::default(),
         };
 
         store.put::<TracksById>(&TrackKey(track.id), &track)?;
@@ -82,8 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let slice_key = SliceKey::new(track_id, spool_idx);
         let slice_meta = SliceMeta {
             len: 32 * 1024, // 32 KB slice
-            leaf_hash: Hash::ZERO,
-            content_digest: Hash::ZERO,
+            leaf_hash: Hash::default(),
+            content_digest: Hash::default(),
             compression: Compression::Lz4,
             last_verified_at: 1000000,
             flags: 0,
@@ -110,15 +110,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Committee and Metadata ===\n");
 
     // Store committee for an epoch
-    let committee = Committee {
+    let committee = CommitteeData {
         epoch: EpochNumber(100),
         members: vec![
-            CommitteeMember {
+            CommitteeMemberData {
                 id: NodeId(1),
                 stake: 1000,
                 weight: 100,
             },
-            CommitteeMember {
+            CommitteeMemberData {
                 id: NodeId(2),
                 stake: 2000,
                 weight: 200,
@@ -137,11 +137,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Schema version: {:?}", version);
 
     println!("\n=== Summary ===");
-    println!("✓ Stored 3 tapes with indices");
-    println!("✓ Stored 5 tracks");
-    println!("✓ Stored 5 slices with metadata and data");
-    println!("✓ Stored committee data");
-    println!("✓ All operations successful!");
+    println!("Stored 3 tapes with indices");
+    println!("Stored 5 tracks");
+    println!("Stored 5 slices with metadata and data");
+    println!("Stored committee data");
+    println!("All operations successful!");
 
     Ok(())
 }

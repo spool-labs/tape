@@ -1,8 +1,8 @@
 //! Key types with big-endian encoding for proper lexicographic sorting
 
-use super::ids::{TapeNumber, TrackNumber};
 use serde::{Deserialize, Serialize};
 use std::mem::MaybeUninit;
+use tape_core::types::{TapeNumber, TrackNumber};
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,

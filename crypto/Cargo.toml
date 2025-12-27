@@ -34,8 +34,11 @@ ark-serialize = { version = "0.5.0", optional = true  }
 rand = { version = "0.8.5", optional = true }
 sha2 = { workspace = true }
 solana-program = { workspace = true }
-solana-curve25519 = { workspace = true } 
+solana-curve25519 = { workspace = true }
 bytemuck.workspace = true
+serde.workspace = true
+wincode.workspace = true
+wincode-derive.workspace = true
 
 [target.'cfg(not(target_os = "solana"))'.dependencies]
 ark-bn254 = { version = "0.5.0" }

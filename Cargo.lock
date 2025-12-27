@@ -6612,9 +6612,12 @@ dependencies = [
  "bytemuck",
  "five8 1.0.0",
  "num_enum",
+ "serde",
  "solana-keypair",
  "solana-program",
  "tape-crypto",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
 ]
 
 [[package]]
@@ -6632,11 +6635,14 @@ dependencies = [
  "hex-literal",
  "num 0.4.3",
  "rand 0.8.5",
+ "serde",
  "sha2 0.10.9",
  "solana-bn254",
  "solana-curve25519",
  "solana-nostd-sha256",
  "solana-program",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
 ]
 
 [[package]]
@@ -6681,6 +6687,23 @@ dependencies = [
  "tape-crypto",
  "thiserror 1.0.69",
  "wincode 0.2.3",
+]
+
+[[package]]
+name = "tape-store"
+version = "0.3.0"
+dependencies = [
+ "rocksdb",
+ "serde",
+ "solana-program",
+ "store",
+ "store-rocks",
+ "tape-core",
+ "tape-crypto",
+ "tempfile",
+ "thiserror 2.0.17",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
 ]
 
 [[package]]
@@ -7438,7 +7461,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "thiserror 2.0.17",
- "wincode-derive",
+ "wincode-derive 0.2.2",
+]
+
+[[package]]
+name = "wincode-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a144d1576a6d65f9c80df1d531e12b197057c6f69a6e9d4a183fe61e9f135568"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]

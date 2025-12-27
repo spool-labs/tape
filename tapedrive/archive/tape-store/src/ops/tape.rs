@@ -16,7 +16,7 @@ pub trait TapeOps {
     /// - TapesActiveIndex: presence index for active tapes
     ///
     /// # Arguments
-    /// * `tape` - The tape to store
+    /// * `tape` - The tape data to store
     ///
     /// # Example
     /// ```
@@ -24,9 +24,9 @@ pub trait TapeOps {
     /// use store::MemoryStore;
     ///
     /// let store = TapeStore::new(MemoryStore::new());
-    /// let tape = Tape {
+    /// let tape = TapeData {
     ///     id: TapeNumber(1),
-    ///     authority: Pubkey::ZERO,
+    ///     authority: StoredPubkey::new([0u8; 32]),
     ///     capacity: 1_000_000,
     ///     used: 0,
     ///     active_epoch: EpochNumber(100),
@@ -35,7 +35,7 @@ pub trait TapeOps {
     /// };
     /// store.put_tape(&tape).unwrap();
     /// ```
-    fn put_tape(&self, tape: &Tape) -> Result<()>;
+    fn put_tape(&self, tape: &TapeData) -> Result<()>;
 
     /// Get tape by address
     ///
@@ -43,13 +43,13 @@ pub trait TapeOps {
     /// then retrieves the full tape data.
     ///
     /// # Arguments
-    /// * `address` - The authority pubkey of the tape
+    /// * `address` - The authority pubkey of the tape (as StoredPubkey)
     ///
     /// # Returns
     /// * `Ok(Some(tape))` if found
     /// * `Ok(None)` if not found
     /// * `Err` on database or consistency errors
-    fn get_tape_by_address(&self, address: &Pubkey) -> Result<Option<Tape>>;
+    fn get_tape_by_address(&self, address: &StoredPubkey) -> Result<Option<TapeData>>;
 
     /// Delete a tape and all its indices atomically
     ///
@@ -68,7 +68,7 @@ pub trait TapeOps {
 }
 
 impl<S: Store> TapeOps for TapeStore<S> {
-    fn put_tape(&self, tape: &Tape) -> Result<()> {
+    fn put_tape(&self, tape: &TapeData) -> Result<()> {
         let mut batch = WriteBatch::new();
 
         // Serialize all keys and values
@@ -95,7 +95,7 @@ impl<S: Store> TapeOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_tape_by_address(&self, address: &Pubkey) -> Result<Option<Tape>> {
+    fn get_tape_by_address(&self, address: &StoredPubkey) -> Result<Option<TapeData>> {
         // Look up tape number by address
         let tape_number = match self.get::<TapesByAddress>(address)? {
             Some(num) => num,
@@ -146,13 +146,13 @@ mod tests {
     use store::MemoryStore;
 
     #[test]
-    #[test]
-    fn     put_tape_atomic() {
+    fn put_tape_atomic() {
         let store = TapeStore::new(MemoryStore::new());
+        let authority = StoredPubkey::new_unique();
 
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(1),
-            authority: Pubkey::ZERO,
+            authority,
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -166,7 +166,7 @@ mod tests {
         let retrieved = store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
         assert_eq!(retrieved, Some(tape.clone()));
 
-        let by_address = store.get::<TapesByAddress>(&Pubkey::ZERO).unwrap();
+        let by_address = store.get::<TapesByAddress>(&authority).unwrap();
         assert_eq!(by_address, Some(TapeNumber(1)));
 
         let in_index = store.get::<TapesActiveIndex>(&TapeKey(TapeNumber(1))).unwrap();
@@ -176,10 +176,11 @@ mod tests {
     #[test]
     fn get_tape_by_address() {
         let store = TapeStore::new(MemoryStore::new());
+        let authority = StoredPubkey::new_unique();
 
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(42),
-            authority: Pubkey::ZERO,
+            authority,
             capacity: 1_000_000,
             used: 500_000,
             active_epoch: EpochNumber(100),
@@ -189,20 +190,21 @@ mod tests {
 
         store.put_tape(&tape).unwrap();
 
-        let found = store.get_tape_by_address(&Pubkey::ZERO).unwrap();
+        let found = store.get_tape_by_address(&authority).unwrap();
         assert_eq!(found, Some(tape));
 
-        let not_found = store.get_tape_by_address(&Pubkey([1u8; 32])).unwrap();
+        let not_found = store.get_tape_by_address(&StoredPubkey::new_unique()).unwrap();
         assert_eq!(not_found, None);
     }
 
     #[test]
     fn delete_tape_atomic() {
         let store = TapeStore::new(MemoryStore::new());
+        let authority = StoredPubkey::new_unique();
 
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(1),
-            authority: Pubkey::ZERO,
+            authority,
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -217,7 +219,7 @@ mod tests {
         let by_id = store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
         assert_eq!(by_id, None);
 
-        let by_address = store.get::<TapesByAddress>(&Pubkey::ZERO).unwrap();
+        let by_address = store.get::<TapesByAddress>(&authority).unwrap();
         assert_eq!(by_address, None);
 
         let in_index = store.get::<TapesActiveIndex>(&TapeKey(TapeNumber(1))).unwrap();

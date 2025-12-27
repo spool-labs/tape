@@ -12,9 +12,9 @@ fn open_primary() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     // Test basic operations
-    let tape = Tape {
+    let tape = TapeData {
         id: TapeNumber(1),
-        authority: Pubkey::ZERO,
+        authority: StoredPubkey::default(),
         capacity: 1_000_000,
         used: 0,
         active_epoch: EpochNumber(100),
@@ -37,9 +37,9 @@ fn open_primary_persistence() {
     // Write data
     {
         let store = TapeStore::open_primary(&db_path).unwrap();
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(42),
-            authority: Pubkey::ZERO,
+            authority: StoredPubkey::default(),
             capacity: 500_000,
             used: 100_000,
             active_epoch: EpochNumber(50),
@@ -76,9 +76,9 @@ fn all_column_families() {
     store.put::<Meta>(&"test_key".to_string(), &vec![1, 2, 3]).unwrap();
 
     // Tapes
-    let tape = Tape {
+    let tape = TapeData {
         id: TapeNumber(1),
-        authority: Pubkey::ZERO,
+        authority: StoredPubkey::default(),
         capacity: 1000,
         used: 0,
         active_epoch: EpochNumber(1),
@@ -86,22 +86,22 @@ fn all_column_families() {
         track_count: 0,
     };
     store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
-    store.put::<TapesByAddress>(&Pubkey::ZERO, &TapeNumber(1)).unwrap();
+    store.put::<TapesByAddress>(&StoredPubkey::default(), &TapeNumber(1)).unwrap();
     store.put::<TapesActiveIndex>(&TapeKey(TapeNumber(1)), &()).unwrap();
 
     // Tracks
-    let track = Track {
+    let track = TrackData {
         id: TrackNumber(1),
-        tape: Pubkey::ZERO,
-        key: Hash::ZERO,
+        tape: StoredPubkey::default(),
+        key: Hash::default(),
         size: 1024,
         registered_epoch: EpochNumber(1),
         certified_epoch: EpochNumber(2),
-        commitment_hash: Hash::ZERO,
+        commitment_hash: Hash::default(),
     };
     store.put::<TracksById>(&TrackKey(TrackNumber(1)), &track).unwrap();
-    store.put::<TracksByAddress>(&Pubkey::ZERO, &TrackNumber(1)).unwrap();
-    store.put::<TracksByBlobKey>(&Hash::ZERO, &TrackNumber(1)).unwrap();
+    store.put::<TracksByAddress>(&StoredPubkey::default(), &TrackNumber(1)).unwrap();
+    store.put::<TracksByBlobKey>(&Hash::default(), &TrackNumber(1)).unwrap();
 
     // Slices
     let slice_key = SliceKey::new(TrackNumber(1), 42);
@@ -109,8 +109,8 @@ fn all_column_families() {
 
     let meta = SliceMeta {
         len: 1024,
-        leaf_hash: Hash::ZERO,
-        content_digest: Hash::ZERO,
+        leaf_hash: Hash::default(),
+        content_digest: Hash::default(),
         compression: Compression::Lz4,
         last_verified_at: 123456789,
         flags: 0,
@@ -120,13 +120,13 @@ fn all_column_families() {
     let state = SliceState {
         current_epoch: EpochNumber(1),
         status: SliceStatus::Verified,
-        prev_owner: Pubkey::ZERO,
-        current_owner: Pubkey::ZERO,
-        next_owner: Pubkey::ZERO,
-        repair_from: Pubkey::ZERO,
+        prev_owner: StoredPubkey::default(),
+        current_owner: StoredPubkey::default(),
+        next_owner: StoredPubkey::default(),
+        repair_from: StoredPubkey::default(),
         repair_last_attempt: 0,
         repair_retries: 0,
-        handoff_to: Pubkey::ZERO,
+        handoff_to: StoredPubkey::default(),
         handoff_last_attempt: 0,
         handoff_retries: 0,
         gc_at: 0,
@@ -143,10 +143,10 @@ fn all_column_families() {
     store.put::<AssignmentProgressCF>(&SpoolKey(42), &progress).unwrap();
 
     // Committee
-    let committee = Committee {
+    let committee = CommitteeData {
         epoch: EpochNumber(1),
         members: vec![
-            CommitteeMember {
+            CommitteeMemberData {
                 id: NodeId(1),
                 stake: 1000,
                 weight: 100,
@@ -167,11 +167,11 @@ fn all_column_families() {
     // Verify we can read everything back
     assert!(store.get::<Meta>(&"test_key".to_string()).unwrap().is_some());
     assert!(store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap().is_some());
-    assert!(store.get::<TapesByAddress>(&Pubkey::ZERO).unwrap().is_some());
+    assert!(store.get::<TapesByAddress>(&StoredPubkey::default()).unwrap().is_some());
     assert!(store.get::<TapesActiveIndex>(&TapeKey(TapeNumber(1))).unwrap().is_some());
     assert!(store.get::<TracksById>(&TrackKey(TrackNumber(1))).unwrap().is_some());
-    assert!(store.get::<TracksByAddress>(&Pubkey::ZERO).unwrap().is_some());
-    assert!(store.get::<TracksByBlobKey>(&Hash::ZERO).unwrap().is_some());
+    assert!(store.get::<TracksByAddress>(&StoredPubkey::default()).unwrap().is_some());
+    assert!(store.get::<TracksByBlobKey>(&Hash::default()).unwrap().is_some());
     assert!(store.get::<SlicesData>(&slice_key).unwrap().is_some());
     assert!(store.get::<SlicesMeta>(&slice_key).unwrap().is_some());
     assert!(store.get::<SlicesState>(&slice_key).unwrap().is_some());

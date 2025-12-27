@@ -31,9 +31,9 @@ fn main() -> Result<()> {
     // ========================================================================
     println!("=== Part 1: TapeOps - Atomic Multi-Index Updates ===\n");
 
-    let tape = Tape {
+    let tape = TapeData {
         id: TapeNumber(1),
-        authority: Pubkey([42; 32]),
+        authority: StoredPubkey::new([42; 32]),
         capacity: 100_000_000, // 100 MB
         used: 0,
         active_epoch: EpochNumber(100),
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
 
     // Reverse lookup: address -> tape
     println!("Testing get_tape_by_address() - two-hop lookup with validation");
-    let found_tape = store.get_tape_by_address(&Pubkey([42; 32]))?;
+    let found_tape = store.get_tape_by_address(&StoredPubkey::new([42; 32]))?;
     assert!(found_tape.is_some());
     println!("✓ Reverse lookup successful: found tape {}\n", found_tape.unwrap().id.0);
 
@@ -71,14 +71,14 @@ fn main() -> Result<()> {
     println!("=== Part 2: TrackOps - Atomic Track Operations ===\n");
 
     for i in 1..=5 {
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(i),
-            tape: Pubkey([42; 32]), // Same tape
-            key: Hash([100 + i as u8; 32]),
+            tape: StoredPubkey::new([42; 32]), // Same tape
+            key: Hash::from([100 + i as u8; 32]),
             size: 1_000_000 * i, // Variable sizes
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash: Hash::default(),
         };
 
         // put_track() atomically updates indices
@@ -107,8 +107,8 @@ fn main() -> Result<()> {
 
         let slice_meta = SliceMeta {
             len: 32 * 1024, // 32 KB
-            leaf_hash: Hash::ZERO,
-            content_digest: Hash::ZERO,
+            leaf_hash: Hash::default(),
+            content_digest: Hash::default(),
             compression: Compression::Lz4,
             last_verified_at: 1000000,
             flags: 0,

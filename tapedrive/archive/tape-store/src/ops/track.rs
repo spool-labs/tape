@@ -18,7 +18,7 @@ pub trait TrackOps {
     /// - TracksByBlobKey: lookup by content hash
     ///
     /// # Arguments
-    /// * `track` - The track to store
+    /// * `track` - The track data to store
     ///
     /// # Example
     /// ```
@@ -26,29 +26,29 @@ pub trait TrackOps {
     /// use store::MemoryStore;
     ///
     /// let store = TapeStore::new(MemoryStore::new());
-    /// let track = Track {
+    /// let track = TrackData {
     ///     id: TrackNumber(1),
-    ///     tape: Pubkey::ZERO,
-    ///     key: Hash::ZERO,
+    ///     tape: StoredPubkey::new([0u8; 32]),
+    ///     key: Hash::default(),
     ///     size: 1024,
     ///     registered_epoch: EpochNumber(100),
     ///     certified_epoch: EpochNumber(101),
-    ///     commitment_hash: Hash::ZERO,
+    ///     commitment_hash: Hash::default(),
     /// };
     /// store.put_track(&track).unwrap();
     /// ```
-    fn put_track(&self, track: &Track) -> Result<()>;
+    fn put_track(&self, track: &TrackData) -> Result<()>;
 
     /// Get track by address (reverse lookup)
     ///
     /// # Arguments
-    /// * `address` - The on-chain address of the track
+    /// * `address` - The on-chain address of the track (as StoredPubkey)
     ///
     /// # Returns
     /// * `Ok(Some(track))` if found
     /// * `Ok(None)` if not found
     /// * `Err` on database or consistency errors
-    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<Track>>;
+    fn get_track_by_address(&self, address: &StoredPubkey) -> Result<Option<TrackData>>;
 
     /// Get all tracks belonging to a tape
     ///
@@ -60,11 +60,11 @@ pub trait TrackOps {
     ///
     /// # Returns
     /// Vector of tracks in ascending order by track ID
-    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<Track>>;
+    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<TrackData>>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
-    fn put_track(&self, track: &Track) -> Result<()> {
+    fn put_track(&self, track: &TrackData) -> Result<()> {
         let mut batch = WriteBatch::new();
 
         // Serialize all keys and values
@@ -102,7 +102,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<Track>> {
+    fn get_track_by_address(&self, address: &StoredPubkey) -> Result<Option<TrackData>> {
         // Look up track number by address
         let track_number = match self.get::<TracksByAddress>(address)? {
             Some(num) => num,
@@ -120,7 +120,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         Ok(track)
     }
 
-    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<Track>> {
+    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<TrackData>> {
         // Serialize the tape ID prefix
         let tape_key = TapeKey(tape_id);
         let prefix_bytes = wincode::serialize(&tape_key)
@@ -151,18 +151,20 @@ mod tests {
     use store::MemoryStore;
 
     #[test]
-    #[test]
-    fn     put_track_atomic() {
+    fn put_track_atomic() {
         let store = TapeStore::new(MemoryStore::new());
+        let tape = StoredPubkey::new_unique();
+        let key = Hash::new_unique();
+        let commitment_hash = Hash::new_unique();
 
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(1),
-            tape: Pubkey::ZERO,
-            key: Hash::ZERO,
+            tape,
+            key,
             size: 1024,
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash,
         };
 
         store.put_track(&track).unwrap();
@@ -171,33 +173,36 @@ mod tests {
         let retrieved = store.get::<TracksById>(&TrackKey(TrackNumber(1))).unwrap();
         assert_eq!(retrieved, Some(track.clone()));
 
-        let by_address = store.get::<TracksByAddress>(&Pubkey::ZERO).unwrap();
+        let by_address = store.get::<TracksByAddress>(&tape).unwrap();
         assert_eq!(by_address, Some(TrackNumber(1)));
 
-        let by_blob_key = store.get::<TracksByBlobKey>(&Hash::ZERO).unwrap();
+        let by_blob_key = store.get::<TracksByBlobKey>(&key).unwrap();
         assert_eq!(by_blob_key, Some(TrackNumber(1)));
     }
 
     #[test]
     fn get_track_by_address() {
         let store = TapeStore::new(MemoryStore::new());
+        let tape = StoredPubkey::new_unique();
+        let key = Hash::new_unique();
+        let commitment_hash = Hash::new_unique();
 
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(42),
-            tape: Pubkey::ZERO,
-            key: Hash::ZERO,
+            tape,
+            key,
             size: 2048,
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash,
         };
 
         store.put_track(&track).unwrap();
 
-        let found = store.get_track_by_address(&Pubkey::ZERO).unwrap();
+        let found = store.get_track_by_address(&tape).unwrap();
         assert_eq!(found, Some(track));
 
-        let not_found = store.get_track_by_address(&Pubkey([1u8; 32])).unwrap();
+        let not_found = store.get_track_by_address(&StoredPubkey::new_unique()).unwrap();
         assert_eq!(not_found, None);
     }
 }

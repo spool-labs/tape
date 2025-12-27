@@ -54,8 +54,7 @@ mod tests {
     use store::MemoryStore;
 
     #[test]
-    #[test]
-    fn     get_storage_stats() {
+    fn get_storage_stats() {
         let store = TapeStore::new(MemoryStore::new());
 
         // Initially empty
@@ -66,9 +65,9 @@ mod tests {
         assert_eq!(stats.slice_data_count, 0);
 
         // Add some data
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(1),
-            authority: Pubkey::ZERO,
+            authority: StoredPubkey::default(),
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -77,22 +76,22 @@ mod tests {
         };
         store.put_tape(&tape).unwrap();
 
-        let track = Track {
+        let track = TrackData {
             id: TrackNumber(1),
-            tape: Pubkey::ZERO,
-            key: Hash::ZERO,
+            tape: StoredPubkey::default(),
+            key: Hash::default(),
             size: 1024,
             registered_epoch: EpochNumber(100),
             certified_epoch: EpochNumber(101),
-            commitment_hash: Hash::ZERO,
+            commitment_hash: Hash::default(),
         };
         store.put_track(&track).unwrap();
 
         let slice_key = SliceKey::new(TrackNumber(1), 0);
         let slice_meta = SliceMeta {
             len: 1024,
-            leaf_hash: Hash::ZERO,
-            content_digest: Hash::ZERO,
+            leaf_hash: Hash::default(),
+            content_digest: Hash::default(),
             compression: Compression::Lz4,
             last_verified_at: 123456789,
             flags: 0,

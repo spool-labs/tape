@@ -1,19 +1,20 @@
-//! Dummy on-chain mirror types - simplified versions until tape-core available
+//! Storage representations of on-chain state
+//!
+//! These types mirror on-chain account data but are optimized for storage with serde/wincode
+//! serialization. They are named with a `Data` suffix to distinguish them from the on-chain
+//! zero-copy POD types.
 
-use super::ids::{EpochNumber, Hash, NodeId, Pubkey, TapeNumber, TrackNumber};
+use super::impls::StoredPubkey;
 use serde::{Deserialize, Serialize};
+use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
+use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-// These represent the onchain state, but are not exactly the same as the onchain state, we should
-// rename them to avoid confusion. Additionally, the onchain state is always zero-copy POD, where
-// as these are bincode/windcode/serde. This reduces the stored data size and lets us add new
-// fields in the future without breaking compatibility.
-
-/// On-chain tape account data
+/// Storage representation of on-chain tape account data
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct Tape { // should be named TapeData
+pub struct TapeData {
     pub id: TapeNumber,
-    pub authority: Pubkey,
+    pub authority: StoredPubkey,
     pub capacity: u64,
     pub used: u64,
     pub active_epoch: EpochNumber,
@@ -21,11 +22,11 @@ pub struct Tape { // should be named TapeData
     pub track_count: u64,
 }
 
-/// On-chain track account data
+/// Storage representation of on-chain track account data
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct Track { // should be named TrackData
+pub struct TrackData {
     pub id: TrackNumber,
-    pub tape: Pubkey,
+    pub tape: StoredPubkey,
     pub key: Hash,
     pub size: u64,
     pub registered_epoch: EpochNumber,
@@ -33,18 +34,18 @@ pub struct Track { // should be named TrackData
     pub commitment_hash: Hash,
 }
 
-/// Committee member information
+/// Storage representation of committee member information
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct CommitteeMember { // should be named CommitteeMemberData
+pub struct CommitteeMemberData {
     pub id: NodeId,
     pub stake: u64,
     pub weight: u64,
 }
 
-/// Committee data for an epoch
+/// Storage representation of committee data for an epoch
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct Committee {  // should be named CommitteeData
+pub struct CommitteeData {
     pub epoch: EpochNumber,
-    pub members: Vec<CommitteeMember>,
+    pub members: Vec<CommitteeMemberData>,
     pub total_stake: u64,
 }

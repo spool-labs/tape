@@ -159,8 +159,7 @@ mod tests {
     use store::MemoryStore;
 
     #[test]
-    #[test]
-    fn     get_track_slices() {
+    fn get_track_slices() {
         let store = TapeStore::new(MemoryStore::new());
 
         let track_id = TrackNumber(1);
@@ -170,8 +169,8 @@ mod tests {
             let key = SliceKey::new(track_id, spool_idx);
             let meta = SliceMeta {
                 len: 1024,
-                leaf_hash: Hash::ZERO,
-                content_digest: Hash::ZERO,
+                leaf_hash: Hash::default(),
+                content_digest: Hash::default(),
                 compression: Compression::Lz4,
                 last_verified_at: 123456789,
                 flags: 0,
@@ -197,8 +196,8 @@ mod tests {
             let key = SliceKey::new(track_id, spool_idx);
             let meta = SliceMeta {
                 len: 1024,
-                leaf_hash: Hash::ZERO,
-                content_digest: Hash::ZERO,
+                leaf_hash: Hash::default(),
+                content_digest: Hash::default(),
                 compression: Compression::Lz4,
                 last_verified_at: 123456789,
                 flags: 0,
@@ -224,8 +223,8 @@ mod tests {
             let key = SliceKey::new(track_id, spool_idx);
             let meta = SliceMeta {
                 len: 1024,
-                leaf_hash: Hash::ZERO,
-                content_digest: Hash::ZERO,
+                leaf_hash: Hash::default(),
+                content_digest: Hash::default(),
                 compression: Compression::Lz4,
                 last_verified_at: 123456789,
                 flags: 0,
@@ -251,8 +250,8 @@ mod tests {
             let key = SliceKey::new(track_id, spool_idx);
             let meta = SliceMeta {
                 len: 1024,
-                leaf_hash: Hash::ZERO,
-                content_digest: Hash::ZERO,
+                leaf_hash: Hash::default(),
+                content_digest: Hash::default(),
                 compression: Compression::Lz4,
                 last_verified_at: 123456789,
                 flags: 0,

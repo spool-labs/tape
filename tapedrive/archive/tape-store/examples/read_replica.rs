@@ -34,9 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add some tapes
     for i in 1..=3 {
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(i),
-            authority: Pubkey([i as u8; 32]),
+            authority: StoredPubkey::new([i as u8; 32]),
             capacity: 10_000_000 * i,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Tape 1: {:?}", tape1.is_some());
 
     // Use operation traits
-    let tape_by_addr = read_only.get_tape_by_address(&Pubkey([1; 32]))?;
+    let tape_by_addr = read_only.get_tape_by_address(&StoredPubkey::new([1; 32]))?;
     println!("  Tape by address: {:?}", tape_by_addr.is_some());
 
     // Get stats
@@ -113,9 +113,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write new data to primary
     println!("Writing new tape to primary...");
-    let new_tape = Tape {
+    let new_tape = TapeData {
         id: TapeNumber(10),
-        authority: Pubkey([10; 32]),
+        authority: StoredPubkey::new([10; 32]),
         capacity: 50_000_000,
         used: 0,
         active_epoch: EpochNumber(100),
@@ -177,9 +177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 11..=13 {
         thread::sleep(Duration::from_millis(500));
 
-        let tape = Tape {
+        let tape = TapeData {
             id: TapeNumber(i),
-            authority: Pubkey([i as u8; 32]),
+            authority: StoredPubkey::new([i as u8; 32]),
             capacity: 10_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -208,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // All operation traits work on secondary instances
     println!("Testing TapeOps::get_tape_by_address()");
-    let tape_by_addr = secondary.get_tape_by_address(&Pubkey([1; 32]))?;
+    let tape_by_addr = secondary.get_tape_by_address(&StoredPubkey::new([1; 32]))?;
     println!("✓ Found tape: {:?}\n", tape_by_addr.map(|t| t.id.0));
 
     println!("Testing StatsOps::get_storage_stats()");
