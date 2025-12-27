@@ -3,11 +3,10 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::store::{Direction, StoreIter};
-use crate::{batch::BatchOp, Result, Store, WriteBatch};
+use store::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch};
 
 #[cfg(feature = "metrics")]
-use crate::metrics::{get_metrics, OperationTimer};
+use tape_metrics::{get_metrics, OperationTimer};
 
 /// In-memory key-value store using HashMap
 ///

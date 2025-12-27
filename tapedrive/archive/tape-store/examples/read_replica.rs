@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         let tape = TapeData {
             id: TapeNumber(i),
-            authority: StoredPubkey::new([i as u8; 32]),
+            authority: Pubkey::new([i as u8; 32]),
             capacity: 10_000_000 * i,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Created tape {}", i);
     }
 
-    println!("✓ Primary database populated\n");
+    println!("Primary database populated\n");
 
     // Get initial stats
     let initial_stats = primary.get_storage_stats()?;
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Opening read-only replica...");
     let read_only = TapeStore::open_read_only(&primary_path)?;
-    println!("✓ Read-only replica opened\n");
+    println!("Read-only replica opened\n");
 
     println!("Reading from read-only replica:");
 
@@ -75,14 +75,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Tape 1: {:?}", tape1.is_some());
 
     // Use operation traits
-    let tape_by_addr = read_only.get_tape_by_address(&StoredPubkey::new([1; 32]))?;
+    let tape_by_addr = read_only.get_tape_by_address(&Pubkey::new([1; 32]))?;
     println!("  Tape by address: {:?}", tape_by_addr.is_some());
 
     // Get stats
     let ro_stats = read_only.get_storage_stats()?;
     println!("  Stats: {} tapes\n", ro_stats.tape_count);
 
-    println!("✓ Read-only replica works correctly");
+    println!("Read-only replica works correctly");
     println!("Note: Read-only replicas show a static snapshot at open time\n");
 
     drop(read_only);
@@ -99,12 +99,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Opening secondary instance...");
     println!("Secondary path: {:?}\n", secondary_path);
     let secondary = TapeStore::open_secondary(&primary_path, &secondary_path)?;
-    println!("✓ Secondary instance opened\n");
+    println!("Secondary instance opened\n");
 
     // Initial sync
     println!("Performing initial catch-up...");
     secondary.catch_up_with_primary()?;
-    println!("✓ Initial sync complete\n");
+    println!("Initial sync complete\n");
 
     // Verify data is visible
     let sec_stats = secondary.get_storage_stats()?;
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Writing new tape to primary...");
     let new_tape = TapeData {
         id: TapeNumber(10),
-        authority: StoredPubkey::new([10; 32]),
+        authority: Pubkey::new([10; 32]),
         capacity: 50_000_000,
         used: 0,
         active_epoch: EpochNumber(100),
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         track_count: 0,
     };
     primary.put_tape(&new_tape)?;
-    println!("✓ Tape 10 written to primary\n");
+    println!("Tape 10 written to primary\n");
 
     // Secondary doesn't see it yet
     let tape10_before = secondary.get::<TapesById>(&TapeKey(TapeNumber(10)))?;
@@ -132,12 +132,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sync secondary
     println!("Syncing secondary...");
     secondary.catch_up_with_primary()?;
-    println!("✓ Sync complete\n");
+    println!("Sync complete\n");
 
     // Now secondary sees it
     let tape10_after = secondary.get::<TapesById>(&TapeKey(TapeNumber(10)))?;
     println!("Secondary sees tape 10 after sync: {}", tape10_after.is_some());
-    println!("✓ Secondary successfully caught up with primary\n");
+    println!("Secondary successfully caught up with primary\n");
 
     // ========================================================================
     // Part 3: Background Sync Loop Pattern
@@ -169,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [Sync thread] Stopped after {} syncs", sync_count);
     });
 
-    println!("✓ Background sync thread started\n");
+    println!("Background sync thread started\n");
 
     // Simulate writes to primary while secondary syncs in background
     println!("Writing data to primary while secondary syncs...");
@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let tape = TapeData {
             id: TapeNumber(i),
-            authority: StoredPubkey::new([i as u8; 32]),
+            authority: Pubkey::new([i as u8; 32]),
             capacity: 10_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -208,12 +208,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // All operation traits work on secondary instances
     println!("Testing TapeOps::get_tape_by_address()");
-    let tape_by_addr = secondary.get_tape_by_address(&StoredPubkey::new([1; 32]))?;
-    println!("✓ Found tape: {:?}\n", tape_by_addr.map(|t| t.id.0));
+    let tape_by_addr = secondary.get_tape_by_address(&Pubkey::new([1; 32]))?;
+    println!("Found tape: {:?}\n", tape_by_addr.map(|t| t.id.0));
 
     println!("Testing StatsOps::get_storage_stats()");
     let final_stats = secondary.get_storage_stats()?;
-    println!("✓ Final stats:");
+    println!("Final stats:");
     println!("  Tapes: {}\n", final_stats.tape_count);
 
     // ========================================================================
@@ -225,17 +225,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     sync_thread.join().unwrap();
 
-    println!("✓ Background sync thread stopped\n");
+    println!("Background sync thread stopped\n");
 
     // ========================================================================
     // Summary
     // ========================================================================
     println!("=== Summary ===\n");
-    println!("✓ Read-only replicas provide static snapshots");
-    println!("✓ Secondary instances can catch up with primary");
-    println!("✓ Background sync loops keep secondaries up-to-date");
-    println!("✓ All operation traits work on secondary instances");
-    println!("✓ Secondaries enable read scaling without impacting primary");
+    println!("Read-only replicas provide static snapshots");
+    println!("Secondary instances can catch up with primary");
+    println!("Background sync loops keep secondaries up-to-date");
+    println!("All operation traits work on secondary instances");
+    println!("Secondaries enable read scaling without impacting primary");
     println!("\nDeployment patterns:");
     println!("  - Use read-only for analytics (static snapshot)");
     println!("  - Use secondary with 1s sync for near-real-time reads");

@@ -2,7 +2,8 @@
 //!
 //! Run with: cargo run --example typed_columns
 
-use store::{Column, MemoryStore, TypedStore};
+use store::{Column, TypedStore};
+use store_memory::MemoryStore;
 
 // Define column families with primitive types
 // For custom structs, implement wincode's SchemaRead and SchemaWrite traits

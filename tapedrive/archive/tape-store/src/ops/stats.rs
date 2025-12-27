@@ -51,7 +51,7 @@ mod tests {
     use super::*;
     use crate::ops::{TapeOps, TrackOps};
     use crate::types::*;
-    use store::MemoryStore;
+    use store_memory::MemoryStore;
 
     #[test]
     fn get_storage_stats() {
@@ -67,7 +67,7 @@ mod tests {
         // Add some data
         let tape = TapeData {
             id: TapeNumber(1),
-            authority: StoredPubkey::default(),
+            authority: Pubkey::default(),
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -78,7 +78,7 @@ mod tests {
 
         let track = TrackData {
             id: TrackNumber(1),
-            tape: StoredPubkey::default(),
+            tape: Pubkey::default(),
             key: Hash::default(),
             size: 1024,
             registered_epoch: EpochNumber(100),

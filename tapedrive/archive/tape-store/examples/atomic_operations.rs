@@ -33,7 +33,7 @@ fn main() -> Result<()> {
 
     let tape = TapeData {
         id: TapeNumber(1),
-        authority: StoredPubkey::new([42; 32]),
+        authority: Pubkey::new([42; 32]),
         capacity: 100_000_000, // 100 MB
         used: 0,
         active_epoch: EpochNumber(100),
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     // - TapesActiveIndex
     println!("Calling put_tape() - atomically updates 3 indices");
     store.put_tape(&tape)?;
-    println!("✓ Tape {} stored with atomic multi-index update\n", tape.id.0);
+    println!("Tape {} stored with atomic multi-index update\n", tape.id.0);
 
     // Verify all three indices were updated
     let by_id = store.get::<TapesById>(&TapeKey(tape.id))?;
@@ -61,9 +61,9 @@ fn main() -> Result<()> {
 
     // Reverse lookup: address -> tape
     println!("Testing get_tape_by_address() - two-hop lookup with validation");
-    let found_tape = store.get_tape_by_address(&StoredPubkey::new([42; 32]))?;
+    let found_tape = store.get_tape_by_address(&Pubkey::new([42; 32]))?;
     assert!(found_tape.is_some());
-    println!("✓ Reverse lookup successful: found tape {}\n", found_tape.unwrap().id.0);
+    println!("Reverse lookup successful: found tape {}\n", found_tape.unwrap().id.0);
 
     // ========================================================================
     // Part 2: TrackOps - Atomic Track Management
@@ -73,7 +73,7 @@ fn main() -> Result<()> {
     for i in 1..=5 {
         let track = TrackData {
             id: TrackNumber(i),
-            tape: StoredPubkey::new([42; 32]), // Same tape
+            tape: Pubkey::new([42; 32]), // Same tape
             key: Hash::from([100 + i as u8; 32]),
             size: 1_000_000 * i, // Variable sizes
             registered_epoch: EpochNumber(100),
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
         // Note: TracksByTape is NOT updated (known limitation from Phase 3)
         store.put_track(&track)?;
 
-        println!("✓ Track {} stored ({} bytes)", i, track.size);
+        println!("Track {} stored ({} bytes)", i, track.size);
     }
     println!();
 
@@ -118,12 +118,12 @@ fn main() -> Result<()> {
         store.put::<SlicesMeta>(&slice_key, &slice_meta)?;
         store.put::<SlicesData>(&slice_key, &vec![spool_idx as u8; 1024])?;
     }
-    println!("✓ Stored 10 slices\n");
+    println!("Stored 10 slices\n");
 
     // Get all slices for a track
     println!("Testing get_track_slices()");
     let slices = store.get_track_slices(track_id)?;
-    println!("✓ Found {} slices for track {}", slices.len(), track_id.0);
+    println!("Found {} slices for track {}", slices.len(), track_id.0);
     if !slices.is_empty() {
         println!("  First slice: spool_idx={}, len={} bytes\n",
                  slices[0].0, slices[0].1.len);
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     // Get slices in a range
     println!("Testing get_track_slices_range() - spools [3, 7)");
     let range = store.get_track_slices_range(track_id, 3, 7)?;
-    println!("✓ Found {} slices in range", range.len());
+    println!("Found {} slices in range", range.len());
     for (spool_idx, meta) in &range {
         println!("  - Spool {}: {} bytes", spool_idx, meta.len);
     }
@@ -141,12 +141,12 @@ fn main() -> Result<()> {
     // Count slices
     println!("Testing count_track_slices()");
     let count = store.count_track_slices(track_id)?;
-    println!("✓ Track {} has {} slices\n", track_id.0, count);
+    println!("Track {} has {} slices\n", track_id.0, count);
 
     // Check completeness (should be false since we only have 10/1024)
     println!("Testing track_is_complete()");
     let is_complete = store.track_is_complete(track_id)?;
-    println!("✓ Track {} is complete: {} (expected false)\n", track_id.0, is_complete);
+    println!("Track {} is complete: {} (expected false)\n", track_id.0, is_complete);
 
     // ========================================================================
     // Part 4: StatsOps - Storage Statistics
@@ -167,10 +167,10 @@ fn main() -> Result<()> {
     // Summary
     // ========================================================================
     println!("=== Summary ===\n");
-    println!("✓ TapeOps: Atomic multi-index tape operations");
-    println!("✓ TrackOps: Atomic track operations with reverse lookups");
-    println!("✓ SliceOps: Efficient range queries and aggregation");
-    println!("✓ StatsOps: Storage statistics collection");
+    println!("TapeOps: Atomic multi-index tape operations");
+    println!("TrackOps: Atomic track operations with reverse lookups");
+    println!("SliceOps: Efficient range queries and aggregation");
+    println!("StatsOps: Storage statistics collection");
     println!("\nAll operation traits demonstrated successfully!");
 
     Ok(())

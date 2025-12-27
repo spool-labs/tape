@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         let tape = TapeData {
             id: TapeNumber(i),
-            authority: StoredPubkey::new([i as u8; 32]),
+            authority: Pubkey::new([i as u8; 32]),
             capacity: 10_000_000 * i, // 10 MB * i
             used: 0,
             active_epoch: EpochNumber(100),
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=5 {
         let track = TrackData {
             id: TrackNumber(i),
-            tape: StoredPubkey::new([1; 32]), // All on tape 1
+            tape: Pubkey::new([1; 32]), // All on tape 1
             key: Hash::from([i as u8; 32]),
             size: 1024 * 1024 * i, // 1 MB * i
             registered_epoch: EpochNumber(100),

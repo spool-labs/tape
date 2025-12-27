@@ -53,7 +53,7 @@ pub trait Store: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MemoryStore;
+    use store_memory::MemoryStore;
 
     #[test]
     fn basic_ops() {

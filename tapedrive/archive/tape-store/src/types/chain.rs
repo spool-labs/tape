@@ -4,7 +4,7 @@
 //! serialization. They are named with a `Data` suffix to distinguish them from the on-chain
 //! zero-copy POD types.
 
-use super::impls::StoredPubkey;
+use super::impls::Pubkey;
 use serde::{Deserialize, Serialize};
 use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
 use tape_crypto::Hash;
@@ -14,7 +14,7 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct TapeData {
     pub id: TapeNumber,
-    pub authority: StoredPubkey,
+    pub authority: Pubkey,
     pub capacity: u64,
     pub used: u64,
     pub active_epoch: EpochNumber,
@@ -26,7 +26,7 @@ pub struct TapeData {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct TrackData {
     pub id: TrackNumber,
-    pub tape: StoredPubkey,
+    pub tape: Pubkey,
     pub key: Hash,
     pub size: u64,
     pub registered_epoch: EpochNumber,

@@ -1,18 +1,14 @@
 [package]
-name = "store"
+name = "store-memory"
 version.workspace = true
 edition.workspace = true
-description = "A thin typed key-value store abstraction"
+description = "In-memory backend for the store trait - useful for testing and as a template for custom backends"
 
 [features]
 default = []
 metrics = ["tape-metrics/metrics"]
 
 [dependencies]
+store.workspace = true
 thiserror.workspace = true
-serde.workspace = true
-wincode = "0.1"
 tape-metrics = { workspace = true, optional = true }
-
-[dev-dependencies]
-store-memory.workspace = true

@@ -14,7 +14,7 @@ fn open_primary() {
     // Test basic operations
     let tape = TapeData {
         id: TapeNumber(1),
-        authority: StoredPubkey::default(),
+        authority: Pubkey::default(),
         capacity: 1_000_000,
         used: 0,
         active_epoch: EpochNumber(100),
@@ -39,7 +39,7 @@ fn open_primary_persistence() {
         let store = TapeStore::open_primary(&db_path).unwrap();
         let tape = TapeData {
             id: TapeNumber(42),
-            authority: StoredPubkey::default(),
+            authority: Pubkey::default(),
             capacity: 500_000,
             used: 100_000,
             active_epoch: EpochNumber(50),
@@ -78,7 +78,7 @@ fn all_column_families() {
     // Tapes
     let tape = TapeData {
         id: TapeNumber(1),
-        authority: StoredPubkey::default(),
+        authority: Pubkey::default(),
         capacity: 1000,
         used: 0,
         active_epoch: EpochNumber(1),
@@ -86,13 +86,13 @@ fn all_column_families() {
         track_count: 0,
     };
     store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
-    store.put::<TapesByAddress>(&StoredPubkey::default(), &TapeNumber(1)).unwrap();
+    store.put::<TapesByAddress>(&Pubkey::default(), &TapeNumber(1)).unwrap();
     store.put::<TapesActiveIndex>(&TapeKey(TapeNumber(1)), &()).unwrap();
 
     // Tracks
     let track = TrackData {
         id: TrackNumber(1),
-        tape: StoredPubkey::default(),
+        tape: Pubkey::default(),
         key: Hash::default(),
         size: 1024,
         registered_epoch: EpochNumber(1),
@@ -100,7 +100,7 @@ fn all_column_families() {
         commitment_hash: Hash::default(),
     };
     store.put::<TracksById>(&TrackKey(TrackNumber(1)), &track).unwrap();
-    store.put::<TracksByAddress>(&StoredPubkey::default(), &TrackNumber(1)).unwrap();
+    store.put::<TracksByAddress>(&Pubkey::default(), &TrackNumber(1)).unwrap();
     store.put::<TracksByBlobKey>(&Hash::default(), &TrackNumber(1)).unwrap();
 
     // Slices
@@ -120,13 +120,13 @@ fn all_column_families() {
     let state = SliceState {
         current_epoch: EpochNumber(1),
         status: SliceStatus::Verified,
-        prev_owner: StoredPubkey::default(),
-        current_owner: StoredPubkey::default(),
-        next_owner: StoredPubkey::default(),
-        repair_from: StoredPubkey::default(),
+        prev_owner: Pubkey::default(),
+        current_owner: Pubkey::default(),
+        next_owner: Pubkey::default(),
+        repair_from: Pubkey::default(),
         repair_last_attempt: 0,
         repair_retries: 0,
-        handoff_to: StoredPubkey::default(),
+        handoff_to: Pubkey::default(),
         handoff_last_attempt: 0,
         handoff_retries: 0,
         gc_at: 0,
@@ -167,10 +167,10 @@ fn all_column_families() {
     // Verify we can read everything back
     assert!(store.get::<Meta>(&"test_key".to_string()).unwrap().is_some());
     assert!(store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap().is_some());
-    assert!(store.get::<TapesByAddress>(&StoredPubkey::default()).unwrap().is_some());
+    assert!(store.get::<TapesByAddress>(&Pubkey::default()).unwrap().is_some());
     assert!(store.get::<TapesActiveIndex>(&TapeKey(TapeNumber(1))).unwrap().is_some());
     assert!(store.get::<TracksById>(&TrackKey(TrackNumber(1))).unwrap().is_some());
-    assert!(store.get::<TracksByAddress>(&StoredPubkey::default()).unwrap().is_some());
+    assert!(store.get::<TracksByAddress>(&Pubkey::default()).unwrap().is_some());
     assert!(store.get::<TracksByBlobKey>(&Hash::default()).unwrap().is_some());
     assert!(store.get::<SlicesData>(&slice_key).unwrap().is_some());
     assert!(store.get::<SlicesMeta>(&slice_key).unwrap().is_some());

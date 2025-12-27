@@ -9,15 +9,14 @@
 //! # Example
 //!
 //! ```
-//! use tape_store::{TapeStore, types::*, columns::*};
-//! use store::MemoryStore;
+//! use tape_store::{TapeStore, MemoryStore, types::*, columns::*};
 //!
 //! let store = TapeStore::new(MemoryStore::new());
 //!
 //! // Store a tape
 //! let tape = TapeData {
 //!     id: TapeNumber(1),
-//!     authority: StoredPubkey::new_unique(),
+//!     authority: Pubkey::new_unique(),
 //!     capacity: 1_000_000,
 //!     used: 0,
 //!     active_epoch: EpochNumber(100),
@@ -39,7 +38,8 @@ pub mod types;
 
 use store::{Store, TypedStore};
 
-pub use store::{MemoryStore, WriteBatch};
+pub use store::WriteBatch;
+pub use store_memory::MemoryStore;
 pub use store_rocks::RocksStore;
 
 /// Wrapper around TypedStore providing tape-specific storage operations
@@ -241,7 +241,7 @@ mod tests {
 
         let tape = TapeData {
             id: TapeNumber(1),
-            authority: StoredPubkey::new_unique(),
+            authority: Pubkey::new_unique(),
             capacity: 1_000_000,
             used: 500_000,
             active_epoch: EpochNumber(100),
@@ -260,7 +260,7 @@ mod tests {
 
         let track = TrackData {
             id: TrackNumber(1),
-            tape: StoredPubkey::new_unique(),
+            tape: Pubkey::new_unique(),
             key: Hash::new_unique(),
             size: 1024,
             registered_epoch: EpochNumber(100),
@@ -296,7 +296,7 @@ mod tests {
     fn test_slice_state_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let owner = StoredPubkey::new_unique();
+        let owner = Pubkey::new_unique();
         let state = SliceState {
             current_epoch: EpochNumber(100),
             status: SliceStatus::Verified,
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn test_big_endian_ordering() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = StoredPubkey::new_unique();
+        let tape = Pubkey::new_unique();
         let hash = Hash::new_unique();
 
         // Insert tracks in non-sequential order
@@ -452,7 +452,7 @@ mod tests {
             let store = TapeStore::open_primary(&path).unwrap();
             let tape = TapeData {
                 id: TapeNumber(1),
-                authority: StoredPubkey::new_unique(),
+                authority: Pubkey::new_unique(),
                 capacity: 1_000_000,
                 used: 500_000,
                 active_epoch: EpochNumber(100),
@@ -492,7 +492,7 @@ mod tests {
             let store = TapeStore::open_primary(&primary_path).unwrap();
             let tape = TapeData {
                 id: TapeNumber(1),
-                authority: StoredPubkey::new_unique(),
+                authority: Pubkey::new_unique(),
                 capacity: 1_000_000,
                 used: 0,
                 active_epoch: EpochNumber(100),
@@ -531,7 +531,7 @@ mod tests {
 
         let tape1 = TapeData {
             id: TapeNumber(1),
-            authority: StoredPubkey::new_unique(),
+            authority: Pubkey::new_unique(),
             capacity: 1_000_000,
             used: 0,
             active_epoch: EpochNumber(100),
@@ -551,7 +551,7 @@ mod tests {
         // Write more data to primary
         let tape2 = TapeData {
             id: TapeNumber(2),
-            authority: StoredPubkey::new_unique(),
+            authority: Pubkey::new_unique(),
             capacity: 2_000_000,
             used: 0,
             active_epoch: EpochNumber(101),
@@ -576,7 +576,7 @@ mod tests {
         let primary_path = dir.path().join("primary");
         let secondary_path = dir.path().join("secondary");
 
-        let authority = StoredPubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         // Create primary and use high-level operations
         {

@@ -6462,9 +6462,19 @@ name = "store"
 version = "0.3.0"
 dependencies = [
  "serde",
+ "store-memory",
  "tape-metrics",
  "thiserror 2.0.17",
  "wincode 0.1.2",
+]
+
+[[package]]
+name = "store-memory"
+version = "0.3.0"
+dependencies = [
+ "store",
+ "tape-metrics",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -6697,6 +6707,7 @@ dependencies = [
  "serde",
  "solana-program",
  "store",
+ "store-memory",
  "store-rocks",
  "tape-core",
  "tape-crypto",

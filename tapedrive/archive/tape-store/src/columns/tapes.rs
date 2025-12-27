@@ -1,6 +1,6 @@
 //! Tape column families
 
-use crate::types::{StoredPubkey, TapeData, TapeKey, TapeNumber};
+use crate::types::{Pubkey, TapeData, TapeKey, TapeNumber};
 use store::Column;
 
 /// Tapes indexed by ID
@@ -17,7 +17,7 @@ pub struct TapesByAddress;
 
 impl Column for TapesByAddress {
     const CF_NAME: &'static str = "tapes/by_address";
-    type Key = StoredPubkey;
+    type Key = Pubkey;
     type Value = TapeNumber;
 }
 

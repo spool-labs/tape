@@ -11,17 +11,17 @@ use wincode::{
 };
 
 // ============================================================================
-// StoredPubkey - wrapper for solana_program::Pubkey
+// Pubkey - wrapper for solana_program::Pubkey
 // ============================================================================
 
-/// A wincode-serializable wrapper around Pubkey for storage operations.
+/// A wincode-serializable wrapper around solana Pubkey for storage operations.
 ///
 /// This type stores pubkeys as raw 32-byte arrays and provides conversions
-/// to/from solana_program::Pubkey.
+/// to/from solana_program::pubkey::Pubkey via `.into()`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct StoredPubkey(pub [u8; 32]);
+pub struct Pubkey(pub [u8; 32]);
 
-impl StoredPubkey {
+impl Pubkey {
     pub const LEN: usize = 32;
 
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -38,31 +38,31 @@ impl StoredPubkey {
     }
 }
 
-impl From<solana_program::pubkey::Pubkey> for StoredPubkey {
+impl From<solana_program::pubkey::Pubkey> for Pubkey {
     fn from(pubkey: solana_program::pubkey::Pubkey) -> Self {
         Self(pubkey.to_bytes())
     }
 }
 
-impl From<StoredPubkey> for solana_program::pubkey::Pubkey {
-    fn from(stored: StoredPubkey) -> Self {
+impl From<Pubkey> for solana_program::pubkey::Pubkey {
+    fn from(stored: Pubkey) -> Self {
         solana_program::pubkey::Pubkey::new_from_array(stored.0)
     }
 }
 
-impl From<&solana_program::pubkey::Pubkey> for StoredPubkey {
+impl From<&solana_program::pubkey::Pubkey> for Pubkey {
     fn from(pubkey: &solana_program::pubkey::Pubkey) -> Self {
         Self(pubkey.to_bytes())
     }
 }
 
-impl AsRef<[u8]> for StoredPubkey {
+impl AsRef<[u8]> for Pubkey {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl SchemaWrite for StoredPubkey {
+impl SchemaWrite for Pubkey {
     type Src = Self;
 
     fn size_of(_src: &Self::Src) -> WriteResult<usize> {
@@ -75,12 +75,12 @@ impl SchemaWrite for StoredPubkey {
     }
 }
 
-impl<'de> SchemaRead<'de> for StoredPubkey {
+impl<'de> SchemaRead<'de> for Pubkey {
     type Dst = Self;
 
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<StoredPubkey>) -> ReadResult<()> {
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<Pubkey>) -> ReadResult<()> {
         let bytes: [u8; 32] = unsafe { reader.get_t()? };
-        dst.write(StoredPubkey(bytes));
+        dst.write(Pubkey(bytes));
         Ok(())
     }
 }

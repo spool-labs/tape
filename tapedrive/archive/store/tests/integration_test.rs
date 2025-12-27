@@ -1,4 +1,5 @@
-use store::{MemoryStore, Store, WriteBatch};
+use store::{Store, WriteBatch};
+use store_memory::MemoryStore;
 
 #[test]
 fn basic_crud() {

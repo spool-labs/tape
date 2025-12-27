@@ -1,14 +1,12 @@
-//! store: A thin typed key-value store abstraction with in-memory backend support
+//! store: A thin typed key-value store abstraction
 //!
-//! This crate provides a storage abstraction layer with the `Store` trait and
-//! an in-memory implementation for testing. For production use with RocksDB,
-//! see the `store-rocks` crate.
+//! This crate provides a storage abstraction layer with the `Store` trait.
+//! The trait is designed to be implemented by various backends:
 //!
 //! # Available Backends
 //!
-//! - `MemoryStore`: In-memory HashMap-based storage (included)
-//! - `RocksStore`: RocksDB-based persistent storage (in `store-rocks` crate)
-//! - `NetworkStore`: Network-based remote storage (in `store-net` crate)
+//! - `store-memory`: In-memory HashMap-based storage (for testing)
+//! - `store-rocks`: RocksDB-based persistent storage (for production)
 //!
 //! The crate offers both low-level byte-oriented access via the `Store` trait
 //! and high-level typed access via the `TypedStore` wrapper with `Column` definitions.
@@ -16,7 +14,8 @@
 //! # Low-level Example
 //!
 //! ```
-//! use store::{Store, MemoryStore, WriteBatch};
+//! use store::{Store, WriteBatch};
+//! use store_memory::MemoryStore;
 //!
 //! let store = MemoryStore::new();
 //!
@@ -36,7 +35,8 @@
 //! # Typed Column Example
 //!
 //! ```
-//! use store::{Column, TypedStore, MemoryStore};
+//! use store::{Column, TypedStore};
+//! use store_memory::MemoryStore;
 //!
 //! // Define a column with primitive types (u64 key, String value)
 //! struct Users;
@@ -55,8 +55,7 @@
 pub mod batch;
 mod column;
 mod error;
-mod memory;
-mod store;
+pub mod store;
 mod typed;
 
 #[cfg(feature = "metrics")]
@@ -68,7 +67,6 @@ pub use metrics::{get_metrics, init_metrics, OperationTimer, StoreMetrics};
 pub use batch::{BatchOp, WriteBatch};
 pub use column::Column;
 pub use error::Error;
-pub use memory::MemoryStore;
 pub use store::{Direction, KeyValue, Store, StoreIter};
 pub use typed::TypedStore;
 

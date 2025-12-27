@@ -4,7 +4,8 @@
 
 #![cfg(feature = "metrics")]
 
-use store::{get_metrics, init_metrics, MemoryStore, Store, WriteBatch};
+use store::{get_metrics, init_metrics, Store, WriteBatch};
+use store_memory::MemoryStore;
 use tape_metrics::MetricsRegistry;
 
 fn setup_metrics() {

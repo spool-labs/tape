@@ -6,12 +6,13 @@ pub mod keys;
 pub mod slice;
 
 // Re-export core types
-pub use solana_program::pubkey::Pubkey;
 pub use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
 pub use tape_crypto::Hash;
 
 // Re-export storage wrapper types
-pub use impls::StoredPubkey;
+// Pubkey is a wincode-serializable wrapper around solana_program::pubkey::Pubkey.
+// Convert from Solana's Pubkey using `.into()`.
+pub use impls::Pubkey;
 
 // Re-export storage types
 pub use chain::{CommitteeData, CommitteeMemberData, TapeData, TrackData};

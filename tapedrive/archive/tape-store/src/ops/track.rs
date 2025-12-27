@@ -22,13 +22,12 @@ pub trait TrackOps {
     ///
     /// # Example
     /// ```
-    /// use tape_store::{TapeStore, types::*, ops::TrackOps};
-    /// use store::MemoryStore;
+    /// use tape_store::{TapeStore, MemoryStore, types::*, ops::TrackOps};
     ///
     /// let store = TapeStore::new(MemoryStore::new());
     /// let track = TrackData {
     ///     id: TrackNumber(1),
-    ///     tape: StoredPubkey::new([0u8; 32]),
+    ///     tape: Pubkey::new([0u8; 32]),
     ///     key: Hash::default(),
     ///     size: 1024,
     ///     registered_epoch: EpochNumber(100),
@@ -42,13 +41,13 @@ pub trait TrackOps {
     /// Get track by address (reverse lookup)
     ///
     /// # Arguments
-    /// * `address` - The on-chain address of the track (as StoredPubkey)
+    /// * `address` - The on-chain address of the track
     ///
     /// # Returns
     /// * `Ok(Some(track))` if found
     /// * `Ok(None)` if not found
     /// * `Err` on database or consistency errors
-    fn get_track_by_address(&self, address: &StoredPubkey) -> Result<Option<TrackData>>;
+    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<TrackData>>;
 
     /// Get all tracks belonging to a tape
     ///
@@ -102,7 +101,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_track_by_address(&self, address: &StoredPubkey) -> Result<Option<TrackData>> {
+    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<TrackData>> {
         // Look up track number by address
         let track_number = match self.get::<TracksByAddress>(address)? {
             Some(num) => num,
@@ -148,12 +147,12 @@ impl<S: Store> TrackOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store::MemoryStore;
+    use store_memory::MemoryStore;
 
     #[test]
     fn put_track_atomic() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = StoredPubkey::new_unique();
+        let tape = Pubkey::new_unique();
         let key = Hash::new_unique();
         let commitment_hash = Hash::new_unique();
 
@@ -183,7 +182,7 @@ mod tests {
     #[test]
     fn get_track_by_address() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = StoredPubkey::new_unique();
+        let tape = Pubkey::new_unique();
         let key = Hash::new_unique();
         let commitment_hash = Hash::new_unique();
 
@@ -202,7 +201,7 @@ mod tests {
         let found = store.get_track_by_address(&tape).unwrap();
         assert_eq!(found, Some(track));
 
-        let not_found = store.get_track_by_address(&StoredPubkey::new_unique()).unwrap();
+        let not_found = store.get_track_by_address(&Pubkey::new_unique()).unwrap();
         assert_eq!(not_found, None);
     }
 }

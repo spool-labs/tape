@@ -9,6 +9,7 @@ tape-core.workspace = true
 tape-crypto.workspace = true
 solana-program.workspace = true
 store.workspace = true
+store-memory.workspace = true
 store-rocks.workspace = true
 rocksdb.workspace = true
 wincode = "0.1"
