@@ -5,9 +5,9 @@ edition.workspace = true
 description = "Application-specific storage layer for distributed tape storage nodes"
 
 [dependencies]
-tape-api.workspace = true
-tape-core.workspace = true
-tape-crypto.workspace = true
+tape-api = { workspace = true, features = ["wincode"] }
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
 solana-program.workspace = true
 store.workspace = true
 store-memory.workspace = true
