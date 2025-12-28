@@ -13,7 +13,7 @@ use rand::CryptoRng;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wincode")]
-use std::mem::MaybeUninit;
+use core::mem::MaybeUninit;
 #[cfg(feature = "wincode")]
 use wincode::{
     io::{Reader, Writer},
