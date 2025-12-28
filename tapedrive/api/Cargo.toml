@@ -1,0 +1,12 @@
+[package]
+name = "tape-node-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+description = "Shared API routes and types for tapedrive storage nodes"
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]

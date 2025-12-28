@@ -6879,6 +6879,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-metrics",
+ "tape-node-api",
  "tape-node-client",
  "thiserror 2.0.17",
  "tokio",
@@ -6890,6 +6891,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-node-api"
+version = "0.3.0"
+
+[[package]]
 name = "tape-node-client"
 version = "0.3.0"
 dependencies = [
@@ -6899,6 +6904,7 @@ dependencies = [
  "serde_json",
  "tape-crypto",
  "tape-metrics",
+ "tape-node-api",
  "thiserror 2.0.17",
  "tokio",
  "url",

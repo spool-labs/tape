@@ -21,6 +21,7 @@ tape-core = { workspace = true }
 tape-api = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-metrics = { workspace = true, features = ["metrics", "http"] }
+tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
 store = { workspace = true }
 

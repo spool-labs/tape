@@ -15,19 +15,16 @@ use tape_metrics::OperationTimer;
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
 
-/// Total number of slices per blob.
-pub const TOTAL_SLICES: usize = 1024;
-
-/// Maximum slice size in bytes.
-pub const MAX_SLICE_SIZE: usize = 256 * 1024; // 256 KB
-
-// Endpoint paths
-pub const SLICE_ENDPOINT: &str = "/v1/tracks/{track_id}/slices/{slice_index}";
-pub const METADATA_ENDPOINT: &str = "/v1/tracks/{track_id}/metadata";
-pub const STATUS_ENDPOINT: &str = "/v1/tracks/{track_id}/status";
-pub const HEALTH_ENDPOINT: &str = "/v1/health";
-pub const INFO_ENDPOINT: &str = "/v1/info";
-pub const SYNC_SHARD_ENDPOINT: &str = "/v1/migrate/sync_shard";
+// Re-export shared constants from tape-core and tape-node-api
+pub use tape_core::erasure::{MAX_SLICE_SIZE, TOTAL_SLICES};
+pub use tape_node_api::{
+    HEALTH_PATH as HEALTH_ENDPOINT,
+    INFO_PATH as INFO_ENDPOINT,
+    METADATA_PATH as METADATA_ENDPOINT,
+    SLICE_PATH as SLICE_ENDPOINT,
+    STATUS_PATH as STATUS_ENDPOINT,
+    SYNC_SHARD_PATH as SYNC_SHARD_ENDPOINT,
+};
 
 /// Shared state for API handlers.
 #[derive(Clone)]

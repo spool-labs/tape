@@ -16,6 +16,7 @@ metrics = ["tape-metrics/metrics"]
 # Internal crates
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-metrics = { workspace = true, optional = true }
+tape-node-api = { workspace = true }
 
 # HTTP client
 reqwest = { workspace = true, features = ["rustls-tls"] }

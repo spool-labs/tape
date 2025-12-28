@@ -3,6 +3,7 @@
 pub mod bft;
 pub mod bls;
 pub mod cert;
+pub mod erasure;
 pub mod spooler;
 pub mod staking;
 pub mod system;
@@ -14,6 +15,7 @@ pub mod prelude {
     pub use crate::bft::*;
     pub use crate::bls::*;
     pub use crate::cert::*;
+    pub use crate::erasure::*;
     pub use crate::spooler::*;
     pub use crate::staking::*;
     pub use crate::system::*;

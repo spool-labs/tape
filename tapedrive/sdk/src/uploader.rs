@@ -9,14 +9,8 @@ use tokio::sync::Semaphore;
 use crate::communication::NodeCommunicationFactory;
 use crate::error::UploadError;
 
-/// Total number of slices per blob.
-pub const TOTAL_SLICES: usize = 1024;
-
-/// Number of data slices (before parity).
-pub const DATA_SLICES: usize = 683;
-
-/// Number of parity slices.
-pub const PARITY_SLICES: usize = 341;
+// Re-export erasure coding constants from tape-core
+pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, TOTAL_SLICES};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
