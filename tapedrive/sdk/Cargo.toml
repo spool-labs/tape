@@ -1,0 +1,36 @@
+[package]
+name = "tape-sdk"
+description = "High-level SDK for tapedrive blob upload/download operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+metrics = ["tape-node-client/metrics", "tape-metrics/metrics"]
+
+[dependencies]
+# Internal crates
+tape-core = { workspace = true }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-node-client = { workspace = true }
+tape-metrics = { workspace = true, optional = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Solana
+solana-program = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

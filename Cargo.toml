@@ -17,6 +17,7 @@ members = [
   "tapedrive/archive/tape-store",
   "tapedrive/node",
   "tapedrive/node-client",
+  "tapedrive/sdk",
   "client/tape-rpc",
   "client/tape-client",
 ]
@@ -47,6 +48,7 @@ tape-node-client = { version = "0.3.0", path = "./tapedrive/node-client" }
 store = { version = "0.3.0", path = "./tapedrive/archive/store" }
 store-memory = { version = "0.3.0", path = "./tapedrive/archive/store-memory" }
 store-rocks = { version = "0.3.0", path = "./tapedrive/archive/store-rocks" }
+tape-sdk = { version = "0.3.0", path = "./tapedrive/sdk" }
 
 # tape-archive = { version = "0.3.0", path = "./tape-archive" }
 # tape-cli = { version = "0.3.0", path = "./tape-cli" }
