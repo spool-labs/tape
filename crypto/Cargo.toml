@@ -18,6 +18,7 @@ crate-type = ["cdylib", "lib"]
 default = []
 std = []
 solana = []
+wincode = ["dep:wincode", "dep:wincode-derive"]
 
 [dependencies]
 dashu = "0.4.2"
@@ -37,8 +38,8 @@ solana-program = { workspace = true }
 solana-curve25519 = { workspace = true }
 bytemuck.workspace = true
 serde.workspace = true
-wincode.workspace = true
-wincode-derive.workspace = true
+wincode = { workspace = true, optional = true }
+wincode-derive = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "solana"))'.dependencies]
 ark-bn254 = { version = "0.5.0" }

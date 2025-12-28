@@ -18,8 +18,8 @@ num_enum.workspace = true
 solana-program.workspace = true
 five8.workspace = true
 serde.workspace = true
-wincode.workspace = true
-wincode-derive.workspace = true
+wincode = { workspace = true, optional = true }
+wincode-derive = { workspace = true, optional = true }
 
 [dev-dependencies]
 solana-keypair.workspace = true
@@ -31,3 +31,4 @@ crate-type = ["cdylib", "lib"]
 default = []
 std = []
 solana = []
+wincode = ["dep:wincode", "dep:wincode-derive", "tape-crypto/wincode"]

@@ -6,6 +6,7 @@ use tape_crypto::bls12254::errors::BLSError;
 use tape_crypto::bls12254::min_sig::*;
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 // Note we're using G2 for public keys and G1 for signatures, which is the
@@ -46,6 +47,7 @@ impl BlsPrivateKey {
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsSignature(pub G1CompressedPoint);
 
 impl BlsSignature {
@@ -95,7 +97,8 @@ impl BlsSignature {
 
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Pod, Zeroable, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
 
 impl BlsPubkey {

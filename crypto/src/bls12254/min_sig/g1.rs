@@ -8,13 +8,17 @@ use solana_bn254::{
 use crate::bls12254::errors::BLSError;
 use super::privkey::PrivKey;
 use bytemuck::{Pod, Zeroable};
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct G1Point(pub [u8; 64]);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct G1CompressedPoint(pub [u8; 32]);
 
 impl Add for G1Point {

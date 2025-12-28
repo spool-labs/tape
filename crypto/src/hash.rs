@@ -2,12 +2,14 @@
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 pub const HASH_BYTES: usize = 32;
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, Pod, Zeroable, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct Hash(pub [u8; HASH_BYTES]);
 
 impl From<Hash> for [u8; HASH_BYTES] {

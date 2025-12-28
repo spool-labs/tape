@@ -18,10 +18,12 @@ use super::g1::G1Point;
 use super::hash::hash_to_curve;
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct G2Point(pub [u8; 128]);
 
 impl Serialize for G2Point {
@@ -79,6 +81,7 @@ impl<'de> Deserialize<'de> for G2Point {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct G2CompressedPoint(pub [u8; 64]);
 
 impl G2Point {
