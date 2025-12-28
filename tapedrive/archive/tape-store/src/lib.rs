@@ -348,22 +348,40 @@ mod tests {
 
     #[test]
     fn test_committee_roundtrip() {
+        use bytemuck::Zeroable;
+        use tape_core::bls::BlsPubkey;
+        use tape_core::system::{CommitteeMember, NodePreferences};
+        use tape_core::types::{Coin, StorageUnits, TAPE};
+
         let store = TapeStore::new(MemoryStore::new());
+
+        let member1 = CommitteeMember {
+            id: NodeId(1),
+            stake: Coin::<TAPE>::new(1000),
+            key: BlsPubkey::zeroed(),
+            blacklist: StorageUnits(0),
+            preferences: NodePreferences {
+                storage_capacity: StorageUnits(1_000_000),
+                storage_price: Coin::<TAPE>::new(100),
+            },
+            weight: 100,
+        };
+
+        let member2 = CommitteeMember {
+            id: NodeId(2),
+            stake: Coin::<TAPE>::new(2000),
+            key: BlsPubkey::zeroed(),
+            blacklist: StorageUnits(0),
+            preferences: NodePreferences {
+                storage_capacity: StorageUnits(2_000_000),
+                storage_price: Coin::<TAPE>::new(100),
+            },
+            weight: 200,
+        };
 
         let committee = CommitteeData {
             epoch: EpochNumber(100),
-            members: vec![
-                CommitteeMemberData {
-                    id: NodeId(1),
-                    stake: 1000,
-                    weight: 100,
-                },
-                CommitteeMemberData {
-                    id: NodeId(2),
-                    stake: 2000,
-                    weight: 200,
-                },
-            ],
+            members: vec![member1, member2],
             total_stake: 3000,
         };
 

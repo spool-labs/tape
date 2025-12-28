@@ -156,7 +156,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store::MemoryStore;
+    use store_memory::MemoryStore;
 
     #[test]
     fn get_track_slices() {

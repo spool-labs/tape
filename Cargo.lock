@@ -6703,6 +6703,7 @@ dependencies = [
 name = "tape-store"
 version = "0.3.0"
 dependencies = [
+ "bytemuck",
  "rocksdb",
  "serde",
  "solana-program",

@@ -19,4 +19,5 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+bytemuck.workspace = true
 tempfile = "3.10"

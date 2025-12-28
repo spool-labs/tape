@@ -4,6 +4,8 @@ use crate::types::*;
 use crate::bls::*;
 use crate::spooler::SpoolAssignment;
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitteeError {
@@ -16,7 +18,7 @@ pub enum CommitteeError {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug)]
+#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct CommitteeMember {
     pub id: NodeId,
     pub stake: Coin<TAPE>,

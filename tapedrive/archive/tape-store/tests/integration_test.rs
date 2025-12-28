@@ -142,16 +142,26 @@ fn all_column_families() {
     };
     store.put::<AssignmentProgressCF>(&SpoolKey(42), &progress).unwrap();
 
-    // Committee
+    use bytemuck::Zeroable;
+    use tape_core::bls::BlsPubkey;
+    use tape_core::system::{CommitteeMember, NodePreferences};
+    use tape_core::types::{Coin, StorageUnits, TAPE};
+
+    let member = CommitteeMember {
+        id: NodeId(1),
+        stake: Coin::<TAPE>::new(1000),
+        key: BlsPubkey::zeroed(),
+        blacklist: StorageUnits(0),
+        preferences: NodePreferences {
+            storage_capacity: StorageUnits(1_000_000),
+            storage_price: Coin::<TAPE>::new(100),
+        },
+        weight: 100,
+    };
+
     let committee = CommitteeData {
         epoch: EpochNumber(1),
-        members: vec![
-            CommitteeMemberData {
-                id: NodeId(1),
-                stake: 1000,
-                weight: 100,
-            },
-        ],
+        members: vec![member],
         total_stake: 1000,
     };
     store.put::<CommitteeByEpoch>(&EpochNumber(1), &committee).unwrap();

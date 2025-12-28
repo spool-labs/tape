@@ -2,6 +2,8 @@ use crate::types::*;
 use tape_crypto::Pubkey;
 use crate::bls::BlsPubkey;
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -23,7 +25,7 @@ pub struct NodeMetadata {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug)]
+#[derive(Clone, Copy, PartialEq, Zeroable, Pod, Debug, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodePreferences {
     /// The preferred total archive size.
     pub storage_capacity: StorageUnits,

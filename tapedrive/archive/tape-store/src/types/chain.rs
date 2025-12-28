@@ -8,7 +8,7 @@ use super::impls::Pubkey;
 use serde::{Deserialize, Serialize};
 use tape_api::state::{Tape, Track};
 use tape_core::system::{Committee, CommitteeMember};
-use tape_core::types::{EpochNumber, NodeId, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -36,19 +36,11 @@ pub struct TrackData {
     pub commitment_hash: Hash,
 }
 
-/// Storage representation of committee member information
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct CommitteeMemberData {
-    pub id: NodeId,
-    pub stake: u64,
-    pub weight: u64,
-}
-
 /// Storage representation of committee data for an epoch
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct CommitteeData {
     pub epoch: EpochNumber,
-    pub members: Vec<CommitteeMemberData>,
+    pub members: Vec<CommitteeMember>,
     pub total_stake: u64,
 }
 
@@ -96,32 +88,22 @@ impl From<Track> for TrackData {
     }
 }
 
-impl From<&CommitteeMember> for CommitteeMemberData {
-    fn from(member: &CommitteeMember) -> Self {
-        Self {
-            id: member.id,
-            stake: member.stake.0,
-            weight: member.weight,
-        }
-    }
-}
-
-impl From<CommitteeMember> for CommitteeMemberData {
-    fn from(member: CommitteeMember) -> Self {
-        Self::from(&member)
-    }
-}
-
 impl CommitteeData {
     /// Create CommitteeData from a Committee and epoch
     pub fn from_committee<const N: usize>(committee: &Committee<N>, epoch: EpochNumber) -> Self {
-        let members: Vec<CommitteeMemberData> = committee.iter().map(|m| m.into()).collect();
+        let members: Vec<CommitteeMember> = committee.iter().cloned().collect();
         let total_stake = committee.total_stake().0;
         Self {
             epoch,
             members,
             total_stake,
         }
+    }
+
+    /// Convert back to a Committee with the specified capacity.
+    /// Members beyond capacity N will be truncated.
+    pub fn to_committee<const N: usize>(&self) -> Committee<N> {
+        Committee::from_members(&self.members)
     }
 }
 
@@ -131,7 +113,6 @@ impl CommitteeData {
 
 impl From<&TapeData> for Tape {
     fn from(data: &TapeData) -> Self {
-        use tape_core::types::StorageUnits;
         Self {
             id: data.id,
             authority: solana_program::pubkey::Pubkey::new_from_array(data.authority.0),
@@ -154,7 +135,6 @@ impl From<&TrackData> for Track {
     fn from(data: &TrackData) -> Self {
         use tape_core::tape::TrackData as CoreTrackData;
         use tape_core::tape::TrackState;
-        use tape_core::types::StorageUnits;
         Self {
             id: data.id,
             tape: solana_program::pubkey::Pubkey::new_from_array(data.tape.0),

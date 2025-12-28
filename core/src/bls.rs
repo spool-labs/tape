@@ -5,6 +5,8 @@ use core::{fmt, str::from_utf8_unchecked};
 use tape_crypto::bls12254::errors::BLSError;
 use tape_crypto::bls12254::min_sig::*;
 use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 // Note we're using G2 for public keys and G1 for signatures, which is the
 // opposite of the more common choice (min_pk). This is because Solana does 
@@ -93,7 +95,7 @@ impl BlsSignature {
 
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct BlsPubkey(pub G2Point); // using the uncompressed form to reduce CU
 
 impl BlsPubkey {
