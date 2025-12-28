@@ -2,9 +2,65 @@
 
 use crate::columns::*;
 use crate::error::{Result, TapeStoreError};
-use crate::types::*;
+use crate::types::{EpochNumber, Pubkey, TapeKey, TapeNumber};
 use crate::TapeStore;
+use serde::{Deserialize, Serialize};
 use store::{Column, Store, WriteBatch};
+use tape_api::state::Tape;
+use tape_core::types::StorageUnits;
+use wincode_derive::{SchemaRead, SchemaWrite};
+
+/// Storage representation of on-chain tape account data
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct TapeData {
+    pub id: TapeNumber,
+    pub authority: Pubkey,
+    pub capacity: u64,
+    pub used: u64,
+    pub active_epoch: EpochNumber,
+    pub expiry_epoch: EpochNumber,
+    pub track_count: u64,
+}
+
+impl From<&Tape> for TapeData {
+    fn from(tape: &Tape) -> Self {
+        Self {
+            id: tape.id,
+            authority: tape.authority.into(),
+            capacity: tape.capacity.0,
+            used: tape.used.0,
+            active_epoch: tape.active_epoch,
+            expiry_epoch: tape.expiry_epoch,
+            track_count: tape.track_count,
+        }
+    }
+}
+
+impl From<Tape> for TapeData {
+    fn from(tape: Tape) -> Self {
+        Self::from(&tape)
+    }
+}
+
+impl From<&TapeData> for Tape {
+    fn from(data: &TapeData) -> Self {
+        Self {
+            id: data.id,
+            authority: solana_program::pubkey::Pubkey::new_from_array(data.authority.0),
+            capacity: StorageUnits(data.capacity),
+            used: StorageUnits(data.used),
+            active_epoch: data.active_epoch,
+            expiry_epoch: data.expiry_epoch,
+            track_count: data.track_count,
+        }
+    }
+}
+
+impl From<TapeData> for Tape {
+    fn from(data: TapeData) -> Self {
+        Self::from(&data)
+    }
+}
 
 /// High-level operations for tape management
 pub trait TapeOps {
@@ -142,6 +198,7 @@ impl<S: Store> TapeOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Pubkey;
     use store_memory::MemoryStore;
 
     #[test]

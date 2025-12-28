@@ -1,11 +1,74 @@
 //! Track management operations
 
-use crate::columns::*;
 use crate::columns::tracks::TapeTrackKey;
+use crate::columns::*;
 use crate::error::{Result, TapeStoreError};
-use crate::types::*;
+use crate::types::{EpochNumber, Hash, Pubkey, TapeKey, TapeNumber, TrackKey, TrackNumber};
 use crate::TapeStore;
+use serde::{Deserialize, Serialize};
 use store::{Column, Store, WriteBatch};
+use tape_api::state::Track;
+use tape_core::types::StorageUnits;
+use wincode_derive::{SchemaRead, SchemaWrite};
+
+/// Storage representation of on-chain track account data
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct TrackData {
+    pub id: TrackNumber,
+    pub tape: Pubkey,
+    pub key: Hash,
+    pub size: u64,
+    pub registered_epoch: EpochNumber,
+    pub certified_epoch: EpochNumber,
+    pub commitment_hash: Hash,
+}
+
+impl From<&Track> for TrackData {
+    fn from(track: &Track) -> Self {
+        Self {
+            id: track.id,
+            tape: track.tape.into(),
+            key: track.key,
+            size: track.size.0,
+            registered_epoch: track.data.registered_epoch,
+            certified_epoch: track.data.state.certified_epoch,
+            commitment_hash: track.data.commitment_hash,
+        }
+    }
+}
+
+impl From<Track> for TrackData {
+    fn from(track: Track) -> Self {
+        Self::from(&track)
+    }
+}
+
+impl From<&TrackData> for Track {
+    fn from(data: &TrackData) -> Self {
+        use tape_core::tape::TrackData as CoreTrackData;
+        use tape_core::tape::TrackState;
+        Self {
+            id: data.id,
+            tape: solana_program::pubkey::Pubkey::new_from_array(data.tape.0),
+            key: data.key,
+            size: StorageUnits(data.size),
+            data: CoreTrackData {
+                state: TrackState {
+                    phase: 0,
+                    certified_epoch: data.certified_epoch,
+                },
+                registered_epoch: data.registered_epoch,
+                commitment_hash: data.commitment_hash,
+            },
+        }
+    }
+}
+
+impl From<TrackData> for Track {
+    fn from(data: TrackData) -> Self {
+        Self::from(&data)
+    }
+}
 
 /// High-level operations for track management
 pub trait TrackOps {
@@ -147,6 +210,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Hash, Pubkey};
     use store_memory::MemoryStore;
 
     #[test]

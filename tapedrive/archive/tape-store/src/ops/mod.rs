@@ -3,13 +3,17 @@
 //! This module provides domain-specific operations that guarantee consistency
 //! across multiple column families through atomic batch operations.
 
-mod tape;
-mod track;
+mod committee;
 mod slice;
 mod stats;
+mod tape;
+mod track;
 
-// Re-export all public traits and types
-pub use tape::TapeOps;
-pub use track::TrackOps;
-pub use slice::SliceOps;
+pub use committee::CommitteeData;
+pub use slice::{
+    AssignmentStatus, Compression, SliceMeta, SliceOps, SliceState, SliceStatus, SyncPhase,
+    SyncProgress,
+};
 pub use stats::{StatsOps, StorageStats};
+pub use tape::{TapeData, TapeOps};
+pub use track::{TrackData, TrackOps};
