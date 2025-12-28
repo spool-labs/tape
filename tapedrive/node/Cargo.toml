@@ -1,0 +1,45 @@
+[package]
+name = "tape-node"
+description = "Tapedrive storage node REST API server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# Internal crates
+tape-core = { workspace = true }
+tape-api = { workspace = true }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-metrics = { workspace = true, features = ["metrics", "http"] }
+store = { workspace = true }
+
+# HTTP Server
+axum = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+
+# Serialization
+wincode = { workspace = true }
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = "0.1"
+
+# Solana
+solana-program = { workspace = true }
+
+# Other
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tower = "0.5"

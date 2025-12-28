@@ -6703,6 +6703,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-node"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "hyper 1.8.1",
+ "serde",
+ "serde_json",
+ "solana-program",
+ "store",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-metrics",
+ "thiserror 2.0.17",
+ "tokio",
+ "tower",
+ "tracing",
+ "wincode 0.1.2",
+]
+
+[[package]]
 name = "tape-rpc"
 version = "0.3.0"
 dependencies = [
