@@ -11,12 +11,17 @@ keywords.workspace = true
 [features]
 default = []
 
+[[bin]]
+name = "tape-node"
+path = "src/bin/node.rs"
+
 [dependencies]
 # Internal crates
 tape-core = { workspace = true }
 tape-api = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-metrics = { workspace = true, features = ["metrics", "http"] }
+tape-node-client = { workspace = true }
 store = { workspace = true }
 
 # HTTP Server
@@ -27,15 +32,24 @@ hyper = { workspace = true }
 # Serialization
 wincode = { workspace = true }
 serde = { workspace = true }
+serde_yaml = "0.9"
 
 # Error handling
 thiserror = { workspace = true }
 
 # Logging
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { workspace = true }
 
 # Solana
 solana-program = { workspace = true }
+
+# Async utilities
+tokio-util = "0.7"
+futures = { workspace = true }
 
 # Other
 anyhow = { workspace = true }
