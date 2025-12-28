@@ -188,7 +188,7 @@ mod tests {
 
         let seat_count = dhondt_allocate(
             &system.committee_next.active_stakes(),
-            SPOOL_COUNT as u16,
+            SLICE_COUNT as u16,
         );
 
         let spools = migrate_spools(

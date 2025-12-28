@@ -16,7 +16,7 @@ use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
 
 // Re-export shared constants from tape-core and tape-node-api
-pub use tape_core::erasure::{MAX_SLICE_SIZE, TOTAL_SLICES};
+pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};
 pub use tape_node_api::{
     HEALTH_PATH as HEALTH_ENDPOINT,
     INFO_PATH as INFO_ENDPOINT,
@@ -59,7 +59,7 @@ pub async fn get_slice(
     let timer = OperationTimer::new();
 
     // Validate slice index
-    if slice_index >= TOTAL_SLICES as u16 {
+    if slice_index >= SLICE_COUNT as u16 {
         state
             .metrics
             .record_request("get_slice", "error", timer.elapsed_secs());
@@ -83,7 +83,7 @@ pub async fn put_slice(
     let timer = OperationTimer::new();
 
     // Validate slice index
-    if slice_index >= TOTAL_SLICES as u16 {
+    if slice_index >= SLICE_COUNT as u16 {
         state
             .metrics
             .record_request("put_slice", "error", timer.elapsed_secs());

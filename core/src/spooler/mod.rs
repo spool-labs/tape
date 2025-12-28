@@ -28,7 +28,7 @@ pub use sainte_lague::*;
 
 use crate::types::{Coin, TAPE};
 
-/// No committee member may have more than 2% of the spools 
+/// No committee member may have more than 2% of the spools
 /// (for sufficiently large committees).
 const MAX_SPOOL_ALLOCATION: u64 = 20;
 

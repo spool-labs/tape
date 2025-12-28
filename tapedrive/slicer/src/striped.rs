@@ -1,5 +1,5 @@
 use super::api::Slicer;
-use super::consts::{CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
+use super::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use super::errors::{DecodeError, EncodeError};
 use super::reed_solomon::ReedSolomonCoder;
 use super::types::{Blob, Shard};
@@ -22,14 +22,14 @@ impl Slicer for StripedSlicer {
     const DATA_OUTPUT_SHREDS: usize = DATA_SLICES;
     const CODING_OUTPUT_SHREDS: usize = CODING_SLICES;
 
-    fn encode(&mut self, _blob: Blob) -> Result<[Shard; TOTAL_SLICES], EncodeError> {
+    fn encode(&mut self, _blob: Blob) -> Result<[Shard; SLICE_COUNT], EncodeError> {
         // TODO: implement multi-stripe encode
         todo!()
     }
 
     fn decode(
         &mut self,
-        _shards: &[Option<Shard>; TOTAL_SLICES],
+        _shards: &[Option<Shard>; SLICE_COUNT],
     ) -> Result<Blob, DecodeError> {
         // TODO: implement multi-stripe decode
         todo!()

@@ -11,7 +11,7 @@ pub mod reed_solomon;
 pub mod shard_index;
 pub mod slice_index;
 
-pub use consts::{MERKLE_HEIGHT, TOTAL_SLICES, F, CODING_SLICES, DATA_SLICES};
+pub use consts::{MERKLE_HEIGHT, SLICE_COUNT, F, CODING_SLICES, DATA_SLICES};
 pub use errors::{EncodeError, DecodeError};
 pub use types::{Shard, Blob};
 pub use api::Slicer;

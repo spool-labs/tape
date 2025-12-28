@@ -1,4 +1,4 @@
-use super::{CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
+use super::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use super::Shard;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
@@ -133,7 +133,7 @@ impl ReedSolomonCoder {
     /// At least k total shards (data+coding) are required.
     pub fn decode(
         &mut self,
-        shards: &[Option<Shard>; TOTAL_SLICES],
+        shards: &[Option<Shard>; SLICE_COUNT],
     ) -> Result<Vec<u8>, ReedSolomonDecodeError> {
         let present = shards.iter().flatten().count();
         if present < self.k_data {
@@ -226,7 +226,7 @@ impl ReedSolomonCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Shard, CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
+    use super::{Shard, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::ShardIndex;
 
     fn make_payload(len: usize) -> Vec<u8> {
@@ -234,8 +234,8 @@ mod tests {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_full(raw: &RawSlices) -> [Option<Shard>; TOTAL_SLICES] {
-        let mut arr: [Option<Shard>; TOTAL_SLICES] = std::array::from_fn(|_| None);
+    fn to_full(raw: &RawSlices) -> [Option<Shard>; SLICE_COUNT] {
+        let mut arr: [Option<Shard>; SLICE_COUNT] = std::array::from_fn(|_| None);
         for (i, d) in raw.data.iter().enumerate() {
             arr[i] = Some(Shard {
                 index: ShardIndex::new(i).unwrap(),
@@ -252,8 +252,8 @@ mod tests {
         arr
     }
 
-    fn keep_only(arr: &mut [Option<Shard>; TOTAL_SLICES], keep: &[usize]) {
-        let mut keep_set = vec![false; TOTAL_SLICES];
+    fn keep_only(arr: &mut [Option<Shard>; SLICE_COUNT], keep: &[usize]) {
+        let mut keep_set = vec![false; SLICE_COUNT];
         for &k in keep {
             keep_set[k] = true;
         }
@@ -264,7 +264,7 @@ mod tests {
         }
     }
 
-    fn equal_sizes(arr: &[Option<Shard>; TOTAL_SLICES]) -> Option<usize> {
+    fn equal_sizes(arr: &[Option<Shard>; SLICE_COUNT]) -> Option<usize> {
         let mut size = None;
         for s in arr.iter().flatten() {
             match size {
@@ -455,7 +455,7 @@ mod tests {
             };
 
             // Build full shard set and round trip
-            let mut shards: [Option<Shard>; TOTAL_SLICES] = std::array::from_fn(|_| None);
+            let mut shards: [Option<Shard>; SLICE_COUNT] = std::array::from_fn(|_| None);
             for (i, d) in raw.data.iter().enumerate() {
                 shards[i] = Some(Shard {
                     index: ShardIndex::new(i).unwrap(),

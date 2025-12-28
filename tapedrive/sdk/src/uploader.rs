@@ -10,7 +10,7 @@ use crate::communication::NodeCommunicationFactory;
 use crate::error::UploadError;
 
 // Re-export erasure coding constants from tape-core
-pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, TOTAL_SLICES};
+pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
@@ -133,10 +133,10 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(TOTAL_SLICES, 1024);
+        assert_eq!(SLICE_COUNT, 1024);
         assert_eq!(DATA_SLICES, 683);
         assert_eq!(PARITY_SLICES, 341);
-        assert_eq!(DATA_SLICES + PARITY_SLICES, TOTAL_SLICES);
+        assert_eq!(DATA_SLICES + PARITY_SLICES, SLICE_COUNT);
     }
 
     #[test]

@@ -1,18 +1,18 @@
-use super::TOTAL_SLICES;
+use super::SLICE_COUNT;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use wincode::{SchemaRead, SchemaWrite};
 
-/// Shard index type. Ensures value is < TOTAL_SLICES.
+/// Shard index type. Ensures value is < SLICE_COUNT.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
 pub struct ShardIndex(usize);
 
 impl ShardIndex {
     pub fn new(index: usize) -> Option<Self> {
-        if index < TOTAL_SLICES {
+        if index < SLICE_COUNT {
             Some(Self(index))
         } else {
             None
@@ -20,7 +20,7 @@ impl ShardIndex {
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
-        (0..TOTAL_SLICES).map(Self)
+        (0..SLICE_COUNT).map(Self)
     }
 }
 
@@ -47,7 +47,7 @@ impl<'de> Deserialize<'de> for ShardIndex {
         impl<'de> serde::de::Visitor<'de> for VisitorImpl {
             type Value = ShardIndex;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "a usize in [0, TOTAL_SLICES)")
+                write!(f, "a usize in [0, SLICE_COUNT)")
             }
             fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
             where
@@ -70,7 +70,7 @@ impl<'de> SchemaRead<'de> for ShardIndex {
     ) -> wincode::ReadResult<()> {
         unsafe {
             reader.copy_into_t(dst)?;
-            if dst.assume_init_ref().0 >= TOTAL_SLICES {
+            if dst.assume_init_ref().0 >= SLICE_COUNT {
                 Err(wincode::ReadError::Custom("shard index out of bounds"))
             } else {
                 Ok(())
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_ok() {
-        let vals = [0, 1, TOTAL_SLICES - 1];
+        let vals = [0, 1, SLICE_COUNT - 1];
         for v in vals {
             let s = serde_json::to_string(&ShardIndex(v)).unwrap();
             let _idx: ShardIndex = serde_json::from_str(&s).unwrap();
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn serde_fail() {
-        let vals = [TOTAL_SLICES, TOTAL_SLICES + 1];
+        let vals = [SLICE_COUNT, SLICE_COUNT + 1];
         for v in vals {
             let s = serde_json::to_string(&v).unwrap();
             let res: Result<ShardIndex, _> = serde_json::from_str(&s);
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn wincode_roundtrip_ok() {
-        let vals = [0, TOTAL_SLICES - 1];
+        let vals = [0, SLICE_COUNT - 1];
         for v in vals {
             let b = wincode::serialize(&ShardIndex(v)).unwrap();
             let _idx: ShardIndex = wincode::deserialize(&b).unwrap();
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn wincode_fail() {
-        let vals = [TOTAL_SLICES, TOTAL_SLICES + 1, usize::MAX];
+        let vals = [SLICE_COUNT, SLICE_COUNT + 1, usize::MAX];
         for v in vals {
             let b = wincode::serialize(&ShardIndex(v)).unwrap();
             let res: Result<ShardIndex, _> = wincode::deserialize(&b);

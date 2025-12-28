@@ -4,7 +4,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::communication::NodeCommunicationFactory;
 use crate::error::DownloadError;
-use crate::uploader::{DATA_SLICES, TOTAL_SLICES};
+use crate::uploader::{DATA_SLICES, SLICE_COUNT};
 
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
@@ -45,7 +45,7 @@ impl ParallelDownloader {
         let mut futures = FuturesUnordered::new();
 
         // Request all slices in parallel
-        for slice_idx in 0..TOTAL_SLICES as u16 {
+        for slice_idx in 0..SLICE_COUNT as u16 {
             let node_idx = slice_idx as usize % num_nodes;
             let address = self.node_addresses[node_idx].clone();
             let factory = self.factory.clone();

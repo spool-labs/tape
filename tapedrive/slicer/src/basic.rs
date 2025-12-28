@@ -1,5 +1,5 @@
 use super::api::Slicer;
-use super::consts::{CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
+use super::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use super::errors::{DecodeError, EncodeError};
 use super::reed_solomon::{ReedSolomonCoder, ReedSolomonDecodeError, ReedSolomonEncodeError};
 use super::shard_index::ShardIndex;
@@ -21,12 +21,12 @@ impl Slicer for BasicSlicer {
     const DATA_OUTPUT_SHREDS: usize = DATA_SLICES;
     const CODING_OUTPUT_SHREDS: usize = CODING_SLICES;
 
-    fn encode(&mut self, blob: Blob) -> Result<[Shard; TOTAL_SLICES], EncodeError> {
+    fn encode(&mut self, blob: Blob) -> Result<[Shard; SLICE_COUNT], EncodeError> {
         let raw = self.0.encode(blob.as_slice()).map_err(|e| match e {
             ReedSolomonEncodeError::TooMuchData => EncodeError::TooMuchData,
         })?;
 
-        let mut output = Vec::with_capacity(TOTAL_SLICES);
+        let mut output = Vec::with_capacity(SLICE_COUNT);
         for (i, data) in raw.data.into_iter().enumerate() {
             let idx = ShardIndex::new(i).expect("index in range");
             output.push(Shard::new(idx, data));
@@ -36,12 +36,12 @@ impl Slicer for BasicSlicer {
             output.push(Shard::new(idx, coding));
         }
 
-        Ok(output.try_into().expect("exactly TOTAL_SLICES shards"))
+        Ok(output.try_into().expect("exactly SLICE_COUNT shards"))
     }
 
     fn decode(
         &mut self,
-        shards: &[Option<Shard>; TOTAL_SLICES],
+        shards: &[Option<Shard>; SLICE_COUNT],
     ) -> Result<Blob, DecodeError> {
         let reconstructed = self.0.decode(shards).map_err(|e| match e {
             ReedSolomonDecodeError::NotEnoughShards => DecodeError::NotEnoughShards,
@@ -57,23 +57,23 @@ impl Slicer for BasicSlicer {
 mod tests {
     use super::*;
     use crate::errors::DecodeError;
-    use crate::consts::{CODING_SLICES, DATA_SLICES, TOTAL_SLICES};
+    use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::merkle_helpers::build_blob_merkle_tree;
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_opt(shards: &[Shard; TOTAL_SLICES]) -> [Option<Shard>; TOTAL_SLICES] {
-        let mut arr: [Option<Shard>; TOTAL_SLICES] = std::array::from_fn(|_| None);
+    fn to_opt(shards: &[Shard; SLICE_COUNT]) -> [Option<Shard>; SLICE_COUNT] {
+        let mut arr: [Option<Shard>; SLICE_COUNT] = std::array::from_fn(|_| None);
         for (i, s) in shards.iter().enumerate() {
             arr[i] = Some(s.clone());
         }
         arr
     }
 
-    fn keep(arr: &mut [Option<Shard>; TOTAL_SLICES], idxs: &[usize]) {
-        let mut mask = vec![false; TOTAL_SLICES];
+    fn keep(arr: &mut [Option<Shard>; SLICE_COUNT], idxs: &[usize]) {
+        let mut mask = vec![false; SLICE_COUNT];
         for &i in idxs {
             mask[i] = true;
         }
@@ -84,7 +84,7 @@ mod tests {
         }
     }
 
-    fn equal_size(shards: &[Shard; TOTAL_SLICES]) -> Option<usize> {
+    fn equal_size(shards: &[Shard; SLICE_COUNT]) -> Option<usize> {
         let mut size: Option<usize> = None;
         for s in shards.iter() {
             match size {
@@ -101,7 +101,7 @@ mod tests {
         let mut slicer = BasicSlicer::default();
         let payload = mk(123_456);
         let shards = slicer.encode(Blob::from(payload)).expect("encode ok");
-        assert_eq!(shards.len(), TOTAL_SLICES);
+        assert_eq!(shards.len(), SLICE_COUNT);
         for (i, s) in shards.iter().enumerate() {
             assert_eq!(*s.index, i);
         }
