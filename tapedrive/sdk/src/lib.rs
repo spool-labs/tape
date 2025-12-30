@@ -35,6 +35,7 @@ pub mod decoder;
 pub mod downloader;
 pub mod encoder;
 pub mod error;
+pub mod routing;
 pub mod uploader;
 
 // Primary client interface
@@ -50,6 +51,9 @@ pub use uploader::DistributedUploader;
 
 // Error types
 pub use error::{ClientError, DownloadError, UploadError};
+
+// Routing
+pub use routing::{RoutingError, SliceRouter};
 
 // Re-export key constants from tape-core for convenience
 pub use tape_core::erasure::{DATA_SLICES, MAX_BLOB_SIZE, MAX_SLICE_SIZE, SLICE_COUNT};
