@@ -6894,6 +6894,12 @@ dependencies = [
 [[package]]
 name = "tape-node-api"
 version = "0.3.0"
+dependencies = [
+ "serde",
+ "tape-crypto",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
+]
 
 [[package]]
 name = "tape-node-client"
@@ -6939,6 +6945,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-metrics",
+ "tape-node-api",
  "tape-node-client",
  "tape-slicer",
  "thiserror 2.0.17",

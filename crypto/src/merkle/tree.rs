@@ -47,8 +47,10 @@ const EMPTY_ROOTS: [[u8; 32]; MAX_MERKLE_TREE_HEIGHT] = [
     hex!("80f9b85d3ded25f980daf5996d3d934f1637b078f9e4ba12d5c69a4d44a56277"),
 ];
 
+/// Hash a leaf node for merkle tree construction.
+/// Uses domain separation with "LEAF" prefix.
 #[inline]
-fn hash_leaf(data: &[u8]) -> Hash {
+pub fn hash_leaf(data: &[u8]) -> Hash {
     hashv(&[LEAF_LABEL, data])
 }
 

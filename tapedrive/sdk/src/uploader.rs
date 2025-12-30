@@ -4,9 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
+use tape_crypto::Hash;
+use tape_node_api::SlicePayload;
 use tokio::sync::Semaphore;
 
 use crate::communication::NodeCommunicationFactory;
+use crate::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
 // Re-export erasure coding constants from tape-core
@@ -15,10 +18,31 @@ pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
 
+/// A slice with its merkle proof, ready for upload.
+#[derive(Clone)]
+pub struct SliceWithProof {
+    pub index: u16,
+    pub data: Vec<u8>,
+    pub leaf_hash: Hash,
+    pub merkle_proof: SliceMerkleProof,
+}
+
+impl SliceWithProof {
+    /// Create a new slice with proof.
+    pub fn new(index: u16, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
+        Self { index, data, leaf_hash, merkle_proof }
+    }
+
+    /// Convert to SlicePayload for network transmission.
+    pub fn to_payload(&self) -> SlicePayload {
+        SlicePayload::new(self.data.clone(), self.leaf_hash, self.merkle_proof)
+    }
+}
+
 /// Distributed uploader for parallel slice uploads to storage nodes.
 pub struct DistributedUploader {
     track_id: String,
-    slices: Vec<Vec<u8>>,
+    slices: Vec<SliceWithProof>,
     node_addresses: Vec<String>,
     factory: NodeCommunicationFactory,
     concurrency_limit: Arc<Semaphore>,
@@ -29,12 +53,12 @@ impl DistributedUploader {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - The encoded slices (should be 1024)
+    /// * `slices` - The encoded slices with merkle proofs (should be 1024)
     /// * `node_addresses` - List of node addresses for the committee
     /// * `factory` - Factory for creating node clients
     pub fn new(
         track_id: String,
-        slices: Vec<Vec<u8>>,
+        slices: Vec<SliceWithProof>,
         node_addresses: Vec<String>,
         factory: NodeCommunicationFactory,
     ) -> Self {
@@ -65,14 +89,14 @@ impl DistributedUploader {
 
         // Simple round-robin distribution of slices to nodes
         // In production, this would use spool assignments from the committee
-        let mut slices_per_node: HashMap<usize, Vec<(u16, Vec<u8>)>> = HashMap::new();
+        let mut slices_per_node: HashMap<usize, Vec<SliceWithProof>> = HashMap::new();
 
-        for (slice_idx, slice_data) in self.slices.iter().enumerate() {
-            let node_idx = slice_idx % num_nodes;
+        for slice in &self.slices {
+            let node_idx = slice.index as usize % num_nodes;
             slices_per_node
                 .entry(node_idx)
                 .or_default()
-                .push((slice_idx as u16, slice_data.clone()));
+                .push(slice.clone());
         }
 
         // Upload to each node in parallel
@@ -92,8 +116,9 @@ impl DistributedUploader {
 
                     let client = factory.client_for_address(&address)?;
 
-                    for (slice_idx, data) in slices {
-                        client.put_slice(&track_id, slice_idx, data).await?;
+                    for slice in slices {
+                        let payload = slice.to_payload();
+                        client.put_slice(&track_id, slice.index, &payload).await?;
                     }
 
                     Ok::<_, UploadError>(node_idx)
@@ -130,6 +155,18 @@ impl DistributedUploader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_slicer::MERKLE_HEIGHT;
+
+    fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
+        (0..count)
+            .map(|i| SliceWithProof {
+                index: i as u16,
+                data: vec![i as u8; 100],
+                leaf_hash: Hash::default(),
+                merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+            })
+            .collect()
+    }
 
     #[test]
     fn test_constants() {
@@ -142,12 +179,28 @@ mod tests {
     #[test]
     fn test_uploader_creation() {
         let factory = NodeCommunicationFactory::new();
-        let slices: Vec<Vec<u8>> = (0..10).map(|i| vec![i as u8; 100]).collect();
+        let slices = make_test_slices(10);
         let nodes = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
 
         let uploader =
-            DistributedUploader::new("track_123".to_string(), slices.clone(), nodes, factory);
+            DistributedUploader::new("track_123".to_string(), slices, nodes, factory);
 
         assert_eq!(uploader.slice_count(), 10);
+    }
+
+    #[test]
+    fn test_slice_with_proof_to_payload() {
+        let slice = SliceWithProof {
+            index: 42,
+            data: vec![0xAB; 500],
+            leaf_hash: Hash::default(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+        };
+
+        let payload = slice.to_payload();
+
+        assert_eq!(payload.data, slice.data);
+        assert_eq!(payload.leaf_hash, slice.leaf_hash);
+        assert_eq!(payload.merkle_proof, slice.merkle_proof);
     }
 }

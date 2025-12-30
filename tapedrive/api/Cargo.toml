@@ -10,3 +10,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
+tape-crypto = { workspace = true, features = ["wincode"] }
+serde = { workspace = true }
+wincode = { workspace = true }
+wincode-derive = { workspace = true }

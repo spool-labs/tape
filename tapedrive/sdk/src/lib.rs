@@ -47,7 +47,7 @@ pub use encoder::{BlobEncoder, SliceMerkleProof};
 
 // Lower-level upload/download
 pub use downloader::ParallelDownloader;
-pub use uploader::DistributedUploader;
+pub use uploader::{DistributedUploader, SliceWithProof};
 
 // Error types
 pub use error::{ClientError, DownloadError, UploadError};
@@ -60,3 +60,6 @@ pub use tape_core::erasure::{DATA_SLICES, MAX_BLOB_SIZE, MAX_SLICE_SIZE, SLICE_C
 
 // Re-export merkle types from tape-slicer
 pub use tape_slicer::{BlobMerkleRoot, MERKLE_HEIGHT};
+
+// Re-export payload type from tape-node-api
+pub use tape_node_api::SlicePayload;

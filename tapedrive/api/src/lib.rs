@@ -3,8 +3,58 @@
 //! This crate provides the canonical definitions for REST API endpoints
 //! used by both `tape-node` (server) and `tape-node-client` (client).
 
+use serde::{Deserialize, Serialize};
+use tape_crypto::Hash;
+use wincode_derive::{SchemaRead, SchemaWrite};
+
 /// API version prefix.
 pub const API_V1: &str = "/v1";
+
+/// Merkle tree height for blob encoding.
+/// 2^10 = 1024 leaves = SLICE_COUNT.
+pub const MERKLE_HEIGHT: usize = 10;
+
+// =============================================================================
+// Payload Types
+// =============================================================================
+
+/// Payload for slice upload requests.
+///
+/// Sent via PUT /v1/tracks/{track_id}/slices/{slice_index}
+/// Serialized using wincode (Content-Type: application/x-wincode)
+///
+/// The payload includes the slice data along with the merkle proof,
+/// allowing storage nodes to verify the slice belongs to the claimed blob.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SlicePayload {
+    /// The raw slice data.
+    pub data: Vec<u8>,
+    /// Merkle leaf hash of this slice (hash of data).
+    pub leaf_hash: Hash,
+    /// Merkle proof (MERKLE_HEIGHT sibling hashes).
+    pub merkle_proof: [Hash; MERKLE_HEIGHT],
+}
+
+impl SlicePayload {
+    /// Create a new slice payload.
+    pub fn new(data: Vec<u8>, leaf_hash: Hash, merkle_proof: [Hash; MERKLE_HEIGHT]) -> Self {
+        Self {
+            data,
+            leaf_hash,
+            merkle_proof,
+        }
+    }
+
+    /// Serialize to wincode bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        wincode::serialize(self).expect("SlicePayload serialization should never fail")
+    }
+
+    /// Deserialize from wincode bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, wincode::ReadError> {
+        wincode::deserialize(bytes)
+    }
+}
 
 // =============================================================================
 // Slice Operations
@@ -89,6 +139,7 @@ pub fn status_url(track_id: &str) -> String {
     format!("/v1/tracks/{}/status", track_id)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +171,32 @@ mod tests {
             .replace("{track_id}", track)
             .replace("{slice_index}", &slice.to_string());
         assert_eq!(built, expected);
+    }
+
+    #[test]
+    fn test_slice_payload_roundtrip() {
+        let payload = SlicePayload {
+            data: vec![0xAB; 1000],
+            leaf_hash: Hash::default(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+        };
+
+        let bytes = payload.to_bytes();
+        let decoded = SlicePayload::from_bytes(&bytes).unwrap();
+
+        assert_eq!(payload, decoded);
+    }
+
+    #[test]
+    fn test_slice_payload_new() {
+        let data = vec![1, 2, 3, 4];
+        let leaf_hash = Hash::default();
+        let proof = [Hash::default(); MERKLE_HEIGHT];
+
+        let payload = SlicePayload::new(data.clone(), leaf_hash, proof);
+
+        assert_eq!(payload.data, data);
+        assert_eq!(payload.leaf_hash, leaf_hash);
+        assert_eq!(payload.merkle_proof, proof);
     }
 }

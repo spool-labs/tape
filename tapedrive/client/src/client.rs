@@ -7,6 +7,8 @@ use std::time::Instant;
 use reqwest::Client;
 use url::Url;
 
+use tape_node_api::{SlicePayload, CONTENT_TYPE_WINCODE};
+
 use crate::error::NodeError;
 
 #[cfg(feature = "metrics")]
@@ -34,24 +36,28 @@ impl StorageNodeClient {
     /// # Arguments
     /// * `track_id` - The track identifier
     /// * `slice_index` - The slice index (0-1023)
-    /// * `data` - The slice data
+    /// * `payload` - The slice payload (data + merkle proof)
     pub async fn put_slice(
         &self,
         track_id: &str,
         slice_index: u16,
-        data: Vec<u8>,
+        payload: &SlicePayload,
     ) -> Result<(), NodeError> {
         #[cfg(feature = "metrics")]
         let start = Instant::now();
+
+        let body = payload.to_bytes();
+
         #[cfg(feature = "metrics")]
-        let data_len = data.len();
+        let body_len = body.len();
 
         let url = self.base_url
             .join(&format!("/v1/tracks/{}/slices/{}", track_id, slice_index))?;
 
         let response = self.inner
             .put(url)
-            .body(data)
+            .header("Content-Type", CONTENT_TYPE_WINCODE)
+            .body(body)
             .send()
             .await?;
 
@@ -68,7 +74,7 @@ impl StorageNodeClient {
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
             metrics.record_request("put_slice", "success", start.elapsed().as_secs_f64());
-            metrics.record_bytes_sent("put_slice", data_len as u64);
+            metrics.record_bytes_sent("put_slice", body_len as u64);
         }
 
         Ok(())

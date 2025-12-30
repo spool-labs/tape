@@ -3,7 +3,7 @@
 //! This module provides `BlobEncoder` which wraps `BasicSlicer` to encode
 //! raw blobs into network-ready slices with merkle commitments.
 
-use tape_crypto::merkle::create_merkle_proof;
+use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
     BasicSlicer, Blob, Slicer, MERKLE_HEIGHT,
@@ -11,6 +11,7 @@ use tape_slicer::{
 };
 
 use crate::error::UploadError;
+use crate::uploader::SliceWithProof;
 
 /// Merkle proof for a single slice.
 ///
@@ -162,7 +163,7 @@ impl BlobEncoder {
     ///
     /// # Returns
     /// Tuple containing:
-    /// - Vector of (slice_index, slice_data, merkle_proof) tuples
+    /// - Vector of `SliceWithProof` (index, data, leaf_hash, merkle_proof)
     /// - The blob merkle root (commitment)
     ///
     /// # Example
@@ -170,15 +171,15 @@ impl BlobEncoder {
     /// let mut encoder = BlobEncoder::new();
     /// let (slices_with_proofs, root) = encoder.encode_with_proofs(data)?;
     ///
-    /// for (idx, slice_data, proof) in slices_with_proofs {
-    ///     // Upload slice_data to node responsible for spool idx
-    ///     // Node can verify: verify_proof(&slice_data, &root, &proof, idx, MERKLE_HEIGHT)
+    /// for slice in slices_with_proofs {
+    ///     // Upload slice to node responsible for spool slice.index
+    ///     // Node can verify: verify_proof(&slice.data, &root, &slice.merkle_proof, slice.index, MERKLE_HEIGHT)
     /// }
     /// ```
     pub fn encode_with_proofs(
         &mut self,
         data: Vec<u8>,
-    ) -> Result<(Vec<(u16, Vec<u8>, SliceMerkleProof)>, BlobMerkleRoot), UploadError> {
+    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
         let blob = Blob::from(data);
         let slices = self.slicer
             .encode(blob)
@@ -203,7 +204,15 @@ impl BlobEncoder {
                 proof_arr[i] = h;
             }
 
-            output.push((*slice.index as u16, slice.data, proof_arr));
+            // Compute leaf hash for this slice
+            let leaf_hash = hash_leaf(&slice.data);
+
+            output.push(SliceWithProof::new(
+                *slice.index as u16,
+                slice.data,
+                leaf_hash,
+                proof_arr,
+            ));
         }
 
         Ok((output, root))
@@ -304,15 +313,15 @@ mod tests {
         assert_eq!(slices_with_proofs.len(), SLICE_COUNT);
 
         // Verify each proof
-        for (idx, slice_data, proof) in &slices_with_proofs {
+        for slice in &slices_with_proofs {
             let valid = verify_proof(
-                slice_data,
+                &slice.data,
                 &root,
-                proof,
-                *idx as u64,
+                &slice.merkle_proof,
+                slice.index as u64,
                 MERKLE_HEIGHT,
             );
-            assert!(valid, "Proof verification failed for slice {}", idx);
+            assert!(valid, "Proof verification failed for slice {}", slice.index);
         }
     }
 
@@ -323,8 +332,8 @@ mod tests {
         let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
 
         // Verify indices are sequential
-        for (expected_idx, (actual_idx, _, _)) in slices_with_proofs.iter().enumerate() {
-            assert_eq!(*actual_idx as usize, expected_idx);
+        for (expected_idx, slice) in slices_with_proofs.iter().enumerate() {
+            assert_eq!(slice.index as usize, expected_idx);
         }
     }
 
@@ -338,5 +347,20 @@ mod tests {
         let (_, root2) = encoder.encode_with_proofs(data).unwrap();
 
         assert_eq!(root1, root2);
+    }
+
+    #[test]
+    fn test_encode_with_proofs_has_leaf_hash() {
+        use tape_crypto::merkle::hash_leaf;
+
+        let mut encoder = test_encoder();
+        let data = vec![0xEF; 10_000];
+        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
+
+        // Verify leaf hashes are correctly computed
+        for slice in &slices_with_proofs {
+            let expected_leaf = hash_leaf(&slice.data);
+            assert_eq!(slice.leaf_hash, expected_leaf);
+        }
     }
 }

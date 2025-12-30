@@ -7,7 +7,7 @@ use crate::decoder::BlobDecoder;
 use crate::downloader::ParallelDownloader;
 use crate::encoder::BlobEncoder;
 use crate::error::{ClientError, DownloadError, UploadError};
-use crate::uploader::DistributedUploader;
+use crate::uploader::{DistributedUploader, SliceWithProof};
 
 /// High-level client for tapedrive blob operations.
 ///
@@ -45,19 +45,18 @@ impl TapeClient {
         }
     }
 
-    /// Upload raw slices to the network.
+    /// Upload slices with proofs to the network.
     ///
     /// This is a lower-level method that uploads pre-encoded slices.
-    /// For full blob upload with encoding, use a higher-level method
-    /// that integrates with the slicer.
+    /// For full blob upload with encoding, use `upload_blob()` instead.
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - Pre-encoded slices (should be 1024)
+    /// * `slices` - Pre-encoded slices with merkle proofs (should be 1024)
     pub async fn upload_slices(
         &self,
         track_id: &str,
-        slices: Vec<Vec<u8>>,
+        slices: Vec<SliceWithProof>,
     ) -> Result<(), UploadError> {
         let uploader = DistributedUploader::new(
             track_id.to_string(),
@@ -110,8 +109,8 @@ impl TapeClient {
     ///
     /// This is the primary method for storing data. It:
     /// 1. Encodes the blob into SLICE_COUNT slices using Reed-Solomon
-    /// 2. Computes the Merkle root commitment
-    /// 3. Uploads all slices to storage nodes
+    /// 2. Computes the Merkle root commitment and proofs for each slice
+    /// 3. Uploads all slices with their proofs to storage nodes
     ///
     /// # Arguments
     /// * `track_id` - The track identifier for this blob
@@ -131,16 +130,21 @@ impl TapeClient {
         track_id: &str,
         data: Vec<u8>,
     ) -> Result<BlobMerkleRoot, ClientError> {
-        // Encode blob into slices with merkle root
+        // Encode blob into slices with merkle proofs
         let mut encoder = BlobEncoder::new();
-        let (slices, commitment) = encoder
-            .encode_to_vec_with_root(data)
+        let (slices_with_proofs, commitment) = encoder
+            .encode_with_proofs(data)
             .map_err(ClientError::Upload)?;
 
-        // Upload all slices
-        self.upload_slices(track_id, slices)
-            .await
-            .map_err(ClientError::Upload)?;
+        // Upload all slices with their proofs
+        let uploader = DistributedUploader::new(
+            track_id.to_string(),
+            slices_with_proofs,
+            self.node_addresses.clone(),
+            self.node_factory.clone(),
+        );
+
+        uploader.upload_all().await.map_err(ClientError::Upload)?;
 
         Ok(commitment)
     }
