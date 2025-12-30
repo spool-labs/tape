@@ -8,14 +8,13 @@ pub mod basic;
 pub mod striped;
 pub mod merkle_helpers;
 pub mod reed_solomon;
-pub mod shard_index;
 pub mod slice_index;
 
 pub use consts::{MERKLE_HEIGHT, SLICE_COUNT, F, CODING_SLICES, DATA_SLICES};
 pub use errors::{EncodeError, DecodeError};
-pub use types::{Shard, Blob};
+pub use types::{Slice, Blob};
 pub use api::Slicer;
 pub use basic::BasicSlicer;
 pub use striped::StripedSlicer;
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
-pub use shard_index::ShardIndex;
+pub use slice_index::SliceIndex;

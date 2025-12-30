@@ -1,23 +1,38 @@
+use super::SLICE_COUNT;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::mem::MaybeUninit;
+use std::ops::Deref;
 use wincode::{SchemaRead, SchemaWrite};
 
+/// Index of a slice within a blob's erasure-coded output.
+/// Valid range: 0 to SLICE_COUNT-1.
+///
+/// Each blob is encoded into SLICE_COUNT slices. The slice at index N
+/// for any blob is stored in spool N on the network.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
-pub struct SliceIndex(u64);
+pub struct SliceIndex(usize);
 
 impl SliceIndex {
-    pub fn new(index: u64) -> Self {
-        Self(index)
+    pub fn new(index: usize) -> Option<Self> {
+        if index < SLICE_COUNT {
+            Some(Self(index))
+        } else {
+            None
+        }
     }
 
-    pub fn inner(self) -> u64 {
-        self.0
+    pub fn all() -> impl Iterator<Item = Self> {
+        (0..SLICE_COUNT).map(Self)
     }
+}
 
-    pub fn first() -> Self {
-        Self(0)
+impl Deref for SliceIndex {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -36,13 +51,14 @@ impl<'de> Deserialize<'de> for SliceIndex {
         impl<'de> serde::de::Visitor<'de> for VisitorImpl {
             type Value = SliceIndex;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "a non-negative u64 representing a stripe index")
+                write!(f, "a usize in [0, SLICE_COUNT)")
             }
             fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                Ok(SliceIndex::new(v))
+                SliceIndex::new(v as usize)
+                    .ok_or_else(|| E::custom(format!("index {} out of bounds", v)))
             }
         }
         deserializer.deserialize_u64(VisitorImpl)
@@ -56,10 +72,13 @@ impl<'de> SchemaRead<'de> for SliceIndex {
         reader: &mut impl wincode::io::Reader<'de>,
         dst: &mut MaybeUninit<Self::Dst>,
     ) -> wincode::ReadResult<()> {
-        // SAFETY: reading 8 bytes initializes a u64 which we wrap.
         unsafe {
             reader.copy_into_t(dst)?;
-            Ok(())
+            if dst.assume_init_ref().0 >= SLICE_COUNT {
+                Err(wincode::ReadError::Custom("slice index out of bounds"))
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -67,10 +86,43 @@ impl<'de> SchemaRead<'de> for SliceIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wincode;
 
     #[test]
-    fn basic() {
-        assert_eq!(SliceIndex::first().inner(), 0);
-        assert_eq!(SliceIndex::new(42).inner(), 42);
+    fn serde_roundtrip_ok() {
+        let vals = [0, 1, SLICE_COUNT - 1];
+        for v in vals {
+            let s = serde_json::to_string(&SliceIndex(v)).unwrap();
+            let _idx: SliceIndex = serde_json::from_str(&s).unwrap();
+        }
+    }
+
+    #[test]
+    fn serde_fail() {
+        let vals = [SLICE_COUNT, SLICE_COUNT + 1];
+        for v in vals {
+            let s = serde_json::to_string(&v).unwrap();
+            let res: Result<SliceIndex, _> = serde_json::from_str(&s);
+            assert!(res.is_err());
+        }
+    }
+
+    #[test]
+    fn wincode_roundtrip_ok() {
+        let vals = [0, SLICE_COUNT - 1];
+        for v in vals {
+            let b = wincode::serialize(&SliceIndex(v)).unwrap();
+            let _idx: SliceIndex = wincode::deserialize(&b).unwrap();
+        }
+    }
+
+    #[test]
+    fn wincode_fail() {
+        let vals = [SLICE_COUNT, SLICE_COUNT + 1, usize::MAX];
+        for v in vals {
+            let b = wincode::serialize(&SliceIndex(v)).unwrap();
+            let res: Result<SliceIndex, _> = wincode::deserialize(&b);
+            assert!(res.is_err());
+        }
     }
 }

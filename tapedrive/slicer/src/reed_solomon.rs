@@ -1,12 +1,12 @@
 use super::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
-use super::Shard;
+use super::Slice;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
 
-/// This is the maximum shard size we allow the encoder/decoder to handle.
-/// We set it to 1 MiB here, which allows encoding up to about 683 MiB of data per stripe
-/// (with 341 MiB of coding, and 1Gib total).
-const DEFAULT_MAX_SHARD_BYTES: usize = 1 << 20; // 1 MiB
+/// This is the maximum slice size we allow the encoder/decoder to handle.
+/// We set it to 1 MiB here, which allows encoding up to about DATA_SLICES MiB of data per stripe
+/// (with CODING_SLICES MiB of coding, and SLICE_COUNT MiB total).
+const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20; // 1 MiB
 
 /// Errors that may be returned by ReedSolomonCoder::encode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -18,17 +18,17 @@ pub enum ReedSolomonEncodeError {
 /// Errors that may be returned by ReedSolomonCoder::decode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum ReedSolomonDecodeError {
-    #[error("not enough shards to reconstruct")]
-    NotEnoughShards,
+    #[error("not enough slices to reconstruct (need at least DATA_SLICES)")]
+    NotEnoughSlices,
     #[error("too much data for configured limits")]
     TooMuchData,
     #[error("invalid padding detected")]
     InvalidPadding,
-    #[error("invalid layout or inconsistent shard sizes/indices")]
+    #[error("invalid layout or inconsistent slice sizes/indices")]
     InvalidLayout,
 }
 
-/// The data and coding slices (shards) output by encode().
+/// The data and coding slices output by encode().
 #[derive(Clone, Debug)]
 pub struct RawSlices {
     pub data: Vec<Vec<u8>>,
@@ -52,14 +52,14 @@ impl ReedSolomonCoder {
         assert!(r_coding > 0, "r_coding must be > 0");
 
         let n_total = k_data + r_coding;
-        assert!(n_total <= 65536, "too many total shards for RS field");
+        assert!(n_total <= 65536, "too many total slices for RS field");
         assert!(k_data == DATA_SLICES, "k_data must match DATA_SLICES");
         assert!(r_coding == CODING_SLICES, "r_coding must match CODING_SLICES");
 
-        // Use a bounded max shard size the library accepts. Per-call reset() will set the actual shard size.
-        let encoder = ReedSolomonEncoder::new(k_data, r_coding, DEFAULT_MAX_SHARD_BYTES)
+        // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
+        let encoder = ReedSolomonEncoder::new(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
             .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(k_data, r_coding, DEFAULT_MAX_SHARD_BYTES)
+        let decoder = ReedSolomonDecoder::new(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
             .expect("RS decoder init");
 
         Self {
@@ -70,7 +70,7 @@ impl ReedSolomonCoder {
         }
     }
 
-    /// Reed–Solomon encodes the payload into k data and r coding shards, returning RawSlices.
+    /// Reed-Solomon encodes the payload into k data and r coding slices, returning RawSlices.
     /// Returns TooMuchData if payload cannot be encoded under the current encoder limits.
     pub fn encode(&mut self, payload: &[u8]) -> Result<RawSlices, ReedSolomonEncodeError> {
         // Compute padding: make total a multiple of 2 * k.
@@ -88,16 +88,16 @@ impl ReedSolomonCoder {
             .checked_add(padding_bytes)
             .ok_or(ReedSolomonEncodeError::TooMuchData)?;
 
-        // shard_bytes = ceil(total_len / k)
-        let shard_bytes = (total_len + k - 1) / k;
+        // slice_bytes = ceil(total_len / k)
+        let slice_bytes = (total_len + k - 1) / k;
 
-        // Ensure the encoder can handle this shard size.
+        // Ensure the encoder can handle this slice size.
         self.encoder
-            .reset(self.k_data, self.r_coding, shard_bytes)
+            .reset(self.k_data, self.r_coding, slice_bytes)
             .map_err(|_| ReedSolomonEncodeError::TooMuchData)?;
 
         // Place 0x80 and zeros at end of payload (bit padding).
-        let last_group_bytes = (two_k + shard_bytes - 1) / shard_bytes * shard_bytes;
+        let last_group_bytes = (two_k + slice_bytes - 1) / slice_bytes * slice_bytes;
         let boundary = total_len
             .checked_sub(last_group_bytes)
             .ok_or(ReedSolomonEncodeError::TooMuchData)?;
@@ -106,72 +106,72 @@ impl ReedSolomonCoder {
         tail.push(0x80);
         tail.resize(last_group_bytes, 0x00);
 
-        // Feed k original shards into the encoder.
+        // Feed k original slices into the encoder.
         let mut data = Vec::with_capacity(self.k_data);
         payload[..boundary]
-            .chunks(shard_bytes)
-            .chain(tail.chunks(shard_bytes))
+            .chunks(slice_bytes)
+            .chain(tail.chunks(slice_bytes))
             .for_each(|chunk| {
                 self.encoder
                     .add_original_shard(chunk)
-                    .expect("adding shards of the configured size should succeed");
+                    .expect("adding slices of the configured size should succeed");
                 data.push(chunk.to_vec());
             });
 
-        // Create parity shards.
+        // Create parity slices.
         let output = self
             .encoder
             .encode()
-            .expect("should be able to encode after k data shards were added");
+            .expect("should be able to encode after k data slices were added");
         let coding = output.recovery_iter().map(<[u8]>::to_vec).collect();
 
         Ok(RawSlices { data, coding })
     }
 
-    /// Reconstructs the raw payload bytes from optional shards (data and coding).
-    /// Layout: data shards are indices [0..k), coding shards are indices [k..k+r).
-    /// At least k total shards (data+coding) are required.
+    /// Reconstructs the raw payload bytes from optional slices (data and coding).
+    /// Layout: data slices are indices [0..k), coding slices are indices [k..k+r).
+    /// At least k total slices (data+coding) are required.
     pub fn decode(
         &mut self,
-        shards: &[Option<Shard>; SLICE_COUNT],
+        slices: &[Option<Slice>; SLICE_COUNT],
     ) -> Result<Vec<u8>, ReedSolomonDecodeError> {
-        let present = shards.iter().flatten().count();
+        let present = slices.iter().flatten().count();
         if present < self.k_data {
-            return Err(ReedSolomonDecodeError::NotEnoughShards);
+            return Err(ReedSolomonDecodeError::NotEnoughSlices);
         }
 
-        // Infer shard_bytes from any present shard.
-        let shard_bytes = shards
+        // Infer slice_bytes from any present slice.
+        let slice_bytes = slices
             .iter()
             .flatten()
             .map(|s| s.data.len())
             .next()
             .ok_or(ReedSolomonDecodeError::InvalidLayout)?;
 
-        // Ensure all present shards have the same size.
-        if shards
+        // Ensure all present slices have the same size.
+        if slices
             .iter()
             .flatten()
-            .any(|s| s.data.len() != shard_bytes)
+            .any(|s| s.data.len() != slice_bytes)
         {
             return Err(ReedSolomonDecodeError::InvalidLayout);
         }
 
         self.decoder
-            .reset(self.k_data, self.r_coding, shard_bytes)
+            .reset(self.k_data, self.r_coding, slice_bytes)
             .map_err(|_| ReedSolomonDecodeError::TooMuchData)?;
 
         // Split into data and coding by index ranges.
-        // Feed data shards (original) and coding shards (recovery) into decoder.
-        for s in shards.iter().flatten() {
+        // Feed data slices (original) and coding slices (recovery) into decoder.
+        for s in slices.iter().flatten() {
             let idx = *s.index;
             if idx < self.k_data {
-                // data shard at index idx
+                // data slice at index idx
                 self.decoder
                     .add_original_shard(idx, &s.data)
                     .map_err(|_| ReedSolomonDecodeError::InvalidLayout)?;
             } else if idx < self.k_data + self.r_coding {
-                // coding shard at offset
+                // coding slice at offset
                 let offset = idx - self.k_data;
                 self.decoder
                     .add_recovery_shard(offset, &s.data)
@@ -182,15 +182,15 @@ impl ReedSolomonCoder {
         }
 
         let restored = self.decoder.decode().map_err(|_| {
-            // If the library returns an error here, it's likely because the shards were inconsistent.
+            // If the library returns an error here, it's likely because the slices were inconsistent.
             ReedSolomonDecodeError::InvalidLayout
         })?;
 
-        // Reassemble the payload from data shards in order [0..k).
-        // If a data shard was missing, pull the restored version.
-        let mut payload = Vec::with_capacity(self.k_data * shard_bytes);
+        // Reassemble the payload from data slices in order [0..k).
+        // If a data slice was missing, pull the restored version.
+        let mut payload = Vec::with_capacity(self.k_data * slice_bytes);
         for data_idx in 0..self.k_data {
-            let shard_ref = match shards[data_idx].as_ref() {
+            let slice_ref = match slices[data_idx].as_ref() {
                 Some(s) => &s.data,
                 None => restored
                     .restored_original(data_idx)
@@ -198,9 +198,9 @@ impl ReedSolomonCoder {
             };
             // Avoid expanding to impossible sizes.
             payload
-                .try_reserve(shard_ref.len())
+                .try_reserve(slice_ref.len())
                 .map_err(|_| ReedSolomonDecodeError::TooMuchData)?;
-            payload.extend_from_slice(shard_ref);
+            payload.extend_from_slice(slice_ref);
         }
 
         // Remove padding: scan backwards counting zeros, then require a single 0x80 preceding them.
@@ -226,33 +226,33 @@ impl ReedSolomonCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Shard, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
-    use crate::ShardIndex;
+    use super::{Slice, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+    use crate::SliceIndex;
 
     fn make_payload(len: usize) -> Vec<u8> {
         // Deterministic, non-trivial pattern
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_full(raw: &RawSlices) -> [Option<Shard>; SLICE_COUNT] {
-        let mut arr: [Option<Shard>; SLICE_COUNT] = std::array::from_fn(|_| None);
+    fn to_full(raw: &RawSlices) -> [Option<Slice>; SLICE_COUNT] {
+        let mut arr: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
         for (i, d) in raw.data.iter().enumerate() {
-            arr[i] = Some(Shard {
-                index: ShardIndex::new(i).unwrap(),
+            arr[i] = Some(Slice {
+                index: SliceIndex::new(i).unwrap(),
                 data: d.clone(),
             });
         }
         for (j, c) in raw.coding.iter().enumerate() {
             let idx = DATA_SLICES + j;
-            arr[idx] = Some(Shard {
-                index: ShardIndex::new(idx).unwrap(),
+            arr[idx] = Some(Slice {
+                index: SliceIndex::new(idx).unwrap(),
                 data: c.clone(),
             });
         }
         arr
     }
 
-    fn keep_only(arr: &mut [Option<Shard>; SLICE_COUNT], keep: &[usize]) {
+    fn keep_only(arr: &mut [Option<Slice>; SLICE_COUNT], keep: &[usize]) {
         let mut keep_set = vec![false; SLICE_COUNT];
         for &k in keep {
             keep_set[k] = true;
@@ -264,7 +264,7 @@ mod tests {
         }
     }
 
-    fn equal_sizes(arr: &[Option<Shard>; SLICE_COUNT]) -> Option<usize> {
+    fn equal_sizes(arr: &[Option<Slice>; SLICE_COUNT]) -> Option<usize> {
         let mut size = None;
         for s in arr.iter().flatten() {
             match size {
@@ -285,9 +285,9 @@ mod tests {
         assert_eq!(raw.data.len(), DATA_SLICES);
         assert_eq!(raw.coding.len(), CODING_SLICES);
 
-        let shard_len = raw.data[0].len();
-        assert!(raw.data.iter().all(|d| d.len() == shard_len));
-        assert!(raw.coding.iter().all(|c| c.len() == shard_len));
+        let slice_len = raw.data[0].len();
+        assert!(raw.data.iter().all(|d| d.len() == slice_len));
+        assert!(raw.coding.iter().all(|c| c.len() == slice_len));
     }
 
     #[test]
@@ -311,14 +311,14 @@ mod tests {
             let raw = coder.encode(&payload).expect("encode ok");
             let full = to_full(&raw);
 
-            // all shards
+            // all slices
             let restored = coder.decode(&full).expect("decode ok");
             assert_eq!(restored, payload, "round-trip mismatch for size {}", sz);
 
-            // only data shards (k)
+            // only data slices (k)
             let mut only_data = full.clone();
             keep_only(&mut only_data, &(0..DATA_SLICES).collect::<Vec<_>>());
-            let restored = coder.decode(&only_data).expect("decode ok with k data shards");
+            let restored = coder.decode(&only_data).expect("decode ok with k data slices");
             assert_eq!(restored, payload, "round-trip data-only mismatch for size {}", sz);
 
             // mixed: ~k/2 data + all coding, then fill to k
@@ -345,7 +345,7 @@ mod tests {
             let mut mixed = full.clone();
             keep_only(&mut mixed, &keep);
             assert_eq!(mixed.iter().flatten().count(), DATA_SLICES);
-            let restored = coder.decode(&mixed).expect("decode ok with mixed shards");
+            let restored = coder.decode(&mixed).expect("decode ok with mixed slices");
             assert_eq!(restored, payload, "round-trip mixed mismatch size {}", sz);
         }
     }
@@ -357,8 +357,8 @@ mod tests {
         for sz in 0..4usize {
             let payload = make_payload(sz);
             let raw = coder.encode(&payload).expect("encode ok");
-            let shards = to_full(&raw);
-            let out = coder.decode(&shards).expect("decode ok");
+            let slices = to_full(&raw);
+            let out = coder.decode(&slices).expect("decode ok");
             assert_eq!(out, payload, "tiny payload mismatch sz={}", sz);
         }
     }
@@ -368,14 +368,14 @@ mod tests {
         let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
         let payload = make_payload(10_000);
         let raw = coder.encode(&payload).expect("encode ok");
-        let mut shards = to_full(&raw);
+        let mut slices = to_full(&raw);
 
-        // keep only k-1 data shards
+        // keep only k-1 data slices
         let keep: Vec<usize> = (0..(DATA_SLICES - 1)).collect();
-        keep_only(&mut shards, &keep);
+        keep_only(&mut slices, &keep);
 
-        let res = coder.decode(&shards);
-        assert!(matches!(res, Err(ReedSolomonDecodeError::NotEnoughShards)));
+        let res = coder.decode(&slices);
+        assert!(matches!(res, Err(ReedSolomonDecodeError::NotEnoughSlices)));
     }
 
     #[test]
@@ -383,21 +383,21 @@ mod tests {
         let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
         let payload = make_payload(50_000);
         let raw = coder.encode(&payload).expect("encode ok");
-        let mut shards = to_full(&raw);
+        let mut slices = to_full(&raw);
 
         // uniform to start
-        let base_len = equal_sizes(&shards).expect("uniform sizes");
+        let base_len = equal_sizes(&slices).expect("uniform sizes");
 
-        // tamper: shrink one shard by 1 byte
-        if let Some(Some(sh)) = shards.get_mut(0) {
+        // tamper: shrink one slice by 1 byte
+        if let Some(Some(sh)) = slices.get_mut(0) {
             assert_eq!(sh.data.len(), base_len);
             sh.data.pop();
             assert_eq!(sh.data.len(), base_len - 1);
         } else {
-            panic!("expected shard present");
+            panic!("expected slice present");
         }
 
-        let res = coder.decode(&shards);
+        let res = coder.decode(&slices);
         assert!(matches!(res, Err(ReedSolomonDecodeError::InvalidLayout)));
     }
 
@@ -406,15 +406,15 @@ mod tests {
         let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
         let payload = Vec::<u8>::new();
         let raw = coder.encode(&payload).expect("encode ok for empty payload");
-        let shards = to_full(&raw);
-        let out = coder.decode(&shards).expect("decode ok");
+        let slices = to_full(&raw);
+        let out = coder.decode(&slices).expect("decode ok");
         assert!(out.is_empty(), "decoded payload should be empty");
     }
 
 
     #[test]
     fn size_table() {
-        // Keep this short so it’s readable on the terminal.
+        // Keep this short so it's readable on the terminal.
 
         let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
         let sizes = [
@@ -433,7 +433,7 @@ mod tests {
 
         println!(
             "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
-            "payload", "shard", "k", "r", "n", "total_bytes", "ratio", "ok"
+            "payload", "slice", "k", "r", "n", "total_bytes", "ratio", "ok"
         );
         println!(
             "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
@@ -444,39 +444,39 @@ mod tests {
             let payload = make_payload(sz);
             let raw = coder.encode(&payload).expect("encode ok");
 
-            // All shards have equal length (by construction)
-            let shard_len = raw.data[0].len();
+            // All slices have equal length (by construction)
+            let slice_len = raw.data[0].len();
             let n = DATA_SLICES + CODING_SLICES;
-            let total_bytes = n * shard_len;
+            let total_bytes = n * slice_len;
             let ratio_str = if sz > 0 {
                 format!("{:.3}", total_bytes as f64 / sz as f64)
             } else {
                 "-".to_string()
             };
 
-            // Build full shard set and round trip
-            let mut shards: [Option<Shard>; SLICE_COUNT] = std::array::from_fn(|_| None);
+            // Build full slice set and round trip
+            let mut slices: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
             for (i, d) in raw.data.iter().enumerate() {
-                shards[i] = Some(Shard {
-                    index: ShardIndex::new(i).unwrap(),
+                slices[i] = Some(Slice {
+                    index: SliceIndex::new(i).unwrap(),
                     data: d.clone(),
                 });
             }
             for (j, c) in raw.coding.iter().enumerate() {
                 let idx = DATA_SLICES + j;
-                shards[idx] = Some(Shard {
-                    index: ShardIndex::new(idx).unwrap(),
+                slices[idx] = Some(Slice {
+                    index: SliceIndex::new(idx).unwrap(),
                     data: c.clone(),
                 });
             }
 
-            let out = coder.decode(&shards).expect("decode ok");
+            let out = coder.decode(&slices).expect("decode ok");
             let ok = out == payload;
 
             println!(
                 "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
                 sz,
-                shard_len,
+                slice_len,
                 DATA_SLICES,
                 CODING_SLICES,
                 n,

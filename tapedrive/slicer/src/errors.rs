@@ -8,12 +8,12 @@ pub enum EncodeError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum DecodeError {
-    #[error("not enough shards to reconstruct")]
-    NotEnoughShards,
+    #[error("not enough slices to reconstruct (need at least DATA_SLICES)")]
+    NotEnoughSlices,
     #[error("too much data for configured limits")]
     TooMuchData,
     #[error("invalid padding in recovered data")]
     BadEncoding,
-    #[error("invalid layout or inconsistent shards")]
+    #[error("invalid layout or inconsistent slices")]
     InvalidLayout,
 }
