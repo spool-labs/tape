@@ -5,15 +5,12 @@
 
 mod committee;
 mod slice;
+mod spool;
 mod stats;
-mod tape;
 mod track;
 
-pub use committee::CommitteeData;
-pub use slice::{
-    AssignmentStatus, Compression, SliceMeta, SliceOps, SliceState, SliceStatus, SyncPhase,
-    SyncProgress,
-};
+pub use committee::{CommitteeCache, CommitteeMemberInfo, CommitteeOps};
+pub use slice::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
+pub use spool::{HandoffInfo, RecoveryInfo, SpoolOps, SpoolState, SpoolStatus};
 pub use stats::{StatsOps, StorageStats};
-pub use tape::{TapeData, TapeOps};
-pub use track::{TrackData, TrackOps};
+pub use track::{TrackInfo, TrackOps};

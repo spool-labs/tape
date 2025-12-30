@@ -1,33 +1,55 @@
 //! tape-store: Application-specific storage layer for distributed tape storage nodes
 //!
 //! This crate provides typed column families and helper methods for storing:
-//! - On-chain account mirrors (tapes, tracks)
-//! - Erasure-coded slice data (1024 slices per track, up to 32 MiB each)
-//! - Epoch-based ownership rotation and assignment tracking
-//! - Recovery queues and garbage collection indices
+//! - Track metadata (commitment hash, certification status, slice count)
+//! - Erasure-coded slice data and metadata (with merkle proofs)
+//! - Spool assignment tracking for epoch transitions
+//! - Committee cache for routing and verification
+//! - Recovery and handoff queues for sync operations
+//! - Garbage collection scheduling
+//!
+//! # Column Families (9 total)
+//!
+//! - `meta`: Node configuration and metadata
+//! - `tracks`: Minimal track info indexed by address
+//! - `slices/data`: Slice blob data (BlobDB)
+//! - `slices/meta`: Slice metadata with merkle proofs
+//! - `spools/assigned`: Spool assignment tracking
+//! - `committee`: Committee cache by epoch
+//! - `pending/recover`: Recovery queue
+//! - `pending/handoff`: Handoff queue
+//! - `gc/scheduled`: Garbage collection index
 //!
 //! # Example
 //!
 //! ```
-//! use tape_store::{TapeStore, MemoryStore, types::*, columns::*};
+//! use tape_store::{TapeStore, MemoryStore, types::*, ops::*};
 //!
 //! let store = TapeStore::new(MemoryStore::new());
 //!
-//! // Store a tape
-//! let tape = TapeData {
-//!     id: TapeNumber(1),
-//!     authority: Pubkey::new_unique(),
-//!     capacity: 1_000_000,
-//!     used: 0,
-//!     active_epoch: EpochNumber(100),
-//!     expiry_epoch: EpochNumber(200),
-//!     track_count: 0,
+//! // Store track info
+//! let track_address = Pubkey::new([1u8; 32]);
+//! let track_info = TrackInfo {
+//!     commitment_hash: Hash::default(),
+//!     certified_epoch: EpochNumber(0),
+//!     slice_count: 0,
 //! };
-//! store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
+//! store.put_track_info(track_address, track_info).unwrap();
 //!
-//! // Retrieve the tape
-//! let retrieved = store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
-//! assert_eq!(retrieved, Some(tape));
+//! // Store a slice
+//! let spool_idx = 42u16;
+//! let slice_meta = SliceMeta {
+//!     len: 1024,
+//!     leaf_hash: Hash::default(),
+//!     merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+//!     compression: Compression::Lz4,
+//!     received_at: 0,
+//! };
+//! store.put_slice(spool_idx, track_address, vec![0u8; 1024], slice_meta).unwrap();
+//!
+//! // Retrieve the slice
+//! let (data, meta) = store.get_slice(spool_idx, track_address).unwrap().unwrap();
+//! assert_eq!(meta.len, 1024);
 //! ```
 
 pub mod columns;
@@ -125,17 +147,20 @@ impl TapeStore<RocksStore> {
     ///
     /// ```no_run
     /// use tape_store::TapeStore;
+    /// use tape_store::error::Result;
     ///
-    /// // Open read-only replica for serving read requests
-    /// let store = TapeStore::open_read_only("/data/tapes")?;
+    /// fn example() -> Result<()> {
+    ///     // Open read-only replica for serving read requests
+    ///     let store = TapeStore::open_read_only("/data/tapes")?;
     ///
-    /// // Can read all data
-    /// use tape_store::types::*;
-    /// use tape_store::columns::*;
-    /// let tape = store.get::<TapesById>(&TapeKey(TapeNumber(1)))?;
+    ///     // Can read all data
+    ///     use tape_store::types::*;
+    ///     use tape_store::ops::*;
+    ///     let track = store.get_track_info(Pubkey::new([1u8; 32]))?;
     ///
-    /// // Cannot write (RocksDB will return errors)
-    /// # Ok::<(), store::Error>(())
+    ///     // Cannot write (RocksDB will return errors)
+    ///     Ok(())
+    /// }
     /// ```
     pub fn open_read_only<P: AsRef<std::path::Path>>(path: P) -> Result<Self, store::Error> {
         let rocks = RocksStore::open_read_only(path, columns::ALL_COLUMN_FAMILIES)?;
@@ -162,30 +187,24 @@ impl TapeStore<RocksStore> {
     ///
     /// ```no_run
     /// use tape_store::TapeStore;
+    /// use tape_store::error::Result;
     /// use std::time::Duration;
     ///
-    /// // Open secondary instance
-    /// let store = TapeStore::open_secondary("/data/tapes", "/data/tapes-secondary")?;
+    /// fn example() -> Result<()> {
+    ///     // Open secondary instance
+    ///     let store = TapeStore::open_secondary("/data/tapes", "/data/tapes-secondary")?;
     ///
-    /// // Sync with primary before reading
-    /// store.catch_up_with_primary()?;
+    ///     // Sync with primary before reading
+    ///     store.catch_up_with_primary()?;
     ///
-    /// // Read data
-    /// use tape_store::types::*;
-    /// use tape_store::columns::*;
-    /// let tape = store.get::<TapesById>(&TapeKey(TapeNumber(1)))?;
+    ///     // Read data
+    ///     use tape_store::types::*;
+    ///     use tape_store::ops::*;
+    ///     let track = store.get_track_info(Pubkey::new([1u8; 32]))?;
     ///
-    /// // In production, run sync in a background task
-    /// // tokio::spawn(async move {
-    /// //     let mut interval = tokio::time::interval(Duration::from_secs(1));
-    /// //     loop {
-    /// //         interval.tick().await;
-    /// //         if let Err(e) = store.catch_up_with_primary() {
-    /// //             eprintln!("Failed to sync with primary: {}", e);
-    /// //         }
-    /// //     }
-    /// // });
-    /// # Ok::<(), store::Error>(())
+    ///     // In production, run sync in a background task
+    ///     Ok(())
+    /// }
     /// ```
     pub fn open_secondary<P: AsRef<std::path::Path>>(
         primary_path: P,
@@ -209,21 +228,6 @@ impl TapeStore<RocksStore> {
     ///
     /// # Returns
     /// `Ok(())` on success, or an error if the sync fails
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use tape_store::TapeStore;
-    ///
-    /// let secondary = TapeStore::open_secondary("/data/primary", "/data/secondary")?;
-    ///
-    /// // Periodic sync in a loop
-    /// loop {
-    ///     secondary.catch_up_with_primary()?;
-    ///     std::thread::sleep(std::time::Duration::from_secs(1));
-    /// }
-    /// # Ok::<(), store::Error>(())
-    /// ```
     pub fn catch_up_with_primary(&self) -> Result<(), store::Error> {
         self.inner.inner().catch_up_with_primary()
     }
@@ -233,44 +237,23 @@ impl TapeStore<RocksStore> {
 mod tests {
     use super::*;
     use crate::columns::*;
+    use crate::ops::*;
     use crate::types::*;
-
-    #[test]
-    fn test_tape_roundtrip() {
-        let store = TapeStore::new(MemoryStore::new());
-
-        let tape = TapeData {
-            id: TapeNumber(1),
-            authority: Pubkey::new_unique(),
-            capacity: 1_000_000,
-            used: 500_000,
-            active_epoch: EpochNumber(100),
-            expiry_epoch: EpochNumber(200),
-            track_count: 42,
-        };
-
-        store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
-        let retrieved = store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
-        assert_eq!(retrieved, Some(tape));
-    }
 
     #[test]
     fn test_track_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
 
-        let track = TrackData {
-            id: TrackNumber(1),
-            tape: Pubkey::new_unique(),
-            key: Hash::new_unique(),
-            size: 1024,
-            registered_epoch: EpochNumber(100),
-            certified_epoch: EpochNumber(101),
+        let info = TrackInfo {
             commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(100),
+            slice_count: 42,
         };
 
-        store.put::<TracksById>(&TrackKey(TrackNumber(1)), &track).unwrap();
-        let retrieved = store.get::<TracksById>(&TrackKey(TrackNumber(1))).unwrap();
-        assert_eq!(retrieved, Some(track));
+        store.put_track_info(address, info.clone()).unwrap();
+        let retrieved = store.get_track_info(address).unwrap();
+        assert_eq!(retrieved, Some(info));
     }
 
     #[test]
@@ -280,139 +263,75 @@ mod tests {
         let meta = SliceMeta {
             len: 1024,
             leaf_hash: Hash::new_unique(),
-            content_digest: Hash::new_unique(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
             compression: Compression::Lz4,
-            last_verified_at: 123456789,
-            flags: 0,
+            received_at: 123456789,
         };
 
-        let key = SliceKey::new(TrackNumber(1), 42);
+        let key = SliceKey::new(42, Pubkey::new_unique());
         store.put::<SlicesMeta>(&key, &meta).unwrap();
         let retrieved = store.get::<SlicesMeta>(&key).unwrap();
         assert_eq!(retrieved, Some(meta));
     }
 
     #[test]
-    fn test_slice_state_roundtrip() {
+    fn test_spool_state_roundtrip() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let owner = Pubkey::new_unique();
-        let state = SliceState {
-            current_epoch: EpochNumber(100),
-            status: SliceStatus::Verified,
-            prev_owner: owner,
-            current_owner: owner,
-            next_owner: owner,
-            repair_from: owner,
-            repair_last_attempt: 0,
-            repair_retries: 0,
-            handoff_to: owner,
-            handoff_last_attempt: 0,
-            handoff_retries: 0,
-            gc_at: 0,
-            last_state_change: 123456789,
+        let state = SpoolState {
+            status: SpoolStatus::Active,
+            assigned_epoch: EpochNumber(100),
+            sync_cursor: None,
         };
 
-        let key = SliceKey::new(TrackNumber(1), 42);
-        store.put::<SlicesState>(&key, &state).unwrap();
-        let retrieved = store.get::<SlicesState>(&key).unwrap();
+        store.put_spool_state(42, state.clone()).unwrap();
+        let retrieved = store.get_spool_state(42).unwrap();
         assert_eq!(retrieved, Some(state));
-    }
-
-    #[test]
-    fn test_assignment_status() {
-        let store = TapeStore::new(MemoryStore::new());
-
-        let status = AssignmentStatus::ActiveSync;
-        let key = SpoolKey(42);
-
-        store.put::<AssignmentStatusCF>(&key, &status).unwrap();
-        let retrieved = store.get::<AssignmentStatusCF>(&key).unwrap();
-        assert_eq!(retrieved, Some(status));
-    }
-
-    #[test]
-    fn test_sync_progress() {
-        let store = TapeStore::new(MemoryStore::new());
-
-        let progress = SyncProgress {
-            last_synced_track_id: 1000,
-            phase: SyncPhase::Ingesting,
-        };
-        let key = SpoolKey(42);
-
-        store.put::<AssignmentProgressCF>(&key, &progress).unwrap();
-        let retrieved = store.get::<AssignmentProgressCF>(&key).unwrap();
-        assert_eq!(retrieved, Some(progress));
     }
 
     #[test]
     fn test_committee_roundtrip() {
         use bytemuck::Zeroable;
         use tape_core::bls::BlsPubkey;
-        use tape_core::system::{CommitteeMember, NodePreferences};
-        use tape_core::types::{Coin, StorageUnits, TAPE};
 
         let store = TapeStore::new(MemoryStore::new());
 
-        let member1 = CommitteeMember {
+        let member1 = CommitteeMemberInfo {
             id: NodeId(1),
-            stake: Coin::<TAPE>::new(1000),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits(0),
-            preferences: NodePreferences {
-                storage_capacity: StorageUnits(1_000_000),
-                storage_price: Coin::<TAPE>::new(100),
-            },
-            weight: 100,
+            pubkey: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::zeroed(),
+            network_address: "192.168.1.1:8080".to_string(),
         };
 
-        let member2 = CommitteeMember {
+        let member2 = CommitteeMemberInfo {
             id: NodeId(2),
-            stake: Coin::<TAPE>::new(2000),
-            key: BlsPubkey::zeroed(),
-            blacklist: StorageUnits(0),
-            preferences: NodePreferences {
-                storage_capacity: StorageUnits(2_000_000),
-                storage_price: Coin::<TAPE>::new(100),
-            },
-            weight: 200,
+            pubkey: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::zeroed(),
+            network_address: "192.168.1.2:8080".to_string(),
         };
 
-        let committee = CommitteeData {
+        let cache = CommitteeCache {
             epoch: EpochNumber(100),
             members: vec![member1, member2],
-            total_stake: 3000,
+            spool_assignment: vec![0, 1, 0, 1],
+            my_member_index: Some(0),
+            my_spools: vec![0, 2],
         };
 
-        store.put::<CommitteeByEpoch>(&EpochNumber(100), &committee).unwrap();
-        let retrieved = store.get::<CommitteeByEpoch>(&EpochNumber(100)).unwrap();
-        assert_eq!(retrieved, Some(committee));
-    }
-
-    #[test]
-    fn test_recovery_queue() {
-        let store = TapeStore::new(MemoryStore::new());
-
-        let key = RecoveryKey::new(42, TrackNumber(1000));
-        store.put::<PendingRecover>(&key, &()).unwrap();
-
-        let exists = store.get::<PendingRecover>(&key).unwrap();
-        assert_eq!(exists, Some(()));
-
-        store.delete::<PendingRecover>(&key).unwrap();
-        let gone = store.get::<PendingRecover>(&key).unwrap();
-        assert_eq!(gone, None);
+        store.put_committee(cache.clone()).unwrap();
+        let retrieved = store.get_committee(EpochNumber(100)).unwrap();
+        assert_eq!(retrieved, Some(cache));
     }
 
     #[test]
     fn test_gc_index() {
         let store = TapeStore::new(MemoryStore::new());
+        let track = Pubkey::new_unique();
 
-        let key = GcKey::new(123456789, TrackNumber(1000), 42);
-        store.put::<GcIndex>(&key, &()).unwrap();
+        let key = GcKey::new(123456789, 42, track);
+        store.put::<GcScheduled>(&key, &()).unwrap();
 
-        let exists = store.get::<GcIndex>(&key).unwrap();
+        let exists = store.get::<GcScheduled>(&key).unwrap();
         assert_eq!(exists, Some(()));
     }
 
@@ -429,32 +348,65 @@ mod tests {
     }
 
     #[test]
-    fn test_big_endian_ordering() {
+    fn test_slice_key_ordering() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = Pubkey::new_unique();
-        let hash = Hash::new_unique();
 
-        // Insert tracks in non-sequential order
-        for id in [100u64, 1, 50, 200, 25] {
-            let track = TrackData {
-                id: TrackNumber(id),
-                tape,
-                key: hash,
-                size: id,
-                registered_epoch: EpochNumber(0),
-                certified_epoch: EpochNumber(0),
-                commitment_hash: hash,
+        // Insert slices in non-sequential spool order
+        for spool_idx in [100u16, 1, 50, 200, 25] {
+            let track = Pubkey::new_unique();
+            let meta = SliceMeta {
+                len: 1024,
+                leaf_hash: Hash::default(),
+                merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+                compression: Compression::Lz4,
+                received_at: 0,
             };
-            store.put::<TracksById>(&TrackKey(TrackNumber(id)), &track).unwrap();
+            store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
         }
 
-        // Verify they come back in sorted order due to BE encoding
+        // Verify slices come back in sorted order by spool_idx
         let mut collected = Vec::new();
-        for (key, _track) in store.iter::<TracksById>().unwrap() {
-            collected.push(key.0 .0);
+        for (key, _meta) in store.iter::<SlicesMeta>().unwrap() {
+            collected.push(key.spool_idx);
         }
 
         assert_eq!(collected, vec![1, 25, 50, 100, 200]);
+    }
+
+    #[test]
+    fn test_spool_prefix_iteration() {
+        let store = TapeStore::new(MemoryStore::new());
+        let spool_idx = 42u16;
+
+        // Add slices to spool 42
+        for _ in 0..5 {
+            let track = Pubkey::new_unique();
+            let meta = SliceMeta {
+                len: 1024,
+                leaf_hash: Hash::default(),
+                merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+                compression: Compression::Lz4,
+                received_at: 0,
+            };
+            store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
+        }
+
+        // Add slices to other spools
+        for other_spool in [1, 100, 500] {
+            let track = Pubkey::new_unique();
+            let meta = SliceMeta {
+                len: 1024,
+                leaf_hash: Hash::default(),
+                merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+                compression: Compression::Lz4,
+                received_at: 0,
+            };
+            store.put_slice(other_spool, track, vec![0u8; 10], meta).unwrap();
+        }
+
+        // Query just spool 42
+        let spool_slices = store.get_spool_slices(42).unwrap();
+        assert_eq!(spool_slices.len(), 5);
     }
 
     #[test]
@@ -468,16 +420,13 @@ mod tests {
         // Create primary and write some data
         {
             let store = TapeStore::open_primary(&path).unwrap();
-            let tape = TapeData {
-                id: TapeNumber(1),
-                authority: Pubkey::new_unique(),
-                capacity: 1_000_000,
-                used: 500_000,
-                active_epoch: EpochNumber(100),
-                expiry_epoch: EpochNumber(200),
-                track_count: 42,
+            let track = Pubkey::new_unique();
+            let info = TrackInfo {
+                commitment_hash: Hash::new_unique(),
+                certified_epoch: EpochNumber(0),
+                slice_count: 0,
             };
-            store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
+            store.put_track_info(track, info).unwrap();
             store.inner().inner().flush().unwrap();
         }
 
@@ -485,14 +434,9 @@ mod tests {
         {
             let ro_store = TapeStore::open_read_only(&path).unwrap();
 
-            // Can read the data
-            let retrieved = ro_store.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
-            assert!(retrieved.is_some());
-            assert_eq!(retrieved.unwrap().id.0, 1);
-
-            // Can iterate
-            let tapes = ro_store.iter::<TapesById>().unwrap();
-            assert_eq!(tapes.len(), 1);
+            // Can iterate tracks
+            let tracks = ro_store.iter::<Tracks>().unwrap();
+            assert_eq!(tracks.len(), 1);
         }
     }
 
@@ -508,16 +452,13 @@ mod tests {
         // Create primary and write initial data
         {
             let store = TapeStore::open_primary(&primary_path).unwrap();
-            let tape = TapeData {
-                id: TapeNumber(1),
-                authority: Pubkey::new_unique(),
-                capacity: 1_000_000,
-                used: 0,
-                active_epoch: EpochNumber(100),
-                expiry_epoch: EpochNumber(200),
-                track_count: 0,
+            let track = Pubkey::new_unique();
+            let info = TrackInfo {
+                commitment_hash: Hash::new_unique(),
+                certified_epoch: EpochNumber(0),
+                slice_count: 5,
             };
-            store.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape).unwrap();
+            store.put_track_info(track, info).unwrap();
             store.inner().inner().flush().unwrap();
         }
 
@@ -528,10 +469,9 @@ mod tests {
             // Sync with primary
             secondary.catch_up_with_primary().unwrap();
 
-            // Can read initial data
-            let retrieved = secondary.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap();
-            assert!(retrieved.is_some());
-            assert_eq!(retrieved.unwrap().id.0, 1);
+            // Can iterate tracks
+            let tracks = secondary.iter::<Tracks>().unwrap();
+            assert_eq!(tracks.len(), 1);
         }
     }
 
@@ -547,16 +487,13 @@ mod tests {
         // Create and keep primary open
         let primary = TapeStore::open_primary(&primary_path).unwrap();
 
-        let tape1 = TapeData {
-            id: TapeNumber(1),
-            authority: Pubkey::new_unique(),
-            capacity: 1_000_000,
-            used: 0,
-            active_epoch: EpochNumber(100),
-            expiry_epoch: EpochNumber(200),
-            track_count: 0,
+        let track1 = Pubkey::new_unique();
+        let info1 = TrackInfo {
+            commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(0),
+            slice_count: 0,
         };
-        primary.put::<TapesById>(&TapeKey(TapeNumber(1)), &tape1).unwrap();
+        primary.put_track_info(track1, info1).unwrap();
         primary.inner().inner().flush().unwrap();
 
         // Open secondary
@@ -564,53 +501,45 @@ mod tests {
 
         // Initial sync
         secondary.catch_up_with_primary().unwrap();
-        assert!(secondary.get::<TapesById>(&TapeKey(TapeNumber(1))).unwrap().is_some());
+        assert_eq!(secondary.iter::<Tracks>().unwrap().len(), 1);
 
         // Write more data to primary
-        let tape2 = TapeData {
-            id: TapeNumber(2),
-            authority: Pubkey::new_unique(),
-            capacity: 2_000_000,
-            used: 0,
-            active_epoch: EpochNumber(101),
-            expiry_epoch: EpochNumber(201),
-            track_count: 0,
+        let track2 = Pubkey::new_unique();
+        let info2 = TrackInfo {
+            commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(1),
+            slice_count: 10,
         };
-        primary.put::<TapesById>(&TapeKey(TapeNumber(2)), &tape2).unwrap();
+        primary.put_track_info(track2, info2).unwrap();
         primary.inner().inner().flush().unwrap();
 
         // Catch up and verify we see the new data
         secondary.catch_up_with_primary().unwrap();
-        assert!(secondary.get::<TapesById>(&TapeKey(TapeNumber(2))).unwrap().is_some());
+        assert_eq!(secondary.iter::<Tracks>().unwrap().len(), 2);
     }
 
     #[test]
     #[cfg(not(miri))] // Skip on miri as it uses tempfile
     fn test_secondary_with_operation_traits() {
         use tempfile::tempdir;
-        use crate::ops::TapeOps;
 
         let dir = tempdir().unwrap();
         let primary_path = dir.path().join("primary");
         let secondary_path = dir.path().join("secondary");
 
-        let authority = Pubkey::new_unique();
+        let track_address = Pubkey::new_unique();
 
         // Create primary and use high-level operations
         {
             let primary = TapeStore::open_primary(&primary_path).unwrap();
-            let tape = TapeData {
-                id: TapeNumber(1),
-                authority,
-                capacity: 1_000_000,
-                used: 0,
-                active_epoch: EpochNumber(100),
-                expiry_epoch: EpochNumber(200),
-                track_count: 0,
+            let info = TrackInfo {
+                commitment_hash: Hash::new_unique(),
+                certified_epoch: EpochNumber(100),
+                slice_count: 42,
             };
 
-            // Use operation trait to atomically update all indices
-            primary.put_tape(&tape).unwrap();
+            // Use operation trait to store track
+            primary.put_track_info(track_address, info).unwrap();
             primary.inner().inner().flush().unwrap();
         }
 
@@ -619,10 +548,10 @@ mod tests {
             let secondary = TapeStore::open_secondary(&primary_path, &secondary_path).unwrap();
             secondary.catch_up_with_primary().unwrap();
 
-            // Use operation trait to read by address
-            let found = secondary.get_tape_by_address(&authority).unwrap();
+            // Use operation trait to read
+            let found = secondary.get_track_info(track_address).unwrap();
             assert!(found.is_some());
-            assert_eq!(found.unwrap().id.0, 1);
+            assert_eq!(found.unwrap().slice_count, 42);
         }
     }
 }

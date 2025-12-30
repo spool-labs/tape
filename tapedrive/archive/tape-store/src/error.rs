@@ -1,6 +1,6 @@
 //! Error types for tape-store operations
 
-use crate::types::{TapeNumber, TrackNumber};
+use crate::types::Pubkey;
 use thiserror::Error;
 
 /// Errors that can occur during tape-store operations
@@ -10,25 +10,21 @@ pub enum TapeStoreError {
     #[error("Store error: {0}")]
     Store(#[from] store::Error),
 
-    /// Tape not found
-    #[error("Tape not found: {0:?}")]
-    TapeNotFound(TapeNumber),
-
     /// Track not found
     #[error("Track not found: {0:?}")]
-    TrackNotFound(TrackNumber),
+    TrackNotFound(Pubkey),
 
     /// Slice not found
-    #[error("Slice not found: track={0:?}, spool={1}")]
-    SliceNotFound(TrackNumber, u16),
+    #[error("Slice not found: spool={0}, track={1:?}")]
+    SliceNotFound(u16, Pubkey),
 
-    /// Inconsistent index: tape has address index but no tape data
-    #[error("Inconsistent tape index: tape {0:?} has address index but no tape data")]
-    InconsistentTapeIndex(TapeNumber),
+    /// Spool not found
+    #[error("Spool not found: {0}")]
+    SpoolNotFound(u16),
 
-    /// Inconsistent index: track has address index but no track data
-    #[error("Inconsistent track index: track {0:?} has address index but no track data")]
-    InconsistentTrackIndex(TrackNumber),
+    /// Committee not found for epoch
+    #[error("Committee not found for epoch {0}")]
+    CommitteeNotFound(u64),
 
     /// Invalid slice count
     #[error("Invalid slice count: expected 1024, got {0}")]

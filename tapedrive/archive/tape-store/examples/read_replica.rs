@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tape_store::{
-    columns::*,
-    ops::{StatsOps, TapeOps},
+    ops::{StatsOps, TrackOps},
     types::*,
     TapeStore,
 };
@@ -20,26 +19,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup primary
     let primary = TapeStore::open_primary(&primary_path)?;
     for i in 1..=3 {
-        let tape = TapeData {
-            id: TapeNumber(i),
-            authority: Pubkey::new([i as u8; 32]),
-            capacity: 10_000_000 * i,
-            used: 0,
-            active_epoch: EpochNumber(100),
-            expiry_epoch: EpochNumber(200),
-            track_count: 0,
+        let track_address = Pubkey::new([i as u8; 32]);
+        let info = TrackInfo {
+            commitment_hash: Hash::from([i as u8; 32]),
+            certified_epoch: EpochNumber(0),
+            slice_count: 0,
         };
-        primary.put_tape(&tape)?;
+        primary.put_track_info(track_address, info)?;
     }
 
     let stats = primary.get_storage_stats()?;
-    println!("Primary: {} tapes", stats.tape_count);
+    println!("Primary: {} tracks", stats.track_count);
 
     // Read-only replica (static snapshot)
     drop(primary);
     let read_only = TapeStore::open_read_only(&primary_path)?;
-    let tape1 = read_only.get::<TapesById>(&TapeKey(TapeNumber(1)))?;
-    println!("Read-only sees tape 1: {}", tape1.is_some());
+    let track1 = read_only.get_track_info(Pubkey::new([1; 32]))?;
+    println!("Read-only sees track 1: {}", track1.is_some());
     drop(read_only);
 
     // Secondary with manual sync
@@ -48,23 +44,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     secondary.catch_up_with_primary()?;
 
     // Write to primary, secondary doesn't see it yet
-    let new_tape = TapeData {
-        id: TapeNumber(10),
-        authority: Pubkey::new([10; 32]),
-        capacity: 50_000_000,
-        used: 0,
-        active_epoch: EpochNumber(100),
-        expiry_epoch: EpochNumber(200),
-        track_count: 0,
-    };
-    primary.put_tape(&new_tape)?;
+    let new_track = Pubkey::new([10; 32]);
+    primary.put_track_info(new_track, TrackInfo {
+        commitment_hash: Hash::from([10; 32]),
+        certified_epoch: EpochNumber(0),
+        slice_count: 0,
+    })?;
 
-    let before = secondary.get::<TapesById>(&TapeKey(TapeNumber(10)))?;
+    let before = secondary.get_track_info(new_track)?;
     println!("Before sync: {}", before.is_some());
 
     secondary.catch_up_with_primary()?;
 
-    let after = secondary.get::<TapesById>(&TapeKey(TapeNumber(10)))?;
+    let after = secondary.get_track_info(new_track)?;
     println!("After sync: {}", after.is_some());
 
     // Background sync loop
@@ -83,32 +75,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Write while syncing
     for i in 11..=13 {
         thread::sleep(Duration::from_millis(500));
-        let tape = TapeData {
-            id: TapeNumber(i),
-            authority: Pubkey::new([i as u8; 32]),
-            capacity: 10_000_000,
-            used: 0,
-            active_epoch: EpochNumber(100),
-            expiry_epoch: EpochNumber(200),
-            track_count: 0,
-        };
-        primary.put_tape(&tape)?;
+        let track_address = Pubkey::new([i as u8; 32]);
+        primary.put_track_info(track_address, TrackInfo {
+            commitment_hash: Hash::from([i as u8; 32]),
+            certified_epoch: EpochNumber(0),
+            slice_count: 0,
+        })?;
     }
 
     thread::sleep(Duration::from_millis(1500));
 
     // Verify sync
     for i in 11..=13 {
-        let tape = secondary.get::<TapesById>(&TapeKey(TapeNumber(i)))?;
-        println!("Tape {}: {}", i, tape.is_some());
+        let track = secondary.get_track_info(Pubkey::new([i as u8; 32]))?;
+        println!("Track {}: {}", i, track.is_some());
     }
 
     // Operation traits work on secondary
-    let found = secondary.get_tape_by_address(&Pubkey::new([1; 32]))?;
-    println!("Found by address: {:?}", found.map(|t| t.id.0));
+    let found = secondary.get_track_info(Pubkey::new([1; 32]))?;
+    println!("Found track 1: {:?}", found.is_some());
 
     let stats = secondary.get_storage_stats()?;
-    println!("Secondary stats: {} tapes", stats.tape_count);
+    println!("Secondary stats: {} tracks", stats.track_count);
 
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     sync_thread.join().unwrap();

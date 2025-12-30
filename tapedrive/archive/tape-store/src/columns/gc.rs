@@ -3,13 +3,13 @@
 use crate::types::GcKey;
 use store::Column;
 
-/// GC index for time-based deletion
-/// Key: GcKey (gc_at, track_id, spool_idx)
+/// GC scheduled index for time-based deletion
+/// Key: GcKey { timestamp: i64, spool_idx: u16, track_address: Pubkey }
 /// Value: unit (presence in GC queue)
-pub struct GcIndex;
+pub struct GcScheduled;
 
-impl Column for GcIndex {
-    const CF_NAME: &'static str = "gc_index";
+impl Column for GcScheduled {
+    const CF_NAME: &'static str = "gc/scheduled";
     type Key = GcKey;
     type Value = ();
 }

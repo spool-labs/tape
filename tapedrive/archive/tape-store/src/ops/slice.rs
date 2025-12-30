@@ -1,22 +1,32 @@
-//! Slice query operations
+//! Slice operations
+//!
+//! Provides high-level operations for storing and retrieving slices
+//! with the new key structure (spool_idx, track_address).
 
 use crate::columns::*;
 use crate::error::{Result, TapeStoreError};
-use crate::types::{EpochNumber, Hash, Pubkey, SliceKey, TrackNumber};
+use crate::types::{Hash, Pubkey, SliceKey};
 use crate::TapeStore;
 use serde::{Deserialize, Serialize};
-use store::{Column, Store};
+use store::{Column, Store, WriteBatch};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-/// Metadata for a slice
+/// Merkle tree height for slice proofs (1024 slices = 2^10)
+pub const MERKLE_HEIGHT: usize = 10;
+
+/// Metadata for a slice (simplified + adds merkle proof)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SliceMeta {
+    /// Original uncompressed size
     pub len: u32,
+    /// Merkle leaf hash of this slice
     pub leaf_hash: Hash,
-    pub content_digest: Hash,
+    /// Merkle proof for serving downloads
+    pub merkle_proof: [Hash; MERKLE_HEIGHT],
+    /// Compression algorithm
     pub compression: Compression,
-    pub last_verified_at: i64,
-    pub flags: u8,
+    /// When we received this slice (Unix timestamp)
+    pub received_at: i64,
 }
 
 /// Compression algorithm used for slice data
@@ -28,321 +38,271 @@ pub enum Compression {
     Zstd = 2,
 }
 
-/// State tracking for a slice including ownership and lifecycle
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SliceState {
-    pub current_epoch: EpochNumber,
-    pub status: SliceStatus,
-    pub prev_owner: Pubkey,
-    pub current_owner: Pubkey,
-    pub next_owner: Pubkey,
-    pub repair_from: Pubkey,
-    pub repair_last_attempt: i64,
-    pub repair_retries: u16,
-    pub handoff_to: Pubkey,
-    pub handoff_last_attempt: i64,
-    pub handoff_retries: u16,
-    pub gc_at: i64,
-    pub last_state_change: i64,
-}
-
-/// Status of a slice in its lifecycle
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum SliceStatus {
-    Unknown = 0,
-    Required = 1,
-    Present = 2,
-    Verified = 3,
-    RepairingFromPeer = 4,
-    Uploading = 5,
-    HandoffPending = 6,
-    HandoffComplete = 7,
-    Deletable = 8,
-}
-
-/// Assignment status for a spool
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum AssignmentStatus {
-    None = 0,
-    Active = 1,
-    ActiveSync = 2,
-    ActiveRecover = 3,
-    LockedToMove = 4,
-}
-
-/// Sync progress for a spool
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SyncProgress {
-    pub last_synced_track_id: u64,
-    pub phase: SyncPhase,
-}
-
-/// Sync phase for a spool
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum SyncPhase {
-    Idle = 0,
-    Ingesting = 1,
-    Repairing = 2,
-}
-
-/// High-level operations for slice queries
+/// High-level operations for slice management
 pub trait SliceOps {
-    /// Get all slices for a track
-    ///
-    /// Retrieves all slice metadata entries for a given track using
-    /// prefix iteration on the track_id.
+    /// Store a slice with its metadata atomically
     ///
     /// # Arguments
-    /// * `track_id` - The track number to query
-    ///
-    /// # Returns
-    /// Vector of (spool_idx, SliceMeta) tuples in ascending spool order
-    fn get_track_slices(&self, track_id: TrackNumber) -> Result<Vec<(u16, SliceMeta)>>;
-
-    /// Get slices in a spool range for a track
-    ///
-    /// Uses range iteration to efficiently retrieve only slices within
-    /// a specific spool index range.
-    ///
-    /// # Arguments
-    /// * `track_id` - The track number to query
-    /// * `start_spool` - Starting spool index (inclusive)
-    /// * `end_spool` - Ending spool index (exclusive)
-    ///
-    /// # Returns
-    /// Vector of (spool_idx, SliceMeta) tuples in the specified range
-    fn get_track_slices_range(
+    /// * `spool_idx` - The spool index this slice belongs to
+    /// * `track_address` - The track address (on-chain pubkey)
+    /// * `data` - The slice data (potentially compressed)
+    /// * `meta` - The slice metadata including merkle proof
+    fn put_slice(
         &self,
-        track_id: TrackNumber,
-        start_spool: u16,
-        end_spool: u16,
-    ) -> Result<Vec<(u16, SliceMeta)>>;
+        spool_idx: u16,
+        track_address: Pubkey,
+        data: Vec<u8>,
+        meta: SliceMeta,
+    ) -> Result<()>;
 
-    /// Count slices for a track
+    /// Get slice data and metadata for serving
     ///
     /// # Arguments
-    /// * `track_id` - The track number to query
+    /// * `spool_idx` - The spool index
+    /// * `track_address` - The track address
     ///
     /// # Returns
-    /// Number of slices stored for this track
-    fn count_track_slices(&self, track_id: TrackNumber) -> Result<usize>;
+    /// Tuple of (data, metadata) if found
+    fn get_slice(
+        &self,
+        spool_idx: u16,
+        track_address: Pubkey,
+    ) -> Result<Option<(Vec<u8>, SliceMeta)>>;
 
-    /// Check if all slices exist for a track
+    /// Get all slices in a spool (for epoch transition sync)
     ///
-    /// A track is complete when all 1024 slices (spools 0-1023) are present.
+    /// Iterates by spool prefix to get all tracks that have a slice for this spool.
     ///
     /// # Arguments
-    /// * `track_id` - The track number to check
+    /// * `spool_idx` - The spool index to query
     ///
     /// # Returns
-    /// * `Ok(true)` if exactly 1024 slices exist
-    /// * `Ok(false)` otherwise
-    fn track_is_complete(&self, track_id: TrackNumber) -> Result<bool>;
+    /// Vector of (track_address, SliceMeta) tuples
+    fn get_spool_slices(&self, spool_idx: u16) -> Result<Vec<(Pubkey, SliceMeta)>>;
+
+    /// Delete a slice (for GC)
+    ///
+    /// # Arguments
+    /// * `spool_idx` - The spool index
+    /// * `track_address` - The track address
+    fn delete_slice(&self, spool_idx: u16, track_address: Pubkey) -> Result<()>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
-    fn get_track_slices(&self, track_id: TrackNumber) -> Result<Vec<(u16, SliceMeta)>> {
-        // Since SliceKey is (track_id, spool_idx), we need to use range iteration
-        // from (track_id, 0) to (track_id, u16::MAX)
-        let start_key = SliceKey::new(track_id, 0);
-        let end_key = SliceKey::new(track_id, u16::MAX);
+    fn put_slice(
+        &self,
+        spool_idx: u16,
+        track_address: Pubkey,
+        data: Vec<u8>,
+        meta: SliceMeta,
+    ) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        let key = SliceKey::new(spool_idx, track_address);
 
-        let start_bytes = wincode::serialize(&start_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("start key: {}", e)))?;
-        let end_bytes = wincode::serialize(&end_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("end key: {}", e)))?;
+        // Serialize key and values
+        let key_bytes = wincode::serialize(&key)
+            .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
+        let data_bytes = wincode::serialize(&data)
+            .map_err(|e| TapeStoreError::Serialization(format!("slice data: {}", e)))?;
+        let meta_bytes = wincode::serialize(&meta)
+            .map_err(|e| TapeStoreError::Serialization(format!("slice meta: {}", e)))?;
 
-        // Range iteration from start to end (exclusive)
-        let iter = self.inner().inner().iter_range(
-            SlicesMeta::CF_NAME,
-            &start_bytes,
-            &end_bytes,
-        )?;
+        // Add both data and meta to batch (atomic)
+        batch.put(SlicesData::CF_NAME, &key_bytes, &data_bytes);
+        batch.put(SlicesMeta::CF_NAME, &key_bytes, &meta_bytes);
+
+        // Execute atomically
+        self.inner().inner().write_batch(batch)?;
+
+        Ok(())
+    }
+
+    fn get_slice(
+        &self,
+        spool_idx: u16,
+        track_address: Pubkey,
+    ) -> Result<Option<(Vec<u8>, SliceMeta)>> {
+        let key = SliceKey::new(spool_idx, track_address);
+
+        // Get data
+        let data = match self.get::<SlicesData>(&key)? {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        // Get metadata
+        let meta = match self.get::<SlicesMeta>(&key)? {
+            Some(m) => m,
+            None => {
+                // Inconsistent state: data exists but no metadata
+                return Err(TapeStoreError::SliceNotFound(spool_idx, track_address));
+            }
+        };
+
+        Ok(Some((data, meta)))
+    }
+
+    fn get_spool_slices(&self, spool_idx: u16) -> Result<Vec<(Pubkey, SliceMeta)>> {
+        // Create prefix bytes for the spool_idx (2 bytes BE)
+        let prefix_bytes = spool_idx.to_be_bytes();
+
+        // Iterate with prefix to get all slices for this spool
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SlicesMeta::CF_NAME, &prefix_bytes)?;
 
         let mut slices = Vec::new();
         for (key_bytes, value_bytes) in iter {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
 
-            // Verify track_id matches (should be guaranteed by range)
-            if key.track_id == track_id {
+            // Verify spool_idx matches (should be guaranteed by prefix)
+            if key.spool_idx == spool_idx {
                 let meta: SliceMeta = wincode::deserialize(&value_bytes)
                     .map_err(|e| TapeStoreError::Serialization(format!("slice meta: {}", e)))?;
-                slices.push((key.spool_idx, meta));
+                slices.push((key.track_address, meta));
             }
         }
 
-        // Include the end_key if it exists
-        if let Some(value_bytes) = self.inner().inner().get(SlicesMeta::CF_NAME, &end_bytes)? {
-            let meta: SliceMeta = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice meta: {}", e)))?;
-            slices.push((u16::MAX, meta));
-        }
-
         Ok(slices)
     }
 
-    fn get_track_slices_range(
-        &self,
-        track_id: TrackNumber,
-        start_spool: u16,
-        end_spool: u16,
-    ) -> Result<Vec<(u16, SliceMeta)>> {
-        if start_spool >= end_spool {
-            return Ok(Vec::new());
-        }
+    fn delete_slice(&self, spool_idx: u16, track_address: Pubkey) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        let key = SliceKey::new(spool_idx, track_address);
 
-        // Create range keys
-        let start_key = SliceKey::new(track_id, start_spool);
-        let end_key = SliceKey::new(track_id, end_spool);
+        let key_bytes = wincode::serialize(&key)
+            .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
 
-        let start_bytes = wincode::serialize(&start_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("start key: {}", e)))?;
-        let end_bytes = wincode::serialize(&end_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("end key: {}", e)))?;
+        // Delete both data and meta atomically
+        batch.delete(SlicesData::CF_NAME, &key_bytes);
+        batch.delete(SlicesMeta::CF_NAME, &key_bytes);
 
-        // Range iteration
-        let iter = self.inner().inner().iter_range(
-            SlicesMeta::CF_NAME,
-            &start_bytes,
-            &end_bytes,
-        )?;
+        self.inner().inner().write_batch(batch)?;
 
-        let mut slices = Vec::new();
-        for (key_bytes, value_bytes) in iter {
-            let key: SliceKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            let meta: SliceMeta = wincode::deserialize(&value_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice meta: {}", e)))?;
-            slices.push((key.spool_idx, meta));
-        }
-
-        Ok(slices)
-    }
-
-    fn count_track_slices(&self, track_id: TrackNumber) -> Result<usize> {
-        // Use the same approach as get_track_slices
-        let slices = self.get_track_slices(track_id)?;
-        Ok(slices.len())
-    }
-
-    fn track_is_complete(&self, track_id: TrackNumber) -> Result<bool> {
-        let count = self.count_track_slices(track_id)?;
-        Ok(count == 1024)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Hash;
     use store_memory::MemoryStore;
 
+    fn create_test_meta() -> SliceMeta {
+        SliceMeta {
+            len: 1024,
+            leaf_hash: Hash::default(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+            compression: Compression::Lz4,
+            received_at: 123456789,
+        }
+    }
+
     #[test]
-    fn get_track_slices() {
+    fn put_and_get_slice() {
         let store = TapeStore::new(MemoryStore::new());
+        let track_address = Pubkey::new_unique();
+        let spool_idx = 42u16;
+        let data = vec![0xAB; 1024];
+        let meta = create_test_meta();
 
-        let track_id = TrackNumber(1);
+        // Put slice
+        store
+            .put_slice(spool_idx, track_address, data.clone(), meta.clone())
+            .unwrap();
 
-        // Add some slice metadata
-        for spool_idx in [0u16, 10, 100, 500, 1000] {
-            let key = SliceKey::new(track_id, spool_idx);
-            let meta = SliceMeta {
-                len: 1024,
-                leaf_hash: Hash::default(),
-                content_digest: Hash::default(),
-                compression: Compression::Lz4,
-                last_verified_at: 123456789,
-                flags: 0,
-            };
-            store.put::<SlicesMeta>(&key, &meta).unwrap();
+        // Get slice
+        let (retrieved_data, retrieved_meta) =
+            store.get_slice(spool_idx, track_address).unwrap().unwrap();
+
+        assert_eq!(retrieved_data, data);
+        assert_eq!(retrieved_meta, meta);
+    }
+
+    #[test]
+    fn get_spool_slices() {
+        let store = TapeStore::new(MemoryStore::new());
+        let spool_idx = 42u16;
+
+        // Add several slices for the same spool
+        let mut track_addresses = Vec::new();
+        for _ in 0..5 {
+            let track_address = Pubkey::new_unique();
+            track_addresses.push(track_address);
+            let data = vec![0xAB; 1024];
+            let meta = create_test_meta();
+            store
+                .put_slice(spool_idx, track_address, data, meta)
+                .unwrap();
         }
 
-        let slices = store.get_track_slices(track_id).unwrap();
+        // Add a slice for a different spool
+        let other_track = Pubkey::new_unique();
+        store
+            .put_slice(99, other_track, vec![0; 100], create_test_meta())
+            .unwrap();
+
+        // Get slices for spool 42
+        let slices = store.get_spool_slices(spool_idx).unwrap();
         assert_eq!(slices.len(), 5);
-        assert_eq!(slices[0].0, 0);
-        assert_eq!(slices[1].0, 10);
-        assert_eq!(slices[4].0, 1000);
+
+        // Verify all track addresses are present
+        for (track_addr, _meta) in &slices {
+            assert!(track_addresses.contains(track_addr));
+        }
     }
 
     #[test]
-    fn get_track_slices_range() {
+    fn delete_slice() {
         let store = TapeStore::new(MemoryStore::new());
+        let track_address = Pubkey::new_unique();
+        let spool_idx = 42u16;
+        let data = vec![0xAB; 1024];
+        let meta = create_test_meta();
 
-        let track_id = TrackNumber(1);
+        // Put slice
+        store
+            .put_slice(spool_idx, track_address, data, meta)
+            .unwrap();
 
-        // Add slice metadata
-        for spool_idx in 0u16..20 {
-            let key = SliceKey::new(track_id, spool_idx);
-            let meta = SliceMeta {
-                len: 1024,
-                leaf_hash: Hash::default(),
-                content_digest: Hash::default(),
-                compression: Compression::Lz4,
-                last_verified_at: 123456789,
-                flags: 0,
-            };
-            store.put::<SlicesMeta>(&key, &meta).unwrap();
-        }
+        // Verify it exists
+        assert!(store.get_slice(spool_idx, track_address).unwrap().is_some());
 
-        // Query range [5, 15)
-        let slices = store.get_track_slices_range(track_id, 5, 15).unwrap();
-        assert_eq!(slices.len(), 10);
-        assert_eq!(slices[0].0, 5);
-        assert_eq!(slices[9].0, 14);
+        // Delete slice
+        store.delete_slice(spool_idx, track_address).unwrap();
+
+        // Verify it's gone
+        assert!(store.get_slice(spool_idx, track_address).unwrap().is_none());
     }
 
     #[test]
-    fn count_track_slices() {
+    fn slice_not_found() {
         let store = TapeStore::new(MemoryStore::new());
+        let track_address = Pubkey::new_unique();
 
-        let track_id = TrackNumber(1);
-
-        // Add 50 slices
-        for spool_idx in 0u16..50 {
-            let key = SliceKey::new(track_id, spool_idx);
-            let meta = SliceMeta {
-                len: 1024,
-                leaf_hash: Hash::default(),
-                content_digest: Hash::default(),
-                compression: Compression::Lz4,
-                last_verified_at: 123456789,
-                flags: 0,
-            };
-            store.put::<SlicesMeta>(&key, &meta).unwrap();
-        }
-
-        let count = store.count_track_slices(track_id).unwrap();
-        assert_eq!(count, 50);
+        let result = store.get_slice(42, track_address).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
-    fn track_is_complete() {
+    fn spool_ordering() {
         let store = TapeStore::new(MemoryStore::new());
 
-        let track_id = TrackNumber(1);
-
-        // Not complete with 0 slices
-        assert!(!store.track_is_complete(track_id).unwrap());
-
-        // Add all 1024 slices
-        for spool_idx in 0u16..1024 {
-            let key = SliceKey::new(track_id, spool_idx);
-            let meta = SliceMeta {
-                len: 1024,
-                leaf_hash: Hash::default(),
-                content_digest: Hash::default(),
-                compression: Compression::Lz4,
-                last_verified_at: 123456789,
-                flags: 0,
-            };
-            store.put::<SlicesMeta>(&key, &meta).unwrap();
+        // Add slices to different spools in random order
+        let spools = [100u16, 1, 50, 200, 25];
+        for spool_idx in spools {
+            let track = Pubkey::new_unique();
+            store
+                .put_slice(spool_idx, track, vec![0; 10], create_test_meta())
+                .unwrap();
         }
 
-        // Now complete
-        assert!(store.track_is_complete(track_id).unwrap());
+        // Verify we can query each spool independently
+        for spool_idx in spools {
+            let slices = store.get_spool_slices(spool_idx).unwrap();
+            assert_eq!(slices.len(), 1);
+        }
     }
 }

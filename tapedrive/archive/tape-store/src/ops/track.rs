@@ -1,271 +1,198 @@
 //! Track management operations
+//!
+//! Simplified operations for minimal track info storage.
 
-use crate::columns::tracks::TapeTrackKey;
 use crate::columns::*;
 use crate::error::{Result, TapeStoreError};
-use crate::types::{EpochNumber, Hash, Pubkey, TapeKey, TapeNumber, TrackKey, TrackNumber};
+use crate::types::{EpochNumber, Hash, Pubkey};
 use crate::TapeStore;
 use serde::{Deserialize, Serialize};
-use store::{Column, Store, WriteBatch};
-use tape_api::state::Track;
-use tape_core::types::StorageUnits;
+use store::Store;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-/// Storage representation of on-chain track account data
+/// Minimal track info stored by nodes
+///
+/// Nodes only need to know:
+/// - The commitment hash to verify incoming slices
+/// - Whether it's certified (for GC decisions)
+/// - How many slices they've stored (for certification readiness)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct TrackData {
-    pub id: TrackNumber,
-    pub tape: Pubkey,
-    pub key: Hash,
-    pub size: u64,
-    pub registered_epoch: EpochNumber,
-    pub certified_epoch: EpochNumber,
+pub struct TrackInfo {
+    /// Merkle root of erasure-coded slices (for verification)
     pub commitment_hash: Hash,
+    /// Epoch when certified (0 = not certified)
+    pub certified_epoch: EpochNumber,
+    /// Count of slices we have stored for this track
+    pub slice_count: u16,
 }
 
-impl From<&Track> for TrackData {
-    fn from(track: &Track) -> Self {
+impl Default for TrackInfo {
+    fn default() -> Self {
         Self {
-            id: track.id,
-            tape: track.tape.into(),
-            key: track.key,
-            size: track.size.0,
-            registered_epoch: track.data.registered_epoch,
-            certified_epoch: track.data.state.certified_epoch,
-            commitment_hash: track.data.commitment_hash,
+            commitment_hash: Hash::default(),
+            certified_epoch: EpochNumber(0),
+            slice_count: 0,
         }
-    }
-}
-
-impl From<Track> for TrackData {
-    fn from(track: Track) -> Self {
-        Self::from(&track)
-    }
-}
-
-impl From<&TrackData> for Track {
-    fn from(data: &TrackData) -> Self {
-        use tape_core::tape::TrackData as CoreTrackData;
-        use tape_core::tape::TrackState;
-        Self {
-            id: data.id,
-            tape: solana_program::pubkey::Pubkey::new_from_array(data.tape.0),
-            key: data.key,
-            size: StorageUnits(data.size),
-            data: CoreTrackData {
-                state: TrackState {
-                    phase: 0,
-                    certified_epoch: data.certified_epoch,
-                },
-                registered_epoch: data.registered_epoch,
-                commitment_hash: data.commitment_hash,
-            },
-        }
-    }
-}
-
-impl From<TrackData> for Track {
-    fn from(data: TrackData) -> Self {
-        Self::from(&data)
     }
 }
 
 /// High-level operations for track management
 pub trait TrackOps {
-    /// Put a track and update all indices atomically
-    ///
-    /// This operation atomically updates:
-    /// - TracksById: main track data
-    /// - TracksByAddress: reverse lookup by on-chain address
-    /// - TracksByTape: index for listing tracks by tape
-    /// - TracksByBlobKey: lookup by content hash
+    /// Store track info
     ///
     /// # Arguments
-    /// * `track` - The track data to store
-    ///
-    /// # Example
-    /// ```
-    /// use tape_store::{TapeStore, MemoryStore, types::*, ops::TrackOps};
-    ///
-    /// let store = TapeStore::new(MemoryStore::new());
-    /// let track = TrackData {
-    ///     id: TrackNumber(1),
-    ///     tape: Pubkey::new([0u8; 32]),
-    ///     key: Hash::default(),
-    ///     size: 1024,
-    ///     registered_epoch: EpochNumber(100),
-    ///     certified_epoch: EpochNumber(101),
-    ///     commitment_hash: Hash::default(),
-    /// };
-    /// store.put_track(&track).unwrap();
-    /// ```
-    fn put_track(&self, track: &TrackData) -> Result<()>;
+    /// * `address` - The on-chain address (Pubkey) of the track
+    /// * `info` - The track info to store
+    fn put_track_info(&self, address: Pubkey, info: TrackInfo) -> Result<()>;
 
-    /// Get track by address (reverse lookup)
+    /// Get track info
     ///
     /// # Arguments
     /// * `address` - The on-chain address of the track
     ///
     /// # Returns
-    /// * `Ok(Some(track))` if found
-    /// * `Ok(None)` if not found
-    /// * `Err` on database or consistency errors
-    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<TrackData>>;
+    /// Track info if found
+    fn get_track_info(&self, address: Pubkey) -> Result<Option<TrackInfo>>;
 
-    /// Get all tracks belonging to a tape
+    /// Increment slice count for a track
     ///
-    /// Uses the TracksByTape index with prefix iteration to efficiently
-    /// retrieve all tracks on a specific tape.
+    /// Called when a new slice is stored for this track.
+    /// If the track doesn't exist, creates it with slice_count = 1.
     ///
     /// # Arguments
-    /// * `tape_id` - The tape number to query
+    /// * `address` - The track address
     ///
     /// # Returns
-    /// Vector of tracks in ascending order by track ID
-    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<TrackData>>;
+    /// The new slice count
+    fn increment_slice_count(&self, address: Pubkey) -> Result<u16>;
+
+    /// Mark a track as certified
+    ///
+    /// # Arguments
+    /// * `address` - The track address
+    /// * `epoch` - The epoch in which it was certified
+    fn mark_certified(&self, address: Pubkey, epoch: EpochNumber) -> Result<()>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
-    fn put_track(&self, track: &TrackData) -> Result<()> {
-        let mut batch = WriteBatch::new();
-
-        // Serialize all keys and values
-        let track_key = TrackKey(track.id);
-        let track_key_bytes = wincode::serialize(&track_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
-        let track_value_bytes = wincode::serialize(track)
-            .map_err(|e| TapeStoreError::Serialization(format!("track value: {}", e)))?;
-        let address_key_bytes = wincode::serialize(&track.tape)
-            .map_err(|e| TapeStoreError::Serialization(format!("address: {}", e)))?;
-        let track_number_bytes = wincode::serialize(&track.id)
-            .map_err(|e| TapeStoreError::Serialization(format!("track number: {}", e)))?;
-        let blob_key_bytes = wincode::serialize(&track.key)
-            .map_err(|e| TapeStoreError::Serialization(format!("blob key: {}", e)))?;
-
-        // For TracksByTape, we need to extract the tape ID from the track.tape Pubkey
-        // In the real implementation, this would be a proper lookup or the Track struct
-        // would contain a TapeNumber field. For now, we'll create a composite key.
-        // Note: This is a limitation - we'd need the TapeNumber to properly index by tape.
-        // For this implementation, we'll skip TracksByTape in put_track and note this
-        // as a design consideration.
-
-        // Add all operations to batch (atomic)
-        batch.put(TracksById::CF_NAME, &track_key_bytes, &track_value_bytes);
-        batch.put(TracksByAddress::CF_NAME, &address_key_bytes, &track_number_bytes);
-        batch.put(TracksByBlobKey::CF_NAME, &blob_key_bytes, &track_number_bytes);
-
-        // Note: TracksByTape requires knowing the TapeNumber, which isn't stored in Track.
-        // In a real implementation, Track would have a tape_id: TapeNumber field,
-        // or we'd need to look it up. Skipping for now as a known limitation.
-
-        // Execute atomically
-        self.inner().inner().write_batch(batch)?;
-
+    fn put_track_info(&self, address: Pubkey, info: TrackInfo) -> Result<()> {
+        self.put::<Tracks>(&address, &info)?;
         Ok(())
     }
 
-    fn get_track_by_address(&self, address: &Pubkey) -> Result<Option<TrackData>> {
-        // Look up track number by address
-        let track_number = match self.get::<TracksByAddress>(address)? {
-            Some(num) => num,
-            None => return Ok(None),
-        };
-
-        // Look up track by number
-        let track = self.get::<TracksById>(&TrackKey(track_number))?;
-
-        // Check consistency
-        if track.is_none() {
-            return Err(TapeStoreError::InconsistentTrackIndex(track_number));
-        }
-
-        Ok(track)
+    fn get_track_info(&self, address: Pubkey) -> Result<Option<TrackInfo>> {
+        let info = self.get::<Tracks>(&address)?;
+        Ok(info)
     }
 
-    fn get_tracks_by_tape(&self, tape_id: TapeNumber) -> Result<Vec<TrackData>> {
-        // Serialize the tape ID prefix
-        let tape_key = TapeKey(tape_id);
-        let prefix_bytes = wincode::serialize(&tape_key)
-            .map_err(|e| TapeStoreError::Serialization(format!("tape key: {}", e)))?;
+    fn increment_slice_count(&self, address: Pubkey) -> Result<u16> {
+        // Get existing track info or create new one
+        let mut info = self.get::<Tracks>(&address)?.unwrap_or_default();
 
-        // Iterate with prefix
-        let iter = self.inner().inner().iter_prefix(TracksByTape::CF_NAME, &prefix_bytes)?;
+        // Increment slice count
+        info.slice_count = info.slice_count.saturating_add(1);
 
-        let mut tracks = Vec::new();
-        for (key_bytes, _) in iter {
-            // Deserialize the full composite key to get track_id
-            let composite_key: TapeTrackKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("tape-track key: {}", e)))?;
+        // Store updated info
+        self.put::<Tracks>(&address, &info)?;
 
-            // Look up the full track data
-            if let Some(track) = self.get::<TracksById>(&composite_key.track_id)? {
-                tracks.push(track);
-            }
-        }
+        Ok(info.slice_count)
+    }
 
-        Ok(tracks)
+    fn mark_certified(&self, address: Pubkey, epoch: EpochNumber) -> Result<()> {
+        // Get existing track info
+        let mut info = match self.get::<Tracks>(&address)? {
+            Some(i) => i,
+            None => return Err(TapeStoreError::TrackNotFound(address)),
+        };
+
+        // Update certified epoch
+        info.certified_epoch = epoch;
+
+        // Store updated info
+        self.put::<Tracks>(&address, &info)?;
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Hash, Pubkey};
     use store_memory::MemoryStore;
 
     #[test]
-    fn put_track_atomic() {
+    fn put_and_get_track_info() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = Pubkey::new_unique();
-        let key = Hash::new_unique();
-        let commitment_hash = Hash::new_unique();
-
-        let track = TrackData {
-            id: TrackNumber(1),
-            tape,
-            key,
-            size: 1024,
-            registered_epoch: EpochNumber(100),
-            certified_epoch: EpochNumber(101),
-            commitment_hash,
+        let address = Pubkey::new_unique();
+        let info = TrackInfo {
+            commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(0),
+            slice_count: 0,
         };
 
-        store.put_track(&track).unwrap();
-
-        // Verify all indices are updated
-        let retrieved = store.get::<TracksById>(&TrackKey(TrackNumber(1))).unwrap();
-        assert_eq!(retrieved, Some(track.clone()));
-
-        let by_address = store.get::<TracksByAddress>(&tape).unwrap();
-        assert_eq!(by_address, Some(TrackNumber(1)));
-
-        let by_blob_key = store.get::<TracksByBlobKey>(&key).unwrap();
-        assert_eq!(by_blob_key, Some(TrackNumber(1)));
+        store.put_track_info(address, info.clone()).unwrap();
+        let retrieved = store.get_track_info(address).unwrap();
+        assert_eq!(retrieved, Some(info));
     }
 
     #[test]
-    fn get_track_by_address() {
+    fn increment_slice_count() {
         let store = TapeStore::new(MemoryStore::new());
-        let tape = Pubkey::new_unique();
-        let key = Hash::new_unique();
-        let commitment_hash = Hash::new_unique();
+        let address = Pubkey::new_unique();
 
-        let track = TrackData {
-            id: TrackNumber(42),
-            tape,
-            key,
-            size: 2048,
-            registered_epoch: EpochNumber(100),
-            certified_epoch: EpochNumber(101),
-            commitment_hash,
+        // First increment creates the track
+        let count = store.increment_slice_count(address).unwrap();
+        assert_eq!(count, 1);
+
+        // Subsequent increments increase the count
+        let count = store.increment_slice_count(address).unwrap();
+        assert_eq!(count, 2);
+
+        let count = store.increment_slice_count(address).unwrap();
+        assert_eq!(count, 3);
+
+        // Verify the stored value
+        let info = store.get_track_info(address).unwrap().unwrap();
+        assert_eq!(info.slice_count, 3);
+    }
+
+    #[test]
+    fn mark_certified() {
+        let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
+
+        // Create track first
+        let info = TrackInfo {
+            commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(0),
+            slice_count: 10,
         };
+        store.put_track_info(address, info).unwrap();
 
-        store.put_track(&track).unwrap();
+        // Mark as certified
+        store.mark_certified(address, EpochNumber(100)).unwrap();
 
-        let found = store.get_track_by_address(&tape).unwrap();
-        assert_eq!(found, Some(track));
+        // Verify
+        let info = store.get_track_info(address).unwrap().unwrap();
+        assert_eq!(info.certified_epoch, EpochNumber(100));
+        assert_eq!(info.slice_count, 10); // Other fields unchanged
+    }
 
-        let not_found = store.get_track_by_address(&Pubkey::new_unique()).unwrap();
-        assert_eq!(not_found, None);
+    #[test]
+    fn mark_certified_not_found() {
+        let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
+
+        let result = store.mark_certified(address, EpochNumber(100));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn track_not_found() {
+        let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
+
+        let result = store.get_track_info(address).unwrap();
+        assert!(result.is_none());
     }
 }
