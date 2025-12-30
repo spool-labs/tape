@@ -23,7 +23,7 @@ pub use tape_node_api::{
     METADATA_PATH as METADATA_ENDPOINT,
     SLICE_PATH as SLICE_ENDPOINT,
     STATUS_PATH as STATUS_ENDPOINT,
-    SYNC_SHARD_PATH as SYNC_SHARD_ENDPOINT,
+    SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT,
 };
 
 /// Shared state for API handlers.
@@ -46,8 +46,8 @@ pub fn create_router(state: ApiState) -> Router {
         .route(HEALTH_ENDPOINT, get(health_check))
         // Node info
         .route(INFO_ENDPOINT, get(get_info))
-        // Shard sync (node-to-node)
-        .route(SYNC_SHARD_ENDPOINT, post(sync_shard))
+        // Spool sync (node-to-node)
+        .route(SYNC_SPOOL_ENDPOINT, post(sync_spool))
         .with_state(state)
 }
 
@@ -173,17 +173,17 @@ pub async fn get_info(State(_state): State<ApiState>) -> Response {
         .into_response()
 }
 
-/// POST /v1/migrate/sync_shard
-pub async fn sync_shard(
+/// POST /v1/migrate/sync_spool
+pub async fn sync_spool(
     State(state): State<ApiState>,
     _body: Bytes,
 ) -> Result<Response, ApiError> {
     let timer = OperationTimer::new();
 
-    // TODO: Implement shard sync (Ed25519 signed request verification)
+    // TODO: Implement spool sync (Ed25519 signed request verification)
     state
         .metrics
-        .record_request("sync_shard", "error", timer.elapsed_secs());
+        .record_request("sync_spool", "error", timer.elapsed_secs());
     Err(ApiError::Unauthorized)
 }
 

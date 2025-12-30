@@ -47,8 +47,8 @@ pub const INFO_PATH: &str = "/v1/info";
 // Node-to-Node Operations
 // =============================================================================
 
-/// POST endpoint for shard synchronization during epoch transitions.
-pub const SYNC_SHARD_PATH: &str = "/v1/migrate/sync_shard";
+/// POST endpoint for spool synchronization during epoch transitions.
+pub const SYNC_SPOOL_PATH: &str = "/v1/migrate/sync_spool";
 
 // =============================================================================
 // Content Types

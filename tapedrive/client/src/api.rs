@@ -10,7 +10,7 @@ pub use tape_node_api::{
     METADATA_PATH,
     SLICE_PATH,
     STATUS_PATH,
-    SYNC_SHARD_PATH,
+    SYNC_SPOOL_PATH,
     // Helper functions
     metadata_url,
     slice_url,

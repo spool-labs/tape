@@ -1,4 +1,4 @@
-//! Types for shard synchronization protocol.
+//! Types for spool synchronization protocol.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,13 +13,13 @@ pub type TrackId = String;
 
 /// Sync request message (versioned for future compatibility).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum SyncShardRequest {
-    V1(SyncShardRequestV1),
+pub enum SyncSpoolRequest {
+    V1(SyncSpoolRequestV1),
 }
 
-/// Version 1 of sync shard request.
+/// Version 1 of sync spool request.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SyncShardRequestV1 {
+pub struct SyncSpoolRequestV1 {
     /// The spool index to sync.
     pub spool_index: SpoolIndex,
     /// Starting track ID for pagination.
@@ -30,7 +30,7 @@ pub struct SyncShardRequestV1 {
     pub epoch: EpochNumber,
 }
 
-impl SyncShardRequest {
+impl SyncSpoolRequest {
     /// Create a new V1 request.
     pub fn new_v1(
         spool_index: SpoolIndex,
@@ -38,7 +38,7 @@ impl SyncShardRequest {
         slice_count: u64,
         epoch: EpochNumber,
     ) -> Self {
-        Self::V1(SyncShardRequestV1 {
+        Self::V1(SyncSpoolRequestV1 {
             spool_index,
             starting_track_id,
             slice_count,
@@ -49,12 +49,12 @@ impl SyncShardRequest {
 
 /// Sync response message (versioned).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum SyncShardResponse {
+pub enum SyncSpoolResponse {
     /// V1 response: list of (track_id, slice_index, data).
     V1(Vec<(TrackId, u16, Vec<u8>)>),
 }
 
-impl SyncShardResponse {
+impl SyncSpoolResponse {
     /// Create a new V1 response.
     pub fn new_v1(slices: Vec<(TrackId, u16, Vec<u8>)>) -> Self {
         Self::V1(slices)
@@ -79,7 +79,7 @@ impl SyncShardResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedSyncRequest {
     /// The underlying request.
-    pub request: SyncShardRequest,
+    pub request: SyncSpoolRequest,
     /// Ed25519 signature over the serialized request.
     pub signature: Vec<u8>,
     /// Public key of the signer.
@@ -92,10 +92,10 @@ mod tests {
 
     #[test]
     fn test_sync_request_creation() {
-        let request = SyncShardRequest::new_v1(42, "track_0".to_string(), 1000, 5);
+        let request = SyncSpoolRequest::new_v1(42, "track_0".to_string(), 1000, 5);
 
         match request {
-            SyncShardRequest::V1(v1) => {
+            SyncSpoolRequest::V1(v1) => {
                 assert_eq!(v1.spool_index, 42);
                 assert_eq!(v1.starting_track_id, "track_0");
                 assert_eq!(v1.slice_count, 1000);
@@ -106,10 +106,10 @@ mod tests {
 
     #[test]
     fn test_sync_response_empty() {
-        let empty = SyncShardResponse::new_v1(vec![]);
+        let empty = SyncSpoolResponse::new_v1(vec![]);
         assert!(empty.is_empty());
 
-        let non_empty = SyncShardResponse::new_v1(vec![
+        let non_empty = SyncSpoolResponse::new_v1(vec![
             ("track_1".to_string(), 0, vec![1, 2, 3]),
         ]);
         assert!(!non_empty.is_empty());

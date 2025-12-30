@@ -239,15 +239,15 @@ impl StorageNodeClient {
         Ok(info)
     }
 
-    /// Send a shard sync request (node-to-node, wincode encoded).
+    /// Send a spool sync request (node-to-node, wincode encoded).
     ///
     /// # Arguments
     /// * `request_bytes` - The wincode-encoded and signed sync request
-    pub async fn sync_shard(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>, NodeError> {
+    pub async fn sync_spool(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>, NodeError> {
         #[cfg(feature = "metrics")]
         let start = Instant::now();
 
-        let url = self.base_url.join("/v1/migrate/sync_shard")?;
+        let url = self.base_url.join("/v1/migrate/sync_spool")?;
 
         let response = self.inner
             .post(url)
@@ -261,7 +261,7 @@ impl StorageNodeClient {
             let message = response.text().await.unwrap_or_default();
             #[cfg(feature = "metrics")]
             if let Some(metrics) = &self.metrics {
-                metrics.record_request("sync_shard", "error", start.elapsed().as_secs_f64());
+                metrics.record_request("sync_spool", "error", start.elapsed().as_secs_f64());
             }
             return Err(NodeError::server_error(status.as_u16(), message));
         }
@@ -270,7 +270,7 @@ impl StorageNodeClient {
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
-            metrics.record_request("sync_shard", "success", start.elapsed().as_secs_f64());
+            metrics.record_request("sync_spool", "success", start.elapsed().as_secs_f64());
         }
 
         Ok(bytes)

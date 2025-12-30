@@ -1,4 +1,4 @@
-//! Shard synchronization handler for epoch transitions.
+//! Spool synchronization handler for epoch transitions.
 
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -7,7 +7,7 @@ use tracing::info;
 use tape_node_client::{StorageNodeClientBuilder, NodeError};
 
 use crate::sync_types::{
-    EpochNumber, SpoolIndex, SyncShardRequest, SyncShardResponse, TrackId,
+    EpochNumber, SpoolIndex, SyncSpoolRequest, SyncSpoolResponse, TrackId,
 };
 
 /// Default batch size for sync requests.
@@ -16,7 +16,7 @@ const DEFAULT_BATCH_SIZE: u64 = 1000;
 /// Default max concurrent sync operations.
 const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 4;
 
-/// Error type for shard sync operations.
+/// Error type for spool sync operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("node communication error: {0}")]
@@ -35,22 +35,22 @@ pub enum SyncError {
     Signing(String),
 }
 
-/// Handler for shard synchronization during epoch transitions.
-pub struct ShardSyncHandler {
+/// Handler for spool synchronization during epoch transitions.
+pub struct SpoolSyncHandler {
     /// Semaphore to limit concurrent sync operations.
     permits: Arc<Semaphore>,
     /// Batch size for sync requests.
     batch_size: u64,
 }
 
-impl Default for ShardSyncHandler {
+impl Default for SpoolSyncHandler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ShardSyncHandler {
-    /// Create a new shard sync handler.
+impl SpoolSyncHandler {
+    /// Create a new spool sync handler.
     pub fn new() -> Self {
         Self {
             permits: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_SYNCS)),
@@ -98,7 +98,7 @@ impl ShardSyncHandler {
         let mut total_slices = 0;
 
         loop {
-            let request = SyncShardRequest::new_v1(
+            let request = SyncSpoolRequest::new_v1(
                 spool,
                 starting_track.clone(),
                 self.batch_size,
@@ -110,10 +110,10 @@ impl ShardSyncHandler {
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
             // Send sync request
-            let response_bytes = client.sync_shard(request_bytes).await?;
+            let response_bytes = client.sync_spool(request_bytes).await?;
 
             // Deserialize response
-            let response: SyncShardResponse = serde_json::from_slice(&response_bytes)
+            let response: SyncSpoolResponse = serde_json::from_slice(&response_bytes)
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
             if response.is_empty() {
@@ -186,7 +186,7 @@ impl ShardSyncHandler {
     }
 }
 
-impl Clone for ShardSyncHandler {
+impl Clone for SpoolSyncHandler {
     fn clone(&self) -> Self {
         Self {
             permits: Arc::clone(&self.permits),
@@ -201,13 +201,13 @@ mod tests {
 
     #[test]
     fn test_handler_creation() {
-        let handler = ShardSyncHandler::new();
+        let handler = SpoolSyncHandler::new();
         assert_eq!(handler.batch_size, DEFAULT_BATCH_SIZE);
     }
 
     #[test]
     fn test_handler_custom_settings() {
-        let handler = ShardSyncHandler::new()
+        let handler = SpoolSyncHandler::new()
             .with_max_concurrent(8)
             .with_batch_size(500);
 

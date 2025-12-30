@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, error};
 
-use crate::shard_sync::{ShardSyncHandler, SyncError};
+use crate::spool_sync::{SpoolSyncHandler, SyncError};
 use crate::sync_types::{EpochNumber, SpoolIndex};
 
 /// Default polling interval for epoch changes.
@@ -28,12 +28,12 @@ pub enum EpochError {
     SubmitSyncDone(String),
 }
 
-/// Epoch driver for monitoring epoch changes and triggering shard sync.
+/// Epoch driver for monitoring epoch changes and triggering spool sync.
 pub struct EpochDriver {
     /// Current epoch number.
     current_epoch: AtomicU64,
-    /// Shard sync handler.
-    shard_sync: Arc<ShardSyncHandler>,
+    /// Spool sync handler.
+    spool_sync: Arc<SpoolSyncHandler>,
     /// Polling interval.
     poll_interval: Duration,
     /// Node identity (for determining owned spools).
@@ -49,15 +49,15 @@ impl EpochDriver {
     pub fn new(initial_epoch: EpochNumber, node_id: String) -> Self {
         Self {
             current_epoch: AtomicU64::new(initial_epoch),
-            shard_sync: Arc::new(ShardSyncHandler::new()),
+            spool_sync: Arc::new(SpoolSyncHandler::new()),
             poll_interval: DEFAULT_POLL_INTERVAL,
             node_id,
         }
     }
 
-    /// Set the shard sync handler.
-    pub fn with_shard_sync(mut self, handler: Arc<ShardSyncHandler>) -> Self {
-        self.shard_sync = handler;
+    /// Set the spool sync handler.
+    pub fn with_spool_sync(mut self, handler: Arc<SpoolSyncHandler>) -> Self {
+        self.spool_sync = handler;
         self
     }
 
@@ -198,7 +198,7 @@ impl EpochDriver {
             info!("Syncing {} new spools", new_spools.len());
 
             let total_slices = self
-                .shard_sync
+                .spool_sync
                 .sync_spools(
                     new_spools,
                     from_epoch,
