@@ -71,8 +71,10 @@ async fn run_node(config: NodeConfig) -> Result<()> {
     let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
 
     // Initialize storage service
-    let storage = StorageService::new(&config, Arc::clone(&metrics))
-        .context("Failed to create storage service")?;
+    let storage = Arc::new(
+        StorageService::new(&config, Arc::clone(&metrics))
+            .context("Failed to create storage service")?,
+    );
     storage
         .initialize()
         .await
@@ -148,7 +150,7 @@ async fn run_node(config: NodeConfig) -> Result<()> {
     });
 
     // Create and run the server
-    let server = Server::new(config, Arc::clone(&metrics));
+    let server = Server::new(config, Arc::clone(&metrics), Arc::clone(&storage));
 
     // Run server with graceful shutdown
     let server_shutdown = shutdown.clone();

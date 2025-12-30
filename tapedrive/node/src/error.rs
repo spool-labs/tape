@@ -10,6 +10,9 @@ pub enum ApiError {
     #[error("invalid slice index")]
     InvalidSliceIndex,
 
+    #[error("invalid track id")]
+    InvalidTrackId,
+
     #[error("not responsible for this spool")]
     NotResponsible,
 
@@ -19,8 +22,8 @@ pub enum ApiError {
     #[error("track not found")]
     TrackNotFound,
 
-    #[error("invalid request body")]
-    InvalidBody,
+    #[error("invalid request body: {0}")]
+    InvalidBody(String),
 
     #[error("unauthorized")]
     Unauthorized,
@@ -39,7 +42,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             ApiError::InvalidSliceIndex => StatusCode::BAD_REQUEST,
-            ApiError::InvalidBody => StatusCode::BAD_REQUEST,
+            ApiError::InvalidTrackId => StatusCode::BAD_REQUEST,
+            ApiError::InvalidBody(_) => StatusCode::BAD_REQUEST,
             ApiError::NotResponsible => StatusCode::MISDIRECTED_REQUEST, // 421
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::TrackNotFound => StatusCode::NOT_FOUND,
