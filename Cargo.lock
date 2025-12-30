@@ -6939,6 +6939,7 @@ dependencies = [
  "tape-crypto",
  "tape-metrics",
  "tape-node-client",
+ "tape-slicer",
  "thiserror 2.0.17",
  "tokio",
 ]

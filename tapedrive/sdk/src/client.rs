@@ -1,8 +1,12 @@
 //! High-level tape client for blob operations.
 
+use tape_slicer::BlobMerkleRoot;
+
 use crate::communication::NodeCommunicationFactory;
+use crate::decoder::BlobDecoder;
 use crate::downloader::ParallelDownloader;
-use crate::error::{DownloadError, UploadError};
+use crate::encoder::BlobEncoder;
+use crate::error::{ClientError, DownloadError, UploadError};
 use crate::uploader::DistributedUploader;
 
 /// High-level client for tapedrive blob operations.
@@ -96,6 +100,118 @@ impl TapeClient {
     /// Call this when the committee changes.
     pub fn set_node_addresses(&mut self, addresses: Vec<String>) {
         self.node_addresses = addresses;
+    }
+
+    // =========================================================================
+    // High-level blob operations (encode + upload, download + decode)
+    // =========================================================================
+
+    /// Upload a blob to the network.
+    ///
+    /// This is the primary method for storing data. It:
+    /// 1. Encodes the blob into SLICE_COUNT slices using Reed-Solomon
+    /// 2. Computes the Merkle root commitment
+    /// 3. Uploads all slices to storage nodes
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier for this blob
+    /// * `data` - Raw blob data to upload
+    ///
+    /// # Returns
+    /// The Merkle root (commitment hash) for the uploaded blob.
+    /// This should be stored on-chain for verification during download.
+    ///
+    /// # Note
+    /// This method does NOT register the track on-chain. The caller must:
+    /// 1. Call this method to upload data
+    /// 2. Use the returned commitment to register the track on Solana
+    /// 3. Collect BLS certifications from nodes
+    pub async fn upload_blob(
+        &self,
+        track_id: &str,
+        data: Vec<u8>,
+    ) -> Result<BlobMerkleRoot, ClientError> {
+        // Encode blob into slices with merkle root
+        let mut encoder = BlobEncoder::new();
+        let (slices, commitment) = encoder
+            .encode_to_vec_with_root(data)
+            .map_err(ClientError::Upload)?;
+
+        // Upload all slices
+        self.upload_slices(track_id, slices)
+            .await
+            .map_err(ClientError::Upload)?;
+
+        Ok(commitment)
+    }
+
+    /// Download and decode a blob from the network.
+    ///
+    /// This is the primary method for retrieving data. It:
+    /// 1. Downloads at least DATA_SLICES slices from storage nodes
+    /// 2. Decodes the slices back into the original blob
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier for the blob
+    ///
+    /// # Returns
+    /// The original blob data.
+    ///
+    /// # Note
+    /// This method does NOT verify the data against on-chain commitment.
+    /// For full verification, the caller should:
+    /// 1. Fetch the track's commitment_hash from Solana
+    /// 2. Re-encode the downloaded data and compare merkle roots
+    /// Or use `download_blob_verified()` which does this automatically.
+    pub async fn download_blob(&self, track_id: &str) -> Result<Vec<u8>, ClientError> {
+        // Download enough slices
+        let slices = self
+            .download_slices(track_id)
+            .await
+            .map_err(ClientError::Download)?;
+
+        // Decode slices back to blob
+        let mut decoder = BlobDecoder::new();
+        let data = decoder
+            .decode(slices)
+            .map_err(ClientError::Download)?;
+
+        Ok(data)
+    }
+
+    /// Download a blob and verify against the expected commitment.
+    ///
+    /// Same as `download_blob()` but also verifies the reconstructed data
+    /// matches the expected Merkle root commitment.
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier for the blob
+    /// * `expected_commitment` - The Merkle root from on-chain track data
+    ///
+    /// # Returns
+    /// The verified original blob data.
+    ///
+    /// # Errors
+    /// Returns `ClientError::CommitmentMismatch` if verification fails.
+    pub async fn download_blob_verified(
+        &self,
+        track_id: &str,
+        expected_commitment: &BlobMerkleRoot,
+    ) -> Result<Vec<u8>, ClientError> {
+        // Download and decode
+        let data = self.download_blob(track_id).await?;
+
+        // Re-encode to verify commitment
+        let mut encoder = BlobEncoder::new();
+        let (_, actual_commitment) = encoder
+            .encode_to_vec_with_root(data.clone())
+            .map_err(|e| ClientError::Encoding(e.to_string()))?;
+
+        if &actual_commitment != expected_commitment {
+            return Err(ClientError::CommitmentMismatch);
+        }
+
+        Ok(data)
     }
 }
 

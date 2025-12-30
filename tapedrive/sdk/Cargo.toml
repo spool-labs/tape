@@ -17,6 +17,7 @@ metrics = ["tape-node-client/metrics", "tape-metrics/metrics"]
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-client = { workspace = true }
+tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 
 # Async

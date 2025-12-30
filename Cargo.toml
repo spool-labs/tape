@@ -47,6 +47,7 @@ tape-store = { version = "0.3.0", path = "./tapedrive/archive/tape-store" }
 tape-node = { version = "0.3.0", path = "./tapedrive/node" }
 tape-node-api = { version = "0.3.0", path = "./tapedrive/api" }
 tape-node-client = { version = "0.3.0", path = "./tapedrive/client" }
+tape-slicer = { version = "0.3.0", path = "./tapedrive/slicer" }
 store = { version = "0.3.0", path = "./tapedrive/archive/store" }
 store-memory = { version = "0.3.0", path = "./tapedrive/archive/store-memory" }
 store-rocks = { version = "0.3.0", path = "./tapedrive/archive/store-rocks" }

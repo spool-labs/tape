@@ -67,4 +67,10 @@ pub enum DownloadError {
 
     #[error("slice verification failed")]
     VerificationFailed,
+
+    #[error("slice decoding failed: {0}")]
+    Decoding(String),
+
+    #[error("invalid slice index: {0}")]
+    InvalidSliceIndex(u16),
 }
