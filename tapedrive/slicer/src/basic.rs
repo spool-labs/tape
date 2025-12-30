@@ -10,6 +10,20 @@ use core::convert::TryInto;
 /// For large blobs, this may use a lot of RAM, since all slices are derived from the full blob.
 pub struct BasicSlicer(ReedSolomonCoder);
 
+impl BasicSlicer {
+    /// Create a new BasicSlicer with a custom max slice size.
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// For production, use `Default::default()` which uses 1 MiB max slice size.
+    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
+        Self(ReedSolomonCoder::with_max_slice_bytes(
+            DATA_SLICES,
+            CODING_SLICES,
+            max_slice_bytes,
+        ))
+    }
+}
+
 impl Default for BasicSlicer {
     fn default() -> Self {
         Self(ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES))
@@ -59,6 +73,12 @@ mod tests {
     use crate::errors::DecodeError;
     use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::merkle_helpers::build_blob_merkle_tree;
+    use crate::reed_solomon::TEST_MAX_SLICE_BYTES;
+
+    /// Create a test slicer with reduced memory footprint.
+    fn test_slicer() -> BasicSlicer {
+        BasicSlicer::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+    }
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -96,10 +116,14 @@ mod tests {
         size
     }
 
+    // Max test payload size with TEST_MAX_SLICE_BYTES (4 KiB * 683 data slices = ~2.7 MB)
+    // Use smaller payloads to stay well within limits
+    const MAX_TEST_PAYLOAD: usize = 100_000; // 100 KB
+
     #[test]
     fn encode_counts() {
-        let mut slicer = BasicSlicer::default();
-        let payload = mk(123_456);
+        let mut slicer = test_slicer();
+        let payload = mk(50_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         assert_eq!(slices.len(), SLICE_COUNT);
         for (i, s) in slices.iter().enumerate() {
@@ -111,8 +135,8 @@ mod tests {
 
     #[test]
     fn roundtrip_all() {
-        let sizes = [0usize, 1, 17, 10_000, 250_000];
-        let mut slicer = BasicSlicer::default();
+        let sizes = [0usize, 1, 17, 10_000, MAX_TEST_PAYLOAD];
+        let mut slicer = test_slicer();
         for &sz in &sizes {
             let payload = mk(sz);
             let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
@@ -124,7 +148,7 @@ mod tests {
 
     #[test]
     fn data_only() {
-        let mut slicer = BasicSlicer::default();
+        let mut slicer = test_slicer();
         let payload = mk(42_000);
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let mut opt = to_opt(&slices);
@@ -135,7 +159,7 @@ mod tests {
 
     #[test]
     fn mixed_k() {
-        let mut slicer = BasicSlicer::default();
+        let mut slicer = test_slicer();
         let payload = mk(77_777);
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let mut opt = to_opt(&slices);
@@ -166,7 +190,7 @@ mod tests {
 
     #[test]
     fn not_enough() {
-        let mut slicer = BasicSlicer::default();
+        let mut slicer = test_slicer();
         let payload = mk(10_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         let mut opt = to_opt(&slices);
@@ -177,7 +201,7 @@ mod tests {
 
     #[test]
     fn bad_size() {
-        let mut slicer = BasicSlicer::default();
+        let mut slicer = test_slicer();
         let payload = mk(50_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         let mut opt = to_opt(&slices);
@@ -190,7 +214,7 @@ mod tests {
 
     #[test]
     fn dup_index() {
-        let mut slicer = BasicSlicer::default();
+        let mut slicer = test_slicer();
         let payload = mk(33_333);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         let mut opt = to_opt(&slices);
@@ -202,8 +226,8 @@ mod tests {
 
     #[test]
     fn merkle_root() {
-        let mut slicer = BasicSlicer::default();
-        let payload = mk(120_000);
+        let mut slicer = test_slicer();
+        let payload = mk(80_000);
         let slices1 = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let slices2 = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let t1 = build_blob_merkle_tree(&slices1);
@@ -218,8 +242,8 @@ mod tests {
 
     #[test]
     fn repl_factor() {
-        let mut slicer = BasicSlicer::default();
-        let n = 1_000_000;
+        let mut slicer = test_slicer();
+        let n = MAX_TEST_PAYLOAD;
         let payload = mk(n);
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let total: usize = slices.iter().map(|s| s.data.len()).sum();

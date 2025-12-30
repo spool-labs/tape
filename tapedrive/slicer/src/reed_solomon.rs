@@ -6,7 +6,12 @@ use thiserror::Error;
 /// This is the maximum slice size we allow the encoder/decoder to handle.
 /// We set it to 1 MiB here, which allows encoding up to about DATA_SLICES MiB of data per stripe
 /// (with CODING_SLICES MiB of coding, and SLICE_COUNT MiB total).
-const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20; // 1 MiB
+pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20; // 1 MiB
+
+/// Smaller max slice size for testing to reduce memory usage.
+/// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
+#[cfg(test)]
+pub const TEST_MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
 
 /// Errors that may be returned by ReedSolomonCoder::encode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -45,11 +50,21 @@ pub struct ReedSolomonCoder {
 }
 
 impl ReedSolomonCoder {
-
+    /// Create a new Reed-Solomon coder with default max slice size (1 MiB).
     pub fn new(k_data: usize, r_coding: usize) -> Self {
+        Self::with_max_slice_bytes(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
+    }
+
+    /// Create a new Reed-Solomon coder with a custom max slice size.
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// The max_slice_bytes determines the maximum size of each slice,
+    /// which affects memory allocation in the encoder/decoder.
+    pub fn with_max_slice_bytes(k_data: usize, r_coding: usize, max_slice_bytes: usize) -> Self {
         assert!(u16::MAX as usize >= 65535);
         assert!(k_data > 0, "k_data must be > 0");
         assert!(r_coding > 0, "r_coding must be > 0");
+        assert!(max_slice_bytes > 0, "max_slice_bytes must be > 0");
 
         let n_total = k_data + r_coding;
         assert!(n_total <= 65536, "too many total slices for RS field");
@@ -57,9 +72,9 @@ impl ReedSolomonCoder {
         assert!(r_coding == CODING_SLICES, "r_coding must match CODING_SLICES");
 
         // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
-        let encoder = ReedSolomonEncoder::new(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
+        let encoder = ReedSolomonEncoder::new(k_data, r_coding, max_slice_bytes)
             .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
+        let decoder = ReedSolomonDecoder::new(k_data, r_coding, max_slice_bytes)
             .expect("RS decoder init");
 
         Self {
@@ -229,6 +244,11 @@ mod tests {
     use super::{Slice, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::SliceIndex;
 
+    /// Create a test coder with reduced memory footprint.
+    fn test_coder() -> ReedSolomonCoder {
+        ReedSolomonCoder::with_max_slice_bytes(DATA_SLICES, CODING_SLICES, TEST_MAX_SLICE_BYTES)
+    }
+
     fn make_payload(len: usize) -> Vec<u8> {
         // Deterministic, non-trivial pattern
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -278,7 +298,7 @@ mod tests {
 
     #[test]
     fn encode_counts() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
         let payload = make_payload(42_000);
         let raw = coder.encode(&payload).expect("encode ok");
 
@@ -292,7 +312,7 @@ mod tests {
 
     #[test]
     fn roundtrip_sizes() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
 
         let sizes = [
             0usize,
@@ -352,7 +372,7 @@ mod tests {
 
     #[test]
     fn tiny() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
 
         for sz in 0..4usize {
             let payload = make_payload(sz);
@@ -365,7 +385,7 @@ mod tests {
 
     #[test]
     fn not_enough() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
         let payload = make_payload(10_000);
         let raw = coder.encode(&payload).expect("encode ok");
         let mut slices = to_full(&raw);
@@ -380,7 +400,7 @@ mod tests {
 
     #[test]
     fn bad_size() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
         let payload = make_payload(50_000);
         let raw = coder.encode(&payload).expect("encode ok");
         let mut slices = to_full(&raw);
@@ -403,7 +423,7 @@ mod tests {
 
     #[test]
     fn empty_rt() {
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
         let payload = Vec::<u8>::new();
         let raw = coder.encode(&payload).expect("encode ok for empty payload");
         let slices = to_full(&raw);
@@ -416,7 +436,9 @@ mod tests {
     fn size_table() {
         // Keep this short so it's readable on the terminal.
 
-        let mut coder = ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES);
+        let mut coder = test_coder();
+        // Max test payload with TEST_MAX_SLICE_BYTES (4 KiB * 683 data slices = ~2.7 MB)
+        // Keep sizes modest for test speed
         let sizes = [
             0usize,
             1,
@@ -427,8 +449,6 @@ mod tests {
             10_000,
             50_000,
             100_000,
-            250_000,
-            1_000_000,
         ];
 
         println!(

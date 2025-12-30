@@ -22,10 +22,20 @@ impl Default for BlobDecoder {
 }
 
 impl BlobDecoder {
-    /// Create a new decoder.
+    /// Create a new decoder with default max slice size (1 MiB).
     pub fn new() -> Self {
         Self {
             slicer: BasicSlicer::default(),
+        }
+    }
+
+    /// Create a decoder with a custom max slice size.
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// For production, use `new()` or `Default::default()`.
+    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
+        Self {
+            slicer: BasicSlicer::with_max_slice_bytes(max_slice_bytes),
         }
     }
 
@@ -106,14 +116,27 @@ mod tests {
     use crate::encoder::BlobEncoder;
     use tape_core::erasure::DATA_SLICES;
 
+    /// Smaller max slice size for testing to reduce memory usage.
+    /// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
+    const TEST_MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
+
+    /// Create test encoder/decoder pair with reduced memory footprint.
+    fn test_encoder() -> BlobEncoder {
+        BlobEncoder::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+    }
+
+    fn test_decoder() -> BlobDecoder {
+        BlobDecoder::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+    }
+
     #[test]
     fn test_roundtrip() {
         let original = vec![0xAB; 50_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let recovered = decoder.decode(slices).unwrap();
 
         assert_eq!(original, recovered);
@@ -123,13 +146,13 @@ mod tests {
     fn test_decode_with_only_data_slices() {
         let original = vec![0xCD; 30_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
         // Keep only exactly DATA_SLICES (minimum required)
         let data_only: Vec<_> = slices.into_iter().take(DATA_SLICES).collect();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let recovered = decoder.decode(data_only).unwrap();
 
         assert_eq!(original, recovered);
@@ -139,13 +162,13 @@ mod tests {
     fn test_decode_with_missing_parity() {
         let original = vec![0xEF; 25_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
         // Keep only the first DATA_SLICES (all data, no parity)
         let data_only: Vec<_> = slices.into_iter().take(DATA_SLICES).collect();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let recovered = decoder.decode(data_only).unwrap();
 
         assert_eq!(original, recovered);
@@ -155,7 +178,7 @@ mod tests {
     fn test_decode_with_scattered_slices() {
         let original = vec![0x12; 20_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
         // Take every other slice, but ensure we have enough
@@ -170,7 +193,7 @@ mod tests {
         // Make sure we have enough
         assert!(scattered.len() >= DATA_SLICES);
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let recovered = decoder.decode(scattered).unwrap();
 
         assert_eq!(original, recovered);
@@ -180,13 +203,13 @@ mod tests {
     fn test_decode_not_enough_slices() {
         let original = vec![0x34; 10_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original).unwrap();
 
         // Only keep 100 slices (not enough - need at least DATA_SLICES)
         let too_few: Vec<_> = slices.into_iter().take(100).collect();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let result = decoder.decode(too_few);
 
         assert!(matches!(
@@ -197,11 +220,17 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_slice_index() {
-        // Create slice with invalid index
-        let invalid_slices = vec![(9999_u16, vec![0u8; 100])];
+        // Create slices with enough count but one has an invalid index (>= SLICE_COUNT)
+        // First encode a real blob to get valid slices
+        let original = vec![0x99; 10_000];
+        let mut encoder = test_encoder();
+        let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
-        let mut decoder = BlobDecoder::new();
-        let result = decoder.decode(invalid_slices);
+        // Replace one slice's index with an invalid one (>= SLICE_COUNT = 1024)
+        slices[0].0 = 9999;
+
+        let mut decoder = test_decoder();
+        let result = decoder.decode(slices);
 
         assert!(matches!(result, Err(DownloadError::InvalidSliceIndex(9999))));
     }
@@ -210,10 +239,10 @@ mod tests {
     fn test_decode_empty_blob() {
         let original = vec![];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let recovered = decoder.decode(slices).unwrap();
 
         assert_eq!(original, recovered);
@@ -223,10 +252,10 @@ mod tests {
     fn test_decode_to_blob() {
         let original = vec![0x56; 15_000];
 
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = test_decoder();
         let blob = decoder.decode_to_blob(slices).unwrap();
 
         assert_eq!(original.len(), blob.len());

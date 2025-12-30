@@ -12,6 +12,7 @@ keywords.workspace = true
 # Local workspace dependencies
 tape-rpc = { version = "0.3.0", path = "../tape-rpc" }
 tape-api.workspace = true
+tape-core.workspace = true
 tape-metrics = { workspace = true, optional = true }
 
 # Solana dependencies

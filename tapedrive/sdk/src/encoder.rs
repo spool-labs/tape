@@ -3,12 +3,20 @@
 //! This module provides `BlobEncoder` which wraps `BasicSlicer` to encode
 //! raw blobs into network-ready slices with merkle commitments.
 
+use tape_crypto::merkle::create_merkle_proof;
+use tape_crypto::Hash;
 use tape_slicer::{
-    BasicSlicer, Blob, Slicer,
+    BasicSlicer, Blob, Slicer, MERKLE_HEIGHT,
     build_blob_merkle_tree, BlobMerkleRoot,
 };
 
 use crate::error::UploadError;
+
+/// Merkle proof for a single slice.
+///
+/// Contains MERKLE_HEIGHT sibling hashes needed to verify the slice
+/// belongs to a blob with a given merkle root.
+pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
 
 /// Encodes blobs into slices for network distribution.
 ///
@@ -25,10 +33,20 @@ impl Default for BlobEncoder {
 }
 
 impl BlobEncoder {
-    /// Create a new encoder.
+    /// Create a new encoder with default max slice size (1 MiB).
     pub fn new() -> Self {
         Self {
             slicer: BasicSlicer::default(),
+        }
+    }
+
+    /// Create an encoder with a custom max slice size.
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// For production, use `new()` or `Default::default()`.
+    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
+        Self {
+            slicer: BasicSlicer::with_max_slice_bytes(max_slice_bytes),
         }
     }
 
@@ -132,6 +150,64 @@ impl BlobEncoder {
 
         Ok((output, root))
     }
+
+    /// Encode a blob and generate merkle proofs for each slice.
+    ///
+    /// This is the full encoding method needed for uploading to storage nodes.
+    /// Each slice includes a merkle proof that allows the storage node to verify
+    /// that the slice belongs to the claimed blob.
+    ///
+    /// # Arguments
+    /// * `data` - Raw blob data to encode
+    ///
+    /// # Returns
+    /// Tuple containing:
+    /// - Vector of (slice_index, slice_data, merkle_proof) tuples
+    /// - The blob merkle root (commitment)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut encoder = BlobEncoder::new();
+    /// let (slices_with_proofs, root) = encoder.encode_with_proofs(data)?;
+    ///
+    /// for (idx, slice_data, proof) in slices_with_proofs {
+    ///     // Upload slice_data to node responsible for spool idx
+    ///     // Node can verify: verify_proof(&slice_data, &root, &proof, idx, MERKLE_HEIGHT)
+    /// }
+    /// ```
+    pub fn encode_with_proofs(
+        &mut self,
+        data: Vec<u8>,
+    ) -> Result<(Vec<(u16, Vec<u8>, SliceMerkleProof)>, BlobMerkleRoot), UploadError> {
+        let blob = Blob::from(data);
+        let slices = self.slicer
+            .encode(blob)
+            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+
+        // Build Merkle tree from slices
+        let tree = build_blob_merkle_tree(&slices);
+        let root = tree.root();
+
+        // Collect slice data for proof generation (need owned copies for lifetime)
+        let slice_data_owned: Vec<Vec<u8>> = slices.iter().map(|s| s.data.clone()).collect();
+        let slice_data_refs: Vec<&[u8]> = slice_data_owned.iter().map(|s| s.as_slice()).collect();
+
+        // Generate proof for each slice
+        let mut output = Vec::with_capacity(slices.len());
+        for (idx, slice) in slices.into_iter().enumerate() {
+            let proof_vec = create_merkle_proof(&slice_data_refs, idx, MERKLE_HEIGHT);
+
+            // Convert Vec<Hash> to fixed-size array
+            let mut proof_arr = [Hash::default(); MERKLE_HEIGHT];
+            for (i, h) in proof_vec.into_iter().enumerate() {
+                proof_arr[i] = h;
+            }
+
+            output.push((*slice.index as u16, slice.data, proof_arr));
+        }
+
+        Ok((output, root))
+    }
 }
 
 #[cfg(test)]
@@ -139,9 +215,18 @@ mod tests {
     use super::*;
     use tape_core::erasure::SLICE_COUNT;
 
+    /// Smaller max slice size for testing to reduce memory usage.
+    /// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
+    const TEST_MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
+
+    /// Create a test encoder with reduced memory footprint.
+    fn test_encoder() -> BlobEncoder {
+        BlobEncoder::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+    }
+
     #[test]
     fn test_encode_basic() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data = vec![0u8; 10_000];
         let slices = encoder.encode(data).unwrap();
 
@@ -155,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_encode_to_vec() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data = vec![42u8; 5_000];
         let slices = encoder.encode_to_vec(data).unwrap();
 
@@ -164,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_encode_with_root() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data = vec![0xAB; 20_000];
         let (slices, root) = encoder.encode_with_root(data).unwrap();
 
@@ -176,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_encode_same_data_same_root() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data1 = vec![0xCD; 15_000];
         let data2 = data1.clone();
 
@@ -188,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_encode_different_data_different_root() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data1 = vec![0xAA; 10_000];
         let data2 = vec![0xBB; 10_000];
 
@@ -200,11 +285,58 @@ mod tests {
 
     #[test]
     fn test_encode_empty_blob() {
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = test_encoder();
         let data = vec![];
         let slices = encoder.encode(data).unwrap();
 
         // Even empty data produces SLICE_COUNT slices
         assert_eq!(slices.len(), SLICE_COUNT);
+    }
+
+    #[test]
+    fn test_encode_with_proofs() {
+        use tape_crypto::merkle::verify_proof;
+
+        let mut encoder = test_encoder();
+        let data = vec![0x42; 30_000];
+        let (slices_with_proofs, root) = encoder.encode_with_proofs(data).unwrap();
+
+        assert_eq!(slices_with_proofs.len(), SLICE_COUNT);
+
+        // Verify each proof
+        for (idx, slice_data, proof) in &slices_with_proofs {
+            let valid = verify_proof(
+                slice_data,
+                &root,
+                proof,
+                *idx as u64,
+                MERKLE_HEIGHT,
+            );
+            assert!(valid, "Proof verification failed for slice {}", idx);
+        }
+    }
+
+    #[test]
+    fn test_encode_with_proofs_indices_sequential() {
+        let mut encoder = test_encoder();
+        let data = vec![0xAB; 15_000];
+        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
+
+        // Verify indices are sequential
+        for (expected_idx, (actual_idx, _, _)) in slices_with_proofs.iter().enumerate() {
+            assert_eq!(*actual_idx as usize, expected_idx);
+        }
+    }
+
+    #[test]
+    fn test_encode_with_proofs_root_matches() {
+        let mut encoder = test_encoder();
+        let data = vec![0xCD; 20_000];
+
+        // encode_with_root and encode_with_proofs should produce same root
+        let (_, root1) = encoder.encode_with_root(data.clone()).unwrap();
+        let (_, root2) = encoder.encode_with_proofs(data).unwrap();
+
+        assert_eq!(root1, root2);
     }
 }

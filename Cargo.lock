@@ -6801,6 +6801,7 @@ dependencies = [
  "solana-client",
  "solana-sdk",
  "tape-api",
+ "tape-core",
  "tape-metrics",
  "tape-rpc",
  "thiserror 2.0.17",

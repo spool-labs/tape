@@ -42,7 +42,7 @@ pub use client::TapeClient;
 
 // Encoder/Decoder for direct use
 pub use decoder::BlobDecoder;
-pub use encoder::BlobEncoder;
+pub use encoder::{BlobEncoder, SliceMerkleProof};
 
 // Lower-level upload/download
 pub use downloader::ParallelDownloader;
