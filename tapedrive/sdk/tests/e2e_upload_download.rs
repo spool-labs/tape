@@ -425,7 +425,7 @@ async fn test_multi_node_with_failures() {
     println!("Uploaded to {} nodes", NUM_NODES);
 
     // Kill first N nodes
-    for i in 0..NODES_TO_KILL {
+    for _ in 0..NODES_TO_KILL {
         let (_, handle) = nodes.remove(0);
         handle.abort();
     }
@@ -458,4 +458,140 @@ async fn test_multi_node_with_failures() {
         "SUCCESS: Recovered data after {} node failures!",
         NODES_TO_KILL
     );
+}
+
+// ============================================================================
+// BENCHMARKS
+// ============================================================================
+
+/// Benchmark upload/download throughput with multiple nodes.
+/// Separates encoding/decoding time from network time.
+///
+/// Run with: cargo test -p tape-sdk --test e2e_upload_download bench_ -- --nocapture
+#[tokio::test]
+async fn bench_upload_download_throughput() {
+    use std::time::Instant;
+    use tape_sdk::{BlobEncoder, BlobDecoder};
+
+    const NUM_NODES: usize = 16;
+    const DATA_SIZE: usize = 100_000; // 100 KB
+
+    // Start nodes
+    let nodes = start_test_nodes(NUM_NODES).await;
+    let node_urls: Vec<String> = nodes
+        .iter()
+        .map(|(addr, _)| format!("http://{}", addr))
+        .collect();
+
+    let client = test_client_multi(node_urls);
+
+    let original: Vec<u8> = (0..DATA_SIZE).map(|i| (i % 256) as u8).collect();
+    let track_id = Pubkey::new_unique().to_string();
+
+    // Warm up
+    let _ = client.upload_blob(&track_id, original.clone()).await;
+    let _ = client.download_blob(&track_id).await;
+
+    // Benchmark encoding separately
+    let mut encoder = BlobEncoder::with_max_slice_bytes(4 * 1024);
+    let start = Instant::now();
+    let (slices, _) = encoder.encode_with_proofs(original.clone()).unwrap();
+    let encode_time = start.elapsed();
+
+    // Benchmark upload (includes encoding)
+    let track_id = Pubkey::new_unique().to_string();
+    let start = Instant::now();
+    let _commitment = client
+        .upload_blob(&track_id, original.clone())
+        .await
+        .expect("upload failed");
+    let upload_total = start.elapsed();
+
+    // Benchmark download (includes decoding)
+    let start = Instant::now();
+    let _recovered = client
+        .download_blob(&track_id)
+        .await
+        .expect("download failed");
+    let download_total = start.elapsed();
+
+    // Benchmark decoding separately
+    let slices_for_decode: Vec<(u16, Vec<u8>)> = slices
+        .iter()
+        .take(683)
+        .map(|s| (s.index, s.data.clone()))
+        .collect();
+    let mut decoder = BlobDecoder::with_max_slice_bytes(4 * 1024);
+    let start = Instant::now();
+    let _ = decoder.decode(slices_for_decode).unwrap();
+    let decode_time = start.elapsed();
+
+    // Estimate network time
+    let upload_network = upload_total.saturating_sub(encode_time);
+    let download_network = download_total.saturating_sub(decode_time);
+
+    println!();
+    println!("=== Upload/Download Benchmark ({} nodes, {} KB) ===", NUM_NODES, DATA_SIZE / 1000);
+    println!();
+    println!("Upload total:    {:>8.2?}  ({:>5.0} slices/sec)",
+             upload_total, 1024.0 / upload_total.as_secs_f64());
+    println!("  - Encode:      {:>8.2?}", encode_time);
+    println!("  - Network:     {:>8.2?}  ({:>5.0} slices/sec)",
+             upload_network, 1024.0 / upload_network.as_secs_f64());
+    println!();
+    println!("Download total:  {:>8.2?}  ({:>5.0} slices/sec)",
+             download_total, 1024.0 / download_total.as_secs_f64());
+    println!("  - Network:     {:>8.2?}  ({:>5.0} slices/sec)",
+             download_network, 1024.0 / download_network.as_secs_f64());
+    println!("  - Decode:      {:>8.2?}", decode_time);
+    println!();
+}
+
+/// Benchmark with varying node counts to see scaling behavior.
+#[tokio::test]
+async fn bench_node_scaling() {
+    use std::time::Instant;
+
+    const DATA_SIZE: usize = 50_000; // 50 KB
+
+    println!();
+    println!("=== Node Scaling Benchmark ({} KB) ===", DATA_SIZE / 1000);
+    println!();
+    println!("{:>6} {:>12} {:>12} {:>12} {:>12}",
+             "Nodes", "Upload", "Download", "Up sl/s", "Down sl/s");
+    println!("{:-<6} {:->12} {:->12} {:->12} {:->12}", "", "", "", "", "");
+
+    for num_nodes in [1, 4, 8, 16, 32] {
+        let nodes = start_test_nodes(num_nodes).await;
+        let node_urls: Vec<String> = nodes
+            .iter()
+            .map(|(addr, _)| format!("http://{}", addr))
+            .collect();
+
+        let client = test_client_multi(node_urls);
+        let original: Vec<u8> = (0..DATA_SIZE).map(|i| (i % 256) as u8).collect();
+
+        // Warm up
+        let track_id = Pubkey::new_unique().to_string();
+        let _ = client.upload_blob(&track_id, original.clone()).await;
+        let _ = client.download_blob(&track_id).await;
+
+        // Benchmark
+        let track_id = Pubkey::new_unique().to_string();
+
+        let start = Instant::now();
+        client.upload_blob(&track_id, original.clone()).await.unwrap();
+        let upload_time = start.elapsed();
+
+        let start = Instant::now();
+        client.download_blob(&track_id).await.unwrap();
+        let download_time = start.elapsed();
+
+        let up_slices = 1024.0 / upload_time.as_secs_f64();
+        let down_slices = 1024.0 / download_time.as_secs_f64();
+
+        println!("{:>6} {:>12.2?} {:>12.2?} {:>12.0} {:>12.0}",
+                 num_nodes, upload_time, download_time, up_slices, down_slices);
+    }
+    println!();
 }
