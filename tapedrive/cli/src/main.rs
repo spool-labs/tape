@@ -7,6 +7,16 @@ use clap::{Parser, Subcommand};
 use tape_crypto::Pubkey;
 use tape_sdk::TapeClient;
 
+/// Number of data slices used in Reed-Solomon encoding.
+/// Must match tape_slicer::DATA_SLICES.
+const DATA_SLICES: usize = 683;
+
+/// Minimum slice size to avoid excessive overhead from tiny slices.
+const MIN_SLICE_BYTES: usize = 1024; // 1 KB
+
+/// Maximum slice size to prevent OOM during encoding/decoding.
+const MAX_SLICE_BYTES: usize = 256 * 1024; // 256 KB (safe for most systems)
+
 /// Tapedrive blob storage CLI.
 #[derive(Parser, Debug)]
 #[command(name = "tape")]
@@ -27,13 +37,14 @@ enum Commands {
         #[arg(short, long, value_delimiter = ',')]
         nodes: Vec<String>,
 
-        /// Optional track ID (generates UUID if not provided).
+        /// Optional track ID (generates random pubkey if not provided).
         #[arg(short, long)]
         track_id: Option<String>,
 
-        /// Maximum slice size in bytes (default: 1MiB).
-        #[arg(long, default_value = "1048576")]
-        max_slice_bytes: usize,
+        /// Maximum slice size in bytes. If not specified, automatically
+        /// calculated based on file size to minimize memory usage.
+        #[arg(long)]
+        max_slice_bytes: Option<usize>,
     },
 
     /// Download a blob from storage nodes.
@@ -48,6 +59,11 @@ enum Commands {
         /// Output file path (defaults to stdout if not provided).
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Maximum slice size in bytes. If not specified, uses a safe default
+        /// that works for most files. Set higher for large files (>170MB).
+        #[arg(long)]
+        max_slice_bytes: Option<usize>,
     },
 
     /// Check health of storage nodes.
@@ -75,8 +91,9 @@ async fn main() -> Result<()> {
             track_id,
             nodes,
             output,
+            max_slice_bytes,
         } => {
-            download_blob(track_id, nodes, output).await?;
+            download_blob(track_id, nodes, output, max_slice_bytes).await?;
         }
         Commands::Health { nodes } => {
             check_health(nodes).await?;
@@ -86,11 +103,29 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Calculate optimal slice size for a given data size.
+///
+/// The slice size is chosen to:
+/// 1. Be at least MIN_SLICE_BYTES to avoid excessive overhead
+/// 2. Be at most MAX_SLICE_BYTES to prevent OOM
+/// 3. Be just large enough to fit the data in DATA_SLICES slices
+fn calculate_slice_size(data_len: usize) -> usize {
+    if data_len == 0 {
+        return MIN_SLICE_BYTES;
+    }
+
+    // Minimum slice size needed: ceil(data_len / DATA_SLICES)
+    let min_needed = (data_len + DATA_SLICES - 1) / DATA_SLICES;
+
+    // Clamp to our bounds
+    min_needed.clamp(MIN_SLICE_BYTES, MAX_SLICE_BYTES)
+}
+
 async fn upload_file(
     file: PathBuf,
     nodes: Vec<String>,
     track_id: Option<String>,
-    max_slice_bytes: usize,
+    max_slice_bytes: Option<usize>,
 ) -> Result<()> {
     if nodes.is_empty() {
         anyhow::bail!("At least one node URL is required");
@@ -102,7 +137,15 @@ async fn upload_file(
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let file_size = data.len();
-    eprintln!("Uploading {} ({} bytes)...", file.display(), file_size);
+
+    // Calculate or use provided slice size
+    let slice_size = max_slice_bytes.unwrap_or_else(|| calculate_slice_size(file_size));
+    eprintln!(
+        "Uploading {} ({} bytes, slice size: {} bytes)...",
+        file.display(),
+        file_size,
+        slice_size
+    );
 
     // Generate or use provided track ID (must be valid base58 pubkey)
     let track_id = track_id.unwrap_or_else(|| {
@@ -113,7 +156,7 @@ async fn upload_file(
     // Create client
     let client = TapeClient::builder()
         .node_addresses(nodes.clone())
-        .max_slice_bytes(max_slice_bytes)
+        .max_slice_bytes(slice_size)
         .build();
 
     // Upload
@@ -135,16 +178,22 @@ async fn download_blob(
     track_id: String,
     nodes: Vec<String>,
     output: Option<PathBuf>,
+    max_slice_bytes: Option<usize>,
 ) -> Result<()> {
     if nodes.is_empty() {
         anyhow::bail!("At least one node URL is required");
     }
 
-    eprintln!("Downloading track {}...", track_id);
+    let slice_size = max_slice_bytes.unwrap_or(MAX_SLICE_BYTES);
+    eprintln!(
+        "Downloading track {} (max slice size: {} bytes)...",
+        track_id, slice_size
+    );
 
-    // Create client
+    // Create client with specified or default max slice size
     let client = TapeClient::builder()
         .node_addresses(nodes)
+        .max_slice_bytes(slice_size)
         .build();
 
     // Download
