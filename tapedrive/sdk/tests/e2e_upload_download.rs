@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use solana_pubkey::Pubkey;
+use tape_crypto::Pubkey;
 use store_memory::MemoryStore;
 use tape_metrics::MetricsRegistry;
 use tape_node::server::routes::{create_router, ApiState};

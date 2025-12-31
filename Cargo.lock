@@ -6946,8 +6946,6 @@ dependencies = [
  "axum",
  "futures",
  "serde",
- "solana-program",
- "solana-pubkey 2.1.16",
  "store-memory",
  "tape-core",
  "tape-crypto",

@@ -31,9 +31,6 @@ serde = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
-# Solana
-solana-program = { workspace = true }
-
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tape-node = { path = "../node" }
@@ -41,4 +38,3 @@ tape-store = { path = "../archive/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../archive/store-memory" }
 axum = { workspace = true }
-solana-pubkey = { workspace = true }
