@@ -14,8 +14,9 @@ const DATA_SLICES: usize = 683;
 /// Minimum slice size to avoid excessive overhead from tiny slices.
 const MIN_SLICE_BYTES: usize = 1024; // 1 KB
 
-/// Maximum slice size to prevent OOM during encoding/decoding.
-const MAX_SLICE_BYTES: usize = 256 * 1024; // 256 KB (safe for most systems)
+/// Maximum slice size for upload to prevent excessive memory during encoding.
+/// Download auto-detects slice size from stored data.
+const MAX_SLICE_BYTES: usize = 256 * 1024; // 256 KB
 
 /// Tapedrive blob storage CLI.
 #[derive(Parser, Debug)]
@@ -59,11 +60,6 @@ enum Commands {
         /// Output file path (defaults to stdout if not provided).
         #[arg(short, long)]
         output: Option<PathBuf>,
-
-        /// Maximum slice size in bytes. If not specified, uses a safe default
-        /// that works for most files. Set higher for large files (>170MB).
-        #[arg(long)]
-        max_slice_bytes: Option<usize>,
     },
 
     /// Check health of storage nodes.
@@ -91,9 +87,8 @@ async fn main() -> Result<()> {
             track_id,
             nodes,
             output,
-            max_slice_bytes,
         } => {
-            download_blob(track_id, nodes, output, max_slice_bytes).await?;
+            download_blob(track_id, nodes, output).await?;
         }
         Commands::Health { nodes } => {
             check_health(nodes).await?;
@@ -178,22 +173,16 @@ async fn download_blob(
     track_id: String,
     nodes: Vec<String>,
     output: Option<PathBuf>,
-    max_slice_bytes: Option<usize>,
 ) -> Result<()> {
     if nodes.is_empty() {
         anyhow::bail!("At least one node URL is required");
     }
 
-    let slice_size = max_slice_bytes.unwrap_or(MAX_SLICE_BYTES);
-    eprintln!(
-        "Downloading track {} (max slice size: {} bytes)...",
-        track_id, slice_size
-    );
+    eprintln!("Downloading track {}...", track_id);
 
-    // Create client with specified or default max slice size
+    // Create client - slice size is auto-detected from stored slices
     let client = TapeClient::builder()
         .node_addresses(nodes)
-        .max_slice_bytes(slice_size)
         .build();
 
     // Download

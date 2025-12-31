@@ -197,11 +197,34 @@ impl TapeClient {
         Ok(commitment)
     }
 
+    /// Probe the slice size for a track by downloading a single slice.
+    ///
+    /// This is useful for determining the correct decoder buffer size
+    /// before downloading all slices.
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier
+    ///
+    /// # Returns
+    /// The size in bytes of slices for this track.
+    pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
+        let downloader = ParallelDownloader::new(
+            track_id.to_string(),
+            self.node_addresses.clone(),
+            self.node_factory.clone(),
+        );
+
+        // Download slice 0 to determine size
+        let slice_data = downloader.download_slice(0).await?;
+        Ok(slice_data.len())
+    }
+
     /// Download and decode a blob from the network.
     ///
     /// This is the primary method for retrieving data. It:
-    /// 1. Downloads at least DATA_SLICES slices from storage nodes
-    /// 2. Decodes the slices back into the original blob
+    /// 1. Probes a single slice to determine the slice size
+    /// 2. Downloads at least DATA_SLICES slices from storage nodes
+    /// 3. Decodes the slices back into the original blob using the detected size
     ///
     /// # Arguments
     /// * `track_id` - The track identifier for the blob
@@ -216,14 +239,20 @@ impl TapeClient {
     /// 2. Re-encode the downloaded data and compare merkle roots
     /// Or use `download_blob_verified()` which does this automatically.
     pub async fn download_blob(&self, track_id: &str) -> Result<Vec<u8>, ClientError> {
+        // Probe slice size first to allocate correct decoder buffers
+        let slice_size = self
+            .probe_slice_size(track_id)
+            .await
+            .map_err(ClientError::Download)?;
+
         // Download enough slices
         let slices = self
             .download_slices(track_id)
             .await
             .map_err(ClientError::Download)?;
 
-        // Decode slices back to blob
-        let mut decoder = BlobDecoder::with_max_slice_bytes(self.max_slice_bytes);
+        // Decode slices using detected slice size
+        let mut decoder = BlobDecoder::with_max_slice_bytes(slice_size);
         let data = decoder
             .decode(slices)
             .map_err(ClientError::Download)?;
