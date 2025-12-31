@@ -72,13 +72,10 @@ async fn run_node(config: NodeConfig) -> Result<()> {
 
     // Initialize storage service
     let storage = Arc::new(
-        StorageService::new(&config, Some(Arc::clone(&metrics)))
-            .context("Failed to create storage service")?,
+        StorageService::open(&config.storage_path)
+            .context("Failed to create storage service")?
+            .with_metrics(Arc::clone(&metrics)),
     );
-    storage
-        .initialize()
-        .await
-        .context("Failed to initialize storage")?;
 
     // Create shutdown token
     let shutdown = CancellationToken::new();

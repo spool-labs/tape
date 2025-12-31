@@ -13,9 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use tape_crypto::Pubkey;
 use store_memory::MemoryStore;
-use tape_core::types::StorageUnits;
+use tape_crypto::Pubkey;
 use tape_metrics::MetricsRegistry;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
@@ -30,14 +29,7 @@ async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         None => MetricsRegistry::init(),
     };
     let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
-
-    let store = TapeStore::new(MemoryStore::new());
-    let service = Arc::new(StorageService::with_store(
-        store,
-        None, // No path for in-memory storage
-        StorageUnits::from(1_000), // 1000 MB
-        None, // No metrics for storage service (routes handle their own)
-    ));
+    let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
     let state = ApiState { metrics, service };
     let app: Router = create_router(state);

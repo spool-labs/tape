@@ -267,7 +267,6 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use store_memory::MemoryStore;
-    use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
     use tape_metrics::MetricsRegistry;
     use tape_store::TapeStore;
@@ -280,15 +279,8 @@ mod tests {
             None => MetricsRegistry::init(),
         };
         let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
+        let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
-        // Create storage service without metrics (not needed for storage operations in tests)
-        let store = TapeStore::new(MemoryStore::new());
-        let service = Arc::new(StorageService::with_store(
-            store,
-            None, // No path for in-memory storage
-            StorageUnits::from(1_000), // 1000 MB
-            None, // No metrics for storage service
-        ));
         ApiState { metrics, service }
     }
 

@@ -1,19 +1,17 @@
 //! Storage service for managing slice storage and retrieval.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use solana_pubkey::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
-use tape_core::types::StorageUnits;
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
 // Re-export types from tape_store for use by routes
 pub use tape_store::ops::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
 
-use crate::config::NodeConfig;
 use crate::metrics::NodeMetrics;
 
 /// Error type for storage operations.
@@ -21,9 +19,6 @@ use crate::metrics::NodeMetrics;
 pub enum StorageError {
     #[error("storage initialization failed: {0}")]
     InitFailed(String),
-
-    #[error("storage path does not exist: {0}")]
-    PathNotFound(PathBuf),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -37,119 +32,50 @@ pub enum StorageError {
 
 /// Storage service for managing slice data.
 ///
-/// Wraps `TapeStore<RocksStore>` and provides methods for storing
-/// and retrieving slices with metrics tracking.
+/// Wraps a `TapeStore` and provides methods for storing and retrieving
+/// slices with optional metrics tracking.
 pub struct StorageService<S: Store = RocksStore> {
     /// The underlying tape store.
     store: TapeStore<S>,
-    /// Path to the storage directory (None for in-memory storage).
-    storage_path: Option<PathBuf>,
-    /// Storage capacity.
-    capacity: StorageUnits,
-    /// Reference to node metrics (optional for testing).
+    /// Optional metrics for tracking operations.
     metrics: Option<Arc<NodeMetrics>>,
 }
 
 impl StorageService<RocksStore> {
-    /// Create a new storage service with RocksDB backend.
+    /// Open a storage service with RocksDB backend at the given path.
     ///
-    /// # Arguments
-    /// * `config` - Node configuration containing storage settings
-    /// * `metrics` - Node metrics for tracking storage operations (optional)
-    pub fn new(
-        config: &NodeConfig,
-        metrics: Option<Arc<NodeMetrics>>,
-    ) -> Result<Self, StorageError> {
-        let storage_path = config.storage_path.clone();
-
-        // Create storage directory if it doesn't exist
-        if !storage_path.exists() {
-            std::fs::create_dir_all(&storage_path)?;
-            tracing::info!(path = %storage_path.display(), "Created storage directory");
+    /// Creates the directory if it doesn't exist.
+    pub fn open(path: &Path) -> Result<Self, StorageError> {
+        if !path.exists() {
+            std::fs::create_dir_all(path)?;
+            tracing::info!(path = %path.display(), "Created storage directory");
         }
 
-        // Open the TapeStore with RocksDB
-        let store = TapeStore::open_primary(&storage_path)
+        let store = TapeStore::open_primary(path)
             .map_err(|e| StorageError::InitFailed(e.to_string()))?;
 
-        tracing::info!(
-            path = %storage_path.display(),
-            capacity = %config.storage_capacity,
-            "Storage service initialized with RocksDB"
-        );
+        tracing::info!(path = %path.display(), "Storage service initialized with RocksDB");
 
         Ok(Self {
             store,
-            storage_path: Some(storage_path),
-            capacity: config.storage_capacity,
-            metrics,
+            metrics: None,
         })
     }
 }
 
 impl<S: Store> StorageService<S> {
-    /// Create a storage service with a custom store backend.
-    ///
-    /// This is primarily used for testing with MemoryStore.
-    ///
-    /// # Arguments
-    /// * `store` - The underlying TapeStore
-    /// * `storage_path` - Path to storage directory (None for in-memory)
-    /// * `capacity` - Storage capacity
-    /// * `metrics` - Node metrics (None for testing without metrics)
-    pub fn with_store(
-        store: TapeStore<S>,
-        storage_path: Option<PathBuf>,
-        capacity: StorageUnits,
-        metrics: Option<Arc<NodeMetrics>>,
-    ) -> Self {
+    /// Create a storage service with the given store.
+    pub fn new(store: TapeStore<S>) -> Self {
         Self {
             store,
-            storage_path,
-            capacity,
-            metrics,
+            metrics: None,
         }
     }
 
-    /// Get the storage path (if configured).
-    pub fn storage_path(&self) -> Option<&Path> {
-        self.storage_path.as_deref()
-    }
-
-    /// Get the storage capacity.
-    pub fn capacity(&self) -> StorageUnits {
-        self.capacity
-    }
-
-    /// Check if storage is healthy.
-    ///
-    /// For in-memory storage (no path configured), this always returns true.
-    /// For file-backed storage, checks that the path exists and is a directory.
-    pub fn is_healthy(&self) -> bool {
-        match &self.storage_path {
-            Some(path) => path.exists() && path.is_dir(),
-            None => true, // In-memory storage is always healthy
-        }
-    }
-
-    /// Initialize storage (placeholder for any startup tasks).
-    pub async fn initialize(&self) -> Result<(), StorageError> {
-        match &self.storage_path {
-            Some(path) => {
-                tracing::info!(
-                    path = %path.display(),
-                    capacity = %self.capacity,
-                    "Storage service initialized"
-                );
-            }
-            None => {
-                tracing::info!(
-                    capacity = %self.capacity,
-                    "Storage service initialized (in-memory)"
-                );
-            }
-        }
-        Ok(())
+    /// Add metrics tracking to this service.
+    pub fn with_metrics(mut self, metrics: Arc<NodeMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Store a slice with its metadata.
@@ -239,14 +165,8 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_crypto::Hash;
 
-    fn create_test_store() -> StorageService<MemoryStore> {
-        let store = TapeStore::new(MemoryStore::new());
-        StorageService::with_store(
-            store,
-            None, // No path for in-memory storage
-            StorageUnits::from(1_000), // 1000 MB
-            None, // No metrics for testing
-        )
+    fn create_test_service() -> StorageService<MemoryStore> {
+        StorageService::new(TapeStore::new(MemoryStore::new()))
     }
 
     fn create_test_meta() -> SliceMeta {
@@ -261,18 +181,16 @@ mod tests {
 
     #[test]
     fn test_put_get_slice() {
-        let service = create_test_store();
+        let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx = 42u16;
         let data = vec![0xAB; 1024];
         let meta = create_test_meta();
 
-        // Put slice
         service
             .put_slice(spool_idx, track, data.clone(), meta.clone())
             .unwrap();
 
-        // Get slice
         let (retrieved_data, retrieved_meta) = service
             .get_slice(spool_idx, track)
             .unwrap()
@@ -284,51 +202,25 @@ mod tests {
 
     #[test]
     fn test_get_nonexistent_slice() {
-        let service = create_test_store();
-        let track = Pubkey::new_unique();
-
-        let result = service.get_slice(0, track).unwrap();
+        let service = create_test_service();
+        let result = service.get_slice(0, Pubkey::new_unique()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_delete_slice() {
-        let service = create_test_store();
+        let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx = 42u16;
 
-        // Put slice
         service
             .put_slice(spool_idx, track, vec![0xAB; 100], create_test_meta())
             .unwrap();
 
-        // Verify it exists
         assert!(service.get_slice(spool_idx, track).unwrap().is_some());
 
-        // Delete slice
         service.delete_slice(spool_idx, track).unwrap();
 
-        // Verify it's gone
         assert!(service.get_slice(spool_idx, track).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_is_healthy_in_memory() {
-        let service = create_test_store();
-        // In-memory storage (no path) is always healthy
-        assert!(service.is_healthy());
-    }
-
-    #[test]
-    fn test_is_healthy_with_path() {
-        let store = TapeStore::new(MemoryStore::new());
-        let service = StorageService::with_store(
-            store,
-            Some(PathBuf::from("/nonexistent/path")),
-            StorageUnits::from(1_000),
-            None,
-        );
-        // Path doesn't exist, so not healthy
-        assert!(!service.is_healthy());
     }
 }
