@@ -6792,6 +6792,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-cli"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "rand 0.8.5",
+ "tape-crypto",
+ "tape-sdk",
+ "tokio",
+]
+
+[[package]]
 name = "tape-client"
 version = "0.3.0"
 dependencies = [

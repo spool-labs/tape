@@ -1,0 +1,30 @@
+[package]
+name = "tape-cli"
+description = "Command-line interface for tapedrive blob storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tape"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+tape-sdk = { path = "../sdk" }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Async
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+hex = { workspace = true }
+
+# Crypto (for generating track IDs)
+tape-crypto = { path = "../../crypto" }
+rand = { workspace = true }

@@ -122,6 +122,21 @@ impl TapeClient {
         &self.node_addresses
     }
 
+    /// Check if a specific node is healthy.
+    ///
+    /// # Arguments
+    /// * `node_address` - The node address to check
+    pub async fn health_check(&self, node_address: &str) -> Result<bool, ClientError> {
+        let client = self
+            .node_factory
+            .client_for_address(node_address)
+            .map_err(|e| ClientError::Encoding(e.to_string()))?;
+        client
+            .health_check()
+            .await
+            .map_err(|e| ClientError::Encoding(e.to_string()))
+    }
+
     /// Update the list of node addresses.
     ///
     /// Call this when the committee changes.

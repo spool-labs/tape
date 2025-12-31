@@ -19,6 +19,7 @@ members = [
   "tapedrive/api",
   "tapedrive/client",
   "tapedrive/sdk",
+  "tapedrive/cli",
   "client/tape-rpc",
   "client/tape-client",
 ]
@@ -97,6 +98,8 @@ chrono = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 thiserror = "2.0.12"
 five8 = "1.0.0"
+hex = "0.4"
+uuid = { version = "1.11", features = ["v4"] }
 
 # cli-specific
 clap = { version = "4.5", features = ["derive"] }
