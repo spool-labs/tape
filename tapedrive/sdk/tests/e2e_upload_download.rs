@@ -53,11 +53,28 @@ async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
+/// Start multiple test nodes.
+async fn start_test_nodes(count: usize) -> Vec<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let mut nodes = Vec::with_capacity(count);
+    for _ in 0..count {
+        nodes.push(start_test_node().await);
+    }
+    nodes
+}
+
 /// Create a test client with small slice sizes (4 KB instead of 1 MB).
 fn test_client(node_url: String) -> TapeClient {
     TapeClient::builder()
         .add_node(node_url)
         .max_slice_bytes(4 * 1024) // 4 KB slices for testing
+        .build()
+}
+
+/// Create a test client with multiple nodes.
+fn test_client_multi(node_urls: Vec<String>) -> TapeClient {
+    TapeClient::builder()
+        .node_addresses(node_urls)
+        .max_slice_bytes(4 * 1024)
         .build()
 }
 
@@ -316,4 +333,129 @@ async fn test_parallel_throughput() {
             success as f64 / elapsed.as_secs_f64()
         );
     }
+}
+
+// ============================================================================
+// MULTI-NODE TESTS
+// ============================================================================
+
+/// Test upload/download with 42 nodes (slices distributed round-robin).
+#[tokio::test]
+async fn test_multi_node_roundtrip() {
+    const NUM_NODES: usize = 42;
+
+    // Start 42 nodes
+    let nodes = start_test_nodes(NUM_NODES).await;
+    let node_urls: Vec<String> = nodes
+        .iter()
+        .map(|(addr, _)| format!("http://{}", addr))
+        .collect();
+
+    println!("Started {} nodes", NUM_NODES);
+
+    let client = test_client_multi(node_urls);
+
+    // Create test data
+    let original: Vec<u8> = (0..50_000u32)
+        .map(|i| ((i * 17 + 42) % 256) as u8)
+        .collect();
+
+    let track_id = Pubkey::new_unique().to_string();
+
+    println!(
+        "Uploading {} bytes across {} nodes (~{} slices each)...",
+        original.len(),
+        NUM_NODES,
+        1024 / NUM_NODES
+    );
+
+    // Upload - slices distributed: slice_idx % NUM_NODES
+    let commitment = client
+        .upload_blob(&track_id, original.clone())
+        .await
+        .expect("upload should succeed");
+
+    println!("Upload complete!");
+
+    // Download - fetches from correct node per slice
+    let recovered = client
+        .download_blob(&track_id)
+        .await
+        .expect("download should succeed");
+
+    assert_eq!(original, recovered);
+
+    // Verify
+    let verified = client
+        .download_blob_verified(&track_id, &commitment)
+        .await
+        .expect("verification should pass");
+
+    assert_eq!(original, verified);
+    println!("SUCCESS: {}-node round-trip verified!", NUM_NODES);
+}
+
+/// Test with simulated node failures (multiple nodes down).
+///
+/// With 42 nodes, each stores ~24 slices. We can lose up to 14 nodes
+/// (341 slices) and still have 683+ remaining.
+#[tokio::test]
+async fn test_multi_node_with_failures() {
+    const NUM_NODES: usize = 42;
+    const NODES_TO_KILL: usize = 10; // Kill 10 nodes (~240 slices lost)
+
+    // Start 42 nodes
+    let mut nodes = start_test_nodes(NUM_NODES).await;
+    let node_urls: Vec<String> = nodes
+        .iter()
+        .map(|(addr, _)| format!("http://{}", addr))
+        .collect();
+
+    let client = test_client_multi(node_urls);
+
+    let original: Vec<u8> = (0..30_000u32).map(|i| (i % 256) as u8).collect();
+    let track_id = Pubkey::new_unique().to_string();
+
+    // Upload to all nodes
+    let commitment = client
+        .upload_blob(&track_id, original.clone())
+        .await
+        .expect("upload should succeed");
+
+    println!("Uploaded to {} nodes", NUM_NODES);
+
+    // Kill first N nodes
+    for i in 0..NODES_TO_KILL {
+        let (_, handle) = nodes.remove(0);
+        handle.abort();
+    }
+    let slices_lost = (1024 / NUM_NODES + 1) * NODES_TO_KILL;
+    let slices_remaining = 1024 - slices_lost;
+    println!(
+        "Killed {} nodes (~{} slices lost, ~{} remaining, need 683)",
+        NODES_TO_KILL, slices_lost, slices_remaining
+    );
+
+    // Give nodes time to shut down
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Download should still work
+    let recovered = client
+        .download_blob(&track_id)
+        .await
+        .expect("download should succeed despite node failures");
+
+    assert_eq!(original, recovered);
+
+    // Verify commitment
+    let verified = client
+        .download_blob_verified(&track_id, &commitment)
+        .await
+        .expect("verification should pass");
+
+    assert_eq!(original, verified);
+    println!(
+        "SUCCESS: Recovered data after {} node failures!",
+        NODES_TO_KILL
+    );
 }
