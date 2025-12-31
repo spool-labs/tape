@@ -15,6 +15,10 @@ use crate::error::NodeError;
 use crate::metrics::NodeClientMetrics;
 
 /// Client for communicating with a single storage node.
+///
+/// This struct is cheap to clone - the inner reqwest::Client uses Arc
+/// internally, so clones share the same connection pool.
+#[derive(Clone)]
 pub struct StorageNodeClient {
     /// HTTP client.
     pub(crate) inner: Client,

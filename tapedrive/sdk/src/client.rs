@@ -9,6 +9,9 @@ use crate::encoder::BlobEncoder;
 use crate::error::{ClientError, DownloadError, UploadError};
 use crate::uploader::{DistributedUploader, SliceWithProof};
 
+/// Default max slice size (1 MiB) - matches production settings.
+pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20;
+
 /// High-level client for tapedrive blob operations.
 ///
 /// Provides simple upload/download methods that handle:
@@ -16,17 +19,35 @@ use crate::uploader::{DistributedUploader, SliceWithProof};
 /// - Distributed upload to storage nodes
 /// - Parallel download with recovery
 /// - Merkle verification
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Production client (1 MiB slices, ~1 GB max blob)
+/// let client = TapeClient::new(node_addresses);
+///
+/// // Test client (4 KB slices, ~2.7 MB max blob, low memory)
+/// let client = TapeClient::builder()
+///     .node_addresses(node_addresses)
+///     .max_slice_bytes(4 * 1024)
+///     .build();
+/// ```
 pub struct TapeClient {
     /// Factory for creating node clients.
     node_factory: NodeCommunicationFactory,
 
     /// List of known storage node addresses.
-    /// In production, this would be fetched from Solana committee state.
     node_addresses: Vec<String>,
+
+    /// Maximum slice size in bytes for encoding.
+    /// Smaller values use less memory but limit max blob size.
+    max_slice_bytes: usize,
 }
 
 impl TapeClient {
-    /// Create a new tape client.
+    /// Create a new tape client with default settings.
+    ///
+    /// Uses 1 MiB slice size (production default).
     ///
     /// # Arguments
     /// * `node_addresses` - List of storage node addresses
@@ -34,7 +55,13 @@ impl TapeClient {
         Self {
             node_factory: NodeCommunicationFactory::new(),
             node_addresses,
+            max_slice_bytes: DEFAULT_MAX_SLICE_BYTES,
         }
+    }
+
+    /// Create a builder for more configuration options.
+    pub fn builder() -> TapeClientBuilder {
+        TapeClientBuilder::default()
     }
 
     /// Create a new tape client with a custom factory.
@@ -42,6 +69,7 @@ impl TapeClient {
         Self {
             node_factory: factory,
             node_addresses,
+            max_slice_bytes: DEFAULT_MAX_SLICE_BYTES,
         }
     }
 
@@ -105,6 +133,11 @@ impl TapeClient {
     // High-level blob operations (encode + upload, download + decode)
     // =========================================================================
 
+    /// Get the configured max slice size.
+    pub fn max_slice_bytes(&self) -> usize {
+        self.max_slice_bytes
+    }
+
     /// Upload a blob to the network.
     ///
     /// This is the primary method for storing data. It:
@@ -131,7 +164,7 @@ impl TapeClient {
         data: Vec<u8>,
     ) -> Result<BlobMerkleRoot, ClientError> {
         // Encode blob into slices with merkle proofs
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = BlobEncoder::with_max_slice_bytes(self.max_slice_bytes);
         let (slices_with_proofs, commitment) = encoder
             .encode_with_proofs(data)
             .map_err(ClientError::Upload)?;
@@ -175,7 +208,7 @@ impl TapeClient {
             .map_err(ClientError::Download)?;
 
         // Decode slices back to blob
-        let mut decoder = BlobDecoder::new();
+        let mut decoder = BlobDecoder::with_max_slice_bytes(self.max_slice_bytes);
         let data = decoder
             .decode(slices)
             .map_err(ClientError::Download)?;
@@ -206,7 +239,7 @@ impl TapeClient {
         let data = self.download_blob(track_id).await?;
 
         // Re-encode to verify commitment
-        let mut encoder = BlobEncoder::new();
+        let mut encoder = BlobEncoder::with_max_slice_bytes(self.max_slice_bytes);
         let (_, actual_commitment) = encoder
             .encode_to_vec_with_root(data.clone())
             .map_err(|e| ClientError::Encoding(e.to_string()))?;
@@ -216,6 +249,67 @@ impl TapeClient {
         }
 
         Ok(data)
+    }
+}
+
+// ============================================================================
+// Builder
+// ============================================================================
+
+/// Builder for creating a `TapeClient` with custom configuration.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let client = TapeClient::builder()
+///     .node_addresses(vec!["node1:8080".into(), "node2:8080".into()])
+///     .max_slice_bytes(4 * 1024)  // 4 KB slices for testing
+///     .build();
+/// ```
+#[derive(Default)]
+pub struct TapeClientBuilder {
+    node_addresses: Vec<String>,
+    node_factory: Option<NodeCommunicationFactory>,
+    max_slice_bytes: Option<usize>,
+}
+
+impl TapeClientBuilder {
+    /// Set the storage node addresses.
+    pub fn node_addresses(mut self, addresses: Vec<String>) -> Self {
+        self.node_addresses = addresses;
+        self
+    }
+
+    /// Add a single node address.
+    pub fn add_node(mut self, address: impl Into<String>) -> Self {
+        self.node_addresses.push(address.into());
+        self
+    }
+
+    /// Set a custom node communication factory.
+    pub fn node_factory(mut self, factory: NodeCommunicationFactory) -> Self {
+        self.node_factory = Some(factory);
+        self
+    }
+
+    /// Set the maximum slice size in bytes.
+    ///
+    /// - Production default: 1 MiB (1 << 20) - supports blobs up to ~683 MiB
+    /// - Testing: 4 KiB (4 * 1024) - supports blobs up to ~2.7 MiB, uses ~6 MB RAM
+    ///
+    /// Smaller values use less memory but limit the maximum blob size.
+    pub fn max_slice_bytes(mut self, size: usize) -> Self {
+        self.max_slice_bytes = Some(size);
+        self
+    }
+
+    /// Build the `TapeClient`.
+    pub fn build(self) -> TapeClient {
+        TapeClient {
+            node_addresses: self.node_addresses,
+            node_factory: self.node_factory.unwrap_or_default(),
+            max_slice_bytes: self.max_slice_bytes.unwrap_or(DEFAULT_MAX_SLICE_BYTES),
+        }
     }
 }
 
@@ -250,5 +344,35 @@ mod tests {
         client.set_node_addresses(new_nodes.clone());
 
         assert_eq!(client.node_addresses(), new_nodes.as_slice());
+    }
+
+    #[test]
+    fn test_builder_default() {
+        let client = TapeClient::builder()
+            .node_addresses(vec!["node1:8080".into()])
+            .build();
+
+        assert_eq!(client.node_addresses(), &["node1:8080"]);
+        assert_eq!(client.max_slice_bytes(), DEFAULT_MAX_SLICE_BYTES);
+    }
+
+    #[test]
+    fn test_builder_custom_slice_size() {
+        let client = TapeClient::builder()
+            .node_addresses(vec!["node1:8080".into()])
+            .max_slice_bytes(4 * 1024)
+            .build();
+
+        assert_eq!(client.max_slice_bytes(), 4 * 1024);
+    }
+
+    #[test]
+    fn test_builder_add_node() {
+        let client = TapeClient::builder()
+            .add_node("node1:8080")
+            .add_node("node2:8080")
+            .build();
+
+        assert_eq!(client.node_addresses().len(), 2);
     }
 }
