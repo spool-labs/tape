@@ -266,25 +266,28 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use std::path::PathBuf;
     use store_memory::MemoryStore;
+    use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
     use tape_metrics::MetricsRegistry;
     use tape_store::TapeStore;
     use tower::ServiceExt;
 
     fn create_test_state() -> ApiState<MemoryStore> {
+        // Initialize metrics for API state (routes need metrics for recording)
         let registry = match MetricsRegistry::get() {
             Some(r) => r,
             None => MetricsRegistry::init(),
         };
         let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
+
+        // Create storage service without metrics (not needed for storage operations in tests)
         let store = TapeStore::new(MemoryStore::new());
         let service = Arc::new(StorageService::with_store(
             store,
-            PathBuf::from("/tmp/test"),
-            1_000_000,
-            metrics.clone(),
+            None, // No path for in-memory storage
+            StorageUnits::from(1_000), // 1000 MB
+            None, // No metrics for storage service
         ));
         ApiState { metrics, service }
     }

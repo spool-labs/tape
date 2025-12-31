@@ -6,6 +6,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use tape_core::types::StorageUnits;
 
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
@@ -53,8 +54,8 @@ pub struct NodeConfig {
     /// Path to storage directory.
     pub storage_path: PathBuf,
 
-    /// Storage capacity in bytes.
-    pub storage_capacity: u64,
+    /// Storage capacity.
+    pub storage_capacity: StorageUnits,
 
     /// Solana RPC URL.
     pub solana_rpc_url: String,
@@ -114,7 +115,7 @@ struct RawNodeConfig {
     /// Path to storage directory.
     pub storage_path: PathBuf,
 
-    /// Storage capacity in bytes.
+    /// Storage capacity in MB.
     #[serde(default = "default_storage_capacity")]
     pub storage_capacity: u64,
 
@@ -126,7 +127,7 @@ struct RawNodeConfig {
 }
 
 fn default_storage_capacity() -> u64 {
-    1_000_000_000 // 1 GB default
+    1_000 // 1000 MB (1 GB) default
 }
 
 impl TryFrom<RawNodeConfig> for NodeConfig {
@@ -151,7 +152,7 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             public_port: raw.public_port,
             tls: raw.tls,
             storage_path: raw.storage_path,
-            storage_capacity: raw.storage_capacity,
+            storage_capacity: StorageUnits::from(raw.storage_capacity),
             solana_rpc_url: raw.solana_rpc_url,
             node_authority,
         })
@@ -221,7 +222,7 @@ node_authority: "11111111111111111111111111111111"
         assert_eq!(config.public_port, 443);
         assert!(config.tls.generate_self_signed);
         assert_eq!(config.storage_path, PathBuf::from("/var/lib/tape/data"));
-        assert_eq!(config.storage_capacity, 1000000);
+        assert_eq!(config.storage_capacity, StorageUnits::from(1000000));
         assert_eq!(config.solana_rpc_url, "https://api.mainnet-beta.solana.com");
     }
 

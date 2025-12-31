@@ -6,6 +6,7 @@ use std::sync::Arc;
 use solana_pubkey::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
+use tape_core::types::StorageUnits;
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
@@ -41,12 +42,12 @@ pub enum StorageError {
 pub struct StorageService<S: Store = RocksStore> {
     /// The underlying tape store.
     store: TapeStore<S>,
-    /// Path to the storage directory.
-    storage_path: PathBuf,
-    /// Storage capacity in bytes.
-    capacity: u64,
-    /// Reference to node metrics.
-    metrics: Arc<NodeMetrics>,
+    /// Path to the storage directory (None for in-memory storage).
+    storage_path: Option<PathBuf>,
+    /// Storage capacity.
+    capacity: StorageUnits,
+    /// Reference to node metrics (optional for testing).
+    metrics: Option<Arc<NodeMetrics>>,
 }
 
 impl StorageService<RocksStore> {
@@ -54,8 +55,11 @@ impl StorageService<RocksStore> {
     ///
     /// # Arguments
     /// * `config` - Node configuration containing storage settings
-    /// * `metrics` - Node metrics for tracking storage operations
-    pub fn new(config: &NodeConfig, metrics: Arc<NodeMetrics>) -> Result<Self, StorageError> {
+    /// * `metrics` - Node metrics for tracking storage operations (optional)
+    pub fn new(
+        config: &NodeConfig,
+        metrics: Option<Arc<NodeMetrics>>,
+    ) -> Result<Self, StorageError> {
         let storage_path = config.storage_path.clone();
 
         // Create storage directory if it doesn't exist
@@ -70,13 +74,13 @@ impl StorageService<RocksStore> {
 
         tracing::info!(
             path = %storage_path.display(),
-            capacity = config.storage_capacity,
+            capacity = %config.storage_capacity,
             "Storage service initialized with RocksDB"
         );
 
         Ok(Self {
             store,
-            storage_path,
+            storage_path: Some(storage_path),
             capacity: config.storage_capacity,
             metrics,
         })
@@ -87,11 +91,17 @@ impl<S: Store> StorageService<S> {
     /// Create a storage service with a custom store backend.
     ///
     /// This is primarily used for testing with MemoryStore.
+    ///
+    /// # Arguments
+    /// * `store` - The underlying TapeStore
+    /// * `storage_path` - Path to storage directory (None for in-memory)
+    /// * `capacity` - Storage capacity
+    /// * `metrics` - Node metrics (None for testing without metrics)
     pub fn with_store(
         store: TapeStore<S>,
-        storage_path: PathBuf,
-        capacity: u64,
-        metrics: Arc<NodeMetrics>,
+        storage_path: Option<PathBuf>,
+        capacity: StorageUnits,
+        metrics: Option<Arc<NodeMetrics>>,
     ) -> Self {
         Self {
             store,
@@ -101,28 +111,44 @@ impl<S: Store> StorageService<S> {
         }
     }
 
-    /// Get the storage path.
-    pub fn storage_path(&self) -> &Path {
-        &self.storage_path
+    /// Get the storage path (if configured).
+    pub fn storage_path(&self) -> Option<&Path> {
+        self.storage_path.as_deref()
     }
 
     /// Get the storage capacity.
-    pub fn capacity(&self) -> u64 {
+    pub fn capacity(&self) -> StorageUnits {
         self.capacity
     }
 
     /// Check if storage is healthy.
+    ///
+    /// For in-memory storage (no path configured), this always returns true.
+    /// For file-backed storage, checks that the path exists and is a directory.
     pub fn is_healthy(&self) -> bool {
-        self.storage_path.exists() && self.storage_path.is_dir()
+        match &self.storage_path {
+            Some(path) => path.exists() && path.is_dir(),
+            None => true, // In-memory storage is always healthy
+        }
     }
 
     /// Initialize storage (placeholder for any startup tasks).
     pub async fn initialize(&self) -> Result<(), StorageError> {
-        tracing::info!(
-            path = %self.storage_path.display(),
-            capacity = self.capacity,
-            "Storage service initialized"
-        );
+        match &self.storage_path {
+            Some(path) => {
+                tracing::info!(
+                    path = %path.display(),
+                    capacity = %self.capacity,
+                    "Storage service initialized"
+                );
+            }
+            None => {
+                tracing::info!(
+                    capacity = %self.capacity,
+                    "Storage service initialized (in-memory)"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -147,8 +173,10 @@ impl<S: Store> StorageService<S> {
 
         self.store.put_slice(spool_idx, track_pubkey, data, meta)?;
 
-        self.metrics.slices_stored_total.inc();
-        self.metrics.bytes_stored_total.add(data_len as i64);
+        if let Some(metrics) = &self.metrics {
+            metrics.slices_stored_total.inc();
+            metrics.bytes_stored_total.add(data_len as i64);
+        }
 
         Ok(())
     }
@@ -172,8 +200,10 @@ impl<S: Store> StorageService<S> {
         let result = self.store.get_slice(spool_idx, track_pubkey)?;
 
         if let Some((ref data, _)) = result {
-            self.metrics.slices_retrieved_total.inc();
-            self.metrics.bytes_retrieved_total.add(data.len() as i64);
+            if let Some(metrics) = &self.metrics {
+                metrics.slices_retrieved_total.inc();
+                metrics.bytes_retrieved_total.add(data.len() as i64);
+            }
         }
 
         Ok(result)
@@ -208,24 +238,14 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_crypto::Hash;
-    use tape_metrics::MetricsRegistry;
-
-    fn create_test_metrics() -> Arc<NodeMetrics> {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        Arc::new(NodeMetrics::new(registry.prometheus_registry()))
-    }
 
     fn create_test_store() -> StorageService<MemoryStore> {
-        let metrics = create_test_metrics();
         let store = TapeStore::new(MemoryStore::new());
         StorageService::with_store(
             store,
-            PathBuf::from("/tmp/test"),
-            1_000_000,
-            metrics,
+            None, // No path for in-memory storage
+            StorageUnits::from(1_000), // 1000 MB
+            None, // No metrics for testing
         )
     }
 
@@ -293,10 +313,22 @@ mod tests {
     }
 
     #[test]
-    fn test_is_healthy() {
+    fn test_is_healthy_in_memory() {
         let service = create_test_store();
-        // For MemoryStore with fake path, is_healthy checks path existence
-        // In real usage with RocksDB, the path would exist
-        assert!(!service.is_healthy()); // /tmp/test doesn't exist in this test
+        // In-memory storage (no path) is always healthy
+        assert!(service.is_healthy());
+    }
+
+    #[test]
+    fn test_is_healthy_with_path() {
+        let store = TapeStore::new(MemoryStore::new());
+        let service = StorageService::with_store(
+            store,
+            Some(PathBuf::from("/nonexistent/path")),
+            StorageUnits::from(1_000),
+            None,
+        );
+        // Path doesn't exist, so not healthy
+        assert!(!service.is_healthy());
     }
 }

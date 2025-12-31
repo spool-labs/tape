@@ -72,7 +72,7 @@ async fn run_node(config: NodeConfig) -> Result<()> {
 
     // Initialize storage service
     let storage = Arc::new(
-        StorageService::new(&config, Arc::clone(&metrics))
+        StorageService::new(&config, Some(Arc::clone(&metrics)))
             .context("Failed to create storage service")?,
     );
     storage

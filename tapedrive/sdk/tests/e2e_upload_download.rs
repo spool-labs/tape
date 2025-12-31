@@ -9,13 +9,13 @@
 //! Uses 4 KB slice size for testing (vs 1 MiB in production) to reduce memory usage.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use tape_crypto::Pubkey;
 use store_memory::MemoryStore;
+use tape_core::types::StorageUnits;
 use tape_metrics::MetricsRegistry;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
@@ -34,9 +34,9 @@ async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let store = TapeStore::new(MemoryStore::new());
     let service = Arc::new(StorageService::with_store(
         store,
-        PathBuf::from("/tmp/e2e-test"),
-        1_000_000_000,
-        metrics.clone(),
+        None, // No path for in-memory storage
+        StorageUnits::from(1_000), // 1000 MB
+        None, // No metrics for storage service (routes handle their own)
     ));
 
     let state = ApiState { metrics, service };
