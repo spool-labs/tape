@@ -18,7 +18,7 @@ use tape_node_api::SlicePayload;
 
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
-use crate::storage_service::{Compression, SliceMeta, StorageService, MERKLE_HEIGHT};
+use crate::storage_service::{Compression, SliceMeta, StorageService};
 
 // Re-export shared constants from tape-core and tape-node-api
 pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};
@@ -29,10 +29,19 @@ pub use tape_node_api::{
 };
 
 /// Shared state for API handlers.
-#[derive(Clone)]
 pub struct ApiState<S: Store = store_rocks::RocksStore> {
     pub metrics: Arc<NodeMetrics>,
     pub service: Arc<StorageService<S>>,
+}
+
+// Manual Clone impl since Arc<T> is Clone regardless of T
+impl<S: Store> Clone for ApiState<S> {
+    fn clone(&self) -> Self {
+        Self {
+            metrics: self.metrics.clone(),
+            service: self.service.clone(),
+        }
+    }
 }
 
 /// Create the API router.

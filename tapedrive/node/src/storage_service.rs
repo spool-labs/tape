@@ -6,8 +6,11 @@ use std::sync::Arc;
 use solana_pubkey::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
-use tape_store::ops::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
+use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
+
+// Re-export types from tape_store for use by routes
+pub use tape_store::ops::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
 
 use crate::config::NodeConfig;
 use crate::metrics::NodeMetrics;
@@ -140,7 +143,7 @@ impl<S: Store> StorageService<S> {
         let data_len = data.len();
 
         // Convert solana_pubkey::Pubkey to tape_store::types::Pubkey
-        let track_pubkey = tape_store::types::Pubkey::new(track_address.to_bytes());
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
         self.store.put_slice(spool_idx, track_pubkey, data, meta)?;
 
@@ -164,7 +167,7 @@ impl<S: Store> StorageService<S> {
         track_address: Pubkey,
     ) -> Result<Option<(Vec<u8>, SliceMeta)>, StorageError> {
         // Convert solana_pubkey::Pubkey to tape_store::types::Pubkey
-        let track_pubkey = tape_store::types::Pubkey::new(track_address.to_bytes());
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
         let result = self.store.get_slice(spool_idx, track_pubkey)?;
 
@@ -186,7 +189,7 @@ impl<S: Store> StorageService<S> {
         spool_idx: u16,
         track_address: Pubkey,
     ) -> Result<(), StorageError> {
-        let track_pubkey = tape_store::types::Pubkey::new(track_address.to_bytes());
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
         self.store.delete_slice(spool_idx, track_pubkey)?;
         Ok(())
     }
@@ -199,8 +202,6 @@ impl<S: Store> StorageService<S> {
     }
 }
 
-// Re-export types needed by routes
-pub use tape_store::ops::{Compression, SliceMeta, MERKLE_HEIGHT};
 
 #[cfg(test)]
 mod tests {
