@@ -5,11 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tape_crypto::Pubkey;
-use tape_sdk::TapeClient;
-
-/// Number of data slices used in Reed-Solomon encoding.
-/// Must match tape_slicer::DATA_SLICES.
-const DATA_SLICES: usize = 683;
+use tape_sdk::{TapeClient, DATA_SLICES};
 
 /// Minimum slice size to avoid excessive overhead from tiny slices.
 const MIN_SLICE_BYTES: usize = 1024; // 1 KB
