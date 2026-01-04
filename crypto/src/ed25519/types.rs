@@ -1,29 +1,34 @@
-//! Ed25519 signature types for off-chain operations.
+//! Ed25519 signature types.
 //!
-//! This module provides wrapper types around `ed25519_consensus` for:
+//! This module provides wrapper types for Ed25519 cryptography:
 //! - `SecretKey` - wrapper around `SigningKey` (off-chain only)
-//! - `PublicKey` - wrapper around `VerificationKey` with Solana Pubkey conversions
-//! - `Signature` - wrapper around `ed25519_consensus::Signature`
+//! - `PublicKey` - wrapper around `VerificationKey` (off-chain only)
+//! - `Signature` - wrapper around `ed25519_consensus::Signature` (off-chain only)
 //! - `Keypair` - combines SecretKey and PublicKey (off-chain only)
+//!
+//! For on-chain signature verification, use `sig_verify` from `crate::ed25519::sig`.
 
 #![allow(unexpected_cfgs)]
 
+// ed25519-consensus is only available off-chain (it brings in curve25519-dalek-ng
+// which has stack size issues on SBF)
 #[cfg(not(target_os = "solana"))]
-use ed25519_consensus::SigningKey;
-use ed25519_consensus::VerificationKey;
+use ed25519_consensus::{SigningKey, VerificationKey};
 #[cfg(not(target_os = "solana"))]
 use rand::CryptoRng;
+#[cfg(not(target_os = "solana"))]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 use core::mem::MaybeUninit;
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,
 };
 
 use super::consts::{ED25519_PUBKEY_LEN, ED25519_SIG_LEN};
+#[cfg(not(target_os = "solana"))]
 use super::errors::SignatureError;
 
 /// Constant for public key length (32 bytes).
@@ -69,9 +74,12 @@ impl SecretKey {
 /// Ed25519 public key wrapper around `VerificationKey`.
 ///
 /// Provides verification and Solana Pubkey conversions.
+/// Only available off-chain (uses ed25519-consensus).
+#[cfg(not(target_os = "solana"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicKey(VerificationKey);
 
+#[cfg(not(target_os = "solana"))]
 impl PublicKey {
     /// The length of a public key in bytes.
     pub const LEN: usize = ED25519_PUBKEY_LEN;
@@ -103,18 +111,21 @@ impl PublicKey {
 
 // Solana Pubkey conversions
 
+#[cfg(not(target_os = "solana"))]
 impl From<PublicKey> for solana_program::pubkey::Pubkey {
     fn from(pk: PublicKey) -> Self {
         solana_program::pubkey::Pubkey::from(pk.to_bytes())
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 impl From<&PublicKey> for solana_program::pubkey::Pubkey {
     fn from(pk: &PublicKey) -> Self {
         solana_program::pubkey::Pubkey::from(*pk.as_bytes())
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 impl TryFrom<solana_program::pubkey::Pubkey> for PublicKey {
     type Error = SignatureError;
 
@@ -123,6 +134,7 @@ impl TryFrom<solana_program::pubkey::Pubkey> for PublicKey {
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 impl TryFrom<&solana_program::pubkey::Pubkey> for PublicKey {
     type Error = SignatureError;
 
@@ -133,7 +145,7 @@ impl TryFrom<&solana_program::pubkey::Pubkey> for PublicKey {
 
 // Wincode SchemaWrite and SchemaRead for PublicKey
 
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 impl SchemaWrite for PublicKey {
     type Src = Self;
 
@@ -147,7 +159,7 @@ impl SchemaWrite for PublicKey {
     }
 }
 
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 impl<'de> SchemaRead<'de> for PublicKey {
     type Dst = Self;
 
@@ -160,9 +172,12 @@ impl<'de> SchemaRead<'de> for PublicKey {
 }
 
 /// Ed25519 signature wrapper around `ed25519_consensus::Signature`.
+/// Only available off-chain (uses ed25519-consensus).
+#[cfg(not(target_os = "solana"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature(ed25519_consensus::Signature);
 
+#[cfg(not(target_os = "solana"))]
 impl Signature {
     /// The length of a signature in bytes.
     pub const LEN: usize = ED25519_SIG_LEN;
@@ -187,7 +202,7 @@ impl Signature {
 
 // Wincode SchemaWrite and SchemaRead for Signature
 
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 impl SchemaWrite for Signature {
     type Src = Self;
 
@@ -201,7 +216,7 @@ impl SchemaWrite for Signature {
     }
 }
 
-#[cfg(feature = "wincode")]
+#[cfg(all(feature = "wincode", not(target_os = "solana")))]
 impl<'de> SchemaRead<'de> for Signature {
     type Dst = Self;
 
