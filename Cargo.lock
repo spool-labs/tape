@@ -5404,10 +5404,14 @@ name = "rpc-test"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "bytemuck",
  "solana-client",
  "solana-sdk",
  "solana-test-validator",
  "solana-transaction-status",
+ "tape-api",
+ "tape-client",
+ "tape-core",
  "tape-rpc",
  "thiserror 2.0.17",
  "tokio",
