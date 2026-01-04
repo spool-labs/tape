@@ -9,7 +9,7 @@ use tape_node_client::{StorageNodeClientBuilder, NodeError};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 
-use crate::sync_types::{SyncSpoolRequest, SyncSpoolResponse, TrackId};
+use super::types::{SyncSpoolRequest, SyncSpoolResponse, TrackId};
 
 /// Default batch size for sync requests.
 const DEFAULT_BATCH_SIZE: usize = 1000;

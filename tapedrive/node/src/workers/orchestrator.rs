@@ -14,7 +14,8 @@ use tracing::{error, info};
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
 use crate::server::ServerHandle;
-use crate::{challenges, live_updates, network_sync};
+
+use super::{challenges, live_updates, network_sync};
 
 /// Event channel capacity.
 const EVENT_CHANNEL_CAPACITY: usize = 10_000;

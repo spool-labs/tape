@@ -18,7 +18,7 @@ use tape_node_api::SlicePayload;
 
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
-use crate::storage_service::{Compression, SliceMeta, StorageService};
+use crate::storage::service::{Compression, SliceMeta, StorageService};
 
 // Re-export shared constants from tape-core and tape-node-api
 pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};

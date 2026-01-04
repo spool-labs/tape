@@ -13,7 +13,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
-use crate::tx_parser::{parse_block, ParsedInstruction};
+
+use super::tx_parser::{parse_block, ParsedInstruction};
 
 /// Default polling interval (Solana slot time).
 const DEFAULT_POLL_INTERVAL_MS: u64 = 400;
@@ -28,7 +29,7 @@ pub enum LiveUpdateError {
     Rpc(String),
 
     #[error("parse error: {0}")]
-    Parse(#[from] crate::tx_parser::ParseError),
+    Parse(#[from] super::tx_parser::ParseError),
 
     #[error("event channel closed")]
     ChannelClosed,

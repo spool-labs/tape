@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 
 use crate::config::NodeConfig;
 use crate::metrics::NodeMetrics;
-use crate::storage_service::StorageService;
+use crate::storage::StorageService;
 
 pub use routes::*;
 

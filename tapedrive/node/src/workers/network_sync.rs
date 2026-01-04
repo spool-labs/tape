@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
-use crate::spool_sync::{SpoolSyncHandler, SyncError};
+use crate::sync::{SpoolSyncHandler, SyncError};
 
 /// Error type for network sync operations.
 #[derive(Debug, thiserror::Error)]
@@ -246,11 +246,11 @@ async fn sync_spool_from_owner(
                 .map_err(|e| SyncError::Storage(format!("Invalid track ID: {}", e)))?;
 
             // Create minimal metadata for synced slices
-            let meta = crate::storage_service::SliceMeta {
+            let meta = crate::storage::service::SliceMeta {
                 len: data.len() as u32,
                 leaf_hash: tape_crypto::Hash::default(), // TODO: compute from data
-                merkle_proof: [tape_crypto::Hash::default(); crate::storage_service::MERKLE_HEIGHT],
-                compression: crate::storage_service::Compression::None,
+                merkle_proof: [tape_crypto::Hash::default(); crate::storage::service::MERKLE_HEIGHT],
+                compression: crate::storage::service::Compression::None,
                 received_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
