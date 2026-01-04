@@ -8,7 +8,9 @@ use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
     UiCompiledInstruction, UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
 };
-use tape_api::instruction::TapeInstruction;
+use tape_api::instruction::{
+    self as ix, TapeInstruction,
+};
 use tape_core::prelude::*;
 use tape_crypto::Hash;
 
@@ -223,43 +225,28 @@ fn parse_instruction(
         TapeInstruction::AdvanceEpoch => Ok(Some(ParsedInstruction::AdvanceEpoch)),
 
         TapeInstruction::SyncEpoch => {
-            let node = get_account(3)?; // node account
-            // Parse instruction data for epoch and spools hash
-            if ix_data.len() < 1 + 8 + 32 {
-                return Err(ParseError::InvalidData);
-            }
-            let epoch_bytes: [u8; 8] = ix_data[1..9].try_into().unwrap();
-            let epoch = EpochNumber::unpack(epoch_bytes);
-            let spools_hash_bytes: [u8; 32] = ix_data[9..41].try_into().unwrap();
+            let node = get_account(3)?;
+            let args = ix::SyncEpoch::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             Ok(Some(ParsedInstruction::SyncEpoch {
                 node,
-                epoch,
-                spools_hash: Hash::from(spools_hash_bytes),
+                epoch: EpochNumber::unpack(args.epoch),
+                spools_hash: args.spools,
             }))
         }
 
         TapeInstruction::RegisterTrack => {
             let owner = get_account(0)?;
             let track = get_account(3)?;
-            // Parse instruction data
-            if ix_data.len() < 1 + 32 + 32 + 32 + 8 {
-                return Err(ParseError::InvalidData);
-            }
-            let key_bytes: [u8; 32] = ix_data[1..33].try_into().unwrap();
-            let root_bytes: [u8; 32] = ix_data[33..65].try_into().unwrap();
-            let commitment_bytes: [u8; 32] = ix_data[65..97].try_into().unwrap();
-            let key = Hash::from(key_bytes);
-            let root = Hash::from(root_bytes);
-            let commitment = Hash::from(commitment_bytes);
-            let size_bytes: [u8; 8] = ix_data[97..105].try_into().unwrap();
-            let size = StorageUnits::unpack(size_bytes);
+            let args = ix::RegisterTrack::try_from_bytes(&ix_data[1..])
+                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             Ok(Some(ParsedInstruction::RegisterTrack {
                 owner,
                 track,
-                key,
-                root,
-                commitment,
-                size,
+                key: args.key,
+                root: args.root,
+                commitment: args.commitment,
+                size: StorageUnits::unpack(args.size),
             }))
         }
 

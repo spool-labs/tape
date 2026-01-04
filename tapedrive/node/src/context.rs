@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
+use store::Store;
 use store_rocks::RocksStore;
 use tape_client::{RpcConfig, TapeClient};
 use tape_crypto::Pubkey;
@@ -38,9 +39,9 @@ pub enum ContextError {
 
 /// Central context holding all shared node state.
 ///
-/// Constructed via `from_config()` which handles all initialization including
-/// fetching initial on-chain state and optionally auto-registering the node.
-pub struct NodeContext {
+/// Generic over the storage backend `S`. Use [`NodeContext::from_config`] for
+/// production (RocksStore) or [`NodeContext::new`] for testing with custom stores.
+pub struct NodeContext<S: Store = RocksStore> {
     /// Node configuration.
     pub config: Arc<NodeConfig>,
     /// This node's authority keypair.
@@ -48,15 +49,15 @@ pub struct NodeContext {
     /// Tape RPC client for chain interactions.
     pub rpc: Arc<TapeClient>,
     /// Slice storage service.
-    pub storage: Arc<StorageService<RocksStore>>,
+    pub storage: Arc<StorageService<S>>,
     /// In-memory cache of on-chain control plane state.
     pub control_plane: Arc<ControlPlane>,
     /// Prometheus metrics.
     pub metrics: Arc<NodeMetrics>,
 }
 
-impl NodeContext {
-    /// Construct context from config.
+impl NodeContext<RocksStore> {
+    /// Construct context from config with RocksDB storage.
     ///
     /// This handles:
     /// 1. Loading the Solana keypair
@@ -124,6 +125,28 @@ impl NodeContext {
             control_plane: Arc::new(control_plane),
             metrics: Arc::new(metrics),
         }))
+    }
+}
+
+impl<S: Store> NodeContext<S> {
+    /// Construct context with a custom storage backend.
+    ///
+    /// Use this for testing with in-memory stores or other backends.
+    pub fn new(
+        config: NodeConfig,
+        keypair: Keypair,
+        rpc: TapeClient,
+        storage: StorageService<S>,
+        control_plane: ControlPlane,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(config),
+            keypair: Arc::new(keypair),
+            rpc: Arc::new(rpc),
+            storage: Arc::new(storage),
+            control_plane: Arc::new(control_plane),
+            metrics: Arc::new(NodeMetrics::new()),
+        })
     }
 
     /// Get this node's public key (authority).
