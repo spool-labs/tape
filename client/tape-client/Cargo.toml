@@ -19,6 +19,7 @@ tape-metrics = { workspace = true, optional = true }
 solana-sdk.workspace = true
 solana-client.workspace = true
 solana-account-decoder.workspace = true
+solana-transaction-status.workspace = true
 
 # Async runtime
 tokio.workspace = true

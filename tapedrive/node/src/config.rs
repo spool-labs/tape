@@ -38,6 +38,9 @@ pub struct NodeConfig {
     /// Path to BLS keypair file (for committee signing).
     pub bls_keypair: PathBuf,
 
+    /// Path to Solana keypair file (JSON format, used for signing transactions).
+    pub solana_keypair_path: String,
+
     /// Address to bind the server to.
     pub bind_address: SocketAddr,
 
@@ -51,13 +54,22 @@ pub struct NodeConfig {
     pub tls: TlsConfig,
 
     /// Path to storage directory.
-    pub storage_path: PathBuf,
+    pub storage_path: String,
 
     /// Solana RPC URL.
     pub solana_rpc_url: String,
 
     /// Node authority pubkey on Solana.
     pub node_authority: Pubkey,
+
+    /// Block polling interval in milliseconds (default: 400ms).
+    pub poll_interval_ms: Option<u64>,
+
+    /// Number of concurrent spool sync operations (default: 4).
+    pub sync_concurrency: Option<usize>,
+
+    /// Batch size for sync requests (default: 1000).
+    pub sync_batch_size: Option<usize>,
 }
 
 impl NodeConfig {
@@ -95,6 +107,10 @@ struct RawNodeConfig {
     /// Path to BLS keypair file (for committee signing).
     pub bls_keypair: PathBuf,
 
+    /// Path to Solana keypair file (JSON format).
+    #[serde(default = "default_solana_keypair_path")]
+    pub solana_keypair_path: String,
+
     /// Address to bind the server to (as string for parsing).
     pub bind_address: String,
 
@@ -109,13 +125,29 @@ struct RawNodeConfig {
     pub tls: TlsConfig,
 
     /// Path to storage directory.
-    pub storage_path: PathBuf,
+    pub storage_path: String,
 
     /// Solana RPC URL.
     pub solana_rpc_url: String,
 
     /// Node authority pubkey on Solana (as base58 string).
     pub node_authority: String,
+
+    /// Block polling interval in milliseconds.
+    #[serde(default)]
+    pub poll_interval_ms: Option<u64>,
+
+    /// Number of concurrent spool sync operations.
+    #[serde(default)]
+    pub sync_concurrency: Option<usize>,
+
+    /// Batch size for sync requests.
+    #[serde(default)]
+    pub sync_batch_size: Option<usize>,
+}
+
+fn default_solana_keypair_path() -> String {
+    "~/.config/solana/id.json".to_string()
 }
 
 impl TryFrom<RawNodeConfig> for NodeConfig {
@@ -135,6 +167,7 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             protocol_keypair: raw.protocol_keypair,
             network_keypair: raw.network_keypair,
             bls_keypair: raw.bls_keypair,
+            solana_keypair_path: raw.solana_keypair_path,
             bind_address,
             public_host: raw.public_host,
             public_port: raw.public_port,
@@ -142,6 +175,9 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             storage_path: raw.storage_path,
             solana_rpc_url: raw.solana_rpc_url,
             node_authority,
+            poll_interval_ms: raw.poll_interval_ms,
+            sync_concurrency: raw.sync_concurrency,
+            sync_batch_size: raw.sync_batch_size,
         })
     }
 }

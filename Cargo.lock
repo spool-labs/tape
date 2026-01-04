@@ -6813,6 +6813,7 @@ dependencies = [
  "solana-account-decoder",
  "solana-client",
  "solana-sdk",
+ "solana-transaction-status",
  "tape-api",
  "tape-core",
  "tape-metrics",
@@ -6881,6 +6882,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bs58",
  "clap",
  "futures",
  "hyper 1.8.1",
@@ -6889,6 +6891,7 @@ dependencies = [
  "serde_yaml",
  "solana-program",
  "solana-sdk",
+ "solana-transaction-status",
  "store",
  "store-memory",
  "store-rocks",

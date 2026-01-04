@@ -1,8 +1,7 @@
 //! Metrics for storage node operations.
 
-use tape_metrics::{
-    prometheus::{HistogramOpts, Opts},
-    HistogramVec, IntCounterVec, IntGauge, Registry,
+use tape_metrics::prometheus::{
+    self, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
 };
 
 /// Latency buckets for node operations (in seconds).
@@ -25,6 +24,14 @@ pub struct NodeMetrics {
     // Epoch metrics
     pub current_epoch: IntGauge,
     pub owned_spools: IntGauge,
+    pub epoch_transitions_total: IntCounter,
+
+    // Block processing metrics
+    pub last_processed_slot: IntGauge,
+    pub blocks_processed_total: IntCounter,
+
+    // Spool sync metrics
+    pub spools_synced_total: IntCounter,
 
     // Storage metrics
     pub storage_bytes_used: IntGauge,
@@ -32,8 +39,13 @@ pub struct NodeMetrics {
 }
 
 impl NodeMetrics {
+    /// Create new metrics with the default global registry.
+    pub fn new() -> Self {
+        Self::with_registry(prometheus::default_registry())
+    }
+
     /// Create new metrics registered with the given registry.
-    pub fn new(registry: &Registry) -> Self {
+    pub fn with_registry(registry: &Registry) -> Self {
         let request_duration = HistogramVec::new(
             HistogramOpts::new(
                 "tape_node_request_duration_seconds",
@@ -106,6 +118,42 @@ impl NodeMetrics {
                 .expect("metric creation should not fail");
         registry.register(Box::new(tracks_stored.clone())).ok();
 
+        let epoch_transitions_total = IntCounter::new(
+            "tape_node_epoch_transitions_total",
+            "Total number of epoch transitions processed",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(epoch_transitions_total.clone()))
+            .ok();
+
+        let last_processed_slot = IntGauge::new(
+            "tape_node_last_processed_slot",
+            "Last Solana slot processed by the node",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(last_processed_slot.clone()))
+            .ok();
+
+        let blocks_processed_total = IntCounter::new(
+            "tape_node_blocks_processed_total",
+            "Total number of blocks processed",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(blocks_processed_total.clone()))
+            .ok();
+
+        let spools_synced_total = IntCounter::new(
+            "tape_node_spools_synced_total",
+            "Total number of spools synced during epoch transitions",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(spools_synced_total.clone()))
+            .ok();
+
         Self {
             request_duration,
             requests_total,
@@ -115,11 +163,23 @@ impl NodeMetrics {
             bytes_retrieved_total,
             current_epoch,
             owned_spools,
+            epoch_transitions_total,
+            last_processed_slot,
+            blocks_processed_total,
+            spools_synced_total,
             storage_bytes_used,
             tracks_stored,
         }
     }
+}
 
+impl Default for NodeMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeMetrics {
     /// Record a completed request.
     pub fn record_request(&self, endpoint: &str, status: &str, duration: f64) {
         self.request_duration

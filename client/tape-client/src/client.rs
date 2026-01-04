@@ -1,3 +1,4 @@
+use solana_transaction_status::UiConfirmedBlock;
 use tape_rpc::{RpcConfig, RpcError, TapeRpcClient};
 
 #[cfg(feature = "metrics")]
@@ -75,6 +76,20 @@ impl TapeClient {
     /// specifically wrapped by TapeClient.
     pub fn rpc(&self) -> &TapeRpcClient {
         &self.rpc
+    }
+
+    // ========================================================================
+    // Delegated RPC methods
+    // ========================================================================
+
+    /// Get the current slot.
+    pub async fn get_slot(&self) -> Result<u64, RpcError> {
+        self.rpc.get_slot().await
+    }
+
+    /// Get block by slot number.
+    pub async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+        self.rpc.get_block(slot).await
     }
 }
 

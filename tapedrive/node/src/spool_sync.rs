@@ -6,12 +6,13 @@ use tracing::info;
 
 use tape_node_client::{StorageNodeClientBuilder, NodeError};
 
-use crate::sync_types::{
-    EpochNumber, SpoolIndex, SyncSpoolRequest, SyncSpoolResponse, TrackId,
-};
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::EpochNumber;
+
+use crate::sync_types::{SyncSpoolRequest, SyncSpoolResponse, TrackId};
 
 /// Default batch size for sync requests.
-const DEFAULT_BATCH_SIZE: u64 = 1000;
+const DEFAULT_BATCH_SIZE: usize = 1000;
 
 /// Default max concurrent sync operations.
 const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 4;
@@ -40,7 +41,7 @@ pub struct SpoolSyncHandler {
     /// Semaphore to limit concurrent sync operations.
     permits: Arc<Semaphore>,
     /// Batch size for sync requests.
-    batch_size: u64,
+    batch_size: usize,
 }
 
 impl Default for SpoolSyncHandler {
@@ -65,7 +66,7 @@ impl SpoolSyncHandler {
     }
 
     /// Set the batch size for sync requests.
-    pub fn with_batch_size(mut self, size: u64) -> Self {
+    pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
     }
@@ -85,7 +86,7 @@ impl SpoolSyncHandler {
         mut on_slice: F,
     ) -> Result<usize, SyncError>
     where
-        F: FnMut(TrackId, u16, Vec<u8>) -> Result<(), SyncError>,
+        F: FnMut(TrackId, SpoolIndex, Vec<u8>) -> Result<(), SyncError>,
     {
         let _permit = self.permits.acquire().await.map_err(|_| {
             SyncError::Storage("semaphore closed".to_string())
@@ -121,14 +122,14 @@ impl SpoolSyncHandler {
             }
 
             let slices = response.slices();
-            for (track_id, slice_idx, data) in slices {
-                on_slice(track_id.clone(), *slice_idx, data.clone())?;
+            for slice in slices {
+                on_slice(slice.track_id.clone(), slice.slice_index, slice.data.clone())?;
                 total_slices += 1;
             }
 
             // Update pagination cursor
-            if let Some((last_track, _, _)) = slices.last() {
-                starting_track = last_track.clone();
+            if let Some(last_slice) = slices.last() {
+                starting_track = last_slice.track_id.clone();
             } else {
                 break;
             }
@@ -156,18 +157,18 @@ impl SpoolSyncHandler {
         on_slice: Arc<F>,
     ) -> Result<usize, SyncError>
     where
-        F: Fn(TrackId, u16, Vec<u8>) -> Result<(), SyncError> + Send + Sync + 'static,
+        F: Fn(TrackId, SpoolIndex, Vec<u8>) -> Result<(), SyncError> + Send + Sync + 'static,
     {
         use futures::stream::{self, StreamExt};
 
         let results: Vec<Result<usize, SyncError>> = stream::iter(spools)
-            .map(|(spool, address)| {
+            .map(|(spool, address): (SpoolIndex, String)| {
                 let handler = self.clone();
                 let on_slice = Arc::clone(&on_slice);
 
                 async move {
                     handler
-                        .sync_spool(spool, from_epoch, &address, |track, idx, data| {
+                        .sync_spool(spool, from_epoch, address.as_str(), |track, idx, data| {
                             on_slice(track, idx, data)
                         })
                         .await
