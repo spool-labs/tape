@@ -12,8 +12,11 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use solana_sdk::signature::read_keypair_file;
+use tape_client::TapeClient;
 use tape_metrics::MetricsRegistry;
-use tape_node::{EpochDriver, NodeConfig, NodeMetrics, Server, StorageService};
+use tape_node::{EpochManager, NodeConfig, NodeMetrics, Server, StorageService};
+use tape_rpc::RpcConfig;
 
 /// Tapedrive storage node.
 #[derive(Parser, Debug)]
@@ -70,6 +73,22 @@ async fn run_node(config: NodeConfig) -> Result<()> {
     let registry = MetricsRegistry::init();
     let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
 
+    // Load authority keypair for Solana transactions
+    let authority_keypair = Arc::new(
+        read_keypair_file(&config.protocol_keypair)
+            .map_err(|e| anyhow::anyhow!("Failed to load keypair from {}: {}", config.protocol_keypair.display(), e))?,
+    );
+
+    // Initialize tape client for chain interactions
+    let rpc_config = RpcConfig {
+        endpoints: vec![config.solana_rpc_url.clone()],
+        ..Default::default()
+    };
+    let client = Arc::new(
+        TapeClient::new(rpc_config)
+            .context("Failed to create tape client")?,
+    );
+
     // Initialize storage service
     let storage = Arc::new(
         StorageService::open(&config.storage_path)
@@ -112,38 +131,19 @@ async fn run_node(config: NodeConfig) -> Result<()> {
         shutdown_clone.cancel();
     });
 
-    // Initialize epoch driver
-    let epoch_driver = EpochDriver::new(0, config.name.clone());
+    // Initialize epoch manager
+    let epoch_manager = Arc::new(EpochManager::new(
+        Arc::clone(&client),
+        Arc::clone(&authority_keypair),
+        Arc::clone(&storage),
+    ));
 
-    // Spawn epoch driver background task
+    // Spawn epoch manager background task
     let epoch_shutdown = shutdown.clone();
+    let epoch_manager_handle = Arc::clone(&epoch_manager);
     let epoch_handle = tokio::spawn(async move {
-        // Placeholder callbacks for epoch driver
-        // In production, these would interact with Solana RPC and storage
-        let fetch_epoch = || {
-            Box::pin(async {
-                // Placeholder: return current epoch from Solana
-                Ok(0u64)
-            }) as futures::future::BoxFuture<'static, Result<u64, tape_node::epoch_driver::EpochError>>
-        };
-
-        let compute_changes = |_from: u64, _to: u64| {
-            // Placeholder: compute spool changes between epochs
-            Ok((vec![], vec![]))
-        };
-
-        let on_sync_done = |_epoch: u64| {
-            Box::pin(async {
-                // Placeholder: signal sync completion
-                Ok(())
-            }) as futures::future::BoxFuture<'static, Result<(), tape_node::epoch_driver::EpochError>>
-        };
-
-        epoch_driver
-            .run(epoch_shutdown, fetch_epoch, compute_changes, on_sync_done)
-            .await;
-
-        info!("Epoch driver stopped");
+        epoch_manager_handle.run(epoch_shutdown).await;
+        info!("Epoch manager stopped");
     });
 
     // Create and run the server

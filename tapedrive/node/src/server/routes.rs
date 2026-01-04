@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use solana_pubkey::Pubkey;
+use tape_crypto::Pubkey;
 use store::Store;
 use tape_metrics::OperationTimer;
 use tape_node_api::SlicePayload;

@@ -1,15 +1,22 @@
 //! Types for spool synchronization protocol.
 
 use serde::{Deserialize, Serialize};
+use solana_sdk::pubkey::Pubkey;
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::EpochNumber;
 
-/// Spool index (0-1023).
-pub type SpoolIndex = u16;
-
-/// Epoch number.
-pub type EpochNumber = u64;
-
-/// Track identifier (as string for now, will be proper type later).
+/// Track identifier (Pubkey serialized as base58 string for JSON compatibility).
 pub type TrackId = String;
+
+/// Convert a Pubkey to TrackId for serialization.
+pub fn track_id_from_pubkey(pubkey: &Pubkey) -> TrackId {
+    pubkey.to_string()
+}
+
+/// Parse a TrackId back to Pubkey.
+pub fn track_id_to_pubkey(track_id: &TrackId) -> Result<Pubkey, &'static str> {
+    track_id.parse().map_err(|_| "invalid track id")
+}
 
 /// Sync request message (versioned for future compatibility).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,8 +31,8 @@ pub struct SyncSpoolRequestV1 {
     pub spool_index: SpoolIndex,
     /// Starting track ID for pagination.
     pub starting_track_id: TrackId,
-    /// Maximum number of slices to return.
-    pub slice_count: u64,
+    /// Maximum number of slices to return per batch.
+    pub batch_size: usize,
     /// The epoch this request is for.
     pub epoch: EpochNumber,
 }
@@ -35,28 +42,39 @@ impl SyncSpoolRequest {
     pub fn new_v1(
         spool_index: SpoolIndex,
         starting_track_id: TrackId,
-        slice_count: u64,
+        batch_size: usize,
         epoch: EpochNumber,
     ) -> Self {
         Self::V1(SyncSpoolRequestV1 {
             spool_index,
             starting_track_id,
-            slice_count,
+            batch_size,
             epoch,
         })
     }
 }
 
+/// A single slice in a sync response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncSlice {
+    /// Track identifier (base58 pubkey).
+    pub track_id: TrackId,
+    /// Slice/spool index (0 to SLICE_COUNT-1).
+    pub slice_index: SpoolIndex,
+    /// Raw slice data.
+    pub data: Vec<u8>,
+}
+
 /// Sync response message (versioned).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SyncSpoolResponse {
-    /// V1 response: list of (track_id, slice_index, data).
-    V1(Vec<(TrackId, u16, Vec<u8>)>),
+    /// V1 response: list of slices.
+    V1(Vec<SyncSlice>),
 }
 
 impl SyncSpoolResponse {
     /// Create a new V1 response.
-    pub fn new_v1(slices: Vec<(TrackId, u16, Vec<u8>)>) -> Self {
+    pub fn new_v1(slices: Vec<SyncSlice>) -> Self {
         Self::V1(slices)
     }
 
@@ -68,7 +86,7 @@ impl SyncSpoolResponse {
     }
 
     /// Get the slices (for V1).
-    pub fn slices(&self) -> &[(TrackId, u16, Vec<u8>)] {
+    pub fn slices(&self) -> &[SyncSlice] {
         match self {
             Self::V1(slices) => slices,
         }
@@ -89,17 +107,23 @@ pub struct SignedSyncRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::types::EpochNumber;
 
     #[test]
     fn test_sync_request_creation() {
-        let request = SyncSpoolRequest::new_v1(42, "track_0".to_string(), 1000, 5);
+        let request = SyncSpoolRequest::new_v1(
+            42,
+            "track_0".to_string(),
+            1000,
+            EpochNumber::new(5),
+        );
 
         match request {
             SyncSpoolRequest::V1(v1) => {
                 assert_eq!(v1.spool_index, 42);
                 assert_eq!(v1.starting_track_id, "track_0");
-                assert_eq!(v1.slice_count, 1000);
-                assert_eq!(v1.epoch, 5);
+                assert_eq!(v1.batch_size, 1000);
+                assert_eq!(v1.epoch, EpochNumber::new(5));
             }
         }
     }
@@ -110,8 +134,20 @@ mod tests {
         assert!(empty.is_empty());
 
         let non_empty = SyncSpoolResponse::new_v1(vec![
-            ("track_1".to_string(), 0, vec![1, 2, 3]),
+            SyncSlice {
+                track_id: "track_1".to_string(),
+                slice_index: 0,
+                data: vec![1, 2, 3],
+            },
         ]);
         assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn test_track_id_conversion() {
+        let pubkey = Pubkey::new_unique();
+        let track_id = track_id_from_pubkey(&pubkey);
+        let parsed = track_id_to_pubkey(&track_id).unwrap();
+        assert_eq!(pubkey, parsed);
     }
 }

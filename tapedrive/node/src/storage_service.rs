@@ -3,7 +3,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use solana_pubkey::Pubkey;
+use tape_core::spooler::SpoolIndex;
+use tape_crypto::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
 use tape_store::types::Pubkey as StorePubkey;
@@ -87,7 +88,7 @@ impl<S: Store> StorageService<S> {
     /// * `meta` - The slice metadata including merkle proof
     pub fn put_slice(
         &self,
-        spool_idx: u16,
+        spool_idx: SpoolIndex,
         track_address: Pubkey,
         data: Vec<u8>,
         meta: SliceMeta,
@@ -117,7 +118,7 @@ impl<S: Store> StorageService<S> {
     /// Tuple of (data, metadata) if found, None otherwise.
     pub fn get_slice(
         &self,
-        spool_idx: u16,
+        spool_idx: SpoolIndex,
         track_address: Pubkey,
     ) -> Result<Option<(Vec<u8>, SliceMeta)>, StorageError> {
         // Convert solana_pubkey::Pubkey to tape_store::types::Pubkey
@@ -142,7 +143,7 @@ impl<S: Store> StorageService<S> {
     /// * `track_address` - The track's on-chain address
     pub fn delete_slice(
         &self,
-        spool_idx: u16,
+        spool_idx: SpoolIndex,
         track_address: Pubkey,
     ) -> Result<(), StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
@@ -183,7 +184,7 @@ mod tests {
     fn test_put_get_slice() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
-        let spool_idx = 42u16;
+        let spool_idx: SpoolIndex = 42;
         let data = vec![0xAB; 1024];
         let meta = create_test_meta();
 
@@ -211,7 +212,7 @@ mod tests {
     fn test_delete_slice() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
-        let spool_idx = 42u16;
+        let spool_idx: SpoolIndex = 42;
 
         service
             .put_slice(spool_idx, track, vec![0xAB; 100], create_test_meta())

@@ -1,7 +1,7 @@
 //! Tapedrive storage node REST API server.
 
 pub mod config;
-pub mod epoch_driver;
+pub mod epoch_manager;
 pub mod error;
 pub mod metrics;
 pub mod server;
@@ -10,7 +10,7 @@ pub mod storage_service;
 pub mod sync_types;
 
 pub use config::{ConfigError, NodeConfig};
-pub use epoch_driver::EpochDriver;
+pub use epoch_manager::{EpochError, EpochManager};
 pub use error::ApiError;
 pub use metrics::NodeMetrics;
 pub use server::Server;
