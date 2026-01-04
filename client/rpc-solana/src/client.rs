@@ -131,7 +131,7 @@ impl SolanaRpc {
     /// Handle error and determine if retry should continue.
     async fn handle_error(
         &self,
-        #[allow(unused_variables)] method: &str,
+        _method: &str,
         err: RpcError,
         backoff: &mut ExponentialBackoff,
     ) -> Result<(), RpcError> {
@@ -144,7 +144,7 @@ impl SolanaRpc {
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
-            metrics.record_error(method, err.category());
+            metrics.record_error(_method, err.category());
         }
 
         // If not retriable, return immediately
@@ -154,7 +154,7 @@ impl SolanaRpc {
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
-            metrics.record_retry(method, err.category());
+            metrics.record_retry(_method, err.category());
         }
 
         // Try failover if appropriate
@@ -190,7 +190,7 @@ impl SolanaRpc {
     /// Handle timeout and determine if retry should continue.
     async fn handle_timeout(
         &self,
-        #[allow(unused_variables)] method: &str,
+        _method: &str,
         backoff: &mut ExponentialBackoff,
     ) -> Result<(), RpcError> {
         let timeout_err = RpcError::Timeout(self.config.timeout);
@@ -203,8 +203,8 @@ impl SolanaRpc {
 
         #[cfg(feature = "metrics")]
         if let Some(metrics) = &self.metrics {
-            metrics.record_error(method, "timeout");
-            metrics.record_retry(method, "timeout");
+            metrics.record_error(_method, "timeout");
+            metrics.record_retry(_method, "timeout");
         }
 
         // Try failover on timeout
