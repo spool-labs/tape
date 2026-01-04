@@ -88,7 +88,7 @@ async fn poll_and_process(
         .await
         .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
 
-    let latest_slot = SlotNumber::new(latest_slot);
+    let latest_slot = SlotNumber(latest_slot);
 
     if latest_slot <= *last_slot {
         return Ok(());
@@ -118,7 +118,7 @@ async fn poll_and_process(
                 // Continue with next slot
             }
         }
-        *last_slot = SlotNumber::new(slot);
+        *last_slot = SlotNumber(slot);
     }
 
     // Update control plane with last processed slot

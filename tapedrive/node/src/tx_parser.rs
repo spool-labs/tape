@@ -261,7 +261,7 @@ fn parse_instruction(
             // TODO: Parse epoch from instruction data or derive from current state
             Ok(Some(ParsedInstruction::CertifyTrack {
                 track,
-                epoch: EpochNumber::new(0), // Placeholder
+                epoch: EpochNumber(0), // Placeholder
             }))
         }
 

@@ -115,7 +115,7 @@ mod tests {
             42,
             "track_0".to_string(),
             1000,
-            EpochNumber::new(5),
+            EpochNumber(5),
         );
 
         match request {
@@ -123,7 +123,7 @@ mod tests {
                 assert_eq!(v1.spool_index, 42);
                 assert_eq!(v1.starting_track_id, "track_0");
                 assert_eq!(v1.batch_size, 1000);
-                assert_eq!(v1.epoch, EpochNumber::new(5));
+                assert_eq!(v1.epoch, EpochNumber(5));
             }
         }
     }

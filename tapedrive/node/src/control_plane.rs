@@ -8,7 +8,6 @@ use std::sync::RwLock;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
-use tape_crypto::Pubkey;
 
 /// In-memory cache of on-chain control plane state.
 ///
@@ -26,8 +25,6 @@ struct ControlPlaneInner {
     epoch: Epoch,
     /// This node's on-chain state.
     node: Node,
-    /// This node's authority pubkey.
-    authority: Pubkey,
     /// Last processed Solana slot.
     last_processed_slot: SlotNumber,
     /// Cached list of spools we own (derived from system state).
@@ -38,7 +35,7 @@ struct ControlPlaneInner {
 
 impl ControlPlane {
     /// Create a new control plane cache with initial state.
-    pub fn new(system: System, epoch: Epoch, node: Node, authority: Pubkey) -> Self {
+    pub fn new(system: System, epoch: Epoch, node: Node) -> Self {
         let (our_spools, in_committee) = compute_our_spools(&system, &node);
 
         Self {
@@ -46,8 +43,7 @@ impl ControlPlane {
                 system,
                 epoch,
                 node,
-                authority,
-                last_processed_slot: SlotNumber::new(0),
+                last_processed_slot: SlotNumber(0),
                 our_spools,
                 in_committee,
             }),

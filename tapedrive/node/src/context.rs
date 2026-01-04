@@ -112,7 +112,7 @@ impl NodeContext<RocksStore> {
         };
 
         // 6. Initialize control plane cache
-        let control_plane = ControlPlane::new(system, epoch, node, authority);
+        let control_plane = ControlPlane::new(system, epoch, node);
 
         // 7. Initialize metrics
         let metrics = NodeMetrics::new();
