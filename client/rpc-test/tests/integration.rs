@@ -7,22 +7,54 @@
 //!
 //! Note: These tests are marked #[ignore] by default because they take ~2-5 seconds
 //! each to start the test validator. Run them explicitly when testing integration.
+//!
+//! **Resource Requirements:** Test validators require significant RAM (8GB+ recommended).
+//! On low-memory systems (<4GB), the validator may hang during startup while
+//! "Waiting for fees to stabilize".
 
 use bytemuck::Zeroable;
 use rpc_test::TestRpc;
+use solana_sdk::bpf_loader_upgradeable;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
-use solana_test_validator::TestValidatorGenesis;
+use solana_test_validator::{TestValidatorGenesis, UpgradeableProgramInfo};
 use tape_client::TapeClient;
+use std::path::PathBuf;
 
-// Note: Programs are loaded by ID using add_program() which looks in target/deploy/
+// Note: Programs are loaded from target/deploy/ using manifest dir to find workspace root
+
+/// Get the path to a deployed program .so file
+fn program_path(name: &str) -> PathBuf {
+    // CARGO_MANIFEST_DIR is client/rpc-test, go up to workspace root
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    PathBuf::from(manifest_dir)
+        .parent() // client/
+        .unwrap()
+        .parent() // workspace root
+        .unwrap()
+        .join("target/deploy")
+        .join(format!("{}.so", name))
+}
+
+/// Create an UpgradeableProgramInfo for loading a program
+fn program_info(name: &str, program_id: Pubkey) -> UpgradeableProgramInfo {
+    UpgradeableProgramInfo {
+        program_id,
+        loader: bpf_loader_upgradeable::id(),
+        upgrade_authority: Pubkey::default(),
+        program_path: program_path(name),
+    }
+}
 
 /// Helper to create a test validator with all Tape programs loaded
 async fn setup_validator() -> (solana_test_validator::TestValidator, Keypair) {
     TestValidatorGenesis::default()
-        .add_program("tapedrive", tape_api::program::tapedrive::ID)
-        .add_program("token", tape_api::program::token::ID)
-        .add_program("exchange", tape_api::program::exchange::ID)
-        .add_program("staking", tape_api::program::staking::ID)
+        .add_upgradeable_programs_with_path(&[
+            program_info("tapedrive", tape_api::program::tapedrive::ID),
+            program_info("token", tape_api::program::token::ID),
+            program_info("exchange", tape_api::program::exchange::ID),
+            program_info("staking", tape_api::program::staking::ID),
+        ])
         .start_async()
         .await
 }
