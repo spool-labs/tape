@@ -2,6 +2,8 @@ use crate::config::RpcConfig;
 use crate::error::RpcError;
 use crate::failover::EndpointFailover;
 use crate::retry::ExponentialBackoff;
+use crate::rpc::Rpc;
+use async_trait::async_trait;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig};
 use solana_sdk::account::Account;
@@ -652,6 +654,70 @@ impl TapeRpcClient {
     /// Get a reference to the configuration
     pub fn config(&self) -> &RpcConfig {
         &self.config
+    }
+}
+
+// ============================================================================
+// Rpc trait implementation
+// ============================================================================
+
+#[async_trait]
+impl Rpc for TapeRpcClient {
+    fn commitment(&self) -> solana_sdk::commitment_config::CommitmentLevel {
+        self.config.commitment
+    }
+
+    async fn get_slot(&self) -> Result<u64, RpcError> {
+        TapeRpcClient::get_slot(self).await
+    }
+
+    async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
+        TapeRpcClient::get_latest_blockhash(self).await
+    }
+
+    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+        TapeRpcClient::get_block(self, slot).await
+    }
+
+    async fn get_block_height(&self) -> Result<u64, RpcError> {
+        TapeRpcClient::get_block_height(self).await
+    }
+
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
+        TapeRpcClient::get_account(self, pubkey).await
+    }
+
+    async fn get_multiple_accounts(
+        &self,
+        pubkeys: &[Pubkey],
+    ) -> Result<Vec<Option<Account>>, RpcError> {
+        TapeRpcClient::get_multiple_accounts(self, pubkeys).await
+    }
+
+    async fn get_program_accounts(
+        &self,
+        program_id: &Pubkey,
+        config: RpcProgramAccountsConfig,
+    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
+        TapeRpcClient::get_program_accounts(self, program_id, config).await
+    }
+
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
+        TapeRpcClient::send_transaction(self, transaction).await
+    }
+
+    async fn send_and_confirm_transaction(
+        &self,
+        transaction: &Transaction,
+    ) -> Result<Signature, RpcError> {
+        TapeRpcClient::send_and_confirm_transaction(self, transaction).await
+    }
+
+    async fn get_signature_status(
+        &self,
+        signature: &Signature,
+    ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
+        TapeRpcClient::get_signature_status(self, signature).await
     }
 }
 

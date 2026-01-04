@@ -26,7 +26,7 @@ tape-api = { workspace = true, features = ["solana"] }
 mollusk-svm = "0.0.15"
 mollusk-svm-programs-token = "0.0.15"
 pretty-hex = "0.4.1"
-solana-log-collector = "=2.1"
+solana-log-collector = "=2.3"
 
 bincode.workspace = true
 mpl-token-metadata.workspace = true

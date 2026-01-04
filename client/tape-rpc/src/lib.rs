@@ -1,36 +1,27 @@
 //! # tape-rpc
 //!
-//! A robust Solana RPC client with automatic retry, exponential backoff, and endpoint failover.
+//! Core RPC trait and error types for Solana RPC operations.
 //!
-//! ## Features
+//! This crate defines the `Rpc` trait which abstracts over different RPC implementations:
+//! - `rpc-solana` - Production client with retry/failover
+//! - `rpc-test` - Test validator client for integration tests
 //!
-//! - **Automatic retry** with configurable exponential backoff
-//! - **Endpoint failover** for high availability
-//! - **Error classification** for smart retry decisions
-//! - **Type-safe configuration** with serde support
-//! - **Async/await** powered by tokio
+//! ## Pattern
+//!
+//! This follows the same pattern as `store/` in `tapedrive/archive/`:
+//! ```text
+//! tape-rpc (trait)  →  rpc-solana | rpc-test
+//!                           ↓
+//!                     tape-client<R: Rpc>
+//! ```
 //!
 //! ## Example
 //!
-//! ```no_run
-//! use tape_rpc::{RpcConfig, TapeRpcClient};
-//! use solana_sdk::pubkey::Pubkey;
+//! ```ignore
+//! use tape_rpc::{Rpc, RpcError};
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = RpcConfig {
-//!         endpoints: vec![
-//!             "https://api.mainnet-beta.solana.com".to_string(),
-//!             "https://backup-rpc.com".to_string(),
-//!         ],
-//!         ..Default::default()
-//!     };
-//!
-//!     let client = TapeRpcClient::new(config)?;
-//!     let slot = client.get_slot().await?;
-//!     println!("Current slot: {}", slot);
-//!
-//!     Ok(())
+//! async fn fetch_slot<R: Rpc>(rpc: &R) -> Result<u64, RpcError> {
+//!     rpc.get_slot().await
 //! }
 //! ```
 
@@ -39,11 +30,15 @@ mod config;
 mod error;
 mod failover;
 mod retry;
+mod rpc;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
-// Public exports
+// Core trait export
+pub use rpc::Rpc;
+
+// Public exports (for backwards compatibility + rpc-solana will use these)
 pub use client::TapeRpcClient;
 pub use config::{RetryConfig, RpcConfig};
 pub use error::RpcError;
@@ -55,8 +50,12 @@ pub use solana_sdk::commitment_config::CommitmentLevel;
 pub use solana_sdk::pubkey::Pubkey;
 pub use solana_sdk::signature::Signature;
 
+// Re-export async_trait for implementors
+pub use async_trait::async_trait;
+
 /// Prelude module for convenient imports
 pub mod prelude {
+    pub use crate::rpc::Rpc;
     pub use crate::client::TapeRpcClient;
     pub use crate::config::{RetryConfig, RpcConfig};
     pub use crate::error::RpcError;

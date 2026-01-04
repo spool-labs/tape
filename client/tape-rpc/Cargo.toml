@@ -16,6 +16,7 @@ solana-transaction-status.workspace = true
 
 # Async runtime
 tokio.workspace = true
+async-trait.workspace = true
 
 # Error handling
 thiserror.workspace = true

@@ -22,6 +22,7 @@ members = [
   "tapedrive/cli",
   "client/tape-rpc",
   "client/tape-client",
+  "client/rpc-test",
 ]
 
 [workspace.package]
@@ -42,6 +43,7 @@ tape-test = { version = "0.3.0", path = "./test" }
 
 tape-rpc = { version = "0.3.0", path = "./client/tape-rpc" }
 tape-client = { version = "0.3.0", path = "./client/tape-client" }
+rpc-test = { version = "0.3.0", path = "./client/rpc-test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 
 tape-store = { version = "0.3.0", path = "./tapedrive/archive/tape-store" }
@@ -63,21 +65,22 @@ tape-sdk = { version = "0.3.0", path = "./tapedrive/sdk" }
 
 # program dependencies
 bytemuck = "1.14.3"
-bytemuck_derive = "1.7.0"
+bytemuck_derive = "1.9.3"
 num_enum = "0.7.2"
 array-const-fn-init = "0.1.1"
 const-crypto = "0.3.0"
 
-# solana-specific
-solana-client = "=2.1"
-solana-program = "=2.1"
-solana-pubkey = "=2.1"
+# solana-specific (2.3.x works with Rust 1.92 and rocksdb 0.23.0)
+solana-client = "=2.3"
+solana-program = "=2.3"
+solana-pubkey = "=2.3"
 solana-keypair = "=3.1"
-solana-sdk = "=2.1"
-solana-transaction-status = "=2.1"
-solana-account-decoder = "=2.1"
-solana-transaction-status-client-types = "=2.1"
-solana-curve25519 = "=2.1"
+solana-sdk = "=2.3"
+solana-transaction-status = "=2.3"
+solana-account-decoder = "=2.3"
+solana-transaction-status-client-types = "=2.3"
+solana-curve25519 = "=2.3"
+solana-test-validator = "=2.3"
 
 steel = { version="4.0.0", features = ["spl"] }
 
@@ -100,6 +103,9 @@ thiserror = "2.0.12"
 five8 = "1.0.0"
 hex = "0.4"
 uuid = { version = "1.11", features = ["v4"] }
+
+# async
+async-trait = "0.1"
 
 # cli-specific
 clap = { version = "4.5", features = ["derive"] }

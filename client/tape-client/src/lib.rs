@@ -7,13 +7,13 @@
 //! - Submitting transactions to Tape programs
 //! - Automatic retry and failover via the underlying tape-rpc layer
 //!
-//! ## Features
+//! ## Generic RPC Pattern
 //!
-//! - **Type-safe account fetching** with automatic deserialization
-//! - **PDA derivation** handled automatically
-//! - **Transaction building** with blockhash management
-//! - **Error handling** with retry and failover
-//! - **Async/await** powered by tokio
+//! `TapeClient<R: Rpc>` is generic over the RPC implementation, following the same
+//! pattern as `TapeStore<S: Store>` in the archive crates. This enables:
+//!
+//! - **Production**: `TapeClient<TapeRpcClient>` with retry/failover
+//! - **Testing**: `TapeClient<TestRpc>` with local test validator
 //!
 //! ## Example
 //!
@@ -23,7 +23,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Configure the client
+//!     // Configure the client (uses TapeRpcClient internally)
 //!     let config = RpcConfig {
 //!         endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
 //!         ..Default::default()
@@ -42,6 +42,27 @@
 //!     println!("Node: {:?}", node);
 //!
 //!     Ok(())
+//! }
+//! ```
+//!
+//! ## Testing with TestRpc
+//!
+//! ```ignore
+//! use tape_client::TapeClient;
+//! use rpc_test::TestRpc;
+//! use solana_test_validator::TestValidatorGenesis;
+//!
+//! #[tokio::test]
+//! async fn test_with_validator() {
+//!     let (validator, payer) = TestValidatorGenesis::default()
+//!         .start_async()
+//!         .await;
+//!
+//!     // Create client with test RPC
+//!     let client = TapeClient::from_rpc(TestRpc::new(&validator));
+//!
+//!     // Same API as production!
+//!     let slot = client.get_slot().await.unwrap();
 //! }
 //! ```
 //!
@@ -78,7 +99,7 @@ pub mod metrics;
 pub use client::TapeClient;
 
 // Re-export tape-rpc types for convenience
-pub use tape_rpc::{CommitmentLevel, Pubkey, RetryConfig, RpcConfig, RpcError, Signature};
+pub use tape_rpc::{CommitmentLevel, Pubkey, RetryConfig, Rpc, RpcConfig, RpcError, Signature, TapeRpcClient};
 
 // Re-export tape-api types for convenience
 // Users can access account types and PDA functions
@@ -88,5 +109,5 @@ pub use tape_api;
 pub mod prelude {
     pub use crate::client::TapeClient;
     pub use tape_api::prelude::*;
-    pub use tape_rpc::{CommitmentLevel, RpcConfig, RpcError};
+    pub use tape_rpc::{CommitmentLevel, Rpc, RpcConfig, RpcError, TapeRpcClient};
 }

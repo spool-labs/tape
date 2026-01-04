@@ -2,9 +2,9 @@ use crate::client::TapeClient;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signature::{Keypair, Signature, Signer};
 use solana_sdk::transaction::Transaction;
-use tape_rpc::RpcError;
+use tape_rpc::{Rpc, RpcError};
 
-impl TapeClient {
+impl<R: Rpc> TapeClient<R> {
     /// Build and send a transaction from instructions
     ///
     /// This is the primary method for submitting transactions to the Tape program.
