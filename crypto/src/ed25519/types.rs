@@ -1,14 +1,17 @@
 //! Ed25519 signature types for off-chain operations.
 //!
 //! This module provides wrapper types around `ed25519_consensus` for:
-//! - `SecretKey` - wrapper around `SigningKey`
+//! - `SecretKey` - wrapper around `SigningKey` (off-chain only)
 //! - `PublicKey` - wrapper around `VerificationKey` with Solana Pubkey conversions
 //! - `Signature` - wrapper around `ed25519_consensus::Signature`
-//! - `Keypair` - combines SecretKey and PublicKey
+//! - `Keypair` - combines SecretKey and PublicKey (off-chain only)
 
 #![allow(unexpected_cfgs)]
 
-use ed25519_consensus::{SigningKey, VerificationKey};
+#[cfg(not(target_os = "solana"))]
+use ed25519_consensus::SigningKey;
+use ed25519_consensus::VerificationKey;
+#[cfg(not(target_os = "solana"))]
 use rand::CryptoRng;
 use serde::{Deserialize, Serialize};
 
@@ -31,9 +34,11 @@ pub const SIGNATURE_LEN: usize = ED25519_SIG_LEN;
 
 /// Ed25519 secret key wrapper around `SigningKey`.
 ///
-/// Used for signing messages off-chain.
+/// Used for signing messages off-chain. Not available on Solana.
+#[cfg(not(target_os = "solana"))]
 pub struct SecretKey(SigningKey);
 
+#[cfg(not(target_os = "solana"))]
 impl SecretKey {
     /// Generate a new random secret key.
     pub fn new<R: CryptoRng + rand::RngCore>(rng: &mut R) -> Self {
@@ -209,11 +214,15 @@ impl<'de> SchemaRead<'de> for Signature {
 }
 
 /// Ed25519 keypair combining a secret key and its derived public key.
+///
+/// Not available on Solana (signing is off-chain only).
+#[cfg(not(target_os = "solana"))]
 pub struct Keypair {
     secret: SecretKey,
     public: PublicKey,
 }
 
+#[cfg(not(target_os = "solana"))]
 impl Keypair {
     /// Generate a new random keypair.
     pub fn new<R: CryptoRng + rand::RngCore>(rng: &mut R) -> Self {
@@ -249,7 +258,8 @@ impl Keypair {
     }
 }
 
-#[cfg(test)]
+// Tests use rand which is only available off-chain
+#[cfg(all(test, not(target_os = "solana")))]
 mod tests {
     use super::*;
 
