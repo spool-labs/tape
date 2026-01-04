@@ -21,6 +21,7 @@ members = [
   "tapedrive/sdk",
   "tapedrive/cli",
   "client/tape-rpc",
+  "client/rpc-solana",
   "client/tape-client",
   "client/rpc-test",
 ]
@@ -42,6 +43,7 @@ tape-crypto = { version = "0.3.0", path = "./crypto" }
 tape-test = { version = "0.3.0", path = "./test" }
 
 tape-rpc = { version = "0.3.0", path = "./client/tape-rpc" }
+rpc-solana = { version = "0.3.0", path = "./client/rpc-solana" }
 tape-client = { version = "0.3.0", path = "./client/tape-client" }
 rpc-test = { version = "0.3.0", path = "./client/rpc-test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }

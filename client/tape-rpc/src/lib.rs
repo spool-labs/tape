@@ -25,39 +25,25 @@
 //! }
 //! ```
 
-mod client;
-mod config;
 mod error;
-mod failover;
-mod retry;
 mod rpc;
 
-#[cfg(feature = "metrics")]
-pub mod metrics;
-
-// Core trait export
-pub use rpc::Rpc;
-
-// Public exports (for backwards compatibility + rpc-solana will use these)
-pub use client::TapeRpcClient;
-pub use config::{RetryConfig, RpcConfig};
+// Core exports
 pub use error::RpcError;
-pub use failover::EndpointFailover;
-pub use retry::ExponentialBackoff;
-
-// Re-export commonly used types from solana-sdk for convenience
-pub use solana_sdk::commitment_config::CommitmentLevel;
-pub use solana_sdk::pubkey::Pubkey;
-pub use solana_sdk::signature::Signature;
+pub use rpc::Rpc;
 
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;
 
+// Re-export commonly used Solana types for convenience
+pub use solana_client::rpc_config::RpcProgramAccountsConfig;
+pub use solana_sdk::commitment_config::CommitmentLevel;
+pub use solana_sdk::pubkey::Pubkey;
+pub use solana_sdk::signature::Signature;
+
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::rpc::Rpc;
-    pub use crate::client::TapeRpcClient;
-    pub use crate::config::{RetryConfig, RpcConfig};
     pub use crate::error::RpcError;
+    pub use crate::rpc::Rpc;
     pub use solana_sdk::commitment_config::CommitmentLevel;
 }

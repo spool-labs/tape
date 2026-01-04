@@ -1,5 +1,6 @@
+use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_transaction_status::UiConfirmedBlock;
-use tape_rpc::{Rpc, RpcConfig, RpcError, TapeRpcClient};
+use tape_rpc::{Rpc, RpcError};
 
 #[cfg(feature = "metrics")]
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 ///
 /// This client is generic over `R: Rpc`, following the same pattern as
 /// `TapeStore<S: Store>` in the archive crates. This enables:
-/// - Production use with `TapeClient<TapeRpcClient>` (retry/failover)
+/// - Production use with `TapeClient<SolanaRpc>` (retry/failover)
 /// - Testing with `TapeClient<TestRpc>` (local test validator)
 ///
 /// # Example
@@ -88,14 +89,14 @@ impl<R: Rpc> TapeClient<R> {
 }
 
 // ============================================================================
-// Production-specific constructors (TapeRpcClient)
+// Production-specific constructors (SolanaRpc)
 // ============================================================================
 
-impl TapeClient<TapeRpcClient> {
+impl TapeClient<SolanaRpc> {
     /// Creates a new TapeClient with the given configuration
     ///
     /// This is the primary constructor for production use. It creates
-    /// a TapeRpcClient with retry and failover capabilities.
+    /// a SolanaRpc with retry and failover capabilities.
     ///
     /// # Arguments
     /// * `config` - RPC configuration including endpoints, commitment, and retry settings
@@ -104,7 +105,7 @@ impl TapeClient<TapeRpcClient> {
     /// Returns an error if the RPC client cannot be initialized
     pub fn new(config: RpcConfig) -> Result<Self, RpcError> {
         Ok(Self {
-            rpc: TapeRpcClient::new(config)?,
+            rpc: SolanaRpc::new(config)?,
             #[cfg(feature = "metrics")]
             metrics: None,
         })
@@ -123,7 +124,7 @@ impl TapeClient<TapeRpcClient> {
     #[cfg(feature = "metrics")]
     pub fn new_with_metrics(config: RpcConfig) -> Result<Self, RpcError> {
         Ok(Self {
-            rpc: TapeRpcClient::new(config)?,
+            rpc: SolanaRpc::new(config)?,
             metrics: Some(crate::metrics::ClientMetrics::new_with_global_registry()),
         })
     }
@@ -181,5 +182,4 @@ mod tests {
         let client_metrics = client.metrics().unwrap();
         assert!(Arc::ptr_eq(client_metrics, &metrics));
     }
-
 }

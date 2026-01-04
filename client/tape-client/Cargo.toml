@@ -9,8 +9,11 @@ repository.workspace = true
 keywords.workspace = true
 
 [dependencies]
-# Local workspace dependencies
+# RPC trait and production implementation
 tape-rpc = { version = "0.3.0", path = "../tape-rpc" }
+rpc-solana = { version = "0.3.0", path = "../rpc-solana" }
+
+# Tape crates
 tape-api.workspace = true
 tape-core.workspace = true
 tape-metrics = { workspace = true, optional = true }
@@ -36,4 +39,4 @@ tracing = { version = "0.1", optional = true }
 
 [features]
 default = []
-metrics = ["tape-metrics/metrics", "tape-rpc/metrics"]
+metrics = ["tape-metrics/metrics", "rpc-solana/metrics"]

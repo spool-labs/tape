@@ -1,0 +1,42 @@
+[package]
+name = "rpc-solana"
+description = "Production Solana RPC client with retry and failover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[dependencies]
+# Core trait
+tape-rpc.workspace = true
+
+# Solana dependencies
+solana-client.workspace = true
+solana-sdk.workspace = true
+solana-transaction-status.workspace = true
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging (optional)
+tracing = { version = "0.1", optional = true }
+
+# Random for jitter
+rand.workspace = true
+
+# Metrics (optional)
+tape-metrics = { workspace = true, optional = true }
+
+[features]
+default = []
+metrics = ["tape-metrics/metrics", "tracing"]

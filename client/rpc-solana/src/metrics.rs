@@ -1,4 +1,4 @@
-//! Metrics for tape-rpc operations.
+//! Metrics for Solana RPC operations.
 //!
 //! This module defines Prometheus metrics for tracking RPC operations,
 //! including request durations, error rates, retries, and failovers.
@@ -34,7 +34,7 @@ const LATENCY_BUCKETS: &[f64] = &[
 ///
 /// ```ignore
 /// use tape_metrics::MetricsRegistry;
-/// use tape_rpc::metrics::RpcMetrics;
+/// use rpc_solana::metrics::RpcMetrics;
 ///
 /// let registry = MetricsRegistry::init();
 /// let metrics = RpcMetrics::new(registry.prometheus_registry());
@@ -173,22 +173,6 @@ impl RpcMetrics {
     }
 
     /// Record a completed RPC request.
-    ///
-    /// # Parameters
-    ///
-    /// - `method`: The RPC method name (e.g., "getAccountInfo")
-    /// - `status`: "success" or "error"
-    /// - `duration`: The request duration in seconds
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use tape_metrics::OperationTimer;
-    ///
-    /// let timer = OperationTimer::new();
-    /// // ... perform RPC call ...
-    /// metrics.record_request("getSlot", "success", timer.elapsed_secs());
-    /// ```
     pub fn record_request(&self, method: &str, status: &str, duration: f64) {
         self.request_duration
             .with_label_values(&[method, status])
@@ -199,17 +183,6 @@ impl RpcMetrics {
     }
 
     /// Record an RPC error.
-    ///
-    /// # Parameters
-    ///
-    /// - `method`: The RPC method name
-    /// - `error_type`: The error category (e.g., "timeout", "connection", "server")
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// metrics.record_error("getAccountInfo", "timeout");
-    /// ```
     pub fn record_error(&self, method: &str, error_type: &str) {
         self.errors_total
             .with_label_values(&[method, error_type])
@@ -217,17 +190,6 @@ impl RpcMetrics {
     }
 
     /// Record an RPC retry.
-    ///
-    /// # Parameters
-    ///
-    /// - `method`: The RPC method name
-    /// - `reason`: The retry reason (e.g., "timeout", "connection_error", "rate_limit")
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// metrics.record_retry("sendTransaction", "timeout");
-    /// ```
     pub fn record_retry(&self, method: &str, reason: &str) {
         self.retries_total
             .with_label_values(&[method, reason])
@@ -235,17 +197,6 @@ impl RpcMetrics {
     }
 
     /// Record an endpoint failover.
-    ///
-    /// # Parameters
-    ///
-    /// - `from_endpoint`: The endpoint we're failing over from
-    /// - `reason`: The failover reason (e.g., "timeout", "connection_error", "rate_limit")
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// metrics.record_failover("https://api.mainnet-beta.solana.com", "timeout");
-    /// ```
     pub fn record_failover(&self, from_endpoint: &str, reason: &str) {
         self.failovers_total
             .with_label_values(&[from_endpoint, reason])
@@ -253,34 +204,11 @@ impl RpcMetrics {
     }
 
     /// Set the current endpoint index.
-    ///
-    /// # Parameters
-    ///
-    /// - `index`: The zero-based index of the current endpoint
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// metrics.set_current_endpoint(0);  // Primary endpoint
-    /// metrics.set_current_endpoint(1);  // First failover endpoint
-    /// ```
     pub fn set_current_endpoint(&self, index: usize) {
         self.current_endpoint.set(index as i64);
     }
 
     /// Set the total number of configured endpoints.
-    ///
-    /// This should be called once during client initialization.
-    ///
-    /// # Parameters
-    ///
-    /// - `count`: The total number of configured endpoints
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// metrics.set_endpoints_configured(3);  // 1 primary + 2 failovers
-    /// ```
     pub fn set_endpoints_configured(&self, count: usize) {
         self.endpoints_configured.set(count as i64);
     }
@@ -293,7 +221,6 @@ mod tests {
 
     #[test]
     fn test_metrics_creation() {
-        // Get or initialize the global registry
         let registry = match MetricsRegistry::get() {
             Some(r) => r,
             None => MetricsRegistry::init(),
@@ -301,89 +228,11 @@ mod tests {
 
         let metrics = RpcMetrics::new(registry.prometheus_registry());
 
-        // Test that we can record metrics without panicking
         metrics.record_request("getSlot", "success", 0.025);
         metrics.record_error("getAccountInfo", "timeout");
         metrics.record_retry("sendTransaction", "rate_limit");
         metrics.record_failover("https://api.mainnet-beta.solana.com", "timeout");
         metrics.set_current_endpoint(0);
         metrics.set_endpoints_configured(3);
-    }
-
-    #[test]
-    fn test_request_metrics() {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        let metrics = RpcMetrics::new(registry.prometheus_registry());
-
-        // Test that we can record metrics without panicking
-        metrics.record_request("getSlot", "success", 0.025);
-        metrics.record_request("getAccountInfo", "error", 0.050);
-
-        // If we got here without panicking, the test passes
-    }
-
-    #[test]
-    fn test_retry_metrics() {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        let metrics = RpcMetrics::new(registry.prometheus_registry());
-
-        // Test that we can record retries without panicking
-        metrics.record_retry("getSlot", "timeout");
-        metrics.record_retry("getSlot", "timeout");
-        metrics.record_retry("sendTransaction", "rate_limit");
-
-        // If we got here without panicking, the test passes
-    }
-
-    #[test]
-    fn test_failover_metrics() {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        let metrics = RpcMetrics::new(registry.prometheus_registry());
-
-        // Test that we can record failovers without panicking
-        metrics.record_failover("https://api.mainnet-beta.solana.com", "timeout");
-        metrics.record_failover("https://backup.solana.com", "connection_error");
-
-        // If we got here without panicking, the test passes
-    }
-
-    #[test]
-    fn test_endpoint_gauges() {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        let metrics = RpcMetrics::new(registry.prometheus_registry());
-
-        // Test that we can set gauge values without panicking
-        metrics.set_current_endpoint(1);
-        metrics.set_endpoints_configured(5);
-
-        // If we got here without panicking, the test passes
-    }
-
-    #[test]
-    fn test_error_metrics() {
-        let registry = match MetricsRegistry::get() {
-            Some(r) => r,
-            None => MetricsRegistry::init(),
-        };
-        let metrics = RpcMetrics::new(registry.prometheus_registry());
-
-        // Test that we can record errors without panicking
-        metrics.record_error("getAccountInfo", "timeout");
-        metrics.record_error("getAccountInfo", "timeout");
-        metrics.record_error("sendTransaction", "server_error");
-
-        // If we got here without panicking, the test passes
     }
 }

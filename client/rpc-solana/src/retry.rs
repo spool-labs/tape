@@ -1,6 +1,6 @@
 use crate::config::RetryConfig;
-use rand::{Rng, SeedableRng};
 use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use std::time::Duration;
 
 /// Exponential backoff with optional jitter

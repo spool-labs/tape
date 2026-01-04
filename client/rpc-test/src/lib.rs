@@ -10,7 +10,7 @@
 //!
 //! This follows the same pattern as `store-memory/` in `tapedrive/archive/`:
 //! ```text
-//! tape-rpc (trait)  →  TapeRpcClient (production) | TestRpc (testing)
+//! tape-rpc (trait)  →  SolanaRpc (production) | TestRpc (testing)
 //! ```
 //!
 //! ## Example
@@ -47,10 +47,10 @@ use tape_rpc::{Rpc, RpcError};
 
 /// Test RPC implementation wrapping a TestValidator
 ///
-/// This is the test equivalent of `TapeRpcClient`. It provides the same interface
+/// This is the test equivalent of `SolanaRpc`. It provides the same interface
 /// but delegates to a local test validator instead of a remote RPC endpoint.
 ///
-/// Unlike `TapeRpcClient`, this implementation:
+/// Unlike `SolanaRpc`, this implementation:
 /// - Does not implement retry/failover (not needed for local validator)
 /// - Does not track metrics
 /// - Returns errors directly without classification
@@ -98,14 +98,14 @@ impl Rpc for TestRpc {
         self.client
             .get_slot()
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         self.client
             .get_latest_blockhash()
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
@@ -120,14 +120,14 @@ impl Rpc for TestRpc {
         self.client
             .get_block_with_config(slot, config)
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn get_block_height(&self) -> Result<u64, RpcError> {
         self.client
             .get_block_height()
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
@@ -138,7 +138,7 @@ impl Rpc for TestRpc {
                 if err_str.contains("AccountNotFound") || err_str.contains("could not find account") {
                     Err(RpcError::AccountNotFound(*pubkey))
                 } else {
-                    Err(RpcError::Request(e))
+                    Err(RpcError::Request(err_str))
                 }
             }
         }
@@ -151,7 +151,7 @@ impl Rpc for TestRpc {
         self.client
             .get_multiple_accounts(pubkeys)
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn get_program_accounts(
@@ -162,7 +162,7 @@ impl Rpc for TestRpc {
         self.client
             .get_program_accounts_with_config(program_id, config)
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 
     async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
@@ -174,7 +174,7 @@ impl Rpc for TestRpc {
                 if err_str.contains("blockhash not found") || err_str.contains("Blockhash not found") {
                     RpcError::BlockhashExpired
                 } else {
-                    RpcError::Request(e)
+                    RpcError::Request(err_str)
                 }
             })
     }
@@ -193,7 +193,7 @@ impl Rpc for TestRpc {
                 } else if err_str.contains("Transaction simulation failed") {
                     RpcError::Transaction(err_str)
                 } else {
-                    RpcError::Request(e)
+                    RpcError::Request(err_str)
                 }
             })
     }
@@ -205,7 +205,7 @@ impl Rpc for TestRpc {
         self.client
             .get_signature_status(signature)
             .await
-            .map_err(|e| RpcError::Request(e))
+            .map_err(|e| RpcError::Request(e.to_string()))
     }
 }
 

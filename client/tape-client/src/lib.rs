@@ -5,14 +5,14 @@
 //! This crate provides a convenient interface for:
 //! - Fetching Tape account state (System, Epoch, Nodes, Tapes, etc.)
 //! - Submitting transactions to Tape programs
-//! - Automatic retry and failover via the underlying tape-rpc layer
+//! - Automatic retry and failover via the underlying rpc-solana layer
 //!
 //! ## Generic RPC Pattern
 //!
 //! `TapeClient<R: Rpc>` is generic over the RPC implementation, following the same
 //! pattern as `TapeStore<S: Store>` in the archive crates. This enables:
 //!
-//! - **Production**: `TapeClient<TapeRpcClient>` with retry/failover
+//! - **Production**: `TapeClient<SolanaRpc>` with retry/failover
 //! - **Testing**: `TapeClient<TestRpc>` with local test validator
 //!
 //! ## Example
@@ -23,7 +23,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Configure the client (uses TapeRpcClient internally)
+//!     // Configure the client (uses SolanaRpc internally)
 //!     let config = RpcConfig {
 //!         endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
 //!         ..Default::default()
@@ -98,8 +98,11 @@ pub mod metrics;
 // Public exports
 pub use client::TapeClient;
 
-// Re-export tape-rpc types for convenience
-pub use tape_rpc::{CommitmentLevel, Pubkey, RetryConfig, Rpc, RpcConfig, RpcError, Signature, TapeRpcClient};
+// Re-export tape-rpc trait types
+pub use tape_rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
+
+// Re-export rpc-solana production types
+pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
 
 // Re-export tape-api types for convenience
 // Users can access account types and PDA functions
@@ -108,6 +111,7 @@ pub use tape_api;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::client::TapeClient;
+    pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
     pub use tape_api::prelude::*;
-    pub use tape_rpc::{CommitmentLevel, Rpc, RpcConfig, RpcError, TapeRpcClient};
+    pub use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 }

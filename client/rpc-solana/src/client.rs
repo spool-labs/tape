@@ -1,9 +1,10 @@
+//! Production Solana RPC client with retry and failover capabilities.
+
 use crate::config::RpcConfig;
-use crate::error::RpcError;
 use crate::failover::EndpointFailover;
 use crate::retry::ExponentialBackoff;
-use crate::rpc::Rpc;
 use async_trait::async_trait;
+use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig};
 use solana_sdk::account::Account;
@@ -14,14 +15,30 @@ use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_status::{UiConfirmedBlock, UiTransactionEncoding};
 use std::sync::Arc;
+use tape_rpc::{Rpc, RpcError};
 use tokio::sync::RwLock;
 
-/// Solana RPC client with retry and failover capabilities
+/// Production Solana RPC client with retry and failover capabilities.
 ///
 /// Wraps the Solana RpcClient with automatic retry logic and endpoint failover.
 /// All operations automatically retry on transient errors and failover to backup
 /// endpoints when necessary.
-pub struct TapeRpcClient {
+///
+/// # Example
+///
+/// ```ignore
+/// use rpc_solana::{SolanaRpc, RpcConfig};
+/// use tape_rpc::Rpc;
+///
+/// let config = RpcConfig {
+///     endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
+///     ..Default::default()
+/// };
+/// let rpc = SolanaRpc::new(config)?;
+///
+/// let slot = rpc.get_slot().await?;
+/// ```
+pub struct SolanaRpc {
     config: RpcConfig,
     failover: Arc<RwLock<EndpointFailover>>,
     client: Arc<RwLock<RpcClient>>,
@@ -29,11 +46,11 @@ pub struct TapeRpcClient {
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
 }
 
-impl TapeRpcClient {
-    /// Creates a new TapeRpcClient with the given configuration
+impl SolanaRpc {
+    /// Creates a new SolanaRpc with the given configuration.
     ///
     /// # Errors
-    /// Returns an error if the configuration is invalid (e.g., no endpoints)
+    /// Returns an error if the configuration is invalid (e.g., no endpoints).
     pub fn new(config: RpcConfig) -> Result<Self, RpcError> {
         if config.endpoints.is_empty() {
             return Err(RpcError::Internal("No endpoints configured".to_string()));
@@ -74,7 +91,12 @@ impl TapeRpcClient {
         })
     }
 
-    /// Attempt to failover to the next endpoint
+    /// Get a reference to the configuration.
+    pub fn config(&self) -> &RpcConfig {
+        &self.config
+    }
+
+    /// Attempt to failover to the next endpoint.
     async fn try_failover(&self) -> Result<(), RpcError> {
         let mut failover = self.failover.write().await;
 
@@ -83,7 +105,7 @@ impl TapeRpcClient {
 
         let new_endpoint = failover.next_endpoint()?;
         let new_endpoint_str = new_endpoint.to_string();
-        let current_index = failover.current_index();
+        let _current_index = failover.current_index();
 
         #[cfg(feature = "metrics")]
         tracing::info!(endpoint = %new_endpoint_str, "Switching RPC endpoint");
@@ -106,8 +128,13 @@ impl TapeRpcClient {
         Ok(())
     }
 
-    /// Handle error and determine if retry should continue
-    async fn handle_error(&self, method: &str, err: RpcError, backoff: &mut ExponentialBackoff) -> Result<(), RpcError> {
+    /// Handle error and determine if retry should continue.
+    async fn handle_error(
+        &self,
+        #[allow(unused_variables)] method: &str,
+        err: RpcError,
+        backoff: &mut ExponentialBackoff,
+    ) -> Result<(), RpcError> {
         #[cfg(feature = "metrics")]
         tracing::warn!(
             category = err.category(),
@@ -160,8 +187,12 @@ impl TapeRpcClient {
         }
     }
 
-    /// Handle timeout and determine if retry should continue
-    async fn handle_timeout(&self, method: &str, backoff: &mut ExponentialBackoff) -> Result<(), RpcError> {
+    /// Handle timeout and determine if retry should continue.
+    async fn handle_timeout(
+        &self,
+        #[allow(unused_variables)] method: &str,
+        backoff: &mut ExponentialBackoff,
+    ) -> Result<(), RpcError> {
         let timeout_err = RpcError::Timeout(self.config.timeout);
 
         #[cfg(feature = "metrics")]
@@ -199,152 +230,48 @@ impl TapeRpcClient {
         }
     }
 
-    /// Reset failover state on success
+    /// Reset failover state on success.
     async fn on_success(&self) {
         let mut failover = self.failover.write().await;
         failover.reset();
     }
 
-    // ========================================================================
-    // Account Operations
-    // ========================================================================
+    /// Convert a ClientError to RpcError.
+    fn convert_error(err: ClientError, pubkey: Option<Pubkey>) -> RpcError {
+        let err_str = err.to_string();
 
-    /// Fetch a single account's data
-    pub async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
-
-        let pubkey = *pubkey;
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
-
-        loop {
-            let result = {
-                let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    client.get_account(&pubkey),
-                )
-                .await
-            };
-
-            match result {
-                Ok(Ok(account)) => {
-                    self.on_success().await;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request("getAccount", "success", timer.elapsed_secs());
-                    }
-
-                    return Ok(account);
-                }
-                Ok(Err(e)) => {
-                    let rpc_err = if e.to_string().contains("AccountNotFound") {
-                        RpcError::AccountNotFound(pubkey)
-                    } else {
-                        RpcError::from(e)
-                    };
-                    self.handle_error("getAccount", rpc_err, &mut backoff).await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout("getAccount", &mut backoff).await?;
-                }
+        // Check for specific error types
+        if err_str.contains("AccountNotFound") {
+            if let Some(pk) = pubkey {
+                return RpcError::AccountNotFound(pk);
             }
         }
-    }
 
-    /// Fetch multiple accounts in a single request
-    pub async fn get_multiple_accounts(
-        &self,
-        pubkeys: &[Pubkey],
-    ) -> Result<Vec<Option<Account>>, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
-
-        let pubkeys = pubkeys.to_vec();
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
-
-        loop {
-            let result = {
-                let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    client.get_multiple_accounts(&pubkeys),
-                )
-                .await
-            };
-
-            match result {
-                Ok(Ok(accounts)) => {
-                    self.on_success().await;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request("getMultipleAccounts", "success", timer.elapsed_secs());
-                    }
-
-                    return Ok(accounts);
-                }
-                Ok(Err(e)) => {
-                    self.handle_error("getMultipleAccounts", RpcError::from(e), &mut backoff).await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout("getMultipleAccounts", &mut backoff).await?;
-                }
-            }
+        if err_str.contains("blockhash not found") || err_str.contains("Blockhash not found") {
+            return RpcError::BlockhashExpired;
         }
-    }
 
-    /// Fetch program accounts with filters
-    pub async fn get_program_accounts(
-        &self,
-        program_id: &Pubkey,
-        config: RpcProgramAccountsConfig,
-    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
-        #[cfg(feature = "metrics")]
-        let timer = tape_metrics::OperationTimer::new();
-
-        let program_id = *program_id;
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
-
-        loop {
-            let config_clone = config.clone();
-            let result = {
-                let client = self.client.read().await;
-                tokio::time::timeout(
-                    self.config.timeout,
-                    client.get_program_accounts_with_config(&program_id, config_clone),
-                )
-                .await
-            };
-
-            match result {
-                Ok(Ok(accounts)) => {
-                    self.on_success().await;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(metrics) = &self.metrics {
-                        metrics.record_request("getProgramAccounts", "success", timer.elapsed_secs());
-                    }
-
-                    return Ok(accounts);
-                }
-                Ok(Err(e)) => {
-                    self.handle_error("getProgramAccounts", RpcError::from(e), &mut backoff).await?;
-                }
-                Err(_elapsed) => {
-                    self.handle_timeout("getProgramAccounts", &mut backoff).await?;
-                }
-            }
+        if err_str.contains("Transaction simulation failed") {
+            return RpcError::Transaction(err_str);
         }
+
+        // Default to Request error with the error message
+        RpcError::Request(err_str)
     }
 
-    // ========================================================================
-    // Slot/Block Operations
-    // ========================================================================
+}
 
-    /// Get the current slot
-    pub async fn get_slot(&self) -> Result<u64, RpcError> {
+// ============================================================================
+// Rpc trait implementation
+// ============================================================================
+
+#[async_trait]
+impl Rpc for SolanaRpc {
+    fn commitment(&self) -> solana_sdk::commitment_config::CommitmentLevel {
+        self.config.commitment
+    }
+
+    async fn get_slot(&self) -> Result<u64, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -368,7 +295,8 @@ impl TapeRpcClient {
                     return Ok(slot);
                 }
                 Ok(Err(e)) => {
-                    self.handle_error("getSlot", RpcError::from(e), &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSlot", rpc_err, &mut backoff).await?;
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("getSlot", &mut backoff).await?;
@@ -377,8 +305,7 @@ impl TapeRpcClient {
         }
     }
 
-    /// Get the latest blockhash
-    pub async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
+    async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -402,20 +329,19 @@ impl TapeRpcClient {
                     return Ok(hash);
                 }
                 Ok(Err(e)) => {
-                    self.handle_error("getLatestBlockhash", RpcError::from(e), &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getLatestBlockhash", rpc_err, &mut backoff)
+                        .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getLatestBlockhash", &mut backoff).await?;
+                    self.handle_timeout("getLatestBlockhash", &mut backoff)
+                        .await?;
                 }
             }
         }
     }
 
-    /// Get block by slot number
-    ///
-    /// Returns the confirmed block at the given slot with full transaction details.
-    /// This is used for future block processing implementations.
-    pub async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
+    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -452,7 +378,8 @@ impl TapeRpcClient {
                     return Ok(block);
                 }
                 Ok(Err(e)) => {
-                    self.handle_error("getBlock", RpcError::from(e), &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getBlock", rpc_err, &mut backoff).await?;
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("getBlock", &mut backoff).await?;
@@ -461,8 +388,7 @@ impl TapeRpcClient {
         }
     }
 
-    /// Get the block height
-    pub async fn get_block_height(&self) -> Result<u64, RpcError> {
+    async fn get_block_height(&self) -> Result<u64, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -486,7 +412,9 @@ impl TapeRpcClient {
                     return Ok(height);
                 }
                 Ok(Err(e)) => {
-                    self.handle_error("getBlockHeight", RpcError::from(e), &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getBlockHeight", rpc_err, &mut backoff)
+                        .await?;
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("getBlockHeight", &mut backoff).await?;
@@ -495,12 +423,141 @@ impl TapeRpcClient {
         }
     }
 
-    // ========================================================================
-    // Transaction Operations
-    // ========================================================================
+    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
 
-    /// Send a transaction without waiting for confirmation
-    pub async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
+        let pubkey = *pubkey;
+        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(self.config.timeout, client.get_account(&pubkey)).await
+            };
+
+            match result {
+                Ok(Ok(account)) => {
+                    self.on_success().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request("getAccount", "success", timer.elapsed_secs());
+                    }
+
+                    return Ok(account);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, Some(pubkey));
+                    self.handle_error("getAccount", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getAccount", &mut backoff).await?;
+                }
+            }
+        }
+    }
+
+    async fn get_multiple_accounts(
+        &self,
+        pubkeys: &[Pubkey],
+    ) -> Result<Vec<Option<Account>>, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let pubkeys = pubkeys.to_vec();
+        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+
+        loop {
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_multiple_accounts(&pubkeys),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(accounts)) => {
+                    self.on_success().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getMultipleAccounts",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(accounts);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getMultipleAccounts", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getMultipleAccounts", &mut backoff)
+                        .await?;
+                }
+            }
+        }
+    }
+
+    async fn get_program_accounts(
+        &self,
+        program_id: &Pubkey,
+        config: RpcProgramAccountsConfig,
+    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
+        #[cfg(feature = "metrics")]
+        let timer = tape_metrics::OperationTimer::new();
+
+        let program_id = *program_id;
+        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+
+        loop {
+            let config_clone = config.clone();
+            let result = {
+                let client = self.client.read().await;
+                tokio::time::timeout(
+                    self.config.timeout,
+                    client.get_program_accounts_with_config(&program_id, config_clone),
+                )
+                .await
+            };
+
+            match result {
+                Ok(Ok(accounts)) => {
+                    self.on_success().await;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_request(
+                            "getProgramAccounts",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
+                    }
+
+                    return Ok(accounts);
+                }
+                Ok(Err(e)) => {
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getProgramAccounts", rpc_err, &mut backoff)
+                        .await?;
+                }
+                Err(_elapsed) => {
+                    self.handle_timeout("getProgramAccounts", &mut backoff)
+                        .await?;
+                }
+            }
+        }
+    }
+
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -529,15 +586,9 @@ impl TapeRpcClient {
                     return Ok(sig);
                 }
                 Ok(Err(e)) => {
-                    let err_str = e.to_string();
-                    let rpc_err = if err_str.contains("blockhash not found")
-                        || err_str.contains("Blockhash not found")
-                    {
-                        RpcError::BlockhashExpired
-                    } else {
-                        RpcError::from(e)
-                    };
-                    self.handle_error("sendTransaction", rpc_err, &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendTransaction", rpc_err, &mut backoff)
+                        .await?;
                 }
                 Err(_elapsed) => {
                     self.handle_timeout("sendTransaction", &mut backoff).await?;
@@ -546,10 +597,7 @@ impl TapeRpcClient {
         }
     }
 
-    /// Send a transaction and wait for confirmation
-    ///
-    /// Uses polling to check transaction status until it's confirmed.
-    pub async fn send_and_confirm_transaction(
+    async fn send_and_confirm_transaction(
         &self,
         transaction: &Transaction,
     ) -> Result<Signature, RpcError> {
@@ -575,37 +623,29 @@ impl TapeRpcClient {
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
-                        metrics.record_request("sendAndConfirmTransaction", "success", timer.elapsed_secs());
+                        metrics.record_request(
+                            "sendAndConfirmTransaction",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
                     }
 
                     return Ok(sig);
                 }
                 Ok(Err(e)) => {
-                    let err_str = e.to_string();
-                    let rpc_err = if err_str.contains("blockhash not found")
-                        || err_str.contains("Blockhash not found")
-                    {
-                        RpcError::BlockhashExpired
-                    } else if err_str.contains("Transaction simulation failed") {
-                        RpcError::Transaction(err_str)
-                    } else {
-                        RpcError::from(e)
-                    };
-                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("sendAndConfirmTransaction", rpc_err, &mut backoff)
+                        .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff).await?;
+                    self.handle_timeout("sendAndConfirmTransaction", &mut backoff)
+                        .await?;
                 }
             }
         }
     }
 
-    /// Check the status of a transaction signature
-    ///
-    /// Returns `Ok(Some(Ok(())))` if confirmed successfully,
-    /// `Ok(Some(Err(e)))` if confirmed with error,
-    /// `Ok(None)` if not yet confirmed.
-    pub async fn get_signature_status(
+    async fn get_signature_status(
         &self,
         signature: &Signature,
     ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
@@ -631,93 +671,26 @@ impl TapeRpcClient {
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
-                        metrics.record_request("getSignatureStatus", "success", timer.elapsed_secs());
+                        metrics.record_request(
+                            "getSignatureStatus",
+                            "success",
+                            timer.elapsed_secs(),
+                        );
                     }
 
                     return Ok(status);
                 }
                 Ok(Err(e)) => {
-                    self.handle_error("getSignatureStatus", RpcError::from(e), &mut backoff).await?;
+                    let rpc_err = Self::convert_error(e, None);
+                    self.handle_error("getSignatureStatus", rpc_err, &mut backoff)
+                        .await?;
                 }
                 Err(_elapsed) => {
-                    self.handle_timeout("getSignatureStatus", &mut backoff).await?;
+                    self.handle_timeout("getSignatureStatus", &mut backoff)
+                        .await?;
                 }
             }
         }
-    }
-
-    /// Get the current commitment configuration
-    pub fn commitment(&self) -> solana_sdk::commitment_config::CommitmentLevel {
-        self.config.commitment
-    }
-
-    /// Get a reference to the configuration
-    pub fn config(&self) -> &RpcConfig {
-        &self.config
-    }
-}
-
-// ============================================================================
-// Rpc trait implementation
-// ============================================================================
-
-#[async_trait]
-impl Rpc for TapeRpcClient {
-    fn commitment(&self) -> solana_sdk::commitment_config::CommitmentLevel {
-        self.config.commitment
-    }
-
-    async fn get_slot(&self) -> Result<u64, RpcError> {
-        TapeRpcClient::get_slot(self).await
-    }
-
-    async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
-        TapeRpcClient::get_latest_blockhash(self).await
-    }
-
-    async fn get_block(&self, slot: u64) -> Result<UiConfirmedBlock, RpcError> {
-        TapeRpcClient::get_block(self, slot).await
-    }
-
-    async fn get_block_height(&self) -> Result<u64, RpcError> {
-        TapeRpcClient::get_block_height(self).await
-    }
-
-    async fn get_account(&self, pubkey: &Pubkey) -> Result<Account, RpcError> {
-        TapeRpcClient::get_account(self, pubkey).await
-    }
-
-    async fn get_multiple_accounts(
-        &self,
-        pubkeys: &[Pubkey],
-    ) -> Result<Vec<Option<Account>>, RpcError> {
-        TapeRpcClient::get_multiple_accounts(self, pubkeys).await
-    }
-
-    async fn get_program_accounts(
-        &self,
-        program_id: &Pubkey,
-        config: RpcProgramAccountsConfig,
-    ) -> Result<Vec<(Pubkey, Account)>, RpcError> {
-        TapeRpcClient::get_program_accounts(self, program_id, config).await
-    }
-
-    async fn send_transaction(&self, transaction: &Transaction) -> Result<Signature, RpcError> {
-        TapeRpcClient::send_transaction(self, transaction).await
-    }
-
-    async fn send_and_confirm_transaction(
-        &self,
-        transaction: &Transaction,
-    ) -> Result<Signature, RpcError> {
-        TapeRpcClient::send_and_confirm_transaction(self, transaction).await
-    }
-
-    async fn get_signature_status(
-        &self,
-        signature: &Signature,
-    ) -> Result<Option<Result<(), solana_sdk::transaction::TransactionError>>, RpcError> {
-        TapeRpcClient::get_signature_status(self, signature).await
     }
 }
 
@@ -728,7 +701,7 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let config = RpcConfig::default();
-        let client = TapeRpcClient::new(config);
+        let client = SolanaRpc::new(config);
         assert!(client.is_ok());
     }
 
@@ -738,7 +711,7 @@ mod tests {
             endpoints: vec![],
             ..Default::default()
         };
-        let client = TapeRpcClient::new(config);
+        let client = SolanaRpc::new(config);
         assert!(client.is_err());
     }
 
@@ -748,7 +721,7 @@ mod tests {
             commitment: solana_sdk::commitment_config::CommitmentLevel::Finalized,
             ..Default::default()
         };
-        let client = TapeRpcClient::new(config).unwrap();
+        let client = SolanaRpc::new(config).unwrap();
         assert_eq!(
             client.commitment(),
             solana_sdk::commitment_config::CommitmentLevel::Finalized

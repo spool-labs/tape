@@ -5400,6 +5400,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-solana"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-sdk",
+ "solana-transaction-status",
+ "tape-metrics",
+ "tape-rpc",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rpc-test"
 version = "0.3.0"
 dependencies = [
@@ -11168,6 +11186,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "rpc-solana",
  "solana-account-decoder",
  "solana-client",
  "solana-sdk",
@@ -11302,18 +11321,11 @@ dependencies = [
 name = "tape-rpc"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "async-trait",
- "rand 0.8.5",
- "serde",
- "serde_json",
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
- "tape-metrics",
  "thiserror 2.0.17",
- "tokio",
- "tracing",
 ]
 
 [[package]]

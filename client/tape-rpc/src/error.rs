@@ -1,33 +1,48 @@
-use solana_client::client_error::{ClientError, ClientErrorKind};
-use solana_client::rpc_request::RpcError as SolanaRpcError;
+//! RPC error types
+//!
+//! This module provides error types for RPC operations that are
+//! implementation-agnostic. Specific implementations (like `rpc-solana`)
+//! convert their internal errors into these types.
+
 use solana_sdk::pubkey::Pubkey;
 use std::time::Duration;
 use thiserror::Error;
 
 /// Errors from RPC operations
+///
+/// These error types are designed to be implementation-agnostic so they
+/// can be used by any RPC implementation (Solana, mock, test, etc.).
 #[derive(Debug, Error)]
 pub enum RpcError {
+    /// RPC request failed with an error message
     #[error("RPC request failed: {0}")]
-    Request(#[from] ClientError),
+    Request(String),
 
+    /// Request timed out
     #[error("Request timeout after {0:?}")]
     Timeout(Duration),
 
+    /// All configured endpoints have been exhausted
     #[error("All endpoints exhausted after {attempts} attempts")]
     AllEndpointsFailed { attempts: u32 },
 
+    /// Account does not exist at the given address
     #[error("Account not found: {0}")]
     AccountNotFound(Pubkey),
 
+    /// Failed to deserialize account data
     #[error("Deserialization failed: {0}")]
     Deserialization(String),
 
+    /// Transaction execution failed
     #[error("Transaction failed: {0}")]
     Transaction(String),
 
+    /// Blockhash has expired (transaction too old)
     #[error("Blockhash expired")]
     BlockhashExpired,
 
+    /// Internal error (configuration, setup, etc.)
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -39,7 +54,7 @@ impl RpcError {
             // Retriable errors
             RpcError::Timeout(_) => true,
             RpcError::BlockhashExpired => true,
-            RpcError::Request(e) => classify_client_error(e),
+            RpcError::Request(msg) => is_retriable_message(msg),
 
             // Non-retriable errors
             RpcError::AccountNotFound(_) => false,
@@ -54,7 +69,7 @@ impl RpcError {
     pub fn should_failover(&self) -> bool {
         match self {
             RpcError::Timeout(_) => true,
-            RpcError::Request(e) => is_endpoint_error(e),
+            RpcError::Request(msg) => is_endpoint_error_message(msg),
             _ => false,
         }
     }
@@ -74,88 +89,31 @@ impl RpcError {
     }
 }
 
-/// Classify Solana client errors for retry decisions
-fn classify_client_error(e: &ClientError) -> bool {
-    match e.kind() {
-        // Network errors are retriable
-        ClientErrorKind::Io(_) => true,
-        ClientErrorKind::Reqwest(_) => true,
-
-        // RPC errors need deeper inspection
-        ClientErrorKind::RpcError(rpc_err) => is_retriable_rpc_error(rpc_err),
-
-        // Serialization errors are not retriable
-        ClientErrorKind::SerdeJson(_) => false,
-
-        // Signing errors are not retriable
-        ClientErrorKind::SigningError(_) => false,
-
-        // Transaction errors are not retriable
-        ClientErrorKind::TransactionError(_) => false,
-
-        // Custom errors - default to not retriable
-        ClientErrorKind::Custom(_) => false,
-
-        // Fallback for any other error kind
-        _ => false,
-    }
+/// Check if error message indicates a retriable condition
+fn is_retriable_message(msg: &str) -> bool {
+    let msg = msg.to_lowercase();
+    msg.contains("blockhash not found")
+        || msg.contains("node is behind")
+        || msg.contains("slot was skipped")
+        || msg.contains("block not available")
+        || msg.contains("timeout")
+        || msg.contains("too many requests")
+        || msg.contains("rate limit")
+        || msg.contains("connection")
+        || msg.contains("network")
 }
 
-/// Classify RPC errors for retry decisions
-fn is_retriable_rpc_error(rpc_err: &SolanaRpcError) -> bool {
-    use SolanaRpcError::*;
-
-    match rpc_err {
-        // Parse errors - check message
-        RpcResponseError { message, .. } => {
-            let msg = message.to_lowercase();
-
-            // Retriable error patterns
-            msg.contains("blockhash not found")
-                || msg.contains("node is behind")
-                || msg.contains("slot was skipped")
-                || msg.contains("block not available")
-                || msg.contains("timeout")
-                || msg.contains("too many requests")
-                || msg.contains("rate limit")
-        }
-
-        // Request errors (network/http issues)
-        RpcRequestError(_) => true,
-
-        // Fallback
-        _ => false,
-    }
-}
-
-/// Check if error suggests trying a different endpoint
-fn is_endpoint_error(e: &ClientError) -> bool {
-    match e.kind() {
-        // Network errors suggest endpoint issues
-        ClientErrorKind::Io(_) => true,
-        ClientErrorKind::Reqwest(_) => true,
-
-        ClientErrorKind::RpcError(rpc_err) => match rpc_err {
-            SolanaRpcError::RpcResponseError { message, code, .. } => {
-                let msg = message.to_lowercase();
-
-                // HTTP error codes that suggest trying different endpoint
-                if code == &429 || code == &503 || code == &504 {
-                    return true;
-                }
-
-                // Error messages suggesting endpoint issues
-                msg.contains("timeout")
-                    || msg.contains("node is behind")
-                    || msg.contains("too many requests")
-                    || msg.contains("rate limit")
-            }
-            SolanaRpcError::RpcRequestError(_) => true,
-            _ => false,
-        },
-
-        _ => false,
-    }
+/// Check if error message suggests trying a different endpoint
+fn is_endpoint_error_message(msg: &str) -> bool {
+    let msg = msg.to_lowercase();
+    msg.contains("timeout")
+        || msg.contains("node is behind")
+        || msg.contains("too many requests")
+        || msg.contains("rate limit")
+        || msg.contains("connection")
+        || msg.contains("503")
+        || msg.contains("504")
+        || msg.contains("429")
 }
 
 #[cfg(test)]
@@ -188,5 +146,12 @@ mod tests {
         assert!(RpcError::Timeout(Duration::from_secs(1)).should_failover());
         assert!(!RpcError::BlockhashExpired.should_failover());
         assert!(!RpcError::AccountNotFound(Pubkey::default()).should_failover());
+    }
+
+    #[test]
+    fn test_retriable_messages() {
+        assert!(RpcError::Request("connection reset".to_string()).is_retriable());
+        assert!(RpcError::Request("rate limit exceeded".to_string()).is_retriable());
+        assert!(!RpcError::Request("invalid account".to_string()).is_retriable());
     }
 }
