@@ -118,6 +118,40 @@ fn create_client(validator: &solana_test_validator::TestValidator) -> TapeClient
     TapeClient::from_rpc(rpc)
 }
 
+/// Helper to fully initialize the system (mint + system + expand + initialize)
+/// This handles the account size expansion needed for the System account.
+async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
+    use tape_api::instruction::{
+        build_create_system_ix, build_expand_system_ix, build_initialize_ix, build_initialize_mint_ix,
+    };
+
+    // Step 1: Initialize the TAPE token mint
+    let mint_ix = build_initialize_mint_ix(payer.pubkey());
+    client.send_instructions(payer, vec![mint_ix]).await
+        .expect("Failed to initialize mint");
+
+    // Step 2: Create the System singleton (starts at ~10KB)
+    let create_system_ix = build_create_system_ix(payer.pubkey());
+    client.send_instructions(payer, vec![create_system_ix]).await
+        .expect("Failed to create system");
+
+    // Step 3: Expand System account to full size
+    // System is ~43KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
+    // Need ~4 expand calls: 10KB -> 20KB -> 30KB -> 40KB -> 43KB
+    for _ in 0..4 {
+        let expand_ix = build_expand_system_ix(payer.pubkey());
+        // Expand until we hit AccountAlreadyInitialized (full size reached)
+        if client.send_instructions(payer, vec![expand_ix]).await.is_err() {
+            break; // Account is at full size
+        }
+    }
+
+    // Step 4: Initialize Epoch and Archive
+    let init_ix = build_initialize_ix(payer.pubkey());
+    client.send_instructions(payer, vec![init_ix]).await
+        .expect("Failed to initialize epoch/archive");
+}
+
 // =============================================================================
 // Basic RPC Tests (no custom programs needed)
 // =============================================================================
@@ -155,27 +189,13 @@ async fn test_get_block() {
 #[tokio::test]
 #[ignore]
 async fn test_initialize_system() {
-    use tape_api::instruction::{build_create_system_ix, build_initialize_ix, build_initialize_mint_ix};
-
     let (validator, payer) = setup_validator().await;
     let client = create_client(&validator);
 
-    // Step 1: Initialize the TAPE token mint
-    let mint_ix = build_initialize_mint_ix(payer.pubkey());
-    let result = client.send_instructions(&payer, vec![mint_ix]).await;
-    assert!(result.is_ok(), "Failed to initialize mint: {:?}", result.err());
+    // Initialize the full system (mint + system + expand + epoch/archive)
+    initialize_system(&client, &payer).await;
 
-    // Step 2: Create the System singleton
-    let create_system_ix = build_create_system_ix(payer.pubkey());
-    let result = client.send_instructions(&payer, vec![create_system_ix]).await;
-    assert!(result.is_ok(), "Failed to create system: {:?}", result.err());
-
-    // Step 3: Initialize Epoch and Archive
-    let init_ix = build_initialize_ix(payer.pubkey());
-    let result = client.send_instructions(&payer, vec![init_ix]).await;
-    assert!(result.is_ok(), "Failed to initialize: {:?}", result.err());
-
-    // Step 4: Verify we can fetch the singleton accounts
+    // Verify we can fetch the singleton accounts
     let system = client.get_system().await;
     assert!(system.is_ok(), "Failed to fetch System: {:?}", system.err());
 
@@ -193,10 +213,7 @@ async fn test_initialize_system() {
 #[tokio::test]
 #[ignore]
 async fn test_register_node() {
-    use tape_api::instruction::{
-        build_create_system_ix, build_initialize_ix, build_initialize_mint_ix,
-        build_register_node_ix,
-    };
+    use tape_api::instruction::build_register_node_ix;
     use tape_api::utils::to_name;
     use tape_core::prelude::*;
 
@@ -204,13 +221,7 @@ async fn test_register_node() {
     let client = create_client(&validator);
 
     // Initialize the system first
-    let mint_ix = build_initialize_mint_ix(payer.pubkey());
-    let create_system_ix = build_create_system_ix(payer.pubkey());
-    let init_ix = build_initialize_ix(payer.pubkey());
-
-    client.send_instructions(&payer, vec![mint_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![create_system_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![init_ix]).await.unwrap();
+    initialize_system(&client, &payer).await;
 
     // Create a node keypair
     let node_authority = Keypair::new();
@@ -261,10 +272,7 @@ async fn test_register_node() {
 #[tokio::test]
 #[ignore]
 async fn test_get_all_nodes() {
-    use tape_api::instruction::{
-        build_create_system_ix, build_initialize_ix, build_initialize_mint_ix,
-        build_register_node_ix,
-    };
+    use tape_api::instruction::build_register_node_ix;
     use tape_api::utils::to_name;
     use tape_core::prelude::*;
 
@@ -272,13 +280,7 @@ async fn test_get_all_nodes() {
     let client = create_client(&validator);
 
     // Initialize the system
-    let mint_ix = build_initialize_mint_ix(payer.pubkey());
-    let create_system_ix = build_create_system_ix(payer.pubkey());
-    let init_ix = build_initialize_ix(payer.pubkey());
-
-    client.send_instructions(&payer, vec![mint_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![create_system_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![init_ix]).await.unwrap();
+    initialize_system(&client, &payer).await;
 
     // Register multiple nodes
     for i in 0..3 {
@@ -356,19 +358,11 @@ async fn test_transaction_insufficient_funds() {
 #[tokio::test]
 #[ignore]
 async fn test_concurrent_reads() {
-    use tape_api::instruction::{build_create_system_ix, build_initialize_ix, build_initialize_mint_ix};
-
     let (validator, payer) = setup_validator().await;
     let client = create_client(&validator);
 
     // Initialize system
-    let mint_ix = build_initialize_mint_ix(payer.pubkey());
-    let create_system_ix = build_create_system_ix(payer.pubkey());
-    let init_ix = build_initialize_ix(payer.pubkey());
-
-    client.send_instructions(&payer, vec![mint_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![create_system_ix]).await.unwrap();
-    client.send_instructions(&payer, vec![init_ix]).await.unwrap();
+    initialize_system(&client, &payer).await;
 
     // Perform concurrent reads
     let (system, epoch, archive, slot) = tokio::join!(
