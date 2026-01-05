@@ -32,6 +32,7 @@
 pub mod client;
 pub mod communication;
 pub mod decoder;
+pub mod discovery;
 pub mod downloader;
 pub mod encoder;
 pub mod error;
@@ -54,6 +55,12 @@ pub use error::{ClientError, DownloadError, UploadError};
 
 // Routing
 pub use routing::{RoutingError, SliceRouter};
+
+// Discovery (on-chain node address resolution)
+pub use discovery::{discover_committee_addresses, discover_committee_addresses_required, DiscoveryError, DiscoveryResult};
+
+// Re-export RPC config for discovery
+pub use tape_client::RpcConfig;
 
 // Re-export key constants from tape-core for convenience
 pub use tape_core::erasure::{DATA_SLICES, MAX_BLOB_SIZE, MAX_SLICE_SIZE, SLICE_COUNT};

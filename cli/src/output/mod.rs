@@ -31,6 +31,7 @@ impl std::str::FromStr for OutputFormat {
 }
 
 /// Print data in the specified format.
+#[allow(dead_code)]
 pub fn print_output<T: Serialize + TableDisplay>(data: &T, format: OutputFormat) {
     match format {
         OutputFormat::Json => print_json(data),
@@ -40,6 +41,7 @@ pub fn print_output<T: Serialize + TableDisplay>(data: &T, format: OutputFormat)
 }
 
 /// Print data as JSON.
+#[allow(dead_code)]
 pub fn print_json<T: Serialize + ?Sized>(data: &T) {
     match serde_json::to_string_pretty(data) {
         Ok(json) => println!("{}", json),
@@ -48,6 +50,7 @@ pub fn print_json<T: Serialize + ?Sized>(data: &T) {
 }
 
 /// Trait for types that can be displayed as a table.
+#[allow(dead_code)]
 pub trait TableDisplay: Serialize {
     /// Print as a formatted table.
     fn print_table(&self);
@@ -60,6 +63,7 @@ pub trait TableDisplay: Serialize {
 }
 
 /// Format a pubkey for display (truncated).
+#[cfg(feature = "db")]
 pub fn format_pubkey(pubkey: &str) -> String {
     if pubkey.len() > 12 {
         format!("{}...{}", &pubkey[..4], &pubkey[pubkey.len()-4..])
@@ -69,6 +73,7 @@ pub fn format_pubkey(pubkey: &str) -> String {
 }
 
 /// Format a hash for display (truncated).
+#[cfg(feature = "db")]
 pub fn format_hash(hash: &[u8]) -> String {
     let hex = hex::encode(hash);
     if hex.len() > 16 {

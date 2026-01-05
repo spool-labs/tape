@@ -4,4 +4,4 @@ pub mod cluster;
 pub mod file;
 
 pub use cluster::Cluster;
-pub use file::{ConfigFile, NodeConfig, default_config_path, expand_path};
+pub use file::{ConfigFile, default_config_path, expand_path};

@@ -17,6 +17,7 @@ pub fn spinner(msg: &str) -> ProgressBar {
 }
 
 /// Create a progress bar.
+#[allow(dead_code)]
 pub fn progress_bar(len: u64, msg: &str) -> ProgressBar {
     let pb = ProgressBar::new(len);
     pb.set_style(

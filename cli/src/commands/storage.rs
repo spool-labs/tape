@@ -7,6 +7,8 @@ use clap::Subcommand;
 
 use crate::Context;
 
+use tape_sdk::{discover_committee_addresses, RpcConfig};
+
 /// Minimum slice size to avoid excessive overhead.
 const MIN_SLICE_BYTES: usize = 1024;
 
@@ -96,6 +98,59 @@ fn calculate_slice_size(data_len: usize) -> usize {
     min_needed.clamp(MIN_SLICE_BYTES, MAX_SLICE_BYTES)
 }
 
+/// Resolve node addresses: prefer explicit override, then auto-discover from on-chain, then config fallback.
+async fn resolve_node_addresses(
+    ctx: &Context,
+    explicit_nodes: Option<Vec<String>>,
+) -> Result<Vec<String>> {
+    // 1. Use explicit --nodes if provided
+    if let Some(nodes) = explicit_nodes {
+        if !nodes.is_empty() {
+            return Ok(nodes);
+        }
+    }
+
+    // 2. Try auto-discovery from on-chain committee (via SDK)
+    let rpc_config = RpcConfig {
+        endpoints: vec![ctx.rpc_url()],
+        ..Default::default()
+    };
+
+    match discover_committee_addresses(&rpc_config).await {
+        Ok(result) => {
+            // Log any warnings
+            for warning in &result.warnings {
+                ctx.debug(warning);
+            }
+
+            if result.has_nodes() {
+                if !ctx.quiet {
+                    eprintln!("Discovered {} nodes from on-chain committee", result.node_count());
+                }
+                return Ok(result.addresses);
+            }
+        }
+        Err(e) => {
+            ctx.debug(&format!("Auto-discovery failed: {}", e));
+        }
+    }
+
+    // 3. Fall back to config
+    if !ctx.nodes.is_empty() {
+        if !ctx.quiet {
+            eprintln!("Using {} nodes from config", ctx.nodes.len());
+        }
+        return Ok(ctx.nodes.clone());
+    }
+
+    anyhow::bail!(
+        "No storage nodes available. Either:\n  \
+         - Ensure active nodes are registered on-chain, or\n  \
+         - Use --nodes to specify manually, or\n  \
+         - Set 'nodes' in config file"
+    )
+}
+
 async fn upload(
     ctx: &Context,
     file: PathBuf,
@@ -107,10 +162,8 @@ async fn upload(
     use tape_crypto::Pubkey;
     use tape_sdk::TapeClient;
 
-    let nodes = nodes.unwrap_or_else(|| ctx.nodes.clone());
-    if nodes.is_empty() {
-        anyhow::bail!("No nodes specified. Use --nodes or set in config.");
-    }
+    // Resolve node addresses (auto-discover or use override/config)
+    let nodes = resolve_node_addresses(ctx, nodes).await?;
 
     // Read file
     let data = tokio::fs::read(&file)
@@ -167,10 +220,8 @@ async fn download(
 ) -> Result<()> {
     use tape_sdk::TapeClient;
 
-    let nodes = nodes.unwrap_or_else(|| ctx.nodes.clone());
-    if nodes.is_empty() {
-        anyhow::bail!("No nodes specified. Use --nodes or set in config.");
-    }
+    // Resolve node addresses (auto-discover or use override/config)
+    let nodes = resolve_node_addresses(ctx, nodes).await?;
 
     if !ctx.quiet {
         eprintln!("Downloading track {}...", track_id);
@@ -241,10 +292,8 @@ async fn verify(
 ) -> Result<()> {
     use tape_sdk::{TapeClient, BlobEncoder, BlobMerkleRoot};
 
-    let nodes = nodes.unwrap_or_else(|| ctx.nodes.clone());
-    if nodes.is_empty() {
-        anyhow::bail!("No nodes specified. Use --nodes or set in config.");
-    }
+    // Resolve node addresses (auto-discover or use override/config)
+    let nodes = resolve_node_addresses(ctx, nodes).await?;
 
     // Parse expected root
     let expected_bytes = hex::decode(root)

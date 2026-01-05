@@ -11530,6 +11530,7 @@ dependencies = [
  "serde",
  "serial_test",
  "store-memory",
+ "tape-client",
  "tape-core",
  "tape-crypto",
  "tape-metrics",
