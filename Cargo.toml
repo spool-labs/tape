@@ -14,7 +14,7 @@ members = [
   "network/node",
   "network/api",
   "network/client",
-  "network/sdk",
+  "sdk",
   "cli",
   "store/store",
   "store/store-memory",
@@ -56,7 +56,7 @@ tape-slicer = { version = "0.3.0", path = "./network/slicer" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
-tape-sdk = { version = "0.3.0", path = "./network/sdk" }
+tape-sdk = { version = "0.3.0", path = "./sdk" }
 
 # tape-archive = { version = "0.3.0", path = "./tape-archive" }
 # tape-cli = { version = "0.3.0", path = "./tape-cli" }
