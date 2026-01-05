@@ -10,20 +10,20 @@ members = [
   "programs/staking",
   "programs/tapedrive",
   "programs/token",
-  "tapedrive/slicer",
-  "tapedrive/archive/store",
-  "tapedrive/archive/store-memory",
-  "tapedrive/archive/store-rocks",
-  "tapedrive/archive/tape-store",
-  "tapedrive/node",
-  "tapedrive/api",
-  "tapedrive/client",
-  "tapedrive/sdk",
-  "tapedrive/cli",
-  "client/rpc",
-  "client/rpc-solana",
-  "client/tape-client",
-  "client/rpc-test",
+  "network/slicer",
+  "network/node",
+  "network/api",
+  "network/client",
+  "network/sdk",
+  "network/cli",
+  "store/store",
+  "store/store-memory",
+  "store/store-rocks",
+  "store/tape-store",
+  "rpc/rpc",
+  "rpc/rpc-solana",
+  "rpc/tape-client",
+  "rpc/rpc-test",
 ]
 
 [workspace.package]
@@ -42,21 +42,21 @@ tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
 tape-test = { version = "0.3.0", path = "./test" }
 
-rpc = { version = "0.3.0", path = "./client/rpc" }
-rpc-solana = { version = "0.3.0", path = "./client/rpc-solana" }
-tape-client = { version = "0.3.0", path = "./client/tape-client" }
-rpc-test = { version = "0.3.0", path = "./client/rpc-test" }
+rpc = { version = "0.3.0", path = "./rpc/rpc" }
+rpc-solana = { version = "0.3.0", path = "./rpc/rpc-solana" }
+tape-client = { version = "0.3.0", path = "./rpc/tape-client" }
+rpc-test = { version = "0.3.0", path = "./rpc/rpc-test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 
-tape-store = { version = "0.3.0", path = "./tapedrive/archive/tape-store" }
-tape-node = { version = "0.3.0", path = "./tapedrive/node" }
-tape-node-api = { version = "0.3.0", path = "./tapedrive/api" }
-tape-node-client = { version = "0.3.0", path = "./tapedrive/client" }
-tape-slicer = { version = "0.3.0", path = "./tapedrive/slicer" }
-store = { version = "0.3.0", path = "./tapedrive/archive/store" }
-store-memory = { version = "0.3.0", path = "./tapedrive/archive/store-memory" }
-store-rocks = { version = "0.3.0", path = "./tapedrive/archive/store-rocks" }
-tape-sdk = { version = "0.3.0", path = "./tapedrive/sdk" }
+tape-store = { version = "0.3.0", path = "./store/tape-store" }
+tape-node = { version = "0.3.0", path = "./network/node" }
+tape-node-api = { version = "0.3.0", path = "./network/api" }
+tape-node-client = { version = "0.3.0", path = "./network/client" }
+tape-slicer = { version = "0.3.0", path = "./network/slicer" }
+store = { version = "0.3.0", path = "./store/store" }
+store-memory = { version = "0.3.0", path = "./store/store-memory" }
+store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
+tape-sdk = { version = "0.3.0", path = "./network/sdk" }
 
 # tape-archive = { version = "0.3.0", path = "./tape-archive" }
 # tape-cli = { version = "0.3.0", path = "./tape-cli" }
