@@ -34,10 +34,6 @@ pub struct ConfigFile {
     #[serde(default)]
     pub keys: HashMap<String, String>,
 
-    /// Node operator settings.
-    #[serde(default)]
-    pub node: NodeConfig,
-
     /// Output format (json, table, plain).
     #[serde(default)]
     pub output: Option<String>,
@@ -49,25 +45,6 @@ pub struct ConfigFile {
 
 fn default_version() -> u32 {
     1
-}
-
-/// Node operator configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeConfig {
-    /// Node display name.
-    pub name: Option<String>,
-
-    /// Commission rate in basis points (0-10000).
-    pub commission: Option<u64>,
-
-    /// Network address (host:port).
-    pub address: Option<String>,
-
-    /// Path to BLS keypair.
-    pub bls_key: Option<String>,
-
-    /// Path to TLS keypair.
-    pub tls_key: Option<String>,
 }
 
 impl ConfigFile {
@@ -153,14 +130,6 @@ nodes: []
 # Keypair paths
 keys:
   default: ~/.config/solana/id.json
-
-# Node operator settings (used by `tape node register` if not overridden)
-node:
-  # name: "my-node"
-  # commission: 500                    # 5% in basis points
-  # address: "node.example.com:8080"
-  # bls_key: ~/.tape/keys/bls.json
-  # tls_key: ~/.tape/keys/tls.json
 
 # Output format (json, table, plain)
 output: table

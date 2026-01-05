@@ -68,15 +68,15 @@ impl NodeContext<RocksStore> {
     /// 5. Auto-registering node if account doesn't exist
     /// 6. Initializing the ControlPlane cache
     /// 7. Initializing metrics
-    pub async fn from_config(config: NodeConfig) -> Result<Arc<Self>, ContextError> {
+    pub async fn from_config(config: NodeConfig, rpc_url: &str) -> Result<Arc<Self>, ContextError> {
         // 1. Load keypair
-        let keypair = load_keypair(&config.solana_keypair_path)?;
+        let keypair = load_keypair(&config.node_keypair)?;
         let authority = keypair.pubkey();
         tracing::info!(authority = %authority, "Loaded node keypair");
 
         // 2. Create RPC client
         let rpc_config = RpcConfig {
-            endpoints: vec![config.solana_rpc_url.clone()],
+            endpoints: vec![rpc_url.to_string()],
             ..Default::default()
         };
         let rpc = RpcClient::new(rpc_config)

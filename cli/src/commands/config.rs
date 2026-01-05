@@ -87,11 +87,6 @@ async fn set(_ctx: &Context, key: &str, value: &str) -> Result<()> {
         "cluster" => config.cluster = Some(value.to_string()),
         "output" => config.output = Some(value.to_string()),
         "log_level" => config.log_level = Some(value.to_string()),
-        "node.name" => config.node.name = Some(value.to_string()),
-        "node.commission" => config.node.commission = Some(value.parse()?),
-        "node.address" => config.node.address = Some(value.to_string()),
-        "node.bls_key" => config.node.bls_key = Some(value.to_string()),
-        "node.tls_key" => config.node.tls_key = Some(value.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),
     }
 
@@ -105,11 +100,6 @@ async fn get(ctx: &Context, key: &str) -> Result<()> {
         "cluster" => ctx.config.cluster.clone(),
         "output" => ctx.config.output.clone(),
         "log_level" => ctx.config.log_level.clone(),
-        "node.name" => ctx.config.node.name.clone(),
-        "node.commission" => ctx.config.node.commission.map(|v| v.to_string()),
-        "node.address" => ctx.config.node.address.clone(),
-        "node.bls_key" => ctx.config.node.bls_key.clone(),
-        "node.tls_key" => ctx.config.node.tls_key.clone(),
         _ => anyhow::bail!("Unknown config key: {}", key),
     };
 

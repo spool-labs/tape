@@ -159,7 +159,7 @@ pub async fn execute(ctx: &Context, args: NodeArgs) -> Result<()> {
     let config = args.config;
     match args.command {
         NodeCommand::Init { force } => init_node_config(config, force).await,
-        NodeCommand::Start => start_node(config).await,
+        NodeCommand::Start => start_node(ctx, config).await,
         NodeCommand::Register {
             name,
             commission,
@@ -212,26 +212,15 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
     // Generate keypairs
     println!("Generating keypairs...");
 
-    // Protocol keypair (Ed25519)
-    let protocol_path = keys_dir.join("protocol.json");
-    if !protocol_path.exists() || force {
+    // TLS keypair (Ed25519 for HTTPS)
+    let tls_path = keys_dir.join("tls.json");
+    if !tls_path.exists() || force {
         let keypair = Keypair::new();
         let json = serde_json::to_string(&keypair.to_bytes().to_vec())?;
-        std::fs::write(&protocol_path, &json)?;
-        println!("  Created protocol keypair: {}", protocol_path.display());
+        std::fs::write(&tls_path, &json)?;
+        println!("  Created TLS keypair: {}", tls_path.display());
     } else {
-        println!("  Protocol keypair exists: {}", protocol_path.display());
-    }
-
-    // Network keypair (Ed25519 for TLS)
-    let network_path = keys_dir.join("network.json");
-    if !network_path.exists() || force {
-        let keypair = Keypair::new();
-        let json = serde_json::to_string(&keypair.to_bytes().to_vec())?;
-        std::fs::write(&network_path, &json)?;
-        println!("  Created network keypair: {}", network_path.display());
-    } else {
-        println!("  Network keypair exists: {}", network_path.display());
+        println!("  TLS keypair exists: {}", tls_path.display());
     }
 
     // BLS keypair (32 bytes)
@@ -257,7 +246,6 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
     println!();
     println!("Next steps:");
     println!("  1. Edit {} and fill in:", config_path.display());
-    println!("     - node_authority (your Solana pubkey)");
     println!("     - public_host (your node's public hostname)");
     println!("     - solana_rpc_url (RPC endpoint for your cluster)");
     println!("  2. Register your node on-chain:");
@@ -271,7 +259,7 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
 }
 
 /// Start the storage node.
-async fn start_node(config: Option<PathBuf>) -> Result<()> {
+async fn start_node(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     let config_path = config.unwrap_or_else(default_config_path);
@@ -289,13 +277,15 @@ async fn start_node(config: Option<PathBuf>) -> Result<()> {
         .with(filter)
         .init();
 
+    let rpc_url = ctx.rpc_url();
     tracing::info!("Starting Tapedrive storage node");
     tracing::info!("Config: {}", config_path.display());
     tracing::info!("Node name: {}", node_config.name);
     tracing::info!("Bind address: {}", node_config.bind_address);
+    tracing::info!("RPC URL: {}", rpc_url);
 
     // Initialize context (opens storage, connects to RPC, fetches on-chain state)
-    let ctx = NodeContext::from_config(node_config.clone())
+    let node_ctx = NodeContext::from_config(node_config.clone(), &rpc_url)
         .await
         .context("Failed to initialize node context")?;
 
@@ -304,8 +294,8 @@ async fn start_node(config: Option<PathBuf>) -> Result<()> {
     // Create and start the HTTP server
     let server = Server::new(
         node_config,
-        ctx.metrics.clone(),
-        ctx.storage.clone(),
+        node_ctx.metrics.clone(),
+        node_ctx.storage.clone(),
     );
 
     let server_handle = server.start()
@@ -315,7 +305,7 @@ async fn start_node(config: Option<PathBuf>) -> Result<()> {
     tracing::info!("HTTP server started");
 
     // Run the orchestrator (blocks until shutdown)
-    orchestrator::run(ctx, server_handle)
+    orchestrator::run(node_ctx, server_handle)
         .await
         .context("Orchestrator error")?;
 
@@ -331,7 +321,7 @@ fn load_node_config(config: Option<PathBuf>) -> Result<NodeConfig> {
 
 /// Load the Solana keypair from node config.
 fn load_keypair_from_config(node_config: &NodeConfig) -> Result<solana_sdk::signature::Keypair> {
-    load_solana_keypair(&expand_path(&node_config.solana_keypair_path))
+    load_solana_keypair(&expand_path(&node_config.node_keypair))
         .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
@@ -351,7 +341,7 @@ async fn register_node(
     let commission = commission.or(node_config.commission);
     let address = address.unwrap_or_else(|| node_config.network_address());
     let bls_key_path = bls_key.unwrap_or_else(|| node_config.bls_keypair.clone());
-    let tls_key_path = tls_key.unwrap_or_else(|| node_config.network_keypair.clone());
+    let tls_key_path = tls_key.unwrap_or_else(|| node_config.tls_keypair.clone());
 
     // Validate commission (required for registration)
     let commission = commission.ok_or_else(|| {
