@@ -123,7 +123,7 @@ node_keypair: ~/.config/solana/id.json
 bind_address: "0.0.0.0:8080"
 
 # Public address other nodes use to reach this node
-public_host: "localhost"
+public_host: "127.0.0.1"
 public_port: 8080
 
 # TLS certificate (self-signed for development, provide paths for production)
