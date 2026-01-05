@@ -1,32 +1,37 @@
 //! High-level SDK for tapedrive blob upload/download operations.
 //!
-//! This crate provides `TapeClient` for uploading and downloading blobs
-//! to/from the tapedrive network.
+//! This crate provides two main client types:
+//! - [`BlobClient`]: High-level blob upload/download operations
+//! - [`RpcClient`]: On-chain state queries (re-exported from `tape-client`)
 //!
 //! # Overview
 //!
 //! The SDK integrates three main components:
 //! - **Encoder/Decoder**: Reed-Solomon erasure coding via `tape-slicer`
 //! - **Uploader/Downloader**: Parallel slice distribution to storage nodes
-//! - **TapeClient**: High-level interface combining encoding and network operations
+//! - **BlobClient**: High-level interface combining encoding and network operations
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use tape_sdk::TapeClient;
+//! use tape_sdk::{BlobClient, RpcClient, RpcConfig};
 //!
-//! // Create client with storage node addresses
-//! let client = TapeClient::new(vec![
+//! // Create blob client with storage node addresses
+//! let blob_client = BlobClient::new(vec![
 //!     "node1.example.com:8080".to_string(),
 //!     "node2.example.com:8080".to_string(),
 //! ]);
 //!
 //! // Upload a blob
 //! let data = vec![0u8; 1_000_000]; // 1 MB of data
-//! let commitment = client.upload_blob("my-track-id", data).await?;
+//! let commitment = blob_client.upload_blob("my-track-id", data).await?;
 //!
 //! // Download the blob
-//! let recovered = client.download_blob("my-track-id").await?;
+//! let recovered = blob_client.download_blob("my-track-id").await?;
+//!
+//! // Query on-chain state
+//! let rpc_client = RpcClient::new(RpcConfig::default())?;
+//! let tape = rpc_client.get_tape_by_number(TapeNumber(42)).await?;
 //! ```
 
 pub mod client;
@@ -40,8 +45,8 @@ pub mod helpers;
 pub mod routing;
 pub mod uploader;
 
-// Primary client interface
-pub use client::{TapeClient, TapeClientBuilder, DEFAULT_MAX_SLICE_BYTES};
+// Primary client interface for blob operations
+pub use client::{BlobClient, BlobClientBuilder, DEFAULT_MAX_SLICE_BYTES};
 
 // Encoder/Decoder for direct use
 pub use decoder::BlobDecoder;
@@ -69,8 +74,10 @@ pub use helpers::{
     create_rpc_client, create_rpc_client_with_config,
 };
 
-// Re-export RPC config for discovery
-pub use tape_client::RpcConfig;
+// Re-export RPC client types for on-chain queries
+// Note: Renamed to RpcClient to avoid confusion with TapeClient (blob operations)
+pub use tape_client::TapeClient as RpcClient;
+pub use tape_client::{RpcConfig, SolanaRpc};
 
 // Re-export key constants from tape-core for convenience
 pub use tape_core::erasure::{DATA_SLICES, MAX_BLOB_SIZE, MAX_SLICE_SIZE, SLICE_COUNT};

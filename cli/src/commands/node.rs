@@ -737,9 +737,9 @@ async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Res
 }
 
 async fn health_check(nodes: &[String]) -> Result<()> {
-    use tape_sdk::TapeClient;
+    use tape_sdk::BlobClient;
 
-    let client = TapeClient::builder()
+    let client = BlobClient::builder()
         .node_addresses(nodes.to_vec())
         .build();
 

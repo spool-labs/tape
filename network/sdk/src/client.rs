@@ -1,4 +1,4 @@
-//! High-level tape client for blob operations.
+//! High-level blob client for upload/download operations.
 
 use tape_slicer::BlobMerkleRoot;
 
@@ -24,15 +24,15 @@ pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20;
 ///
 /// ```rust,ignore
 /// // Production client (1 MiB slices, ~1 GB max blob)
-/// let client = TapeClient::new(node_addresses);
+/// let client = BlobClient::new(node_addresses);
 ///
 /// // Test client (4 KB slices, ~2.7 MB max blob, low memory)
-/// let client = TapeClient::builder()
+/// let client = BlobClient::builder()
 ///     .node_addresses(node_addresses)
 ///     .max_slice_bytes(4 * 1024)
 ///     .build();
 /// ```
-pub struct TapeClient {
+pub struct BlobClient {
     /// Factory for creating node clients.
     node_factory: NodeCommunicationFactory,
 
@@ -44,7 +44,7 @@ pub struct TapeClient {
     max_slice_bytes: usize,
 }
 
-impl TapeClient {
+impl BlobClient {
     /// Create a new tape client with default settings.
     ///
     /// Uses 1 MiB slice size (production default).
@@ -60,8 +60,8 @@ impl TapeClient {
     }
 
     /// Create a builder for more configuration options.
-    pub fn builder() -> TapeClientBuilder {
-        TapeClientBuilder::default()
+    pub fn builder() -> BlobClientBuilder {
+        BlobClientBuilder::default()
     }
 
     /// Create a new tape client with a custom factory.
@@ -325,24 +325,24 @@ impl TapeClient {
 // Builder
 // ============================================================================
 
-/// Builder for creating a `TapeClient` with custom configuration.
+/// Builder for creating a `BlobClient` with custom configuration.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// let client = TapeClient::builder()
+/// let client = BlobClient::builder()
 ///     .node_addresses(vec!["node1:8080".into(), "node2:8080".into()])
 ///     .max_slice_bytes(4 * 1024)  // 4 KB slices for testing
 ///     .build();
 /// ```
 #[derive(Default)]
-pub struct TapeClientBuilder {
+pub struct BlobClientBuilder {
     node_addresses: Vec<String>,
     node_factory: Option<NodeCommunicationFactory>,
     max_slice_bytes: Option<usize>,
 }
 
-impl TapeClientBuilder {
+impl BlobClientBuilder {
     /// Set the storage node addresses.
     pub fn node_addresses(mut self, addresses: Vec<String>) -> Self {
         self.node_addresses = addresses;
@@ -372,9 +372,9 @@ impl TapeClientBuilder {
         self
     }
 
-    /// Build the `TapeClient`.
-    pub fn build(self) -> TapeClient {
-        TapeClient {
+    /// Build the `BlobClient`.
+    pub fn build(self) -> BlobClient {
+        BlobClient {
             node_addresses: self.node_addresses,
             node_factory: self.node_factory.unwrap_or_default(),
             max_slice_bytes: self.max_slice_bytes.unwrap_or(DEFAULT_MAX_SLICE_BYTES),
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let nodes = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
-        let client = TapeClient::new(nodes.clone());
+        let client = BlobClient::new(nodes.clone());
 
         assert_eq!(client.node_addresses(), nodes.as_slice());
     }
@@ -400,14 +400,14 @@ mod tests {
         let factory =
             NodeCommunicationFactory::new().with_connect_timeout(std::time::Duration::from_secs(10));
 
-        let client = TapeClient::with_factory(nodes.clone(), factory);
+        let client = BlobClient::with_factory(nodes.clone(), factory);
 
         assert_eq!(client.node_addresses(), nodes.as_slice());
     }
 
     #[test]
     fn test_update_addresses() {
-        let mut client = TapeClient::new(vec!["localhost:8080".to_string()]);
+        let mut client = BlobClient::new(vec!["localhost:8080".to_string()]);
 
         let new_nodes = vec!["node1:8080".to_string(), "node2:8080".to_string()];
         client.set_node_addresses(new_nodes.clone());
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_builder_default() {
-        let client = TapeClient::builder()
+        let client = BlobClient::builder()
             .node_addresses(vec!["node1:8080".into()])
             .build();
 
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_builder_custom_slice_size() {
-        let client = TapeClient::builder()
+        let client = BlobClient::builder()
             .node_addresses(vec!["node1:8080".into()])
             .max_slice_bytes(4 * 1024)
             .build();
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_builder_add_node() {
-        let client = TapeClient::builder()
+        let client = BlobClient::builder()
             .add_node("node1:8080")
             .add_node("node2:8080")
             .build();

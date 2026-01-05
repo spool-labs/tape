@@ -160,7 +160,7 @@ async fn upload(
     _register: bool,
 ) -> Result<()> {
     use tape_crypto::Pubkey;
-    use tape_sdk::TapeClient;
+    use tape_sdk::BlobClient;
 
     // Resolve node addresses (auto-discover or use override/config)
     let nodes = resolve_node_addresses(ctx, nodes).await?;
@@ -189,7 +189,7 @@ async fn upload(
     });
 
     // Create client and upload
-    let client = TapeClient::builder()
+    let client = BlobClient::builder()
         .node_addresses(nodes.clone())
         .max_slice_bytes(slice_size)
         .build();
@@ -218,7 +218,7 @@ async fn download(
     nodes: Option<Vec<String>>,
     verify: Option<String>,
 ) -> Result<()> {
-    use tape_sdk::TapeClient;
+    use tape_sdk::BlobClient;
 
     // Resolve node addresses (auto-discover or use override/config)
     let nodes = resolve_node_addresses(ctx, nodes).await?;
@@ -227,7 +227,7 @@ async fn download(
         eprintln!("Downloading track {}...", track_id);
     }
 
-    let client = TapeClient::builder()
+    let client = BlobClient::builder()
         .node_addresses(nodes)
         .build();
 
@@ -290,7 +290,7 @@ async fn verify(
     root: &str,
     nodes: Option<Vec<String>>,
 ) -> Result<()> {
-    use tape_sdk::{TapeClient, BlobEncoder, BlobMerkleRoot};
+    use tape_sdk::{BlobClient, BlobEncoder, BlobMerkleRoot};
 
     // Resolve node addresses (auto-discover or use override/config)
     let nodes = resolve_node_addresses(ctx, nodes).await?;
@@ -312,7 +312,7 @@ async fn verify(
     }
 
     // Download the blob
-    let client = TapeClient::builder()
+    let client = BlobClient::builder()
         .node_addresses(nodes)
         .build();
 
