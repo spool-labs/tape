@@ -137,12 +137,23 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
 
     // Step 3: Expand System account to full size
     // System is ~43KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
-    // Need ~4 expand calls: 10KB -> 20KB -> 30KB -> 40KB -> 43KB
-    for _ in 0..4 {
+    // Need multiple expand calls until the account reaches full size
+    for i in 0..10 {
         let expand_ix = build_expand_system_ix(payer.pubkey());
-        // Expand until we hit AccountAlreadyInitialized (full size reached)
-        if client.send_instructions(payer, vec![expand_ix]).await.is_err() {
-            break; // Account is at full size
+        match client.send_instructions(payer, vec![expand_ix]).await {
+            Ok(_) => {
+                eprintln!("Expand {} succeeded", i + 1);
+            }
+            Err(e) => {
+                // AccountAlreadyInitialized means we've reached full size
+                let err_str = format!("{:?}", e);
+                if err_str.contains("AccountAlreadyInitialized") || err_str.contains("already initialized") {
+                    eprintln!("System account fully expanded after {} calls", i);
+                    break;
+                } else {
+                    panic!("Expand {} failed unexpectedly: {:?}", i + 1, e);
+                }
+            }
         }
     }
 
