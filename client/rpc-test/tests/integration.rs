@@ -162,9 +162,11 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
     }
 
     // Step 4: Initialize Epoch and Archive
+    eprintln!("Sending Initialize instruction...");
     let init_ix = build_initialize_ix(payer.pubkey());
     client.send_instructions(payer, vec![init_ix]).await
         .expect("Failed to initialize epoch/archive");
+    eprintln!("System initialization complete!");
 }
 
 // =============================================================================
