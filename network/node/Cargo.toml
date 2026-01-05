@@ -26,6 +26,7 @@ tape-node-client = { workspace = true }
 tape-store = { workspace = true }
 tape-client = { workspace = true }
 rpc = { workspace = true }
+rpc-solana = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
 

@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rpc_solana::SolanaRpc;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
@@ -47,7 +48,7 @@ pub struct NodeContext<S: Store = RocksStore> {
     /// This node's authority keypair.
     pub keypair: Arc<Keypair>,
     /// Tape RPC client for chain interactions.
-    pub rpc: Arc<TapeClient>,
+    pub rpc: Arc<TapeClient<SolanaRpc>>,
     /// Slice storage service.
     pub storage: Arc<StorageService<S>>,
     /// In-memory cache of on-chain control plane state.
@@ -135,7 +136,7 @@ impl<S: Store> NodeContext<S> {
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
-        rpc: TapeClient,
+        rpc: TapeClient<SolanaRpc>,
         storage: StorageService<S>,
         control_plane: ControlPlane,
     ) -> Arc<Self> {
