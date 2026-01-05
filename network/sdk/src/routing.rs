@@ -297,6 +297,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::erasure::PARITY_SLICES;
     use tape_core::types::{Coin, TAPE};
 
     fn make_committee<const N: usize>(count: usize) -> Committee<N> {
