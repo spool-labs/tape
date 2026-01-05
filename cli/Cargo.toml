@@ -1,0 +1,73 @@
+[package]
+name = "tape-cli"
+description = "Command-line interface for tapedrive distributed storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tape"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+tape-core = { path = "../core" }
+tape-crypto = { path = "../crypto" }
+tape-api = { path = "../api" }
+tape-sdk = { path = "../network/sdk" }
+tape-client = { path = "../rpc/tape-client" }
+rpc-solana = { path = "../rpc/rpc-solana" }
+tape-store = { path = "../store/tape-store", optional = true }
+
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Async
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "time"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+bytemuck = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+dirs = "5"
+shellexpand = "3"
+bs58 = "0.5"
+
+# Output formatting
+comfy-table = "7"
+colored = "2"
+
+# Progress indicators
+indicatif = "0.17"
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Date/time
+chrono = "0.4"
+
+# RocksDB (for db commands)
+rocksdb = { version = "0.23", optional = true }
+
+# Solana
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }
+solana-account-decoder = { workspace = true }
+steel = { workspace = true }
+
+[features]
+default = []
+db = ["tape-store", "rocksdb"]
