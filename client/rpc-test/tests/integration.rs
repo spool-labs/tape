@@ -3,28 +3,47 @@
 //! These tests start a local Solana test validator with the Tape programs loaded,
 //! then exercise the TapeClient API against it.
 //!
-//! Run with: `cargo test -p rpc-test --test integration -- --ignored`
+//! ## Test Categories
 //!
-//! Note: These tests are marked #[ignore] by default because they take ~2-5 seconds
-//! each to start the test validator. Run them explicitly when testing integration.
+//! - **Basic RPC tests** (`test_get_slot`, `test_get_block`, etc.): Test the RPC layer
+//!   without loading custom programs. These validate that `TestRpc` works correctly.
+//!
+//! - **Full integration tests** (`test_initialize_system`, etc.): Test business logic
+//!   with all Tape programs loaded.
+//!
+//! ## Running Tests
+//!
+//! Basic RPC tests (no external programs needed):
+//! ```bash
+//! cargo test -p rpc-test --test integration -- --ignored test_get
+//! cargo test -p rpc-test --test integration -- --ignored test_fetch
+//! cargo test -p rpc-test --test integration -- --ignored test_transaction
+//! ```
+//!
+//! Full integration tests:
+//! ```bash
+//! cargo test -p rpc-test --test integration -- --ignored
+//! ```
 //!
 //! **Resource Requirements:** Test validators require significant RAM (8GB+ recommended).
-//! On low-memory systems (<4GB), the validator may hang during startup while
-//! "Waiting for fees to stabilize".
 
 use bytemuck::Zeroable;
 use rpc_test::TestRpc;
 use solana_sdk::bpf_loader_upgradeable;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_test_validator::{TestValidatorGenesis, UpgradeableProgramInfo};
 use tape_client::TapeClient;
 use std::path::PathBuf;
 
+/// Metaplex Token Metadata program ID
+const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+
 // Note: Programs are loaded from target/deploy/ using manifest dir to find workspace root
 
-/// Get the path to a deployed program .so file
-fn program_path(name: &str) -> PathBuf {
+/// Get the workspace root directory
+fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is client/rpc-test, go up to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir)
@@ -32,7 +51,20 @@ fn program_path(name: &str) -> PathBuf {
         .unwrap()
         .parent() // workspace root
         .unwrap()
+        .to_path_buf()
+}
+
+/// Get the path to a deployed program .so file
+fn program_path(name: &str) -> PathBuf {
+    workspace_root()
         .join("target/deploy")
+        .join(format!("{}.so", name))
+}
+
+/// Get the path to external program ELF files (from test/elfs/)
+fn external_program_path(name: &str) -> PathBuf {
+    workspace_root()
+        .join("test/elfs")
         .join(format!("{}.so", name))
 }
 
@@ -46,14 +78,35 @@ fn program_info(name: &str, program_id: Pubkey) -> UpgradeableProgramInfo {
     }
 }
 
-/// Helper to create a test validator with all Tape programs loaded
+/// Helper to create a basic test validator (no custom programs)
+/// Use this for testing the RPC layer itself.
+async fn setup_basic_validator() -> (solana_test_validator::TestValidator, Keypair) {
+    TestValidatorGenesis::default()
+        .start_async()
+        .await
+}
+
+/// Create an UpgradeableProgramInfo for external programs (from test/elfs/)
+fn external_program_info(name: &str, program_id: Pubkey) -> UpgradeableProgramInfo {
+    UpgradeableProgramInfo {
+        program_id,
+        loader: bpf_loader_upgradeable::id(),
+        upgrade_authority: Pubkey::default(),
+        program_path: external_program_path(name),
+    }
+}
+
+/// Helper to create a test validator with all Tape programs loaded.
 async fn setup_validator() -> (solana_test_validator::TestValidator, Keypair) {
     TestValidatorGenesis::default()
         .add_upgradeable_programs_with_path(&[
+            // Our programs (from target/deploy/)
             program_info("tapedrive", tape_api::program::tapedrive::ID),
             program_info("token", tape_api::program::token::ID),
             program_info("exchange", tape_api::program::exchange::ID),
             program_info("staking", tape_api::program::staking::ID),
+            // External programs (from test/elfs/)
+            external_program_info("mpl_token_metadata", MPL_TOKEN_METADATA_ID),
         ])
         .start_async()
         .await
@@ -66,13 +119,13 @@ fn create_client(validator: &solana_test_validator::TestValidator) -> TapeClient
 }
 
 // =============================================================================
-// Basic RPC Tests
+// Basic RPC Tests (no custom programs needed)
 // =============================================================================
 
 #[tokio::test]
 #[ignore]
 async fn test_get_slot() {
-    let (validator, _payer) = setup_validator().await;
+    let (validator, _payer) = setup_basic_validator().await;
     let client = create_client(&validator);
 
     let slot = client.get_slot().await.unwrap();
@@ -83,7 +136,7 @@ async fn test_get_slot() {
 #[tokio::test]
 #[ignore]
 async fn test_get_block() {
-    let (validator, _payer) = setup_validator().await;
+    let (validator, _payer) = setup_basic_validator().await;
     let client = create_client(&validator);
 
     // Get current slot and fetch its block
@@ -262,13 +315,13 @@ async fn test_get_all_nodes() {
 }
 
 // =============================================================================
-// Error Handling Tests
+// Error Handling Tests (no custom programs needed)
 // =============================================================================
 
 #[tokio::test]
 #[ignore]
 async fn test_fetch_nonexistent_account() {
-    let (validator, _payer) = setup_validator().await;
+    let (validator, _payer) = setup_basic_validator().await;
     let client = create_client(&validator);
 
     // Try to fetch System account before initialization
@@ -279,7 +332,7 @@ async fn test_fetch_nonexistent_account() {
 #[tokio::test]
 #[ignore]
 async fn test_transaction_insufficient_funds() {
-    let (validator, _payer) = setup_validator().await;
+    let (validator, _payer) = setup_basic_validator().await;
     let client = create_client(&validator);
 
     // Create a new keypair with no funds
