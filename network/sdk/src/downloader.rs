@@ -56,7 +56,7 @@ impl ParallelDownloader {
         }
     }
 
-    /// Download at least DATA_SLICES (683) valid slices.
+    /// Download at least DATA_SLICES (2f+1) valid slices.
     ///
     /// Requests slices in parallel (up to concurrency limit) and returns
     /// as soon as enough are collected.

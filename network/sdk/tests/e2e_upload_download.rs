@@ -20,6 +20,7 @@ use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
 use tape_sdk::TapeClient;
 use tape_store::TapeStore;
+use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
 use tokio::net::TcpListener;
 
 /// Start a test node on a random port with in-memory storage.
@@ -133,7 +134,7 @@ async fn test_verified_download() {
     println!("SUCCESS: Verified download passed!");
 }
 
-/// Test that download reconstructs correctly even with erasure (only 683 of 1024 slices).
+/// Test that download reconstructs correctly even with erasure (only 2f+1 of 3f+1 slices).
 #[tokio::test]
 #[serial]
 async fn test_erasure_recovery() {
@@ -149,11 +150,11 @@ async fn test_erasure_recovery() {
         .await
         .expect("upload should succeed");
 
-    // Download (will only fetch 683 slices - the minimum needed)
+    // Download (will only fetch 2f+1 slices - the minimum needed)
     let recovered = client
         .download_blob(&track_id)
         .await
-        .expect("download should succeed with 683 slices");
+        .expect("download should succeed with 2f+1 slices");
 
     assert_eq!(original, recovered);
 
@@ -394,7 +395,7 @@ async fn test_multi_node_roundtrip() {
 /// Test with simulated node failures (multiple nodes down).
 ///
 /// With 42 nodes, each stores ~24 slices. We can lose up to 14 nodes
-/// (341 slices) and still have 683+ remaining.
+/// (f slices) and still have 2f+1 remaining.
 #[tokio::test]
 #[serial]
 async fn test_multi_node_with_failures() {
@@ -426,11 +427,11 @@ async fn test_multi_node_with_failures() {
         let (_, handle) = nodes.remove(0);
         handle.abort();
     }
-    let slices_lost = (1024 / NUM_NODES + 1) * NODES_TO_KILL;
-    let slices_remaining = 1024 - slices_lost;
+    let slices_lost = (SLICE_COUNT / NUM_NODES + 1) * NODES_TO_KILL;
+    let slices_remaining = SLICE_COUNT - slices_lost;
     println!(
-        "Killed {} nodes (~{} slices lost, ~{} remaining, need 683)",
-        NODES_TO_KILL, slices_lost, slices_remaining
+        "Killed {} nodes (~{} slices lost, ~{} remaining, need {})",
+        NODES_TO_KILL, slices_lost, slices_remaining, DATA_SLICES
     );
 
     // Give nodes time to shut down
@@ -516,7 +517,7 @@ async fn bench_upload_download_throughput() {
     // Benchmark decoding separately
     let slices_for_decode: Vec<(u16, Vec<u8>)> = slices
         .iter()
-        .take(683)
+        .take(DATA_SLICES)
         .map(|s| (s.index, s.data.clone()))
         .collect();
     let mut decoder = BlobDecoder::with_max_slice_bytes(4 * 1024);

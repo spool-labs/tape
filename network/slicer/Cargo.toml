@@ -12,6 +12,7 @@ readme.workspace = true
 documentation = "https://docs.rs/tape-core"
 
 [dependencies]
+tape-core.workspace = true
 tape-crypto.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true

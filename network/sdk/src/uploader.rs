@@ -132,9 +132,9 @@ impl DistributedUploader {
             .collect()
             .await;
 
-        // Check quorum
+        // Check quorum - need 2f+1 (min_correct) nodes to acknowledge
         let successful = results.iter().filter(|r| r.is_ok()).count();
-        let required = (num_nodes * 2 / 3) + 1;
+        let required = tape_core::bft::min_correct(num_nodes as u64) as usize;
 
         if successful < required {
             return Err(UploadError::InsufficientQuorum {

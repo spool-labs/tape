@@ -437,7 +437,7 @@ mod tests {
         // Keep this short so it's readable on the terminal.
 
         let mut coder = test_coder();
-        // Max test payload with TEST_MAX_SLICE_BYTES (4 KiB * 683 data slices = ~2.7 MB)
+        // Max test payload with TEST_MAX_SLICE_BYTES (4 KiB * 2f+1 data slices = ~2.7 MB)
         // Keep sizes modest for test speed
         let sizes = [
             0usize,

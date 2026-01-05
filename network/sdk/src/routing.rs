@@ -364,9 +364,9 @@ mod tests {
         let member_0_slices = router.slices_for_member(0);
         let member_1_slices = router.slices_for_member(1);
 
-        // Each of 3 members should have ~341-342 slices
-        assert!(member_0_slices.len() >= 341);
-        assert!(member_1_slices.len() >= 341);
+        // Each of 3 members should have ~f slices (SLICE_COUNT / num_members)
+        assert!(member_0_slices.len() >= PARITY_SLICES);
+        assert!(member_1_slices.len() >= PARITY_SLICES);
 
         // First few slices should be correct
         assert!(member_0_slices.contains(&0));

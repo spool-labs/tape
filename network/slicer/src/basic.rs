@@ -116,7 +116,7 @@ mod tests {
         size
     }
 
-    // Max test payload size with TEST_MAX_SLICE_BYTES (4 KiB * 683 data slices = ~2.7 MB)
+    // Max test payload size with TEST_MAX_SLICE_BYTES (4 KiB * 2f+1 data slices = ~2.7 MB)
     // Use smaller payloads to stay well within limits
     const MAX_TEST_PAYLOAD: usize = 100_000; // 100 KB
 

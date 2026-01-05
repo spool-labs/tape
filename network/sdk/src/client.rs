@@ -251,7 +251,7 @@ impl TapeClient {
     ///
     /// # Fault Tolerance
     /// This method is resilient to node failures. It will continue fetching
-    /// from available nodes until it has enough slices (683 of 1024) to
+    /// from available nodes until it has enough slices (2f+1 of 3f+1) to
     /// reconstruct the original data.
     ///
     /// # Note
@@ -363,7 +363,7 @@ impl TapeClientBuilder {
 
     /// Set the maximum slice size in bytes.
     ///
-    /// - Production default: 1 MiB (1 << 20) - supports blobs up to ~683 MiB
+    /// - Production default: 1 MiB (1 << 20) - supports blobs up to ~DATA_SLICES MiB
     /// - Testing: 4 KiB (4 * 1024) - supports blobs up to ~2.7 MiB, uses ~6 MB RAM
     ///
     /// Smaller values use less memory but limit the maximum blob size.
