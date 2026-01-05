@@ -68,7 +68,7 @@ pub use discovery::{discover_committee_addresses, discover_committee_addresses_r
 // Helpers (keypair loading, hash parsing, committee operations)
 pub use helpers::{
     HelperError,
-    load_solana_keypair, load_bls_keypair, load_tls_pubkey,
+    load_solana_keypair, load_bls_keypair, load_tls_keypair,
     parse_hash, parse_hex_bytes,
     find_member_index, get_node_assigned_spools,
     create_rpc_client, create_rpc_client_with_config,

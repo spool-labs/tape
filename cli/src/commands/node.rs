@@ -15,7 +15,7 @@ use tape_node::config::{NodeConfig, default_config_path, default_config_content,
 use tape_node::{NodeContext, Server, orchestrator};
 
 use tape_sdk::{
-    load_solana_keypair, load_bls_keypair, load_tls_pubkey,
+    load_solana_keypair, load_bls_keypair, load_tls_keypair,
     parse_hash, create_rpc_client, find_member_index,
 };
 
@@ -371,7 +371,8 @@ async fn register_node(
     // Load keys from node config
     let keypair = load_keypair_from_config(&node_config)?;
     let bls_private_key = load_bls_keypair(&bls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let tls_pubkey = load_tls_pubkey(&tls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let tls_keypair = load_tls_keypair(&tls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let tls_pubkey = tls_keypair.pubkey();
 
     // Derive BLS public key and proof of possession
     let bls_pubkey = bls_private_key

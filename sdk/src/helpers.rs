@@ -111,15 +111,16 @@ pub fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, HelperError> {
     Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
 }
 
-/// Load a TLS public key from a JSON file.
+/// Load a TLS keypair from a JSON file.
 ///
-/// The file should contain a JSON array of 32 bytes (ed25519 public key).
+/// The file should contain a JSON array of 64 bytes (ed25519 keypair in Solana format).
 ///
 /// # Example
 /// ```rust,ignore
-/// let tls_pubkey = load_tls_pubkey(Path::new("tls_key.json"))?;
+/// let tls_keypair = load_tls_keypair(Path::new("tls.json"))?;
+/// let pubkey = tls_keypair.pubkey();
 /// ```
-pub fn load_tls_pubkey(path: &Path) -> Result<Pubkey, HelperError> {
+pub fn load_tls_keypair(path: &Path) -> Result<Keypair, HelperError> {
     let contents = std::fs::read(path).map_err(|e| HelperError::FileRead {
         path: path.display().to_string(),
         message: e.to_string(),
@@ -130,17 +131,15 @@ pub fn load_tls_pubkey(path: &Path) -> Result<Pubkey, HelperError> {
         message: e.to_string(),
     })?;
 
-    if bytes.len() != 32 {
+    if bytes.len() != 64 {
         return Err(HelperError::InvalidLength {
-            name: "TLS public key".to_string(),
-            expected: 32,
+            name: "TLS keypair".to_string(),
+            expected: 64,
             actual: bytes.len(),
         });
     }
 
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(Pubkey::new_from_array(arr))
+    Keypair::from_bytes(&bytes).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
 }
 
 // ============================================================================
