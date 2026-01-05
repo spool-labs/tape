@@ -118,6 +118,12 @@ fn create_client(validator: &solana_test_validator::TestValidator) -> TapeClient
     TapeClient::from_rpc(rpc)
 }
 
+/// Cleanly end a test by skipping validator cleanup.
+/// TestValidator::drop() hangs waiting for threads to terminate.
+fn end_test(validator: solana_test_validator::TestValidator) {
+    core::mem::forget(validator);
+}
+
 /// Helper to fully initialize the system (mint + system + expand + initialize)
 /// This handles the account size expansion needed for the System account.
 async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
@@ -136,14 +142,12 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
         .expect("Failed to create system");
 
     // Step 3: Expand System account to full size
-    // System is ~43KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
+    // System is ~70KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
     // Need multiple expand calls until the account reaches full size
-    for i in 0..10 {
+    for _ in 0..10 {
         let expand_ix = build_expand_system_ix(payer.pubkey());
         match client.send_instructions(payer, vec![expand_ix]).await {
-            Ok(_) => {
-                eprintln!("Expand {} succeeded", i + 1);
-            }
+            Ok(_) => {}
             Err(e) => {
                 // AccountAlreadyInitialized means we've reached full size
                 // Solana returns this as "instruction requires an uninitialized account"
@@ -152,21 +156,18 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
                     || err_str.contains("already initialized")
                     || err_str.contains("uninitialized account")
                 {
-                    eprintln!("System account fully expanded after {} calls", i);
                     break;
                 } else {
-                    panic!("Expand {} failed unexpectedly: {:?}", i + 1, e);
+                    panic!("Expand failed unexpectedly: {:?}", e);
                 }
             }
         }
     }
 
     // Step 4: Initialize Epoch and Archive
-    eprintln!("Sending Initialize instruction...");
     let init_ix = build_initialize_ix(payer.pubkey());
     client.send_instructions(payer, vec![init_ix]).await
         .expect("Failed to initialize epoch/archive");
-    eprintln!("System initialization complete!");
 }
 
 // =============================================================================
@@ -182,6 +183,7 @@ async fn test_get_slot() {
     let slot = client.get_slot().await.unwrap();
     // slot is u64, so always >= 0; just verify we got a value
     assert!(slot < u64::MAX, "Should get a valid slot number");
+    end_test(validator);
 }
 
 #[tokio::test]
@@ -197,6 +199,7 @@ async fn test_get_block() {
     // which should always exist in a test validator
     let block = client.get_block(0).await;
     assert!(block.is_ok(), "Should fetch genesis block");
+    end_test(validator);
 }
 
 // =============================================================================
@@ -221,6 +224,7 @@ async fn test_initialize_system() {
 
     let archive = client.get_archive().await;
     assert!(archive.is_ok(), "Failed to fetch Archive: {:?}", archive.err());
+    end_test(validator);
 }
 
 // =============================================================================
@@ -280,6 +284,7 @@ async fn test_register_node() {
 
     let node = node.unwrap();
     assert_eq!(node.metadata.name, name, "Node name should match");
+    end_test(validator);
 }
 
 // =============================================================================
@@ -331,6 +336,7 @@ async fn test_get_all_nodes() {
 
     let nodes = nodes.unwrap();
     assert_eq!(nodes.len(), 3, "Should have 3 registered nodes");
+    end_test(validator);
 }
 
 // =============================================================================
@@ -346,6 +352,7 @@ async fn test_fetch_nonexistent_account() {
     // Try to fetch System account before initialization
     let result = client.get_system().await;
     assert!(result.is_err(), "Should fail to fetch uninitialized System");
+    end_test(validator);
 }
 
 #[tokio::test]
@@ -366,6 +373,7 @@ async fn test_transaction_insufficient_funds() {
 
     let result = client.send_instructions(&broke_user, vec![transfer_ix]).await;
     assert!(result.is_err(), "Should fail due to insufficient funds");
+    end_test(validator);
 }
 
 // =============================================================================
@@ -380,7 +388,6 @@ async fn test_concurrent_reads() {
 
     // Initialize system
     initialize_system(&client, &payer).await;
-
     // Perform concurrent reads
     let (system, epoch, archive, slot) = tokio::join!(
         client.get_system(),
@@ -393,4 +400,7 @@ async fn test_concurrent_reads() {
     assert!(epoch.is_ok(), "Concurrent Epoch fetch failed");
     assert!(archive.is_ok(), "Concurrent Archive fetch failed");
     assert!(slot.is_ok(), "Concurrent slot fetch failed");
+
+    // Skip validator cleanup - TestValidator::drop() hangs waiting for threads
+    end_test(validator);
 }
