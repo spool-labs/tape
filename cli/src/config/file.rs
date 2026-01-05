@@ -8,11 +8,18 @@ use serde::{Deserialize, Serialize};
 
 use super::cluster::Cluster;
 
-/// Default config file path.
+/// Default CLI config file path.
 pub fn default_config_path() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(".tape").join("config.yaml"))
         .unwrap_or_else(|| PathBuf::from(".tape/config.yaml"))
+}
+
+/// Default node config file path (for `tape node start`).
+pub fn default_node_config_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".tape").join("node.yaml"))
+        .unwrap_or_else(|| PathBuf::from(".tape/node.yaml"))
 }
 
 /// Configuration file structure.
