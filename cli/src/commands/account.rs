@@ -22,7 +22,7 @@ use tape_core::staking::StakePhase;
 use tape_core::tape::TrackPhase;
 use tape_core::system::Committee;
 
-use crate::output::{format_bytes, format_number, print_hex_dump};
+use crate::output::{format_basis_points, format_bytes, format_number, print_hex_dump};
 use crate::Context;
 
 #[derive(Subcommand, Debug)]
@@ -552,8 +552,11 @@ fn print_node_account(node: &Node) {
 
     println!();
     println!("Staking Pool:");
-    // Pool details would require more complex display
-    println!("  (pool details available via pool inspection)");
+    println!("  Shares:          {}", format_number(node.pool.shares.as_u64()));
+    println!("  Stake:           {}", format_tape(node.pool.stake.as_u64()));
+    println!("  Rewards:         {}", format_tape(node.pool.rewards.as_u64()));
+    println!("  Commission:      {}", format_tape(node.pool.commission.as_u64()));
+    println!("  Commission Rate: {}", format_basis_points(node.pool.commission_rate.as_u64()));
 }
 
 async fn show_tape(ctx: &Context, authority: &str, raw: bool) -> Result<()> {
