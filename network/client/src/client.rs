@@ -19,7 +19,7 @@ use crate::metrics::NodeClientMetrics;
 /// This struct is cheap to clone - the inner reqwest::Client uses Arc
 /// internally, so clones share the same connection pool.
 #[derive(Clone)]
-pub struct TapeNodeClient {
+pub struct NodeClient {
     /// HTTP client.
     pub(crate) inner: Client,
     /// Base URL for this node.
@@ -29,7 +29,7 @@ pub struct TapeNodeClient {
     pub(crate) metrics: Option<Arc<NodeClientMetrics>>,
 }
 
-impl TapeNodeClient {
+impl NodeClient {
     /// Get the base URL for this client.
     pub fn base_url(&self) -> &Url {
         &self.base_url

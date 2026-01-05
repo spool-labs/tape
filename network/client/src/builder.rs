@@ -1,4 +1,4 @@
-//! Builder pattern for TapeNodeClient.
+//! Builder pattern for NodeClient.
 
 #[cfg(feature = "metrics")]
 use std::sync::Arc;
@@ -6,27 +6,27 @@ use std::time::Duration;
 use reqwest::Client;
 use url::Url;
 
-use crate::client::TapeNodeClient;
+use crate::client::NodeClient;
 use crate::error::NodeError;
 
 #[cfg(feature = "metrics")]
 use crate::metrics::NodeClientMetrics;
 
-/// Builder for creating TapeNodeClient instances.
-pub struct TapeNodeClientBuilder {
+/// Builder for creating NodeClient instances.
+pub struct NodeClientBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<NodeClientMetrics>>,
 }
 
-impl Default for TapeNodeClientBuilder {
+impl Default for NodeClientBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TapeNodeClientBuilder {
+impl NodeClientBuilder {
     /// Create a new builder with default settings.
     pub fn new() -> Self {
         Self {
@@ -60,7 +60,7 @@ impl TapeNodeClientBuilder {
     ///
     /// # Arguments
     /// * `address` - The node address (host:port or full URL)
-    pub fn build(self, address: &str) -> Result<TapeNodeClient, NodeError> {
+    pub fn build(self, address: &str) -> Result<NodeClient, NodeError> {
         // Parse address - add https:// if no scheme
         let base_url = if address.starts_with("http://") || address.starts_with("https://") {
             Url::parse(address)?
@@ -74,7 +74,7 @@ impl TapeNodeClientBuilder {
             .build()
             .map_err(NodeError::Request)?;
 
-        Ok(TapeNodeClient {
+        Ok(NodeClient {
             inner: client,
             base_url,
             #[cfg(feature = "metrics")]
@@ -86,14 +86,14 @@ impl TapeNodeClientBuilder {
     ///
     /// # Arguments
     /// * `url` - The base URL for the node
-    pub fn build_with_url(self, url: Url) -> Result<TapeNodeClient, NodeError> {
+    pub fn build_with_url(self, url: Url) -> Result<NodeClient, NodeError> {
         let client = Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout)
             .build()
             .map_err(NodeError::Request)?;
 
-        Ok(TapeNodeClient {
+        Ok(NodeClient {
             inner: client,
             base_url: url,
             #[cfg(feature = "metrics")]
@@ -108,14 +108,14 @@ mod tests {
 
     #[test]
     fn test_builder_defaults() {
-        let builder = TapeNodeClientBuilder::new();
+        let builder = NodeClientBuilder::new();
         assert_eq!(builder.connect_timeout, Duration::from_secs(5));
         assert_eq!(builder.request_timeout, Duration::from_secs(30));
     }
 
     #[test]
     fn test_builder_custom_timeouts() {
-        let builder = TapeNodeClientBuilder::new()
+        let builder = NodeClientBuilder::new()
             .connect_timeout(Duration::from_secs(10))
             .request_timeout(Duration::from_secs(60));
 
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_build_with_address() {
-        let client = TapeNodeClientBuilder::new()
+        let client = NodeClientBuilder::new()
             .build("localhost:8080")
             .unwrap();
 
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_build_with_full_url() {
-        let client = TapeNodeClientBuilder::new()
+        let client = NodeClientBuilder::new()
             .build("http://localhost:8080")
             .unwrap();
 
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn test_build_with_url_object() {
         let url = Url::parse("https://node1.tapedrive.io:443").unwrap();
-        let client = TapeNodeClientBuilder::new()
+        let client = NodeClientBuilder::new()
             .build_with_url(url)
             .unwrap();
 
