@@ -146,8 +146,12 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
             }
             Err(e) => {
                 // AccountAlreadyInitialized means we've reached full size
+                // Solana returns this as "instruction requires an uninitialized account"
                 let err_str = format!("{:?}", e);
-                if err_str.contains("AccountAlreadyInitialized") || err_str.contains("already initialized") {
+                if err_str.contains("AccountAlreadyInitialized")
+                    || err_str.contains("already initialized")
+                    || err_str.contains("uninitialized account")
+                {
                     eprintln!("System account fully expanded after {} calls", i);
                     break;
                 } else {
