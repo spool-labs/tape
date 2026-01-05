@@ -207,30 +207,52 @@ impl TapeClient {
     ///
     /// # Returns
     /// The size in bytes of slices for this track.
+    ///
+    /// # Fault Tolerance
+    /// Tries random slices from different nodes until one responds.
+    /// Randomized order ensures load is spread across nodes.
     pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
+        use rand::seq::SliceRandom;
+        use tape_core::erasure::SLICE_COUNT;
+
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
             self.node_addresses.clone(),
             self.node_factory.clone(),
         );
 
-        // Download slice 0 to determine size
-        let slice_data = downloader.download_slice(0).await?;
-        Ok(slice_data.len())
+        // Generate random slice indices to spread load across nodes
+        let mut indices: Vec<u16> = (0..SLICE_COUNT as u16).collect();
+        indices.shuffle(&mut rand::thread_rng());
+
+        // Try slices in random order until one responds
+        // With 1024 slices across N nodes, this will try every node
+        for &slice_idx in &indices {
+            if let Ok(slice_data) = downloader.download_slice(slice_idx).await {
+                return Ok(slice_data.len());
+            }
+        }
+
+        Err(DownloadError::NoNodesAvailable)
     }
 
     /// Download and decode a blob from the network.
     ///
     /// This is the primary method for retrieving data. It:
-    /// 1. Probes a single slice to determine the slice size
-    /// 2. Downloads at least DATA_SLICES slices from storage nodes
-    /// 3. Decodes the slices back into the original blob using the detected size
+    /// 1. Downloads at least DATA_SLICES slices from storage nodes (fault-tolerant)
+    /// 2. Infers slice size from the collected slices
+    /// 3. Decodes the slices back into the original blob
     ///
     /// # Arguments
     /// * `track_id` - The track identifier for the blob
     ///
     /// # Returns
     /// The original blob data.
+    ///
+    /// # Fault Tolerance
+    /// This method is resilient to node failures. It will continue fetching
+    /// from available nodes until it has enough slices (683 of 1024) to
+    /// reconstruct the original data.
     ///
     /// # Note
     /// This method does NOT verify the data against on-chain commitment.
@@ -239,19 +261,22 @@ impl TapeClient {
     /// 2. Re-encode the downloaded data and compare merkle roots
     /// Or use `download_blob_verified()` which does this automatically.
     pub async fn download_blob(&self, track_id: &str) -> Result<Vec<u8>, ClientError> {
-        // Probe slice size first to allocate correct decoder buffers
-        let slice_size = self
-            .probe_slice_size(track_id)
-            .await
-            .map_err(ClientError::Download)?;
-
-        // Download enough slices
+        // Download enough slices (fault-tolerant - continues on node failures)
         let slices = self
             .download_slices(track_id)
             .await
             .map_err(ClientError::Download)?;
 
-        // Decode slices using detected slice size
+        // Infer slice size from the first collected slice
+        let slice_size = slices
+            .first()
+            .map(|(_, data)| data.len())
+            .ok_or(ClientError::Download(DownloadError::InsufficientSlices {
+                got: 0,
+                need: tape_core::erasure::DATA_SLICES,
+            }))?;
+
+        // Decode slices using inferred slice size
         let mut decoder = BlobDecoder::with_max_slice_bytes(slice_size);
         let data = decoder
             .decode(slices)

@@ -31,6 +31,9 @@ serde = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Random
+rand = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tape-node = { path = "../node" }

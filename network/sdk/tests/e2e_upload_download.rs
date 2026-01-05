@@ -395,12 +395,8 @@ async fn test_multi_node_roundtrip() {
 ///
 /// With 42 nodes, each stores ~24 slices. We can lose up to 14 nodes
 /// (341 slices) and still have 683+ remaining.
-///
-/// NOTE: Currently ignored - SDK download logic doesn't gracefully handle
-/// node failures (returns connection error instead of skipping dead nodes).
 #[tokio::test]
 #[serial]
-#[ignore = "SDK needs failure-tolerant download logic"]
 async fn test_multi_node_with_failures() {
     const NUM_NODES: usize = 42;
     const NODES_TO_KILL: usize = 10; // Kill 10 nodes (~240 slices lost)
