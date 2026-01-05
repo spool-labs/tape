@@ -15,7 +15,7 @@ members = [
   "network/api",
   "network/client",
   "network/sdk",
-  "network/cli",
+  "cli",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
