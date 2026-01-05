@@ -15,14 +15,8 @@ use crate::Context;
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCommand {
-    /// Initialize the system (CreateSystem + ExpandSystem + Initialize).
+    /// Initialize the full system (InitMint + CreateSystem + ExpandSystem + Initialize).
     Init,
-
-    /// Expand system account.
-    ExpandSystem,
-
-    /// Initialize TAPE token mint.
-    InitMint,
 
     /// Advance to next epoch (permissionless).
     AdvanceEpoch,
@@ -60,13 +54,11 @@ pub async fn execute(ctx: &Context, cmd: AdminCommand) -> Result<()> {
 
     match cmd {
         AdminCommand::Init => init_system(ctx).await,
-        AdminCommand::ExpandSystem => expand_system(ctx).await,
-        AdminCommand::InitMint => init_mint(ctx).await,
         AdminCommand::AdvanceEpoch => advance_epoch(ctx).await,
     }
 }
 
-/// Initialize the full system: CreateSystem + ExpandSystem + Initialize.
+/// Initialize the full system: InitMint + CreateSystem + ExpandSystem (repeated) + Initialize.
 async fn init_system(ctx: &Context) -> Result<()> {
     let keypair = load_keypair(ctx)?;
     let client = create_client(ctx)?;
@@ -75,12 +67,21 @@ async fn init_system(ctx: &Context) -> Result<()> {
     ctx.print(&format!("Signer: {}", keypair.pubkey()));
 
     if ctx.dry_run {
-        ctx.print("[DRY RUN] Would execute: CreateSystem, ExpandSystem, Initialize");
+        ctx.print("[DRY RUN] Would execute: InitMint, CreateSystem, ExpandSystem (multiple), Initialize");
         return Ok(());
     }
 
-    // Step 1: CreateSystem
-    ctx.print("Step 1/3: Creating system account...");
+    // Step 1: Initialize TAPE token mint
+    ctx.print("Step 1: Initializing TAPE token mint...");
+    let ix = build_initialize_mint_ix(keypair.pubkey());
+    let sig = client
+        .send_instructions(&keypair, vec![ix])
+        .await
+        .map_err(|e| anyhow::anyhow!("InitializeMint failed: {}", e))?;
+    ctx.print(&format!("  Transaction: {}", sig));
+
+    // Step 2: CreateSystem
+    ctx.print("Step 2: Creating system account...");
     let ix = build_create_system_ix(keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
@@ -88,17 +89,35 @@ async fn init_system(ctx: &Context) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("CreateSystem failed: {}", e))?;
     ctx.print(&format!("  Transaction: {}", sig));
 
-    // Step 2: ExpandSystem
-    ctx.print("Step 2/3: Expanding system account...");
-    let ix = build_expand_system_ix(keypair.pubkey());
-    let sig = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("ExpandSystem failed: {}", e))?;
-    ctx.print(&format!("  Transaction: {}", sig));
+    // Step 3: ExpandSystem (repeat until fully expanded)
+    // System account is ~45KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
+    // Need multiple expand calls until the account reaches full size
+    ctx.print("Step 3: Expanding system account...");
+    let mut expansion_count = 0;
+    for _ in 0..10 {
+        let ix = build_expand_system_ix(keypair.pubkey());
+        match client.send_instructions(&keypair, vec![ix]).await {
+            Ok(sig) => {
+                expansion_count += 1;
+                ctx.print(&format!("  Expansion {}: {}", expansion_count, sig));
+            }
+            Err(e) => {
+                // AccountAlreadyInitialized means we've reached full size
+                let err_str = format!("{:?}", e);
+                if err_str.contains("AccountAlreadyInitialized")
+                    || err_str.contains("already initialized")
+                    || err_str.contains("uninitialized account")
+                {
+                    break;
+                }
+                return Err(anyhow::anyhow!("ExpandSystem failed: {}", e));
+            }
+        }
+    }
+    ctx.print(&format!("  System account expanded ({} iterations)", expansion_count));
 
-    // Step 3: Initialize
-    ctx.print("Step 3/3: Initializing system state...");
+    // Step 4: Initialize
+    ctx.print("Step 4: Initializing system state...");
     let ix = build_initialize_ix(keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
@@ -107,54 +126,6 @@ async fn init_system(ctx: &Context) -> Result<()> {
     ctx.print(&format!("  Transaction: {}", sig));
 
     ctx.print("System initialized successfully!");
-    Ok(())
-}
-
-/// Expand system account (for incremental allocation).
-async fn expand_system(ctx: &Context) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
-    let client = create_client(ctx)?;
-
-    ctx.print("Expanding system account...");
-    ctx.print(&format!("Signer: {}", keypair.pubkey()));
-
-    if ctx.dry_run {
-        ctx.print("[DRY RUN] Would execute: ExpandSystem");
-        return Ok(());
-    }
-
-    let ix = build_expand_system_ix(keypair.pubkey());
-    let sig = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("ExpandSystem failed: {}", e))?;
-
-    ctx.print(&format!("Transaction: {}", sig));
-    ctx.print("System account expanded successfully!");
-    Ok(())
-}
-
-/// Initialize the TAPE token mint.
-async fn init_mint(ctx: &Context) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
-    let client = create_client(ctx)?;
-
-    ctx.print("Initializing TAPE token mint...");
-    ctx.print(&format!("Signer: {}", keypair.pubkey()));
-
-    if ctx.dry_run {
-        ctx.print("[DRY RUN] Would execute: InitializeMint");
-        return Ok(());
-    }
-
-    let ix = build_initialize_mint_ix(keypair.pubkey());
-    let sig = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("InitializeMint failed: {}", e))?;
-
-    ctx.print(&format!("Transaction: {}", sig));
-    ctx.print("TAPE token mint initialized successfully!");
     Ok(())
 }
 
