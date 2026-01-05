@@ -3,7 +3,7 @@
 //! Production Solana RPC client with retry and failover capabilities.
 //!
 //! This crate provides `SolanaRpc`, a production-ready implementation of the
-//! `tape_rpc::Rpc` trait with:
+//! `rpc::Rpc` trait with:
 //!
 //! - Automatic retry with exponential backoff
 //! - Endpoint failover across multiple RPC endpoints
@@ -23,7 +23,7 @@
 //!
 //! ```ignore
 //! use rpc_solana::{SolanaRpc, RpcConfig, RetryConfig};
-//! use tape_rpc::Rpc;
+//! use rpc::Rpc;
 //!
 //! // Create with default settings
 //! let rpc = SolanaRpc::new(RpcConfig::default())?;
@@ -66,11 +66,11 @@ pub use failover::EndpointFailover;
 pub use retry::ExponentialBackoff;
 
 // Re-export tape-rpc types for convenience
-pub use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+pub use rpc::{CommitmentLevel, Rpc, RpcError};
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::client::SolanaRpc;
     pub use crate::config::{RetryConfig, RpcConfig};
-    pub use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+    pub use rpc::{CommitmentLevel, Rpc, RpcError};
 }

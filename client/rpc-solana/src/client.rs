@@ -15,7 +15,7 @@ use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_status::{UiConfirmedBlock, UiTransactionEncoding};
 use std::sync::Arc;
-use tape_rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError};
 use tokio::sync::RwLock;
 
 /// Production Solana RPC client with retry and failover capabilities.
@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 ///
 /// ```ignore
 /// use rpc_solana::{SolanaRpc, RpcConfig};
-/// use tape_rpc::Rpc;
+/// use rpc::Rpc;
 ///
 /// let config = RpcConfig {
 ///     endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],

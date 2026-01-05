@@ -2,7 +2,7 @@ use crate::client::TapeClient;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::pubkey::Pubkey;
-use tape_rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError};
 
 // Import tape-api types
 use tape_api::prelude::*;

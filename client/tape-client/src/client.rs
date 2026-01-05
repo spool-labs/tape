@@ -1,6 +1,6 @@
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_transaction_status::UiConfirmedBlock;
-use tape_rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError};
 
 #[cfg(feature = "metrics")]
 use std::sync::Arc;

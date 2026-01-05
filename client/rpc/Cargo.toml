@@ -1,5 +1,5 @@
 [package]
-name = "tape-rpc"
+name = "rpc"
 description = "Core RPC trait and error types for Solana RPC operations"
 version.workspace = true
 edition.workspace = true

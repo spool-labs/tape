@@ -18,7 +18,7 @@
 //! ```ignore
 //! use rpc_test::TestRpc;
 //! use solana_test_validator::TestValidatorGenesis;
-//! use tape_rpc::Rpc;
+//! use rpc::Rpc;
 //!
 //! #[tokio::test]
 //! async fn test_rpc_operations() {
@@ -43,7 +43,7 @@ use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_test_validator::TestValidator;
 use solana_transaction_status::{TransactionDetails, UiConfirmedBlock, UiTransactionEncoding};
-use tape_rpc::{Rpc, RpcError};
+use rpc::{Rpc, RpcError};
 
 /// Test RPC implementation wrapping a TestValidator
 ///

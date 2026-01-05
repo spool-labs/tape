@@ -10,7 +10,7 @@ keywords.workspace = true
 
 [dependencies]
 # RPC trait and production implementation
-tape-rpc = { version = "0.3.0", path = "../tape-rpc" }
+rpc = { version = "0.3.0", path = "../rpc" }
 rpc-solana = { version = "0.3.0", path = "../rpc-solana" }
 
 # Tape crates

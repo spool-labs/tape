@@ -5400,18 +5400,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "solana-client",
+ "solana-sdk",
+ "solana-transaction-status",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "rpc-solana"
 version = "0.3.0"
 dependencies = [
  "async-trait",
  "rand 0.8.5",
+ "rpc",
  "serde",
  "serde_json",
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
  "tape-metrics",
- "tape-rpc",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -5422,11 +5433,11 @@ name = "rpc-test"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "rpc",
  "solana-client",
  "solana-sdk",
  "solana-test-validator",
  "solana-transaction-status",
- "tape-rpc",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -11182,6 +11193,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "rpc",
  "rpc-solana",
  "rpc-test",
  "solana-account-decoder",
@@ -11192,7 +11204,6 @@ dependencies = [
  "tape-api",
  "tape-core",
  "tape-metrics",
- "tape-rpc",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -11261,6 +11272,7 @@ dependencies = [
  "clap 4.5.53",
  "futures 0.3.31",
  "hyper 1.8.1",
+ "rpc",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -11277,7 +11289,6 @@ dependencies = [
  "tape-metrics",
  "tape-node-api",
  "tape-node-client",
- "tape-rpc",
  "tape-store",
  "thiserror 2.0.17",
  "tokio",
@@ -11313,17 +11324,6 @@ dependencies = [
  "tokio",
  "url 2.5.7",
  "wincode 0.1.2",
-]
-
-[[package]]
-name = "tape-rpc"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "solana-client",
- "solana-sdk",
- "solana-transaction-status",
- "thiserror 2.0.17",
 ]
 
 [[package]]

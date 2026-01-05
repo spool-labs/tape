@@ -10,7 +10,7 @@ keywords.workspace = true
 
 [dependencies]
 # Core trait
-tape-rpc.workspace = true
+rpc.workspace = true
 
 # Solana dependencies
 solana-client.workspace = true

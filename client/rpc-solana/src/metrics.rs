@@ -107,7 +107,7 @@ impl RpcMetrics {
 
         let request_duration = HistogramVec::new(
             HistogramOpts::new(
-                "tape_rpc_request_duration_seconds",
+                "rpc_request_duration_seconds",
                 "Duration of RPC requests in seconds",
             )
             .buckets(LATENCY_BUCKETS.to_vec()),
@@ -117,14 +117,14 @@ impl RpcMetrics {
         registry.register(Box::new(request_duration.clone())).ok();
 
         let requests_total = IntCounterVec::new(
-            Opts::new("tape_rpc_requests_total", "Total number of RPC requests"),
+            Opts::new("rpc_requests_total", "Total number of RPC requests"),
             &["method", "status"],
         )
         .unwrap();
         registry.register(Box::new(requests_total.clone())).ok();
 
         let retries_total = IntCounterVec::new(
-            Opts::new("tape_rpc_retries_total", "Total number of RPC retries"),
+            Opts::new("rpc_retries_total", "Total number of RPC retries"),
             &["method", "reason"],
         )
         .unwrap();
@@ -132,7 +132,7 @@ impl RpcMetrics {
 
         let failovers_total = IntCounterVec::new(
             Opts::new(
-                "tape_rpc_failovers_total",
+                "rpc_failovers_total",
                 "Total number of endpoint failovers",
             ),
             &["from_endpoint", "reason"],
@@ -141,21 +141,21 @@ impl RpcMetrics {
         registry.register(Box::new(failovers_total.clone())).ok();
 
         let errors_total = IntCounterVec::new(
-            Opts::new("tape_rpc_errors_total", "Total number of RPC errors"),
+            Opts::new("rpc_errors_total", "Total number of RPC errors"),
             &["method", "error_type"],
         )
         .unwrap();
         registry.register(Box::new(errors_total.clone())).ok();
 
         let current_endpoint = IntGauge::new(
-            "tape_rpc_current_endpoint",
+            "rpc_current_endpoint",
             "Index of the current RPC endpoint",
         )
         .unwrap();
         registry.register(Box::new(current_endpoint.clone())).ok();
 
         let endpoints_configured = IntGauge::new(
-            "tape_rpc_endpoints_configured",
+            "rpc_endpoints_configured",
             "Total number of configured RPC endpoints",
         )
         .unwrap();

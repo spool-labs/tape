@@ -25,7 +25,7 @@ tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
 tape-store = { workspace = true }
 tape-client = { workspace = true }
-tape-rpc = { workspace = true }
+rpc = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
 

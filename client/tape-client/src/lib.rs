@@ -99,7 +99,7 @@ pub mod metrics;
 pub use client::TapeClient;
 
 // Re-export tape-rpc trait types
-pub use tape_rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
+pub use rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
 
 // Re-export rpc-solana production types
 pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
@@ -113,5 +113,5 @@ pub mod prelude {
     pub use crate::client::TapeClient;
     pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
     pub use tape_api::prelude::*;
-    pub use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+    pub use rpc::{CommitmentLevel, Rpc, RpcError};
 }

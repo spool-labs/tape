@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use tape_rpc::RpcError;
+use rpc::RpcError;
 
 /// Manages endpoint rotation with round-robin and tried-endpoint tracking
 ///

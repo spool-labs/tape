@@ -18,7 +18,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use tape_rpc::{Rpc, RpcError};
+//! use rpc::{Rpc, RpcError};
 //!
 //! async fn fetch_slot<R: Rpc>(rpc: &R) -> Result<u64, RpcError> {
 //!     rpc.get_slot().await
