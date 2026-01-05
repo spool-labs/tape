@@ -1,0 +1,18 @@
+[package]
+name = "store-rocks"
+version.workspace = true
+edition.workspace = true
+description = "RocksDB backend implementation for the store crate"
+
+[features]
+default = []
+metrics = ["tape-metrics/metrics", "store/metrics"]
+
+[dependencies]
+store = { path = "../store" }
+tape-metrics = { workspace = true, optional = true }
+rocksdb.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
