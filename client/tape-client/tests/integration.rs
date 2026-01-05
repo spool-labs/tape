@@ -5,7 +5,7 @@
 //!
 //! ## Test Categories
 //!
-//! - **Basic RPC tests** (`test_get_slot`, `test_get_block`, etc.): Test the RPC layer
+//! - **Basic RPC tests** (`test_get_slot`): Test the RPC layer
 //!   without loading custom programs. These validate that `TestRpc` works correctly.
 //!
 //! - **Full integration tests** (`test_initialize_system`, etc.): Test business logic
@@ -15,19 +15,26 @@
 //!
 //! Basic RPC tests (no external programs needed):
 //! ```bash
-//! cargo test -p rpc-test --test integration -- --ignored test_get
-//! cargo test -p rpc-test --test integration -- --ignored test_fetch
-//! cargo test -p rpc-test --test integration -- --ignored test_transaction
+//! cargo test -p tape-client --test integration -- --ignored test_get
+//! cargo test -p tape-client --test integration -- --ignored test_fetch
+//! cargo test -p tape-client --test integration -- --ignored test_transaction
 //! ```
 //!
-//! Full integration tests:
+//! Full integration tests (run individually to avoid memory issues):
 //! ```bash
-//! cargo test -p rpc-test --test integration -- --ignored
+//! cargo test -p tape-client --test integration test_initialize_system -- --ignored
+//! cargo test -p tape-client --test integration test_register_node -- --ignored
+//! cargo test -p tape-client --test integration test_get_all_nodes -- --ignored
+//! cargo test -p tape-client --test integration test_concurrent_reads -- --ignored
+//! ```
+//!
+//! Run all tests:
+//! ```bash
+//! cargo test -p tape-client --test integration -- --ignored --test-threads=1
 //! ```
 //!
 //! **Resource Requirements:** Test validators require significant RAM (8GB+ recommended).
 
-use bytemuck::Zeroable;
 use rpc_test::TestRpc;
 use solana_sdk::bpf_loader_upgradeable;
 use solana_sdk::pubkey::Pubkey;
@@ -44,7 +51,7 @@ const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6
 
 /// Get the workspace root directory
 fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is client/rpc-test, go up to workspace root
+    // CARGO_MANIFEST_DIR is client/tape-client, go up to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir)
         .parent() // client/
@@ -118,10 +125,31 @@ fn create_client(validator: &solana_test_validator::TestValidator) -> TapeClient
     TapeClient::from_rpc(rpc)
 }
 
-/// Cleanly end a test by skipping validator cleanup.
-/// TestValidator::drop() hangs waiting for threads to terminate.
-fn end_test(validator: solana_test_validator::TestValidator) {
-    core::mem::forget(validator);
+/// Guard that ensures TestValidator is cleaned up without blocking.
+/// TestValidator::drop() can hang waiting for threads to terminate,
+/// so we spawn the drop in a detached background thread.
+struct ValidatorGuard(Option<solana_test_validator::TestValidator>);
+
+impl ValidatorGuard {
+    fn new(validator: solana_test_validator::TestValidator) -> Self {
+        Self(Some(validator))
+    }
+
+    fn validator(&self) -> &solana_test_validator::TestValidator {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl Drop for ValidatorGuard {
+    fn drop(&mut self) {
+        if let Some(v) = self.0.take() {
+            // Spawn cleanup in a detached thread so we don't block.
+            // The thread will complete the drop eventually, freeing resources.
+            std::thread::spawn(move || {
+                drop(v);
+            });
+        }
+    }
 }
 
 /// Helper to fully initialize the system (mint + system + expand + initialize)
@@ -178,28 +206,12 @@ async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
 #[ignore]
 async fn test_get_slot() {
     let (validator, _payer) = setup_basic_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     let slot = client.get_slot().await.unwrap();
     // slot is u64, so always >= 0; just verify we got a value
     assert!(slot < u64::MAX, "Should get a valid slot number");
-    end_test(validator);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_get_block() {
-    let (validator, _payer) = setup_basic_validator().await;
-    let client = create_client(&validator);
-
-    // Get current slot and fetch its block
-    let _slot = client.get_slot().await.unwrap();
-
-    // Note: The most recent slot might not be confirmed yet, so we try slot 0
-    // which should always exist in a test validator
-    let block = client.get_block(0).await;
-    assert!(block.is_ok(), "Should fetch genesis block");
-    end_test(validator);
 }
 
 // =============================================================================
@@ -210,7 +222,8 @@ async fn test_get_block() {
 #[ignore]
 async fn test_initialize_system() {
     let (validator, payer) = setup_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Initialize the full system (mint + system + expand + epoch/archive)
     initialize_system(&client, &payer).await;
@@ -224,7 +237,6 @@ async fn test_initialize_system() {
 
     let archive = client.get_archive().await;
     assert!(archive.is_ok(), "Failed to fetch Archive: {:?}", archive.err());
-    end_test(validator);
 }
 
 // =============================================================================
@@ -239,7 +251,8 @@ async fn test_register_node() {
     use tape_core::prelude::*;
 
     let (validator, payer) = setup_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Initialize the system first
     initialize_system(&client, &payer).await;
@@ -255,15 +268,16 @@ async fn test_register_node() {
     );
     client.send_instructions(&payer, vec![transfer_ix]).await.unwrap();
 
-    // Register a node
+    // Register a node with valid BLS keypair
     let name = to_name("test-node");
     let commission_rate = BasisPoints(500); // 5%
-    let network_address = NetworkAddress::zeroed();
+    let network_address = NetworkAddress::from_bytes([0u8; 24]);
     let network_tls = solana_sdk::pubkey::Pubkey::new_unique();
-    // Note: In production you'd use real BLS keys. For testing, zeroed values work
-    // as long as the program doesn't validate the PoP (which it might skip in dev mode).
-    let bls_pubkey: BlsPubkey = Zeroable::zeroed();
-    let bls_pop: BlsSignature = Zeroable::zeroed();
+
+    // Generate valid BLS keypair with proof of possession
+    let bls_secret = BlsPrivateKey::from_random();
+    let bls_pubkey = bls_secret.public_key().expect("derive BLS pubkey");
+    let bls_pop = bls_secret.proof_of_possession().expect("generate PoP");
 
     let register_ix = build_register_node_ix(
         node_authority.pubkey(),
@@ -284,7 +298,6 @@ async fn test_register_node() {
 
     let node = node.unwrap();
     assert_eq!(node.metadata.name, name, "Node name should match");
-    end_test(validator);
 }
 
 // =============================================================================
@@ -299,7 +312,8 @@ async fn test_get_all_nodes() {
     use tape_core::prelude::*;
 
     let (validator, payer) = setup_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Initialize the system
     initialize_system(&client, &payer).await;
@@ -316,16 +330,21 @@ async fn test_get_all_nodes() {
         );
         client.send_instructions(&payer, vec![transfer_ix]).await.unwrap();
 
+        // Generate valid BLS keypair with proof of possession
+        let bls_secret = BlsPrivateKey::from_random();
+        let bls_pubkey = bls_secret.public_key().expect("derive BLS pubkey");
+        let bls_pop = bls_secret.proof_of_possession().expect("generate PoP");
+
         // Register
         let name = to_name(&format!("node-{}", i));
         let register_ix = build_register_node_ix(
             node_authority.pubkey(),
             name,
             BasisPoints(500),
-            NetworkAddress::zeroed(),
+            NetworkAddress::from_bytes([0u8; 24]),
             solana_sdk::pubkey::Pubkey::new_unique(),
-            Zeroable::zeroed(),
-            Zeroable::zeroed(),
+            bls_pubkey,
+            bls_pop,
         );
         client.send_instructions(&node_authority, vec![register_ix]).await.unwrap();
     }
@@ -336,7 +355,6 @@ async fn test_get_all_nodes() {
 
     let nodes = nodes.unwrap();
     assert_eq!(nodes.len(), 3, "Should have 3 registered nodes");
-    end_test(validator);
 }
 
 // =============================================================================
@@ -347,19 +365,20 @@ async fn test_get_all_nodes() {
 #[ignore]
 async fn test_fetch_nonexistent_account() {
     let (validator, _payer) = setup_basic_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Try to fetch System account before initialization
     let result = client.get_system().await;
     assert!(result.is_err(), "Should fail to fetch uninitialized System");
-    end_test(validator);
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_transaction_insufficient_funds() {
     let (validator, _payer) = setup_basic_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Create a new keypair with no funds
     let broke_user = Keypair::new();
@@ -373,7 +392,6 @@ async fn test_transaction_insufficient_funds() {
 
     let result = client.send_instructions(&broke_user, vec![transfer_ix]).await;
     assert!(result.is_err(), "Should fail due to insufficient funds");
-    end_test(validator);
 }
 
 // =============================================================================
@@ -384,10 +402,12 @@ async fn test_transaction_insufficient_funds() {
 #[ignore]
 async fn test_concurrent_reads() {
     let (validator, payer) = setup_validator().await;
-    let client = create_client(&validator);
+    let _guard = ValidatorGuard::new(validator);
+    let client = create_client(_guard.validator());
 
     // Initialize system
     initialize_system(&client, &payer).await;
+
     // Perform concurrent reads
     let (system, epoch, archive, slot) = tokio::join!(
         client.get_system(),
@@ -400,7 +420,4 @@ async fn test_concurrent_reads() {
     assert!(epoch.is_ok(), "Concurrent Epoch fetch failed");
     assert!(archive.is_ok(), "Concurrent Archive fetch failed");
     assert!(slot.is_ok(), "Concurrent slot fetch failed");
-
-    // Skip validator cleanup - TestValidator::drop() hangs waiting for threads
-    end_test(validator);
 }

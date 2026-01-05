@@ -24,10 +24,3 @@ async-trait.workspace = true
 
 # Error handling
 thiserror.workspace = true
-
-[dev-dependencies]
-# Tape crates for integration tests
-tape-client.workspace = true
-tape-api.workspace = true
-tape-core.workspace = true
-bytemuck.workspace = true
