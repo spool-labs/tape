@@ -8,7 +8,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
 use store_rocks::RocksStore;
-use tape_client::{RpcConfig, TapeClient};
+use rpc_client::{RpcConfig, RpcClient};
 use tape_crypto::Pubkey;
 
 use crate::config::NodeConfig;
@@ -48,7 +48,7 @@ pub struct NodeContext<S: Store = RocksStore> {
     /// This node's authority keypair.
     pub keypair: Arc<Keypair>,
     /// Tape RPC client for chain interactions.
-    pub rpc: Arc<TapeClient<SolanaRpc>>,
+    pub rpc: Arc<RpcClient<SolanaRpc>>,
     /// Slice storage service.
     pub storage: Arc<StorageService<S>>,
     /// In-memory cache of on-chain control plane state.
@@ -79,7 +79,7 @@ impl NodeContext<RocksStore> {
             endpoints: vec![config.solana_rpc_url.clone()],
             ..Default::default()
         };
-        let rpc = TapeClient::new(rpc_config)
+        let rpc = RpcClient::new(rpc_config)
             .map_err(|e| ContextError::RpcClient(e.to_string()))?;
 
         // 3. Open storage
@@ -136,7 +136,7 @@ impl<S: Store> NodeContext<S> {
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
-        rpc: TapeClient<SolanaRpc>,
+        rpc: RpcClient<SolanaRpc>,
         storage: StorageService<S>,
         control_plane: ControlPlane,
     ) -> Arc<Self> {

@@ -15,7 +15,7 @@ tape-core = { path = "../core" }
 tape-crypto = { path = "../crypto" }
 tape-api = { path = "../api" }
 tape-sdk = { path = "../network/sdk" }
-tape-client = { path = "../rpc/tape-client" }
+rpc-client = { path = "../rpc/rpc-client" }
 rpc-solana = { path = "../rpc/rpc-solana" }
 tape-store = { path = "../store/tape-store", optional = true }
 

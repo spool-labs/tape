@@ -22,7 +22,7 @@ members = [
   "store/tape-store",
   "rpc/rpc",
   "rpc/rpc-solana",
-  "rpc/tape-client",
+  "rpc/rpc-client",
   "rpc/rpc-test",
 ]
 
@@ -44,7 +44,7 @@ tape-test = { version = "0.3.0", path = "./test" }
 
 rpc = { version = "0.3.0", path = "./rpc/rpc" }
 rpc-solana = { version = "0.3.0", path = "./rpc/rpc-solana" }
-tape-client = { version = "0.3.0", path = "./rpc/tape-client" }
+rpc-client = { version = "0.3.0", path = "./rpc/rpc-client" }
 rpc-test = { version = "0.3.0", path = "./rpc/rpc-test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 

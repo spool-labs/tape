@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the full tapedrive flow:
 //! 1. Start a storage node (in-memory for testing)
-//! 2. Use BlobClient to upload a blob (encode → distribute → store)
+//! 2. Use TapeClient to upload a blob (encode → distribute → store)
 //! 3. Download the blob back (fetch → decode)
 //! 4. Verify the data matches
 //!
@@ -18,7 +18,7 @@ use store_memory::MemoryStore;
 use tape_crypto::Pubkey;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
-use tape_sdk::BlobClient;
+use tape_sdk::TapeClient;
 use tape_store::TapeStore;
 use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
 use tokio::net::TcpListener;
@@ -52,16 +52,16 @@ async fn start_test_nodes(count: usize) -> Vec<(SocketAddr, tokio::task::JoinHan
 }
 
 /// Create a test client with small slice sizes (4 KB instead of 1 MB).
-fn test_client(node_url: String) -> BlobClient {
-    BlobClient::builder()
+fn test_client(node_url: String) -> TapeClient {
+    TapeClient::builder()
         .add_node(node_url)
         .max_slice_bytes(4 * 1024) // 4 KB slices for testing
         .build()
 }
 
 /// Create a test client with multiple nodes.
-fn test_client_multi(node_urls: Vec<String>) -> BlobClient {
-    BlobClient::builder()
+fn test_client_multi(node_urls: Vec<String>) -> TapeClient {
+    TapeClient::builder()
         .node_addresses(node_urls)
         .max_slice_bytes(4 * 1024)
         .build()
@@ -71,7 +71,7 @@ fn test_client_multi(node_urls: Vec<String>) -> BlobClient {
 // HIGH-LEVEL SDK TESTS
 // ============================================================================
 
-/// Test the complete upload → download flow using BlobClient.
+/// Test the complete upload → download flow using TapeClient.
 #[tokio::test]
 #[serial]
 async fn test_upload_download_roundtrip() {
@@ -206,7 +206,7 @@ async fn test_slice_not_found() {
 /// Test that the builder correctly sets max_slice_bytes.
 #[tokio::test]
 async fn test_client_builder() {
-    let client = BlobClient::builder()
+    let client = TapeClient::builder()
         .add_node("http://localhost:8080")
         .max_slice_bytes(4 * 1024)
         .build();

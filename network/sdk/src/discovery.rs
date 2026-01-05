@@ -10,7 +10,7 @@
 //! ```text
 //! System.committee.iter()        →  CommitteeMember { id: NodeId, ... }
 //!                                     ↓
-//! tape-client::get_node_by_id()  →  Node { metadata.network_address, ... }
+//! rpc_client::get_node_by_id()   →  Node { metadata.network_address, ... }
 //!                                     ↓
 //! NetworkAddress.to_socket_addr()→  SocketAddr
 //!                                     ↓
@@ -21,7 +21,7 @@
 //!
 //! ```rust,ignore
 //! use tape_sdk::discovery::discover_committee_addresses;
-//! use tape_client::RpcConfig;
+//! use rpc_client::RpcConfig;
 //!
 //! let rpc_config = RpcConfig {
 //!     endpoints: vec!["https://api.mainnet-beta.solana.com".into()],
@@ -32,7 +32,7 @@
 //! println!("Found {} storage nodes", addresses.len());
 //! ```
 
-use tape_client::{RpcConfig, TapeClient as RpcClient};
+use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::NodeId;
 use thiserror::Error;
 

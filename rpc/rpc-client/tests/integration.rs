@@ -1,7 +1,7 @@
-//! Integration tests for TapeClient using TestValidator
+//! Integration tests for RpcClient using TestValidator
 //!
 //! These tests start a local Solana test validator with the Tape programs loaded,
-//! then exercise the TapeClient API against it.
+//! then exercise the RpcClient API against it.
 //!
 //! ## Test Categories
 //!
@@ -15,22 +15,22 @@
 //!
 //! Basic RPC tests (no external programs needed):
 //! ```bash
-//! cargo test -p tape-client --test integration -- --ignored test_get
-//! cargo test -p tape-client --test integration -- --ignored test_fetch
-//! cargo test -p tape-client --test integration -- --ignored test_transaction
+//! cargo test -p rpc-client --test integration -- --ignored test_get
+//! cargo test -p rpc-client --test integration -- --ignored test_fetch
+//! cargo test -p rpc-client --test integration -- --ignored test_transaction
 //! ```
 //!
 //! Full integration tests (run individually to avoid memory issues):
 //! ```bash
-//! cargo test -p tape-client --test integration test_initialize_system -- --ignored
-//! cargo test -p tape-client --test integration test_register_node -- --ignored
-//! cargo test -p tape-client --test integration test_get_all_nodes -- --ignored
-//! cargo test -p tape-client --test integration test_concurrent_reads -- --ignored
+//! cargo test -p rpc-client --test integration test_initialize_system -- --ignored
+//! cargo test -p rpc-client --test integration test_register_node -- --ignored
+//! cargo test -p rpc-client --test integration test_get_all_nodes -- --ignored
+//! cargo test -p rpc-client --test integration test_concurrent_reads -- --ignored
 //! ```
 //!
 //! Run all tests:
 //! ```bash
-//! cargo test -p tape-client --test integration -- --ignored --test-threads=1
+//! cargo test -p rpc-client --test integration -- --ignored --test-threads=1
 //! ```
 //!
 //! **Resource Requirements:** Test validators require significant RAM (8GB+ recommended).
@@ -41,7 +41,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use solana_test_validator::{TestValidatorGenesis, UpgradeableProgramInfo};
-use tape_client::TapeClient;
+use rpc_client::RpcClient;
 use std::path::PathBuf;
 
 /// Metaplex Token Metadata program ID
@@ -119,10 +119,10 @@ async fn setup_validator() -> (solana_test_validator::TestValidator, Keypair) {
         .await
 }
 
-/// Helper to create TapeClient with TestRpc
-fn create_client(validator: &solana_test_validator::TestValidator) -> TapeClient<TestRpc> {
+/// Helper to create RpcClient with TestRpc
+fn create_client(validator: &solana_test_validator::TestValidator) -> RpcClient<TestRpc> {
     let rpc = TestRpc::new(validator);
-    TapeClient::from_rpc(rpc)
+    RpcClient::from_rpc(rpc)
 }
 
 /// Guard that ensures TestValidator is cleaned up without blocking.
@@ -154,7 +154,7 @@ impl Drop for ValidatorGuard {
 
 /// Helper to fully initialize the system (mint + system + expand + initialize)
 /// This handles the account size expansion needed for the System account.
-async fn initialize_system(client: &TapeClient<TestRpc>, payer: &Keypair) {
+async fn initialize_system(client: &RpcClient<TestRpc>, payer: &Keypair) {
     use tape_api::instruction::{
         build_create_system_ix, build_expand_system_ix, build_initialize_ix, build_initialize_mint_ix,
     };

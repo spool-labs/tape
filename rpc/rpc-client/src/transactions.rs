@@ -1,10 +1,10 @@
-use crate::client::TapeClient;
+use crate::client::RpcClient;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signature::{Keypair, Signature, Signer};
 use solana_sdk::transaction::Transaction;
 use rpc::{Rpc, RpcError};
 
-impl<R: Rpc> TapeClient<R> {
+impl<R: Rpc> RpcClient<R> {
     /// Build and send a transaction from instructions
     ///
     /// This is the primary method for submitting transactions to the Tape program.
@@ -285,7 +285,7 @@ mod tests {
     #[ignore] // Requires actual RPC endpoint
     async fn test_send_instructions() {
         let config = rpc::RpcConfig::default();
-        let client = TapeClient::new(config).unwrap();
+        let client = RpcClient::new(config).unwrap();
 
         let payer = Keypair::new();
         let to = Pubkey::new_unique();

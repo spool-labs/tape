@@ -1,6 +1,6 @@
 [package]
-name = "tape-client"
-description = "High-level client for tape network programs"
+name = "rpc-client"
+description = "RPC client for Tapedrive on-chain program queries"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

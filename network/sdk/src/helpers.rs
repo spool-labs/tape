@@ -12,7 +12,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use thiserror::Error;
 
-use tape_client::{RpcConfig, TapeClient, SolanaRpc};
+use rpc_client::{RpcConfig, RpcClient, SolanaRpc};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::Committee;
@@ -247,13 +247,13 @@ pub fn get_node_assigned_spools<const N: usize, const S: usize>(
 /// let client = create_rpc_client("https://api.mainnet-beta.solana.com")?;
 /// let system = client.get_system().await?;
 /// ```
-pub fn create_rpc_client(endpoint: &str) -> Result<TapeClient<SolanaRpc>, HelperError> {
+pub fn create_rpc_client(endpoint: &str) -> Result<RpcClient<SolanaRpc>, HelperError> {
     let config = RpcConfig {
         endpoints: vec![endpoint.to_string()],
         ..Default::default()
     };
 
-    TapeClient::new(config).map_err(|e| HelperError::RpcClient(e.to_string()))
+    RpcClient::new(config).map_err(|e| HelperError::RpcClient(e.to_string()))
 }
 
 /// Create an RPC client from configuration.
@@ -266,8 +266,8 @@ pub fn create_rpc_client(endpoint: &str) -> Result<TapeClient<SolanaRpc>, Helper
 /// };
 /// let client = create_rpc_client_with_config(config)?;
 /// ```
-pub fn create_rpc_client_with_config(config: RpcConfig) -> Result<TapeClient<SolanaRpc>, HelperError> {
-    TapeClient::new(config).map_err(|e| HelperError::RpcClient(e.to_string()))
+pub fn create_rpc_client_with_config(config: RpcConfig) -> Result<RpcClient<SolanaRpc>, HelperError> {
+    RpcClient::new(config).map_err(|e| HelperError::RpcClient(e.to_string()))
 }
 
 #[cfg(test)]

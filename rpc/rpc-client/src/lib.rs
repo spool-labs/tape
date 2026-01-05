@@ -1,24 +1,23 @@
-//! # tape-client
+//! # rpc-client
 //!
-//! High-level client library for interacting with Tape v2 Solana programs.
+//! RPC client library for querying Tapedrive on-chain program state.
 //!
 //! This crate provides a convenient interface for:
-//! - Fetching Tape account state (System, Epoch, Nodes, Tapes, etc.)
-//! - Submitting transactions to Tape programs
+//! - Fetching Tapedrive account state (System, Epoch, Nodes, Tapes, etc.)
+//! - Submitting transactions to Tapedrive programs
 //! - Automatic retry and failover via the underlying rpc-solana layer
 //!
 //! ## Generic RPC Pattern
 //!
-//! `TapeClient<R: Rpc>` is generic over the RPC implementation, following the same
-//! pattern as `TapeStore<S: Store>` in the archive crates. This enables:
+//! `RpcClient<R: Rpc>` is generic over the RPC implementation, enabling:
 //!
-//! - **Production**: `TapeClient<SolanaRpc>` with retry/failover
-//! - **Testing**: `TapeClient<TestRpc>` with local test validator
+//! - **Production**: `RpcClient<SolanaRpc>` with retry/failover
+//! - **Testing**: `RpcClient<TestRpc>` with local test validator
 //!
 //! ## Example
 //!
 //! ```no_run
-//! use tape_client::{TapeClient, RpcConfig};
+//! use rpc_client::{RpcClient, RpcConfig};
 //! use solana_sdk::signature::{Keypair, Signer};
 //!
 //! #[tokio::main]
@@ -29,7 +28,7 @@
 //!         ..Default::default()
 //!     };
 //!
-//!     let client = TapeClient::new(config)?;
+//!     let client = RpcClient::new(config)?;
 //!
 //!     // Fetch singleton accounts
 //!     let system = client.get_system().await?;
@@ -48,7 +47,7 @@
 //! ## Testing with TestRpc
 //!
 //! ```ignore
-//! use tape_client::TapeClient;
+//! use rpc_client::RpcClient;
 //! use rpc_test::TestRpc;
 //! use solana_test_validator::TestValidatorGenesis;
 //!
@@ -59,7 +58,7 @@
 //!         .await;
 //!
 //!     // Create client with test RPC
-//!     let client = TapeClient::from_rpc(TestRpc::new(&validator));
+//!     let client = RpcClient::from_rpc(TestRpc::new(&validator));
 //!
 //!     // Same API as production!
 //!     let slot = client.get_slot().await.unwrap();
@@ -69,12 +68,12 @@
 //! ## Submitting Transactions
 //!
 //! ```no_run
-//! use tape_client::TapeClient;
+//! use rpc_client::RpcClient;
 //! use solana_sdk::signature::{Keypair, Signer};
 //! # use tape_api::instruction::*; // Assuming tape-api provides instruction builders
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = TapeClient::new(Default::default())?;
+//! let client = RpcClient::new(Default::default())?;
 //! let payer = Keypair::new();
 //!
 //! // Build instruction using tape-api (example)
@@ -96,7 +95,7 @@ mod transactions;
 pub mod metrics;
 
 // Public exports
-pub use client::TapeClient;
+pub use client::RpcClient;
 
 // Re-export tape-rpc trait types
 pub use rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
@@ -110,7 +109,7 @@ pub use tape_api;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::client::TapeClient;
+    pub use crate::client::RpcClient;
     pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
     pub use tape_api::prelude::*;
     pub use rpc::{CommitmentLevel, Rpc, RpcError};

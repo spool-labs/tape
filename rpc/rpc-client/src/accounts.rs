@@ -1,4 +1,4 @@
-use crate::client::TapeClient;
+use crate::client::RpcClient;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::pubkey::Pubkey;
@@ -15,7 +15,7 @@ use tape_api::program::tapedrive::{
 // Import tape-core types for ID lookups
 use tape_core::types::{NodeId, TapeNumber, TrackNumber};
 
-impl<R: Rpc> TapeClient<R> {
+impl<R: Rpc> RpcClient<R> {
     // ========================================================================
     // Singleton Accounts
     // ========================================================================

@@ -5,33 +5,32 @@ use rpc::{Rpc, RpcError};
 #[cfg(feature = "metrics")]
 use std::sync::Arc;
 
-/// High-level client for Tape v2 programs
+/// RPC client for Tapedrive on-chain program queries.
 ///
 /// Wraps an RPC implementation and provides convenient methods for
-/// interacting with Tape-specific accounts and operations.
+/// interacting with Tapedrive-specific accounts and operations.
 ///
-/// This client is generic over `R: Rpc`, following the same pattern as
-/// `TapeStore<S: Store>` in the archive crates. This enables:
-/// - Production use with `TapeClient<SolanaRpc>` (retry/failover)
-/// - Testing with `TapeClient<TestRpc>` (local test validator)
+/// This client is generic over `R: Rpc`, enabling:
+/// - Production use with `RpcClient<SolanaRpc>` (retry/failover)
+/// - Testing with `RpcClient<TestRpc>` (local test validator)
 ///
 /// # Example
 ///
 /// ```ignore
 /// // Production
-/// let client = TapeClient::new(config)?;
+/// let client = RpcClient::new(config)?;
 ///
 /// // Testing
-/// let client = TapeClient::from_rpc(TestRpc::new(&validator));
+/// let client = RpcClient::from_rpc(TestRpc::new(&validator));
 /// ```
-pub struct TapeClient<R: Rpc> {
+pub struct RpcClient<R: Rpc> {
     rpc: R,
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<crate::metrics::ClientMetrics>>,
 }
 
-impl<R: Rpc> TapeClient<R> {
-    /// Creates a new TapeClient from any Rpc implementation
+impl<R: Rpc> RpcClient<R> {
+    /// Creates a new RpcClient from any Rpc implementation
     ///
     /// # Arguments
     /// * `rpc` - The RPC implementation to use
@@ -68,7 +67,7 @@ impl<R: Rpc> TapeClient<R> {
     /// Access the underlying RPC client for custom operations
     ///
     /// This allows direct access to low-level RPC methods that aren't
-    /// specifically wrapped by TapeClient.
+    /// specifically wrapped by RpcClient.
     pub fn rpc(&self) -> &R {
         &self.rpc
     }
@@ -92,8 +91,8 @@ impl<R: Rpc> TapeClient<R> {
 // Production-specific constructors (SolanaRpc)
 // ============================================================================
 
-impl TapeClient<SolanaRpc> {
-    /// Creates a new TapeClient with the given configuration
+impl RpcClient<SolanaRpc> {
+    /// Creates a new RpcClient with the given configuration
     ///
     /// This is the primary constructor for production use. It creates
     /// a SolanaRpc with retry and failover capabilities.
@@ -111,7 +110,7 @@ impl TapeClient<SolanaRpc> {
         })
     }
 
-    /// Creates a new TapeClient with metrics enabled
+    /// Creates a new RpcClient with metrics enabled
     ///
     /// # Arguments
     /// * `config` - RPC configuration including endpoints, commitment, and retry settings
@@ -137,14 +136,14 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let config = RpcConfig::default();
-        let client = TapeClient::new(config);
+        let client = RpcClient::new(config);
         assert!(client.is_ok());
     }
 
     #[test]
     fn test_rpc_access() {
         let config = RpcConfig::default();
-        let client = TapeClient::new(config).unwrap();
+        let client = RpcClient::new(config).unwrap();
         let _rpc = client.rpc();
     }
 
@@ -152,7 +151,7 @@ mod tests {
     #[test]
     fn test_client_without_metrics() {
         let config = RpcConfig::default();
-        let client = TapeClient::new(config).unwrap();
+        let client = RpcClient::new(config).unwrap();
         assert!(client.metrics().is_none());
     }
 
@@ -160,7 +159,7 @@ mod tests {
     #[test]
     fn test_client_with_metrics() {
         let config = RpcConfig::default();
-        let client = TapeClient::new_with_metrics(config).unwrap();
+        let client = RpcClient::new_with_metrics(config).unwrap();
         assert!(client.metrics().is_some());
     }
 
@@ -175,7 +174,7 @@ mod tests {
         let metrics_registry = Registry::new();
         let metrics = Arc::new(ClientMetrics::new(&metrics_registry));
 
-        let client = TapeClient::new(config).unwrap().with_metrics(metrics.clone());
+        let client = RpcClient::new(config).unwrap().with_metrics(metrics.clone());
         assert!(client.metrics().is_some());
 
         // Verify it's the same metrics instance

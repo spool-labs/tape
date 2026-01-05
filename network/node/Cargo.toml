@@ -24,13 +24,13 @@ tape-metrics = { workspace = true, features = ["metrics", "http"] }
 tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
 tape-store = { workspace = true }
-tape-client = { workspace = true }
+rpc-client = { workspace = true }
 rpc = { workspace = true }
 rpc-solana = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
 
-# Solana (tape-client re-exports what we need for transactions)
+# Solana (rpc-client re-exports what we need for transactions)
 solana-sdk = { workspace = true }
 solana-transaction-status = { workspace = true }
 

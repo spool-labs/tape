@@ -10,7 +10,7 @@ use crate::output::{format_number, OutputFormat};
 use crate::utils::spinner;
 use crate::Context;
 
-use tape_client::{RpcConfig, TapeClient};
+use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::NetworkAddress;
 
 #[derive(Subcommand, Debug)]
@@ -57,7 +57,7 @@ async fn list_peers(ctx: &Context, show_all: bool) -> Result<()> {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
-    let client = TapeClient::new(config)?;
+    let client = RpcClient::new(config)?;
 
     // Fetch all nodes from chain
     let nodes = client.get_all_nodes().await
@@ -278,7 +278,7 @@ async fn show_status(ctx: &Context) -> Result<()> {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
-    let client = TapeClient::new(config)?;
+    let client = RpcClient::new(config)?;
 
     // Fetch system state
     let system = client.get_system().await

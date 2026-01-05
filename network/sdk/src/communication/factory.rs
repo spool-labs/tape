@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tape_node_client::{NodeError, StorageNodeClient, StorageNodeClientBuilder};
+use tape_node_client::{NodeError, TapeNodeClient, TapeNodeClientBuilder};
 
 /// Factory for creating storage node clients.
 ///
@@ -15,7 +15,7 @@ pub struct NodeCommunicationFactory {
     connect_timeout: Duration,
     request_timeout: Duration,
     /// Cache of clients by address. Uses Arc<RwLock> for thread-safe sharing.
-    cache: Arc<RwLock<HashMap<String, StorageNodeClient>>>,
+    cache: Arc<RwLock<HashMap<String, TapeNodeClient>>>,
 }
 
 impl Default for NodeCommunicationFactory {
@@ -49,7 +49,7 @@ impl NodeCommunicationFactory {
     /// Get or create a client for the given node address.
     ///
     /// Clients are cached and reused to maintain HTTP connection pools.
-    pub fn client_for_address(&self, address: &str) -> Result<StorageNodeClient, NodeError> {
+    pub fn client_for_address(&self, address: &str) -> Result<TapeNodeClient, NodeError> {
         // Fast path: check cache with read lock
         {
             let cache = self.cache.read().unwrap();
@@ -59,7 +59,7 @@ impl NodeCommunicationFactory {
         }
 
         // Slow path: create new client and cache it
-        let client = StorageNodeClientBuilder::new()
+        let client = TapeNodeClientBuilder::new()
             .connect_timeout(self.connect_timeout)
             .request_timeout(self.request_timeout)
             .build(address)?;

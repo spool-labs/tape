@@ -12,7 +12,7 @@ use tape_api::instruction::{
     build_split_pool_stake_ix, build_merge_pool_stake_ix,
 };
 use tape_api::program::tapedrive::stake_pda;
-use tape_client::{RpcConfig, TapeClient};
+use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::TAPE;
 
 use crate::config::expand_path;
@@ -88,13 +88,13 @@ fn load_keypair(ctx: &Context) -> Result<Keypair> {
     Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
 }
 
-/// Create a TapeClient from context.
-fn create_client(ctx: &Context) -> Result<TapeClient<rpc_solana::SolanaRpc>> {
+/// Create a RpcClient from context.
+fn create_client(ctx: &Context) -> Result<RpcClient<rpc_solana::SolanaRpc>> {
     let config = RpcConfig {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
-    TapeClient::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
+    RpcClient::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
 }
 
 /// Parse a pubkey string.

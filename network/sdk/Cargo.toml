@@ -20,7 +20,7 @@ tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
-tape-client = { path = "../../rpc/tape-client" }
+rpc-client = { path = "../../rpc/rpc-client" }
 
 # Solana (for keypair helpers)
 solana-sdk = { workspace = true }

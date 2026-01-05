@@ -5529,6 +5529,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-client"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "rpc",
+ "rpc-solana",
+ "rpc-test",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-sdk",
+ "solana-test-validator",
+ "solana-transaction-status",
+ "tape-api",
+ "tape-core",
+ "tape-metrics",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rpc-solana"
 version = "0.3.0"
 dependencies = [
@@ -11359,6 +11381,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest 0.12.28",
  "rocksdb",
+ "rpc-client",
  "rpc-solana",
  "serde",
  "serde_json",
@@ -11369,7 +11392,6 @@ dependencies = [
  "solana-sdk",
  "steel",
  "tape-api",
- "tape-client",
  "tape-core",
  "tape-crypto",
  "tape-sdk",
@@ -11378,28 +11400,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "tape-client"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "rpc",
- "rpc-solana",
- "rpc-test",
- "solana-account-decoder",
- "solana-client",
- "solana-sdk",
- "solana-test-validator",
- "solana-transaction-status",
- "tape-api",
- "tape-core",
- "tape-metrics",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -11466,6 +11466,7 @@ dependencies = [
  "futures 0.3.31",
  "hyper 1.8.1",
  "rpc",
+ "rpc-client",
  "rpc-solana",
  "serde",
  "serde_json",
@@ -11477,7 +11478,6 @@ dependencies = [
  "store-memory",
  "store-rocks",
  "tape-api",
- "tape-client",
  "tape-core",
  "tape-crypto",
  "tape-metrics",
@@ -11528,12 +11528,12 @@ dependencies = [
  "futures 0.3.31",
  "hex",
  "rand 0.8.5",
+ "rpc-client",
  "serde",
  "serde_json",
  "serial_test",
  "solana-sdk",
  "store-memory",
- "tape-client",
  "tape-core",
  "tape-crypto",
  "tape-metrics",

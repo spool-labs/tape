@@ -8,7 +8,7 @@ use tape_api::instruction::{
     build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
     build_initialize_mint_ix,
 };
-use tape_client::{RpcConfig, TapeClient};
+use rpc_client::{RpcConfig, RpcClient};
 
 use crate::config::expand_path;
 use crate::Context;
@@ -46,13 +46,13 @@ fn load_keypair(ctx: &Context) -> Result<Keypair> {
     Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
 }
 
-/// Create a TapeClient from context.
-fn create_client(ctx: &Context) -> Result<TapeClient<rpc_solana::SolanaRpc>> {
+/// Create a RpcClient from context.
+fn create_client(ctx: &Context) -> Result<RpcClient<rpc_solana::SolanaRpc>> {
     let config = RpcConfig {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
-    TapeClient::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
+    RpcClient::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
 }
 
 pub async fn execute(ctx: &Context, cmd: AdminCommand) -> Result<()> {

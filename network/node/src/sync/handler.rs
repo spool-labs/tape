@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::info;
 
-use tape_node_client::{StorageNodeClientBuilder, NodeError};
+use tape_node_client::{TapeNodeClientBuilder, NodeError};
 
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
@@ -92,7 +92,7 @@ impl SpoolSyncHandler {
             SyncError::Storage("semaphore closed".to_string())
         })?;
 
-        let client = StorageNodeClientBuilder::new()
+        let client = TapeNodeClientBuilder::new()
             .build(prev_owner_address)?;
 
         let mut starting_track = String::new();
