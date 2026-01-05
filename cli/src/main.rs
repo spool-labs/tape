@@ -76,10 +76,7 @@ enum Commands {
     },
 
     /// Storage node management.
-    Node {
-        #[command(subcommand)]
-        command: commands::node::NodeCommand,
-    },
+    Node(commands::node::NodeArgs),
 
     /// On-chain account queries.
     Account {
@@ -239,7 +236,7 @@ async fn main() -> Result<()> {
         Commands::Config { command } => commands::config::execute(&ctx, command).await,
         Commands::Keys { command } => commands::keys::execute(&ctx, command).await,
         Commands::Admin { command } => commands::admin::execute(&ctx, command).await,
-        Commands::Node { command } => commands::node::execute(&ctx, command).await,
+        Commands::Node(args) => commands::node::execute(&ctx, args).await,
         Commands::Account { command } => commands::account::execute(&ctx, command).await,
         Commands::Tape { command } => commands::tape::execute(&ctx, command).await,
         Commands::Track { command } => commands::track::execute(&ctx, command).await,

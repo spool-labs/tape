@@ -15,13 +15,6 @@ pub fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".tape/config.yaml"))
 }
 
-/// Default node config file path (for `tape node start`).
-pub fn default_node_config_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".tape").join("node.yaml"))
-        .unwrap_or_else(|| PathBuf::from(".tape/node.yaml"))
-}
-
 /// Configuration file structure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigFile {

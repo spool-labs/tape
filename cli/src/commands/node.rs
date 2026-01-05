@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use solana_sdk::signature::Signer;
 
 use tape_api::instruction;
@@ -11,13 +11,14 @@ use tape_api::program::tapedrive::{node_pda, BLACKLIST_SIZE};
 use tape_api::utils::to_name;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, NetworkAddress, StorageUnits};
+use tape_node::config::{NodeConfig, default_config_path, default_config_content, expand_path};
+use tape_node::{NodeContext, Server, orchestrator};
 
 use tape_sdk::{
     load_solana_keypair, load_bls_keypair, load_tls_pubkey,
     parse_hash, create_rpc_client, find_member_index,
 };
 
-use crate::config::file::{expand_path, default_node_config_path};
 use crate::output::format_basis_points;
 use crate::Context;
 
@@ -32,47 +33,50 @@ struct BlacklistProof {
     proof: Vec<String>,
 }
 
+/// Node command arguments with shared config option.
+#[derive(Args, Debug)]
+pub struct NodeArgs {
+    /// Node config file (default: ~/.tape/node.yaml).
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: NodeCommand,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum NodeCommand {
     /// Initialize node config file.
     Init {
-        /// Config file path (default: ~/.tape/node.yaml).
-        #[arg(long)]
-        config: Option<std::path::PathBuf>,
-
         /// Overwrite existing config.
         #[arg(long)]
         force: bool,
     },
 
     /// Start storage node.
-    Start {
-        /// Config file path (default: ~/.tape/node.yaml).
-        #[arg(long)]
-        config: Option<std::path::PathBuf>,
-    },
+    Start,
 
     /// Register new node on-chain.
     Register {
-        /// Node display name.
+        /// Node display name (overrides config).
         #[arg(long)]
         name: Option<String>,
 
-        /// Commission rate (0-10000 basis points).
+        /// Commission rate in basis points, 0-10000 (overrides config).
         #[arg(long)]
         commission: Option<u64>,
 
-        /// Network address (host:port).
+        /// Network address host:port (overrides config).
         #[arg(long)]
         address: Option<String>,
 
-        /// BLS keypair path.
+        /// BLS keypair path (overrides config).
         #[arg(long)]
-        bls_key: Option<std::path::PathBuf>,
+        bls_key: Option<PathBuf>,
 
-        /// TLS keypair path.
+        /// TLS/network keypair path (overrides config).
         #[arg(long)]
-        tls_key: Option<std::path::PathBuf>,
+        tls_key: Option<PathBuf>,
     },
 
     /// Request to join committee.
@@ -140,7 +144,7 @@ pub enum NodeCommand {
 
         /// Merkle proof path.
         #[arg(long)]
-        proof: std::path::PathBuf,
+        proof: PathBuf,
     },
 
     /// Check node health.
@@ -151,33 +155,30 @@ pub enum NodeCommand {
     },
 }
 
-pub async fn execute(ctx: &Context, cmd: NodeCommand) -> Result<()> {
-    match cmd {
-        NodeCommand::Init { config, force } => init_node_config(config, force).await,
-        NodeCommand::Start { config } => {
-            let config_path = config.unwrap_or_else(default_node_config_path);
-            println!("Starting node with config: {}", config_path.display());
-            anyhow::bail!("Not yet implemented - use the node binary directly")
-        }
+pub async fn execute(ctx: &Context, args: NodeArgs) -> Result<()> {
+    let config = args.config;
+    match args.command {
+        NodeCommand::Init { force } => init_node_config(config, force).await,
+        NodeCommand::Start => start_node(config).await,
         NodeCommand::Register {
             name,
             commission,
             address,
             bls_key,
             tls_key,
-        } => register_node(ctx, name, commission, address, bls_key, tls_key).await,
-        NodeCommand::Join => join_committee(ctx).await,
-        NodeCommand::Sync => sync_epoch(ctx).await,
-        NodeCommand::Status { node } => show_status(ctx, node).await,
-        NodeCommand::SetAuthority { new_authority } => set_authority(ctx, &new_authority).await,
-        NodeCommand::SetName { name } => set_name(ctx, &name).await,
-        NodeCommand::SetAddress { address } => set_address(ctx, &address).await,
-        NodeCommand::SetCommission { bps } => set_commission(ctx, bps).await,
-        NodeCommand::SetCapacity { mb } => set_capacity(ctx, mb).await,
-        NodeCommand::SetPrice { tape } => set_price(ctx, &tape).await,
-        NodeCommand::ClaimCommission => claim_commission(ctx).await,
-        NodeCommand::BlacklistAdd { track } => blacklist_add(ctx, &track).await,
-        NodeCommand::BlacklistRemove { index, proof } => blacklist_remove(ctx, index, proof).await,
+        } => register_node(ctx, config, name, commission, address, bls_key, tls_key).await,
+        NodeCommand::Join => join_committee(ctx, config).await,
+        NodeCommand::Sync => sync_epoch(ctx, config).await,
+        NodeCommand::Status { node } => show_status(ctx, config, node).await,
+        NodeCommand::SetAuthority { new_authority } => set_authority(ctx, config, &new_authority).await,
+        NodeCommand::SetName { name } => set_name(ctx, config, &name).await,
+        NodeCommand::SetAddress { address } => set_address(ctx, config, &address).await,
+        NodeCommand::SetCommission { bps } => set_commission(ctx, config, bps).await,
+        NodeCommand::SetCapacity { mb } => set_capacity(ctx, config, mb).await,
+        NodeCommand::SetPrice { tape } => set_price(ctx, config, &tape).await,
+        NodeCommand::ClaimCommission => claim_commission(ctx, config).await,
+        NodeCommand::BlacklistAdd { track } => blacklist_add(ctx, config, &track).await,
+        NodeCommand::BlacklistRemove { index, proof } => blacklist_remove(ctx, config, index, proof).await,
         NodeCommand::Health { nodes } => {
             let nodes = nodes.unwrap_or_else(|| ctx.nodes.clone());
             if nodes.is_empty() {
@@ -188,54 +189,12 @@ pub async fn execute(ctx: &Context, cmd: NodeCommand) -> Result<()> {
     }
 }
 
-/// Default node config content.
-fn default_node_config_content() -> &'static str {
-    r#"# Tapedrive Storage Node Configuration
-
-# Display name for this node
-name: "my-node"
-
-# Keypairs (auto-generated by `tape node init`)
-protocol_keypair: ~/.tape/keys/protocol.json
-network_keypair: ~/.tape/keys/network.json
-bls_keypair: ~/.tape/keys/bls.json
-solana_keypair_path: ~/.config/solana/id.json
-
-# Local address to bind the server
-bind_address: "0.0.0.0:8080"
-
-# Public address other nodes use to reach this node
-public_host: "localhost"
-public_port: 8080
-
-# TLS certificate (self-signed for development, provide paths for production)
-tls:
-  generate_self_signed: true
-  # certificate_path: /path/to/cert.pem
-  # key_path: /path/to/key.pem
-
-# Directory for slice data storage
-storage_path: ~/.tape/data
-
-# Solana RPC endpoint
-solana_rpc_url: "https://api.devnet.solana.com"
-
-# Solana pubkey that owns this node account (run `solana address` to get yours)
-node_authority: "YOUR_SOLANA_PUBKEY_HERE"
-
-# Performance tuning (optional)
-# poll_interval_ms: 400
-# sync_concurrency: 4
-# sync_batch_size: 1000
-"#
-}
-
 /// Initialize node config file and generate keypairs.
 async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
     use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
 
-    let config_path = config.unwrap_or_else(default_node_config_path);
+    let config_path = config.unwrap_or_else(default_config_path);
 
     if config_path.exists() && !force {
         println!("Node config already exists at: {}", config_path.display());
@@ -291,7 +250,7 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&config_path, default_node_config_content())?;
+    std::fs::write(&config_path, default_config_content())?;
 
     println!();
     println!("Created node config at: {}", config_path.display());
@@ -311,44 +270,92 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Get the keypair from context, returning an error if not configured.
-fn get_keypair(ctx: &Context) -> Result<solana_sdk::signature::Keypair> {
-    let keypair_path = ctx
-        .keypair
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use -k or set in config."))?;
+/// Start the storage node.
+async fn start_node(config: Option<PathBuf>) -> Result<()> {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-    load_solana_keypair(keypair_path).map_err(|e| anyhow::anyhow!("{}", e))
+    let config_path = config.unwrap_or_else(default_config_path);
+
+    // Load config
+    let node_config = NodeConfig::from_yaml_file(&config_path)
+        .with_context(|| format!("Failed to load node config from {}", config_path.display()))?;
+
+    // Initialize logging
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .init();
+
+    tracing::info!("Starting Tapedrive storage node");
+    tracing::info!("Config: {}", config_path.display());
+    tracing::info!("Node name: {}", node_config.name);
+    tracing::info!("Bind address: {}", node_config.bind_address);
+
+    // Initialize context (opens storage, connects to RPC, fetches on-chain state)
+    let ctx = NodeContext::from_config(node_config.clone())
+        .await
+        .context("Failed to initialize node context")?;
+
+    tracing::info!("Node context initialized");
+
+    // Create and start the HTTP server
+    let server = Server::new(
+        node_config,
+        ctx.metrics.clone(),
+        ctx.storage.clone(),
+    );
+
+    let server_handle = server.start()
+        .await
+        .context("Failed to start HTTP server")?;
+
+    tracing::info!("HTTP server started");
+
+    // Run the orchestrator (blocks until shutdown)
+    orchestrator::run(ctx, server_handle)
+        .await
+        .context("Orchestrator error")?;
+
+    Ok(())
+}
+
+/// Load node config from the specified path or default.
+fn load_node_config(config: Option<PathBuf>) -> Result<NodeConfig> {
+    let config_path = config.unwrap_or_else(default_config_path);
+    NodeConfig::from_yaml_file(&config_path)
+        .with_context(|| format!("Failed to load node config from {}", config_path.display()))
+}
+
+/// Load the Solana keypair from node config.
+fn load_keypair_from_config(node_config: &NodeConfig) -> Result<solana_sdk::signature::Keypair> {
+    load_solana_keypair(&expand_path(&node_config.solana_keypair_path))
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn register_node(
     ctx: &Context,
+    config: Option<PathBuf>,
     name: Option<String>,
     commission: Option<u64>,
     address: Option<String>,
     bls_key: Option<PathBuf>,
     tls_key: Option<PathBuf>,
 ) -> Result<()> {
-    // Fallback to config values
-    let name = name.or_else(|| ctx.config.node.name.clone());
-    let commission = commission.or(ctx.config.node.commission);
-    let address = address.or_else(|| ctx.config.node.address.clone());
-    let bls_key = bls_key.or_else(|| ctx.config.node.bls_key.as_ref().map(|s| expand_path(s)));
-    let tls_key = tls_key.or_else(|| ctx.config.node.tls_key.as_ref().map(|s| expand_path(s)));
+    let node_config = load_node_config(config)?;
 
-    // Validate required fields
-    let name = name.ok_or_else(|| anyhow::anyhow!("Node name required. Use --name or set in config."))?;
+    // CLI args override config file values
+    let name = name.unwrap_or_else(|| node_config.name.clone());
+    let commission = commission.or(node_config.commission);
+    let address = address.unwrap_or_else(|| node_config.network_address());
+    let bls_key_path = bls_key.unwrap_or_else(|| node_config.bls_keypair.clone());
+    let tls_key_path = tls_key.unwrap_or_else(|| node_config.network_keypair.clone());
+
+    // Validate commission (required for registration)
     let commission = commission.ok_or_else(|| {
         anyhow::anyhow!("Commission rate required. Use --commission or set in config.")
-    })?;
-    let address = address.ok_or_else(|| {
-        anyhow::anyhow!("Network address required. Use --address or set in config.")
-    })?;
-    let bls_key_path = bls_key.ok_or_else(|| {
-        anyhow::anyhow!("BLS keypair path required. Use --bls-key or set in config.")
-    })?;
-    let tls_key_path = tls_key.ok_or_else(|| {
-        anyhow::anyhow!("TLS keypair path required. Use --tls-key or set in config.")
     })?;
 
     // Validate commission rate
@@ -369,8 +376,8 @@ async fn register_node(
         return Ok(());
     }
 
-    // Load keys
-    let keypair = get_keypair(ctx)?;
+    // Load keys from node config
+    let keypair = load_keypair_from_config(&node_config)?;
     let bls_private_key = load_bls_keypair(&bls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
     let tls_pubkey = load_tls_pubkey(&tls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -417,7 +424,9 @@ async fn register_node(
     Ok(())
 }
 
-async fn join_committee(ctx: &Context) -> Result<()> {
+async fn join_committee(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if ctx.dry_run {
@@ -425,7 +434,7 @@ async fn join_committee(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_join_network_ix(keypair.pubkey(), node_address);
@@ -445,7 +454,9 @@ async fn join_committee(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-async fn sync_epoch(ctx: &Context) -> Result<()> {
+async fn sync_epoch(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if ctx.dry_run {
@@ -453,7 +464,7 @@ async fn sync_epoch(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Get current epoch and system state
@@ -499,7 +510,7 @@ async fn sync_epoch(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-async fn show_status(ctx: &Context, node: Option<String>) -> Result<()> {
+async fn show_status(ctx: &Context, config: Option<PathBuf>, node: Option<String>) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -510,7 +521,8 @@ async fn show_status(ctx: &Context, node: Option<String>) -> Result<()> {
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid node pubkey: {}", node_str))?
     } else {
-        let keypair = get_keypair(ctx)?;
+        let node_config = load_node_config(config)?;
+        let keypair = load_keypair_from_config(&node_config)?;
         keypair.pubkey()
     };
 
@@ -561,7 +573,9 @@ async fn show_status(ctx: &Context, node: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn set_authority(ctx: &Context, new_authority: &str) -> Result<()> {
+async fn set_authority(ctx: &Context, config: Option<PathBuf>, new_authority: &str) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     let new_auth_pubkey: solana_sdk::pubkey::Pubkey = new_authority
@@ -573,7 +587,7 @@ async fn set_authority(ctx: &Context, new_authority: &str) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_authority_ix(keypair.pubkey(), node_address, new_auth_pubkey);
@@ -593,7 +607,9 @@ async fn set_authority(ctx: &Context, new_authority: &str) -> Result<()> {
     Ok(())
 }
 
-async fn set_name(ctx: &Context, name: &str) -> Result<()> {
+async fn set_name(ctx: &Context, config: Option<PathBuf>, name: &str) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if ctx.dry_run {
@@ -601,7 +617,7 @@ async fn set_name(ctx: &Context, name: &str) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_name_ix(keypair.pubkey(), node_address, name);
@@ -621,7 +637,9 @@ async fn set_name(ctx: &Context, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn set_address(ctx: &Context, address: &str) -> Result<()> {
+async fn set_address(ctx: &Context, config: Option<PathBuf>, address: &str) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     let network_address = NetworkAddress::from(address)
@@ -632,7 +650,7 @@ async fn set_address(ctx: &Context, address: &str) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_network_address_ix(keypair.pubkey(), node_address, network_address);
@@ -652,7 +670,9 @@ async fn set_address(ctx: &Context, address: &str) -> Result<()> {
     Ok(())
 }
 
-async fn set_commission(ctx: &Context, bps: u64) -> Result<()> {
+async fn set_commission(ctx: &Context, config: Option<PathBuf>, bps: u64) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if bps > 10000 {
@@ -668,7 +688,7 @@ async fn set_commission(ctx: &Context, bps: u64) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_commission_ix(keypair.pubkey(), node_address, BasisPoints(bps));
@@ -692,7 +712,9 @@ async fn set_commission(ctx: &Context, bps: u64) -> Result<()> {
     Ok(())
 }
 
-async fn set_capacity(ctx: &Context, mb: u64) -> Result<()> {
+async fn set_capacity(ctx: &Context, config: Option<PathBuf>, mb: u64) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if ctx.dry_run {
@@ -700,7 +722,7 @@ async fn set_capacity(ctx: &Context, mb: u64) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_storage_capacity_ix(keypair.pubkey(), node_address, StorageUnits(mb));
@@ -720,7 +742,9 @@ async fn set_capacity(ctx: &Context, mb: u64) -> Result<()> {
     Ok(())
 }
 
-async fn set_price(ctx: &Context, tape: &str) -> Result<()> {
+async fn set_price(ctx: &Context, config: Option<PathBuf>, tape: &str) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     let price: Coin<TAPE> = TAPE::parse(tape)
@@ -731,7 +755,7 @@ async fn set_price(ctx: &Context, tape: &str) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_set_storage_price_ix(keypair.pubkey(), node_address, price);
@@ -751,7 +775,9 @@ async fn set_price(ctx: &Context, tape: &str) -> Result<()> {
     Ok(())
 }
 
-async fn claim_commission(ctx: &Context) -> Result<()> {
+async fn claim_commission(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     if ctx.dry_run {
@@ -759,7 +785,7 @@ async fn claim_commission(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_claim_commission_ix(keypair.pubkey(), node_address);
@@ -778,7 +804,9 @@ async fn claim_commission(ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-async fn blacklist_add(ctx: &Context, track: &str) -> Result<()> {
+async fn blacklist_add(ctx: &Context, config: Option<PathBuf>, track: &str) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     let track_pubkey: solana_sdk::pubkey::Pubkey = track
@@ -790,7 +818,7 @@ async fn blacklist_add(ctx: &Context, track: &str) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_add_to_blacklist_ix(keypair.pubkey(), node_address, track_pubkey);
@@ -810,7 +838,9 @@ async fn blacklist_add(ctx: &Context, track: &str) -> Result<()> {
     Ok(())
 }
 
-async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Result<()> {
+async fn blacklist_remove(ctx: &Context, config: Option<PathBuf>, index: u64, proof_path: PathBuf) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     // Load and parse proof file
@@ -845,7 +875,7 @@ async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Res
         return Ok(());
     }
 
-    let keypair = get_keypair(ctx)?;
+    let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_remove_from_blacklist_ix(

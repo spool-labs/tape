@@ -1,6 +1,6 @@
 [package]
 name = "tape-node"
-description = "Tapedrive storage node REST API server"
+description = "Tapedrive storage node library"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,10 +10,6 @@ keywords.workspace = true
 
 [features]
 default = []
-
-[[bin]]
-name = "tape-node"
-path = "src/bin/node.rs"
 
 [dependencies]
 # Internal crates
@@ -65,6 +61,8 @@ futures = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 bs58 = "0.5"
+dirs = "5"
+shellexpand = "3"
 
 [dev-dependencies]
 tower = "0.5"
