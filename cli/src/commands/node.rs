@@ -340,8 +340,10 @@ async fn register_node(
     let name = name.unwrap_or_else(|| node_config.name.clone());
     let commission = commission.or(node_config.commission);
     let address = address.unwrap_or_else(|| node_config.network_address());
-    let bls_key_path = bls_key.unwrap_or_else(|| node_config.bls_keypair.clone());
-    let tls_key_path = tls_key.unwrap_or_else(|| node_config.tls_keypair.clone());
+    let bls_key_path = bls_key.map(|p| expand_path(p.to_string_lossy().as_ref()))
+        .unwrap_or_else(|| node_config.bls_keypair.clone());
+    let tls_key_path = tls_key.map(|p| expand_path(p.to_string_lossy().as_ref()))
+        .unwrap_or_else(|| node_config.tls_keypair.clone());
 
     // Validate commission (required for registration)
     let commission = commission.ok_or_else(|| {
