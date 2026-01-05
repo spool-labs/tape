@@ -15,7 +15,6 @@ use std::time::Duration;
 use axum::Router;
 use store_memory::MemoryStore;
 use tape_crypto::Pubkey;
-use tape_metrics::MetricsRegistry;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
 use tape_sdk::TapeClient;
@@ -24,11 +23,7 @@ use tokio::net::TcpListener;
 
 /// Start a test node on a random port with in-memory storage.
 async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let registry = match MetricsRegistry::get() {
-        Some(r) => r,
-        None => MetricsRegistry::init(),
-    };
-    let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
+    let metrics = Arc::new(NodeMetrics::new());
     let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
     let state = ApiState { metrics, service };
