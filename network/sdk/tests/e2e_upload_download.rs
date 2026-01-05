@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use serial_test::serial;
 use store_memory::MemoryStore;
 use tape_crypto::Pubkey;
 use tape_node::server::routes::{create_router, ApiState};
@@ -71,6 +72,7 @@ fn test_client_multi(node_urls: Vec<String>) -> TapeClient {
 
 /// Test the complete upload → download flow using TapeClient.
 #[tokio::test]
+#[serial]
 async fn test_upload_download_roundtrip() {
     let (addr, _handle) = start_test_node().await;
     let client = test_client(format!("http://{}", addr));
@@ -107,6 +109,7 @@ async fn test_upload_download_roundtrip() {
 
 /// Test download with commitment verification.
 #[tokio::test]
+#[serial]
 async fn test_verified_download() {
     let (addr, _handle) = start_test_node().await;
     let client = test_client(format!("http://{}", addr));
@@ -132,6 +135,7 @@ async fn test_verified_download() {
 
 /// Test that download reconstructs correctly even with erasure (only 683 of 1024 slices).
 #[tokio::test]
+#[serial]
 async fn test_erasure_recovery() {
     let (addr, _handle) = start_test_node().await;
     let client = test_client(format!("http://{}", addr));
@@ -168,6 +172,7 @@ async fn test_erasure_recovery() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_health_check() {
     let (addr, _handle) = start_test_node().await;
     let node_url = format!("http://{}", addr);
@@ -183,6 +188,7 @@ async fn test_health_check() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_slice_not_found() {
     let (addr, _handle) = start_test_node().await;
     let node_url = format!("http://{}", addr);
@@ -210,6 +216,7 @@ async fn test_client_builder() {
 
 /// Benchmark: Sequential PUT/GET to measure server throughput
 #[tokio::test]
+#[serial]
 async fn test_sequential_throughput() {
     use std::time::Instant;
     use tape_crypto::Hash;
@@ -254,6 +261,7 @@ async fn test_sequential_throughput() {
 
 /// Benchmark: Parallel GET with different concurrency levels
 #[tokio::test]
+#[serial]
 async fn test_parallel_throughput() {
     use std::sync::Arc;
     use std::time::Instant;
@@ -328,6 +336,7 @@ async fn test_parallel_throughput() {
 
 /// Test upload/download with 42 nodes (slices distributed round-robin).
 #[tokio::test]
+#[serial]
 async fn test_multi_node_roundtrip() {
     const NUM_NODES: usize = 42;
 
@@ -387,6 +396,7 @@ async fn test_multi_node_roundtrip() {
 /// With 42 nodes, each stores ~24 slices. We can lose up to 14 nodes
 /// (341 slices) and still have 683+ remaining.
 #[tokio::test]
+#[serial]
 async fn test_multi_node_with_failures() {
     const NUM_NODES: usize = 42;
     const NODES_TO_KILL: usize = 10; // Kill 10 nodes (~240 slices lost)
@@ -456,6 +466,7 @@ async fn test_multi_node_with_failures() {
 ///
 /// Run with: cargo test -p tape-sdk --test e2e_upload_download bench_ -- --nocapture
 #[tokio::test]
+#[serial]
 async fn bench_upload_download_throughput() {
     use std::time::Instant;
     use tape_sdk::{BlobEncoder, BlobDecoder};
@@ -536,6 +547,7 @@ async fn bench_upload_download_throughput() {
 
 /// Benchmark with varying node counts to see scaling behavior.
 #[tokio::test]
+#[serial]
 async fn bench_node_scaling() {
     use std::time::Instant;
 

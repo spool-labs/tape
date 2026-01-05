@@ -38,3 +38,4 @@ tape-store = { path = "../../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../../store/store-memory" }
 axum = { workspace = true }
+serial_test = "3.1"
