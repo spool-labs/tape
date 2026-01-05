@@ -1,0 +1,54 @@
+[package]
+name = "tape-sdk"
+description = "High-level SDK for tapedrive blob upload/download operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[features]
+default = []
+metrics = ["tape-node-client/metrics", "tape-metrics/metrics"]
+
+[dependencies]
+# Internal crates
+tape-core = { workspace = true }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-node-api = { workspace = true }
+tape-node-client = { workspace = true }
+tape-slicer = { workspace = true }
+tape-metrics = { workspace = true, optional = true }
+rpc-client = { path = "../rpc/rpc-client" }
+
+# Solana (for keypair helpers)
+solana-sdk = { workspace = true }
+
+# Serialization (for keypair loading)
+serde_json = { workspace = true }
+
+# Hex encoding
+hex = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Random
+rand = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tape-node = { path = "../network/node" }
+tape-store = { path = "../store/tape-store" }
+tape-metrics = { workspace = true }
+store-memory = { path = "../store/store-memory" }
+axum = { workspace = true }
+serial_test = "3.1"
