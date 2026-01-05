@@ -2,9 +2,10 @@
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::Signer;
 use solana_sdk::pubkey::Pubkey;
-use tape_crypto::Hash;
+
+use tape_sdk::{load_solana_keypair, parse_hash, create_rpc_client};
 
 use crate::config::expand_path;
 use crate::Context;
@@ -90,46 +91,14 @@ pub async fn execute(ctx: &Context, cmd: TrackCommand) -> Result<()> {
     }
 }
 
-/// Load keypair from config path.
-fn load_keypair(ctx: &Context) -> Result<Keypair> {
+/// Load keypair from context's configured path.
+fn get_keypair(ctx: &Context) -> Result<solana_sdk::signature::Keypair> {
     let path = ctx.keypair.as_ref()
         .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
 
     let expanded = expand_path(&path.to_string_lossy());
-
-    let contents = std::fs::read_to_string(&expanded)
-        .with_context(|| format!("Failed to read keypair: {}", expanded.display()))?;
-
-    let bytes: Vec<u8> = serde_json::from_str(&contents)
-        .with_context(|| "Failed to parse keypair file (expected JSON array of bytes)")?;
-
-    Keypair::from_bytes(&bytes)
-        .map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
-}
-
-/// Create TapeClient for RPC operations.
-fn create_rpc_client(ctx: &Context) -> Result<tape_client::TapeClient<tape_client::SolanaRpc>> {
-    let config = tape_client::RpcConfig {
-        endpoints: vec![ctx.rpc_url()],
-        ..Default::default()
-    };
-
-    tape_client::TapeClient::new(config)
-        .map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
-}
-
-/// Parse a hex-encoded 32-byte hash.
-fn parse_hash(hex_str: &str, name: &str) -> Result<Hash> {
-    let bytes = hex::decode(hex_str)
-        .with_context(|| format!("Invalid {} hex", name))?;
-
-    if bytes.len() != 32 {
-        anyhow::bail!("{} must be 32 bytes (got {})", name, bytes.len());
-    }
-
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(Hash::from(arr))
+    load_solana_keypair(&expanded)
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn register(
@@ -142,14 +111,14 @@ async fn register(
     use tape_api::instruction::build_register_track_ix;
     use tape_core::types::StorageUnits;
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
-    // Parse hashes
-    let key_hash = parse_hash(key, "key")?;
-    let root_hash = parse_hash(root, "root")?;
+    // Parse hashes using SDK helper
+    let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
+    let root_hash = parse_hash(root, "root").map_err(|e| anyhow::anyhow!("{}", e))?;
     let commitment_hash = match commitment {
-        Some(c) => parse_hash(c, "commitment")?,
+        Some(c) => parse_hash(c, "commitment").map_err(|e| anyhow::anyhow!("{}", e))?,
         None => root_hash, // Default: commitment == root
     };
 
@@ -178,7 +147,7 @@ async fn register(
         key_hash.into(),
     );
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -196,10 +165,10 @@ async fn register(
 async fn delete(ctx: &Context, key: &str) -> Result<()> {
     use tape_api::instruction::build_delete_track_ix;
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
-    let key_hash = parse_hash(key, "key")?;
+    let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if !ctx.quiet {
         eprintln!("Deleting track:");
@@ -214,7 +183,7 @@ async fn delete(ctx: &Context, key: &str) -> Result<()> {
 
     let ix = build_delete_track_ix(signer, key_hash.into());
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -237,32 +206,23 @@ async fn certify(
     use tape_api::instruction::build_certify_track_ix;
     use tape_api::program::tapedrive::CommitteeBitmap;
     use tape_core::bls::BlsSignature;
+    use tape_sdk::parse_hex_bytes;
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
-    let key_hash = parse_hash(key, "key")?;
+    let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Parse bitmap (16 bytes for 128 members)
-    let bitmap_bytes = hex::decode(bitmap)
-        .with_context(|| "Invalid bitmap hex")?;
-
-    if bitmap_bytes.len() != 16 {
-        anyhow::bail!("Bitmap must be 16 bytes (got {})", bitmap_bytes.len());
-    }
-
+    let bitmap_bytes = parse_hex_bytes(bitmap, "bitmap", 16)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let mut bitmap_arr = [0u8; 16];
     bitmap_arr.copy_from_slice(&bitmap_bytes);
     let committee_bitmap: CommitteeBitmap = bytemuck::cast(bitmap_arr);
 
     // Parse BLS signature (32 bytes compressed G1)
-    let sig_bytes = hex::decode(signature)
-        .with_context(|| "Invalid signature hex")?;
-
-    if sig_bytes.len() != 32 {
-        anyhow::bail!("BLS signature must be 32 bytes (got {})", sig_bytes.len());
-    }
-
+    let sig_bytes = parse_hex_bytes(signature, "signature", 32)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let mut sig_arr = [0u8; 32];
     sig_arr.copy_from_slice(&sig_bytes);
     let bls_sig: BlsSignature = bytemuck::cast(sig_arr);
@@ -272,7 +232,7 @@ async fn certify(
         eprintln!("  Authority: {}", signer);
         eprintln!("  Key: {}", key);
         eprintln!("  Bitmap: {}", bitmap);
-        eprintln!("  Signature: {}...", &signature[..16]);
+        eprintln!("  Signature: {}...", &signature[..16.min(signature.len())]);
     }
 
     if ctx.dry_run {
@@ -282,7 +242,7 @@ async fn certify(
 
     let ix = build_certify_track_ix(signer, key_hash.into(), committee_bitmap, bls_sig);
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -304,12 +264,12 @@ async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<(
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
-            let keypair = load_keypair(ctx)?;
+            let keypair = get_keypair(ctx)?;
             keypair.pubkey()
         }
     };
 
-    let key_hash = parse_hash(key, "key")?;
+    let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
     let (track_address, _) = track_pda(authority_pubkey, key_hash);
 
     if !ctx.quiet {
@@ -318,7 +278,7 @@ async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<(
         eprintln!("  Key: {}", key);
     }
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     match client.get_track(&authority_pubkey, &key_hash).await {
         Ok(track) => {
@@ -366,7 +326,7 @@ async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
-            let keypair = load_keypair(ctx)?;
+            let keypair = get_keypair(ctx)?;
             keypair.pubkey()
         }
     };
@@ -375,7 +335,7 @@ async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
         eprintln!("Listing tracks for authority: {}", authority_pubkey);
     }
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // First, get the tape to see track count
     match client.get_tape(&authority_pubkey).await {

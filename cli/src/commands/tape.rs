@@ -2,8 +2,10 @@
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::Signer;
 use solana_sdk::pubkey::Pubkey;
+
+use tape_sdk::{load_solana_keypair, create_rpc_client};
 
 use crate::config::expand_path;
 use crate::Context;
@@ -92,32 +94,14 @@ pub async fn execute(ctx: &Context, cmd: TapeCommand) -> Result<()> {
     }
 }
 
-/// Load keypair from config path.
-fn load_keypair(ctx: &Context) -> Result<Keypair> {
+/// Load keypair from context's configured path.
+fn get_keypair(ctx: &Context) -> Result<solana_sdk::signature::Keypair> {
     let path = ctx.keypair.as_ref()
         .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
 
     let expanded = expand_path(&path.to_string_lossy());
-
-    let contents = std::fs::read_to_string(&expanded)
-        .with_context(|| format!("Failed to read keypair: {}", expanded.display()))?;
-
-    let bytes: Vec<u8> = serde_json::from_str(&contents)
-        .with_context(|| "Failed to parse keypair file (expected JSON array of bytes)")?;
-
-    Keypair::from_bytes(&bytes)
-        .map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
-}
-
-/// Create TapeClient for RPC operations.
-fn create_rpc_client(ctx: &Context) -> Result<tape_client::TapeClient<tape_client::SolanaRpc>> {
-    let config = tape_client::RpcConfig {
-        endpoints: vec![ctx.rpc_url()],
-        ..Default::default()
-    };
-
-    tape_client::TapeClient::new(config)
-        .map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
+    load_solana_keypair(&expanded)
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn reserve(
@@ -133,7 +117,7 @@ async fn reserve(
         anyhow::bail!("End epoch must be greater than start epoch");
     }
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
     if !ctx.quiet {
@@ -156,7 +140,7 @@ async fn reserve(
         EpochNumber(end_epoch),
     );
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -174,7 +158,7 @@ async fn reserve(
 async fn destroy(ctx: &Context, tape: Option<String>) -> Result<()> {
     use tape_api::instruction::build_destroy_tape_ix;
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
     // If tape authority specified, it must match the signer
@@ -197,7 +181,7 @@ async fn destroy(ctx: &Context, tape: Option<String>) -> Result<()> {
 
     let ix = build_destroy_tape_ix(signer);
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -219,7 +203,7 @@ async fn split(
     use tape_api::instruction::{build_split_tape_by_epoch_ix, build_split_tape_by_size_ix};
     use tape_core::types::{EpochNumber, StorageUnits};
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
     let recipient_pubkey: Pubkey = recipient.parse()
@@ -263,7 +247,7 @@ async fn split(
     // For now, we assume the recipient keypair is also available or this is a self-split
     // In a real implementation, you might need to pass the recipient keypair separately
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // If recipient is different from signer, we need recipient to sign
     // This is a limitation - in production you'd need multi-party signing
@@ -291,7 +275,7 @@ async fn split(
 async fn merge(ctx: &Context, recipient: &str) -> Result<()> {
     use tape_api::instruction::build_merge_tape_ix;
 
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let signer = keypair.pubkey();
 
     let recipient_pubkey: Pubkey = recipient.parse()
@@ -319,7 +303,7 @@ async fn merge(ctx: &Context, recipient: &str) -> Result<()> {
 
     let ix = build_merge_tape_ix(signer, recipient_pubkey);
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -338,7 +322,7 @@ async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
-            let keypair = load_keypair(ctx)?;
+            let keypair = get_keypair(ctx)?;
             keypair.pubkey()
         }
     };
@@ -347,7 +331,7 @@ async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
         eprintln!("Listing tapes for authority: {}", authority_pubkey);
     }
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Get the tape for this authority
     match client.get_tape(&authority_pubkey).await {
@@ -386,7 +370,7 @@ async fn show(ctx: &Context, authority: Option<String>) -> Result<()> {
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
-            let keypair = load_keypair(ctx)?;
+            let keypair = get_keypair(ctx)?;
             keypair.pubkey()
         }
     };
@@ -397,7 +381,7 @@ async fn show(ctx: &Context, authority: Option<String>) -> Result<()> {
         eprintln!("Fetching tape for authority: {}", authority_pubkey);
     }
 
-    let client = create_rpc_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     match client.get_tape(&authority_pubkey).await {
         Ok(tape) => {

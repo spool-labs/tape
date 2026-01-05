@@ -11526,9 +11526,12 @@ version = "0.3.0"
 dependencies = [
  "axum 0.8.8",
  "futures 0.3.31",
+ "hex",
  "rand 0.8.5",
  "serde",
+ "serde_json",
  "serial_test",
+ "solana-sdk",
  "store-memory",
  "tape-client",
  "tape-core",

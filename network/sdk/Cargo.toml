@@ -22,6 +22,15 @@ tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-client = { path = "../../rpc/tape-client" }
 
+# Solana (for keypair helpers)
+solana-sdk = { workspace = true }
+
+# Serialization (for keypair loading)
+serde_json = { workspace = true }
+
+# Hex encoding
+hex = { workspace = true }
+
 # Async
 tokio = { workspace = true }
 futures = { workspace = true }

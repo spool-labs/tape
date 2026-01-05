@@ -4,17 +4,18 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::Signer;
 
-use rpc_solana::RpcConfig;
 use tape_api::instruction;
 use tape_api::program::tapedrive::{node_pda, BLACKLIST_SIZE};
 use tape_api::utils::to_name;
-use tape_client::TapeClient;
-use tape_core::bls::BlsPrivateKey;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, NetworkAddress, StorageUnits};
-use tape_crypto::hash::Hash;
+
+use tape_sdk::{
+    load_solana_keypair, load_bls_keypair, load_tls_pubkey,
+    parse_hash, create_rpc_client, find_member_index,
+};
 
 use crate::config::file::expand_path;
 use crate::output::format_basis_points;
@@ -174,77 +175,14 @@ pub async fn execute(ctx: &Context, cmd: NodeCommand) -> Result<()> {
     }
 }
 
-/// Load a Solana keypair from a JSON file.
-fn load_keypair(path: &std::path::Path) -> Result<Keypair> {
-    let keypair_bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read keypair file: {}", path.display()))?;
-
-    let keypair_json: Vec<u8> = serde_json::from_slice(&keypair_bytes)
-        .with_context(|| format!("Failed to parse keypair JSON: {}", path.display()))?;
-
-    Keypair::from_bytes(&keypair_json)
-        .map_err(|e| anyhow::anyhow!("Invalid keypair bytes: {}", e))
-}
-
-/// Load a BLS keypair from a JSON file.
-fn load_bls_keypair(path: &std::path::Path) -> Result<BlsPrivateKey> {
-    let keypair_bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read BLS keypair file: {}", path.display()))?;
-
-    let keypair_json: Vec<u8> = serde_json::from_slice(&keypair_bytes)
-        .with_context(|| format!("Failed to parse BLS keypair JSON: {}", path.display()))?;
-
-    if keypair_json.len() != 32 {
-        anyhow::bail!(
-            "Invalid BLS keypair size: expected 32 bytes, got {}",
-            keypair_json.len()
-        );
-    }
-
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&keypair_json);
-    Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
-}
-
-/// Load TLS public key from a certificate/key file.
-/// For simplicity, we expect the TLS key file to contain a JSON array of 32 bytes
-/// representing the ed25519 public key.
-fn load_tls_pubkey(path: &std::path::Path) -> Result<solana_sdk::pubkey::Pubkey> {
-    let key_bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read TLS key file: {}", path.display()))?;
-
-    let key_json: Vec<u8> = serde_json::from_slice(&key_bytes)
-        .with_context(|| format!("Failed to parse TLS key JSON: {}", path.display()))?;
-
-    if key_json.len() != 32 {
-        anyhow::bail!(
-            "Invalid TLS key size: expected 32 bytes, got {}",
-            key_json.len()
-        );
-    }
-
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&key_json);
-    Ok(solana_sdk::pubkey::Pubkey::new_from_array(arr))
-}
-
 /// Get the keypair from context, returning an error if not configured.
-fn get_keypair(ctx: &Context) -> Result<Keypair> {
+fn get_keypair(ctx: &Context) -> Result<solana_sdk::signature::Keypair> {
     let keypair_path = ctx
         .keypair
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use -k or set in config."))?;
 
-    load_keypair(keypair_path)
-}
-
-/// Create a TapeClient from context.
-fn create_client(ctx: &Context) -> Result<TapeClient<rpc_solana::SolanaRpc>> {
-    let config = RpcConfig {
-        endpoints: vec![ctx.rpc_url()],
-        ..Default::default()
-    };
-    TapeClient::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC client: {}", e))
+    load_solana_keypair(keypair_path).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 async fn register_node(
@@ -297,8 +235,8 @@ async fn register_node(
 
     // Load keys
     let keypair = get_keypair(ctx)?;
-    let bls_private_key = load_bls_keypair(&bls_key_path)?;
-    let tls_pubkey = load_tls_pubkey(&tls_key_path)?;
+    let bls_private_key = load_bls_keypair(&bls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let tls_pubkey = load_tls_pubkey(&tls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Derive BLS public key and proof of possession
     let bls_pubkey = bls_private_key
@@ -325,7 +263,7 @@ async fn register_node(
     );
 
     // Send transaction
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Registering node on-chain...");
 
     let signature = client
@@ -356,7 +294,7 @@ async fn join_committee(ctx: &Context) -> Result<()> {
 
     let ix = instruction::build_join_network_ix(keypair.pubkey(), node_address);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Requesting to join committee...");
 
     let signature = client
@@ -380,7 +318,7 @@ async fn sync_epoch(ctx: &Context) -> Result<()> {
     }
 
     let keypair = get_keypair(ctx)?;
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Get current epoch and system state
     let epoch = client
@@ -401,11 +339,8 @@ async fn sync_epoch(ctx: &Context) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch node account: {}", e))?;
 
-    // Find our member index in the committee
-    let member_index = system
-        .committee
-        .iter()
-        .position(|m| m.id == node_account.id)
+    // Find our member index in the committee using SDK helper
+    let member_index = find_member_index(&system.committee, node_account.id)
         .ok_or_else(|| anyhow::anyhow!("Node is not in the current committee"))?;
 
     // Get our assigned spools
@@ -431,7 +366,7 @@ async fn sync_epoch(ctx: &Context) -> Result<()> {
 async fn show_status(ctx: &Context, node: Option<String>) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Determine which node to query
     let authority = if let Some(node_str) = node {
@@ -507,7 +442,7 @@ async fn set_authority(ctx: &Context, new_authority: &str) -> Result<()> {
 
     let ix = instruction::build_set_authority_ix(keypair.pubkey(), node_address, new_auth_pubkey);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node authority to {}...", new_auth_pubkey));
 
     let signature = client
@@ -535,7 +470,7 @@ async fn set_name(ctx: &Context, name: &str) -> Result<()> {
 
     let ix = instruction::build_set_name_ix(keypair.pubkey(), node_address, name);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node name to '{}'...", name));
 
     let signature = client
@@ -566,7 +501,7 @@ async fn set_address(ctx: &Context, address: &str) -> Result<()> {
 
     let ix = instruction::build_set_network_address_ix(keypair.pubkey(), node_address, network_address);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting network address to {}...", address));
 
     let signature = client
@@ -602,7 +537,7 @@ async fn set_commission(ctx: &Context, bps: u64) -> Result<()> {
 
     let ix = instruction::build_set_commission_ix(keypair.pubkey(), node_address, BasisPoints(bps));
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!(
         "Setting commission to {} ({})...",
         bps,
@@ -634,7 +569,7 @@ async fn set_capacity(ctx: &Context, mb: u64) -> Result<()> {
 
     let ix = instruction::build_set_storage_capacity_ix(keypair.pubkey(), node_address, StorageUnits(mb));
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage capacity to {} MB...", mb));
 
     let signature = client
@@ -665,7 +600,7 @@ async fn set_price(ctx: &Context, tape: &str) -> Result<()> {
 
     let ix = instruction::build_set_storage_price_ix(keypair.pubkey(), node_address, price);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage price to {} per MB...", price));
 
     let signature = client
@@ -693,7 +628,7 @@ async fn claim_commission(ctx: &Context) -> Result<()> {
 
     let ix = instruction::build_claim_commission_ix(keypair.pubkey(), node_address);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Claiming accumulated commission...");
 
     let signature = client
@@ -724,7 +659,7 @@ async fn blacklist_add(ctx: &Context, track: &str) -> Result<()> {
 
     let ix = instruction::build_add_to_blacklist_ix(keypair.pubkey(), node_address, track_pubkey);
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Adding {} to blacklist...", track_pubkey));
 
     let signature = client
@@ -749,18 +684,8 @@ async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Res
     let proof_data: BlacklistProof = serde_json::from_str(&proof_json)
         .with_context(|| format!("Failed to parse proof file: {}", proof_path.display()))?;
 
-    // Parse hash
-    let hash_bytes = hex::decode(&proof_data.hash)
-        .with_context(|| format!("Invalid hash hex: {}", proof_data.hash))?;
-    if hash_bytes.len() != 32 {
-        anyhow::bail!(
-            "Invalid hash length: expected 32 bytes, got {}",
-            hash_bytes.len()
-        );
-    }
-    let mut hash_arr = [0u8; 32];
-    hash_arr.copy_from_slice(&hash_bytes);
-    let hash = Hash::from(hash_arr);
+    // Parse hash using SDK helper
+    let hash = parse_hash(&proof_data.hash, "hash").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Parse proof hashes
     if proof_data.proof.len() != BLACKLIST_SIZE {
@@ -771,20 +696,10 @@ async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Res
         );
     }
 
-    let mut proof: [Hash; BLACKLIST_SIZE] = [Hash::default(); BLACKLIST_SIZE];
+    let mut proof: [tape_crypto::Hash; BLACKLIST_SIZE] = [tape_crypto::Hash::default(); BLACKLIST_SIZE];
     for (i, hash_hex) in proof_data.proof.iter().enumerate() {
-        let bytes = hex::decode(hash_hex)
-            .with_context(|| format!("Invalid proof hash hex at index {}: {}", i, hash_hex))?;
-        if bytes.len() != 32 {
-            anyhow::bail!(
-                "Invalid proof hash length at index {}: expected 32 bytes, got {}",
-                i,
-                bytes.len()
-            );
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        proof[i] = Hash::from(arr);
+        proof[i] = parse_hash(hash_hex, &format!("proof[{}]", i))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     if ctx.dry_run {
@@ -806,7 +721,7 @@ async fn blacklist_remove(ctx: &Context, index: u64, proof_path: PathBuf) -> Res
         proof,
     );
 
-    let client = create_client(ctx)?;
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Removing blacklist entry at index {}...", index));
 
     let signature = client

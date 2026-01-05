@@ -36,6 +36,7 @@ pub mod discovery;
 pub mod downloader;
 pub mod encoder;
 pub mod error;
+pub mod helpers;
 pub mod routing;
 pub mod uploader;
 
@@ -58,6 +59,15 @@ pub use routing::{RoutingError, SliceRouter};
 
 // Discovery (on-chain node address resolution)
 pub use discovery::{discover_committee_addresses, discover_committee_addresses_required, DiscoveryError, DiscoveryResult};
+
+// Helpers (keypair loading, hash parsing, committee operations)
+pub use helpers::{
+    HelperError,
+    load_solana_keypair, load_bls_keypair, load_tls_pubkey,
+    parse_hash, parse_hex_bytes,
+    find_member_index, get_node_assigned_spools,
+    create_rpc_client, create_rpc_client_with_config,
+};
 
 // Re-export RPC config for discovery
 pub use tape_client::RpcConfig;
