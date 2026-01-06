@@ -22,8 +22,8 @@ pub struct TapeArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum TapeCommand {
-    /// Reserve storage capacity (creates new tape with new keypair).
-    Reserve {
+    /// Initialize a new tape (reserve storage capacity).
+    Init {
         /// Storage units (MB).
         #[arg(long)]
         size: u64,
@@ -74,8 +74,8 @@ pub async fn execute(ctx: &Context, args: TapeArgs) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match args.command {
-        TapeCommand::Reserve { size, start_epoch, end_epoch } => {
-            reserve(ctx, size, start_epoch, end_epoch).await
+        TapeCommand::Init { size, start_epoch, end_epoch } => {
+            init(ctx, size, start_epoch, end_epoch).await
         }
         TapeCommand::Destroy { tape } => {
             destroy(ctx, &tape).await
@@ -93,7 +93,7 @@ pub async fn execute(ctx: &Context, args: TapeArgs) -> Result<()> {
 }
 
 
-async fn reserve(
+async fn init(
     ctx: &Context,
     size: u64,
     start_epoch: u64,
@@ -392,7 +392,7 @@ async fn list(ctx: &Context) -> Result<()> {
             OutputFormat::Json => println!("[]"),
             _ => {
                 println!("No tapes found.");
-                println!("Use `tape tape reserve` to create one.");
+                println!("Use `tape tape init` to create one.");
             }
         }
         return Ok(());
@@ -409,7 +409,7 @@ async fn list(ctx: &Context) -> Result<()> {
             OutputFormat::Json => println!("[]"),
             _ => {
                 println!("No tapes found.");
-                println!("Use `tape tape reserve` to create one.");
+                println!("Use `tape tape init` to create one.");
             }
         }
         return Ok(());
@@ -464,7 +464,7 @@ async fn list(ctx: &Context) -> Result<()> {
         _ => {
             if tapes.is_empty() && not_found.is_empty() {
                 println!("No tapes found.");
-                println!("Use `tape tape reserve` to create one.");
+                println!("Use `tape tape init` to create one.");
                 return Ok(());
             }
 

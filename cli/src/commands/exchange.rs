@@ -32,8 +32,8 @@ pub struct ExchangeArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ExchangeCommand {
-    /// Create a new exchange. Generates new keypair automatically.
-    Register,
+    /// Initialize a new exchange.
+    Init,
 
     /// Set exchange rate (TAPE per SOL ratio).
     SetRate {
@@ -137,7 +137,7 @@ pub async fn execute(ctx: &Context, args: ExchangeArgs) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match args.command {
-        ExchangeCommand::Register => register(ctx).await,
+        ExchangeCommand::Init => init(ctx).await,
         ExchangeCommand::SetRate { exchange, tape, sol } => set_rate(ctx, &exchange, tape, sol).await,
         ExchangeCommand::DepositTape { exchange, amount } => deposit_tape(ctx, &exchange, &amount).await,
         ExchangeCommand::DepositSol { exchange, amount } => deposit_sol(ctx, &exchange, &amount).await,
@@ -153,8 +153,8 @@ pub async fn execute(ctx: &Context, args: ExchangeArgs) -> Result<()> {
     }
 }
 
-/// Register a new exchange.
-async fn register(ctx: &Context) -> Result<()> {
+/// Initialize a new exchange.
+async fn init(ctx: &Context) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
@@ -492,7 +492,7 @@ async fn list(ctx: &Context) -> Result<()> {
             OutputFormat::Json => println!("[]"),
             _ => {
                 println!("No exchanges found.");
-                println!("Use `tape exchange register` to create one.");
+                println!("Use `tape exchange init` to create one.");
             }
         }
         return Ok(());
@@ -509,7 +509,7 @@ async fn list(ctx: &Context) -> Result<()> {
             OutputFormat::Json => println!("[]"),
             _ => {
                 println!("No exchanges found.");
-                println!("Use `tape exchange register` to create one.");
+                println!("Use `tape exchange init` to create one.");
             }
         }
         return Ok(());
@@ -565,7 +565,7 @@ async fn list(ctx: &Context) -> Result<()> {
         _ => {
             if exchanges.is_empty() && not_found.is_empty() {
                 println!("No exchanges found.");
-                println!("Use `tape exchange register` to create one.");
+                println!("Use `tape exchange init` to create one.");
                 return Ok(());
             }
 

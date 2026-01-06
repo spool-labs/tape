@@ -56,7 +56,7 @@ pub enum NodeCommand {
     /// Start storage node.
     Start,
 
-    /// Register new node on-chain.
+    /// Register node on-chain.
     Register {
         /// Node display name (overrides config).
         #[arg(long)]
