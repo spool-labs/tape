@@ -99,15 +99,13 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         &build_merge_stake_ix(
             *fee_payer_info.key,
             *source_authority_info.key,
-            *node_info.key,
             *dest_authority_info.key,
         ),
         &[
             fee_payer_info.clone(),
+
             source_authority_info.clone(),
             dest_authority_info.clone(),
-
-            node_info.clone(),
             source_vault_info.clone(),
             dest_vault_info.clone(),
 

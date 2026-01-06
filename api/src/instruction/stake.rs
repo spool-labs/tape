@@ -85,7 +85,6 @@ pub fn build_unstake_ix(
 pub fn build_split_stake_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    pool: Pubkey,
     recipient: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
@@ -109,7 +108,6 @@ pub fn build_split_stake_ix(
             AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(recipient, true),
 
-            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(source_vault_address, false),
             AccountMeta::new(dest_vault_address, false),
 
@@ -124,7 +122,6 @@ pub fn build_split_stake_ix(
 pub fn build_merge_stake_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    pool: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
 
@@ -143,7 +140,6 @@ pub fn build_merge_stake_ix(
             AccountMeta::new(authority, true),  // writable: receives vault rent refund
             AccountMeta::new_readonly(recipient, true),
 
-            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(source_vault_address, false),
             AccountMeta::new(dest_vault_address, false),
 

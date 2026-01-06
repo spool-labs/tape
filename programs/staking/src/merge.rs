@@ -8,7 +8,6 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         authority_info,
         recipient_info,
 
-        pool_info,
         source_vault_info,
         dest_vault_info,
 
@@ -93,9 +92,8 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
-        let pool_address = Pubkey::new_unique();
 
-        let instruction = build_merge_stake_ix(fee_payer, authority, pool_address, recipient);
+        let instruction = build_merge_stake_ix(fee_payer, authority, recipient);
 
         let (source_stake_address, _) = stake_pda(authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
@@ -103,16 +101,12 @@ mod tests {
         let (dest_stake_address, _) = stake_pda(recipient);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
-        let pool = Node::zeroed();
-
         let initial_balance: u64 = 1_000;
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             sol(recipient, 0),
-
-            pda(pool_address, pool.pack(), tapedrive::ID),
 
             token(source_vault_address, source_vault_address, amount),
             token(dest_vault_address, dest_vault_address, initial_balance),
