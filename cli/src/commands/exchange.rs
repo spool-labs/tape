@@ -1,6 +1,5 @@
 //! Token exchange commands.
 
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
@@ -21,45 +20,26 @@ use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::{TAPE, SOL};
 
 use crate::output::OutputFormat;
-use crate::utils::{get_keypair, resolve_authority, authority_keys_dir, AuthorityType};
+use crate::utils::{get_keypair, resolve_authority, authority_keys_dir, save_exchange_keypair, load_keypair_from_path, AuthorityType};
 use crate::Context;
 
-/// Save a keypair to the exchanges keys directory.
-fn save_exchange_keypair(keypair: &Keypair) -> Result<PathBuf> {
-    let dir = authority_keys_dir(AuthorityType::Exchange);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("Failed to create exchanges keys directory: {}", dir.display()))?;
-
-    let path = dir.join(format!("{}.json", keypair.pubkey()));
-    let bytes = keypair.to_bytes();
-    let json = serde_json::to_string(&bytes.to_vec())?;
-
-    std::fs::write(&path, &json)
-        .with_context(|| format!("Failed to write exchange keypair to {}", path.display()))?;
-
-    Ok(path)
-}
-
-/// Exchange subcommand arguments with global authority flag.
+/// Exchange subcommand arguments.
 #[derive(Args, Debug)]
 pub struct ExchangeArgs {
-    /// Exchange authority keypair: path to file OR pubkey (resolves to ~/.tape/keys/exchanges/{pubkey}.json).
-    /// If not specified, uses --keypair as the authority.
-    #[arg(long, short = 'a', global = true)]
-    pub authority: Option<String>,
-
     #[command(subcommand)]
     pub command: ExchangeCommand,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ExchangeCommand {
-    /// Create a new exchange.
-    /// If no authority is specified, generates a new keypair.
+    /// Create a new exchange. Generates new keypair automatically.
     Register,
 
     /// Set exchange rate (TAPE per SOL ratio).
     SetRate {
+        /// Exchange account address.
+        exchange: String,
+
         /// TAPE amount in the ratio (e.g., for 1000 TAPE per 1 SOL, use --tape 1000 --sol 1).
         #[arg(long)]
         tape: u64,
@@ -71,24 +51,36 @@ pub enum ExchangeCommand {
 
     /// Deposit TAPE into your exchange.
     DepositTape {
+        /// Exchange account address.
+        exchange: String,
+
         /// Amount in TAPE (e.g., "1000.5").
         amount: String,
     },
 
     /// Deposit SOL into your exchange.
     DepositSol {
+        /// Exchange account address.
+        exchange: String,
+
         /// Amount in SOL (e.g., "1.5").
         amount: String,
     },
 
     /// Withdraw TAPE from your exchange.
     WithdrawTape {
+        /// Exchange account address.
+        exchange: String,
+
         /// Amount in TAPE.
         amount: String,
     },
 
     /// Withdraw SOL from your exchange.
     WithdrawSol {
+        /// Exchange account address.
+        exchange: String,
+
         /// Amount in SOL.
         amount: String,
     },
@@ -98,9 +90,9 @@ pub enum ExchangeCommand {
         /// Amount of SOL to swap (e.g., "0.5").
         amount_sol: String,
 
-        /// Exchange authority pubkey to swap at (uses your own exchange if not specified).
+        /// Exchange account address to swap at.
         #[arg(long)]
-        exchange: Option<String>,
+        exchange: String,
     },
 
     /// Swap TAPE for SOL at an exchange.
@@ -108,12 +100,12 @@ pub enum ExchangeCommand {
         /// Amount of TAPE to swap (e.g., "100.0").
         amount_tape: String,
 
-        /// Exchange authority pubkey to swap at (uses your own exchange if not specified).
+        /// Exchange account address to swap at.
         #[arg(long)]
-        exchange: Option<String>,
+        exchange: String,
     },
 
-    /// List exchanges.
+    /// List all saved exchanges.
     List,
 }
 
@@ -145,93 +137,63 @@ pub async fn execute(ctx: &Context, args: ExchangeArgs) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match args.command {
-        ExchangeCommand::Register => register(ctx, args.authority).await,
-        ExchangeCommand::SetRate { tape, sol } => set_rate(ctx, args.authority, tape, sol).await,
-        ExchangeCommand::DepositTape { amount } => deposit_tape(ctx, args.authority, &amount).await,
-        ExchangeCommand::DepositSol { amount } => deposit_sol(ctx, args.authority, &amount).await,
-        ExchangeCommand::WithdrawTape { amount } => withdraw_tape(ctx, args.authority, &amount).await,
-        ExchangeCommand::WithdrawSol { amount } => withdraw_sol(ctx, args.authority, &amount).await,
+        ExchangeCommand::Register => register(ctx).await,
+        ExchangeCommand::SetRate { exchange, tape, sol } => set_rate(ctx, &exchange, tape, sol).await,
+        ExchangeCommand::DepositTape { exchange, amount } => deposit_tape(ctx, &exchange, &amount).await,
+        ExchangeCommand::DepositSol { exchange, amount } => deposit_sol(ctx, &exchange, &amount).await,
+        ExchangeCommand::WithdrawTape { exchange, amount } => withdraw_tape(ctx, &exchange, &amount).await,
+        ExchangeCommand::WithdrawSol { exchange, amount } => withdraw_sol(ctx, &exchange, &amount).await,
         ExchangeCommand::SwapForTape { amount_sol, exchange } => {
-            swap_for_tape(ctx, &amount_sol, exchange).await
+            swap_for_tape(ctx, &amount_sol, &exchange).await
         }
         ExchangeCommand::SwapForSol { amount_tape, exchange } => {
-            swap_for_sol(ctx, &amount_tape, exchange).await
+            swap_for_sol(ctx, &amount_tape, &exchange).await
         }
-        ExchangeCommand::List => {
-            list(ctx, args.authority).await
-        }
+        ExchangeCommand::List => list(ctx).await,
     }
 }
 
 /// Register a new exchange.
-async fn register(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
+async fn register(ctx: &Context) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
-    // Determine authority: resolve from arg, or generate new one
-    let (authority_keypair, is_new_keypair) = match authority_arg {
-        Some(auth) => {
-            let kp = resolve_authority(&auth, AuthorityType::Exchange)?;
-            (kp, false)
-        }
-        None => {
-            // Generate a new unique keypair for this exchange
-            (Keypair::new(), true)
-        }
-    };
-
+    // Generate a new unique keypair for this exchange
+    let authority_keypair = Keypair::new();
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
 
     ctx.print("Creating new exchange...");
     ctx.print(&format!("Fee payer: {}", fee_payer.pubkey()));
-    ctx.print(&format!("Authority: {}{}", authority, if is_new_keypair { " (new)" } else { "" }));
-    ctx.print(&format!("Exchange PDA: {}", exchange_address));
+    ctx.print(&format!("Exchange: {} (new)", exchange_address));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: RegisterExchange");
-        if is_new_keypair {
-            ctx.print(&format!("[DRY RUN] Would generate new authority: {}", authority));
-        }
+        ctx.print(&format!("[DRY RUN] Would create exchange: {}", exchange_address));
         return Ok(());
     }
 
     // Register exchange instruction (fee_payer pays, authority signs and owns)
     let ix = build_register_exchange_ix(fee_payer.pubkey(), authority);
 
-    // Send with both signers if using new keypair or different authority
-    let sig = if is_new_keypair || fee_payer.pubkey() != authority {
-        client
-            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
-            .await
-            .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?
-    } else {
-        client
-            .send_instructions(&fee_payer, vec![ix])
-            .await
-            .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?
-    };
+    let sig = client
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+        .await
+        .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?;
 
-    // Save the new keypair
-    let keypair_path = if is_new_keypair {
-        let path = save_exchange_keypair(&authority_keypair)?;
-        Some(path)
-    } else {
-        None
-    };
+    // Save the new keypair (indexed by exchange address)
+    let (_, keypair_path) = save_exchange_keypair(&authority_keypair)?;
 
     ctx.print(&format!("Transaction: {}", sig));
     ctx.print("Exchange created successfully!");
-
-    if let Some(path) = keypair_path {
-        ctx.print(&format!("Keypair saved: {}", path.display()));
-    }
+    ctx.print(&format!("Exchange: {}", exchange_address));
+    ctx.print(&format!("Keypair saved: {}", keypair_path.display()));
 
     Ok(())
 }
 
 /// Set exchange rate.
-async fn set_rate(ctx: &Context, authority_arg: Option<String>, tape: u64, sol: u64) -> Result<()> {
+async fn set_rate(ctx: &Context, exchange_address_str: &str, tape: u64, sol: u64) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
@@ -239,14 +201,11 @@ async fn set_rate(ctx: &Context, authority_arg: Option<String>, tape: u64, sol: 
         anyhow::bail!("SOL amount cannot be zero");
     }
 
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Exchange)?,
-        None => get_keypair(ctx)?,
-    };
-
+    // Resolve authority keypair from exchange address
+    let authority_keypair = resolve_authority(exchange_address_str, AuthorityType::Exchange)?;
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
+
     let rate = (tape as f64) / (sol as f64);
 
     ctx.print(&format!("Setting exchange rate: {} TAPE per {} SOL (ratio: {:.6})", tape, sol, rate));
@@ -277,17 +236,13 @@ async fn set_rate(ctx: &Context, authority_arg: Option<String>, tape: u64, sol: 
 }
 
 /// Deposit TAPE into exchange.
-async fn deposit_tape(ctx: &Context, authority_arg: Option<String>, amount_str: &str) -> Result<()> {
+async fn deposit_tape(ctx: &Context, exchange_address_str: &str, amount_str: &str) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Exchange)?,
-        None => get_keypair(ctx)?,
-    };
-
+    // Resolve authority keypair from exchange address
+    let authority_keypair = resolve_authority(exchange_address_str, AuthorityType::Exchange)?;
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
     let authority_ata = ata(&authority);
@@ -321,17 +276,13 @@ async fn deposit_tape(ctx: &Context, authority_arg: Option<String>, amount_str: 
 }
 
 /// Deposit SOL into exchange.
-async fn deposit_sol(ctx: &Context, authority_arg: Option<String>, amount_str: &str) -> Result<()> {
+async fn deposit_sol(ctx: &Context, exchange_address_str: &str, amount_str: &str) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Exchange)?,
-        None => get_keypair(ctx)?,
-    };
-
+    // Resolve authority keypair from exchange address
+    let authority_keypair = resolve_authority(exchange_address_str, AuthorityType::Exchange)?;
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
 
@@ -363,17 +314,13 @@ async fn deposit_sol(ctx: &Context, authority_arg: Option<String>, amount_str: &
 }
 
 /// Withdraw TAPE from exchange.
-async fn withdraw_tape(ctx: &Context, authority_arg: Option<String>, amount_str: &str) -> Result<()> {
+async fn withdraw_tape(ctx: &Context, exchange_address_str: &str, amount_str: &str) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Exchange)?,
-        None => get_keypair(ctx)?,
-    };
-
+    // Resolve authority keypair from exchange address
+    let authority_keypair = resolve_authority(exchange_address_str, AuthorityType::Exchange)?;
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
     let authority_ata = ata(&authority);
@@ -407,17 +354,13 @@ async fn withdraw_tape(ctx: &Context, authority_arg: Option<String>, amount_str:
 }
 
 /// Withdraw SOL from exchange.
-async fn withdraw_sol(ctx: &Context, authority_arg: Option<String>, amount_str: &str) -> Result<()> {
+async fn withdraw_sol(ctx: &Context, exchange_address_str: &str, amount_str: &str) -> Result<()> {
     let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Exchange)?,
-        None => get_keypair(ctx)?,
-    };
-
+    // Resolve authority keypair from exchange address
+    let authority_keypair = resolve_authority(exchange_address_str, AuthorityType::Exchange)?;
     let authority = authority_keypair.pubkey();
     let (exchange_address, _) = exchange_pda(authority);
 
@@ -449,24 +392,19 @@ async fn withdraw_sol(ctx: &Context, authority_arg: Option<String>, amount_str: 
 }
 
 /// Swap SOL for TAPE at an exchange.
-async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Option<String>) -> Result<()> {
+async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_address_str: &str) -> Result<()> {
     // For swaps, fee_payer is the signer (person swapping)
     let fee_payer = get_keypair(ctx)?;
     let signer = fee_payer.pubkey();
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
-    // Determine which exchange to use
-    let exchange_auth = match exchange_authority {
-        Some(s) => parse_pubkey(&s)?,
-        None => signer, // Use own exchange if not specified
-    };
-
-    let (exchange_address, _) = exchange_pda(exchange_auth);
+    // Parse exchange address
+    let exchange_address = parse_pubkey(exchange_address_str)?;
     let signer_ata = ata(&signer);
 
     ctx.print(&format!("Swapping {} for TAPE...", amount));
-    ctx.print(&format!("Exchange: {} (authority: {})", exchange_address, exchange_auth));
+    ctx.print(&format!("Exchange: {}", exchange_address));
     ctx.print(&format!("Receiving TAPE at: {}", signer_ata));
 
     if ctx.dry_run {
@@ -486,24 +424,19 @@ async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Opti
 }
 
 /// Swap TAPE for SOL at an exchange.
-async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_authority: Option<String>) -> Result<()> {
+async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_address_str: &str) -> Result<()> {
     // For swaps, fee_payer is the signer (person swapping)
     let fee_payer = get_keypair(ctx)?;
     let signer = fee_payer.pubkey();
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
-    // Determine which exchange to use
-    let exchange_auth = match exchange_authority {
-        Some(s) => parse_pubkey(&s)?,
-        None => signer, // Use own exchange if not specified
-    };
-
-    let (exchange_address, _) = exchange_pda(exchange_auth);
+    // Parse exchange address
+    let exchange_address = parse_pubkey(exchange_address_str)?;
     let signer_ata = ata(&signer);
 
     ctx.print(&format!("Swapping {} for SOL...", amount));
-    ctx.print(&format!("Exchange: {} (authority: {})", exchange_address, exchange_auth));
+    ctx.print(&format!("Exchange: {}", exchange_address));
     ctx.print(&format!("Sending TAPE from: {}", signer_ata));
 
     if ctx.dry_run {
@@ -545,81 +478,81 @@ async fn fetch_exchange(ctx: &Context, authority: &Pubkey) -> Result<Option<tape
     }
 }
 
-/// List exchanges.
-async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
-    // Collect exchanges to display
+/// List all saved exchanges.
+async fn list(ctx: &Context) -> Result<()> {
+    // Collect exchanges to display: (exchange_address, exchange_data)
     let mut exchanges: Vec<(Pubkey, tape_api::state::Exchange)> = Vec::new();
     let mut not_found: Vec<Pubkey> = Vec::new();
 
-    // If authority is provided, query just that exchange
-    if let Some(auth) = authority_arg {
-        let authority_pubkey: Pubkey = auth.parse()
-            .with_context(|| format!("Invalid authority pubkey: {}", auth))?;
+    // List all saved exchange keypairs (filenames are exchange addresses)
+    let exchanges_dir = authority_keys_dir(AuthorityType::Exchange);
 
-        match fetch_exchange(ctx, &authority_pubkey).await? {
-            Some(exchange) => exchanges.push((authority_pubkey, exchange)),
-            None => not_found.push(authority_pubkey),
-        }
-    } else {
-        // No authority provided - list all saved exchange keypairs
-        let exchanges_dir = authority_keys_dir(AuthorityType::Exchange);
-
-        if !exchanges_dir.exists() {
-            match ctx.output {
-                OutputFormat::Json => println!("[]"),
-                _ => {
-                    println!("No exchanges found.");
-                    println!("Use `tape exchange register` to create one.");
-                }
+    if !exchanges_dir.exists() {
+        match ctx.output {
+            OutputFormat::Json => println!("[]"),
+            _ => {
+                println!("No exchanges found.");
+                println!("Use `tape exchange register` to create one.");
             }
-            return Ok(());
         }
+        return Ok(());
+    }
 
-        let entries: Vec<_> = std::fs::read_dir(&exchanges_dir)
-            .with_context(|| format!("Failed to read exchanges directory: {}", exchanges_dir.display()))?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-            .collect();
+    let entries: Vec<_> = std::fs::read_dir(&exchanges_dir)
+        .with_context(|| format!("Failed to read exchanges directory: {}", exchanges_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .collect();
 
-        if entries.is_empty() {
-            match ctx.output {
-                OutputFormat::Json => println!("[]"),
-                _ => {
-                    println!("No exchanges found.");
-                    println!("Use `tape exchange register` to create one.");
-                }
+    if entries.is_empty() {
+        match ctx.output {
+            OutputFormat::Json => println!("[]"),
+            _ => {
+                println!("No exchanges found.");
+                println!("Use `tape exchange register` to create one.");
             }
-            return Ok(());
         }
+        return Ok(());
+    }
 
-        for entry in entries {
-            let filename = entry.file_name();
-            let pubkey_str = filename.to_string_lossy();
-            let pubkey_str = pubkey_str.trim_end_matches(".json");
+    for entry in entries {
+        let path = entry.path();
+        let filename = entry.file_name();
+        let exchange_address_str = filename.to_string_lossy();
+        let exchange_address_str = exchange_address_str.trim_end_matches(".json");
 
-            let authority_pubkey: Pubkey = match pubkey_str.parse() {
-                Ok(pk) => pk,
-                Err(_) => continue,
-            };
+        // Parse exchange address from filename
+        let exchange_address: Pubkey = match exchange_address_str.parse() {
+            Ok(pk) => pk,
+            Err(_) => continue,
+        };
 
-            match fetch_exchange(ctx, &authority_pubkey).await? {
-                Some(exchange) => exchanges.push((authority_pubkey, exchange)),
-                None => not_found.push(authority_pubkey),
-            }
+        // Load keypair to get authority
+        let keypair = match load_keypair_from_path(&path.to_string_lossy()) {
+            Ok(kp) => kp,
+            Err(_) => continue,
+        };
+        let authority = keypair.pubkey();
+
+        // Fetch exchange using authority
+        match fetch_exchange(ctx, &authority).await {
+            Ok(Some(exchange)) => exchanges.push((exchange_address, exchange)),
+            Ok(None) => not_found.push(exchange_address),
+            Err(_) => not_found.push(exchange_address),
         }
     }
 
     // Output based on format
     match ctx.output {
         OutputFormat::Json => {
-            let json_exchanges: Vec<_> = exchanges.iter().map(|(authority, exchange)| {
+            let json_exchanges: Vec<_> = exchanges.iter().map(|(exchange_address, exchange)| {
                 let rate = if exchange.rate.other > 0 {
                     (exchange.rate.tape as f64) / (exchange.rate.other as f64)
                 } else {
                     0.0
                 };
                 serde_json::json!({
-                    "authority": authority.to_string(),
+                    "address": exchange_address.to_string(),
                     "balance_tape": exchange.balance_tape.as_u64(),
                     "balance_sol": exchange.balance_sol.as_u64(),
                     "rate_tape": exchange.rate.tape,
@@ -638,25 +571,25 @@ async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
 
             let mut table = Table::new();
             table.load_preset(UTF8_FULL);
-            table.set_header(vec!["Authority", "TAPE Balance", "SOL Balance", "Rate (TAPE/SOL)"]);
+            table.set_header(vec!["Exchange", "TAPE Balance", "SOL Balance", "Rate (TAPE/SOL)"]);
 
-            for (authority, exchange) in &exchanges {
+            for (exchange_address, exchange) in &exchanges {
                 let rate = if exchange.rate.other > 0 {
                     format!("{:.2}", (exchange.rate.tape as f64) / (exchange.rate.other as f64))
                 } else {
                     "N/A".to_string()
                 };
                 table.add_row(vec![
-                    &authority.to_string(),
+                    &exchange_address.to_string(),
                     &format!("{}", exchange.balance_tape),
                     &format!("{}", exchange.balance_sol),
                     &rate,
                 ]);
             }
 
-            for authority in &not_found {
+            for exchange_address in &not_found {
                 table.add_row(vec![
-                    &authority.to_string(),
+                    &exchange_address.to_string(),
                     "(not found on-chain)",
                     "",
                     "",

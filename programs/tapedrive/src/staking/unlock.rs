@@ -41,7 +41,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key);
 
     let stake = stake_info
         .has_address(&stake_address)?
@@ -82,7 +82,7 @@ mod tests {
         let instruction = build_request_stake_unlock_ix(fee_payer, authority, pool_address);
 
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(authority, pool_address);
+        let (stake_address, _) = stake_pda(authority);
         let (history_address, _) = history_pda(pool_address);
 
         // Setup existing accounts

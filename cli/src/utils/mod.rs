@@ -2,9 +2,12 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use solana_sdk::signature::Keypair;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signer};
+use tape_api::program::tapedrive::{tape_pda, stake_pda};
+use tape_api::program::exchange::exchange_pda;
 use tape_sdk::load_solana_keypair;
 
 use crate::config::expand_path;
@@ -36,29 +39,29 @@ pub fn authority_keys_dir(auth_type: AuthorityType) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(format!(".tape/keys/{}", auth_type.subdir())))
 }
 
-/// Resolve an authority string to a keypair.
+/// Resolve an account address to its authority keypair.
 ///
 /// If the string looks like a path (contains `/` or ends with `.json`),
 /// loads the keypair from that path.
 ///
-/// Otherwise, treats it as a pubkey and looks up the keypair in
-/// `~/.tape/keys/{type}/{pubkey}.json`.
-pub fn resolve_authority(authority: &str, auth_type: AuthorityType) -> Result<Keypair> {
-    let is_path = authority.contains('/') || authority.ends_with(".json");
+/// Otherwise, treats it as an on-chain account address and looks up the
+/// authority keypair in `~/.tape/keys/{type}/{account_address}.json`.
+pub fn resolve_authority(account_address: &str, auth_type: AuthorityType) -> Result<Keypair> {
+    let is_path = account_address.contains('/') || account_address.ends_with(".json");
 
     if is_path {
-        load_keypair_from_path(authority)
+        load_keypair_from_path(account_address)
     } else {
-        // Treat as pubkey, look up in keys directory
+        // Treat as account address, look up authority keypair in keys directory
         let keys_dir = authority_keys_dir(auth_type);
-        let keypair_path = keys_dir.join(format!("{}.json", authority));
+        let keypair_path = keys_dir.join(format!("{}.json", account_address));
 
         if !keypair_path.exists() {
             anyhow::bail!(
-                "Authority keypair not found: {}\nLooked in: {}\nUse `tape keys list {}` to see available keypairs.",
-                authority,
+                "Keypair not found for account: {}\nLooked in: {}\nUse `tape {} list` to see available accounts.",
+                account_address,
                 keypair_path.display(),
-                auth_type.subdir()
+                auth_type.subdir().trim_end_matches('s') // "tapes" -> "tape"
             );
         }
 
@@ -138,4 +141,71 @@ pub fn progress_bar(len: u64, msg: &str) -> ProgressBar {
     );
     pb.set_message(msg.to_string());
     pb
+}
+
+// ============================================================================
+// Keypair save functions - save authority keypair by on-chain account address
+// ============================================================================
+
+/// Save a tape authority keypair, indexed by the tape's on-chain address.
+///
+/// Returns the tape address and the path where the keypair was saved.
+pub fn save_tape_keypair(keypair: &Keypair) -> Result<(Pubkey, PathBuf)> {
+    let authority = keypair.pubkey();
+    let (tape_address, _) = tape_pda(authority);
+
+    let dir = authority_keys_dir(AuthorityType::Tape);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create tapes keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", tape_address));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write tape keypair to {}", path.display()))?;
+
+    Ok((tape_address, path))
+}
+
+/// Save a stake authority keypair, indexed by the stake's on-chain address.
+///
+/// Returns the stake address and the path where the keypair was saved.
+pub fn save_stake_keypair(keypair: &Keypair) -> Result<(Pubkey, PathBuf)> {
+    let authority = keypair.pubkey();
+    let (stake_address, _) = stake_pda(authority);
+
+    let dir = authority_keys_dir(AuthorityType::Stake);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create stakes keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", stake_address));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write stake keypair to {}", path.display()))?;
+
+    Ok((stake_address, path))
+}
+
+/// Save an exchange authority keypair, indexed by the exchange's on-chain address.
+///
+/// Returns the exchange address and the path where the keypair was saved.
+pub fn save_exchange_keypair(keypair: &Keypair) -> Result<(Pubkey, PathBuf)> {
+    let authority = keypair.pubkey();
+    let (exchange_address, _) = exchange_pda(authority);
+
+    let dir = authority_keys_dir(AuthorityType::Exchange);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create exchanges keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", exchange_address));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write exchange keypair to {}", path.display()))?;
+
+    Ok((exchange_address, path))
 }

@@ -69,7 +69,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 
     let stake = stake_info
@@ -194,7 +194,7 @@ mod tests {
         let (epoch_address, _) = epoch_pda();
         let (pool_address, _)  = node_pda(pool_owner);
         let (history_address, _) = history_pda(pool_address);
-        let (stake_address, _) = stake_pda(authority, pool_address);
+        let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
 
         let instruction = build_unstake_from_pool_ix(fee_payer, authority, pool_address);

@@ -32,7 +32,7 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
 
     // Source vault token account
-    let (source_stake_address, _)     = stake_pda(*authority_info.key, *pool_info.key);
+    let (source_stake_address, _)     = stake_pda(*authority_info.key);
     let (source_vault_address, bump)  = vault_pda(source_stake_address);
 
     source_vault_info
@@ -44,7 +44,7 @@ pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 
 
     // Destination vault token account
-    let (dest_stake_address, _)       = stake_pda(*recipient_info.key, *pool_info.key);
+    let (dest_stake_address, _)       = stake_pda(*recipient_info.key);
     let (dest_vault_address, _)       = vault_pda(dest_stake_address);
 
 
@@ -97,10 +97,10 @@ mod tests {
 
         let instruction = build_merge_stake_ix(fee_payer, authority, pool_address, recipient);
 
-        let (source_stake_address, _) = stake_pda(authority, pool_address);
+        let (source_stake_address, _) = stake_pda(authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient, pool_address);
+        let (dest_stake_address, _) = stake_pda(recipient);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         let pool = Node::zeroed();

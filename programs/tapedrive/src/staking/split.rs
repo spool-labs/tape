@@ -49,10 +49,10 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     }
 
     // Derive stake/vault addresses
-    let (source_stake_address, _) = stake_pda(*source_authority_info.key, *node_info.key);
+    let (source_stake_address, _) = stake_pda(*source_authority_info.key);
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
-    let (dest_stake_address, _) = stake_pda(*dest_authority_info.key, *node_info.key);
+    let (dest_stake_address, _) = stake_pda(*dest_authority_info.key);
     let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
     // Validate source stake
@@ -94,7 +94,7 @@ pub fn process_split_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[STAKE, dest_authority_info.key.as_ref(), node_info.key.as_ref()],
+        &[STAKE, dest_authority_info.key.as_ref()],
     )?;
 
     let dest_stake = dest_stake_info
@@ -165,10 +165,10 @@ mod tests {
 
         let instruction = build_split_pool_stake_ix(fee_payer, source_authority, pool_address, dest_authority, amount.into());
 
-        let (source_stake_address, _) = stake_pda(source_authority, pool_address);
+        let (source_stake_address, _) = stake_pda(source_authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(dest_authority, pool_address);
+        let (dest_stake_address, _) = stake_pda(dest_authority);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         // Prepare a minimal node

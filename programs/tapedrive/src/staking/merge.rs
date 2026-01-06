@@ -38,8 +38,8 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_program(&staking::ID)?;
 
     // Derive addresses
-    let (source_stake_address, _) = stake_pda(*source_authority_info.key, *node_info.key);
-    let (dest_stake_address, _)   = stake_pda(*dest_authority_info.key, *node_info.key);
+    let (source_stake_address, _) = stake_pda(*source_authority_info.key);
+    let (dest_stake_address, _)   = stake_pda(*dest_authority_info.key);
 
     let (source_vault_address, _) = vault_pda(source_stake_address);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
@@ -141,10 +141,10 @@ mod tests {
 
         let instruction = build_merge_pool_stake_ix(fee_payer, source_authority, pool_address, dest_authority);
 
-        let (source_stake_address, _) = stake_pda(source_authority, pool_address);
+        let (source_stake_address, _) = stake_pda(source_authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(dest_authority, pool_address);
+        let (dest_stake_address, _) = stake_pda(dest_authority);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         // Prepare node

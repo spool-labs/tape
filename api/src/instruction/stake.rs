@@ -32,7 +32,7 @@ pub fn build_stake_ix(
 ) -> Instruction {
 
     let (mint_address, _)  = mint_pda();
-    let (stake_address, _) = stake_pda(authority, pool);
+    let (stake_address, _) = stake_pda(authority);
     let (vault_address, _) = vault_pda(stake_address);
     let authority_ata      = ata(&authority);
 
@@ -62,7 +62,7 @@ pub fn build_unstake_ix(
     pool: Pubkey,
 ) -> Instruction {
 
-    let (stake_address, _) = stake_pda(authority, pool);
+    let (stake_address, _) = stake_pda(authority);
     let (vault_address, _) = vault_pda(stake_address);
     let authority_ata      = ata(&authority);
 
@@ -91,11 +91,11 @@ pub fn build_split_stake_ix(
 ) -> Instruction {
 
     // Source (authority) stake/vault token PDA
-    let (source_stake_address, _) = stake_pda(authority, pool);
+    let (source_stake_address, _) = stake_pda(authority);
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
     // Destination (recipient) stake/vault token PDA
-    let (dest_stake_address, _)   = stake_pda(recipient, pool);
+    let (dest_stake_address, _)   = stake_pda(recipient);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     let (mint_address, _) = mint_pda();
@@ -129,11 +129,11 @@ pub fn build_merge_stake_ix(
 ) -> Instruction {
 
     // Source (donor) stake/vault token PDA
-    let (source_stake_address, _) = stake_pda(authority, pool);
+    let (source_stake_address, _) = stake_pda(authority);
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
     // Destination (recipient) stake/vault token PDA
-    let (dest_stake_address, _)   = stake_pda(recipient, pool);
+    let (dest_stake_address, _)   = stake_pda(recipient);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     Instruction {

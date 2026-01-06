@@ -43,7 +43,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let (stake_address, _)      = stake_pda(*authority_info.key, *pool_info.key);
+    let (stake_address, _)      = stake_pda(*authority_info.key);
     let (vault_address, bump)   = vault_pda(stake_address);
 
     vault_info
@@ -99,7 +99,7 @@ mod tests {
 
         let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
 
-        let (stake_address, _) = stake_pda(authority, pool_address);
+        let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 
@@ -157,7 +157,7 @@ mod tests {
 
         let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
 
-        let (stake_address, _) = stake_pda(authority, pool_address);
+        let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 

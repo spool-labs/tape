@@ -137,8 +137,8 @@ pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
 }
 
 #[inline(always)]
-pub fn stake_pda(authority: Pubkey, node: Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[STAKE, authority.as_ref(), node.as_ref()], &id())
+pub fn stake_pda(authority: Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[STAKE, authority.as_ref()], &id())
 }
 
 #[inline(always)]

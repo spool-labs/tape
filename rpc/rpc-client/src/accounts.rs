@@ -127,18 +127,16 @@ impl<R: Rpc> RpcClient<R> {
     /// Fetch a Stake account
     ///
     /// # Arguments
-    /// * `authority` - The authority public key of the staker
-    /// * `node` - The node public key being staked to
+    /// * `authority` - The authority public key of the stake
     pub async fn get_stake(
         &self,
         authority: &Pubkey,
-        node: &Pubkey,
     ) -> Result<Stake, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
 
         let result = async {
-            let (address, _bump) = stake_pda(*authority, *node);
+            let (address, _bump) = stake_pda(*authority);
             let account = self.rpc().get_account(&address).await?;
             Stake::unpack_with_discriminator(&account.data)
                 .map(|s| *s)

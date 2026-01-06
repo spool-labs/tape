@@ -67,7 +67,7 @@ pub fn build_stake_with_pool_ix(
 
     let (epoch_address, _)  = epoch_pda();
     let (mint_address, _)   = mint_pda();
-    let (stake_address, _)  = stake_pda(authority, pool);
+    let (stake_address, _)  = stake_pda(authority);
     let (vault_address, _)  = vault_pda(stake_address);
     let authority_ata       = ata(&authority);
 
@@ -102,7 +102,7 @@ pub fn build_request_stake_unlock_ix(
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
-    let (stake_address, _) = stake_pda(authority, pool);
+    let (stake_address, _) = stake_pda(authority);
     let (history_address, _) = history_pda(pool);
 
     Instruction {
@@ -131,7 +131,7 @@ pub fn build_unstake_from_pool_ix(
     let (archive_address, _) = archive_pda();
     let (archive_ata, _)     = archive_ata();
     let (epoch_address, _)   = epoch_pda();
-    let (stake_address, _)   = stake_pda(authority, pool);
+    let (stake_address, _)   = stake_pda(authority);
     let (vault_address, _)   = vault_pda(stake_address);
     let (history_address, _) = history_pda(pool);
 
@@ -165,8 +165,8 @@ pub fn build_split_pool_stake_ix(
     recipient: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
-    let (source_stake, _) = stake_pda(authority, pool);
-    let (dest_stake, _)   = stake_pda(recipient, pool);
+    let (source_stake, _) = stake_pda(authority);
+    let (dest_stake, _)   = stake_pda(recipient);
 
     let (source_vault, _) = vault_pda(source_stake);
     let (dest_vault, _)   = vault_pda(dest_stake);
@@ -202,8 +202,8 @@ pub fn build_merge_pool_stake_ix(
     pool: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
-    let (source_stake, _) = stake_pda(authority, pool);
-    let (dest_stake, _)   = stake_pda(recipient, pool);
+    let (source_stake, _) = stake_pda(authority);
+    let (dest_stake, _)   = stake_pda(recipient);
 
     let (source_vault, _) = vault_pda(source_stake);
     let (dest_vault, _)   = vault_pda(dest_stake);

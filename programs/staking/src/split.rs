@@ -46,7 +46,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     }
 
     // Source vault token account
-    let (source_stake_address, _)           = stake_pda(*authority_info.key, *pool_info.key);
+    let (source_stake_address, _)           = stake_pda(*authority_info.key);
     let (source_vault_address, source_bump) = vault_pda(source_stake_address);
 
     source_vault_info
@@ -57,7 +57,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     // Destination vault token account must be empty; we'll create it
-    let (dest_stake_address, _)             = stake_pda(*recipient_info.key, *pool_info.key);
+    let (dest_stake_address, _)             = stake_pda(*recipient_info.key);
     let (dest_vault_address, dest_bump)     = vault_pda(dest_stake_address);
 
     dest_vault_info
@@ -112,10 +112,10 @@ mod tests {
 
         let instruction = build_split_stake_ix(fee_payer, authority, pool_address, recipient, amount.into());
 
-        let (source_stake_address, _) = stake_pda(authority, pool_address);
+        let (source_stake_address, _) = stake_pda(authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient, pool_address);
+        let (dest_stake_address, _) = stake_pda(recipient);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         let pool = Node::zeroed();
@@ -175,10 +175,10 @@ mod tests {
 
         let instruction = build_split_stake_ix(fee_payer, authority, pool_address, recipient, amount.into());
 
-        let (source_stake_address, _) = stake_pda(authority, pool_address);
+        let (source_stake_address, _) = stake_pda(authority);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient, pool_address);
+        let (dest_stake_address, _) = stake_pda(recipient);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         let pool = Node::zeroed();

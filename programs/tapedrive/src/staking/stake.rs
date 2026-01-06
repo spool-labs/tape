@@ -60,7 +60,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 
     // We require a new stake account for each stake action to simplify logic. 
@@ -91,7 +91,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[STAKE, authority_info.key.as_ref(), node_info.key.as_ref()],
+        &[STAKE, authority_info.key.as_ref()],
     )?;
 
     let stake = stake_info
@@ -148,7 +148,7 @@ mod tests {
 
         let authority_ata = ata_address(&authority);
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(authority, pool_address);
+        let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
 
         // Setup existing accounts

@@ -653,7 +653,7 @@ async fn show_stake(ctx: &Context, staker: &str, node: &str, raw: bool) -> Resul
     let rpc = create_rpc(ctx)?;
     let staker_pubkey = parse_pubkey(staker)?;
     let node_pubkey = parse_pubkey(node)?;
-    let (address, _bump) = stake_pda(staker_pubkey, node_pubkey);
+    let (address, _bump) = stake_pda(staker_pubkey);
 
     let account = rpc
         .get_account(&address)
