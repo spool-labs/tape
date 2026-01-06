@@ -63,10 +63,10 @@ pub enum TapeCommand {
     /// Destroy tape and reclaim rent.
     Destroy,
 
-    /// Split tape by epoch or size.
+    /// Split tape by epoch or size (creates new tape with new keypair).
     Split {
-        /// Recipient pubkey for the split portion.
-        recipient: String,
+        /// Source tape authority pubkey (tape to split from).
+        source: String,
 
         /// Split at epoch (creates new tape from this epoch onwards).
         #[arg(long, conflicts_with = "at_size")]
@@ -79,15 +79,15 @@ pub enum TapeCommand {
 
     /// Merge tapes (combine two tapes into one).
     Merge {
-        /// Recipient authority pubkey (tape to merge into).
-        recipient: String,
+        /// Source tape authority pubkey (tape to merge from).
+        source: String,
+
+        /// Destination tape authority pubkey (tape to merge into).
+        destination: String,
     },
 
     /// List tapes (queries on-chain, authority can be pubkey).
     List,
-
-    /// Show tape details (queries on-chain, authority can be pubkey).
-    Show,
 }
 
 pub async fn execute(ctx: &Context, args: TapeArgs) -> Result<()> {
@@ -100,17 +100,14 @@ pub async fn execute(ctx: &Context, args: TapeArgs) -> Result<()> {
         TapeCommand::Destroy => {
             destroy(ctx, args.authority).await
         }
-        TapeCommand::Split { recipient, at_epoch, at_size } => {
-            split(ctx, args.authority, &recipient, at_epoch, at_size).await
+        TapeCommand::Split { source, at_epoch, at_size } => {
+            split(ctx, &source, at_epoch, at_size).await
         }
-        TapeCommand::Merge { recipient } => {
-            merge(ctx, args.authority, &recipient).await
+        TapeCommand::Merge { source, destination } => {
+            merge(ctx, &source, &destination).await
         }
         TapeCommand::List => {
             list(ctx, args.authority).await
-        }
-        TapeCommand::Show => {
-            show(ctx, args.authority).await
         }
     }
 }
@@ -288,149 +285,145 @@ async fn destroy(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
 
 async fn split(
     ctx: &Context,
-    authority_arg: Option<String>,
-    recipient: &str,
+    source: &str,
     at_epoch: Option<u64>,
     at_size: Option<u64>,
 ) -> Result<()> {
     use tape_api::instruction::{build_split_tape_by_epoch_ix, build_split_tape_by_size_ix};
     use tape_core::types::{EpochNumber, StorageUnits};
 
-    let fee_payer = get_keypair(ctx)?;
-
-    // Resolve authority keypair
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
-        None => get_keypair(ctx)?,
-    };
-
-    let authority = authority_keypair.pubkey();
-
-    let recipient_pubkey: Pubkey = recipient.parse()
-        .with_context(|| format!("Invalid recipient pubkey: {}", recipient))?;
-
     if at_epoch.is_none() && at_size.is_none() {
         anyhow::bail!("Must specify either --at-epoch or --at-size");
     }
 
-    let ix = if let Some(epoch) = at_epoch {
-        if !ctx.quiet {
+    let fee_payer = get_keypair(ctx)?;
+
+    // Resolve source keypair
+    let source_keypair = resolve_authority(source, AuthorityType::Tape)?;
+    let source_pubkey = source_keypair.pubkey();
+
+    // Generate a new keypair for the recipient (new tape)
+    let recipient_keypair = Keypair::new();
+    let recipient_pubkey = recipient_keypair.pubkey();
+
+    if !ctx.quiet {
+        if let Some(epoch) = at_epoch {
             eprintln!("Splitting tape at epoch {}", epoch);
-            eprintln!("  Source: {}", authority);
-            eprintln!("  Recipient: {}", recipient_pubkey);
-        }
-
-        if ctx.dry_run {
-            println!("Dry run - would split tape at epoch {}", epoch);
-            return Ok(());
-        }
-
-        build_split_tape_by_epoch_ix(fee_payer.pubkey(), authority, recipient_pubkey, EpochNumber(epoch))
-    } else if let Some(size) = at_size {
-        if !ctx.quiet {
+        } else if let Some(size) = at_size {
             eprintln!("Splitting tape at size {} MB", size);
-            eprintln!("  Source: {}", authority);
-            eprintln!("  Recipient: {}", recipient_pubkey);
         }
+        eprintln!("  Source: {}", source_pubkey);
+        eprintln!("  Recipient: {} (new)", recipient_pubkey);
+    }
 
-        if ctx.dry_run {
+    if ctx.dry_run {
+        if let Some(epoch) = at_epoch {
+            println!("Dry run - would split tape at epoch {}", epoch);
+        } else if let Some(size) = at_size {
             println!("Dry run - would split tape at size {} MB", size);
-            return Ok(());
         }
+        println!("  Would generate new recipient: {}", recipient_pubkey);
+        return Ok(());
+    }
 
-        build_split_tape_by_size_ix(fee_payer.pubkey(), authority, recipient_pubkey, StorageUnits(size))
+    let ix = if let Some(epoch) = at_epoch {
+        build_split_tape_by_epoch_ix(fee_payer.pubkey(), source_pubkey, recipient_pubkey, EpochNumber(epoch))
+    } else if let Some(size) = at_size {
+        build_split_tape_by_size_ix(fee_payer.pubkey(), source_pubkey, recipient_pubkey, StorageUnits(size))
     } else {
         unreachable!()
     };
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // If recipient is different from authority, we need recipient to sign
-    // This is a limitation - in production you'd need multi-party signing
-    if recipient_pubkey != authority {
-        anyhow::bail!(
-            "Split requires recipient ({}) to sign. Multi-party signing not yet supported in CLI. \
-             For self-split, use your own pubkey as recipient.",
-            recipient_pubkey
-        );
-    }
-
-    let signature = if fee_payer.pubkey() != authority {
+    // Source and recipient both need to sign, recipient is always new
+    let signature = if fee_payer.pubkey() == source_pubkey {
+        // Fee payer is source, recipient is new
         client
-            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&recipient_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     } else {
+        // Fee payer is neither, need both additional signers
         client
-            .send_instructions(&fee_payer, vec![ix])
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&source_keypair, &recipient_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     };
 
+    // Save the new recipient keypair
+    let keypair_path = save_tape_keypair(&recipient_keypair)?;
+
     println!("Tape split successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Source: {}", authority);
+    println!("  Source: {}", source_pubkey);
     println!("  Recipient: {}", recipient_pubkey);
+    println!("  Keypair saved: {}", keypair_path.display());
 
     Ok(())
 }
 
-async fn merge(ctx: &Context, authority_arg: Option<String>, recipient: &str) -> Result<()> {
+async fn merge(ctx: &Context, source: &str, destination: &str) -> Result<()> {
     use tape_api::instruction::build_merge_tape_ix;
 
     let fee_payer = get_keypair(ctx)?;
 
-    // Resolve authority keypair (source tape owner)
-    let authority_keypair = match authority_arg {
-        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
-        None => get_keypair(ctx)?,
-    };
+    // Resolve both keypairs
+    let source_keypair = resolve_authority(source, AuthorityType::Tape)?;
+    let dest_keypair = resolve_authority(destination, AuthorityType::Tape)?;
 
-    let authority = authority_keypair.pubkey();
-
-    let recipient_pubkey: Pubkey = recipient.parse()
-        .with_context(|| format!("Invalid recipient pubkey: {}", recipient))?;
+    let source_pubkey = source_keypair.pubkey();
+    let dest_pubkey = dest_keypair.pubkey();
 
     if !ctx.quiet {
         eprintln!("Merging tape:");
-        eprintln!("  Source: {}", authority);
-        eprintln!("  Destination: {}", recipient_pubkey);
+        eprintln!("  Source: {}", source_pubkey);
+        eprintln!("  Destination: {}", dest_pubkey);
     }
 
     if ctx.dry_run {
-        println!("Dry run - would merge tape {} into {}", authority, recipient_pubkey);
+        println!("Dry run - would merge tape {} into {}", source_pubkey, dest_pubkey);
         return Ok(());
     }
 
-    // Note: The recipient needs to sign too for the merge instruction
-    if recipient_pubkey != authority {
-        anyhow::bail!(
-            "Merge requires recipient ({}) to sign. Multi-party signing not yet supported in CLI. \
-             For self-merge, use your own pubkey as recipient.",
-            recipient_pubkey
-        );
-    }
-
-    let ix = build_merge_tape_ix(fee_payer.pubkey(), authority, recipient_pubkey);
+    let ix = build_merge_tape_ix(fee_payer.pubkey(), source_pubkey, dest_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let signature = if fee_payer.pubkey() != authority {
+    // Both source and destination need to sign
+    let fee_payer_is_source = fee_payer.pubkey() == source_pubkey;
+    let fee_payer_is_dest = fee_payer.pubkey() == dest_pubkey;
+
+    let signature = if fee_payer_is_source && fee_payer_is_dest {
+        // Fee payer owns both tapes (same keypair)
         client
-            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .send_instructions(&fee_payer, vec![ix])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else if fee_payer_is_source {
+        // Fee payer is source, dest is different
+        client
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&dest_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else if fee_payer_is_dest {
+        // Fee payer is dest, source is different
+        client
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&source_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     } else {
+        // Fee payer is neither, need both additional signers
         client
-            .send_instructions(&fee_payer, vec![ix])
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&source_keypair, &dest_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     };
 
     println!("Tapes merged successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Source (closed): {}", authority);
-    println!("  Destination: {}", recipient_pubkey);
+    println!("  Source (closed): {}", source_pubkey);
+    println!("  Destination: {}", dest_pubkey);
 
     Ok(())
 }
@@ -562,53 +555,6 @@ async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
 
             println!("{}", table);
             println!("\nTotal: {} tape(s)", tapes.len());
-        }
-    }
-
-    Ok(())
-}
-
-async fn show(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
-    use tape_api::program::tapedrive::tape_pda;
-
-    // For show, authority can be just a pubkey (no signing needed)
-    let authority_pubkey: Pubkey = match authority_arg {
-        Some(auth) => auth.parse()
-            .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
-        None => {
-            let keypair = get_keypair(ctx)?;
-            keypair.pubkey()
-        }
-    };
-
-    let (tape_address, _) = tape_pda(authority_pubkey);
-
-    if !ctx.quiet {
-        eprintln!("Fetching tape for authority: {}", authority_pubkey);
-    }
-
-    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    match client.get_tape(&authority_pubkey).await {
-        Ok(tape) => {
-            println!("Tape Details:");
-            println!("  Account: {}", tape_address);
-            println!("  Authority: {}", tape.authority);
-            println!("  ID: {}", tape.id);
-            println!("  Capacity: {} MB", tape.capacity);
-            println!("  Used: {} MB", tape.used);
-            println!("  Available: {} MB", tape.capacity.as_u64().saturating_sub(tape.used.as_u64()));
-            println!("  Active Epoch: {}", tape.active_epoch);
-            println!("  Expiry Epoch: {}", tape.expiry_epoch);
-            println!("  Track Count: {}", tape.track_count);
-        }
-        Err(e) => {
-            if e.to_string().contains("not found") || e.to_string().contains("AccountNotFound") {
-                println!("No tape found for authority: {}", authority_pubkey);
-                println!("Use `tape tape reserve` to create one.");
-            } else {
-                return Err(anyhow::anyhow!("Failed to fetch tape: {}", e));
-            }
         }
     }
 
