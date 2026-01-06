@@ -1,13 +1,27 @@
 //! Track/blob management commands.
 
 use anyhow::{Context as _, Result};
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use solana_sdk::signature::Signer;
 use solana_sdk::pubkey::Pubkey;
 
 use tape_sdk::{parse_hash, create_rpc_client};
 
+use crate::utils::{get_keypair, resolve_authority, AuthorityType};
 use crate::Context;
+
+/// Track subcommand arguments with global authority flag.
+/// Note: Track authority is the tape authority (tracks belong to tapes).
+#[derive(Args, Debug)]
+pub struct TrackArgs {
+    /// Tape authority keypair: path to file OR pubkey (resolves to ~/.tape/keys/tapes/{pubkey}.json).
+    /// If not specified, uses --keypair as the authority.
+    #[arg(long, short = 'a', global = true)]
+    pub authority: Option<String>,
+
+    #[command(subcommand)]
+    pub command: TrackCommand,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum TrackCommand {
@@ -54,47 +68,37 @@ pub enum TrackCommand {
     Status {
         /// Track key hash (hex encoded).
         key: String,
-
-        /// Authority pubkey (uses keypair if not specified).
-        #[arg(long)]
-        authority: Option<String>,
     },
 
     /// List user's tracks.
-    List {
-        /// Authority pubkey (uses keypair if not specified).
-        #[arg(long)]
-        authority: Option<String>,
-    },
+    List,
 }
 
-pub async fn execute(ctx: &Context, cmd: TrackCommand) -> Result<()> {
+pub async fn execute(ctx: &Context, args: TrackArgs) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
-    match cmd {
+    match args.command {
         TrackCommand::Register { key, root, commitment, size } => {
-            register(ctx, &key, &root, commitment.as_deref(), size).await
+            register(ctx, args.authority, &key, &root, commitment.as_deref(), size).await
         }
         TrackCommand::Delete { key } => {
-            delete(ctx, &key).await
+            delete(ctx, args.authority, &key).await
         }
         TrackCommand::Certify { key, bitmap, signature } => {
-            certify(ctx, &key, &bitmap, &signature).await
+            certify(ctx, args.authority, &key, &bitmap, &signature).await
         }
-        TrackCommand::Status { key, authority } => {
-            status(ctx, &key, authority).await
+        TrackCommand::Status { key } => {
+            status(ctx, args.authority, &key).await
         }
-        TrackCommand::List { authority } => {
-            list(ctx, authority).await
+        TrackCommand::List => {
+            list(ctx, args.authority).await
         }
     }
 }
 
-// Use shared get_keypair from crate::utils
-use crate::utils::get_keypair;
-
 async fn register(
     ctx: &Context,
+    authority_arg: Option<String>,
     key: &str,
     root: &str,
     commitment: Option<&str>,
@@ -103,9 +107,15 @@ async fn register(
     use tape_api::instruction::build_register_track_ix;
     use tape_core::types::StorageUnits;
 
-    // For now, fee_payer is also the authority (track owner)
     let fee_payer = get_keypair(ctx)?;
-    let authority = &fee_payer; // Same keypair acts as both
+
+    // Resolve tape authority keypair
+    let authority_keypair = match authority_arg {
+        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
+        None => get_keypair(ctx)?,
+    };
+
+    let authority = authority_keypair.pubkey();
 
     // Parse hashes using SDK helper
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -120,7 +130,8 @@ async fn register(
 
     if !ctx.quiet {
         eprintln!("Registering track:");
-        eprintln!("  Authority: {}", authority.pubkey());
+        eprintln!("  Fee payer: {}", fee_payer.pubkey());
+        eprintln!("  Tape authority: {}", authority);
         eprintln!("  Key: {}", key);
         eprintln!("  Root: {}", root);
         eprintln!("  Commitment: {}", commitment.unwrap_or(root));
@@ -134,7 +145,7 @@ async fn register(
 
     let ix = build_register_track_ix(
         fee_payer.pubkey(),
-        authority.pubkey(),
+        authority,
         storage_units,
         root_hash,
         commitment_hash,
@@ -142,32 +153,45 @@ async fn register(
     );
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let signature = client
-        .send_instructions(&fee_payer, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
+
+    let signature = if fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, vec![ix])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    };
 
     println!("Track registered successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Authority: {}", authority.pubkey());
+    println!("  Tape authority: {}", authority);
     println!("  Key: {}", key);
     println!("  Size: {} bytes", size);
 
     Ok(())
 }
 
-async fn delete(ctx: &Context, key: &str) -> Result<()> {
+async fn delete(ctx: &Context, authority_arg: Option<String>, key: &str) -> Result<()> {
     use tape_api::instruction::build_delete_track_ix;
 
-    // For now, fee_payer is also the authority (track owner)
     let fee_payer = get_keypair(ctx)?;
-    let authority = &fee_payer; // Same keypair acts as both
 
+    // Resolve tape authority keypair
+    let authority_keypair = match authority_arg {
+        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
+        None => get_keypair(ctx)?,
+    };
+
+    let authority = authority_keypair.pubkey();
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if !ctx.quiet {
         eprintln!("Deleting track:");
-        eprintln!("  Authority: {}", authority.pubkey());
+        eprintln!("  Tape authority: {}", authority);
         eprintln!("  Key: {}", key);
     }
 
@@ -176,17 +200,25 @@ async fn delete(ctx: &Context, key: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_delete_track_ix(fee_payer.pubkey(), authority.pubkey(), key_hash);
+    let ix = build_delete_track_ix(fee_payer.pubkey(), authority, key_hash);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let signature = client
-        .send_instructions(&fee_payer, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
+
+    let signature = if fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, vec![ix])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    };
 
     println!("Track deleted successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Authority: {}", authority.pubkey());
+    println!("  Tape authority: {}", authority);
     println!("  Key: {}", key);
 
     Ok(())
@@ -194,6 +226,7 @@ async fn delete(ctx: &Context, key: &str) -> Result<()> {
 
 async fn certify(
     ctx: &Context,
+    authority_arg: Option<String>,
     key: &str,
     bitmap: &str,
     signature: &str,
@@ -203,10 +236,15 @@ async fn certify(
     use tape_core::bls::BlsSignature;
     use tape_sdk::parse_hex_bytes;
 
-    // For now, fee_payer is also the authority (track owner)
     let fee_payer = get_keypair(ctx)?;
-    let authority = &fee_payer; // Same keypair acts as both
 
+    // Resolve tape authority keypair
+    let authority_keypair = match authority_arg {
+        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
+        None => get_keypair(ctx)?,
+    };
+
+    let authority = authority_keypair.pubkey();
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Parse bitmap (16 bytes for 128 members)
@@ -225,7 +263,7 @@ async fn certify(
 
     if !ctx.quiet {
         eprintln!("Certifying track:");
-        eprintln!("  Authority: {}", authority.pubkey());
+        eprintln!("  Tape authority: {}", authority);
         eprintln!("  Key: {}", key);
         eprintln!("  Bitmap: {}", bitmap);
         eprintln!("  Signature: {}...", &signature[..16.min(signature.len())]);
@@ -236,27 +274,36 @@ async fn certify(
         return Ok(());
     }
 
-    let ix = build_certify_track_ix(fee_payer.pubkey(), authority.pubkey(), key_hash, committee_bitmap, bls_sig);
+    let ix = build_certify_track_ix(fee_payer.pubkey(), authority, key_hash, committee_bitmap, bls_sig);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let sig = client
-        .send_instructions(&fee_payer, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
+
+    let sig = if fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, vec![ix])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    };
 
     println!("Track certified successfully!");
     println!("  Transaction: {}", sig);
-    println!("  Authority: {}", authority.pubkey());
+    println!("  Tape authority: {}", authority);
     println!("  Key: {}", key);
 
     Ok(())
 }
 
-async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<()> {
+async fn status(ctx: &Context, authority_arg: Option<String>, key: &str) -> Result<()> {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::tape::TrackPhase;
 
-    let authority_pubkey: Pubkey = match authority {
+    // For status, authority can be just a pubkey (no signing needed)
+    let authority_pubkey: Pubkey = match authority_arg {
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
@@ -270,7 +317,7 @@ async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<(
 
     if !ctx.quiet {
         eprintln!("Fetching track status:");
-        eprintln!("  Authority: {}", authority_pubkey);
+        eprintln!("  Tape authority: {}", authority_pubkey);
         eprintln!("  Key: {}", key);
     }
 
@@ -305,7 +352,7 @@ async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<(
         Err(e) => {
             if e.to_string().contains("not found") || e.to_string().contains("AccountNotFound") {
                 println!("Track not found:");
-                println!("  Authority: {}", authority_pubkey);
+                println!("  Tape authority: {}", authority_pubkey);
                 println!("  Key: {}", key);
                 println!("  Expected Account: {}", track_address);
             } else {
@@ -317,8 +364,9 @@ async fn status(ctx: &Context, key: &str, authority: Option<String>) -> Result<(
     Ok(())
 }
 
-async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
-    let authority_pubkey: Pubkey = match authority {
+async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
+    // For list, authority can be just a pubkey (no signing needed)
+    let authority_pubkey: Pubkey = match authority_arg {
         Some(auth) => auth.parse()
             .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
         None => {
@@ -328,7 +376,7 @@ async fn list(ctx: &Context, authority: Option<String>) -> Result<()> {
     };
 
     if !ctx.quiet {
-        eprintln!("Listing tracks for authority: {}", authority_pubkey);
+        eprintln!("Listing tracks for tape authority: {}", authority_pubkey);
     }
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;

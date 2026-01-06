@@ -88,10 +88,7 @@ enum Commands {
     Tape(commands::tape::TapeArgs),
 
     /// Track/blob management.
-    Track {
-        #[command(subcommand)]
-        command: commands::track::TrackCommand,
-    },
+    Track(commands::track::TrackArgs),
 
     /// Blob upload/download.
     Storage {
@@ -230,7 +227,7 @@ async fn main() -> Result<()> {
         Commands::Node(args) => commands::node::execute(&ctx, args).await,
         Commands::Account { command } => commands::account::execute(&ctx, command).await,
         Commands::Tape(args) => commands::tape::execute(&ctx, args).await,
-        Commands::Track { command } => commands::track::execute(&ctx, command).await,
+        Commands::Track(args) => commands::track::execute(&ctx, args).await,
         Commands::Storage { command } => commands::storage::execute(&ctx, command).await,
         Commands::Stake(args) => commands::stake::execute(&ctx, args).await,
         Commands::Exchange(args) => commands::exchange::execute(&ctx, args).await,
