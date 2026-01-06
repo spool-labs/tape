@@ -1,14 +1,44 @@
 //! Storage resource (tape) management commands.
 
+use std::path::PathBuf;
+
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use solana_sdk::signature::Signer;
+use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::pubkey::Pubkey;
 
+use tape_api::helpers::build_authority_ix;
 use tape_sdk::{load_solana_keypair, create_rpc_client};
 
 use crate::config::expand_path;
 use crate::Context;
+
+/// Default lamports to fund new authority accounts (0.01 SOL).
+/// Covers Tape account rent (~0.001 SOL) plus buffer for transaction fees.
+const AUTHORITY_FUND_LAMPORTS: u64 = 10_000_000;
+
+/// Directory for tape keypairs.
+fn tapes_keys_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".tape").join("keys").join("tapes"))
+        .unwrap_or_else(|| PathBuf::from(".tape/keys/tapes"))
+}
+
+/// Save a keypair to the tapes keys directory.
+fn save_tape_keypair(keypair: &Keypair) -> Result<PathBuf> {
+    let dir = tapes_keys_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create tapes keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", keypair.pubkey()));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write tape keypair to {}", path.display()))?;
+
+    Ok(path)
+}
 
 #[derive(Subcommand, Debug)]
 pub enum TapeCommand {
@@ -25,6 +55,10 @@ pub enum TapeCommand {
         /// Expiry epoch.
         #[arg(long)]
         end_epoch: u64,
+
+        /// Path to existing authority keypair (generates new if not specified).
+        #[arg(long)]
+        authority: Option<PathBuf>,
     },
 
     /// Destroy tape and reclaim rent.
@@ -73,8 +107,8 @@ pub async fn execute(ctx: &Context, cmd: TapeCommand) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match cmd {
-        TapeCommand::Reserve { size, start_epoch, end_epoch } => {
-            reserve(ctx, size, start_epoch, end_epoch).await
+        TapeCommand::Reserve { size, start_epoch, end_epoch, authority } => {
+            reserve(ctx, size, start_epoch, end_epoch, authority).await
         }
         TapeCommand::Destroy { tape } => {
             destroy(ctx, tape).await
@@ -109,6 +143,7 @@ async fn reserve(
     size: u64,
     start_epoch: u64,
     end_epoch: u64,
+    authority_path: Option<PathBuf>,
 ) -> Result<()> {
     use tape_api::instruction::build_reserve_tape_ix;
     use tape_core::types::{EpochNumber, StorageUnits};
@@ -117,12 +152,29 @@ async fn reserve(
         anyhow::bail!("End epoch must be greater than start epoch");
     }
 
-    let keypair = get_keypair(ctx)?;
-    let signer = keypair.pubkey();
+    // Load the fee payer keypair (from --keypair or config)
+    let fee_payer = get_keypair(ctx)?;
+
+    // Determine authority: use provided keypair or generate new one
+    let (authority_keypair, is_new_keypair) = match authority_path {
+        Some(path) => {
+            let expanded = expand_path(&path.to_string_lossy());
+            let kp = load_solana_keypair(&expanded)
+                .map_err(|e| anyhow::anyhow!("Failed to load authority keypair: {}", e))?;
+            (kp, false)
+        }
+        None => {
+            // Generate a new unique keypair for this tape
+            (Keypair::new(), true)
+        }
+    };
+
+    let authority = authority_keypair.pubkey();
 
     if !ctx.quiet {
         eprintln!("Reserving tape:");
-        eprintln!("  Authority: {}", signer);
+        eprintln!("  Fee payer: {}", fee_payer.pubkey());
+        eprintln!("  Authority: {}{}", authority, if is_new_keypair { " (new)" } else { "" });
         eprintln!("  Size: {} MB", size);
         eprintln!("  Start epoch: {}", start_epoch);
         eprintln!("  End epoch: {}", end_epoch);
@@ -130,27 +182,64 @@ async fn reserve(
 
     if ctx.dry_run {
         println!("Dry run - would reserve {} MB from epoch {} to {}", size, start_epoch, end_epoch);
+        if is_new_keypair {
+            println!("  Would generate new authority: {}", authority);
+        }
         return Ok(());
     }
 
-    let ix = build_reserve_tape_ix(
-        signer,
+    // Build instructions
+    let mut instructions = Vec::new();
+
+    // If using a new keypair, fund it first with SOL for rent
+    if is_new_keypair {
+        instructions.push(build_authority_ix(
+            fee_payer.pubkey(),
+            authority,
+            AUTHORITY_FUND_LAMPORTS,
+        ));
+    }
+
+    // Reserve tape instruction (authority is the signer)
+    instructions.push(build_reserve_tape_ix(
+        authority,
         StorageUnits(size),
         EpochNumber(start_epoch),
         EpochNumber(end_epoch),
-    );
+    ));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let signature = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
+
+    // Send with both signers if using new keypair
+    let signature = if is_new_keypair || fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, instructions, &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, instructions)
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
+    };
+
+    // Save the new keypair
+    let keypair_path = if is_new_keypair {
+        let path = save_tape_keypair(&authority_keypair)?;
+        Some(path)
+    } else {
+        None
+    };
 
     println!("Tape reserved successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Authority: {}", signer);
+    println!("  Authority: {}", authority);
     println!("  Size: {} MB", size);
     println!("  Active: epoch {} to {}", start_epoch, end_epoch);
+
+    if let Some(path) = keypair_path {
+        println!("  Keypair saved: {}", path.display());
+    }
 
     Ok(())
 }

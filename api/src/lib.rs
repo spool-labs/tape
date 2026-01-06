@@ -1,6 +1,7 @@
 pub mod consts;
 pub mod cpi;
 pub mod event;
+pub mod helpers;
 pub mod program;
 pub mod instruction;
 pub mod loaders;
@@ -13,6 +14,7 @@ pub mod prelude {
 
     pub use crate::consts::*;
     pub use crate::cpi::*;
+    pub use crate::helpers::*;
     pub use crate::instruction::*;
     pub use crate::loaders::*;
     pub use crate::program::*;

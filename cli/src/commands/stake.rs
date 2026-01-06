@@ -1,5 +1,6 @@
 //! Staking operations commands.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
@@ -7,6 +8,7 @@ use clap::Subcommand;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
+use tape_api::helpers::{build_authority_ix, build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_stake_with_pool_ix, build_request_stake_unlock_ix, build_unstake_from_pool_ix,
     build_split_pool_stake_ix, build_merge_pool_stake_ix,
@@ -14,9 +16,37 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::stake_pda;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::TAPE;
+use tape_sdk::load_solana_keypair;
 
 use crate::config::expand_path;
 use crate::Context;
+
+/// Default lamports to fund new authority accounts (0.01 SOL).
+/// Covers Stake account rent plus buffer for transaction fees.
+const AUTHORITY_FUND_LAMPORTS: u64 = 10_000_000;
+
+/// Directory for stake keypairs.
+fn stakes_keys_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".tape").join("keys").join("stakes"))
+        .unwrap_or_else(|| PathBuf::from(".tape/keys/stakes"))
+}
+
+/// Save a keypair to the stakes keys directory.
+fn save_stake_keypair(keypair: &Keypair) -> Result<PathBuf> {
+    let dir = stakes_keys_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create stakes keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", keypair.pubkey()));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write stake keypair to {}", path.display()))?;
+
+    Ok(path)
+}
 
 #[derive(Subcommand, Debug)]
 pub enum StakeCommand {
@@ -27,6 +57,10 @@ pub enum StakeCommand {
 
         /// Amount in TAPE (e.g., "100.5" or "1000").
         amount: String,
+
+        /// Path to existing authority keypair (generates new if not specified).
+        #[arg(long)]
+        authority: Option<PathBuf>,
     },
 
     /// Request stake unlock (starts cooldown).
@@ -111,7 +145,7 @@ pub async fn execute(ctx: &Context, cmd: StakeCommand) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match cmd {
-        StakeCommand::Deposit { pool, amount } => deposit(ctx, &pool, &amount).await,
+        StakeCommand::Deposit { pool, amount, authority } => deposit(ctx, &pool, &amount, authority).await,
         StakeCommand::Unlock { pool } => unlock(ctx, &pool).await,
         StakeCommand::Withdraw { pool } => withdraw(ctx, &pool).await,
         StakeCommand::Split { pool, recipient, amount } => split(ctx, &pool, &recipient, &amount).await,
@@ -121,28 +155,100 @@ pub async fn execute(ctx: &Context, cmd: StakeCommand) -> Result<()> {
 }
 
 /// Deposit (stake) tokens to a pool.
-async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path: Option<PathBuf>) -> Result<()> {
+    // Load the fee payer keypair (from --keypair or config)
+    let fee_payer = load_keypair(ctx)?;
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
     let amount = parse_tape_amount(amount_str)?;
 
+    // Determine authority: use provided keypair or generate new one
+    let (authority_keypair, is_new_keypair) = match authority_path {
+        Some(path) => {
+            let expanded = expand_path(&path.to_string_lossy());
+            let kp = load_solana_keypair(&expanded)
+                .map_err(|e| anyhow::anyhow!("Failed to load authority keypair: {}", e))?;
+            (kp, false)
+        }
+        None => {
+            // Generate a new unique keypair for this stake
+            (Keypair::new(), true)
+        }
+    };
+
+    let authority = authority_keypair.pubkey();
+    let (stake_address, _) = stake_pda(authority, pool);
+
     ctx.print(&format!("Staking {} to pool {}...", amount, pool));
-    ctx.print(&format!("Staker: {}", keypair.pubkey()));
+    ctx.print(&format!("Fee payer: {}", fee_payer.pubkey()));
+    ctx.print(&format!("Staker: {}{}", authority, if is_new_keypair { " (new)" } else { "" }));
+    ctx.print(&format!("Stake PDA: {}", stake_address));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: StakeWithPool");
+        if is_new_keypair {
+            ctx.print(&format!("[DRY RUN] Would generate new staker: {}", authority));
+        }
         return Ok(());
     }
 
-    let ix = build_stake_with_pool_ix(keypair.pubkey(), pool, amount);
-    let sig = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("StakeWithPool failed: {}", e))?;
+    // Build instructions
+    let mut instructions = Vec::new();
+
+    // If using a new keypair, fund it with SOL and TAPE
+    if is_new_keypair {
+        // 1. Transfer SOL to authority for rent
+        instructions.push(build_authority_ix(
+            fee_payer.pubkey(),
+            authority,
+            AUTHORITY_FUND_LAMPORTS,
+        ));
+
+        // 2. Create ATA for authority and transfer TAPE tokens
+        let ata_ixs = build_authority_with_tokens_ix(
+            fee_payer.pubkey(),
+            authority,
+            amount,
+        );
+        instructions.extend(ata_ixs);
+    }
+
+    // 3. Stake instruction
+    instructions.push(build_stake_with_pool_ix(authority, pool, amount));
+
+    // 4. Close the ATA to reclaim rent (if new keypair)
+    if is_new_keypair {
+        instructions.push(build_close_ata_ix(authority, fee_payer.pubkey()));
+    }
+
+    // Send with both signers if using new keypair or different authority
+    let sig = if is_new_keypair || fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, instructions, &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("StakeWithPool failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, instructions)
+            .await
+            .map_err(|e| anyhow::anyhow!("StakeWithPool failed: {}", e))?
+    };
+
+    // Save the new keypair
+    let keypair_path = if is_new_keypair {
+        let path = save_stake_keypair(&authority_keypair)?;
+        Some(path)
+    } else {
+        None
+    };
 
     ctx.print(&format!("Transaction: {}", sig));
     ctx.print("Stake deposited successfully!");
+
+    if let Some(path) = keypair_path {
+        ctx.print(&format!("Keypair saved: {}", path.display()));
+    }
+
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 //! Token exchange commands.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
@@ -7,6 +8,7 @@ use clap::Subcommand;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
+use tape_api::helpers::build_authority_ix;
 use tape_api::instruction::{
     build_register_exchange_ix, build_set_exchange_rate_ix,
     build_deposit_tape_ix, build_deposit_sol_ix,
@@ -17,14 +19,46 @@ use tape_api::program::exchange::exchange_pda;
 use tape_api::utils::ata;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::{TAPE, SOL};
+use tape_sdk::load_solana_keypair;
 
 use crate::config::expand_path;
 use crate::Context;
 
+/// Default lamports to fund new authority accounts (0.01 SOL).
+/// Covers Exchange account rent plus buffer for transaction fees.
+const AUTHORITY_FUND_LAMPORTS: u64 = 10_000_000;
+
+/// Directory for exchange keypairs.
+fn exchanges_keys_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".tape").join("keys").join("exchanges"))
+        .unwrap_or_else(|| PathBuf::from(".tape/keys/exchanges"))
+}
+
+/// Save a keypair to the exchanges keys directory.
+fn save_exchange_keypair(keypair: &Keypair) -> Result<PathBuf> {
+    let dir = exchanges_keys_dir();
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create exchanges keys directory: {}", dir.display()))?;
+
+    let path = dir.join(format!("{}.json", keypair.pubkey()));
+    let bytes = keypair.to_bytes();
+    let json = serde_json::to_string(&bytes.to_vec())?;
+
+    std::fs::write(&path, &json)
+        .with_context(|| format!("Failed to write exchange keypair to {}", path.display()))?;
+
+    Ok(path)
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ExchangeCommand {
     /// Create a new exchange.
-    Register,
+    Register {
+        /// Path to existing authority keypair (generates new if not specified).
+        #[arg(long)]
+        authority: Option<PathBuf>,
+    },
 
     /// Set exchange rate (TAPE per SOL ratio).
     SetRate {
@@ -128,7 +162,7 @@ pub async fn execute(ctx: &Context, cmd: ExchangeCommand) -> Result<()> {
     ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
 
     match cmd {
-        ExchangeCommand::Register => register(ctx).await,
+        ExchangeCommand::Register { authority } => register(ctx, authority).await,
         ExchangeCommand::SetRate { tape, sol } => set_rate(ctx, tape, sol).await,
         ExchangeCommand::DepositTape { amount } => deposit_tape(ctx, &amount).await,
         ExchangeCommand::DepositSol { amount } => deposit_sol(ctx, &amount).await,
@@ -144,29 +178,84 @@ pub async fn execute(ctx: &Context, cmd: ExchangeCommand) -> Result<()> {
 }
 
 /// Register a new exchange.
-async fn register(ctx: &Context) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+async fn register(ctx: &Context, authority_path: Option<PathBuf>) -> Result<()> {
+    // Load the fee payer keypair (from --keypair or config)
+    let fee_payer = load_keypair(ctx)?;
     let client = create_client(ctx)?;
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
+    // Determine authority: use provided keypair or generate new one
+    let (authority_keypair, is_new_keypair) = match authority_path {
+        Some(path) => {
+            let expanded = expand_path(&path.to_string_lossy());
+            let kp = load_solana_keypair(&expanded)
+                .map_err(|e| anyhow::anyhow!("Failed to load authority keypair: {}", e))?;
+            (kp, false)
+        }
+        None => {
+            // Generate a new unique keypair for this exchange
+            (Keypair::new(), true)
+        }
+    };
+
+    let authority = authority_keypair.pubkey();
+    let (exchange_address, _) = exchange_pda(authority);
 
     ctx.print("Creating new exchange...");
-    ctx.print(&format!("Authority: {}", keypair.pubkey()));
+    ctx.print(&format!("Fee payer: {}", fee_payer.pubkey()));
+    ctx.print(&format!("Authority: {}{}", authority, if is_new_keypair { " (new)" } else { "" }));
     ctx.print(&format!("Exchange PDA: {}", exchange_address));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: RegisterExchange");
+        if is_new_keypair {
+            ctx.print(&format!("[DRY RUN] Would generate new authority: {}", authority));
+        }
         return Ok(());
     }
 
-    let ix = build_register_exchange_ix(keypair.pubkey());
-    let sig = client
-        .send_instructions(&keypair, vec![ix])
-        .await
-        .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?;
+    // Build instructions
+    let mut instructions = Vec::new();
+
+    // If using a new keypair, fund it first with SOL for rent
+    if is_new_keypair {
+        instructions.push(build_authority_ix(
+            fee_payer.pubkey(),
+            authority,
+            AUTHORITY_FUND_LAMPORTS,
+        ));
+    }
+
+    // Register exchange instruction (authority is the signer)
+    instructions.push(build_register_exchange_ix(authority));
+
+    // Send with both signers if using new keypair
+    let sig = if is_new_keypair || fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, instructions, &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, instructions)
+            .await
+            .map_err(|e| anyhow::anyhow!("RegisterExchange failed: {}", e))?
+    };
+
+    // Save the new keypair
+    let keypair_path = if is_new_keypair {
+        let path = save_exchange_keypair(&authority_keypair)?;
+        Some(path)
+    } else {
+        None
+    };
 
     ctx.print(&format!("Transaction: {}", sig));
     ctx.print("Exchange created successfully!");
+
+    if let Some(path) = keypair_path {
+        ctx.print(&format!("Keypair saved: {}", path.display()));
+    }
+
     Ok(())
 }
 

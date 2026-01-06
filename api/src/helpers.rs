@@ -1,10 +1,9 @@
 //! Helper functions for building common instruction patterns.
 
 use solana_program::{
-    instruction::{AccountMeta, Instruction},
+    instruction::Instruction,
     pubkey::Pubkey,
     system_instruction,
-    system_program,
 };
 use spl_associated_token_account::instruction::create_associated_token_account;
 use spl_token::instruction::{close_account, transfer_checked};
@@ -101,6 +100,7 @@ pub fn build_close_ata_ix(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_program::system_program;
 
     #[test]
     fn test_build_authority_ix() {
@@ -120,7 +120,7 @@ mod tests {
     fn test_build_authority_with_tokens_ix() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let amount = Coin::<TAPE>::from(1_000_000u64);
+        let amount = TAPE(1_000_000);
 
         let ixs = build_authority_with_tokens_ix(fee_payer, authority, amount);
 
