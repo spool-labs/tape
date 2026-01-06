@@ -34,8 +34,9 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
     let epoch = epoch_info
+        .is_writable()?
         .is_epoch()?
-        .as_account::<Epoch>(&tapedrive::ID)?;
+        .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
     let node = node_info
         .is_writable()?
@@ -102,6 +103,14 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     archive.rewards_paid = rewards_paid;
+
+    // Track committee_prev advancement for Active → NextReady transition
+    if epoch.state.is_active() {
+        if let Some(member_index) = system.committee_prev.index_of(&node.id) {
+            let weight = system.spools_prev.spools_for_member(member_index).len() as u64;
+            epoch.state.add_advanced_weight(weight, SLICE_COUNT as u64);
+        }
+    }
 
     Ok(())
 }
@@ -231,6 +240,108 @@ mod tests {
                     .build(),
                 Check::account(&history_address)
                     .data(history.pack().as_ref())
+                    .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn active_to_next() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let pool_owner = Pubkey::new_unique();
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (pool_address, _) = node_pda(pool_owner);
+        let (history_address, _) = history_pda(pool_address);
+
+        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+
+        let mut system = System::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut epoch = Epoch::zeroed();
+
+        epoch.id = EpochNumber(7);
+        epoch.state.set_active();
+
+        let mut node = Node {
+            id: NodeId(2),
+            authority: pool_owner,
+            pool: StakingPool {
+                stake: TAPE(1_000),
+                shares: ShareAmount(1_000),
+                commission_rate: BasisPoints(0),
+                ..StakingPool::zeroed()
+            },
+            metadata: NodeMetadata {
+                bls_pubkey: BlsPubkey::new_unique(),
+                next_bls_pubkey: BlsPubkey::new_unique(),
+                ..NodeMetadata::zeroed()
+            },
+            latest_epoch: EpochNumber(6),
+            ..Node::zeroed()
+        };
+
+        let mut history = History {
+            node: pool_address,
+            latest_epoch: EpochNumber(6),
+            inner: PoolHistory::new(),
+            ..History::zeroed()
+        };
+
+        // Give node enough spools to trigger transition (needs > 683 for supermajority)
+        system.committee_prev = Committee::from_members(&[
+            member(node.id.into(), 3_000, 0),
+            member(3, 2_000, 0),
+            member(5, 1_000, 0),
+        ]);
+        // Node (id=2) gets 700 spools, others get less - node at index 0 after sort
+        system.spools_prev = SpoolAssignment::try_from_counts(&[700, 200, 124]).unwrap();
+
+        archive.rewards_pool = TAPE(10_000);
+        archive.recent_usage = StorageUnits(1_000);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
+        ];
+
+        // Expected state after instruction
+        let e0 = epoch.id;
+        let rewards_owed = calc_rewards(
+            node.id,
+            archive.recent_usage,
+            &system.committee_prev,
+            &system.spools_prev,
+            archive.rewards_pool,
+        );
+
+        archive.rewards_paid = rewards_owed.into();
+        // 700 spools > 683 threshold, so should transition
+        epoch.state.set_next_ready();
+
+        node.latest_epoch = e0;
+        node.pool.advance_epoch(e0, rewards_owed).unwrap();
+        node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
+
+        history.inner.push(e0, node.pool.get_current_rate());
+        history.latest_epoch = node.latest_epoch;
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&epoch_address)
+                    .data(epoch.pack().as_ref())
                     .build(),
             ],
         );

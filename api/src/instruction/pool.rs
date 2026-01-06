@@ -50,7 +50,7 @@ pub fn build_advance_pool_ix(
 
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new(archive_address, false),
-            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(epoch_address, false),
             AccountMeta::new(pool, false),
             AccountMeta::new(history_address, false),
         ],

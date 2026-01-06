@@ -17,7 +17,7 @@ pub struct EpochState {
     /// The epoch phase.
     pub phase: u64,
 
-    /// Attested weight in Syncing phase.
+    /// Accumulated weight for phase transitions (Syncing→Active, Active→NextReady).
     pub weight: u64,
 }
 
@@ -90,17 +90,19 @@ impl EpochState {
         matches!(self.as_enum(), Some(EpochPhase::NextEpochReady))
     }
 
-    /// Gets attested weight in Syncing phase.
+    /// Gets accumulated weight (used in Syncing and Active phases).
     pub fn weight(&self) -> Option<u64> {
-        if self.is_syncing() {
+        if self.is_syncing() || self.is_active() {
             Some(self.weight)
         } else {
             None
         }
     }
 
-    /// Adds weight in Syncing phase, moves to Active if supermajority reached.
-    pub fn add_weight(&mut self, add_weight: u64, total: u64) -> bool {
+    /// Adds sync attestation weight in Syncing phase.
+    /// Transitions to Active if supermajority reached.
+    /// Returns true if phase transitioned.
+    pub fn add_sync_weight(&mut self, add_weight: u64, total: u64) -> bool {
         if !self.is_syncing() {
             return false;
         }
@@ -109,10 +111,29 @@ impl EpochState {
 
         if is_supermajority(new_weight, total) {
             self.set_active();
-            true // Moved to Active
+            true
         } else {
             self.weight = new_weight;
-            false // Stays in Syncing
+            false
+        }
+    }
+
+    /// Adds pool advancement weight in Active phase.
+    /// Transitions to NextReady if supermajority of committee_prev has advanced.
+    /// Returns true if phase transitioned.
+    pub fn add_advanced_weight(&mut self, add_weight: u64, total: u64) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+
+        let new_weight = self.weight.saturating_add(add_weight);
+
+        if is_supermajority(new_weight, total) {
+            self.set_next_ready();
+            true
+        } else {
+            self.weight = new_weight;
+            false
         }
     }
 
@@ -145,17 +166,16 @@ mod tests {
         assert!(s.is_syncing());
         assert_eq!(s.weight(), Some(0));
 
-        // Add weight
-        s.add_weight(5, 10);
+        s.add_sync_weight(5, 10);
         assert_eq!(s.weight(), Some(5));
     }
 
     #[test]
-    fn set_act_next() {
+    fn set_active() {
         let mut s = EpochState::new();
         s.set_active();
         assert!(s.is_active());
-        assert_eq!(s.weight(), None);
+        assert_eq!(s.weight(), Some(0));
 
         s.set_next_ready();
         assert!(s.is_next_ready());
@@ -163,34 +183,67 @@ mod tests {
     }
 
     #[test]
-    fn weight_flow() {
+    fn sync_to_active() {
         // total = 10, supermajority needs w >= 7
         let mut s = EpochState::new();
         s.set_syncing();
 
-        let r1 = s.add_weight(3, 10);
+        let r1 = s.add_sync_weight(3, 10);
         assert!(!r1);
         assert!(s.is_syncing());
         assert_eq!(s.weight(), Some(3));
 
-        let r2 = s.add_weight(4, 10);
+        let r2 = s.add_sync_weight(4, 10);
         assert!(r2);
         assert!(s.is_active());
-        assert_eq!(s.weight(), None);
+        assert_eq!(s.weight(), Some(0)); // reset on transition
+    }
 
-        // Further weight does nothing in Active
-        let r3 = s.add_weight(5, 10);
-        assert!(!r3);
+    #[test]
+    fn active_to_next() {
+        // total = 10, supermajority needs w >= 7
+        let mut s = EpochState::new();
+        s.set_active();
+        assert_eq!(s.weight(), Some(0));
+
+        let r1 = s.add_advanced_weight(3, 10);
+        assert!(!r1);
+        assert!(s.is_active());
+        assert_eq!(s.weight(), Some(3));
+
+        let r2 = s.add_advanced_weight(4, 10);
+        assert!(r2);
+        assert!(s.is_next_ready());
+        assert_eq!(s.weight(), None);
+    }
+
+    #[test]
+    fn sync_noop_active() {
+        let mut s = EpochState::new();
+        s.set_active();
+
+        let r = s.add_sync_weight(10, 10);
+        assert!(!r);
         assert!(s.is_active());
     }
 
     #[test]
-    fn weight_edge() {
+    fn advance_noop_sync() {
+        let mut s = EpochState::new();
+        s.set_syncing();
+
+        let r = s.add_advanced_weight(10, 10);
+        assert!(!r);
+        assert!(s.is_syncing());
+    }
+
+    #[test]
+    fn sync_edge() {
         // total = 7, supermajority threshold: 5
         let mut s = EpochState::new();
         s.set_syncing();
-        s.add_weight(4, 7);
-        let r = s.add_weight(1, 7);
+        s.add_sync_weight(4, 7);
+        let r = s.add_sync_weight(1, 7);
         assert!(r);
         assert!(s.is_active());
     }

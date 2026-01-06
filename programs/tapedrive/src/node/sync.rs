@@ -76,7 +76,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     // Attest our weight for this epoch sync
     epoch.state
-        .add_weight(weight, total);
+        .add_sync_weight(weight, total);
 
     node.latest_epoch = current_epoch(epoch);
 
