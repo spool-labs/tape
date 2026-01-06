@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
+use comfy_table::{presets::UTF8_FULL, Table};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
@@ -17,6 +18,7 @@ use tape_api::program::tapedrive::stake_pda;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::TAPE;
 
+use crate::output::OutputFormat;
 use crate::utils::{get_keypair, resolve_authority, authority_keys_dir, AuthorityType};
 use crate::Context;
 
@@ -432,54 +434,102 @@ async fn merge(
 async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
     let client = create_client(ctx)?;
 
-    // For list, authority can be just a pubkey (no signing needed)
-    let staker_pubkey: Pubkey = match authority_arg {
-        Some(auth) => auth.parse()
-            .with_context(|| format!("Invalid staker pubkey: {}", auth))?,
-        None => {
-            let keypair = get_keypair(ctx)?;
-            keypair.pubkey()
+    // Collect stakes to display
+    let mut stakes: Vec<(Pubkey, Pubkey, tape_api::state::Stake)> = Vec::new(); // (staker, pool, stake)
+
+    // Get all nodes to check stakes against
+    let nodes = match client.get_all_nodes().await {
+        Ok(n) => n,
+        Err(e) => {
+            ctx.debug(&format!("Failed to enumerate nodes: {}", e));
+            match ctx.output {
+                OutputFormat::Json => println!("[]"),
+                _ => {
+                    println!("Could not enumerate nodes to find stakes.");
+                    println!("Try querying a specific stake: tape account stake <staker> <node>");
+                }
+            }
+            return Ok(());
         }
     };
 
-    ctx.print(&format!("Listing stakes for: {}", staker_pubkey));
+    // If authority is provided, query just that staker
+    if let Some(auth) = authority_arg {
+        let staker_pubkey: Pubkey = auth.parse()
+            .with_context(|| format!("Invalid staker pubkey: {}", auth))?;
 
-    // Try to get all nodes first, then check stakes for each
-    match client.get_all_nodes().await {
-        Ok(nodes) => {
-            ctx.print(&format!("{:<44} {:>15} {:>10}", "Pool (Node)", "Staked", "Status"));
-            ctx.print(&format!("{}", "-".repeat(75)));
-
-            let mut found_any = false;
-            for (node_pubkey, _node) in nodes.iter() {
-                // Derive stake PDA for this staker + node combination
-                let (_stake_address, _) = stake_pda(staker_pubkey, *node_pubkey);
-
-                // Try to fetch the stake account
-                if let Ok(stake) = client.get_stake(&staker_pubkey, node_pubkey).await {
-                    found_any = true;
-                    let status = if stake.inner.is_withdrawing() {
-                        "unlocking"
-                    } else {
-                        "active"
-                    };
-                    ctx.print(&format!(
-                        "{:<44} {:>15} {:>10}",
-                        node_pubkey.to_string(),
-                        format!("{}", stake.inner.amount),
-                        status
-                    ));
-                }
-            }
-
-            if !found_any {
-                ctx.print("(no stakes found)");
+        for (node_pubkey, _node) in nodes.iter() {
+            if let Ok(stake) = client.get_stake(&staker_pubkey, node_pubkey).await {
+                stakes.push((staker_pubkey, *node_pubkey, stake));
             }
         }
-        Err(e) => {
-            ctx.debug(&format!("Failed to enumerate nodes: {}", e));
-            ctx.print("Could not enumerate all nodes. Try querying a specific stake:");
-            ctx.print("  tape account stake <staker> <node>");
+    } else {
+        // No authority provided - list all saved stake keypairs
+        let stakes_dir = authority_keys_dir(AuthorityType::Stake);
+
+        if stakes_dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&stakes_dir)
+                .with_context(|| format!("Failed to read stakes directory: {}", stakes_dir.display()))?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                .collect();
+
+            for entry in entries {
+                let filename = entry.file_name();
+                let pubkey_str = filename.to_string_lossy();
+                let pubkey_str = pubkey_str.trim_end_matches(".json");
+
+                let staker_pubkey: Pubkey = match pubkey_str.parse() {
+                    Ok(pk) => pk,
+                    Err(_) => continue,
+                };
+
+                for (node_pubkey, _node) in nodes.iter() {
+                    if let Ok(stake) = client.get_stake(&staker_pubkey, node_pubkey).await {
+                        stakes.push((staker_pubkey, *node_pubkey, stake));
+                    }
+                }
+            }
+        }
+    }
+
+    // Output based on format
+    match ctx.output {
+        OutputFormat::Json => {
+            let json_stakes: Vec<_> = stakes.iter().map(|(staker, pool, stake)| {
+                serde_json::json!({
+                    "staker": staker.to_string(),
+                    "pool": pool.to_string(),
+                    "amount": stake.inner.amount.as_u64(),
+                    "activation_epoch": stake.inner.activation_epoch.as_u64(),
+                    "status": if stake.inner.is_withdrawing() { "unlocking" } else { "active" },
+                })
+            }).collect();
+            println!("{}", serde_json::to_string_pretty(&json_stakes)?);
+        }
+        _ => {
+            if stakes.is_empty() {
+                println!("No stakes found.");
+                println!("Use `tape stake deposit` to stake tokens.");
+                return Ok(());
+            }
+
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL);
+            table.set_header(vec!["Staker", "Pool (Node)", "Amount", "Status"]);
+
+            for (staker, pool, stake) in &stakes {
+                let status = if stake.inner.is_withdrawing() { "unlocking" } else { "active" };
+                table.add_row(vec![
+                    &staker.to_string(),
+                    &pool.to_string(),
+                    &format!("{}", stake.inner.amount),
+                    status,
+                ]);
+            }
+
+            println!("{}", table);
+            println!("\nTotal: {} stake(s)", stakes.len());
         }
     }
 

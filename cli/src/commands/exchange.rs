@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
+use comfy_table::{presets::UTF8_FULL, Table};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
@@ -19,6 +20,7 @@ use tape_api::utils::ata;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::{TAPE, SOL};
 
+use crate::output::OutputFormat;
 use crate::utils::{get_keypair, resolve_authority, authority_keys_dir, AuthorityType};
 use crate::Context;
 
@@ -110,6 +112,9 @@ pub enum ExchangeCommand {
         #[arg(long)]
         exchange: Option<String>,
     },
+
+    /// List exchanges.
+    List,
 }
 
 /// Create a RpcClient from context.
@@ -151,6 +156,9 @@ pub async fn execute(ctx: &Context, args: ExchangeArgs) -> Result<()> {
         }
         ExchangeCommand::SwapForSol { amount_tape, exchange } => {
             swap_for_sol(ctx, &amount_tape, exchange).await
+        }
+        ExchangeCommand::List => {
+            list(ctx, args.authority).await
         }
     }
 }
@@ -511,5 +519,154 @@ async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_authority: Optio
 
     ctx.print(&format!("Transaction: {}", sig));
     ctx.print("Swap completed successfully!");
+    Ok(())
+}
+
+/// Fetch exchange account by authority
+async fn fetch_exchange(ctx: &Context, authority: &Pubkey) -> Result<Option<tape_api::state::Exchange>> {
+    use rpc_solana::{Rpc, RpcConfig as SolanaRpcConfig, SolanaRpc};
+    use tape_api::state::Exchange;
+
+    let config = SolanaRpcConfig {
+        endpoints: vec![ctx.rpc_url()],
+        ..Default::default()
+    };
+    let rpc = SolanaRpc::new(config).map_err(|e| anyhow::anyhow!("Failed to create RPC: {}", e))?;
+
+    let (address, _) = exchange_pda(*authority);
+    match rpc.get_account(&address).await {
+        Ok(account) => {
+            let exchange = Exchange::unpack_with_discriminator(&account.data)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize exchange: {}", e))?;
+            Ok(Some(exchange.clone()))
+        }
+        Err(rpc_solana::RpcError::AccountNotFound(_)) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("RPC error: {}", e)),
+    }
+}
+
+/// List exchanges.
+async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
+    // Collect exchanges to display
+    let mut exchanges: Vec<(Pubkey, tape_api::state::Exchange)> = Vec::new();
+    let mut not_found: Vec<Pubkey> = Vec::new();
+
+    // If authority is provided, query just that exchange
+    if let Some(auth) = authority_arg {
+        let authority_pubkey: Pubkey = auth.parse()
+            .with_context(|| format!("Invalid authority pubkey: {}", auth))?;
+
+        match fetch_exchange(ctx, &authority_pubkey).await? {
+            Some(exchange) => exchanges.push((authority_pubkey, exchange)),
+            None => not_found.push(authority_pubkey),
+        }
+    } else {
+        // No authority provided - list all saved exchange keypairs
+        let exchanges_dir = authority_keys_dir(AuthorityType::Exchange);
+
+        if !exchanges_dir.exists() {
+            match ctx.output {
+                OutputFormat::Json => println!("[]"),
+                _ => {
+                    println!("No exchanges found.");
+                    println!("Use `tape exchange register` to create one.");
+                }
+            }
+            return Ok(());
+        }
+
+        let entries: Vec<_> = std::fs::read_dir(&exchanges_dir)
+            .with_context(|| format!("Failed to read exchanges directory: {}", exchanges_dir.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+
+        if entries.is_empty() {
+            match ctx.output {
+                OutputFormat::Json => println!("[]"),
+                _ => {
+                    println!("No exchanges found.");
+                    println!("Use `tape exchange register` to create one.");
+                }
+            }
+            return Ok(());
+        }
+
+        for entry in entries {
+            let filename = entry.file_name();
+            let pubkey_str = filename.to_string_lossy();
+            let pubkey_str = pubkey_str.trim_end_matches(".json");
+
+            let authority_pubkey: Pubkey = match pubkey_str.parse() {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+
+            match fetch_exchange(ctx, &authority_pubkey).await? {
+                Some(exchange) => exchanges.push((authority_pubkey, exchange)),
+                None => not_found.push(authority_pubkey),
+            }
+        }
+    }
+
+    // Output based on format
+    match ctx.output {
+        OutputFormat::Json => {
+            let json_exchanges: Vec<_> = exchanges.iter().map(|(authority, exchange)| {
+                let rate = if exchange.rate.other > 0 {
+                    (exchange.rate.tape as f64) / (exchange.rate.other as f64)
+                } else {
+                    0.0
+                };
+                serde_json::json!({
+                    "authority": authority.to_string(),
+                    "balance_tape": exchange.balance_tape.as_u64(),
+                    "balance_sol": exchange.balance_sol.as_u64(),
+                    "rate_tape": exchange.rate.tape,
+                    "rate_sol": exchange.rate.other,
+                    "rate": rate,
+                })
+            }).collect();
+            println!("{}", serde_json::to_string_pretty(&json_exchanges)?);
+        }
+        _ => {
+            if exchanges.is_empty() && not_found.is_empty() {
+                println!("No exchanges found.");
+                println!("Use `tape exchange register` to create one.");
+                return Ok(());
+            }
+
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL);
+            table.set_header(vec!["Authority", "TAPE Balance", "SOL Balance", "Rate (TAPE/SOL)"]);
+
+            for (authority, exchange) in &exchanges {
+                let rate = if exchange.rate.other > 0 {
+                    format!("{:.2}", (exchange.rate.tape as f64) / (exchange.rate.other as f64))
+                } else {
+                    "N/A".to_string()
+                };
+                table.add_row(vec![
+                    &authority.to_string(),
+                    &format!("{}", exchange.balance_tape),
+                    &format!("{}", exchange.balance_sol),
+                    &rate,
+                ]);
+            }
+
+            for authority in &not_found {
+                table.add_row(vec![
+                    &authority.to_string(),
+                    "(not found on-chain)",
+                    "",
+                    "",
+                ]);
+            }
+
+            println!("{}", table);
+            println!("\nTotal: {} exchange(s)", exchanges.len());
+        }
+    }
+
     Ok(())
 }
