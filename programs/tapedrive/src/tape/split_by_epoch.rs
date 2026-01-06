@@ -37,8 +37,9 @@ pub fn process_split_tape_by_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) ->
         .is_archive()?
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
+    // Splitting creates an additional tape (1 becomes 2)
     archive.tape_count = archive.tape_count
-        .checked_sub(1)
+        .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // Derive PDAs
@@ -156,7 +157,7 @@ mod tests {
             ..Tape::zeroed()
         };
         let expected_archive = Archive {
-            tape_count: 99,
+            tape_count: 101, // split adds 1 tape (1 becomes 2)
             ..archive
         };
 

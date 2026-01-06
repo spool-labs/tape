@@ -105,6 +105,10 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
+    // Increment tape count for the new tape
+    archive.tape_count = archive.tape_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
 
     create_program_account::<Tape>(
         tape_info,
@@ -181,6 +185,7 @@ mod tests {
             .schedule
             .reserve_capacity(storage_units, fee_per_epoch, start_epoch, end_epoch)
             .unwrap();
+        expected_archive.tape_count = 1; // New tape created
 
         let initial_token_balance: u64 = 1_000_000;
 
