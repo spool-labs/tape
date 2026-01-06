@@ -64,7 +64,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let start_epoch = EpochNumber::unpack(args.activation_epoch);
     let end_epoch = EpochNumber::unpack(args.expiry_epoch);
 
-    if start_epoch <= current_epoch(epoch) {
+    if start_epoch < current_epoch(epoch) {
         return Err(ProgramError::InvalidArgument);
     }
     if end_epoch <= start_epoch {
