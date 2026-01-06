@@ -320,11 +320,6 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // After bootstrap advance: epoch 1, still NextReady (for next advance)
-        let mut expected_schedule = EpochSchedule::new_at(EpochNumber(1));
-        // No reservations, so advance_epoch returns zero usage
-        let _ = expected_schedule.advance_epoch();
-
         env.process_instruction(
             &instruction,
             &accounts,
@@ -567,7 +562,7 @@ mod tests {
             &instruction,
             &accounts,
             &[
-                Check::err(TapeError::TooSoon),
+                Check::err(TapeError::TooSoon.into()),
             ]
         );
     }
@@ -614,7 +609,7 @@ mod tests {
             &instruction,
             &accounts,
             &[
-                Check::err(TapeError::BadEpochState),
+                Check::err(TapeError::BadEpochState.into()),
             ]
         );
     }
