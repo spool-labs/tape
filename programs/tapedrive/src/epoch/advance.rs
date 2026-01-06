@@ -6,7 +6,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let now = Clock::get()?.unix_timestamp;
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         system_info,
         archive_info,
         epoch_info,
@@ -14,7 +15,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
     let system = system_info
@@ -132,9 +136,10 @@ mod tests {
     fn test_advance_epoch() {
         let env = test_env();
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
-        let instruction = build_advance_epoch_ix(signer);
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -178,7 +183,8 @@ mod tests {
         ).expect("reserve capacity");
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),

@@ -203,6 +203,7 @@ async fn reserve(
     // Reserve tape instruction (authority is the signer)
     instructions.push(build_reserve_tape_ix(
         authority,
+        authority,
         StorageUnits(size),
         EpochNumber(start_epoch),
         EpochNumber(end_epoch),
@@ -268,7 +269,7 @@ async fn destroy(ctx: &Context, tape: Option<String>) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_destroy_tape_ix(signer);
+    let ix = build_destroy_tape_ix(signer, signer);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
@@ -314,7 +315,7 @@ async fn split(
             return Ok(());
         }
 
-        build_split_tape_by_epoch_ix(signer, recipient_pubkey, EpochNumber(epoch))
+        build_split_tape_by_epoch_ix(signer, signer, recipient_pubkey, EpochNumber(epoch))
     } else if let Some(size) = at_size {
         if !ctx.quiet {
             eprintln!("Splitting tape at size {} MB", size);
@@ -327,7 +328,7 @@ async fn split(
             return Ok(());
         }
 
-        build_split_tape_by_size_ix(signer, recipient_pubkey, StorageUnits(size))
+        build_split_tape_by_size_ix(signer, signer, recipient_pubkey, StorageUnits(size))
     } else {
         unreachable!()
     };
@@ -390,7 +391,7 @@ async fn merge(ctx: &Context, recipient: &str) -> Result<()> {
         );
     }
 
-    let ix = build_merge_tape_ix(signer, recipient_pubkey);
+    let ix = build_merge_tape_ix(signer, signer, recipient_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client

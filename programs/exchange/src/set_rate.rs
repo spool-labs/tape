@@ -5,18 +5,23 @@ use steel::*;
 pub fn process_set_exchange_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetExchangeRate::try_from_bytes(data)?;
     let [
-        signer_info, 
+        fee_payer_info,
+        authority_info,
         exchange_info
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
 
     let exchange = exchange_info
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
 
     // Only exchange authority may update the rate
-    signer_info
+    authority_info
         .is_signer()?
         .has_address(&exchange.authority)?;
 

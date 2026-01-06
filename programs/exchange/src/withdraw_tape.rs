@@ -5,8 +5,9 @@ use steel::*;
 pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = WithdrawTape::try_from_bytes(data)?;
     let [
-        signer_info, 
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
         exchange_info,
         exchange_ata_info,
         token_program_info,
@@ -14,18 +15,21 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
     let (exchange_ata, _) = exchange_ata(*exchange_info.key);
 
     let exchange = exchange_info
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
 
-    signer_info
+    authority_info
         .is_signer()?
-        .is_writable()?
         .has_address(&exchange.authority)?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
@@ -54,7 +58,7 @@ pub fn process_withdraw_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     transfer_signed(
         exchange_info,
         exchange_ata_info,
-        signer_ata_info,
+        authority_ata_info,
         token_program_info,
         amount.as_u64(),
         &[EXCHANGE, exchange.authority.as_ref()],

@@ -6,8 +6,9 @@ use crate::error::*;
 pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForSol::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
         exchange_info,
         exchange_ata_info,
         token_program_info,
@@ -17,9 +18,13 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
-        .is_writable()?
-        .is_signer()?;
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
+        .is_signer()?
+        .is_writable()?;
 
     let (exchange_ata, _) = exchange_ata(*exchange_info.key);
 
@@ -27,7 +32,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
@@ -62,16 +67,16 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ExchangeError::InsufficientFunds.into());
     }
 
-    // Transfer TAPE from signer to exchange_ata
+    // Transfer TAPE from authority to exchange_ata
     transfer(
-        signer_info,
-        signer_ata_info,
+        authority_info,
+        authority_ata_info,
         exchange_ata_info,
         token_program_info,
         amount_in_tape.as_u64(),
     )?;
 
-    // Transfer SOL from exchange to signer
+    // Transfer SOL from exchange to authority
     let rent_exempt_reserve = Rent::get()?
         .minimum_balance(exchange_info.data_len());
 
@@ -79,7 +84,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount_out_sol)
         .ok_or(ExchangeError::Underflow)?;
-    let new_signer_lamports = (**signer_info.lamports.borrow())
+    let new_authority_lamports = (**authority_info.lamports.borrow())
         .checked_add(amount_out_sol)
         .ok_or(ExchangeError::Overflow)?;
 
@@ -88,7 +93,7 @@ pub fn process_swap_for_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
-    **signer_info.try_borrow_mut_lamports()? = new_signer_lamports;
+    **authority_info.try_borrow_mut_lamports()? = new_authority_lamports;
 
     // Update exchange balances safely
     exchange.balance_tape = exchange

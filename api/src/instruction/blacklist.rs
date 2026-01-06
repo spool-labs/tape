@@ -16,7 +16,8 @@ pub struct RemoveFromBlacklist {
 }
 
 pub fn build_add_to_blacklist_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     track_address: Pubkey,
 ) -> Instruction {
@@ -24,7 +25,8 @@ pub fn build_add_to_blacklist_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
             AccountMeta::new_readonly(track_address, false),
         ],
@@ -33,7 +35,8 @@ pub fn build_add_to_blacklist_ix(
 }
 
 pub fn build_remove_from_blacklist_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     index: u64,
     hash: Hash,
@@ -47,7 +50,8 @@ pub fn build_remove_from_blacklist_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: RemoveFromBlacklist {

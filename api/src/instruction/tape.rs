@@ -33,18 +33,19 @@ pub struct MergeTape {}
 
 
 pub fn build_reserve_tape_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     storage_units: StorageUnits,
     activation_epoch: EpochNumber,
     expiry_epoch: EpochNumber,
 ) -> Instruction {
 
-    let signer_ata = ata(&signer);
+    let authority_ata = ata(&authority);
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
     let (archive_ata, _) = archive_ata();
 
-    let (tape_address, _) = tape_pda(signer);
+    let (tape_address, _) = tape_pda(authority);
 
     let storage_units = storage_units.pack();
     let activation_epoch = activation_epoch.pack();
@@ -53,8 +54,9 @@ pub fn build_reserve_tape_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new(tape_address, false),
             AccountMeta::new_readonly(epoch_address, false),
@@ -74,11 +76,12 @@ pub fn build_reserve_tape_ix(
 }
 
 pub fn build_split_tape_by_size_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     recipient: Pubkey,
     size: StorageUnits,
 ) -> Instruction {
-    let (source_tape_address, _) = tape_pda(signer);
+    let (source_tape_address, _) = tape_pda(authority);
     let (dest_tape_address, _) = tape_pda(recipient);
     let (archive_address, _) = archive_pda();
 
@@ -87,7 +90,8 @@ pub fn build_split_tape_by_size_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(recipient, true),
 
             AccountMeta::new(source_tape_address, false),
@@ -102,11 +106,12 @@ pub fn build_split_tape_by_size_ix(
 }
 
 pub fn build_split_tape_by_epoch_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     recipient: Pubkey,
     split_epoch: EpochNumber,
 ) -> Instruction {
-    let (source_tape_address, _) = tape_pda(signer);
+    let (source_tape_address, _) = tape_pda(authority);
     let (dest_tape_address, _) = tape_pda(recipient);
     let (archive_address, _) = archive_pda();
 
@@ -115,7 +120,8 @@ pub fn build_split_tape_by_epoch_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(recipient, true),
 
             AccountMeta::new(source_tape_address, false),
@@ -130,17 +136,19 @@ pub fn build_split_tape_by_epoch_ix(
 }
 
 pub fn build_merge_tape_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
-    let (source_tape_address, _) = tape_pda(signer);
+    let (source_tape_address, _) = tape_pda(authority);
     let (dest_tape_address, _) = tape_pda(recipient);
     let (archive_address, _) = archive_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(recipient, true),
 
             AccountMeta::new(source_tape_address, false),
@@ -154,16 +162,18 @@ pub fn build_merge_tape_ix(
 }
 
 pub fn build_destroy_tape_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
 ) -> Instruction {
-    let (tape_address, _) = tape_pda(signer);
+    let (tape_address, _) = tape_pda(authority);
     let (epoch_address, _) = epoch_pda();
     let (archive_address, _) = archive_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new(tape_address, false),
             AccountMeta::new_readonly(epoch_address, false),

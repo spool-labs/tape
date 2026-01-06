@@ -25,23 +25,25 @@ pub struct MergeStake {}
 
 
 pub fn build_stake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
     let (mint_address, _)  = mint_pda();
-    let (stake_address, _) = stake_pda(signer, pool);
+    let (stake_address, _) = stake_pda(authority, pool);
     let (vault_address, _) = vault_pda(stake_address);
-    let signer_ata         = ata(&signer);
+    let authority_ata      = ata(&authority);
 
     let amount = amount.pack();
 
     Instruction {
         program_id: crate::program::staking::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
@@ -55,19 +57,21 @@ pub fn build_stake_ix(
 }
 
 pub fn build_unstake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
 
-    let (stake_address, _) = stake_pda(signer, pool);
+    let (stake_address, _) = stake_pda(authority, pool);
     let (vault_address, _) = vault_pda(stake_address);
-    let signer_ata         = ata(&signer);
+    let authority_ata      = ata(&authority);
 
     Instruction {
         program_id: crate::program::staking::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),  // writable: receives vault rent refund
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
@@ -79,14 +83,15 @@ pub fn build_unstake_ix(
 }
 
 pub fn build_split_stake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     recipient: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
-    // Source (signer) stake/vault token PDA
-    let (source_stake_address, _) = stake_pda(signer, pool);
+    // Source (authority) stake/vault token PDA
+    let (source_stake_address, _) = stake_pda(authority, pool);
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
     // Destination (recipient) stake/vault token PDA
@@ -100,7 +105,8 @@ pub fn build_split_stake_ix(
     Instruction {
         program_id: crate::program::staking::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new_readonly(pool, false),
@@ -116,13 +122,14 @@ pub fn build_split_stake_ix(
 }
 
 pub fn build_merge_stake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
 
     // Source (donor) stake/vault token PDA
-    let (source_stake_address, _) = stake_pda(signer, pool);
+    let (source_stake_address, _) = stake_pda(authority, pool);
     let (source_vault_address, _) = vault_pda(source_stake_address);
 
     // Destination (recipient) stake/vault token PDA
@@ -132,7 +139,8 @@ pub fn build_merge_stake_ix(
     Instruction {
         program_id: crate::program::staking::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),  // writable: receives vault rent refund
             AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new_readonly(pool, false),

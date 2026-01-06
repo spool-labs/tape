@@ -5,7 +5,8 @@ use crate::error::*;
 pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AdvancePool::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         system_info,
         archive_info,
@@ -16,8 +17,11 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    // Signer does not need to be the pool authority
-    signer_info
+    // fee_payer does not need to be the pool authority
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
     let system = system_info
@@ -118,7 +122,8 @@ mod tests {
 
     #[test]
     fn test_advance_pool() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_owner = Pubkey::new_unique();
 
         let (system_address, _) = system_pda();
@@ -127,7 +132,7 @@ mod tests {
         let (pool_address, _) = node_pda(pool_owner);
         let (history_address, _) = history_pda(pool_address);
 
-        let instruction = build_advance_pool_ix(signer, pool_address);
+        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
 
         let mut system = System::zeroed();
         let mut archive = Archive::zeroed();
@@ -177,7 +182,8 @@ mod tests {
         archive.rewards_paid = TAPE(0);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),

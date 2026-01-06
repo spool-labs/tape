@@ -7,20 +7,22 @@ use crate::program::token::*;
 pub struct InitializeMint {}
 
 pub fn build_initialize_mint_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
 ) -> Instruction {
 
     let (mint_address, _) = mint_pda();
     let (metadata_address, _) = metadata_pda();
     let (treasury_address, _) = treasury_pda();
 
-    let signer_ata = ata(&signer);
+    let authority_ata = ata(&authority);
 
     Instruction {
         program_id: crate::program::token::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new(mint_address, false),
             AccountMeta::new(metadata_address, false),

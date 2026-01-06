@@ -4,8 +4,9 @@ use steel::*;
 pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = StakeTokens::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
 
         pool_info,
         vault_info,
@@ -17,13 +18,17 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
-        .assert(|t| t.owner() == *signer_info.key)?
+        .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     pool_info
@@ -38,7 +43,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     system_program_info
         .is_program(&system_program::ID)?;
 
-    let (stake_address, _)      = stake_pda(*signer_info.key, *pool_info.key);
+    let (stake_address, _)      = stake_pda(*authority_info.key, *pool_info.key);
     let (vault_address, bump)   = vault_pda(stake_address);
 
     vault_info
@@ -48,7 +53,7 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
     if vault_info.data_is_empty() {
         create_token_account(
-            signer_info,
+            fee_payer_info,
             vault_info,
             mint_info,
             system_program_info,
@@ -68,8 +73,8 @@ pub fn process_stake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     transfer(
-        signer_info,
-        signer_ata_info,
+        authority_info,
+        authority_ata_info,
         vault_info,
         token_program_info,
         amount.into(),
@@ -88,22 +93,24 @@ mod tests {
     fn test_stake() {
         let amount: u64 = 1000;
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_stake_ix(signer, pool_address, amount.into());
+        let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
 
-        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (stake_address, _) = stake_pda(authority, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
-        let signer_ata = ata_address(&signer);
+        let authority_ata = ata_address(&authority);
 
         let pool = Node::zeroed();
 
         let initial_token_balance: u64 = 1_000_000_000;
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_token_balance),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, initial_token_balance),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
             empty(vault_address),
@@ -115,17 +122,17 @@ mod tests {
 
         let env = test_env();
         env.process_instruction(
-            &instruction, 
+            &instruction,
             &accounts,
             &[
                 Check::success(),
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000 - rent_token())
                     .build(),
-                Check::account(&signer_ata).data(
+                Check::account(&authority_ata).data(
                     token(
-                        signer_ata,
-                        signer,
+                        authority_ata,
+                        authority,
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),
@@ -144,22 +151,24 @@ mod tests {
     fn test_stake_existing() {
         let amount: u64 = 2_000;
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_stake_ix(signer, pool_address, amount.into());
+        let instruction = build_stake_ix(fee_payer, authority, pool_address, amount.into());
 
-        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (stake_address, _) = stake_pda(authority, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
-        let signer_ata = ata_address(&signer);
+        let authority_ata = ata_address(&authority);
 
         let pool = Node::zeroed();
 
         let initial_token_balance: u64 = 10_000_000;
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_token_balance),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, initial_token_balance),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
             token(vault_address, vault_address, 0),
@@ -171,18 +180,18 @@ mod tests {
 
         let env = test_env();
         env.process_instruction(
-            &instruction, 
+            &instruction,
             &accounts,
             &[
                 Check::success(),
                 // No rent change since the vault already existed
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000)
                     .build(),
-                Check::account(&signer_ata).data(
+                Check::account(&authority_ata).data(
                     token(
-                        signer_ata,
-                        signer,
+                        authority_ata,
+                        authority,
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),

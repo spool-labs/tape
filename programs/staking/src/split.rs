@@ -4,7 +4,8 @@ use steel::*;
 pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitStake::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         recipient_info,
 
         pool_info,
@@ -18,7 +19,11 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     recipient_info
@@ -41,7 +46,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     }
 
     // Source vault token account
-    let (source_stake_address, _)           = stake_pda(*signer_info.key, *pool_info.key);
+    let (source_stake_address, _)           = stake_pda(*authority_info.key, *pool_info.key);
     let (source_vault_address, source_bump) = vault_pda(source_stake_address);
 
     source_vault_info
@@ -62,7 +67,7 @@ pub fn process_split_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     // If the PDA token account doesn't exist yet, create it; otherwise validate it.
     if dest_vault_info.is_empty().is_ok() {
         create_token_account(
-            signer_info,
+            fee_payer_info,
             dest_vault_info,
             mint_info,
             system_program_info,
@@ -100,13 +105,14 @@ mod tests {
         let amount: u64 = 1_000;
         let initial_source_balance: u64 = 5_000;
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_split_stake_ix(signer, pool_address, recipient, amount.into());
+        let instruction = build_split_stake_ix(fee_payer, authority, pool_address, recipient, amount.into());
 
-        let (source_stake_address, _) = stake_pda(signer, pool_address);
+        let (source_stake_address, _) = stake_pda(authority, pool_address);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
         let (dest_stake_address, _) = stake_pda(recipient, pool_address);
@@ -115,7 +121,8 @@ mod tests {
         let pool = Node::zeroed();
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             sol(recipient, 0),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
@@ -134,19 +141,19 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000 - rent_token())
                     .build(),
                 Check::account(&source_vault_address).data(
                     token(
-                        source_vault_address, 
-                        source_vault_address, 
+                        source_vault_address,
+                        source_vault_address,
                         initial_source_balance - amount
                     ).1.data.as_ref(),
                 ).build(),
                 Check::account(&dest_vault_address).data(
                     token(
-                        dest_vault_address, 
+                        dest_vault_address,
                         dest_vault_address,
                         amount
                     ).1.data.as_ref(),
@@ -161,13 +168,14 @@ mod tests {
         let initial_source_balance: u64 = 5_000;
         let initial_dest_balance: u64 = 1_500;
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_split_stake_ix(signer, pool_address, recipient, amount.into());
+        let instruction = build_split_stake_ix(fee_payer, authority, pool_address, recipient, amount.into());
 
-        let (source_stake_address, _) = stake_pda(signer, pool_address);
+        let (source_stake_address, _) = stake_pda(authority, pool_address);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
         let (dest_stake_address, _) = stake_pda(recipient, pool_address);
@@ -176,7 +184,8 @@ mod tests {
         let pool = Node::zeroed();
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             sol(recipient, 0),
 
             pda(pool_address, pool.pack(), tapedrive::ID),
@@ -203,19 +212,19 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000)
                     .build(),
                 Check::account(&source_vault_address).data(
                     token(
-                        source_vault_address, 
-                        source_vault_address, 
+                        source_vault_address,
+                        source_vault_address,
                         initial_source_balance - amount
                     ).1.data.as_ref(),
                 ).build(),
                 Check::account(&dest_vault_address).data(
                     token(
-                        dest_vault_address, 
+                        dest_vault_address,
                         dest_vault_address,
                         initial_dest_balance + amount
                     ).1.data.as_ref(),

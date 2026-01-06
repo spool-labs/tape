@@ -4,7 +4,8 @@ use tape_api::prelude::*;
 pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = Initialize::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         system_info,
         epoch_info,
@@ -20,7 +21,10 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
     system_program_info
@@ -65,7 +69,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     create_program_account::<Epoch>(
         epoch_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
         &[EPOCH],
     )?;
@@ -73,14 +77,14 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     create_program_account::<Archive>(
         archive_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
         &[ARCHIVE],
     )?;
 
     // Create Archive ATA
     create_associated_token_account(
-        signer_info,
+        fee_payer_info,
         archive_info,
         archive_ata_info,
         mint_info,
@@ -114,7 +118,8 @@ mod tests {
 
     #[test]
     fn test_initialize() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         // PDAs
         let (system_address, _) = system_pda();
@@ -124,10 +129,11 @@ mod tests {
 
         let system = System::zeroed();
 
-        let instruction = build_initialize_ix(signer);
+        let instruction = build_initialize_ix(fee_payer, authority);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             // existing system account
             pda(system_address, system.pack(), tapedrive::ID),

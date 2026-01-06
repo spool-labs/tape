@@ -5,7 +5,8 @@ use steel::*;
 pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = RequestStakeUnlock::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         stake_info,
         epoch_info,
         node_info,
@@ -16,7 +17,11 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
 
     let (history_address, _) = history_pda(*node_info.key);
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     let epoch = epoch_info
@@ -36,14 +41,14 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
 
     let stake = stake_info
         .has_address(&stake_address)?
         .is_writable()?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if stake.authority != *signer_info.key || stake.pool != *node_info.key {
+    if stake.authority != *authority_info.key || stake.pool != *node_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -70,13 +75,14 @@ mod tests {
 
     #[test]
     fn test_request_stake_unlock() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_request_stake_unlock_ix(signer, pool_address);
+        let instruction = build_request_stake_unlock_ix(fee_payer, authority, pool_address);
 
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (stake_address, _) = stake_pda(authority, pool_address);
         let (history_address, _) = history_pda(pool_address);
 
         // Setup existing accounts
@@ -102,7 +108,7 @@ mod tests {
         history.inner.push(e1, ExchangeRate { tape: 1100, other: 8900 });
         history.inner.push(e2, ExchangeRate { tape: 1200, other: 8800 });
 
-        stake.authority = signer;
+        stake.authority = authority;
         stake.pool = pool_address;
         stake.inner = StakedTape::new(TAPE(1000), e0);
 
@@ -112,7 +118,8 @@ mod tests {
             .convert_to_other_amount(stake.inner.amount.into());
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(stake_address, stake.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),

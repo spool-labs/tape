@@ -275,7 +275,7 @@ async fn submit_sync_epoch(ctx: &NodeContext, epoch: EpochNumber) -> Result<(), 
     let assigned_spools = ctx.control_plane.get_our_spools();
 
     // Build the sync instruction
-    let ix = build_epoch_sync_ix(authority, node_address, epoch, &assigned_spools);
+    let ix = build_epoch_sync_ix(authority, authority, node_address, epoch, &assigned_spools);
 
     info!(
         epoch = epoch.as_u64(),

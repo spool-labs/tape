@@ -5,21 +5,26 @@ use crate::error::*;
 pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AddToBlacklist::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         node_info,
         track_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -42,20 +47,21 @@ mod tests {
 
     #[test]
     fn test_add_to_blacklist() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         // PDAs
         let blob_hash = Hash::new_unique();
-        let (node_address, _) = node_pda(signer);
-        let (tape_address, _) = tape_pda(signer);
-        let (track_address, _) = track_pda(signer, blob_hash);
+        let (node_address, _) = node_pda(authority);
+        let (tape_address, _) = tape_pda(authority);
+        let (track_address, _) = track_pda(authority, blob_hash);
 
         // Instruction
-        let instruction = build_add_to_blacklist_ix(signer, node_address, track_address);
+        let instruction = build_add_to_blacklist_ix(fee_payer, authority, node_address, track_address);
 
         // Prepare node with initialized blacklist
         let mut node = Node::zeroed();
-        node.authority = signer;
+        node.authority = authority;
         node.blacklist = Blacklist::new();
 
         // Prepare a track
@@ -72,7 +78,8 @@ mod tests {
 
         // Build accounts
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
             pda(track_address, track.pack(), tapedrive::ID),
         ];

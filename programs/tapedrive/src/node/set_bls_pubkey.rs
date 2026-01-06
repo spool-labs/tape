@@ -5,20 +5,24 @@ use crate::error::*;
 pub fn process_set_bls_pubkey(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetBlsPubkey::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         node_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -40,19 +44,20 @@ mod tests {
 
     #[test]
     fn test_set_network_tls() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let old_bls_pubkey = BlsPubkey::new_unique();
 
         let new_secret = BlsPrivateKey::from_random();
         let new_bls_pubkey = new_secret.public_key().expect("pubkey");
         let new_bls_pop = new_secret.proof_of_possession().expect("pop");
 
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = node_pda(authority);
 
-        let instruction = build_set_bls_pubkey_ix(signer, node_address, new_bls_pubkey, new_bls_pop);
+        let instruction = build_set_bls_pubkey_ix(fee_payer, authority, node_address, new_bls_pubkey, new_bls_pop);
 
         let node = Node {
-            authority: signer,
+            authority,
             metadata: NodeMetadata {
                 bls_pubkey: old_bls_pubkey,
                 next_bls_pubkey: old_bls_pubkey,
@@ -62,7 +67,8 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 

@@ -390,6 +390,7 @@ async fn register_node(
     let name_bytes = to_name(&name);
     let ix = instruction::build_register_node_ix(
         keypair.pubkey(),
+        keypair.pubkey(),
         name_bytes,
         BasisPoints(commission),
         network_address,
@@ -430,7 +431,7 @@ async fn join_committee(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_join_network_ix(keypair.pubkey(), node_address);
+    let ix = instruction::build_join_network_ix(keypair.pubkey(), keypair.pubkey(), node_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Requesting to join committee...");
@@ -486,7 +487,7 @@ async fn sync_epoch(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
     // Get our assigned spools
     let spools = system.spools.spools_for_member(member_index);
 
-    let ix = instruction::build_epoch_sync_ix(keypair.pubkey(), node_address, epoch.id, &spools);
+    let ix = instruction::build_epoch_sync_ix(keypair.pubkey(), keypair.pubkey(), node_address, epoch.id, &spools);
 
     ctx.print(&format!("Submitting epoch sync for epoch {}...", epoch.id));
 
@@ -583,7 +584,7 @@ async fn set_authority(ctx: &Context, config: Option<PathBuf>, new_authority: &s
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_authority_ix(keypair.pubkey(), node_address, new_auth_pubkey);
+    let ix = instruction::build_set_authority_ix(keypair.pubkey(), keypair.pubkey(), node_address, new_auth_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node authority to {}...", new_auth_pubkey));
@@ -613,7 +614,7 @@ async fn set_name(ctx: &Context, config: Option<PathBuf>, name: &str) -> Result<
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_name_ix(keypair.pubkey(), node_address, name);
+    let ix = instruction::build_set_name_ix(keypair.pubkey(), keypair.pubkey(), node_address, name);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node name to '{}'...", name));
@@ -646,7 +647,7 @@ async fn set_address(ctx: &Context, config: Option<PathBuf>, address: &str) -> R
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_network_address_ix(keypair.pubkey(), node_address, network_address);
+    let ix = instruction::build_set_network_address_ix(keypair.pubkey(), keypair.pubkey(), node_address, network_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting network address to {}...", address));
@@ -684,7 +685,7 @@ async fn set_commission(ctx: &Context, config: Option<PathBuf>, bps: u64) -> Res
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_commission_ix(keypair.pubkey(), node_address, BasisPoints(bps));
+    let ix = instruction::build_set_commission_ix(keypair.pubkey(), keypair.pubkey(), node_address, BasisPoints(bps));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!(
@@ -718,7 +719,7 @@ async fn set_capacity(ctx: &Context, config: Option<PathBuf>, mb: u64) -> Result
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_storage_capacity_ix(keypair.pubkey(), node_address, StorageUnits(mb));
+    let ix = instruction::build_set_storage_capacity_ix(keypair.pubkey(), keypair.pubkey(), node_address, StorageUnits(mb));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage capacity to {} MB...", mb));
@@ -751,7 +752,7 @@ async fn set_price(ctx: &Context, config: Option<PathBuf>, tape: &str) -> Result
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_set_storage_price_ix(keypair.pubkey(), node_address, price);
+    let ix = instruction::build_set_storage_price_ix(keypair.pubkey(), keypair.pubkey(), node_address, price);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage price to {} per MB...", price));
@@ -781,7 +782,7 @@ async fn claim_commission(ctx: &Context, config: Option<PathBuf>) -> Result<()> 
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_claim_commission_ix(keypair.pubkey(), node_address);
+    let ix = instruction::build_claim_commission_ix(keypair.pubkey(), keypair.pubkey(), node_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Claiming accumulated commission...");
@@ -814,7 +815,7 @@ async fn blacklist_add(ctx: &Context, config: Option<PathBuf>, track: &str) -> R
     let keypair = load_keypair_from_config(&node_config)?;
     let (node_address, _) = node_pda(keypair.pubkey());
 
-    let ix = instruction::build_add_to_blacklist_ix(keypair.pubkey(), node_address, track_pubkey);
+    let ix = instruction::build_add_to_blacklist_ix(keypair.pubkey(), keypair.pubkey(), node_address, track_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Adding {} to blacklist...", track_pubkey));
@@ -872,6 +873,7 @@ async fn blacklist_remove(ctx: &Context, config: Option<PathBuf>, index: u64, pr
     let (node_address, _) = node_pda(keypair.pubkey());
 
     let ix = instruction::build_remove_from_blacklist_ix(
+        keypair.pubkey(),
         keypair.pubkey(),
         node_address,
         index,

@@ -28,7 +28,8 @@ pub struct InvalidateTrack {}
 
 
 pub fn build_register_track_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     storage_units: StorageUnits,
     root: Hash,         // Data merkle root
     commitment: Hash,   // Erasure coding root
@@ -36,15 +37,16 @@ pub fn build_register_track_ix(
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
-    let (tape_address, _) = tape_pda(signer);
-    let (track_address, _) = track_pda(signer, key);
+    let (tape_address, _) = tape_pda(authority);
+    let (track_address, _) = track_pda(authority, key);
 
     let size = storage_units.pack();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(tape_address, false),
@@ -63,17 +65,19 @@ pub fn build_register_track_ix(
 }
 
 pub fn build_delete_track_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     id: Hash
 ) -> Instruction {
 
-    let (tape_address, _) = tape_pda(signer);
-    let (track_address, _) = track_pda(signer, id);
+    let (tape_address, _) = tape_pda(authority);
+    let (track_address, _) = track_pda(authority, id);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(tape_address, false),
             AccountMeta::new(track_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
@@ -84,7 +88,8 @@ pub fn build_delete_track_ix(
 }
 
 pub fn build_certify_track_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     id: Hash,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
@@ -92,13 +97,14 @@ pub fn build_certify_track_ix(
 
     let (epoch_address, _) = epoch_pda();
     let (system_address, _) = system_pda();
-    let (tape_address, _) = tape_pda(signer);
-    let (track_address, _) = track_pda(signer, id);
+    let (tape_address, _) = tape_pda(authority);
+    let (track_address, _) = track_pda(authority, id);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new(system_address, false),
             AccountMeta::new(epoch_address, false),

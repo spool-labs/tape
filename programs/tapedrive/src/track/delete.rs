@@ -4,7 +4,8 @@ use steel::*;
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = DeleteTrack::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         tape_info,
         track_info,
@@ -15,7 +16,11 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     system_program_info.is_program(&system_program::ID)?;
@@ -32,7 +37,7 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let (tape_address, _) = tape_pda(tape.authority);
     let (track_address, _) = track_pda(tape.authority, track.key);
 
-    if tape.authority != *signer_info.key {
+    if tape.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -56,7 +61,7 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    close_account(track_info, signer_info)?;
+    close_account(track_info, fee_payer_info)?;
 
     Ok(())
 }
@@ -68,11 +73,12 @@ mod tests {
 
     #[test]
     fn test_delete_track() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
 
-        let (tape_address, _) = tape_pda(signer);
-        let (track_address, _) = track_pda(signer, bucket_hash);
+        let (tape_address, _) = tape_pda(authority);
+        let (track_address, _) = track_pda(authority, bucket_hash);
 
         let track = Track {
             id: TrackNumber(100),
@@ -86,7 +92,7 @@ mod tests {
         };
 
         let tape = Tape {
-            authority: signer,
+            authority: authority,
             capacity: StorageUnits(1000),
             used: StorageUnits(250),
             active_epoch: EpochNumber(15),
@@ -95,10 +101,11 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let instruction = build_delete_track_ix(signer, bucket_hash);
+        let instruction = build_delete_track_ix(fee_payer, authority, bucket_hash);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             pda(tape_address, tape.pack(), tapedrive::ID),
             pda(track_address, track.pack(), tapedrive::ID),
@@ -113,7 +120,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000 + rent(Track::get_size()))
                     .build(),
                 Check::account(&track_address)

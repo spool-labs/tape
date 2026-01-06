@@ -5,13 +5,20 @@ use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = ExpandSystem::try_from_bytes(data)?;
     let [
-        signer_info, 
+        fee_payer_info,
+        authority_info,
         system_info,
-        system_program_info, 
+        system_program_info,
         rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
+        .is_signer()?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -43,7 +50,7 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     resize_account(
         system_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         new_size,
     )?;
 
@@ -57,9 +64,10 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
      #[test]
      fn test_system_expand() {
-         let signer = Pubkey::new_unique();
+         let fee_payer = Pubkey::new_unique();
+         let authority = Pubkey::new_unique();
 
-         let instruction = build_expand_system_ix(signer);
+         let instruction = build_expand_system_ix(fee_payer, authority);
          let (system_address, _) = system_pda();
 
          // Create a system account that is one byte short.
@@ -67,7 +75,8 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
              .pack()[..System::get_size()-1].to_vec();
 
          let accounts = vec![
-             sol(signer, 1_000_000_000),
+             sol(fee_payer, 1_000_000_000),
+             sol(authority, 0),
              pda(system_address, partial_account, tapedrive::ID),
 
              system_program(),
@@ -76,12 +85,12 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
          let env = test_env();
          env.process_instruction(
-             &instruction, 
+             &instruction,
              &accounts,
              &[
                  Check::success(),
                  Check::account(&system_address).data(
-                     System { 
+                     System {
                          ..System::zeroed()
                      }.pack().as_ref()
                  ).build(),
@@ -91,24 +100,26 @@ pub fn process_expand_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     #[test]
     fn test_system_partial_expand() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let (system_address, _) = system_pda();
-        let instruction = build_expand_system_ix(signer);
-        
+        let instruction = build_expand_system_ix(fee_payer, authority);
+
         // Create a system account with minimal size (1 byte)
         let initial_size = 1;
         let partial_account = System::zeroed()
             .pack()[0..initial_size].to_vec();
-        
+
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, partial_account, tapedrive::ID),
             system_program(),
             rent_sysvar(),
         ];
 
         let env = test_env();
-        
+
         // Calculate expected size after one expansion
         let required_size = System::get_size();
         let expected_size = initial_size

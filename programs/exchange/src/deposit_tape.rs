@@ -5,8 +5,9 @@ use steel::*;
 pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = DepositTape::try_from_bytes(data)?;
     let [
-        signer_info, 
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
         exchange_info,
         exchange_ata_info,
         token_program_info,
@@ -14,10 +15,14 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
@@ -40,8 +45,8 @@ pub fn process_deposit_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let amount = TAPE::unpack(args.amount);
 
     transfer(
-        signer_info,
-        signer_ata_info,
+        authority_info,
+        authority_ata_info,
         exchange_ata_info,
         token_program_info,
         amount.as_u64()

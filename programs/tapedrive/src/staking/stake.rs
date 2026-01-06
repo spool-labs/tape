@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = StakeWithPool::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
 
         epoch_info,
         node_info,
@@ -15,14 +16,18 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 
         mint_info,
         token_program_info,
-        system_program_info, 
+        system_program_info,
         stakeing_program_info,
         rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     mint_info
@@ -45,17 +50,17 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
-        .assert(|t| t.owner() == *signer_info.key)?
+        .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     if node.latest_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 
     // We require a new stake account for each stake action to simplify logic. 
@@ -84,16 +89,16 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     create_program_account::<Stake>(
         stake_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
-        &[STAKE, signer_info.key.as_ref(), node_info.key.as_ref()],
+        &[STAKE, authority_info.key.as_ref(), node_info.key.as_ref()],
     )?;
 
     let stake = stake_info
         .is_type::<Stake>(&tapedrive::ID)?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    stake.authority  = *signer_info.key;
+    stake.authority  = *authority_info.key;
     stake.pool       = *node_info.key;
     stake.inner      = staked_tape;
 
@@ -101,13 +106,15 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
     // (in an isolated program to remove custody issues)
     solana_program::program::invoke(
         &build_stake_ix(
-            *signer_info.key,
+            *fee_payer_info.key,
+            *authority_info.key,
             *node_info.key,
             amount,
         ),
         &[
-            signer_info.clone(),
-            signer_ata_info.clone(),
+            fee_payer_info.clone(),
+            authority_info.clone(),
+            authority_ata_info.clone(),
             node_info.clone(),
             vault_info.clone(),
 
@@ -132,15 +139,16 @@ mod tests {
 
     #[test]
     fn test_stake_with_node() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
         let amount: u64 = 1000;
 
-        let instruction = build_stake_with_pool_ix(signer, pool_address, amount.into());
+        let instruction = build_stake_with_pool_ix(fee_payer, authority, pool_address, amount.into());
 
-        let signer_ata = ata_address(&signer);
+        let authority_ata = ata_address(&authority);
         let (epoch_address, _) = epoch_pda();
-        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (stake_address, _) = stake_pda(authority, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
 
         // Setup existing accounts
@@ -171,8 +179,9 @@ mod tests {
         let initial_token_balance: u64 = 1_000_000_000;
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_token_balance),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, initial_token_balance),
 
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
@@ -194,7 +203,7 @@ mod tests {
                 Check::success(),
                 Check::account(&stake_address).data(
                     Stake {
-                        authority: signer,
+                        authority: authority,
                         pool: pool_address,
                         inner: StakedTape {
                             amount: amount.into(),
@@ -218,10 +227,10 @@ mod tests {
                         ..node
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&signer_ata).data(
+                Check::account(&authority_ata).data(
                     token(
-                        signer_ata, 
-                        signer, 
+                        authority_ata,
+                        authority,
                         initial_token_balance - amount
                     ).1.data.as_ref()
                 ).build(),

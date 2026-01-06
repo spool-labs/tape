@@ -5,7 +5,8 @@ use crate::error::*;
 pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinNetwork::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         system_info,
         epoch_info,
         node_info,
@@ -13,7 +14,11 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
+        .is_signer()?;
 
     let system = system_info
         .is_writable()?
@@ -27,7 +32,7 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let node = node_info
         .as_account::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -63,13 +68,14 @@ mod tests {
 
     #[test]
     fn test_join_network() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = node_pda(authority);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
-        let instruction = build_join_network_ix(signer, node_address);
+        let instruction = build_join_network_ix(fee_payer, authority, node_address);
 
         // Setup existing accounts
         let mut system = System::zeroed();
@@ -84,7 +90,7 @@ mod tests {
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
-        node.authority = signer;
+        node.authority = authority;
 
         // Minimal pool setup to produce a non-zero activation balance
         node.pool.stake = TAPE(1_000);
@@ -95,7 +101,8 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(node_address, node.pack(), tapedrive::ID),

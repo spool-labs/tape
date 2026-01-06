@@ -5,7 +5,8 @@ use tape_api::prelude::*;
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterNode::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         system_info,
         archive_info,
@@ -13,16 +14,19 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         node_info,
         history_info,
 
-        system_program_info, 
+        system_program_info,
         rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
-    let (node_address, _) = node_pda(*signer_info.key);
+    let (node_address, _) = node_pda(*authority_info.key);
     let (history_address, _) = history_pda(node_address);
 
     node_info
@@ -62,9 +66,9 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     create_program_account::<Node>(
         node_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
-        &[NODE, signer_info.key.as_ref()],
+        &[NODE, authority_info.key.as_ref()],
     )?;
 
     let node_number = system.total_nodes;
@@ -77,7 +81,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let node = node_info.as_account_mut::<Node>(&tapedrive::ID)?;
 
     node.id                   = node_number.into();
-    node.authority            = *signer_info.key;
+    node.authority            = *authority_info.key;
     node.registered_epoch     = current_epoch(epoch);
     node.latest_epoch         = current_epoch(epoch);
 
@@ -100,7 +104,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     create_program_account::<History>(
         history_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
         &[HISTORY, node_address.as_ref()],
     )?;
@@ -122,7 +126,8 @@ mod tests {
 
     #[test]
     fn test_register_node() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         let name = to_name("hello, world");
         let commission_rate = BasisPoints(100); // 1%
@@ -134,7 +139,8 @@ mod tests {
         let bls_pop = secret.proof_of_possession().expect("pop");
 
         let instruction = build_register_node_ix(
-            signer,
+            fee_payer,
+            authority,
             name,
             commission_rate,
             network_address,
@@ -146,7 +152,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = node_pda(authority);
         let (history_address, _) = history_pda(node_address);
 
         // Setup existing accounts
@@ -163,7 +169,8 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
@@ -190,7 +197,7 @@ mod tests {
                 Check::account(&node_address).data(
                     Node {
                         id: NodeId::new(0),
-                        authority: signer,
+                        authority,
                         pool: StakingPool::new(commission_rate),
                         blacklist: Blacklist::new(),
                         metadata: NodeMetadata {

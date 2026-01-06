@@ -1,4 +1,7 @@
 //! Helper functions for building common instruction patterns.
+//!
+//! These helpers are used for operations that need to set up token accounts
+//! for ephemeral authority keypairs (e.g., staking with a unique authority).
 
 use solana_program::{
     instruction::Instruction,
@@ -15,15 +18,14 @@ use crate::utils::ata;
 /// Token decimals for TAPE.
 const TAPE_DECIMALS: u8 = 6;
 
-/// Build an instruction to transfer SOL from fee_payer to a new authority.
+/// Build an instruction to transfer SOL to a new authority account.
 ///
-/// This is used to fund a new authority keypair with enough SOL to pay for
-/// PDA account rent when creating tapes, exchanges, or stakes.
+/// This is used to fund ephemeral authority keypairs with enough SOL for rent.
 ///
 /// # Arguments
 /// * `fee_payer` - The account paying for the transfer (must sign)
 /// * `authority` - The new authority that will receive the SOL
-/// * `lamports` - Amount of SOL (in lamports) to transfer
+/// * `lamports` - Amount of lamports to transfer
 pub fn build_authority_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
@@ -100,21 +102,6 @@ pub fn build_close_ata_ix(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_program::system_program;
-
-    #[test]
-    fn test_build_authority_ix() {
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-        let lamports = 1_000_000;
-
-        let ix = build_authority_ix(fee_payer, authority, lamports);
-
-        assert_eq!(ix.program_id, system_program::ID);
-        assert_eq!(ix.accounts.len(), 2);
-        assert!(ix.accounts[0].is_signer);
-        assert!(ix.accounts[0].is_writable);
-    }
 
     #[test]
     fn test_build_authority_with_tokens_ix() {

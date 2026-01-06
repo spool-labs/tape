@@ -73,7 +73,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
 
     // Step 1: Initialize TAPE token mint
     ctx.print("Step 1: Initializing TAPE token mint...");
-    let ix = build_initialize_mint_ix(keypair.pubkey());
+    let ix = build_initialize_mint_ix(keypair.pubkey(), keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -82,7 +82,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
 
     // Step 2: CreateSystem
     ctx.print("Step 2: Creating system account...");
-    let ix = build_create_system_ix(keypair.pubkey());
+    let ix = build_create_system_ix(keypair.pubkey(), keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -95,7 +95,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
     ctx.print("Step 3: Expanding system account...");
     let mut expansion_count = 0;
     for _ in 0..10 {
-        let ix = build_expand_system_ix(keypair.pubkey());
+        let ix = build_expand_system_ix(keypair.pubkey(), keypair.pubkey());
         match client.send_instructions(&keypair, vec![ix]).await {
             Ok(sig) => {
                 expansion_count += 1;
@@ -118,7 +118,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
 
     // Step 4: Initialize
     ctx.print("Step 4: Initializing system state...");
-    let ix = build_initialize_ix(keypair.pubkey());
+    let ix = build_initialize_ix(keypair.pubkey(), keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -142,7 +142,7 @@ async fn advance_epoch(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_advance_epoch_ix(keypair.pubkey());
+    let ix = build_advance_epoch_ix(keypair.pubkey(), keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await

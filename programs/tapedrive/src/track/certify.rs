@@ -6,7 +6,8 @@ use crate::error::*;
 pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CertifyTrack::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         system_info,
         epoch_info,
@@ -16,7 +17,11 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     let system = system_info
@@ -103,11 +108,12 @@ mod tests {
 
     #[test]
     fn test_certify_track() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
 
-        let (tape_address, _) = tape_pda(signer);
-        let (track_address, _) = track_pda(signer, bucket_hash);
+        let (tape_address, _) = tape_pda(authority);
+        let (track_address, _) = track_pda(authority, bucket_hash);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
 
@@ -149,7 +155,7 @@ mod tests {
 
         // Accounts/state
         let tape = Tape {
-            authority: signer,
+            authority: authority,
             ..Tape::zeroed()
         };
 
@@ -196,10 +202,11 @@ mod tests {
 
         // Instruction and accounts
         let instruction = build_certify_track_ix(
-            signer, bucket_hash, bitmap, agg_sig);
+            fee_payer, authority, bucket_hash, bitmap, agg_sig);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),

@@ -2362,7 +2362,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-api",
@@ -4093,51 +4093,92 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm"
-version = "0.0.15"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95e7c0b51a00d234774b61bf829aa75316eb3a5ebf30bd622010bd046daa287a"
+checksum = "7c01cfd03829e0c7c5a0decb92cdc2963501268fb48851eea03f9017bd0eae83"
 dependencies = [
+ "agave-feature-set",
+ "agave-precompiles",
  "bincode",
  "mollusk-svm-error",
  "mollusk-svm-keys",
+ "mollusk-svm-result",
+ "solana-account",
  "solana-bpf-loader-program",
+ "solana-clock",
  "solana-compute-budget",
+ "solana-epoch-rewards",
+ "solana-epoch-schedule",
+ "solana-hash 2.3.0",
+ "solana-instruction",
+ "solana-loader-v3-interface 3.0.0",
+ "solana-loader-v4-interface",
  "solana-log-collector",
  "solana-logger",
+ "solana-precompile-error",
+ "solana-program-error 2.2.2",
  "solana-program-runtime",
- "solana-sdk",
+ "solana-pubkey 2.4.0",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-slot-hashes",
+ "solana-stake-interface",
+ "solana-svm-callback",
  "solana-system-program",
+ "solana-sysvar",
+ "solana-sysvar-id",
  "solana-timings",
+ "solana-transaction-context",
 ]
 
 [[package]]
 name = "mollusk-svm-error"
-version = "0.0.15"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92d7892725c98a376b55e03ccbea44a0d2111c8f7bab0432b42ea689f3f612e7"
+checksum = "237a9aeed06a7181fa7b5dc4437ccf39cba9cf2062938aa44bc5373bffebacd1"
 dependencies = [
- "solana-sdk",
+ "solana-pubkey 2.4.0",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "mollusk-svm-keys"
-version = "0.0.15"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd18816096707d148467889844ae57384ab4cbbe50ed24fd03139e6e34d61301"
+checksum = "cf086261ca149a8b03c75ef17b3ac83ca985ff46598c3a298f6e85bdc69d7420"
 dependencies = [
  "mollusk-svm-error",
- "solana-sdk",
+ "solana-account",
+ "solana-instruction",
+ "solana-pubkey 2.4.0",
+ "solana-transaction-context",
 ]
 
 [[package]]
 name = "mollusk-svm-programs-token"
-version = "0.0.15"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acdaf9b1afcf8b45fbaa9d3e555ef7ef46b3594d3196ca484ca37fe85975ef45"
+checksum = "b905d2d511d5962219aca8b2de088ca351ecf3c64767e879726abc4b5fbefe72"
 dependencies = [
  "mollusk-svm",
- "solana-sdk",
+ "solana-account",
+ "solana-pubkey 2.4.0",
+ "solana-rent",
+ "spl-associated-token-account 7.0.0",
+ "spl-token 8.0.0",
+]
+
+[[package]]
+name = "mollusk-svm-result"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46d33c72e491320ce1a884c60e0e23768c44c0990accb0ecbd20e698b21a2c25"
+dependencies = [
+ "solana-account",
+ "solana-instruction",
+ "solana-program-error 2.2.2",
+ "solana-pubkey 2.4.0",
+ "solana-rent",
 ]
 
 [[package]]
@@ -6249,6 +6290,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f949fe4edaeaea78c844023bfc1c898e0b1f5a100f8a8d2d0f85d0a7b090258"
 dependencies = [
  "bincode",
+ "qualifier_attr",
  "serde",
  "serde_bytes",
  "serde_derive",
@@ -6282,7 +6324,7 @@ dependencies = [
  "solana-epoch-schedule",
  "solana-fee-calculator",
  "solana-instruction",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-nonce",
  "solana-program-option",
  "solana-program-pack",
@@ -6632,7 +6674,7 @@ dependencies = [
  "solana-hash 2.3.0",
  "solana-instruction",
  "solana-keccak-hasher",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-log-collector",
  "solana-measure",
@@ -7061,7 +7103,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair 2.2.1",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-measure",
  "solana-message",
  "solana-metrics",
@@ -7823,6 +7865,20 @@ dependencies = [
 
 [[package]]
 name = "solana-loader-v3-interface"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4be76cfa9afd84ca2f35ebc09f0da0f0092935ccdac0595d98447f259538c2"
+dependencies = [
+ "serde",
+ "serde_bytes",
+ "serde_derive",
+ "solana-instruction",
+ "solana-pubkey 2.4.0",
+ "solana-sdk-ids",
+]
+
+[[package]]
+name = "solana-loader-v3-interface"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f7162a05b8b0773156b443bccd674ea78bb9aa406325b467ea78c06c99a63a2"
@@ -7863,7 +7919,7 @@ dependencies = [
  "solana-bincode",
  "solana-bpf-loader-program",
  "solana-instruction",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-log-collector",
  "solana-measure",
@@ -8224,7 +8280,7 @@ dependencies = [
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-loader-v2-interface",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-message",
  "solana-msg",
@@ -8389,7 +8445,7 @@ dependencies = [
  "solana-hash 2.3.0",
  "solana-instruction",
  "solana-keypair 2.2.1",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-log-collector",
  "solana-logger",
  "solana-message",
@@ -8884,7 +8940,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair 2.2.1",
  "solana-lattice-hash",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-measure",
  "solana-message",
@@ -9534,7 +9590,7 @@ dependencies = [
  "solana-hash 2.3.0",
  "solana-instruction",
  "solana-instructions-sysvar",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-loader-v4-program",
  "solana-log-collector",
@@ -9745,7 +9801,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair 2.2.1",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-logger",
  "solana-message",
  "solana-native-token",
@@ -9989,7 +10045,7 @@ dependencies = [
  "solana-hash 2.3.0",
  "solana-instruction",
  "solana-loader-v2-interface",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-message",
  "solana-program-option",
  "solana-pubkey 2.4.0",
@@ -11118,7 +11174,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-api",
@@ -11358,7 +11414,7 @@ dependencies = [
  "mpl-token-metadata",
  "num_enum",
  "solana-program",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-core",
@@ -11598,7 +11654,7 @@ dependencies = [
  "solana-log-collector",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "tape-api",
  "tape-core",
@@ -11622,7 +11678,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-api",
@@ -11877,7 +11933,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-program",
  "solana-sdk",
- "spl-associated-token-account 6.0.0",
+ "spl-associated-token-account 7.0.0",
  "spl-token 4.0.2",
  "steel",
  "tape-api",

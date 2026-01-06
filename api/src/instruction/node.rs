@@ -80,7 +80,8 @@ pub struct ClaimCommission {}
 
 
 pub fn build_register_node_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     name: [u8; NAME_LENGTH],
     commission_rate: BasisPoints,
     network_address: NetworkAddress,
@@ -92,7 +93,7 @@ pub fn build_register_node_ix(
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
-    let (node_address, _) = node_pda(signer);
+    let (node_address, _) = node_pda(authority);
     let (history_address, _) = history_pda(node_address);
 
     let commission_rate = commission_rate.pack();
@@ -100,7 +101,8 @@ pub fn build_register_node_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new(system_address, false),
             AccountMeta::new_readonly(archive_address, false),
@@ -123,7 +125,8 @@ pub fn build_register_node_ix(
 }
 
 pub fn build_join_network_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
 ) -> Instruction {
 
@@ -133,7 +136,8 @@ pub fn build_join_network_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new_readonly(node_address, false),
@@ -143,11 +147,12 @@ pub fn build_join_network_ix(
 }
 
 pub fn build_epoch_sync_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     epoch: EpochNumber,
     spools: &[SpoolIndex],
-) ->Instruction {
+) -> Instruction {
 
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
@@ -158,7 +163,8 @@ pub fn build_epoch_sync_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new(epoch_address, false),
             AccountMeta::new(node_address, false),
@@ -171,7 +177,8 @@ pub fn build_epoch_sync_ix(
 }
 
 pub fn build_set_authority_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     new_authority: Pubkey,
 ) -> Instruction {
@@ -179,7 +186,8 @@ pub fn build_set_authority_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(new_authority, false),
             AccountMeta::new(node_address, false),
         ],
@@ -188,7 +196,8 @@ pub fn build_set_authority_ix(
 }
 
 pub fn build_set_bls_pubkey_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     bls_pubkey: BlsPubkey,
     bls_pop: BlsSignature,
@@ -197,7 +206,8 @@ pub fn build_set_bls_pubkey_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetBlsPubkey {
@@ -208,7 +218,8 @@ pub fn build_set_bls_pubkey_ix(
 }
 
 pub fn build_set_name_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     name: &str,
 ) -> Instruction {
@@ -217,7 +228,8 @@ pub fn build_set_name_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetName {
@@ -227,7 +239,8 @@ pub fn build_set_name_ix(
 }
 
 pub fn build_set_network_address_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     network_address: NetworkAddress,
 ) -> Instruction {
@@ -235,7 +248,8 @@ pub fn build_set_network_address_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetNetworkAddress {
@@ -245,7 +259,8 @@ pub fn build_set_network_address_ix(
 }
 
 pub fn build_set_network_tls_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     network_tls: Pubkey,
 ) -> Instruction {
@@ -253,7 +268,8 @@ pub fn build_set_network_tls_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetNetworkTls {
@@ -263,7 +279,8 @@ pub fn build_set_network_tls_ix(
 }
 
 pub fn build_set_commission_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     commission_rate: BasisPoints,
 ) -> Instruction {
@@ -274,7 +291,8 @@ pub fn build_set_commission_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
             AccountMeta::new_readonly(epoch_address, false),
         ],
@@ -285,19 +303,21 @@ pub fn build_set_commission_ix(
 }
 
 pub fn build_claim_commission_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
 ) -> Instruction {
 
-    let signer_ata           = ata(&signer);
+    let authority_ata        = ata(&authority);
     let (archive_address, _) = archive_pda();
     let (archive_ata, _)     = archive_ata();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new(archive_address, false),
             AccountMeta::new(archive_ata, false),
@@ -311,7 +331,8 @@ pub fn build_claim_commission_ix(
 }
 
 pub fn build_set_storage_capacity_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     size: StorageUnits,
 ) -> Instruction {
@@ -320,7 +341,8 @@ pub fn build_set_storage_capacity_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetStorageCapacity {
@@ -330,7 +352,8 @@ pub fn build_set_storage_capacity_ix(
 }
 
 pub fn build_set_storage_price_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     node_address: Pubkey,
     price: Coin<TAPE>,
 ) -> Instruction {
@@ -339,7 +362,8 @@ pub fn build_set_storage_price_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(node_address, false),
         ],
         data: SetStoragePrice {

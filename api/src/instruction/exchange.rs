@@ -51,17 +51,19 @@ pub struct SwapForSol {
 
 
 pub fn build_register_exchange_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
 ) -> Instruction {
 
     let (mint_address, _) = mint_pda();
-    let (exchange_address, _) = exchange_pda(signer);
+    let (exchange_address, _) = exchange_pda(authority);
     let (exchange_ata, _) = exchange_ata(exchange_address);
 
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(exchange_address, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(mint_address, false),
@@ -75,7 +77,8 @@ pub fn build_register_exchange_ix(
 }
 
 pub fn build_deposit_sol_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     exchange: Pubkey,
     amount: Coin<SOL>,
 ) -> Instruction {
@@ -84,7 +87,8 @@ pub fn build_deposit_sol_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),
             AccountMeta::new(exchange, false),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
@@ -95,7 +99,8 @@ pub fn build_deposit_sol_ix(
 }
 
 pub fn build_withdraw_sol_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     exchange: Pubkey,
     amount: Coin<SOL>,
 ) -> Instruction {
@@ -104,7 +109,8 @@ pub fn build_withdraw_sol_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),
             AccountMeta::new(exchange, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -115,8 +121,9 @@ pub fn build_withdraw_sol_ix(
 }
 
 pub fn build_deposit_tape_ix(
-    signer: Pubkey,
-    signer_ata: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
+    authority_ata: Pubkey,
     exchange: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
@@ -126,8 +133,9 @@ pub fn build_deposit_tape_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),
@@ -139,8 +147,9 @@ pub fn build_deposit_tape_ix(
 }
 
 pub fn build_withdraw_tape_ix(
-    signer: Pubkey,
-    signer_ata: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
+    authority_ata: Pubkey,
     exchange: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
@@ -150,8 +159,9 @@ pub fn build_withdraw_tape_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),
@@ -163,7 +173,8 @@ pub fn build_withdraw_tape_ix(
 }
 
 pub fn build_set_exchange_rate_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     exchange: Pubkey,
     tape: u64,
     sol: u64,
@@ -171,7 +182,8 @@ pub fn build_set_exchange_rate_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new(exchange, false),
         ],
         data: SetExchangeRate {
@@ -183,8 +195,9 @@ pub fn build_set_exchange_rate_ix(
 }
 
 pub fn build_swap_for_tape_ix(
-    signer: Pubkey,
-    signer_ata: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
+    authority_ata: Pubkey,
     exchange: Pubkey,
     amount_sol: Coin<SOL>,
 ) -> Instruction {
@@ -194,8 +207,9 @@ pub fn build_swap_for_tape_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),
+            AccountMeta::new(authority_ata, false),
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(system_program::ID, false),
@@ -206,8 +220,9 @@ pub fn build_swap_for_tape_ix(
 }
 
 pub fn build_swap_for_sol_ix(
-    signer: Pubkey,
-    signer_ata: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
+    authority_ata: Pubkey,
     exchange: Pubkey,
     amount_tape: Coin<TAPE>,
 ) -> Instruction {
@@ -217,8 +232,9 @@ pub fn build_swap_for_sol_ix(
     Instruction {
         program_id: crate::program::exchange::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),
+            AccountMeta::new(authority_ata, false),
             AccountMeta::new(exchange, false),
             AccountMeta::new(exchange_ata, false),
             AccountMeta::new_readonly(spl_token::ID, false),

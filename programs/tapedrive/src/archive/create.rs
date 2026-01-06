@@ -5,13 +5,20 @@ use solana_program::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = CreateSystem::try_from_bytes(data)?;
     let [
-        signer_info, 
+        fee_payer_info,
+        authority_info,
         system_info,
-        system_program_info, 
+        system_program_info,
         rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
+        .is_signer()?;
 
     system_program_info
         .is_program(&system_program::ID)?;
@@ -27,11 +34,11 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let size = MAX_PERMITTED_DATA_INCREASE
         .min(System::get_size());
-    
+
     create_account_with_size::<System>(
         system_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         size,
         &tapedrive::ID,
         &[SYSTEM],
@@ -48,13 +55,15 @@ mod tests {
 
     #[test]
     fn test_system_create() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
-        let instruction = build_create_system_ix(signer);
+        let instruction = build_create_system_ix(fee_payer, authority);
         let (system_address, _) = system_pda();
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             empty(system_address),
 
             system_program(),
@@ -66,7 +75,7 @@ mod tests {
 
         let env = test_env();
         env.process_instruction(
-            &instruction, 
+            &instruction,
             &accounts,
             &[
                 Check::success(),

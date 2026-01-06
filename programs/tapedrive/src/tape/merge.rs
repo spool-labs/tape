@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergeTape::try_from_bytes(data)?;
     let [
-        signer_info,
-        recipient_info,
+        fee_payer_info,
+        source_authority_info,
+        dest_authority_info,
 
         source_tape_info,
         dest_tape_info,
@@ -17,9 +18,13 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    source_authority_info
         .is_signer()?;
-    recipient_info
+    dest_authority_info
         .is_signer()?;
 
     system_program_info
@@ -34,8 +39,8 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    let (source_tape_address, _) = tape_pda(*signer_info.key);
-    let (dest_tape_address, _)   = tape_pda(*recipient_info.key);
+    let (source_tape_address, _) = tape_pda(*source_authority_info.key);
+    let (dest_tape_address, _)   = tape_pda(*dest_authority_info.key);
 
     let source_tape = source_tape_info
         .is_writable()?
@@ -48,8 +53,8 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
     // Require correct authorities
-    if source_tape.authority != *signer_info.key || 
-       dest_tape.authority != *recipient_info.key {
+    if source_tape.authority != *source_authority_info.key ||
+       dest_tape.authority != *dest_authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -74,7 +79,7 @@ pub fn process_merge_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     dest_tape.capacity     = new_capacity;
     dest_tape.used         = new_used;
 
-    close_account(source_tape_info, signer_info)?;
+    close_account(source_tape_info, fee_payer_info)?;
 
     Ok(())
 }
@@ -86,11 +91,12 @@ mod tests {
 
     #[test]
     fn test_merge_tape() {
-        let signer = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let source_authority = Pubkey::new_unique();
+        let dest_authority = Pubkey::new_unique();
 
-        let (source_tape_address, _) = tape_pda(signer);
-        let (dest_tape_address, _)   = tape_pda(recipient);
+        let (source_tape_address, _) = tape_pda(source_authority);
+        let (dest_tape_address, _)   = tape_pda(dest_authority);
         let (archive_address, _)     = archive_pda();
 
         // Two tapes with identical epochs
@@ -98,7 +104,7 @@ mod tests {
         let e1 = EpochNumber(110);
 
         let source_tape = Tape {
-            authority: signer,
+            authority: source_authority,
             capacity: StorageUnits(200),
             used: StorageUnits(30),
             active_epoch: e0,
@@ -106,7 +112,7 @@ mod tests {
             ..Tape::zeroed()
         };
         let dest_tape = Tape {
-            authority: recipient,
+            authority: dest_authority,
             capacity: StorageUnits(100),
             used: StorageUnits(20),
             active_epoch: e0,
@@ -119,11 +125,12 @@ mod tests {
             ..Archive::zeroed()
         };
 
-        let instruction = build_merge_tape_ix(signer, recipient);
+        let instruction = build_merge_tape_ix(fee_payer, source_authority, dest_authority);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            sol(recipient, 0),
+            sol(fee_payer, 1_000_000_000),
+            sol(source_authority, 0),
+            sol(dest_authority, 0),
 
             pda(source_tape_address, source_tape.pack(), tapedrive::ID),
             pda(dest_tape_address, dest_tape.pack(), tapedrive::ID),
@@ -133,7 +140,7 @@ mod tests {
         ];
 
         let expected_tape = Tape {
-            authority: recipient,
+            authority: dest_authority,
             capacity: StorageUnits(300),
             used: StorageUnits(50),
             active_epoch: e0,

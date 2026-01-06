@@ -160,12 +160,12 @@ async fn initialize_system(client: &RpcClient<TestRpc>, payer: &Keypair) {
     };
 
     // Step 1: Initialize the TAPE token mint
-    let mint_ix = build_initialize_mint_ix(payer.pubkey());
+    let mint_ix = build_initialize_mint_ix(payer.pubkey(), payer.pubkey());
     client.send_instructions(payer, vec![mint_ix]).await
         .expect("Failed to initialize mint");
 
     // Step 2: Create the System singleton (starts at ~10KB)
-    let create_system_ix = build_create_system_ix(payer.pubkey());
+    let create_system_ix = build_create_system_ix(payer.pubkey(), payer.pubkey());
     client.send_instructions(payer, vec![create_system_ix]).await
         .expect("Failed to create system");
 
@@ -173,7 +173,7 @@ async fn initialize_system(client: &RpcClient<TestRpc>, payer: &Keypair) {
     // System is ~70KB, MAX_PERMITTED_DATA_INCREASE is 10KB per tx
     // Need multiple expand calls until the account reaches full size
     for _ in 0..10 {
-        let expand_ix = build_expand_system_ix(payer.pubkey());
+        let expand_ix = build_expand_system_ix(payer.pubkey(), payer.pubkey());
         match client.send_instructions(payer, vec![expand_ix]).await {
             Ok(_) => {}
             Err(e) => {
@@ -193,7 +193,7 @@ async fn initialize_system(client: &RpcClient<TestRpc>, payer: &Keypair) {
     }
 
     // Step 4: Initialize Epoch and Archive
-    let init_ix = build_initialize_ix(payer.pubkey());
+    let init_ix = build_initialize_ix(payer.pubkey(), payer.pubkey());
     client.send_instructions(payer, vec![init_ix]).await
         .expect("Failed to initialize epoch/archive");
 }
@@ -281,6 +281,7 @@ async fn test_register_node() {
 
     let register_ix = build_register_node_ix(
         node_authority.pubkey(),
+        node_authority.pubkey(),
         name,
         commission_rate,
         network_address,
@@ -338,6 +339,7 @@ async fn test_get_all_nodes() {
         // Register
         let name = to_name(&format!("node-{}", i));
         let register_ix = build_register_node_ix(
+            node_authority.pubkey(),
             node_authority.pubkey(),
             name,
             BasisPoints(500),

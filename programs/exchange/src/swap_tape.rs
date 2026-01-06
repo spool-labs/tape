@@ -6,8 +6,9 @@ use steel::*;
 pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForTape::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
         exchange_info,
         exchange_ata_info,
         system_program_info,
@@ -18,9 +19,13 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     };
 
     // Basic checks
-    signer_info
-        .is_writable()?
-        .is_signer()?;
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
+        .is_signer()?
+        .is_writable()?;
 
     let (exchange_ata, _) = exchange_ata(*exchange_info.key);
 
@@ -28,7 +33,7 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
         .assert(|a| a.mint().eq(&MINT_ADDRESS))?;
@@ -62,25 +67,25 @@ pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ExchangeError::InsufficientFunds.into());
     }
 
-    // Transfer SOL from signer to exchange (CPI to system program)
+    // Transfer SOL from authority to exchange (CPI to system program)
     invoke(
         &system_instruction::transfer(
-            signer_info.key,
+            authority_info.key,
             exchange_info.key,
             amount_in_sol.as_u64(),
         ),
         &[
-            signer_info.clone(),
+            authority_info.clone(),
             exchange_info.clone(),
             system_program_info.clone(),
         ],
     )?;
 
-    // Transfer TAPE from exchange_ata to signer_ata
+    // Transfer TAPE from exchange_ata to authority_ata
     transfer_signed(
         exchange_info,
         exchange_ata_info,
-        signer_ata_info,
+        authority_ata_info,
         token_program_info,
         amount_out_tape,
         &[EXCHANGE, exchange.authority.as_ref()],

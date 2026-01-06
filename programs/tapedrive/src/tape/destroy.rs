@@ -5,7 +5,8 @@ use crate::error::*;
 pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = DestroyTape::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         tape_info,
         epoch_info,
@@ -16,7 +17,11 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     system_program_info
@@ -35,7 +40,7 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if tape.authority != *signer_info.key {
+    if tape.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -54,7 +59,7 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::NotEmpty.into());
     }
 
-    close_account(tape_info, signer_info)?;
+    close_account(tape_info, fee_payer_info)?;
 
     Ok(())
 }
@@ -66,14 +71,15 @@ mod tests {
 
     #[test]
     fn test_destroy_tape() {
-        let signer = Pubkey::new_unique();
-        let (tape_address, _) = tape_pda(signer);
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (tape_address, _) = tape_pda(authority);
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
 
         // Tape expired at 50, used = 0
         let tape = Tape {
-            authority: signer,
+            authority: authority,
             capacity: StorageUnits(123),
             used: StorageUnits(0),
             active_epoch: EpochNumber(40),
@@ -89,10 +95,11 @@ mod tests {
             ..Archive::zeroed()
         };
 
-        let instruction = build_destroy_tape_ix(signer);
+        let instruction = build_destroy_tape_ix(fee_payer, authority);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             pda(tape_address, tape.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
@@ -112,7 +119,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                Check::account(&signer)
+                Check::account(&fee_payer)
                     .lamports(1_000_000_000 + rent(Tape::get_size()))
                     .build(),
                 Check::account(&tape_address)

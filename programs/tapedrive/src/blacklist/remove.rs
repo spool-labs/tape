@@ -5,21 +5,26 @@ use crate::error::*;
 pub fn process_remove_from_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RemoveFromBlacklist::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         node_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
     // Node authority must sign
-    signer_info.is_signer()?;
+    authority_info.is_signer()?;
 
     // Load and validate node
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -52,15 +57,16 @@ mod tests {
 
     #[test]
     fn test_remove_from_blacklist_success() {
-        let signer = Pubkey::new_unique();
-        let (node_address, _) = node_pda(signer);
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (node_address, _) = node_pda(authority);
 
         // Build a node with a single blacklisted track
         let blob_hash = Hash::new_unique();
         let units = StorageUnits(500);
 
         let mut node = Node::zeroed();
-        node.authority = signer;
+        node.authority = authority;
         node.blacklist = Blacklist::new();
         node.blacklist.add(blob_hash, units).expect("add");
 
@@ -76,7 +82,8 @@ mod tests {
 
         // Build instruction
         let instruction = build_remove_from_blacklist_ix(
-            signer,
+            fee_payer,
+            authority,
             node_address,
             0,
             blob_hash,
@@ -86,7 +93,8 @@ mod tests {
 
         // Accounts
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
@@ -111,15 +119,16 @@ mod tests {
 
     #[test]
     fn test_remove_from_blacklist_bad_proof() {
-        let signer = Pubkey::new_unique();
-        let (node_address, _) = node_pda(signer);
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (node_address, _) = node_pda(authority);
 
         let blob_hash = Hash::new_unique();
         let units = StorageUnits(123);
 
         // Node with one blacklisted entry
         let mut node = Node::zeroed();
-        node.authority = signer;
+        node.authority = authority;
         node.blacklist = Blacklist::new();
         node.blacklist.add(blob_hash, units).expect("add");
 
@@ -127,7 +136,8 @@ mod tests {
         let bad_proof: [Hash; BLACKLIST_SIZE] = [Hash::zeroed(); BLACKLIST_SIZE];
 
         let instruction = build_remove_from_blacklist_ix(
-            signer,
+            fee_payer,
+            authority,
             node_address,
             0,
             blob_hash,
@@ -136,7 +146,8 @@ mod tests {
         );
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 

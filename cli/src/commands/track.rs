@@ -141,10 +141,11 @@ async fn register(
 
     let ix = build_register_track_ix(
         signer,
+        signer,
         storage_units,
-        root_hash.into(),
-        commitment_hash.into(),
-        key_hash.into(),
+        root_hash,
+        commitment_hash,
+        key_hash,
     );
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -181,7 +182,7 @@ async fn delete(ctx: &Context, key: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_delete_track_ix(signer, key_hash.into());
+    let ix = build_delete_track_ix(signer, signer, key_hash);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
@@ -240,7 +241,7 @@ async fn certify(
         return Ok(());
     }
 
-    let ix = build_certify_track_ix(signer, key_hash.into(), committee_bitmap, bls_sig);
+    let ix = build_certify_track_ix(signer, signer, key_hash, committee_bitmap, bls_sig);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let sig = client

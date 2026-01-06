@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergePoolStake::try_from_bytes(data)?;
     let [
-        signer_info,
-        recipient_info,
+        fee_payer_info,
+        source_authority_info,
+        dest_authority_info,
 
         node_info,
         source_stake_info,
@@ -21,10 +22,14 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    source_authority_info
         .is_signer()?;
 
-    recipient_info
+    dest_authority_info
         .is_signer()?;
 
     token_program_info
@@ -33,8 +38,8 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .is_program(&staking::ID)?;
 
     // Derive addresses
-    let (source_stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
-    let (dest_stake_address, _)   = stake_pda(*recipient_info.key, *node_info.key);
+    let (source_stake_address, _) = stake_pda(*source_authority_info.key, *node_info.key);
+    let (dest_stake_address, _)   = stake_pda(*dest_authority_info.key, *node_info.key);
 
     let (source_vault_address, _) = vault_pda(source_stake_address);
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
@@ -48,7 +53,7 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let source_stake = source_stake_info
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if source_stake.authority != *signer_info.key || source_stake.pool != *node_info.key {
+    if source_stake.authority != *source_authority_info.key || source_stake.pool != *node_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -61,7 +66,7 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let dest_stake = dest_stake_info
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if dest_stake.authority != *recipient_info.key || dest_stake.pool != *node_info.key {
+    if dest_stake.authority != *dest_authority_info.key || dest_stake.pool != *node_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -92,13 +97,15 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // CPI into staking program to move all funds and close source vault
     solana_program::program::invoke(
         &build_merge_stake_ix(
-            *signer_info.key,
+            *fee_payer_info.key,
+            *source_authority_info.key,
             *node_info.key,
-            *recipient_info.key,
+            *dest_authority_info.key,
         ),
         &[
-            signer_info.clone(),
-            recipient_info.clone(),
+            fee_payer_info.clone(),
+            source_authority_info.clone(),
+            dest_authority_info.clone(),
 
             node_info.clone(),
             source_vault_info.clone(),
@@ -110,7 +117,7 @@ pub fn process_merge_pool_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     close_account(
         source_stake_info,
-        signer_info,
+        fee_payer_info,
     )?;
 
     Ok(())
@@ -127,16 +134,17 @@ mod tests {
         let amount: u64 = 1_000;
         let initial_dest_balance: u64 = 1_500;
 
-        let signer = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let source_authority = Pubkey::new_unique();
+        let dest_authority = Pubkey::new_unique();
         let pool_address = Pubkey::new_unique();
 
-        let instruction = build_merge_pool_stake_ix(signer, pool_address, recipient);
+        let instruction = build_merge_pool_stake_ix(fee_payer, source_authority, pool_address, dest_authority);
 
-        let (source_stake_address, _) = stake_pda(signer, pool_address);
+        let (source_stake_address, _) = stake_pda(source_authority, pool_address);
         let (source_vault_address, _) = vault_pda(source_stake_address);
 
-        let (dest_stake_address, _) = stake_pda(recipient, pool_address);
+        let (dest_stake_address, _) = stake_pda(dest_authority, pool_address);
         let (dest_vault_address, _) = vault_pda(dest_stake_address);
 
         // Prepare node
@@ -146,7 +154,7 @@ mod tests {
         let e0: EpochNumber = EpochNumber(73);
 
         let source_stake = Stake {
-            authority: signer,
+            authority: source_authority,
             pool: pool_address,
             inner: StakedTape {
                 amount: TAPE(amount),
@@ -156,7 +164,7 @@ mod tests {
         };
 
         let dest_stake = Stake {
-            authority: recipient,
+            authority: dest_authority,
             pool: pool_address,
             inner: StakedTape {
                 amount: TAPE(initial_dest_balance),
@@ -166,8 +174,9 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            sol(recipient, 0),
+            sol(fee_payer, 1_000_000_000),
+            sol(source_authority, 0),
+            sol(dest_authority, 0),
 
             pda(pool_address, node.pack(), tapedrive::ID),
             pda(source_stake_address, source_stake.pack(), tapedrive::ID),
@@ -186,8 +195,13 @@ mod tests {
             &[
                 Check::success(),
 
-                Check::account(&signer)
-                    .lamports(1_000_000_000 + rent_token() + rent(source_stake.pack().len()))
+                // fee_payer gets stake account rent refund (not vault rent - that goes to authority)
+                Check::account(&fee_payer)
+                    .lamports(1_000_000_000 + rent(source_stake.pack().len()))
+                    .build(),
+                // source_authority receives vault rent refund
+                Check::account(&source_authority)
+                    .lamports(rent_token())
                     .build(),
                 Check::account(&source_stake_address)
                     .lamports(0)
@@ -201,7 +215,7 @@ mod tests {
                 // Destination stake receives principal; source amount becomes zero
                 Check::account(&dest_stake_address).data(
                     Stake {
-                        authority: recipient,
+                        authority: dest_authority,
                         pool: pool_address,
                         inner: StakedTape {
                             amount: TAPE(initial_dest_balance + amount),
@@ -211,7 +225,7 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
 
-                // Vaults: move tokens and close source vault (rent refunded to signer)
+                // Vaults: move tokens and close source vault (rent refunded to authority)
                 Check::account(&dest_vault_address).data(
                     token(
                         dest_vault_address,

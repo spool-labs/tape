@@ -5,7 +5,8 @@ use crate::error::*;
 pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncEpoch::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         system_info,
         epoch_info,
         node_info,
@@ -13,7 +14,10 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
         .is_signer()?;
 
     let system = system_info
@@ -29,7 +33,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -90,11 +94,12 @@ mod tests {
 
     #[test]
     fn test_epoch_sync() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = node_pda(authority);
 
         // Setup existing accounts
 
@@ -103,11 +108,11 @@ mod tests {
         let mut node = Node::zeroed();
 
         node.id = NodeId(9000);
-        node.authority = signer;
+        node.authority = authority;
         node.latest_epoch = EpochNumber(7);
 
-        system.committee = Committee::from_members(&[ 
-            member(3, 3_000), 
+        system.committee = Committee::from_members(&[
+            member(3, 3_000),
             member(node.id.into(), 2_000),  // index 1
             member(1, 1_000)
         ]);
@@ -119,14 +124,16 @@ mod tests {
         epoch.state = EpochState::syncing();
 
         let instruction = build_epoch_sync_ix(
-            signer,
+            fee_payer,
+            authority,
             node_address,
             epoch.id,
             &system.spools.spools_for_member(1) // index 1
         );
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(node_address, node.pack(), tapedrive::ID),
@@ -164,7 +171,8 @@ mod tests {
         node.latest_epoch = EpochNumber(42);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(node_address, node.pack(), tapedrive::ID),
@@ -188,14 +196,16 @@ mod tests {
         epoch.state = EpochState::syncing();
 
         let instruction = build_epoch_sync_ix(
-            signer,
+            fee_payer,
+            authority,
             node_address,
             epoch.id,
             &system.spools.spools_for_member(1)
         );
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(node_address, node.pack(), tapedrive::ID),

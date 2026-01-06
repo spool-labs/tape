@@ -226,7 +226,7 @@ async fn register(ctx: &Context, authority_path: Option<PathBuf>) -> Result<()> 
     }
 
     // Register exchange instruction (authority is the signer)
-    instructions.push(build_register_exchange_ix(authority));
+    instructions.push(build_register_exchange_ix(authority, authority));
 
     // Send with both signers if using new keypair
     let sig = if is_new_keypair || fee_payer.pubkey() != authority {
@@ -279,7 +279,7 @@ async fn set_rate(ctx: &Context, tape: u64, sol: u64) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_set_exchange_rate_ix(keypair.pubkey(), exchange_address, tape, sol);
+    let ix = build_set_exchange_rate_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, tape, sol);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -308,7 +308,7 @@ async fn deposit_tape(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_deposit_tape_ix(keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_deposit_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -335,7 +335,7 @@ async fn deposit_sol(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_deposit_sol_ix(keypair.pubkey(), exchange_address, amount);
+    let ix = build_deposit_sol_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -364,7 +364,7 @@ async fn withdraw_tape(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_withdraw_tape_ix(keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_withdraw_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -391,7 +391,7 @@ async fn withdraw_sol(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_withdraw_sol_ix(keypair.pubkey(), exchange_address, amount);
+    let ix = build_withdraw_sol_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -426,7 +426,7 @@ async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Opti
         return Ok(());
     }
 
-    let ix = build_swap_for_tape_ix(keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_swap_for_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -461,7 +461,7 @@ async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_authority: Optio
         return Ok(());
     }
 
-    let ix = build_swap_for_sol_ix(keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_swap_for_sol_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await

@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = UnstakeFromPool::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
 
         archive_info,
         archive_ata_info,
@@ -26,13 +27,17 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     let (history_address, _) = history_pda(*node_info.key);
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
-        .assert(|t| t.owner() == *signer_info.key)?
+        .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     archive_info
@@ -64,7 +69,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         return Err(TapeError::NodeStale.into());
     }
 
-    let (stake_address, _) = stake_pda(*signer_info.key, *node_info.key);
+    let (stake_address, _) = stake_pda(*authority_info.key, *node_info.key);
     let (vault_address, _) = vault_pda(stake_address);
 
     let stake = stake_info
@@ -72,7 +77,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .has_address(&stake_address)?
         .as_account_mut::<Stake>(&tapedrive::ID)?;
 
-    if stake.authority != *signer_info.key || stake.pool != *node_info.key {
+    if stake.authority != *authority_info.key || stake.pool != *node_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -132,11 +137,11 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         total_rewards,
     );
 
-    // Transfer owed rewards from archive to signer ATA
+    // Transfer owed rewards from archive to authority ATA
     transfer_signed(
         archive_info,
         archive_ata_info,
-        signer_ata_info,
+        authority_ata_info,
         token_program_info,
         total_rewards.into(),
         &[ARCHIVE],
@@ -145,12 +150,14 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Transfer out the principal, and close vault
     solana_program::program::invoke(
         &build_unstake_ix(
-            *signer_info.key, 
+            *fee_payer_info.key,
+            *authority_info.key,
             *node_info.key
         ),
         &[
-            signer_info.clone(),
-            signer_ata_info.clone(),
+            fee_payer_info.clone(),
+            authority_info.clone(),
+            authority_ata_info.clone(),
             node_info.clone(),
             vault_info.clone(),
 
@@ -161,7 +168,7 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     // Close the Stake account
     close_account(
         stake_info,
-        signer_info,
+        fee_payer_info,
     )?;
 
     // TODO: update/advance the node's state?
@@ -177,19 +184,20 @@ mod tests {
     #[test]
     fn test_unstake_from_pool() {
 
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let pool_owner = Pubkey::new_unique();
 
-        let signer_ata = ata_address(&signer);
+        let authority_ata = ata_address(&authority);
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
         let (epoch_address, _) = epoch_pda();
         let (pool_address, _)  = node_pda(pool_owner);
         let (history_address, _) = history_pda(pool_address);
-        let (stake_address, _) = stake_pda(signer, pool_address);
+        let (stake_address, _) = stake_pda(authority, pool_address);
         let (vault_address, _) = vault_pda(stake_address);
 
-        let instruction = build_unstake_from_pool_ix(signer, pool_address);
+        let instruction = build_unstake_from_pool_ix(fee_payer, authority, pool_address);
 
         // Epoch timeline
         let e0: EpochNumber = EpochNumber(42);     // activation epoch
@@ -236,7 +244,7 @@ mod tests {
 
         // Stake account prepared in "unlocking" state with withdraw at e4
         let stake = Stake {
-            authority: signer,
+            authority: authority,
             pool: pool_address,
             inner: StakedTape {
                 amount: TAPE(principal),
@@ -249,8 +257,9 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            token(signer_ata, signer, 0),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, 0),
 
             pda(archive_address, archive.pack(), tapedrive::ID),
             token(archive_ata, archive_address, reward),
@@ -273,8 +282,13 @@ mod tests {
             &[
                 Check::success(),
 
-                Check::account(&signer)
-                    .lamports(1_000_000_000 + rent_token() + rent(Stake::get_size()))
+                // fee_payer gets stake account rent refund (not vault rent - that goes to authority)
+                Check::account(&fee_payer)
+                    .lamports(1_000_000_000 + rent(Stake::get_size()))
+                    .build(),
+                // authority receives vault rent refund
+                Check::account(&authority)
+                    .lamports(rent_token())
                     .build(),
                 Check::account(&stake_address)
                     .lamports(0)
@@ -293,11 +307,11 @@ mod tests {
                     ).1.data.as_ref()
                 ).build(),
 
-                // Signer gets principal tokens and vault gets closed, rent refunded
-                Check::account(&signer_ata).data(
+                // Authority gets principal tokens and rewards
+                Check::account(&authority_ata).data(
                     token(
-                        signer_ata,
-                        signer,
+                        authority_ata,
+                        authority,
                         principal + reward
                     ).1.data.as_ref()
                 ).build(),

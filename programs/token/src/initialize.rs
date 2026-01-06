@@ -5,21 +5,29 @@ use tape_api::prelude::*;
 
 pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [
-        signer_info, 
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
 
-        mint_info, 
-        metadata_info, 
+        mint_info,
+        metadata_info,
         treasury_info,
 
-        system_program_info, 
-        token_program_info, 
+        system_program_info,
+        token_program_info,
         associated_token_program_info,
-        metadata_program_info, 
+        metadata_program_info,
         rent_sysvar_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
+        .is_signer()?;
 
     // Empty accounts
 
@@ -55,7 +63,7 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     create_program_account::<Treasury>(
         treasury_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tape_api::program::token::ID,
         &[TREASURY],
     )?;
@@ -64,7 +72,7 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     allocate_account_with_bump(
         mint_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         Mint::LEN,
         &spl_token::ID,
         &[MINT, MINT_SEED],
@@ -73,7 +81,7 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
 
     // Set mint authority
     initialize_mint_signed_with_bump(
-        mint_info, 
+        mint_info,
         treasury_info,
         None,
         token_program_info,
@@ -89,8 +97,8 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
         metadata: metadata_info,
         mint: mint_info,
         mint_authority: treasury_info,
-        payer: signer_info,
-        update_authority: (signer_info, true),
+        payer: fee_payer_info,
+        update_authority: (authority_info, true),
         system_program: system_program_info,
         rent: Some(rent_sysvar_info),
         __args: mpl_token_metadata::instructions::CreateMetadataAccountV3InstructionArgs {
@@ -109,21 +117,21 @@ pub fn process_initialize_mint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Pr
     }
     .invoke_signed(&[&[TREASURY, &[TREASURY_BUMP]]])?;
 
-    // Create signer_ata token account.
+    // Create authority_ata token account.
     create_associated_token_account(
-        signer_info,
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
         mint_info,
         system_program_info,
         token_program_info,
         associated_token_program_info,
     )?;
 
-    // Mint max supply to signer_ata.
+    // Mint max supply to authority_ata.
     mint_to_signed(
         mint_info,
-        signer_ata_info,
+        authority_ata_info,
         treasury_info,
         token_program_info,
         MAX_SUPPLY,
@@ -141,18 +149,20 @@ mod tests {
 
     #[test]
     fn test_initialize() {
-        let signer = Pubkey::new_unique();
-        let signer_ata = ata_address(&signer);
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let authority_ata = ata_address(&authority);
 
-        let instruction = build_initialize_mint_ix(signer);
+        let instruction = build_initialize_mint_ix(fee_payer, authority);
 
         let (treasury_address, _) = treasury_pda();
         let (mint_address, _) = mint_pda();
         let (metadata_address, _) = metadata_pda();
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            empty(signer_ata),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            empty(authority_ata),
 
             empty(mint_address),
             empty(metadata_address),
@@ -167,16 +177,16 @@ mod tests {
 
         let env = test_env();
         env.process_instruction(
-            &instruction, 
+            &instruction,
             &accounts,
             &[
                 Check::success(),
                 Check::account(&treasury_address).data(
-                    Treasury { 
+                    Treasury {
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&signer_ata).data(
-                    token(signer_ata, signer, MAX_SUPPLY).1.data.as_ref()
+                Check::account(&authority_ata).data(
+                    token(authority_ata, authority, MAX_SUPPLY).1.data.as_ref()
                 ).build(),
                 Check::account(&mint_address).data(
                     mint(MAX_SUPPLY).1.data.as_ref()

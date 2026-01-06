@@ -5,19 +5,24 @@ use crate::error::*;
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterTrack::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
 
         epoch_info,
         tape_info,
         track_info,
 
-        system_program_info, 
+        system_program_info,
         rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
     system_program_info
@@ -29,8 +34,8 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
-    let (tape_address, _) = tape_pda(*signer_info.key);
-    let (track_address, _) = track_pda(*signer_info.key, args.key);
+    let (tape_address, _) = tape_pda(*authority_info.key);
+    let (track_address, _) = track_pda(*authority_info.key, args.key);
 
     let tape = tape_info
         .is_writable()?
@@ -51,9 +56,9 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     create_program_account::<Track>(
         track_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
-        &[TRACK, signer_info.key.as_ref(), args.key.as_ref()],
+        &[TRACK, authority_info.key.as_ref(), args.key.as_ref()],
     )?;
 
     let track_number = tape.track_count;
@@ -92,7 +97,8 @@ mod tests {
 
     #[test]
     fn test_register_track() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let storage_units = StorageUnits(100);
 
         let data_root = Hash::new_unique();
@@ -100,7 +106,8 @@ mod tests {
         let bucket_hash = Hash::new_unique();
 
         let instruction = build_register_track_ix(
-            signer,
+            fee_payer,
+            authority,
             storage_units,
             data_root,
             erasure_root,
@@ -108,14 +115,14 @@ mod tests {
         );
 
         let (epoch_address, _) = epoch_pda();
-        let (tape_address, _) = tape_pda(signer);
-        let (track_address, _) = track_pda(signer, bucket_hash);
+        let (tape_address, _) = tape_pda(authority);
+        let (track_address, _) = track_pda(authority, bucket_hash);
 
         // Setup existing accounts
 
         let epoch = Epoch::zeroed();
         let tape = Tape {
-            authority: signer,
+            authority: authority,
             capacity: StorageUnits(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
@@ -124,7 +131,8 @@ mod tests {
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
 
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(tape_address, tape.pack(), tapedrive::ID),
@@ -154,7 +162,7 @@ mod tests {
                 ).build(),
                 Check::account(&tape_address).data(
                     Tape {
-                        authority: signer,
+                        authority: authority,
                         capacity: tape.capacity,
                         used: storage_units,
                         active_epoch: tape.active_epoch,

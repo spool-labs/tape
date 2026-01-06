@@ -88,7 +88,7 @@ steel = { version="4.0.0", features = ["spl"] }
 
 mpl-token-metadata = "5.1"
 spl-token = { version = "^4", features = ["no-entrypoint"] }
-spl-associated-token-account = { version = "^6", features = [ "no-entrypoint" ] } 
+spl-associated-token-account = { version = "^7", features = [ "no-entrypoint" ] } 
 
 # client-specific
 sha2 = "0.10.8"

@@ -6,18 +6,23 @@ use crate::error::*;
 pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = WithdrawSol::try_from_bytes(data)?;
     let [
-        signer_info, 
+        fee_payer_info,
+        authority_info,
         exchange_info,
         rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
     let exchange = exchange_info
         .is_writable()?
         .as_account_mut::<Exchange>(&exchange::ID)?;
 
-    signer_info
+    authority_info
         .is_signer()?
         .is_writable()?
         .has_address(&exchange.authority)?;
@@ -27,7 +32,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let mut amount = SOL::unpack(args.amount);
 
-    // Check if the exchange has enough balance 
+    // Check if the exchange has enough balance
     // (without dipping into rent-exempt reserve)
     if amount > exchange.balance_sol {
         return Err(ExchangeError::InsufficientFunds.into());
@@ -45,7 +50,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let new_exchange_lamports = (**exchange_info.lamports.borrow())
         .checked_sub(amount.as_u64())
         .ok_or(ExchangeError::Underflow)?;
-    let new_signer_lamports = (**signer_info.lamports.borrow())
+    let new_authority_lamports = (**authority_info.lamports.borrow())
         .checked_add(amount.as_u64())
         .ok_or(ExchangeError::Overflow)?;
 
@@ -54,7 +59,7 @@ pub fn process_withdraw_sol(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     **exchange_info.try_borrow_mut_lamports()? = new_exchange_lamports;
-    **signer_info.try_borrow_mut_lamports()? = new_signer_lamports;
+    **authority_info.try_borrow_mut_lamports()? = new_authority_lamports;
 
     // Update exchange state
     exchange.balance_sol = exchange.balance_sol

@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
     let [
-        signer_info,
-        signer_ata_info,
+        fee_payer_info,
+        authority_info,
+        authority_ata_info,
 
         tape_info,
         epoch_info,
@@ -14,19 +15,23 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         archive_ata_info,
 
         token_program_info,
-        system_program_info, 
+        system_program_info,
         rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    authority_info
         .is_signer()?;
 
-    signer_ata_info
+    authority_ata_info
         .is_writable()?
         .as_token_account()?
-        .assert(|t| t.owner() == *signer_info.key)?
+        .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
     token_program_info
@@ -49,7 +54,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .is_writable()?
         .is_archive_ata()?;
 
-    let (tape_address, _)  = tape_pda(*signer_info.key);
+    let (tape_address, _)  = tape_pda(*authority_info.key);
 
     tape_info
         .is_empty()?
@@ -104,22 +109,22 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     create_program_account::<Tape>(
         tape_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
-        &[RESOURCE, signer_info.key.as_ref()],
+        &[RESOURCE, authority_info.key.as_ref()],
     )?;
 
     let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    tape.authority = *signer_info.key;
+    tape.authority = *authority_info.key;
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
     tape.capacity = total_units;
     tape.used = StorageUnits::zero();
 
     transfer(
-        signer_info,
-        signer_ata_info,
+        authority_info,
+        authority_ata_info,
         archive_ata_info,
         token_program_info,
         total_cost,
@@ -135,7 +140,8 @@ mod tests {
 
     #[test]
     fn test_reserve_tape() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
 
         let storage_units = StorageUnits(100);     // 100 MB
         let start_epoch = EpochNumber(43);         // In the future
@@ -143,13 +149,13 @@ mod tests {
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
         let instruction = build_reserve_tape_ix(
-            signer, storage_units, start_epoch, end_epoch);
+            fee_payer, authority, storage_units, start_epoch, end_epoch);
 
         let (epoch_address, _) = epoch_pda();
         let (archive_address, _) = archive_pda();
         let (archive_ata, _) = archive_ata();
-        let (tape_address, _) = tape_pda(signer);
-        let signer_ata = ata_address(&signer);
+        let (tape_address, _) = tape_pda(authority);
+        let authority_ata = ata_address(&authority);
 
         // Setup existing accounts
 
@@ -179,8 +185,9 @@ mod tests {
         let initial_token_balance: u64 = 1_000_000;
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            token(signer_ata, signer, initial_token_balance),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, initial_token_balance),
 
             empty(tape_address),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
@@ -200,7 +207,7 @@ mod tests {
                 Check::success(),
                 Check::account(&tape_address).data(
                     Tape {
-                        authority: signer,
+                        authority: authority,
                         capacity: storage_units,
                         used: StorageUnits::zero(),
                         active_epoch: start_epoch,
@@ -211,8 +218,8 @@ mod tests {
                 Check::account(&archive_address).data(
                     expected_archive.pack().as_ref()
                 ).build(),
-                Check::account(&signer_ata).data(
-                    token(signer_ata, signer, initial_token_balance - total_cost).1.data.as_ref()
+                Check::account(&authority_ata).data(
+                    token(authority_ata, authority, initial_token_balance - total_cost).1.data.as_ref()
                 ).build(),
                 Check::account(&archive_ata).data(
                     token(archive_ata, archive_address, total_cost).1.data.as_ref()

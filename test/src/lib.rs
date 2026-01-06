@@ -2,6 +2,7 @@ use tape_api::prelude::*;
 use tape_api::program;
 use mollusk_svm::{
     program::{keyed_account_for_system_program, loader_keys::LOADER_V2},
+    result::Config as CheckConfig,
     sysvar::Sysvars,
     Mollusk,
 };
@@ -227,7 +228,7 @@ impl TestEnv {
             }
         }
 
-        result.run_checks(checks);
+        result.run_checks(checks, &CheckConfig::default(), &self.mollusk);
     }
 
     fn print_instruction(&self, instruction: &Instruction) {

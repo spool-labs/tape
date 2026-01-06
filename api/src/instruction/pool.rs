@@ -32,7 +32,8 @@ pub struct SplitPoolStake {
 pub struct MergePoolStake {}
 
 pub fn build_advance_pool_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
 
@@ -44,7 +45,8 @@ pub fn build_advance_pool_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new(archive_address, false),
@@ -57,24 +59,26 @@ pub fn build_advance_pool_ix(
 }
 
 pub fn build_stake_with_pool_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
 
     let (epoch_address, _)  = epoch_pda();
     let (mint_address, _)   = mint_pda();
-    let (stake_address, _)  = stake_pda(signer, pool);
+    let (stake_address, _)  = stake_pda(authority, pool);
     let (vault_address, _)  = vault_pda(stake_address);
-    let signer_ata          = ata(&signer);
+    let authority_ata       = ata(&authority);
 
     let amount = amount.pack();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
@@ -92,18 +96,20 @@ pub fn build_stake_with_pool_ix(
 }
 
 pub fn build_request_stake_unlock_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
-    let (stake_address, _) = stake_pda(signer, pool);
+    let (stake_address, _) = stake_pda(authority, pool);
     let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
 
             AccountMeta::new(stake_address, false),
             AccountMeta::new_readonly(epoch_address, false),
@@ -116,23 +122,25 @@ pub fn build_request_stake_unlock_ix(
 
 
 pub fn build_unstake_from_pool_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
 ) -> Instruction {
 
-    let signer_ata           = ata(&signer);
+    let authority_ata        = ata(&authority);
     let (archive_address, _) = archive_pda();
     let (archive_ata, _)     = archive_ata();
     let (epoch_address, _)   = epoch_pda();
-    let (stake_address, _)   = stake_pda(signer, pool);
+    let (stake_address, _)   = stake_pda(authority, pool);
     let (vault_address, _)   = vault_pda(stake_address);
     let (history_address, _) = history_pda(pool);
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
-            AccountMeta::new(signer_ata, false),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),  // writable: receives vault rent refund via CPI
+            AccountMeta::new(authority_ata, false),
 
             AccountMeta::new_readonly(archive_address, false),
             AccountMeta::new(archive_ata, false),
@@ -151,12 +159,13 @@ pub fn build_unstake_from_pool_ix(
 }
 
 pub fn build_split_pool_stake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     recipient: Pubkey,
     amount: Coin<TAPE>,
 ) -> Instruction {
-    let (source_stake, _) = stake_pda(signer, pool);
+    let (source_stake, _) = stake_pda(authority, pool);
     let (dest_stake, _)   = stake_pda(recipient, pool);
 
     let (source_vault, _) = vault_pda(source_stake);
@@ -168,7 +177,8 @@ pub fn build_split_pool_stake_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new_readonly(pool, false),
@@ -187,11 +197,12 @@ pub fn build_split_pool_stake_ix(
 }
 
 pub fn build_merge_pool_stake_ix(
-    signer: Pubkey,
+    fee_payer: Pubkey,
+    authority: Pubkey,
     pool: Pubkey,
     recipient: Pubkey,
 ) -> Instruction {
-    let (source_stake, _) = stake_pda(signer, pool);
+    let (source_stake, _) = stake_pda(authority, pool);
     let (dest_stake, _)   = stake_pda(recipient, pool);
 
     let (source_vault, _) = vault_pda(source_stake);
@@ -200,7 +211,8 @@ pub fn build_merge_pool_stake_ix(
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
-            AccountMeta::new(signer, true),
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(authority, true),  // writable: receives vault rent refund via CPI
             AccountMeta::new_readonly(recipient, true),
 
             AccountMeta::new_readonly(pool, false),

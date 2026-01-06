@@ -5,8 +5,9 @@ use crate::error::*;
 pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SplitTapeBySize::try_from_bytes(data)?;
     let [
-        signer_info,
-        recipient_info,
+        fee_payer_info,
+        source_authority_info,
+        dest_authority_info,
 
         source_tape_info,
         dest_tape_info,
@@ -18,9 +19,13 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+
+    source_authority_info
         .is_signer()?;
-    recipient_info
+    dest_authority_info
         .is_signer()?;
 
     system_program_info
@@ -38,8 +43,8 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
     // Derive PDAs
-    let (source_tape_address, _) = tape_pda(*signer_info.key);
-    let (dest_tape_address, _)   = tape_pda(*recipient_info.key);
+    let (source_tape_address, _) = tape_pda(*source_authority_info.key);
+    let (dest_tape_address, _)   = tape_pda(*dest_authority_info.key);
 
     // Validate source tape
     source_tape_info
@@ -48,7 +53,7 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .is_type::<Tape>(&tapedrive::ID)?;
     let source_tape = source_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    if source_tape.authority != *signer_info.key {
+    if source_tape.authority != *source_authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -63,13 +68,13 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(ProgramError::InvalidArgument);
     }
 
-    // Create destination Tape account (recipient authority)
+    // Create destination Tape account (dest authority)
     create_program_account::<Tape>(
         dest_tape_info,
         system_program_info,
-        signer_info,
+        fee_payer_info,
         &tapedrive::ID,
-        &[RESOURCE, recipient_info.key.as_ref()],
+        &[RESOURCE, dest_authority_info.key.as_ref()],
     )?;
 
     let dest_tape = dest_tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
@@ -82,7 +87,7 @@ pub fn process_split_tape_by_size(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .ok_or(TapeError::UnexpectedState)?;
 
     // Initialize destination tape
-    dest_tape.authority    = *recipient_info.key;
+    dest_tape.authority    = *dest_authority_info.key;
     dest_tape.active_epoch = source_tape.active_epoch;
     dest_tape.expiry_epoch = source_tape.expiry_epoch;
     dest_tape.capacity     = split_size;
@@ -105,16 +110,17 @@ mod tests {
 
     #[test]
     fn test_split_tape_by_size() {
-        let signer = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let source_authority = Pubkey::new_unique();
+        let dest_authority = Pubkey::new_unique();
 
-        let (source_tape_address, _) = tape_pda(signer);
-        let (dest_tape_address, _)   = tape_pda(recipient);
+        let (source_tape_address, _) = tape_pda(source_authority);
+        let (dest_tape_address, _)   = tape_pda(dest_authority);
         let (archive_address, _)     = archive_pda();
 
         // Source: 1000 capacity, used 250, epochs [10, 20)
         let source_tape = Tape {
-            authority: signer,
+            authority: source_authority,
             capacity: StorageUnits(1000),
             used: StorageUnits(250),
             active_epoch: EpochNumber(10),
@@ -128,11 +134,12 @@ mod tests {
         };
 
         let split_size = StorageUnits(200);
-        let instruction = build_split_tape_by_size_ix(signer, recipient, split_size);
+        let instruction = build_split_tape_by_size_ix(fee_payer, source_authority, dest_authority, split_size);
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
-            sol(recipient, 0),
+            sol(fee_payer, 1_000_000_000),
+            sol(source_authority, 0),
+            sol(dest_authority, 0),
 
             pda(source_tape_address, source_tape.pack(), tapedrive::ID),
             empty(dest_tape_address),
@@ -143,7 +150,7 @@ mod tests {
         ];
 
         let expected_dest = Tape {
-            authority: recipient,
+            authority: dest_authority,
             capacity: split_size,
             used: StorageUnits(200), // min(250, 200)
             active_epoch: EpochNumber(10),
@@ -152,7 +159,7 @@ mod tests {
         };
 
         let expected_source = Tape {
-            authority: signer,
+            authority: source_authority,
             capacity: StorageUnits(800),
             used: StorageUnits(50), // 250 - 200
             active_epoch: EpochNumber(10),

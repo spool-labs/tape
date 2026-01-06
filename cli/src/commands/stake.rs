@@ -214,7 +214,7 @@ async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path
     }
 
     // 3. Stake instruction
-    instructions.push(build_stake_with_pool_ix(authority, pool, amount));
+    instructions.push(build_stake_with_pool_ix(authority, authority, pool, amount));
 
     // 4. Close the ATA to reclaim rent (if new keypair)
     if is_new_keypair {
@@ -266,7 +266,7 @@ async fn unlock(ctx: &Context, pool_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_request_stake_unlock_ix(keypair.pubkey(), pool);
+    let ix = build_request_stake_unlock_ix(keypair.pubkey(), keypair.pubkey(), pool);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -291,7 +291,7 @@ async fn withdraw(ctx: &Context, pool_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_unstake_from_pool_ix(keypair.pubkey(), pool);
+    let ix = build_unstake_from_pool_ix(keypair.pubkey(), keypair.pubkey(), pool);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -325,7 +325,7 @@ async fn split(ctx: &Context, pool_str: &str, recipient_str: &str, amount_str: &
 
     // In a real implementation, we would need a way to get the recipient's signature
     // For now, we'll just build the instruction (it will fail if recipient signature is missing)
-    let ix = build_split_pool_stake_ix(keypair.pubkey(), pool, recipient, amount);
+    let ix = build_split_pool_stake_ix(keypair.pubkey(), keypair.pubkey(), pool, recipient, amount);
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await
@@ -361,7 +361,7 @@ async fn merge(ctx: &Context, pool_str: &str, source_str: &str) -> Result<()> {
     // Build instruction where signer (source) merges into recipient (keypair)
     // But since we don't have source's keypair, this will fail
     // In practice, the source would run this command, not the recipient
-    let ix = build_merge_pool_stake_ix(source, pool, keypair.pubkey());
+    let ix = build_merge_pool_stake_ix(source, source, pool, keypair.pubkey());
     let sig = client
         .send_instructions(&keypair, vec![ix])
         .await

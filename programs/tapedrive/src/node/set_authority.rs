@@ -4,20 +4,25 @@ use steel::*;
 pub fn process_set_authority(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = SetAuthority::try_from_bytes(data)?;
     let [
-        signer_info,
+        fee_payer_info,
+        authority_info,
         new_authority_info,
         node_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    signer_info.is_signer()?;
+    fee_payer_info
+        .is_signer()?
+        .is_writable()?;
+    authority_info
+        .is_signer()?;
 
     let node = node_info
         .is_writable()?
         .as_account_mut::<Node>(&tapedrive::ID)?;
 
-    if node.authority != *signer_info.key {
+    if node.authority != *authority_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
 
@@ -33,20 +38,22 @@ mod tests {
 
     #[test]
     fn test_set_authority() {
-        let signer = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
         let new_authority = Pubkey::new_unique();
 
-        let (node_address, _) = node_pda(signer);
+        let (node_address, _) = node_pda(authority);
 
-        let instruction = build_set_authority_ix(signer, node_address, new_authority);
+        let instruction = build_set_authority_ix(fee_payer, authority, node_address, new_authority);
 
         let node = Node {
-            authority: signer,
+            authority,
             ..Node::zeroed()
         };
 
         let accounts = vec![
-            sol(signer, 1_000_000_000),
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
             sol(new_authority, 0),
             pda(node_address, node.pack(), tapedrive::ID),
         ];
