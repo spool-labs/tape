@@ -5,9 +5,8 @@ use clap::Subcommand;
 use solana_sdk::signature::Signer;
 use solana_sdk::pubkey::Pubkey;
 
-use tape_sdk::{load_solana_keypair, parse_hash, create_rpc_client};
+use tape_sdk::{parse_hash, create_rpc_client};
 
-use crate::config::expand_path;
 use crate::Context;
 
 #[derive(Subcommand, Debug)]
@@ -91,15 +90,8 @@ pub async fn execute(ctx: &Context, cmd: TrackCommand) -> Result<()> {
     }
 }
 
-/// Load keypair from context's configured path.
-fn get_keypair(ctx: &Context) -> Result<solana_sdk::signature::Keypair> {
-    let path = ctx.keypair.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
-
-    let expanded = expand_path(&path.to_string_lossy());
-    load_solana_keypair(&expanded)
-        .map_err(|e| anyhow::anyhow!("{}", e))
-}
+// Use shared get_keypair from crate::utils
+use crate::utils::get_keypair;
 
 async fn register(
     ctx: &Context,
@@ -111,8 +103,9 @@ async fn register(
     use tape_api::instruction::build_register_track_ix;
     use tape_core::types::StorageUnits;
 
-    let keypair = get_keypair(ctx)?;
-    let signer = keypair.pubkey();
+    // For now, fee_payer is also the authority (track owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
 
     // Parse hashes using SDK helper
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -127,7 +120,7 @@ async fn register(
 
     if !ctx.quiet {
         eprintln!("Registering track:");
-        eprintln!("  Authority: {}", signer);
+        eprintln!("  Authority: {}", authority.pubkey());
         eprintln!("  Key: {}", key);
         eprintln!("  Root: {}", root);
         eprintln!("  Commitment: {}", commitment.unwrap_or(root));
@@ -140,8 +133,8 @@ async fn register(
     }
 
     let ix = build_register_track_ix(
-        signer,
-        signer,
+        fee_payer.pubkey(),
+        authority.pubkey(),
         storage_units,
         root_hash,
         commitment_hash,
@@ -150,13 +143,13 @@ async fn register(
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
 
     println!("Track registered successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Authority: {}", signer);
+    println!("  Authority: {}", authority.pubkey());
     println!("  Key: {}", key);
     println!("  Size: {} bytes", size);
 
@@ -166,14 +159,15 @@ async fn register(
 async fn delete(ctx: &Context, key: &str) -> Result<()> {
     use tape_api::instruction::build_delete_track_ix;
 
-    let keypair = get_keypair(ctx)?;
-    let signer = keypair.pubkey();
+    // For now, fee_payer is also the authority (track owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
 
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if !ctx.quiet {
         eprintln!("Deleting track:");
-        eprintln!("  Authority: {}", signer);
+        eprintln!("  Authority: {}", authority.pubkey());
         eprintln!("  Key: {}", key);
     }
 
@@ -182,17 +176,17 @@ async fn delete(ctx: &Context, key: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_delete_track_ix(signer, signer, key_hash);
+    let ix = build_delete_track_ix(fee_payer.pubkey(), authority.pubkey(), key_hash);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
 
     println!("Track deleted successfully!");
     println!("  Transaction: {}", signature);
-    println!("  Authority: {}", signer);
+    println!("  Authority: {}", authority.pubkey());
     println!("  Key: {}", key);
 
     Ok(())
@@ -209,8 +203,9 @@ async fn certify(
     use tape_core::bls::BlsSignature;
     use tape_sdk::parse_hex_bytes;
 
-    let keypair = get_keypair(ctx)?;
-    let signer = keypair.pubkey();
+    // For now, fee_payer is also the authority (track owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
 
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -230,7 +225,7 @@ async fn certify(
 
     if !ctx.quiet {
         eprintln!("Certifying track:");
-        eprintln!("  Authority: {}", signer);
+        eprintln!("  Authority: {}", authority.pubkey());
         eprintln!("  Key: {}", key);
         eprintln!("  Bitmap: {}", bitmap);
         eprintln!("  Signature: {}...", &signature[..16.min(signature.len())]);
@@ -241,17 +236,17 @@ async fn certify(
         return Ok(());
     }
 
-    let ix = build_certify_track_ix(signer, signer, key_hash, committee_bitmap, bls_sig);
+    let ix = build_certify_track_ix(fee_payer.pubkey(), authority.pubkey(), key_hash, committee_bitmap, bls_sig);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?;
 
     println!("Track certified successfully!");
     println!("  Transaction: {}", sig);
-    println!("  Authority: {}", signer);
+    println!("  Authority: {}", authority.pubkey());
     println!("  Key: {}", key);
 
     Ok(())

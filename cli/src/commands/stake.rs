@@ -16,9 +16,8 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::stake_pda;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::TAPE;
-use tape_sdk::load_solana_keypair;
 
-use crate::config::expand_path;
+use crate::utils::{get_keypair, load_keypair_from_path};
 use crate::Context;
 
 /// Default lamports to fund new authority accounts (0.01 SOL).
@@ -104,24 +103,6 @@ pub enum StakeCommand {
     },
 }
 
-/// Load keypair from the configured path.
-fn load_keypair(ctx: &Context) -> Result<Keypair> {
-    let path = ctx
-        .keypair
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
-
-    let path = expand_path(&path.to_string_lossy());
-
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read keypair: {}", path.display()))?;
-
-    let bytes: Vec<u8> = serde_json::from_str(&contents)
-        .with_context(|| "Failed to parse keypair file (expected JSON array of bytes)")?;
-
-    Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
-}
-
 /// Create a RpcClient from context.
 fn create_client(ctx: &Context) -> Result<RpcClient<rpc_solana::SolanaRpc>> {
     let config = RpcConfig {
@@ -157,7 +138,7 @@ pub async fn execute(ctx: &Context, cmd: StakeCommand) -> Result<()> {
 /// Deposit (stake) tokens to a pool.
 async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path: Option<PathBuf>) -> Result<()> {
     // Load the fee payer keypair (from --keypair or config)
-    let fee_payer = load_keypair(ctx)?;
+    let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
     let amount = parse_tape_amount(amount_str)?;
@@ -165,9 +146,7 @@ async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path
     // Determine authority: use provided keypair or generate new one
     let (authority_keypair, is_new_keypair) = match authority_path {
         Some(path) => {
-            let expanded = expand_path(&path.to_string_lossy());
-            let kp = load_solana_keypair(&expanded)
-                .map_err(|e| anyhow::anyhow!("Failed to load authority keypair: {}", e))?;
+            let kp = load_keypair_from_path(&path.to_string_lossy())?;
             (kp, false)
         }
         None => {
@@ -213,8 +192,8 @@ async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path
         instructions.extend(ata_ixs);
     }
 
-    // 3. Stake instruction
-    instructions.push(build_stake_with_pool_ix(authority, authority, pool, amount));
+    // 3. Stake instruction (fee_payer pays, authority signs and owns stake)
+    instructions.push(build_stake_with_pool_ix(fee_payer.pubkey(), authority, pool, amount));
 
     // 4. Close the ATA to reclaim rent (if new keypair)
     if is_new_keypair {
@@ -254,21 +233,23 @@ async fn deposit(ctx: &Context, pool_str: &str, amount_str: &str, authority_path
 
 /// Request stake unlock (starts cooldown period).
 async fn unlock(ctx: &Context, pool_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (stake owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
 
     ctx.print(&format!("Requesting unlock from pool {}...", pool));
-    ctx.print(&format!("Staker: {}", keypair.pubkey()));
+    ctx.print(&format!("Staker: {}", authority.pubkey()));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: RequestStakeUnlock");
         return Ok(());
     }
 
-    let ix = build_request_stake_unlock_ix(keypair.pubkey(), keypair.pubkey(), pool);
+    let ix = build_request_stake_unlock_ix(fee_payer.pubkey(), authority.pubkey(), pool);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("RequestStakeUnlock failed: {}", e))?;
 
@@ -279,21 +260,23 @@ async fn unlock(ctx: &Context, pool_str: &str) -> Result<()> {
 
 /// Withdraw stake after cooldown.
 async fn withdraw(ctx: &Context, pool_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (stake owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
 
     ctx.print(&format!("Withdrawing stake from pool {}...", pool));
-    ctx.print(&format!("Staker: {}", keypair.pubkey()));
+    ctx.print(&format!("Staker: {}", authority.pubkey()));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: UnstakeFromPool");
         return Ok(());
     }
 
-    let ix = build_unstake_from_pool_ix(keypair.pubkey(), keypair.pubkey(), pool);
+    let ix = build_unstake_from_pool_ix(fee_payer.pubkey(), authority.pubkey(), pool);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("UnstakeFromPool failed: {}", e))?;
 
@@ -304,14 +287,16 @@ async fn withdraw(ctx: &Context, pool_str: &str) -> Result<()> {
 
 /// Split stake to another recipient.
 async fn split(ctx: &Context, pool_str: &str, recipient_str: &str, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (stake owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
     let recipient = parse_pubkey(recipient_str)?;
     let amount = parse_tape_amount(amount_str)?;
 
     ctx.print(&format!("Splitting {} to {} from pool {}...", amount, recipient, pool));
-    ctx.print(&format!("Source staker: {}", keypair.pubkey()));
+    ctx.print(&format!("Source staker: {}", authority.pubkey()));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: SplitPoolStake");
@@ -325,9 +310,9 @@ async fn split(ctx: &Context, pool_str: &str, recipient_str: &str, amount_str: &
 
     // In a real implementation, we would need a way to get the recipient's signature
     // For now, we'll just build the instruction (it will fail if recipient signature is missing)
-    let ix = build_split_pool_stake_ix(keypair.pubkey(), keypair.pubkey(), pool, recipient, amount);
+    let ix = build_split_pool_stake_ix(fee_payer.pubkey(), authority.pubkey(), pool, recipient, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("SplitPoolStake failed: {}. Note: recipient signature may be required.", e))?;
 
@@ -338,34 +323,33 @@ async fn split(ctx: &Context, pool_str: &str, recipient_str: &str, amount_str: &
 
 /// Merge stake from source into signer's stake.
 async fn merge(ctx: &Context, pool_str: &str, source_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the recipient (receiving the merged stake)
+    let fee_payer = get_keypair(ctx)?;
+    let recipient = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let pool = parse_pubkey(pool_str)?;
     let source = parse_pubkey(source_str)?;
 
     ctx.print(&format!("Merging stake from {} into your stake for pool {}...", source, pool));
-    ctx.print(&format!("Recipient (you): {}", keypair.pubkey()));
+    ctx.print(&format!("Recipient (you): {}", recipient.pubkey()));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: MergePoolStake");
         return Ok(());
     }
 
-    // Note: MergePoolStake is called by the source who wants to merge their stake into recipient
-    // The function signature is: build_merge_pool_stake_ix(signer, pool, recipient)
-    // where signer is the source and recipient receives the merged stake
-    // So if we want to receive stake from `source`, we need `source` to be the signer
-    // This command assumes the user is the recipient, so we need source's signature
-    ctx.print("Note: Merge requires source signature. This command expects you to be receiving the stake.");
+    // Note: MergePoolStake requires both source and dest authority signatures
+    // The function signature is: build_merge_pool_stake_ix(fee_payer, source_auth, pool, dest_auth)
+    // This command assumes you are the recipient, so we need source's signature too
+    ctx.print("Note: Merge requires both source and recipient signatures.");
 
-    // Build instruction where signer (source) merges into recipient (keypair)
-    // But since we don't have source's keypair, this will fail
-    // In practice, the source would run this command, not the recipient
-    let ix = build_merge_pool_stake_ix(source, source, pool, keypair.pubkey());
+    // Build instruction where source merges into recipient
+    // Since we don't have source's keypair, this will fail unless source == recipient
+    let ix = build_merge_pool_stake_ix(fee_payer.pubkey(), source, pool, recipient.pubkey());
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
-        .map_err(|e| anyhow::anyhow!("MergePoolStake failed: {}. Note: source must execute merge, not recipient.", e))?;
+        .map_err(|e| anyhow::anyhow!("MergePoolStake failed: {}. Note: source signature is also required.", e))?;
 
     ctx.print(&format!("Transaction: {}", sig));
     ctx.print("Stake merged successfully!");
@@ -379,7 +363,7 @@ async fn list(ctx: &Context, staker: Option<String>) -> Result<()> {
     let staker_pubkey = match staker {
         Some(s) => parse_pubkey(&s)?,
         None => {
-            let keypair = load_keypair(ctx)?;
+            let keypair = get_keypair(ctx)?;
             keypair.pubkey()
         }
     };

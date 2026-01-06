@@ -325,6 +325,9 @@ fn load_keypair_from_config(node_config: &NodeConfig) -> Result<solana_sdk::sign
         .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
+// Use shared get_keypair from crate::utils
+use crate::utils::get_keypair;
+
 async fn register_node(
     ctx: &Context,
     config: Option<PathBuf>,
@@ -368,8 +371,9 @@ async fn register_node(
         return Ok(());
     }
 
-    // Load keys from node config
-    let keypair = load_keypair_from_config(&node_config)?;
+    // Load fee payer from CLI context and authority from node config
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
     let bls_private_key = load_bls_keypair(&bls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
     let tls_keypair = load_tls_keypair(&tls_key_path).map_err(|e| anyhow::anyhow!("{}", e))?;
     let tls_pubkey = tls_keypair.pubkey();
@@ -389,8 +393,8 @@ async fn register_node(
     // Build instruction
     let name_bytes = to_name(&name);
     let ix = instruction::build_register_node_ix(
-        keypair.pubkey(),
-        keypair.pubkey(),
+        fee_payer.pubkey(),
+        authority.pubkey(),
         name_bytes,
         BasisPoints(commission),
         network_address,
@@ -404,16 +408,16 @@ async fn register_node(
     ctx.print("Registering node on-chain...");
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let (node_address, _) = node_pda(authority.pubkey());
 
     println!("Node registered successfully!");
     println!("  Transaction: {}", signature);
     println!("  Node Account: {}", node_address);
-    println!("  Authority: {}", keypair.pubkey());
+    println!("  Authority: {}", authority.pubkey());
 
     Ok(())
 }
@@ -428,16 +432,17 @@ async fn join_committee(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_join_network_ix(keypair.pubkey(), keypair.pubkey(), node_address);
+    let ix = instruction::build_join_network_ix(fee_payer.pubkey(), authority.pubkey(), node_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Requesting to join committee...");
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -458,7 +463,8 @@ async fn sync_epoch(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Get current epoch and system state
@@ -472,11 +478,11 @@ async fn sync_epoch(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch system: {}", e))?;
 
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let (node_address, _) = node_pda(authority.pubkey());
 
     // Get node to find our member index
     let node_account = client
-        .get_node(&keypair.pubkey())
+        .get_node(&authority.pubkey())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch node account: {}", e))?;
 
@@ -487,12 +493,12 @@ async fn sync_epoch(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
     // Get our assigned spools
     let spools = system.spools.spools_for_member(member_index);
 
-    let ix = instruction::build_epoch_sync_ix(keypair.pubkey(), keypair.pubkey(), node_address, epoch.id, &spools);
+    let ix = instruction::build_epoch_sync_ix(fee_payer.pubkey(), authority.pubkey(), node_address, epoch.id, &spools);
 
     ctx.print(&format!("Submitting epoch sync for epoch {}...", epoch.id));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -581,16 +587,17 @@ async fn set_authority(ctx: &Context, config: Option<PathBuf>, new_authority: &s
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_authority_ix(keypair.pubkey(), keypair.pubkey(), node_address, new_auth_pubkey);
+    let ix = instruction::build_set_authority_ix(fee_payer.pubkey(), authority.pubkey(), node_address, new_auth_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node authority to {}...", new_auth_pubkey));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -611,16 +618,17 @@ async fn set_name(ctx: &Context, config: Option<PathBuf>, name: &str) -> Result<
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_name_ix(keypair.pubkey(), keypair.pubkey(), node_address, name);
+    let ix = instruction::build_set_name_ix(fee_payer.pubkey(), authority.pubkey(), node_address, name);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting node name to '{}'...", name));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -644,16 +652,17 @@ async fn set_address(ctx: &Context, config: Option<PathBuf>, address: &str) -> R
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_network_address_ix(keypair.pubkey(), keypair.pubkey(), node_address, network_address);
+    let ix = instruction::build_set_network_address_ix(fee_payer.pubkey(), authority.pubkey(), node_address, network_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting network address to {}...", address));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -682,10 +691,11 @@ async fn set_commission(ctx: &Context, config: Option<PathBuf>, bps: u64) -> Res
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_commission_ix(keypair.pubkey(), keypair.pubkey(), node_address, BasisPoints(bps));
+    let ix = instruction::build_set_commission_ix(fee_payer.pubkey(), authority.pubkey(), node_address, BasisPoints(bps));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!(
@@ -695,7 +705,7 @@ async fn set_commission(ctx: &Context, config: Option<PathBuf>, bps: u64) -> Res
     ));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -716,16 +726,17 @@ async fn set_capacity(ctx: &Context, config: Option<PathBuf>, mb: u64) -> Result
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_storage_capacity_ix(keypair.pubkey(), keypair.pubkey(), node_address, StorageUnits(mb));
+    let ix = instruction::build_set_storage_capacity_ix(fee_payer.pubkey(), authority.pubkey(), node_address, StorageUnits(mb));
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage capacity to {} MB...", mb));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -749,16 +760,17 @@ async fn set_price(ctx: &Context, config: Option<PathBuf>, tape: &str) -> Result
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_set_storage_price_ix(keypair.pubkey(), keypair.pubkey(), node_address, price);
+    let ix = instruction::build_set_storage_price_ix(fee_payer.pubkey(), authority.pubkey(), node_address, price);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Setting storage price to {} per MB...", price));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -779,16 +791,17 @@ async fn claim_commission(ctx: &Context, config: Option<PathBuf>) -> Result<()> 
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_claim_commission_ix(keypair.pubkey(), keypair.pubkey(), node_address);
+    let ix = instruction::build_claim_commission_ix(fee_payer.pubkey(), authority.pubkey(), node_address);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print("Claiming accumulated commission...");
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -812,16 +825,17 @@ async fn blacklist_add(ctx: &Context, config: Option<PathBuf>, track: &str) -> R
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
-    let ix = instruction::build_add_to_blacklist_ix(keypair.pubkey(), keypair.pubkey(), node_address, track_pubkey);
+    let ix = instruction::build_add_to_blacklist_ix(fee_payer.pubkey(), authority.pubkey(), node_address, track_pubkey);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
     ctx.print(&format!("Adding {} to blacklist...", track_pubkey));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
@@ -869,12 +883,14 @@ async fn blacklist_remove(ctx: &Context, config: Option<PathBuf>, index: u64, pr
         return Ok(());
     }
 
-    let keypair = load_keypair_from_config(&node_config)?;
-    let (node_address, _) = node_pda(keypair.pubkey());
+    // Load fee payer from CLI context and authority from node config
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
 
     let ix = instruction::build_remove_from_blacklist_ix(
-        keypair.pubkey(),
-        keypair.pubkey(),
+        fee_payer.pubkey(),
+        authority.pubkey(),
         node_address,
         index,
         hash,
@@ -886,7 +902,7 @@ async fn blacklist_remove(ctx: &Context, config: Option<PathBuf>, index: u64, pr
     ctx.print(&format!("Removing blacklist entry at index {}...", index));
 
     let signature = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
         .await
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 

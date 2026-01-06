@@ -19,9 +19,8 @@ use tape_api::program::exchange::exchange_pda;
 use tape_api::utils::ata;
 use rpc_client::{RpcConfig, RpcClient};
 use tape_core::types::coin::{TAPE, SOL};
-use tape_sdk::load_solana_keypair;
 
-use crate::config::expand_path;
+use crate::utils::{get_keypair, load_keypair_from_path};
 use crate::Context;
 
 /// Default lamports to fund new authority accounts (0.01 SOL).
@@ -116,24 +115,6 @@ pub enum ExchangeCommand {
     },
 }
 
-/// Load keypair from the configured path.
-fn load_keypair(ctx: &Context) -> Result<Keypair> {
-    let path = ctx
-        .keypair
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
-
-    let path = expand_path(&path.to_string_lossy());
-
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read keypair: {}", path.display()))?;
-
-    let bytes: Vec<u8> = serde_json::from_str(&contents)
-        .with_context(|| "Failed to parse keypair file (expected JSON array of bytes)")?;
-
-    Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
-}
-
 /// Create a RpcClient from context.
 fn create_client(ctx: &Context) -> Result<RpcClient<rpc_solana::SolanaRpc>> {
     let config = RpcConfig {
@@ -180,15 +161,13 @@ pub async fn execute(ctx: &Context, cmd: ExchangeCommand) -> Result<()> {
 /// Register a new exchange.
 async fn register(ctx: &Context, authority_path: Option<PathBuf>) -> Result<()> {
     // Load the fee payer keypair (from --keypair or config)
-    let fee_payer = load_keypair(ctx)?;
+    let fee_payer = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
     // Determine authority: use provided keypair or generate new one
     let (authority_keypair, is_new_keypair) = match authority_path {
         Some(path) => {
-            let expanded = expand_path(&path.to_string_lossy());
-            let kp = load_solana_keypair(&expanded)
-                .map_err(|e| anyhow::anyhow!("Failed to load authority keypair: {}", e))?;
+            let kp = load_keypair_from_path(&path.to_string_lossy())?;
             (kp, false)
         }
         None => {
@@ -225,8 +204,8 @@ async fn register(ctx: &Context, authority_path: Option<PathBuf>) -> Result<()> 
         ));
     }
 
-    // Register exchange instruction (authority is the signer)
-    instructions.push(build_register_exchange_ix(authority, authority));
+    // Register exchange instruction (fee_payer pays, authority signs and owns)
+    instructions.push(build_register_exchange_ix(fee_payer.pubkey(), authority));
 
     // Send with both signers if using new keypair
     let sig = if is_new_keypair || fee_payer.pubkey() != authority {
@@ -261,14 +240,16 @@ async fn register(ctx: &Context, authority_path: Option<PathBuf>) -> Result<()> 
 
 /// Set exchange rate.
 async fn set_rate(ctx: &Context, tape: u64, sol: u64) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (exchange owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
 
     if sol == 0 {
         anyhow::bail!("SOL amount cannot be zero");
     }
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
+    let (exchange_address, _) = exchange_pda(authority.pubkey());
     let rate = (tape as f64) / (sol as f64);
 
     ctx.print(&format!("Setting exchange rate: {} TAPE per {} SOL (ratio: {:.6})", tape, sol, rate));
@@ -279,9 +260,9 @@ async fn set_rate(ctx: &Context, tape: u64, sol: u64) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_set_exchange_rate_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, tape, sol);
+    let ix = build_set_exchange_rate_ix(fee_payer.pubkey(), authority.pubkey(), exchange_address, tape, sol);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("SetExchangeRate failed: {}", e))?;
 
@@ -292,25 +273,27 @@ async fn set_rate(ctx: &Context, tape: u64, sol: u64) -> Result<()> {
 
 /// Deposit TAPE into exchange.
 async fn deposit_tape(ctx: &Context, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (exchange owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
-    let signer_ata = ata(&keypair.pubkey());
+    let (exchange_address, _) = exchange_pda(authority.pubkey());
+    let authority_ata = ata(&authority.pubkey());
 
     ctx.print(&format!("Depositing {} into exchange...", amount));
     ctx.print(&format!("Exchange: {}", exchange_address));
-    ctx.print(&format!("From ATA: {}", signer_ata));
+    ctx.print(&format!("From ATA: {}", authority_ata));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: DepositTape");
         return Ok(());
     }
 
-    let ix = build_deposit_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_deposit_tape_ix(fee_payer.pubkey(), authority.pubkey(), authority_ata, exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("DepositTape failed: {}", e))?;
 
@@ -321,11 +304,13 @@ async fn deposit_tape(ctx: &Context, amount_str: &str) -> Result<()> {
 
 /// Deposit SOL into exchange.
 async fn deposit_sol(ctx: &Context, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (exchange owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
+    let (exchange_address, _) = exchange_pda(authority.pubkey());
 
     ctx.print(&format!("Depositing {} into exchange...", amount));
     ctx.print(&format!("Exchange: {}", exchange_address));
@@ -335,9 +320,9 @@ async fn deposit_sol(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_deposit_sol_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, amount);
+    let ix = build_deposit_sol_ix(fee_payer.pubkey(), authority.pubkey(), exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("DepositSol failed: {}", e))?;
 
@@ -348,25 +333,27 @@ async fn deposit_sol(ctx: &Context, amount_str: &str) -> Result<()> {
 
 /// Withdraw TAPE from exchange.
 async fn withdraw_tape(ctx: &Context, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (exchange owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
-    let signer_ata = ata(&keypair.pubkey());
+    let (exchange_address, _) = exchange_pda(authority.pubkey());
+    let authority_ata = ata(&authority.pubkey());
 
     ctx.print(&format!("Withdrawing {} from exchange...", amount));
     ctx.print(&format!("Exchange: {}", exchange_address));
-    ctx.print(&format!("To ATA: {}", signer_ata));
+    ctx.print(&format!("To ATA: {}", authority_ata));
 
     if ctx.dry_run {
         ctx.print("[DRY RUN] Would execute: WithdrawTape");
         return Ok(());
     }
 
-    let ix = build_withdraw_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_withdraw_tape_ix(fee_payer.pubkey(), authority.pubkey(), authority_ata, exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("WithdrawTape failed: {}", e))?;
 
@@ -377,11 +364,13 @@ async fn withdraw_tape(ctx: &Context, amount_str: &str) -> Result<()> {
 
 /// Withdraw SOL from exchange.
 async fn withdraw_sol(ctx: &Context, amount_str: &str) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For now, fee_payer is also the authority (exchange owner)
+    let fee_payer = get_keypair(ctx)?;
+    let authority = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
-    let (exchange_address, _) = exchange_pda(keypair.pubkey());
+    let (exchange_address, _) = exchange_pda(authority.pubkey());
 
     ctx.print(&format!("Withdrawing {} from exchange...", amount));
     ctx.print(&format!("Exchange: {}", exchange_address));
@@ -391,9 +380,9 @@ async fn withdraw_sol(ctx: &Context, amount_str: &str) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_withdraw_sol_ix(keypair.pubkey(), keypair.pubkey(), exchange_address, amount);
+    let ix = build_withdraw_sol_ix(fee_payer.pubkey(), authority.pubkey(), exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("WithdrawSol failed: {}", e))?;
 
@@ -404,18 +393,20 @@ async fn withdraw_sol(ctx: &Context, amount_str: &str) -> Result<()> {
 
 /// Swap SOL for TAPE at an exchange.
 async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Option<String>) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For swaps, fee_payer is also the signer (person swapping)
+    let fee_payer = get_keypair(ctx)?;
+    let signer = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_sol_amount(amount_str)?;
 
     // Determine which exchange to use
     let exchange_auth = match exchange_authority {
         Some(s) => parse_pubkey(&s)?,
-        None => keypair.pubkey(), // Use own exchange if not specified
+        None => signer.pubkey(), // Use own exchange if not specified
     };
 
     let (exchange_address, _) = exchange_pda(exchange_auth);
-    let signer_ata = ata(&keypair.pubkey());
+    let signer_ata = ata(&signer.pubkey());
 
     ctx.print(&format!("Swapping {} for TAPE...", amount));
     ctx.print(&format!("Exchange: {} (authority: {})", exchange_address, exchange_auth));
@@ -426,9 +417,9 @@ async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Opti
         return Ok(());
     }
 
-    let ix = build_swap_for_tape_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_swap_for_tape_ix(fee_payer.pubkey(), signer.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("SwapForTape failed: {}", e))?;
 
@@ -439,18 +430,20 @@ async fn swap_for_tape(ctx: &Context, amount_str: &str, exchange_authority: Opti
 
 /// Swap TAPE for SOL at an exchange.
 async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_authority: Option<String>) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    // For swaps, fee_payer is also the signer (person swapping)
+    let fee_payer = get_keypair(ctx)?;
+    let signer = &fee_payer; // Same keypair acts as both
     let client = create_client(ctx)?;
     let amount = parse_tape_amount(amount_str)?;
 
     // Determine which exchange to use
     let exchange_auth = match exchange_authority {
         Some(s) => parse_pubkey(&s)?,
-        None => keypair.pubkey(), // Use own exchange if not specified
+        None => signer.pubkey(), // Use own exchange if not specified
     };
 
     let (exchange_address, _) = exchange_pda(exchange_auth);
-    let signer_ata = ata(&keypair.pubkey());
+    let signer_ata = ata(&signer.pubkey());
 
     ctx.print(&format!("Swapping {} for SOL...", amount));
     ctx.print(&format!("Exchange: {} (authority: {})", exchange_address, exchange_auth));
@@ -461,9 +454,9 @@ async fn swap_for_sol(ctx: &Context, amount_str: &str, exchange_authority: Optio
         return Ok(());
     }
 
-    let ix = build_swap_for_sol_ix(keypair.pubkey(), keypair.pubkey(), signer_ata, exchange_address, amount);
+    let ix = build_swap_for_sol_ix(fee_payer.pubkey(), signer.pubkey(), signer_ata, exchange_address, amount);
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&fee_payer, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("SwapForSol failed: {}", e))?;
 

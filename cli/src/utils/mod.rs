@@ -1,6 +1,32 @@
 //! CLI utilities.
 
+use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
+use solana_sdk::signature::Keypair;
+use tape_sdk::load_solana_keypair;
+
+use crate::config::expand_path;
+use crate::Context;
+
+/// Load the fee payer keypair from CLI context.
+///
+/// This loads the keypair from the path specified via --keypair flag
+/// or the keys.default config setting.
+pub fn get_keypair(ctx: &Context) -> Result<Keypair> {
+    let path = ctx.keypair.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
+
+    load_keypair_from_path(&path.to_string_lossy())
+}
+
+/// Load a keypair from an arbitrary file path.
+///
+/// Handles path expansion (e.g., ~ for home directory).
+pub fn load_keypair_from_path(path: &str) -> Result<Keypair> {
+    let expanded = expand_path(path);
+    load_solana_keypair(&expanded)
+        .map_err(|e| anyhow::anyhow!("Failed to load keypair from {}: {}", path, e))
+}
 
 /// Create a spinner for long-running operations.
 pub fn spinner(msg: &str) -> ProgressBar {

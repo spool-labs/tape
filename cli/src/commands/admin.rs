@@ -1,8 +1,8 @@
 //! System administration commands.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use clap::Subcommand;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{
     build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
@@ -10,7 +10,6 @@ use tape_api::instruction::{
 };
 use rpc_client::{RpcConfig, RpcClient};
 
-use crate::config::expand_path;
 use crate::Context;
 
 #[derive(Subcommand, Debug)]
@@ -22,23 +21,7 @@ pub enum AdminCommand {
     AdvanceEpoch,
 }
 
-/// Load keypair from the configured path.
-fn load_keypair(ctx: &Context) -> Result<Keypair> {
-    let path = ctx
-        .keypair
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No keypair configured. Use --keypair or set keys.default in config."))?;
-
-    let path = expand_path(&path.to_string_lossy());
-
-    let contents = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read keypair: {}", path.display()))?;
-
-    let bytes: Vec<u8> = serde_json::from_str(&contents)
-        .with_context(|| "Failed to parse keypair file (expected JSON array of bytes)")?;
-
-    Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair data: {}", e))
-}
+use crate::utils::get_keypair;
 
 /// Create a RpcClient from context.
 fn create_client(ctx: &Context) -> Result<RpcClient<rpc_solana::SolanaRpc>> {
@@ -60,7 +43,7 @@ pub async fn execute(ctx: &Context, cmd: AdminCommand) -> Result<()> {
 
 /// Initialize the full system: InitMint + CreateSystem + ExpandSystem (repeated) + Initialize.
 async fn init_system(ctx: &Context) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
     ctx.print("Initializing Tapedrive system...");
@@ -131,7 +114,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
 
 /// Advance to the next epoch (permissionless operation).
 async fn advance_epoch(ctx: &Context) -> Result<()> {
-    let keypair = load_keypair(ctx)?;
+    let keypair = get_keypair(ctx)?;
     let client = create_client(ctx)?;
 
     ctx.print("Advancing epoch...");
