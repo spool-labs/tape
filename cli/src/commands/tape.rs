@@ -4,11 +4,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand};
+use comfy_table::{presets::UTF8_FULL, Table};
 use solana_sdk::signature::{Keypair, Signer};
 use solana_sdk::pubkey::Pubkey;
 
 use tape_sdk::create_rpc_client;
 
+use crate::output::OutputFormat;
 use crate::utils::{get_keypair, resolve_authority, authority_keys_dir, AuthorityType};
 use crate::Context;
 
@@ -434,46 +436,132 @@ async fn merge(ctx: &Context, authority_arg: Option<String>, recipient: &str) ->
 }
 
 async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
-    // For list, authority can be just a pubkey (no signing needed)
-    let authority_pubkey: Pubkey = match authority_arg {
-        Some(auth) => auth.parse()
-            .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
-        None => {
-            let keypair = get_keypair(ctx)?;
-            keypair.pubkey()
-        }
-    };
-
-    if !ctx.quiet {
-        eprintln!("Listing tapes for authority: {}", authority_pubkey);
-    }
-
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // Get the tape for this authority
-    match client.get_tape(&authority_pubkey).await {
-        Ok(tape) => {
-            println!("{:<20} {:>12} {:>12} {:>12} {:>12} {:>8}",
-                "Authority", "ID", "Capacity", "Used", "Epochs", "Tracks");
-            println!("{}", "-".repeat(80));
+    // Collect tapes to display
+    let mut tapes: Vec<(Pubkey, tape_api::state::Tape)> = Vec::new();
+    let mut not_found: Vec<Pubkey> = Vec::new();
 
-            let epoch_range = format!("{}-{}", tape.active_epoch, tape.expiry_epoch);
-            println!("{:<20} {:>12} {:>12} {:>12} {:>12} {:>8}",
-                &authority_pubkey.to_string()[..20],
-                tape.id,
-                format!("{} MB", tape.capacity),
-                format!("{} MB", tape.used),
-                epoch_range,
-                tape.track_count
-            );
-        }
-        Err(e) => {
-            if e.to_string().contains("not found") || e.to_string().contains("AccountNotFound") {
-                println!("No tape found for authority: {}", authority_pubkey);
-                println!("Use `tape tape reserve` to create one.");
-            } else {
-                return Err(anyhow::anyhow!("Failed to fetch tape: {}", e));
+    // If authority is provided, query just that tape
+    if let Some(auth) = authority_arg {
+        let authority_pubkey: Pubkey = auth.parse()
+            .with_context(|| format!("Invalid authority pubkey: {}", auth))?;
+
+        match client.get_tape(&authority_pubkey).await {
+            Ok(tape) => tapes.push((authority_pubkey, tape)),
+            Err(e) => {
+                if e.to_string().contains("not found") || e.to_string().contains("AccountNotFound") {
+                    not_found.push(authority_pubkey);
+                } else {
+                    return Err(anyhow::anyhow!("Failed to fetch tape: {}", e));
+                }
             }
+        }
+    } else {
+        // No authority provided - list all saved tape keypairs
+        let tapes_dir = authority_keys_dir(AuthorityType::Tape);
+
+        if !tapes_dir.exists() {
+            match ctx.output {
+                OutputFormat::Json => println!("[]"),
+                _ => {
+                    println!("No tapes found.");
+                    println!("Use `tape tape reserve` to create one.");
+                }
+            }
+            return Ok(());
+        }
+
+        let entries: Vec<_> = std::fs::read_dir(&tapes_dir)
+            .with_context(|| format!("Failed to read tapes directory: {}", tapes_dir.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+
+        if entries.is_empty() {
+            match ctx.output {
+                OutputFormat::Json => println!("[]"),
+                _ => {
+                    println!("No tapes found.");
+                    println!("Use `tape tape reserve` to create one.");
+                }
+            }
+            return Ok(());
+        }
+
+        for entry in entries {
+            let filename = entry.file_name();
+            let pubkey_str = filename.to_string_lossy();
+            let pubkey_str = pubkey_str.trim_end_matches(".json");
+
+            let authority_pubkey: Pubkey = match pubkey_str.parse() {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+
+            match client.get_tape(&authority_pubkey).await {
+                Ok(tape) => tapes.push((authority_pubkey, tape)),
+                Err(e) => {
+                    if e.to_string().contains("not found") || e.to_string().contains("AccountNotFound") {
+                        not_found.push(authority_pubkey);
+                    }
+                }
+            }
+        }
+    }
+
+    // Output based on format
+    match ctx.output {
+        OutputFormat::Json => {
+            let json_tapes: Vec<_> = tapes.iter().map(|(authority, tape)| {
+                serde_json::json!({
+                    "authority": authority.to_string(),
+                    "id": tape.id.as_u64(),
+                    "capacity": tape.capacity.as_u64(),
+                    "used": tape.used.as_u64(),
+                    "active_epoch": tape.active_epoch.as_u64(),
+                    "expiry_epoch": tape.expiry_epoch.as_u64(),
+                    "track_count": tape.track_count,
+                })
+            }).collect();
+            println!("{}", serde_json::to_string_pretty(&json_tapes)?);
+        }
+        _ => {
+            if tapes.is_empty() && not_found.is_empty() {
+                println!("No tapes found.");
+                println!("Use `tape tape reserve` to create one.");
+                return Ok(());
+            }
+
+            let mut table = Table::new();
+            table.load_preset(UTF8_FULL);
+            table.set_header(vec!["Authority", "ID", "Capacity", "Used", "Epochs", "Tracks"]);
+
+            for (authority, tape) in &tapes {
+                let epoch_range = format!("{}-{}", tape.active_epoch.as_u64(), tape.expiry_epoch.as_u64());
+                table.add_row(vec![
+                    &authority.to_string(),
+                    &tape.id.as_u64().to_string(),
+                    &format!("{} MB", tape.capacity.as_u64()),
+                    &format!("{} MB", tape.used.as_u64()),
+                    &epoch_range,
+                    &tape.track_count.to_string(),
+                ]);
+            }
+
+            for authority in &not_found {
+                table.add_row(vec![
+                    &authority.to_string(),
+                    "(not found on-chain)",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]);
+            }
+
+            println!("{}", table);
+            println!("\nTotal: {} tape(s)", tapes.len());
         }
     }
 
