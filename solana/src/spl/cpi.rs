@@ -2,9 +2,9 @@
 //!
 //! Provides convenient wrappers for common SPL token operations.
 
-use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, pubkey::Pubkey};
+use solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, program_pack::Pack, pubkey::Pubkey};
 
-use crate::account::invoke_signed_with_bump;
+use crate::account::{allocate_account_with_bump, invoke_signed_with_bump};
 
 /// Creates an associated token account.
 #[inline(always)]
@@ -33,6 +33,39 @@ pub fn create_associated_token_account<'info>(
             token_program.clone(),
             associated_token_program.clone(),
         ],
+    )
+}
+
+/// Creates a PDA token account (not an ATA).
+#[inline(always)]
+pub fn create_token_account<'info>(
+    funder_info: &AccountInfo<'info>,
+    target_info: &AccountInfo<'info>,
+    mint_info: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    seeds: &[&[u8]],
+    bump: u8,
+) -> ProgramResult {
+    allocate_account_with_bump(
+        target_info,
+        system_program,
+        funder_info,
+        spl_token::state::Account::LEN,
+        &spl_token::id(),
+        seeds,
+        bump,
+    )?;
+
+    // Initialize the token account (requires no signers)
+    solana_program::program::invoke(
+        &spl_token::instruction::initialize_account3(
+            &spl_token::id(),
+            target_info.key,
+            mint_info.key,
+            target_info.key,
+        )
+        .unwrap(),
+        &[target_info.clone(), mint_info.clone()],
     )
 }
 

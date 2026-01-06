@@ -1,5 +1,4 @@
 pub mod consts;
-pub mod cpi;
 pub mod event;
 pub mod helpers;
 pub mod program;
@@ -10,9 +9,9 @@ pub mod utils;
 
 pub mod prelude {
     pub use tape_core::prelude::*;
+    pub use tape_solana::*;
 
     pub use crate::consts::*;
-    pub use crate::cpi::*;
     pub use crate::helpers::*;
     pub use crate::instruction::*;
     pub use crate::loaders::*;
