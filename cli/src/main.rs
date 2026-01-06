@@ -85,10 +85,7 @@ enum Commands {
     },
 
     /// Storage resource (tape) management.
-    Tape {
-        #[command(subcommand)]
-        command: commands::tape::TapeCommand,
-    },
+    Tape(commands::tape::TapeArgs),
 
     /// Track/blob management.
     Track {
@@ -103,16 +100,10 @@ enum Commands {
     },
 
     /// Staking operations.
-    Stake {
-        #[command(subcommand)]
-        command: commands::stake::StakeCommand,
-    },
+    Stake(commands::stake::StakeArgs),
 
     /// Token exchange.
-    Exchange {
-        #[command(subcommand)]
-        command: commands::exchange::ExchangeCommand,
-    },
+    Exchange(commands::exchange::ExchangeArgs),
 
     /// Database utilities.
     #[cfg(feature = "db")]
@@ -238,11 +229,11 @@ async fn main() -> Result<()> {
         Commands::Admin { command } => commands::admin::execute(&ctx, command).await,
         Commands::Node(args) => commands::node::execute(&ctx, args).await,
         Commands::Account { command } => commands::account::execute(&ctx, command).await,
-        Commands::Tape { command } => commands::tape::execute(&ctx, command).await,
+        Commands::Tape(args) => commands::tape::execute(&ctx, args).await,
         Commands::Track { command } => commands::track::execute(&ctx, command).await,
         Commands::Storage { command } => commands::storage::execute(&ctx, command).await,
-        Commands::Stake { command } => commands::stake::execute(&ctx, command).await,
-        Commands::Exchange { command } => commands::exchange::execute(&ctx, command).await,
+        Commands::Stake(args) => commands::stake::execute(&ctx, args).await,
+        Commands::Exchange(args) => commands::exchange::execute(&ctx, args).await,
         #[cfg(feature = "db")]
         Commands::Db { command } => commands::db::execute(&ctx, command).await,
         Commands::Metrics { command } => commands::metrics::execute(&ctx, command).await,

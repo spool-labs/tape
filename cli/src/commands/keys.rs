@@ -54,7 +54,12 @@ pub enum KeysCommand {
     },
 
     /// List managed keypairs.
-    List,
+    /// Optionally filter by type: tapes, stakes, exchanges.
+    List {
+        /// Filter by key type (tapes, stakes, exchanges).
+        /// If not specified, lists all keys in ~/.tape/keys/.
+        key_type: Option<String>,
+    },
 
     /// Show public key for a keypair.
     Show {
@@ -77,7 +82,7 @@ pub async fn execute(ctx: &Context, cmd: KeysCommand) -> Result<()> {
         KeysCommand::Export { name, output } => {
             export(ctx, &name, output).await
         }
-        KeysCommand::List => list(ctx).await,
+        KeysCommand::List { key_type } => list(ctx, key_type).await,
         KeysCommand::Show { name } => show(ctx, name).await,
         KeysCommand::Default => show_default(ctx).await,
     }
@@ -182,39 +187,92 @@ async fn export(_ctx: &Context, name: &str, output: Option<PathBuf>) -> Result<(
     Ok(())
 }
 
-async fn list(_ctx: &Context) -> Result<()> {
+async fn list(_ctx: &Context, key_type: Option<String>) -> Result<()> {
     use solana_sdk::signature::Keypair;
 
-    let dir = keys_dir();
+    // Determine which directory to list
+    let (dir, type_name) = match key_type.as_deref() {
+        Some("tapes") | Some("tape") => {
+            (keys_dir().join("tapes"), "tape")
+        }
+        Some("stakes") | Some("stake") => {
+            (keys_dir().join("stakes"), "stake")
+        }
+        Some("exchanges") | Some("exchange") => {
+            (keys_dir().join("exchanges"), "exchange")
+        }
+        Some(t) => {
+            anyhow::bail!("Unknown key type '{}'. Use: tapes, stakes, or exchanges", t);
+        }
+        None => {
+            // List all keys in the base directory
+            (keys_dir(), "default")
+        }
+    };
 
     if !dir.exists() {
-        println!("No keys directory found at {}", dir.display());
-        println!("Use `tape keys generate` to create a new keypair.");
+        if key_type.is_some() {
+            println!("No {} keys found.", type_name);
+            println!("Keys are saved when you create resources with auto-generated authorities.");
+        } else {
+            println!("No keys directory found at {}", dir.display());
+            println!("Use `tape keys generate` to create a new keypair.");
+        }
         return Ok(());
     }
 
     let entries = std::fs::read_dir(&dir)
         .with_context(|| format!("Failed to read keys directory: {}", dir.display()))?;
 
-    println!("{:<20} {}", "Name", "Public Key");
-    println!("{}", "-".repeat(70));
+    println!("{:<48} {}", "Public Key", "Path");
+    println!("{}", "-".repeat(90));
 
     let mut count = 0;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
 
-        if path.extension().map_or(false, |e| e == "json") {
-            let name = path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
+        // Skip subdirectories when listing the base keys dir
+        if path.is_dir() {
+            continue;
+        }
 
+        if path.extension().map_or(false, |e| e == "json") {
             // Try to load and show pubkey
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 if let Ok(bytes) = serde_json::from_str::<Vec<u8>>(&contents) {
                     if let Ok(keypair) = Keypair::from_bytes(&bytes) {
-                        println!("{:<20} {}", name, keypair.pubkey());
+                        // Shorten the path for display
+                        let display_path = path.to_string_lossy()
+                            .replace(&dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(), "~");
+                        println!("{:<48} {}", keypair.pubkey(), display_path);
                         count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // If listing base dir, also list subdirectories
+    if key_type.is_none() {
+        for subdir in &["tapes", "stakes", "exchanges"] {
+            let subdir_path = keys_dir().join(subdir);
+            if subdir_path.exists() {
+                if let Ok(entries) = std::fs::read_dir(&subdir_path) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |e| e == "json") {
+                            if let Ok(contents) = std::fs::read_to_string(&path) {
+                                if let Ok(bytes) = serde_json::from_str::<Vec<u8>>(&contents) {
+                                    if let Ok(keypair) = Keypair::from_bytes(&bytes) {
+                                        let display_path = path.to_string_lossy()
+                                            .replace(&dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(), "~");
+                                        println!("{:<48} {}", keypair.pubkey(), display_path);
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -223,6 +281,8 @@ async fn list(_ctx: &Context) -> Result<()> {
 
     if count == 0 {
         println!("(no keypairs found)");
+    } else {
+        println!("\nTotal: {} keypair(s)", count);
     }
 
     Ok(())

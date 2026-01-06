@@ -1,5 +1,7 @@
 //! CLI utilities.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use solana_sdk::signature::Keypair;
@@ -7,6 +9,88 @@ use tape_sdk::load_solana_keypair;
 
 use crate::config::expand_path;
 use crate::Context;
+
+/// Authority key types for resolution.
+#[derive(Debug, Clone, Copy)]
+pub enum AuthorityType {
+    Tape,
+    Stake,
+    Exchange,
+}
+
+impl AuthorityType {
+    /// Get the subdirectory name for this authority type.
+    pub fn subdir(&self) -> &'static str {
+        match self {
+            AuthorityType::Tape => "tapes",
+            AuthorityType::Stake => "stakes",
+            AuthorityType::Exchange => "exchanges",
+        }
+    }
+}
+
+/// Get the keys directory for a specific authority type.
+pub fn authority_keys_dir(auth_type: AuthorityType) -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(".tape").join("keys").join(auth_type.subdir()))
+        .unwrap_or_else(|| PathBuf::from(format!(".tape/keys/{}", auth_type.subdir())))
+}
+
+/// Resolve an authority string to a keypair.
+///
+/// If the string looks like a path (contains `/` or ends with `.json`),
+/// loads the keypair from that path.
+///
+/// Otherwise, treats it as a pubkey and looks up the keypair in
+/// `~/.tape/keys/{type}/{pubkey}.json`.
+pub fn resolve_authority(authority: &str, auth_type: AuthorityType) -> Result<Keypair> {
+    let is_path = authority.contains('/') || authority.ends_with(".json");
+
+    if is_path {
+        load_keypair_from_path(authority)
+    } else {
+        // Treat as pubkey, look up in keys directory
+        let keys_dir = authority_keys_dir(auth_type);
+        let keypair_path = keys_dir.join(format!("{}.json", authority));
+
+        if !keypair_path.exists() {
+            anyhow::bail!(
+                "Authority keypair not found: {}\nLooked in: {}\nUse `tape keys list {}` to see available keypairs.",
+                authority,
+                keypair_path.display(),
+                auth_type.subdir()
+            );
+        }
+
+        load_keypair_from_path(&keypair_path.to_string_lossy())
+    }
+}
+
+/// List all authority keypairs of a given type.
+#[allow(dead_code)]
+pub fn list_authority_keypairs(auth_type: AuthorityType) -> Result<Vec<(String, PathBuf)>> {
+    let dir = authority_keys_dir(auth_type);
+
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut keypairs = Vec::new();
+
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().map_or(false, |e| e == "json") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                keypairs.push((stem.to_string(), path));
+            }
+        }
+    }
+
+    keypairs.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(keypairs)
+}
 
 /// Load the fee payer keypair from CLI context.
 ///
