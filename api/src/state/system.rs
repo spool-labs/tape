@@ -32,5 +32,5 @@ pub struct System {
     pub spools: SpoolAssignment<SLICE_COUNT>,
 }
 
-state!(AccountType, System);
+tape_solana::state!(AccountType, System);
 

@@ -28,4 +28,4 @@ pub struct Tape {
     pub track_count: u64,
 }
 
-state!(AccountType, Tape);
+tape_solana::state!(AccountType, Tape);

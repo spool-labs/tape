@@ -16,4 +16,4 @@ pub struct Stake {
     pub inner: StakedTape,
 }
 
-state!(AccountType, Stake);
+tape_solana::state!(AccountType, Stake);

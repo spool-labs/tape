@@ -36,4 +36,4 @@ pub struct Node {
 }
 
 
-state!(AccountType, Node);
+tape_solana::state!(AccountType, Node);

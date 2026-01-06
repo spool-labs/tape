@@ -1,4 +1,3 @@
-use crate::declare_id;
 use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
 use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
@@ -14,7 +13,7 @@ pub const EPOCH_DURATION:        i64 = 7 * 24 * 60 * 60;   // 1 week in seconds
 pub const BLACKLIST_SIZE:      usize = 24;                 // 2^24 blob entries in blocklist
 pub const STREAM_SEGMENTS:     usize = 18;                 // 2^18 = 262,144 segments (32MiB with 128B segments)
 
-declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
+tape_solana::declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

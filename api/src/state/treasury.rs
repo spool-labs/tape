@@ -6,4 +6,4 @@ use crate::state;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Treasury {}
 
-state!(AccountType, Treasury);
+tape_solana::state!(AccountType, Treasury);

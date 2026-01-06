@@ -7,7 +7,6 @@ pub mod instruction;
 pub mod loaders;
 pub mod state;
 pub mod utils;
-mod macros;
 
 pub mod prelude {
     pub use tape_core::prelude::*;

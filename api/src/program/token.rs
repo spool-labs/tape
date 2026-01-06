@@ -1,8 +1,7 @@
-use crate::declare_id;
 use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 
-declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
+tape_solana::declare_id!("tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL"); 
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };

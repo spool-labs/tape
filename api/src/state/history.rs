@@ -21,4 +21,4 @@ pub struct History {
 }
 
 
-state!(AccountType, History);
+tape_solana::state!(AccountType, History);

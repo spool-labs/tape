@@ -129,62 +129,62 @@ pub enum TapeInstruction {
 }
 
 
-instruction!(TokenInstruction, InitializeMint);
+tape_solana::instruction!(TokenInstruction, InitializeMint);
 
-instruction!(ExchangeInstruction, RegisterExchange);
-instruction!(ExchangeInstruction, SetExchangeRate);
-instruction!(ExchangeInstruction, DepositTape);
-instruction!(ExchangeInstruction, DepositSol);
-instruction!(ExchangeInstruction, WithdrawTape);
-instruction!(ExchangeInstruction, WithdrawSol);
-instruction!(ExchangeInstruction, SwapForTape);
-instruction!(ExchangeInstruction, SwapForSol);
+tape_solana::instruction!(ExchangeInstruction, RegisterExchange);
+tape_solana::instruction!(ExchangeInstruction, SetExchangeRate);
+tape_solana::instruction!(ExchangeInstruction, DepositTape);
+tape_solana::instruction!(ExchangeInstruction, DepositSol);
+tape_solana::instruction!(ExchangeInstruction, WithdrawTape);
+tape_solana::instruction!(ExchangeInstruction, WithdrawSol);
+tape_solana::instruction!(ExchangeInstruction, SwapForTape);
+tape_solana::instruction!(ExchangeInstruction, SwapForSol);
 
-instruction!(StakingInstruction, StakeTokens);
-instruction!(StakingInstruction, UnstakeTokens);
-instruction!(StakingInstruction, SplitStake);
-instruction!(StakingInstruction, MergeStake);
+tape_solana::instruction!(StakingInstruction, StakeTokens);
+tape_solana::instruction!(StakingInstruction, UnstakeTokens);
+tape_solana::instruction!(StakingInstruction, SplitStake);
+tape_solana::instruction!(StakingInstruction, MergeStake);
 
-instruction!(TapeInstruction, CreateSystem);
-instruction!(TapeInstruction, ExpandSystem);
-instruction!(TapeInstruction, Initialize);
-instruction!(TapeInstruction, AdvanceEpoch);
+tape_solana::instruction!(TapeInstruction, CreateSystem);
+tape_solana::instruction!(TapeInstruction, ExpandSystem);
+tape_solana::instruction!(TapeInstruction, Initialize);
+tape_solana::instruction!(TapeInstruction, AdvanceEpoch);
 //instruction!(TapeInstruction, RegisterFeature);
 //instruction!(TapeInstruction, CertifyFeature);
 
-instruction!(TapeInstruction, AdvancePool);
-instruction!(TapeInstruction, StakeWithPool);
-instruction!(TapeInstruction, RequestStakeUnlock);
-instruction!(TapeInstruction, UnstakeFromPool);
-instruction!(TapeInstruction, SplitPoolStake);
-instruction!(TapeInstruction, MergePoolStake);
+tape_solana::instruction!(TapeInstruction, AdvancePool);
+tape_solana::instruction!(TapeInstruction, StakeWithPool);
+tape_solana::instruction!(TapeInstruction, RequestStakeUnlock);
+tape_solana::instruction!(TapeInstruction, UnstakeFromPool);
+tape_solana::instruction!(TapeInstruction, SplitPoolStake);
+tape_solana::instruction!(TapeInstruction, MergePoolStake);
 
-instruction!(TapeInstruction, RegisterNode);
-instruction!(TapeInstruction, JoinNetwork);
-instruction!(TapeInstruction, SyncEpoch);
-instruction!(TapeInstruction, ClaimCommission);
-instruction!(TapeInstruction, SetAuthority);
-instruction!(TapeInstruction, SetName);
-instruction!(TapeInstruction, SetBlsPubkey);
-instruction!(TapeInstruction, SetNetworkAddress);
-instruction!(TapeInstruction, SetNetworkTls);
-instruction!(TapeInstruction, SetCommissionRate);
-instruction!(TapeInstruction, SetStoragePrice);
-instruction!(TapeInstruction, SetStorageCapacity);
-instruction!(TapeInstruction, AddToBlacklist);
-instruction!(TapeInstruction, RemoveFromBlacklist);
+tape_solana::instruction!(TapeInstruction, RegisterNode);
+tape_solana::instruction!(TapeInstruction, JoinNetwork);
+tape_solana::instruction!(TapeInstruction, SyncEpoch);
+tape_solana::instruction!(TapeInstruction, ClaimCommission);
+tape_solana::instruction!(TapeInstruction, SetAuthority);
+tape_solana::instruction!(TapeInstruction, SetName);
+tape_solana::instruction!(TapeInstruction, SetBlsPubkey);
+tape_solana::instruction!(TapeInstruction, SetNetworkAddress);
+tape_solana::instruction!(TapeInstruction, SetNetworkTls);
+tape_solana::instruction!(TapeInstruction, SetCommissionRate);
+tape_solana::instruction!(TapeInstruction, SetStoragePrice);
+tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
+tape_solana::instruction!(TapeInstruction, AddToBlacklist);
+tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
 //instruction!(TapeInstruction, VoteOnFeature);
 
-instruction!(TapeInstruction, ReserveTape);
-instruction!(TapeInstruction, DestroyTape);
-instruction!(TapeInstruction, SplitTapeByEpoch);
-instruction!(TapeInstruction, SplitTapeBySize);
-instruction!(TapeInstruction, MergeTape);
+tape_solana::instruction!(TapeInstruction, ReserveTape);
+tape_solana::instruction!(TapeInstruction, DestroyTape);
+tape_solana::instruction!(TapeInstruction, SplitTapeByEpoch);
+tape_solana::instruction!(TapeInstruction, SplitTapeBySize);
+tape_solana::instruction!(TapeInstruction, MergeTape);
 
-instruction!(TapeInstruction, RegisterTrack);
-instruction!(TapeInstruction, DeleteTrack);
-instruction!(TapeInstruction, CertifyTrack);
-instruction!(TapeInstruction, InvalidateTrack);
+tape_solana::instruction!(TapeInstruction, RegisterTrack);
+tape_solana::instruction!(TapeInstruction, DeleteTrack);
+tape_solana::instruction!(TapeInstruction, CertifyTrack);
+tape_solana::instruction!(TapeInstruction, InvalidateTrack);
 
 //instruction!(TapeInstruction, CreateStream);
 //instruction!(TapeInstruction, RegisterStream);

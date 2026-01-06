@@ -29,4 +29,4 @@ pub struct Archive {
     pub tape_count: u64,
 }
 
-state!(AccountType, Archive);
+tape_solana::state!(AccountType, Archive);

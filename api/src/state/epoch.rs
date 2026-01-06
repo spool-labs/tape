@@ -16,4 +16,4 @@ pub struct Epoch {
     pub last_epoch: i64,
 }
 
-state!(AccountType, Epoch);
+tape_solana::state!(AccountType, Epoch);

@@ -19,4 +19,4 @@ pub struct Exchange {
     pub rate: ExchangeRate,
 }
 
-state!(AccountType, Exchange);
+tape_solana::state!(AccountType, Exchange);
