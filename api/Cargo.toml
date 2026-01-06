@@ -13,8 +13,8 @@ documentation = "https://docs.rs/tape-api"
 
 [dependencies]
 tape-core.workspace = true
+tape-solana.workspace = true
 
-steel.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true

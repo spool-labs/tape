@@ -29,7 +29,8 @@ mpl-token-metadata.workspace = true
 solana-program.workspace = true
 spl-token.workspace = true
 spl-associated-token-account.workspace = true
-steel.workspace = true
+tape-solana.workspace = true
+thiserror.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
 

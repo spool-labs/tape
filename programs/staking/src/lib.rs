@@ -12,7 +12,7 @@ use merge::*;
 
 use tape_api::prelude::*;
 use tape_api::program::staking;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,

@@ -20,7 +20,7 @@ pub use withdraw_sol::*;
 pub use withdraw_tape::*;
 
 use tape_api::prelude::*;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,

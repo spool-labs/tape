@@ -58,8 +58,8 @@ macro_rules! state {
             }
         }
 
-        // steel account macro
-        account!($acct_ty, $data_ty);
+        // tape_solana account macro
+        tape_solana::account!($acct_ty, $data_ty);
     };
 }
 

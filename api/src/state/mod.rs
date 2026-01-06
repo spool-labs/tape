@@ -21,7 +21,7 @@ pub use tape::*;
 pub use track::*;
 pub use treasury::*;
 
-use steel::*;
+use tape_solana::*;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]

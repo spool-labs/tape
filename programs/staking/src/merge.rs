@@ -1,5 +1,5 @@
 use tape_api::prelude::*;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_merge_stake(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = MergeStake::try_from_bytes(data)?;

@@ -1,5 +1,5 @@
 use tape_api::prelude::*;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_set_name(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetName::try_from_bytes(data)?;

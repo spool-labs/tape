@@ -4,6 +4,7 @@ members = [
   "api",
   "core",
   "crypto",
+  "solana",
   "test",
   "metrics",
   "programs/exchange",
@@ -40,6 +41,7 @@ keywords = ["solana", "crypto", "storage"]
 tape-api = { version = "0.3.0", path = "./api" }
 tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
+tape-solana = { version = "0.3.0", path = "./solana" }
 tape-test = { version = "0.3.0", path = "./test" }
 
 rpc = { version = "0.3.0", path = "./rpc/rpc" }
@@ -83,8 +85,6 @@ solana-account-decoder = "=2.3"
 solana-transaction-status-client-types = "=2.3"
 solana-curve25519 = "=2.3"
 solana-test-validator = "=2.3"
-
-steel = { version="4.0.0", features = ["spl"] }
 
 mpl-token-metadata = "5.1"
 spl-token = { version = "^4", features = ["no-entrypoint"] }

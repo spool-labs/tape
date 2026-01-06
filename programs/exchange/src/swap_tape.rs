@@ -1,7 +1,7 @@
 use solana_program::{program::invoke, system_instruction};
 use crate::error::*;
 use tape_api::prelude::*;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_swap_for_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SwapForTape::try_from_bytes(data)?;

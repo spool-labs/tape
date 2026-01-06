@@ -67,7 +67,7 @@ rocksdb = { version = "0.23", optional = true }
 solana-sdk = { workspace = true }
 solana-client = { workspace = true }
 solana-account-decoder = { workspace = true }
-steel = { workspace = true }
+tape-solana = { workspace = true }
 
 [features]
 default = []

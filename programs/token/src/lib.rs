@@ -5,7 +5,7 @@ use initialize::*;
 
 use tape_api::prelude::*;
 use tape_api::program::token;
-use steel::*;
+use tape_solana::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,
