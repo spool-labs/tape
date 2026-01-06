@@ -121,8 +121,10 @@ async fn reserve(
     start_epoch: u64,
     end_epoch: u64,
 ) -> Result<()> {
+    use tape_api::helpers::build_authority_with_tokens_ix;
     use tape_api::instruction::build_reserve_tape_ix;
     use tape_core::types::{EpochNumber, StorageUnits};
+    use tape_core::types::coin::TAPE;
 
     if end_epoch <= start_epoch {
         anyhow::bail!("End epoch must be greater than start epoch");
@@ -130,6 +132,18 @@ async fn reserve(
 
     // Load the fee payer keypair (from --keypair or config)
     let fee_payer = get_keypair(ctx)?;
+
+    // Create RPC client early to fetch archive for cost calculation
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Fetch archive to calculate reservation cost
+    let archive = client.get_archive().await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch archive: {}", e))?;
+
+    let num_epochs = end_epoch.saturating_sub(start_epoch);
+    let price_per_unit = archive.storage_price.as_u64();
+    let single_epoch_cost = price_per_unit.saturating_mul(size);
+    let total_cost = single_epoch_cost.saturating_mul(num_epochs);
 
     // Determine authority: resolve from arg, or generate new one
     let (authority_keypair, is_new_keypair) = match authority_arg {
@@ -152,36 +166,49 @@ async fn reserve(
         eprintln!("  Size: {} MB", size);
         eprintln!("  Start epoch: {}", start_epoch);
         eprintln!("  End epoch: {}", end_epoch);
+        eprintln!("  Cost: {} TAPE", TAPE(total_cost));
     }
 
     if ctx.dry_run {
         println!("Dry run - would reserve {} MB from epoch {} to {}", size, start_epoch, end_epoch);
+        println!("  Cost: {} TAPE", TAPE(total_cost));
         if is_new_keypair {
             println!("  Would generate new authority: {}", authority);
         }
         return Ok(());
     }
 
-    // Reserve tape instruction (fee_payer pays, authority signs and owns)
-    let ix = build_reserve_tape_ix(
+    // Build instructions
+    let mut instructions = Vec::new();
+
+    // If using a new keypair, create ATA and transfer TAPE tokens from fee_payer
+    if is_new_keypair {
+        let ata_ixs = build_authority_with_tokens_ix(
+            fee_payer.pubkey(),
+            authority,
+            TAPE(total_cost),
+        );
+        instructions.extend(ata_ixs);
+    }
+
+    // Reserve tape instruction (fee_payer pays rent, authority owns)
+    instructions.push(build_reserve_tape_ix(
         fee_payer.pubkey(),
         authority,
         StorageUnits(size),
         EpochNumber(start_epoch),
         EpochNumber(end_epoch),
-    );
-
-    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+    ));
 
     // Send with both signers if using new keypair or different authority
     let signature = if is_new_keypair || fee_payer.pubkey() != authority {
         client
-            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .send_instructions_with_signers(&fee_payer, instructions, &[&authority_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     } else {
         client
-            .send_instructions(&fee_payer, vec![ix])
+            .send_instructions(&fee_payer, instructions)
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     };
@@ -199,6 +226,7 @@ async fn reserve(
     println!("  Authority: {}", authority);
     println!("  Size: {} MB", size);
     println!("  Active: epoch {} to {}", start_epoch, end_epoch);
+    println!("  Cost: {} TAPE", TAPE(total_cost));
 
     if let Some(path) = keypair_path {
         println!("  Keypair saved: {}", path.display());
