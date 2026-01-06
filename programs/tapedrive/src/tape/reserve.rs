@@ -105,10 +105,12 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .reserve_capacity(total_units, fee_per_epoch, start_epoch, end_epoch)
         .map_err(|_| TapeError::UnexpectedState)?;
 
+    // Assign tape ID before incrementing count (1-indexed)
+    let tape_id = TapeNumber(archive.tape_count.checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?);
+
     // Increment tape count for the new tape
-    archive.tape_count = archive.tape_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+    archive.tape_count = tape_id.as_u64();
 
     create_program_account::<Tape>(
         tape_info,
@@ -120,6 +122,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let tape = tape_info.as_account_mut::<Tape>(&tapedrive::ID)?;
 
+    tape.id = tape_id;
     tape.authority = *authority_info.key;
     tape.active_epoch = start_epoch;
     tape.expiry_epoch = end_epoch;
@@ -212,6 +215,7 @@ mod tests {
                 Check::success(),
                 Check::account(&tape_address).data(
                     Tape {
+                        id: TapeNumber(1),  // First tape
                         authority: authority,
                         capacity: storage_units,
                         used: StorageUnits::zero(),
