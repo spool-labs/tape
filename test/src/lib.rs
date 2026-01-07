@@ -12,8 +12,9 @@ use mollusk_svm_programs_token::{
     token as spl_token_program,
 };
 
+#[allow(deprecated)]
+use solana_sdk::bpf_loader_upgradeable;
 use solana_sdk::{
-    bpf_loader_upgradeable,
     account::Account,
     instruction::Instruction,
     program_pack::Pack,

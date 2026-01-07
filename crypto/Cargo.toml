@@ -11,6 +11,9 @@ readme.workspace = true
 
 documentation = "https://docs.rs/tape-crypto"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(target_os, values(\"solana\"))"] }
+
 [lib]
 crate-type = ["cdylib", "lib"]
 
