@@ -352,6 +352,15 @@ mod tests {
                 Check::account(&epoch_address)
                     .data(epoch.pack().as_ref())
                     .build(),
+                Check::account(&archive_address)
+                    .data(archive.pack().as_ref())
+                    .build(),
+                Check::account(&pool_address)
+                    .data(node.pack().as_ref())
+                    .build(),
+                Check::account(&history_address)
+                    .data(history.pack().as_ref())
+                    .build(),
             ],
         );
     }
@@ -468,6 +477,9 @@ mod tests {
                 Check::account(&archive_address)
                     .data(expected_archive.pack().as_ref())
                     .build(),
+                Check::account(&history_address)
+                    .data(history.pack().as_ref())
+                    .build(),
             ],
         );
     }
@@ -543,7 +555,7 @@ mod tests {
             pda(history_address, history.pack(), tapedrive::ID),
         ];
 
-        // Expected node state after instruction
+        // Expected state after instruction
         let rewards_owed = calc_rewards(
             node.id,
             archive.recent_usage,
@@ -557,6 +569,13 @@ mod tests {
         expected_node.pool.advance_epoch(EpochNumber(5), rewards_owed).unwrap();
         expected_node.metadata.bls_pubkey = expected_node.metadata.next_bls_pubkey;
 
+        let mut expected_archive = archive.clone();
+        expected_archive.rewards_paid = rewards_owed.into();
+
+        let mut expected_history = history.clone();
+        expected_history.latest_epoch = EpochNumber(5);
+        expected_history.inner.push(EpochNumber(5), expected_node.pool.get_current_rate());
+
         // In low-quorum mode, syncing check is skipped
         let env = test_env();
         env.process_instruction(
@@ -564,9 +583,14 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                // Node should be updated
                 Check::account(&pool_address)
                     .data(expected_node.pack().as_ref())
+                    .build(),
+                Check::account(&archive_address)
+                    .data(expected_archive.pack().as_ref())
+                    .build(),
+                Check::account(&history_address)
+                    .data(expected_history.pack().as_ref())
                     .build(),
             ],
         );
