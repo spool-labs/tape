@@ -98,9 +98,8 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     system.total_nodes = 0;
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
-    epoch.id = EpochNumber(0);
+    epoch.id = EpochNumber(1);
     epoch.last_epoch = 0;
-    epoch.state.set_next_ready();  // Bootstrap: skip Syncing/Active phases
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
     archive.storage_capacity = StorageUnits(1000); // 1Gb
@@ -167,12 +166,11 @@ mod tests {
                     }.pack().as_ref()
                 ).build(),
 
-                // Epoch created + initialized (bootstrap: epoch 0 in NextReady state)
+                // Epoch created + initialized
                 Check::account(&epoch_address).data(
                     Epoch {
-                        id: EpochNumber(0),
+                        id: EpochNumber(1),
                         last_epoch: 0,
-                        state: EpochState::next_ready(),
                         ..Epoch::zeroed()
                     }.pack().as_ref()
                 ).build(),
@@ -182,7 +180,7 @@ mod tests {
                     Archive {
                         storage_capacity: StorageUnits(1000),
                         storage_price: TAPE::from("0.0001"),
-                        schedule: EpochSchedule::new_at(EpochNumber(0)),
+                        schedule: EpochSchedule::new_at(EpochNumber(1)),
                         ..Archive::zeroed()
                     }.pack().as_ref()
                 ).build(),

@@ -36,14 +36,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    // Bootstrap mode: epochs 0 and 1 allow rapid advancement without normal checks
-    let is_bootstrap = epoch.id.as_u64() < 2;
-
-    if !is_bootstrap && !epoch.state.is_next_ready() {
+    if !epoch.state.is_next_ready() {
         return Err(TapeError::BadEpochState.into());
     }
 
-    if !is_bootstrap && epoch.last_epoch + EPOCH_DURATION > now {
+    if epoch.last_epoch + EPOCH_DURATION > now {
         return Err(TapeError::TooSoon.into());
     }
 
@@ -54,15 +51,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
-
-    // During bootstrap with empty committee_next, skip D'Hondt allocation
-    // (would panic with zero total stake)
-    if system.committee_next.size() > 0 {
-        system.spools.migrate_dhondt(
-            &system.committee,
-            &system.committee_next,
-        ).map_err(|_| TapeError::UnexpectedState)?;
-    }
+    system.spools.migrate_dhondt(
+        &system.committee,
+        &system.committee_next,
+    ).map_err(|_| TapeError::UnexpectedState)?;
 
     // Rotate committees
     system.committee_prev = system.committee.clone();
@@ -89,15 +81,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);
+    epoch.state.set_syncing();
     epoch.last_epoch = now;
-
-    // During bootstrap (epochs 0→1), stay in NextReady to allow another advance.
-    // Once we reach epoch 2, transition to normal Syncing mode.
-    if epoch.id.as_u64() < 2 {
-        epoch.state.set_next_ready();
-    } else {
-        epoch.state.set_syncing();
-    }
 
     // Update the archive storage price and capacity based on the new committee preferences
     let mut storage_prices : Vec<ValueAndWeight> = vec![];
@@ -288,240 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_advance_epoch_0_to_1() {
-        // Test bootstrap: advancing from epoch 0 to 1 with empty committees
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-
-        // Initial state after Initialize (epoch 0, NextReady, empty committees)
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let system = System::zeroed();
-
-        epoch.id = EpochNumber(0);
-        epoch.state = EpochState::next_ready();
-        epoch.last_epoch = 0;
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-        ];
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                // System unchanged (empty committees)
-                Check::account(&system_address).data(
-                    system.pack().as_ref()
-                ).build(),
-                // Epoch advanced to 1, still NextReady for next bootstrap advance
-                Check::account(&epoch_address).data(
-                    Epoch {
-                        id: EpochNumber(1),
-                        state: EpochState::next_ready(),
-                        last_epoch: env.now(),
-                    }.pack().as_ref()
-                ).build(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_bootstrap_advance_epoch_1_to_2() {
-        // Test bootstrap: advancing from epoch 1 to 2 with nodes in committee_next
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-
-        // State during epoch 1 (after first bootstrap advance)
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        epoch.id = EpochNumber(1);
-        epoch.state = EpochState::next_ready();
-        epoch.last_epoch = env.now() - 10; // Recent, but bootstrap skips time check
-
-        // Nodes have joined committee_next during epoch 1
-        system.committee_next = Committee::from_members(&[
-            member(1, 3_000, 1_000_000, 1000),
-            member(2, 2_000, 1_000_000, 1000),
-        ]);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-        ];
-
-        // Calculate expected spool allocation
-        let seat_count = dhondt_allocate(
-            &system.committee_next.active_stakes(),
-            SLICE_COUNT as u16,
-        );
-
-        let spools = migrate_spools(
-            &system.spools.0,
-            &system.committee.active_members(),
-            &system.committee_next.active_members(),
-            &seat_count,
-        ).expect("seat reassignment failed");
-
-        let expected_spools = SpoolAssignment::try_from(spools.as_ref()).unwrap();
-
-        let mut expected_committee = system.committee_next.clone();
-        expected_committee.apply_weights_from_spools(&expected_spools);
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                // System has committee rotated and spools assigned
-                Check::account(&system_address).data(
-                    System {
-                        spools: expected_spools,
-                        spools_prev: system.spools,
-                        committee_prev: system.committee,
-                        committee: expected_committee,
-                        ..system
-                    }.pack().as_ref()
-                ).build(),
-                // Epoch 2: now in Syncing (normal operation begins)
-                Check::account(&epoch_address).data(
-                    Epoch {
-                        id: EpochNumber(2),
-                        state: EpochState::syncing(),
-                        last_epoch: env.now(),
-                    }.pack().as_ref()
-                ).build(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_advance_epoch_2_to_3() {
-        // Test normal operation: epoch 2 to 3 requires EPOCH_DURATION and NextReady
-        let env = test_env();
-
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let instruction = build_advance_epoch_ix(fee_payer, authority);
-
-        let (system_address, _) = system_pda();
-        let (archive_address, _) = archive_pda();
-        let (epoch_address, _) = epoch_pda();
-
-        // State at epoch 2 (post-bootstrap, normal operation)
-        let mut epoch = Epoch::zeroed();
-        let mut archive = Archive::zeroed();
-        let mut system = System::zeroed();
-
-        // Must have EPOCH_DURATION elapsed for non-bootstrap advance
-        let last_epoch = env.now() - (EPOCH_DURATION + 100);
-
-        epoch.id = EpochNumber(2);
-        epoch.state = EpochState::next_ready(); // Must be NextReady
-        epoch.last_epoch = last_epoch;
-
-        // Active committee from epoch 2
-        system.committee = Committee::from_members(&[
-            member(1, 3_000, 1_000_000, 1000),
-            member(2, 2_000, 1_000_000, 1000),
-        ]);
-
-        // New nodes joining for epoch 3
-        system.committee_next = Committee::from_members(&[
-            member(3, 4_000, 1_200_000, 900),
-            member(1, 3_500, 1_100_000, 1000),
-            member(2, 2_500, 1_000_000, 1100),
-        ]);
-
-        archive.schedule = EpochSchedule::new_at(epoch.id);
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(system_address, system.pack(), tapedrive::ID),
-            pda(archive_address, archive.pack(), tapedrive::ID),
-            pda(epoch_address, epoch.pack(), tapedrive::ID),
-        ];
-
-        // Calculate expected spool allocation
-        let seat_count = dhondt_allocate(
-            &system.committee_next.active_stakes(),
-            SLICE_COUNT as u16,
-        );
-
-        let spools = migrate_spools(
-            &system.spools.0,
-            &system.committee.active_members(),
-            &system.committee_next.active_members(),
-            &seat_count,
-        ).expect("seat reassignment failed");
-
-        let expected_spools = SpoolAssignment::try_from(spools.as_ref()).unwrap();
-
-        let mut expected_committee = system.committee_next.clone();
-        expected_committee.apply_weights_from_spools(&expected_spools);
-
-        env.process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                // System has committee rotated and spools assigned
-                Check::account(&system_address).data(
-                    System {
-                        spools: expected_spools,
-                        spools_prev: system.spools,
-                        committee_prev: system.committee,
-                        committee: expected_committee,
-                        ..system
-                    }.pack().as_ref()
-                ).build(),
-                // Epoch 3: in Syncing (normal operation)
-                Check::account(&epoch_address).data(
-                    Epoch {
-                        id: EpochNumber(3),
-                        state: EpochState::syncing(),
-                        last_epoch: env.now(),
-                    }.pack().as_ref()
-                ).build(),
-            ]
-        );
-    }
-
-    #[test]
     fn test_advance_too_soon() {
-        // Test that non-bootstrap advance fails if EPOCH_DURATION hasn't elapsed
+        // Test that advance fails if EPOCH_DURATION hasn't elapsed
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();
@@ -569,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_advance_bad_state() {
-        // Test that non-bootstrap advance fails if not in NextReady state
+        // Test that advance fails if not in NextReady state
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();

@@ -841,6 +841,7 @@ async fn advance_pool(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
 
     println!("Pool advanced!");
     println!("  Transaction: {}", signature);
+    println!("  Node: {}", node_address);
 
     Ok(())
 }

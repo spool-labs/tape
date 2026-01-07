@@ -82,7 +82,7 @@ async fn handle_event(
         NodeEvent::NodeSynced {
             node,
             epoch,
-            spools_hash,
+            spools_hash: _,
         } => {
             // Track sync progress from other nodes
             // TODO: Maintain a set of synced nodes to know when quorum is reached
