@@ -59,7 +59,6 @@ pub fn build_stake_ix(
 pub fn build_unstake_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
-    pool: Pubkey,
 ) -> Instruction {
 
     let (stake_address, _) = stake_pda(authority);
@@ -72,10 +71,7 @@ pub fn build_unstake_ix(
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),  // writable: receives vault rent refund
             AccountMeta::new(authority_ata, false),
-
-            AccountMeta::new_readonly(pool, false),
             AccountMeta::new(vault_address, false),
-
             AccountMeta::new_readonly(spl_token::ID, false),
         ],
         data: UnstakeTokens {}.to_bytes(),

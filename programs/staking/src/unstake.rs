@@ -6,10 +6,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         fee_payer_info,
         authority_info,
         authority_ata_info,
-
-        _pool_info,
         vault_info,
-
         token_program_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -27,9 +24,6 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .as_token_account()?
         .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
-
-    // No check done against "pool_info" to reduce risks of stake being locked due to parent
-    // program changes
 
     token_program_info
         .is_program(&spl_token::ID)?;
@@ -82,24 +76,18 @@ mod tests {
 
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let pool_address = Pubkey::new_unique();
 
-        let instruction = build_unstake_ix(fee_payer, authority, pool_address);
+        let instruction = build_unstake_ix(fee_payer, authority);
 
         let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
         let authority_ata = ata_address(&authority);
 
-        let pool = Node::zeroed();
-
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             token(authority_ata, authority, 0),
-
-            pda(pool_address, pool.pack(), tapedrive::ID),
             token(vault_address, vault_address, amount),
-
             token_program(),
         ];
 

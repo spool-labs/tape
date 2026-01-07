@@ -152,15 +152,12 @@ pub fn process_unstake_from_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         &build_unstake_ix(
             *fee_payer_info.key,
             *authority_info.key,
-            *node_info.key
         ),
         &[
             fee_payer_info.clone(),
             authority_info.clone(),
             authority_ata_info.clone(),
-            node_info.clone(),
             vault_info.clone(),
-
             token_program_info.clone(),
         ],
     )?;
