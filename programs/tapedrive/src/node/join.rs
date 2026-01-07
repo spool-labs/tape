@@ -2,6 +2,14 @@ use tape_solana::*;
 use tape_api::prelude::*;
 use crate::error::*;
 
+/// Calculate total stake including all scheduled additions.
+/// Used during low-quorum mode to bypass E+2 activation delay.
+fn calculate_total_pending_stake<const N: usize>(pool: &StakingPool<N>) -> Coin<TAPE> {
+    pool.stake
+        .saturating_add(pool.schedule.total_incoming())
+        .saturating_sub(pool.schedule.total_outgoing())
+}
+
 pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinNetwork::try_from_bytes(data)?;
     let [
@@ -36,10 +44,18 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Find the stake balance at activation epoch (1 epoch from now)
-    let activation_epoch = next_epoch(epoch);
-    let balance = node.pool
-        .calculate_stake_at(activation_epoch);
+    // During low-quorum mode, include all scheduled stake (bypass E+2 delay)
+    // In normal mode, use the stake balance at activation epoch (1 epoch from now)
+    let balance = if system.is_low_quorum() {
+        calculate_total_pending_stake(&node.pool)
+    } else {
+        let activation_epoch = next_epoch(epoch);
+        node.pool.calculate_stake_at(activation_epoch)
+    };
+
+    if balance.is_zero() {
+        return Err(TapeError::UnexpectedState.into());
+    }
 
     let member = CommitteeMember {
         id: node.id,
@@ -143,6 +159,133 @@ mod tests {
                 Check::account(&node_address) // unchanged
                     .data(node.pack().as_ref())
                     .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_join_low_quorum_pending_stake() {
+        // Test that in low-quorum mode, pending stake is included
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let (node_address, _) = node_pda(authority);
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+
+        // Setup existing accounts
+        let mut system = System::zeroed();
+        let mut epoch = Epoch::zeroed();
+        let mut node = Node::zeroed();
+
+        // System has only 1 member - low-quorum mode
+        system.committee = Committee::from_members(&[
+            member(99, 1_000),
+        ]);
+
+        epoch.id = EpochNumber(42);
+
+        node.id = NodeId(5);
+        node.authority = authority;
+
+        // Pool has no active stake, only scheduled stake
+        node.pool.stake = TAPE(0);
+        node.pool.shares = ShareAmount(0);
+
+        // Schedule 2000 for epoch 44 and 500 for epoch 45
+        node.pool.schedule.stake(EpochNumber(44), TAPE(2000)).unwrap();
+        node.pool.schedule.stake(EpochNumber(45), TAPE(500)).unwrap();
+
+        node.preferences = NodePreferences {
+            storage_price: TAPE(10),
+            storage_capacity: StorageUnits(1_000_000),
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        // In low-quorum mode, balance should include all pending stake
+        // total_incoming = 2000 + 500 = 2500
+        let total_pending = calculate_total_pending_stake(&node.pool);
+        assert_eq!(total_pending, TAPE(2500));
+
+        let member = CommitteeMember {
+            id: node.id,
+            stake: total_pending,
+            key: node.metadata.bls_pubkey,
+            blacklist: node.blacklist.total_size(),
+            preferences: node.preferences.clone(),
+            ..CommitteeMember::zeroed()
+        };
+
+        system
+            .committee_next
+            .try_join(&member)
+            .expect("join committee");
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&system_address)
+                    .data(system.pack().as_ref())
+                    .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_join_zero_stake_fails() {
+        // Test that joining with zero stake fails
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let (node_address, _) = node_pda(authority);
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+
+        let mut system = System::zeroed();
+        let mut epoch = Epoch::zeroed();
+        let mut node = Node::zeroed();
+
+        // Low-quorum mode
+        system.committee = Committee::from_members(&[
+            member(99, 1_000),
+        ]);
+
+        epoch.id = EpochNumber(42);
+
+        node.id = NodeId(5);
+        node.authority = authority;
+        // No stake at all
+        node.pool.stake = TAPE(0);
+        node.pool.shares = ShareAmount(0);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(TapeError::UnexpectedState.into()),
             ],
         );
     }

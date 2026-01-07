@@ -143,6 +143,18 @@ impl<const N: usize> PoolSchedule<N> {
 
     #[inline]
     pub fn outgoing_shares_count(&self) -> usize { self.outgoing_shares.len() }
+
+    /// Total incoming stake across all scheduled epochs.
+    #[inline]
+    pub fn total_incoming(&self) -> Coin<TAPE> {
+        self.incoming_tokens.sum_through(EpochNumber(u64::MAX)).into()
+    }
+
+    /// Total pre-activation cancellations across all scheduled epochs.
+    #[inline]
+    pub fn total_outgoing(&self) -> Coin<TAPE> {
+        self.outgoing_tokens.sum_through(EpochNumber(u64::MAX)).into()
+    }
 }
 
 unsafe impl<const N: usize> Zeroable for PoolSchedule<N> {}
@@ -238,5 +250,38 @@ mod tests {
         // Entries <= 5 cleared; only epoch 7 remains
         assert_eq!(s.unstake_sum(epoch(5)), shares(0));
         assert_eq!(s.unstake_sum(epoch(7)), shares(20));
+    }
+
+    #[test]
+    fn total_incoming_outgoing() {
+        let mut s = PoolSchedule::<8>::new();
+
+        // Add incoming stake across multiple epochs
+        s.stake(epoch(3), tape(100)).unwrap();
+        s.stake(epoch(5), tape(200)).unwrap();
+        s.stake(epoch(7), tape(300)).unwrap();
+
+        assert_eq!(s.total_incoming(), tape(600));
+
+        // Add outgoing (cancel) across multiple epochs
+        s.cancel(epoch(3), tape(50)).unwrap();
+        s.cancel(epoch(5), tape(100)).unwrap();
+
+        assert_eq!(s.total_outgoing(), tape(150));
+
+        // Take some - should reduce totals
+        let _ = s.take_incoming(epoch(3));
+        assert_eq!(s.total_incoming(), tape(500)); // 200 + 300
+
+        let _ = s.take_outgoing(epoch(3));
+        assert_eq!(s.total_outgoing(), tape(100)); // 100
+    }
+
+    #[test]
+    fn total_incoming_empty() {
+        let s = PoolSchedule::<4>::new();
+
+        assert_eq!(s.total_incoming(), tape(0));
+        assert_eq!(s.total_outgoing(), tape(0));
     }
 }

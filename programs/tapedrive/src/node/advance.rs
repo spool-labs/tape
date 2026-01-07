@@ -47,8 +47,9 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account_mut::<History>(&tapedrive::ID)?
         .assert_mut(|h| h.node == *node_info.key)?;
 
-    // Can't advance if epoch is syncing (i.e., not active)
-    if epoch.state.is_syncing() {
+    // --- State Check ---
+    // Skip syncing check during low-quorum mode
+    if !system.is_low_quorum() && epoch.state.is_syncing() {
         return Err(TapeError::BadEpochState.into());
     }
 
@@ -62,20 +63,26 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
     }
 
-    // Calculate rewards owed based on recent usage snapshot
-    let reward_pool = archive.rewards_pool;
-    let allocated = archive.recent_usage;
+    // --- Reward Calculation ---
+    // No rewards if prev committee is empty (first pool / first epoch)
+    let rewards_owed = if system.committee_prev_empty() {
+        TAPE::zero()
+    } else {
+        calc_rewards(
+            node.id,
+            archive.recent_usage,
+            &system.committee_prev,
+            &system.spools_prev,
+            archive.rewards_pool
+        )
+    };
 
-    let rewards_owed = calc_rewards(
-        node.id, 
-        allocated, 
-        &system.committee_prev, 
-        &system.spools_prev, 
-        reward_pool
-    );
-
-    if rewards_owed.is_zero() {
-        return Err(TapeError::NoRewards.into());
+    // --- Reward Validation ---
+    // Only error on zero rewards if prev committee exists and node was in it
+    if rewards_owed.is_zero() && !system.committee_prev_empty() {
+        if system.committee_prev.index_of(&node.id).is_some() {
+            return Err(TapeError::NoRewards.into());
+        }
     }
 
     // Update node
@@ -93,20 +100,24 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     history.latest_epoch = node.latest_epoch;
     history.inner.push(current_epoch(epoch), new_rate);
 
-    // Update archive
+    // --- Archive Reward Tracking ---
+    if !system.committee_prev_empty() && !rewards_owed.is_zero() {
+        let rewards_paid = archive.rewards_paid
+            .saturating_add(rewards_owed.into());
 
-    let rewards_paid = archive.rewards_paid
-        .saturating_add(rewards_owed.into());
+        if rewards_paid > archive.rewards_pool {
+            return Err(TapeError::RewardsOverflow.into());
+        }
 
-    if rewards_paid > archive.rewards_pool {
-        return Err(TapeError::RewardsOverflow.into());
+        archive.rewards_paid = rewards_paid;
     }
 
-    archive.rewards_paid = rewards_paid;
-
-    // Track committee_prev advancement for Active → NextReady transition
+    // --- State Transition ---
     if epoch.state.is_active() {
-        if let Some(member_index) = system.committee_prev.index_of(&node.id) {
+        if system.committee_prev_empty() {
+            // First epoch: immediately transition to next_ready
+            epoch.state.set_next_ready();
+        } else if let Some(member_index) = system.committee_prev.index_of(&node.id) {
             let weight = system.spools_prev.spools_for_member(member_index).len() as u64;
             epoch.state.add_advanced_weight(weight, SLICE_COUNT as u64);
         }
@@ -342,6 +353,222 @@ mod tests {
                 Check::success(),
                 Check::account(&epoch_address)
                     .data(epoch.pack().as_ref())
+                    .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_first_epoch_advance() {
+        // Test that in the first epoch (empty committee_prev), we skip rewards
+        // and immediately transition to next_ready
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let pool_owner = Pubkey::new_unique();
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (pool_address, _) = node_pda(pool_owner);
+        let (history_address, _) = history_pda(pool_address);
+
+        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+
+        let mut system = System::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut epoch = Epoch::zeroed();
+
+        epoch.id = EpochNumber(2);
+        epoch.state.set_active();
+
+        // Empty previous committee (first epoch after bootstrap)
+        system.committee_prev = Committee::new();
+        // Current committee has only this node (low-quorum)
+        system.committee = Committee::from_members(&[
+            member(2, 1_000, 0),
+        ]);
+
+        let mut node = Node {
+            id: NodeId(2),
+            authority: pool_owner,
+            pool: StakingPool {
+                stake: TAPE(1_000),
+                shares: ShareAmount(1_000),
+                commission_rate: BasisPoints(0),
+                ..StakingPool::zeroed()
+            },
+            metadata: NodeMetadata {
+                bls_pubkey: BlsPubkey::new_unique(),
+                next_bls_pubkey: BlsPubkey::new_unique(),
+                ..NodeMetadata::zeroed()
+            },
+            latest_epoch: EpochNumber(1),
+            ..Node::zeroed()
+        };
+
+        let mut history = History {
+            node: pool_address,
+            latest_epoch: EpochNumber(1),
+            inner: PoolHistory::new(),
+            ..History::zeroed()
+        };
+
+        // Even though there's a rewards pool, we should not pay out
+        // because committee_prev is empty
+        archive.rewards_pool = TAPE(10_000);
+        archive.recent_usage = StorageUnits(1_000);
+        archive.rewards_paid = TAPE(0);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
+        ];
+
+        // Expected state after instruction
+        let e0 = epoch.id;
+
+        // rewards_owed should be zero (committee_prev empty)
+        let rewards_owed = TAPE::zero();
+
+        node.latest_epoch = e0;
+        node.pool.advance_epoch(e0, rewards_owed).unwrap();
+        node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
+
+        history.inner.push(e0, node.pool.get_current_rate());
+        history.latest_epoch = node.latest_epoch;
+
+        // Epoch should transition to next_ready immediately
+        epoch.state.set_next_ready();
+
+        // Archive should NOT have rewards_paid updated (empty committee_prev)
+
+        // Archive rewards_paid should remain 0 since committee_prev is empty
+        let expected_archive = Archive {
+            rewards_pool: TAPE(10_000),
+            rewards_paid: TAPE(0),  // Unchanged - no rewards paid (committee_prev empty)
+            recent_usage: StorageUnits(1_000),
+            ..Archive::zeroed()
+        };
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&epoch_address)
+                    .data(epoch.pack().as_ref())
+                    .build(),
+                Check::account(&pool_address)
+                    .data(node.pack().as_ref())
+                    .build(),
+                Check::account(&archive_address)
+                    .data(expected_archive.pack().as_ref())
+                    .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_low_quorum_syncing_allowed() {
+        // Test that in low-quorum mode, advancing during syncing state is allowed
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let pool_owner = Pubkey::new_unique();
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (pool_address, _) = node_pda(pool_owner);
+        let (history_address, _) = history_pda(pool_address);
+
+        let instruction = build_advance_pool_ix(fee_payer, authority, pool_address);
+
+        let mut system = System::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut epoch = Epoch::zeroed();
+
+        epoch.id = EpochNumber(5);
+        epoch.state = EpochState::syncing(); // Normally would block advance_pool
+
+        // Small committee (low-quorum mode)
+        system.committee = Committee::from_members(&[
+            member(2, 1_000, 0),
+        ]);
+        // Small prev committee
+        system.committee_prev = Committee::from_members(&[
+            member(2, 1_000, 0),
+        ]);
+        system.spools_prev = SpoolAssignment::try_from_counts(&[SLICE_COUNT as u16]).unwrap();
+
+        let mut node = Node {
+            id: NodeId(2),
+            authority: pool_owner,
+            pool: StakingPool {
+                stake: TAPE(1_000),
+                shares: ShareAmount(1_000),
+                commission_rate: BasisPoints(0),
+                ..StakingPool::zeroed()
+            },
+            metadata: NodeMetadata {
+                bls_pubkey: BlsPubkey::new_unique(),
+                next_bls_pubkey: BlsPubkey::new_unique(),
+                ..NodeMetadata::zeroed()
+            },
+            latest_epoch: EpochNumber(4),
+            ..Node::zeroed()
+        };
+
+        let history = History {
+            node: pool_address,
+            latest_epoch: EpochNumber(4),
+            inner: PoolHistory::new(),
+            ..History::zeroed()
+        };
+
+        archive.rewards_pool = TAPE(10_000);
+        archive.recent_usage = StorageUnits(1_000);
+        archive.rewards_paid = TAPE(0);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(pool_address, node.pack(), tapedrive::ID),
+            pda(history_address, history.pack(), tapedrive::ID),
+        ];
+
+        // Expected node state after instruction
+        let rewards_owed = calc_rewards(
+            node.id,
+            archive.recent_usage,
+            &system.committee_prev,
+            &system.spools_prev,
+            archive.rewards_pool,
+        );
+
+        let mut expected_node = node.clone();
+        expected_node.latest_epoch = EpochNumber(5);
+        expected_node.pool.advance_epoch(EpochNumber(5), rewards_owed).unwrap();
+        expected_node.metadata.bls_pubkey = expected_node.metadata.next_bls_pubkey;
+
+        // In low-quorum mode, syncing check is skipped
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                // Node should be updated
+                Check::account(&pool_address)
+                    .data(expected_node.pack().as_ref())
                     .build(),
             ],
         );

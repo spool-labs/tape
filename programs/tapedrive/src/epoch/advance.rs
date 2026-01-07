@@ -36,18 +36,42 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    if !epoch.state.is_next_ready() {
-        return Err(TapeError::BadEpochState.into());
-    }
-
-    if epoch.last_epoch + EPOCH_DURATION > now {
-        return Err(TapeError::TooSoon.into());
+    // --- State and Time Checks ---
+    // Low-quorum mode: relaxed - skip state and time checks
+    // Normal mode: strict requirements
+    if system.is_low_quorum() {
+        // Low-quorum: relaxed checks - allow advancing in any state
+    } else {
+        if !epoch.state.is_next_ready() {
+            return Err(TapeError::BadEpochState.into());
+        }
+        if epoch.last_epoch + EPOCH_DURATION > now {
+            return Err(TapeError::TooSoon.into());
+        }
     }
 
     // Ensure the archive schedule is aligned with the current epoch
     if archive.schedule.current_epoch() != epoch.id {
         return Err(TapeError::BadSchedule.into());
     }
+
+    // --- Empty committee_next Handling ---
+    if system.committee_next_empty() {
+        if system.is_low_quorum() {
+            // Low-quorum with no nodes: advance counters, stay ready
+            let _ = archive.schedule.advance_epoch();
+            epoch.id = next_epoch(epoch);
+            epoch.last_epoch = now;
+            epoch.state = EpochState::next_ready();
+            return Ok(());
+        } else {
+            return Err(TapeError::UnexpectedState.into());
+        }
+    }
+
+    // --- Capture low-quorum state BEFORE rotation ---
+    // CRITICAL: Must check before committee_next is cleared
+    let entering_low_quorum = system.will_be_low_quorum();
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
@@ -63,8 +87,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee
         .apply_weights_from_spools(&system.spools);
 
-    // The next committee should never have any weights assigned
-    debug_assert!(system.committee_next.iter().all(|m| m.weight == 0));
+    // Clear committee_next for the next epoch
+    system.committee_next = Committee::new();
 
     // Update future accounting
     let epoch_usage = archive.schedule
@@ -74,40 +98,54 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let leftover = archive.rewards_pool
         .saturating_sub(archive.rewards_paid);
 
-    archive.rewards_paid = TAPE::zero();
-    archive.rewards_pool = epoch_usage.paid()
-        .saturating_add(leftover);
-    archive.recent_usage = epoch_usage.reserved();
+    // --- Archive Updates ---
+    if entering_low_quorum {
+        // Entering/staying low-quorum: keep only unclaimed rewards
+        archive.rewards_paid = TAPE::zero();
+        archive.rewards_pool = leftover;
+    } else {
+        // Normal: add new rewards from schedule
+        archive.rewards_paid = TAPE::zero();
+        archive.rewards_pool = epoch_usage.paid()
+            .saturating_add(leftover);
+        archive.recent_usage = epoch_usage.reserved();
+    }
 
     // Advance epoch metadata
     epoch.id = next_epoch(epoch);
-    epoch.state.set_syncing();
     epoch.last_epoch = now;
+    epoch.state = if entering_low_quorum {
+        EpochState::next_ready()
+    } else {
+        EpochState::syncing()
+    };
 
     // Update the archive storage price and capacity based on the new committee preferences
-    let mut storage_prices : Vec<ValueAndWeight> = vec![];
-    let mut storage_capacities : Vec<ValueAndWeight> = vec![];
-    let mut total_weight = 0u64;
+    // (only update if not entering low-quorum mode)
+    if !entering_low_quorum {
+        let mut storage_prices : Vec<ValueAndWeight> = vec![];
+        let mut storage_capacities : Vec<ValueAndWeight> = vec![];
+        let mut total_weight = 0u64;
 
-    system.committee.iter().for_each(|member| {
-        let weight = member.weight as u64;
-        let preferences = &member.preferences;
+        system.committee.iter().for_each(|member| {
+            let weight = member.weight as u64;
+            let preferences = &member.preferences;
 
-        storage_prices
-            .push((preferences.storage_price.into(), weight));
-        storage_capacities
-            .push((preferences.storage_capacity.into(), weight));
+            storage_prices
+                .push((preferences.storage_price.into(), weight));
+            storage_capacities
+                .push((preferences.storage_capacity.into(), weight));
 
-        total_weight = total_weight.saturating_add(weight);
-    });
+            total_weight = total_weight.saturating_add(weight);
+        });
 
-    // We select the lowest price that achieves quorum 
-    // and the highest capacity that achieves quorum
-
-    archive.storage_capacity = 
-        quorum_above(&storage_capacities, total_weight).into();
-    archive.storage_price = 
-        quorum_below(&storage_prices, total_weight).into();
+        // We select the lowest price that achieves quorum
+        // and the highest capacity that achieves quorum
+        archive.storage_capacity =
+            quorum_above(&storage_capacities, total_weight).into();
+        archive.storage_price =
+            quorum_below(&storage_prices, total_weight).into();
+    }
 
     solana_program::msg!(
         "Advanced to {}, capacity: {}, price: {}",
@@ -234,16 +272,17 @@ mod tests {
         let storage_price    = quorum_below(&price_pairs, total_weight).into();
 
         env.process_instruction(
-            &instruction, 
+            &instruction,
             &accounts,
             &[
                 Check::success(),
                 Check::account(&system_address).data(
-                    System { 
+                    System {
                         spools: expected_seats,
                         spools_prev: system.spools,
                         committee_prev: system.committee,
                         committee: expected_committee,
+                        committee_next: Committee::new(),  // Cleared after epoch advance
                         ..system
                     }.pack().as_ref()
                 ).build(),
@@ -274,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_advance_too_soon() {
-        // Test that advance fails if EPOCH_DURATION hasn't elapsed
+        // Test that advance fails if EPOCH_DURATION hasn't elapsed (in normal mode)
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();
@@ -297,6 +336,11 @@ mod tests {
         epoch.state = EpochState::next_ready();
         epoch.last_epoch = last_epoch;
 
+        // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
+        let members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee = Committee::from_members(&members);
         system.committee_next = Committee::from_members(&[
             member(1, 3_000, 1_000_000, 1000),
         ]);
@@ -322,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_advance_bad_state() {
-        // Test that advance fails if not in NextReady state
+        // Test that advance fails if not in NextReady state (in normal mode)
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();
@@ -344,6 +388,11 @@ mod tests {
         epoch.state = EpochState::syncing(); // Wrong state - should be NextReady
         epoch.last_epoch = last_epoch;
 
+        // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
+        let members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee = Committee::from_members(&members);
         system.committee_next = Committee::from_members(&[
             member(1, 3_000, 1_000_000, 1000),
         ]);
@@ -363,6 +412,209 @@ mod tests {
             &accounts,
             &[
                 Check::err(TapeError::BadEpochState.into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_low_quorum_advance() {
+        // Test that in low-quorum mode, we can advance even without enough time
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        // Recent last_epoch - in low-quorum mode this should be OK
+        let last_epoch = env.now() - 100;
+
+        let e0 = EpochNumber(2);
+
+        epoch.id = e0;
+        epoch.state = EpochState::next_ready();
+        epoch.last_epoch = last_epoch;
+
+        // Current committee has only 1 node (< MIN_COMMITTEE_SIZE), so we're in low-quorum
+        system.committee = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+        ]);
+
+        // Next committee has 2 nodes (still low-quorum)
+        system.committee_next = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+            member(2, 2_000, 1_000_000, 1000),
+        ]);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        // Expected state: epoch advances, state is next_ready (low-quorum), committee rotates
+        let mut expected_epoch = Epoch::zeroed();
+        expected_epoch.id = e0 + EpochNumber(1);
+        expected_epoch.state = EpochState::next_ready();  // Stays in next_ready (low-quorum)
+        expected_epoch.last_epoch = env.now();
+
+        // Should succeed despite not enough time passing
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                // Verify epoch state is next_ready (not syncing) since entering low-quorum
+                Check::account(&epoch_address).data(
+                    expected_epoch.pack().as_ref()
+                ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_low_quorum_empty_committee_next() {
+        // Test that in low-quorum mode with empty committee_next, we advance counters
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
+        let e0 = EpochNumber(5);
+
+        epoch.id = e0;
+        epoch.state = EpochState::next_ready();
+        epoch.last_epoch = last_epoch;
+
+        // Current committee has < MIN_COMMITTEE_SIZE, so we're in low-quorum
+        system.committee = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+        ]);
+
+        // Empty next committee
+        system.committee_next = Committee::new();
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        // Expected state: epoch counter advances, state stays next_ready
+        let mut expected_epoch = Epoch::zeroed();
+        expected_epoch.id = e0 + EpochNumber(1);
+        expected_epoch.state = EpochState::next_ready();
+        expected_epoch.last_epoch = env.now();
+
+        // Should succeed and advance epoch counter
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&epoch_address).data(
+                    expected_epoch.pack().as_ref()
+                ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_transition_low_quorum_to_normal() {
+        // Test transition from low-quorum to normal mode when committee_next is large enough
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
+        let e0 = EpochNumber(10);
+        let e1 = e0 + EpochNumber(1);
+        let e100 = e0 + EpochNumber(100);
+
+        epoch.id = e0;
+        epoch.state = EpochState::next_ready();
+        epoch.last_epoch = last_epoch;
+
+        // Current committee is small (low-quorum)
+        system.committee = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+        ]);
+
+        // Next committee has >= MIN_COMMITTEE_SIZE (24) nodes
+        let members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee_next = Committee::from_members(&members);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+        archive.schedule.reserve_capacity(
+            StorageUnits(500), TAPE(1000), e0, e100
+        ).expect("reserve capacity");
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        // Expected epoch state: syncing (normal mode)
+        let expected_epoch = Epoch {
+            id: e1,
+            state: EpochState::syncing(),
+            last_epoch: env.now(),
+        };
+
+        // Should transition to normal mode (syncing state)
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&epoch_address).data(
+                    expected_epoch.pack().as_ref()
+                ).build(),
             ]
         );
     }
