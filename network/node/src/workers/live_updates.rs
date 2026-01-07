@@ -230,11 +230,11 @@ async fn process_instruction(
         }
 
         ParsedInstruction::RegisterTrack {
-            owner,
+            owner: _,
             track,
-            key,
-            root,
-            commitment,
+            key: _,
+            root: _,
+            commitment: _,
             size,
         } => {
             debug!(
@@ -257,7 +257,7 @@ async fn process_instruction(
             // TODO: Update local track state to mark as certified
         }
 
-        ParsedInstruction::DeleteTrack { owner, track } => {
+        ParsedInstruction::DeleteTrack { owner: _, track } => {
             debug!(track = %track, "Detected DeleteTrack instruction");
 
             // TODO: Schedule track data for GC
@@ -274,7 +274,7 @@ async fn process_instruction(
             // Informational only for now
         }
 
-        ParsedInstruction::DestroyTape { owner, tape } => {
+        ParsedInstruction::DestroyTape { owner: _, tape } => {
             debug!(tape = %tape, "Detected DestroyTape instruction");
 
             // TODO: Schedule all tracks in tape for GC
