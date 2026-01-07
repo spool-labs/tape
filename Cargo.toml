@@ -26,6 +26,29 @@ members = [
   "rpc/rpc-client",
   "rpc/rpc-test",
 ]
+# Programs require cargo build-sbf, exclude from default cargo build/check
+default-members = [
+  "api",
+  "core",
+  "crypto",
+  "solana",
+  "test",
+  "metrics",
+  "network/slicer",
+  "network/node",
+  "network/api",
+  "network/client",
+  "sdk",
+  "cli",
+  "store/store",
+  "store/store-memory",
+  "store/store-rocks",
+  "store/tape-store",
+  "rpc/rpc",
+  "rpc/rpc-solana",
+  "rpc/rpc-client",
+  "rpc/rpc-test",
+]
 
 [workspace.package]
 version = "0.3.0"

@@ -1,10 +1,17 @@
 # Tapedrive Local Development Makefile
 #
 # Usage:
-#   make build     - Build all programs
+#   make check     - Check all non-program crates (cargo check)
+#   make build     - Build all Solana programs (cargo build-sbf)
+#   make test      - Test all Solana programs (cargo test-sbf)
 #   make validator - Start local validator with all programs
 #   make local     - Clean, build, and start validator
 #   make metadata  - Download Metaplex metadata program from mainnet
+#
+# Note: Programs are excluded from default workspace members.
+#   - `cargo build` / `cargo check` only builds non-program crates
+#   - `cargo build-sbf -p <program>` builds specific programs
+#   - `make build` builds all programs via cargo build-sbf
 #
 # Program IDs:
 #   tapedrive: tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W
@@ -13,7 +20,7 @@
 #   token:     tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL
 #   metadata:  metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s
 
-.PHONY: all clean build test validator local metadata
+.PHONY: all clean build test check validator local metadata
 
 # Program IDs
 TAPEDRIVE_ID = tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W
@@ -32,6 +39,11 @@ METADATA_ELF = test/elfs/mpl_token_metadata.so
 RPC_URL = https://api.mainnet-beta.solana.com
 
 all: build
+
+# Check all non-program crates (uses default-members from Cargo.toml)
+check:
+	@echo "Checking non-program crates..."
+	@cargo check
 
 # Remove test-ledger directory
 clean:
