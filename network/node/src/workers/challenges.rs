@@ -33,7 +33,7 @@ pub enum ChallengeError {
 /// Run the challenges loop.
 ///
 /// This is Thread C's main entry point (currently a stub).
-pub async fn run(_ctx: Arc<NodeContext>, cancel: CancellationToken) -> Result<(), ChallengeError> {
+pub async fn run(ctx: Arc<NodeContext>, cancel: CancellationToken) -> Result<(), ChallengeError> {
     info!("Challenges thread starting (stub implementation)");
 
     let interval = Duration::from_secs(DEFAULT_CHALLENGE_INTERVAL_SECS);

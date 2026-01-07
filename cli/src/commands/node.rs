@@ -131,6 +131,9 @@ pub enum NodeCommand {
     /// Claim accumulated commission.
     ClaimCommission,
 
+    /// Advance pool epoch accounting.
+    Advance,
+
     /// Add track to blacklist.
     BlacklistAdd {
         /// Track pubkey.
@@ -177,6 +180,7 @@ pub async fn execute(ctx: &Context, args: NodeArgs) -> Result<()> {
         NodeCommand::SetCapacity { mb } => set_capacity(ctx, config, mb).await,
         NodeCommand::SetPrice { tape } => set_price(ctx, config, &tape).await,
         NodeCommand::ClaimCommission => claim_commission(ctx, config).await,
+        NodeCommand::Advance => advance_pool(ctx, config).await,
         NodeCommand::BlacklistAdd { track } => blacklist_add(ctx, config, &track).await,
         NodeCommand::BlacklistRemove { index, proof } => blacklist_remove(ctx, config, index, proof).await,
         NodeCommand::Health { nodes } => {
@@ -806,6 +810,36 @@ async fn claim_commission(ctx: &Context, config: Option<PathBuf>) -> Result<()> 
         .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
 
     println!("Commission claimed!");
+    println!("  Transaction: {}", signature);
+
+    Ok(())
+}
+
+async fn advance_pool(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
+    let node_config = load_node_config(config)?;
+
+    ctx.debug(&format!("Using RPC: {}", ctx.rpc_url()));
+
+    if ctx.dry_run {
+        println!("Dry run - would advance pool epoch accounting");
+        return Ok(());
+    }
+
+    let fee_payer = get_keypair(ctx)?;
+    let authority = load_keypair_from_config(&node_config)?;
+    let (node_address, _) = node_pda(authority.pubkey());
+
+    let ix = instruction::build_advance_pool_ix(fee_payer.pubkey(), authority.pubkey(), node_address);
+
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+    ctx.print("Advancing pool epoch accounting...");
+
+    let signature = client
+        .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority])
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to send transaction: {}", e))?;
+
+    println!("Pool advanced!");
     println!("  Transaction: {}", signature);
 
     Ok(())

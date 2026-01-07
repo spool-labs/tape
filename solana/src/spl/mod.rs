@@ -4,7 +4,7 @@
 
 pub mod cpi;
 pub mod mint;
-pub mod token;
+mod token;
 pub mod validation;
 
 pub use cpi::*;

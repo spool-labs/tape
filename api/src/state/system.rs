@@ -1,10 +1,7 @@
 use tape_solana::*;
 use tape_core::prelude::*;
 use super::AccountType;
-use crate::program::{
-    MEMBER_COUNT,
-    SLICE_COUNT,
-};
+use crate::program::MEMBER_COUNT;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
