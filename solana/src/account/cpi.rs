@@ -270,7 +270,7 @@ pub fn resize_account<'info>(
         )?;
     }
 
-    target_account.realloc(new_size, true)?;
+    target_account.resize(new_size)?;
 
     Ok(())
 }

@@ -1,5 +1,4 @@
 use tape_api::prelude::*;
-use tape_solana::*;
 
 pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = UnstakeTokens::try_from_bytes(data)?;
@@ -8,7 +7,7 @@ pub fn process_unstake_tokens(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         authority_info,
         authority_ata_info,
 
-        pool_info,
+        _pool_info,
         vault_info,
 
         token_program_info,

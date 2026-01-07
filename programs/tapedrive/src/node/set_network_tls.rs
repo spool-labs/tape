@@ -1,5 +1,4 @@
 use tape_api::prelude::*;
-use tape_solana::*;
 
 pub fn process_set_network_tls(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetNetworkTls::try_from_bytes(data)?;

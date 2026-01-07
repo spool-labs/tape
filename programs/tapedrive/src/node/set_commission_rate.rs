@@ -1,5 +1,4 @@
 use tape_api::prelude::*;
-use tape_solana::*;
 
 pub fn process_set_commission_rate(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetCommissionRate::try_from_bytes(data)?;

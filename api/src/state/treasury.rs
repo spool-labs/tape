@@ -1,6 +1,5 @@
 use tape_solana::*;
 use super::AccountType;
-use crate::state;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]

@@ -1,7 +1,6 @@
 use tape_solana::*;
 use tape_core::prelude::*;
 use super::AccountType;
-use crate::state;
 use crate::program::FUTURE_EPOCHS;
 
 #[repr(C)]

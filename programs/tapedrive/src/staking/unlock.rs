@@ -1,6 +1,5 @@
 use crate::error::*;
 use tape_api::prelude::*;
-use tape_solana::*;
 
 pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = RequestStakeUnlock::try_from_bytes(data)?;

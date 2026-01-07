@@ -12,7 +12,6 @@ use merge::*;
 
 use tape_api::prelude::*;
 use tape_api::program::staking;
-use tape_solana::*;
 
 pub fn process_instruction(
     program_id: &Pubkey,

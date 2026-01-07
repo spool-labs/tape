@@ -21,6 +21,8 @@ pub use utils::*;
 // Re-export common dependencies for convenience
 pub use bytemuck::{Pod, Zeroable};
 pub use num_enum::{IntoPrimitive, TryFromPrimitive};
+#[allow(deprecated)]
+pub use solana_program::system_program;
 pub use solana_program::{
     account_info::AccountInfo,
     clock::Clock,
@@ -29,7 +31,7 @@ pub use solana_program::{
     instruction::{AccountMeta, Instruction},
     program_error::ProgramError,
     pubkey::Pubkey,
-    system_program, sysvar,
+    sysvar,
     sysvar::Sysvar,
 };
 pub use thiserror::Error;
@@ -38,13 +40,14 @@ pub use thiserror::Error;
 pub mod prelude {
     pub use super::account::*;
     pub use super::log::*;
-    pub use super::macros::*;
     #[cfg(feature = "spl")]
     pub use super::spl::*;
     pub use super::utils::*;
 
     pub use bytemuck::{Pod, Zeroable};
     pub use num_enum::{IntoPrimitive, TryFromPrimitive};
+    #[allow(deprecated)]
+    pub use solana_program::system_program;
     pub use solana_program::{
         account_info::AccountInfo,
         clock::Clock,
@@ -53,7 +56,7 @@ pub mod prelude {
         instruction::{AccountMeta, Instruction},
         program_error::ProgramError,
         pubkey::Pubkey,
-        system_program, sysvar,
+        sysvar,
         sysvar::Sysvar,
     };
     pub use thiserror::Error;

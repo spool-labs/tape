@@ -1,5 +1,4 @@
 use tape_api::prelude::*;
-use tape_solana::*;
 
 pub fn process_register_exchange(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = RegisterExchange::try_from_bytes(data)?;
