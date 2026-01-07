@@ -36,12 +36,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_epoch()?
         .as_account_mut::<Epoch>(&tapedrive::ID)?;
 
-    // --- State and Time Checks ---
-    // Low-quorum mode: relaxed - skip state and time checks
-    // Normal mode: strict requirements
+    // Check epoch state and timing
     if system.is_low_quorum() {
         // Low-quorum: relaxed checks - allow advancing in any state
     } else {
+        // Normal mode: strict requirements
         if !epoch.state.is_next_ready() {
             return Err(TapeError::BadEpochState.into());
         }
@@ -55,7 +54,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
-    // --- Empty committee_next Handling ---
+    // Empty committee_next Handling
     if system.committee_next_empty() {
         if system.is_low_quorum() {
             // Low-quorum with no nodes: advance counters, stay ready
@@ -69,8 +68,6 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         }
     }
 
-    // --- Capture low-quorum state BEFORE rotation ---
-    // CRITICAL: Must check before committee_next is cleared
     let entering_low_quorum = system.will_be_low_quorum();
 
     // Save previous spools, then reassign for the next committee
@@ -98,9 +95,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let leftover = archive.rewards_pool
         .saturating_sub(archive.rewards_paid);
 
-    // --- Archive Updates ---
+    // Check if we're entering/staying in low-quorum mode
     if entering_low_quorum {
-        // Entering/staying low-quorum: keep only unclaimed rewards
+        // Low-quorum: keep only unclaimed rewards
         archive.rewards_paid = TAPE::zero();
         archive.rewards_pool = leftover;
     } else {

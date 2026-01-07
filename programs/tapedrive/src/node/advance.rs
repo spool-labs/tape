@@ -47,7 +47,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account_mut::<History>(&tapedrive::ID)?
         .assert_mut(|h| h.node == *node_info.key)?;
 
-    // --- State Check ---
     // Skip syncing check during low-quorum mode
     if !system.is_low_quorum() && epoch.state.is_syncing() {
         return Err(TapeError::BadEpochState.into());
@@ -63,7 +62,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
     }
 
-    // --- Reward Calculation ---
     // No rewards if prev committee is empty (first pool / first epoch)
     let rewards_owed = if system.committee_prev_empty() {
         TAPE::zero()
@@ -77,7 +75,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         )
     };
 
-    // --- Reward Validation ---
     // Only error on zero rewards if prev committee exists and node was in it
     if rewards_owed.is_zero() && !system.committee_prev_empty() {
         if system.committee_prev.index_of(&node.id).is_some() {
@@ -100,7 +97,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     history.latest_epoch = node.latest_epoch;
     history.inner.push(current_epoch(epoch), new_rate);
 
-    // --- Archive Reward Tracking ---
+    // Archive Reward Tracking
     if !system.committee_prev_empty() && !rewards_owed.is_zero() {
         let rewards_paid = archive.rewards_paid
             .saturating_add(rewards_owed.into());
@@ -112,7 +109,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         archive.rewards_paid = rewards_paid;
     }
 
-    // --- State Transition ---
+    // State Transition
     if epoch.state.is_active() {
         if system.committee_prev_empty() {
             // First epoch: immediately transition to next_ready
@@ -335,6 +332,7 @@ mod tests {
         );
 
         archive.rewards_paid = rewards_owed.into();
+
         // 700 spools > 683 threshold, so should transition
         epoch.state.set_next_ready();
 
@@ -506,7 +504,7 @@ mod tests {
         ]);
         system.spools_prev = SpoolAssignment::try_from_counts(&[SLICE_COUNT as u16]).unwrap();
 
-        let mut node = Node {
+        let node = Node {
             id: NodeId(2),
             authority: pool_owner,
             pool: StakingPool {
