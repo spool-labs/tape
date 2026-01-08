@@ -1,5 +1,6 @@
 use crate::error::*;
 use tape_api::prelude::*;
+use tape_api::event::StakeUnlockRequested;
 
 pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = RequestStakeUnlock::try_from_bytes(data)?;
@@ -61,6 +62,14 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     node.pool
         .request_withdraw(staked_tape, current_epoch(epoch), activation_rate)
         .map_err(|_| TapeError::StakingFailed)?;
+
+    StakeUnlockRequested {
+        stake: stake_address,
+        authority: *authority_info.key,
+        pool: *node_info.key,
+        amount: staked_tape.amount.as_u64().to_le_bytes(),
+        withdraw_epoch: staked_tape.state.withdraw_epoch().unwrap_or(EpochNumber(0)),
+    }.log();
 
     // TODO: update/advance the node's state?
 

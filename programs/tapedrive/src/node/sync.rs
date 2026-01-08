@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::NodeSynced;
 use crate::error::*;
 
 pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -85,6 +86,13 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     }
 
     node.latest_epoch = current_epoch(epoch);
+
+    NodeSynced {
+        node: *node_info.key,
+        id: node.id,
+        epoch: current_epoch(epoch),
+        spools_hash: args.spools,
+    }.log();
 
     Ok(())
 }

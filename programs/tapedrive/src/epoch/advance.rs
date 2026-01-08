@@ -1,6 +1,7 @@
 use tape_solana::*;
 use crate::error::*;
 use tape_api::prelude::*;
+use tape_api::event::EpochAdvanced;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let now = Clock::get()?.unix_timestamp;
@@ -54,6 +55,9 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
+    // Save old epoch for event logging
+    let old_epoch = epoch.id;
+
     // Empty committee_next Handling
     if system.committee_next_empty() {
         if system.is_low_quorum() {
@@ -62,6 +66,17 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             epoch.id = next_epoch(epoch);
             epoch.last_epoch = now;
             epoch.state = EpochState::next_ready();
+
+            EpochAdvanced {
+                old_epoch,
+                new_epoch: epoch.id,
+                timestamp: (now as u64).to_le_bytes(),
+                committee_size: 0u64.to_le_bytes(),
+                total_stake: 0u64.to_le_bytes(),
+                storage_price: archive.storage_price.as_u64().to_le_bytes(),
+                storage_capacity: archive.storage_capacity,
+            }.log();
+
             return Ok(());
         } else {
             return Err(TapeError::UnexpectedState.into());
@@ -139,6 +154,22 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         archive.storage_price =
             quorum_below(&storage_prices, total_weight).into();
     }
+
+    // Calculate committee size and total stake for event
+    let committee_size = system.committee.size() as u64;
+    let total_stake: u64 = system.committee.iter()
+        .map(|m| m.stake.as_u64())
+        .sum();
+
+    EpochAdvanced {
+        old_epoch,
+        new_epoch: epoch.id,
+        timestamp: (now as u64).to_le_bytes(),
+        committee_size: committee_size.to_le_bytes(),
+        total_stake: total_stake.to_le_bytes(),
+        storage_price: archive.storage_price.as_u64().to_le_bytes(),
+        storage_capacity: archive.storage_capacity,
+    }.log();
 
     solana_program::msg!(
         "Advanced to {}, capacity: {}, price: {}",

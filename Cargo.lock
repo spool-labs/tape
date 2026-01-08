@@ -11211,6 +11211,7 @@ dependencies = [
  "clap 4.5.53",
  "dirs 5.0.1",
  "futures 0.3.31",
+ "hex",
  "hyper 1.8.1",
  "rpc",
  "rpc-client",

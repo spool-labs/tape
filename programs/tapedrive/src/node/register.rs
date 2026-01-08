@@ -1,6 +1,7 @@
 use tape_solana::*;
 use crate::error::*;
 use tape_api::prelude::*;
+use tape_api::event::NodeRegistered;
 
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterNode::try_from_bytes(data)?;
@@ -115,6 +116,13 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     history.registered_epoch  = node.registered_epoch;
     history.latest_epoch      = node.latest_epoch;
     history.inner             = PoolHistory::new();
+
+    NodeRegistered {
+        node: node_address,
+        id: node.id,
+        authority: *authority_info.key,
+        epoch: current_epoch(epoch),
+    }.log();
 
     Ok(())
 }

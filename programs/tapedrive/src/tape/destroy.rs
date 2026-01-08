@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::TapeDestroyed;
 use crate::error::*;
 
 pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -58,6 +59,11 @@ pub fn process_destroy_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if !tape.used.is_zero() {
         return Err(TapeError::NotEmpty.into());
     }
+
+    TapeDestroyed {
+        tape: *tape_info.key,
+        authority: *authority_info.key,
+    }.log();
 
     close_account(tape_info, fee_payer_info)?;
 

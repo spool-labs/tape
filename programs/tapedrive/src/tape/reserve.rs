@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::TapeReserved;
 use crate::error::*;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -136,6 +137,15 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         token_program_info,
         total_cost,
     )?;
+
+    TapeReserved {
+        tape: tape_address,
+        authority: *authority_info.key,
+        capacity: total_units,
+        active_epoch: start_epoch,
+        expiry_epoch: end_epoch,
+        cost: total_cost.to_le_bytes(),
+    }.log();
 
     Ok(())
 }

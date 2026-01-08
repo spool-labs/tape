@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::TrackCertified;
 use tape_crypto::bls12254::min_sig::*;
 use crate::error::*;
 
@@ -76,8 +77,8 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     let mut pubkeys = Vec::with_capacity(indices.len());
-    for member_index in indices {
-        if let Some(member) = system.committee.member_at(member_index) {
+    for member_index in &indices {
+        if let Some(member) = system.committee.member_at(*member_index) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -94,9 +95,18 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
 
+    let signer_count = indices.len() as u64;
+
     track.data.set_certified(
         current_epoch(epoch),
     );
+
+    TrackCertified {
+        track: *track_info.key,
+        epoch: current_epoch(epoch),
+        signer_count: signer_count.to_le_bytes(),
+        signer_weight: weight.to_le_bytes(),
+    }.log();
 
     Ok(())
 }

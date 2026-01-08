@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::TrackRegistered;
 use crate::error::*;
 
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -86,6 +87,15 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
      }
 
     tape.used = new_used;
+
+    TrackRegistered {
+        track: *track_info.key,
+        tape: tape_address,
+        key: args.key,
+        size: total_units,
+        commitment: args.commitment,
+        epoch: current_epoch(epoch),
+    }.log();
 
     Ok(())
 }

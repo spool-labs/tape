@@ -11,7 +11,7 @@ use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
 // Re-export types from tape_store for use by routes
-pub use tape_store::ops::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
+pub use tape_store::ops::{Compression, SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
 
 use crate::metrics::NodeMetrics;
 
@@ -149,6 +149,36 @@ impl<S: Store> StorageService<S> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
         self.store.delete_slice(spool_idx, track_pubkey)?;
         Ok(())
+    }
+
+    /// Store track metadata.
+    ///
+    /// # Arguments
+    /// * `track_address` - The track's on-chain address
+    /// * `info` - The track metadata to store
+    pub fn put_track_info(
+        &self,
+        track_address: Pubkey,
+        info: TrackInfo,
+    ) -> Result<(), StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        self.store.put_track_info(track_pubkey, info)?;
+        Ok(())
+    }
+
+    /// Get track metadata.
+    ///
+    /// # Arguments
+    /// * `track_address` - The track's on-chain address
+    ///
+    /// # Returns
+    /// Track info if found, None otherwise.
+    pub fn get_track_info(
+        &self,
+        track_address: Pubkey,
+    ) -> Result<Option<TrackInfo>, StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        Ok(self.store.get_track_info(track_pubkey)?)
     }
 
     /// Shutdown storage gracefully.

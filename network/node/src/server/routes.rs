@@ -18,7 +18,9 @@ use tape_node_api::SlicePayload;
 
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
-use crate::storage::service::{Compression, SliceMeta, StorageService};
+use crate::storage::service::{Compression, SliceMeta, StorageService, TrackInfo};
+use tape_core::types::EpochNumber;
+use tape_crypto::Hash;
 
 // Re-export shared constants from tape-core and tape-node-api
 pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};
@@ -186,44 +188,177 @@ pub async fn put_slice<S: Store>(
 /// GET /v1/tracks/:track_id/metadata
 pub async fn get_metadata<S: Store>(
     State(state): State<ApiState<S>>,
-    Path(_track_id): Path<String>,
+    Path(track_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let timer = OperationTimer::new();
 
-    // TODO: Implement metadata retrieval from TrackOps
-    state
-        .metrics
-        .record_request("get_metadata", "error", timer.elapsed_secs());
-    Err(ApiError::TrackNotFound)
+    // Parse track_id to Pubkey (base58)
+    let track_address = parse_track_id(&track_id)?;
+
+    // Retrieve track info from storage
+    match state.service.get_track_info(track_address) {
+        Ok(Some(info)) => {
+            let response = serde_json::json!({
+                "commitment_hash": hex::encode(info.commitment_hash.0),
+                "certified_epoch": info.certified_epoch.0,
+                "slice_count": info.slice_count
+            });
+
+            state
+                .metrics
+                .record_request("get_metadata", "success", timer.elapsed_secs());
+
+            Ok((
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&response).unwrap_or_default(),
+            )
+                .into_response())
+        }
+        Ok(None) => {
+            state
+                .metrics
+                .record_request("get_metadata", "not_found", timer.elapsed_secs());
+            Err(ApiError::TrackNotFound)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get track metadata");
+            state
+                .metrics
+                .record_request("get_metadata", "error", timer.elapsed_secs());
+            Err(ApiError::Storage(e.to_string()))
+        }
+    }
 }
 
 /// PUT /v1/tracks/:track_id/metadata
 pub async fn put_metadata<S: Store>(
     State(state): State<ApiState<S>>,
-    Path(_track_id): Path<String>,
-    _body: Bytes,
+    Path(track_id): Path<String>,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
     let timer = OperationTimer::new();
 
-    // TODO: Implement metadata storage via TrackOps
-    state
-        .metrics
-        .record_request("put_metadata", "success", timer.elapsed_secs());
-    Ok(StatusCode::CREATED.into_response())
+    // Parse track_id to Pubkey (base58)
+    let track_address = parse_track_id(&track_id)?;
+
+    // Parse JSON body to extract commitment_hash
+    let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+        state
+            .metrics
+            .record_request("put_metadata", "error", timer.elapsed_secs());
+        ApiError::InvalidBody(format!("invalid JSON: {}", e))
+    })?;
+
+    let commitment_hex = json
+        .get("commitment_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            state
+                .metrics
+                .record_request("put_metadata", "error", timer.elapsed_secs());
+            ApiError::InvalidBody("missing commitment_hash field".into())
+        })?;
+
+    // Decode hex to bytes
+    let commitment_bytes = hex::decode(commitment_hex).map_err(|e| {
+        state
+            .metrics
+            .record_request("put_metadata", "error", timer.elapsed_secs());
+        ApiError::InvalidBody(format!("invalid hex in commitment_hash: {}", e))
+    })?;
+
+    // Validate length is 32 bytes
+    if commitment_bytes.len() != 32 {
+        state
+            .metrics
+            .record_request("put_metadata", "error", timer.elapsed_secs());
+        return Err(ApiError::InvalidBody(format!(
+            "commitment_hash must be 32 bytes, got {}",
+            commitment_bytes.len()
+        )));
+    }
+
+    // Convert to Hash type
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(&commitment_bytes);
+    let commitment_hash = Hash(hash_bytes);
+
+    // Create TrackInfo with commitment_hash, certified_epoch=0, slice_count=0
+    let info = TrackInfo {
+        commitment_hash,
+        certified_epoch: EpochNumber(0),
+        slice_count: 0,
+    };
+
+    // Store track metadata
+    match state.service.put_track_info(track_address, info) {
+        Ok(()) => {
+            state
+                .metrics
+                .record_request("put_metadata", "success", timer.elapsed_secs());
+            Ok(StatusCode::CREATED.into_response())
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to put track metadata");
+            state
+                .metrics
+                .record_request("put_metadata", "error", timer.elapsed_secs());
+            Err(ApiError::Storage(e.to_string()))
+        }
+    }
 }
 
 /// GET /v1/tracks/:track_id/status
 pub async fn get_status<S: Store>(
     State(state): State<ApiState<S>>,
-    Path(_track_id): Path<String>,
+    Path(track_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let timer = OperationTimer::new();
 
-    // TODO: Implement status check
-    state
-        .metrics
-        .record_request("get_status", "error", timer.elapsed_secs());
-    Err(ApiError::TrackNotFound)
+    // Parse track_id to Pubkey (base58)
+    let track_address = parse_track_id(&track_id)?;
+
+    // Retrieve track info from storage
+    match state.service.get_track_info(track_address) {
+        Ok(Some(info)) => {
+            let is_certified = info.certified_epoch.0 > 0;
+            let mut response = serde_json::json!({
+                "track_id": track_id,
+                "slice_count": info.slice_count,
+                "is_certified": is_certified
+            });
+
+            // Include certified_epoch only if certified
+            if is_certified {
+                response["certified_epoch"] = serde_json::json!(info.certified_epoch.0);
+            }
+
+            state
+                .metrics
+                .record_request("get_status", "success", timer.elapsed_secs());
+
+            Ok((
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&response).unwrap_or_default(),
+            )
+                .into_response())
+        }
+        Ok(None) => {
+            state
+                .metrics
+                .record_request("get_status", "not_found", timer.elapsed_secs());
+            Err(ApiError::TrackNotFound)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get track status");
+            state
+                .metrics
+                .record_request("get_status", "error", timer.elapsed_secs());
+            Err(ApiError::Storage(e.to_string()))
+        }
+    }
 }
 
 /// GET /v1/health

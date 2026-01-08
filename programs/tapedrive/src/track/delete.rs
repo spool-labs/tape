@@ -1,4 +1,5 @@
 use tape_api::prelude::*;
+use tape_api::event::TrackDeleted;
 
 pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = DeleteTrack::try_from_bytes(data)?;
@@ -59,6 +60,13 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     tape.track_count = tape.track_count
         .checked_sub(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
+
+    TrackDeleted {
+        track: *track_info.key,
+        tape: tape_address,
+        key: track.key,
+        size: track.size,
+    }.log();
 
     close_account(track_info, fee_payer_info)?;
 

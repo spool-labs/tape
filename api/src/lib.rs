@@ -12,6 +12,7 @@ pub mod prelude {
     pub use tape_solana::*;
 
     pub use crate::consts::*;
+    pub use crate::event::*;
     pub use crate::helpers::*;
     pub use crate::instruction::*;
     pub use crate::loaders::*;

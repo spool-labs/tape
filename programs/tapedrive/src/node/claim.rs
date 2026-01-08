@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::CommissionClaimed;
 use crate::error::*;
 
 pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -62,6 +63,12 @@ pub fn process_claim_commission(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         commission.into(),
         &[ARCHIVE],
     )?;
+
+    CommissionClaimed {
+        node: *node_info.key,
+        authority: *authority_info.key,
+        amount: commission.as_u64().to_le_bytes(),
+    }.log();
 
     Ok(())
 }

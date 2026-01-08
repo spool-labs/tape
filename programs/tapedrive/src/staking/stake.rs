@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::StakeDeposited;
 use crate::error::*;
 
 pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -123,6 +124,14 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
             system_program_info.clone(),
         ],
     )?;
+
+    StakeDeposited {
+        stake: stake_address,
+        authority: *authority_info.key,
+        pool: *node_info.key,
+        amount: amount.as_u64().to_le_bytes(),
+        activation_epoch: staked_tape.activation_epoch,
+    }.log();
 
     // TODO: update/advance the node's state?
 

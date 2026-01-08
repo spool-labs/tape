@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::prelude::*;
+use tape_api::event::NodeJoinedCommittee;
 use crate::error::*;
 
 /// Calculate total stake including all scheduled additions.
@@ -69,6 +70,13 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     system.committee_next
         .try_join(&member)
         .map_err(|_| TapeError::UnexpectedState)?;
+
+    NodeJoinedCommittee {
+        node: *node_info.key,
+        id: node.id,
+        stake: balance.as_u64().to_le_bytes(),
+        activation_epoch: next_epoch(epoch),
+    }.log();
 
     Ok(())
 }
