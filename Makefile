@@ -1,9 +1,11 @@
 # Tapedrive Local Development Makefile
 #
 # Usage:
+#   make setup     - First-time setup (installs sccache for build caching)
 #   make check     - Check all non-program crates (cargo check)
 #   make build     - Build all Solana programs (cargo build-sbf)
 #   make test      - Test all Solana programs (cargo test-sbf)
+#   make test-all  - Run all workspace tests
 #   make validator - Start local validator with all programs
 #   make local     - Clean, build, and start validator
 #   make metadata  - Download Metaplex metadata program from mainnet
@@ -13,6 +15,10 @@
 #   - `cargo build-sbf -p <program>` builds specific programs
 #   - `make build` builds all programs via cargo build-sbf
 #
+# Build Caching:
+#   sccache is used to cache C++ compilations (e.g., rocksdb).
+#   Run `make setup` to install it, or it will be installed automatically.
+#
 # Program IDs:
 #   tapedrive: tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W
 #   staking:   taQ4ccnpwKHP9SxPxda76YrwxhDwsCMYg8vjf6KRiNh
@@ -20,7 +26,7 @@
 #   token:     tape9hFAE7jstfKB2QT1ovFNUZKKtDUyGZiGQpnBFdL
 #   metadata:  metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s
 
-.PHONY: all clean build test check validator local metadata
+.PHONY: all clean build test check validator local metadata setup ensure-sccache test-build test-all
 
 # Program IDs
 TAPEDRIVE_ID = tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W
@@ -40,10 +46,28 @@ RPC_URL = https://api.mainnet-beta.solana.com
 
 all: build
 
+# First-time setup - install sccache for build caching
+setup:
+	@./scripts/install-sccache.sh
+
+# Ensure sccache is installed (called automatically by build targets)
+ensure-sccache:
+	@command -v sccache >/dev/null 2>&1 || (echo "Installing sccache..." && ./scripts/install-sccache.sh)
+
 # Check all non-program crates (uses default-members from Cargo.toml)
-check:
+check: ensure-sccache
 	@echo "Checking non-program crates..."
-	@cargo check
+	@RUSTC_WRAPPER=sccache cargo check
+
+# Pre-build all test binaries (prevents rocksdb rebuilds when switching between test commands)
+test-build: ensure-sccache
+	@echo "Building all test binaries..."
+	@RUSTC_WRAPPER=sccache cargo test --no-run
+
+# Run all tests (builds once, runs all)
+test-all: ensure-sccache
+	@echo "Running all tests..."
+	@RUSTC_WRAPPER=sccache cargo test
 
 # Remove test-ledger directory
 clean:
@@ -54,7 +78,7 @@ metadata:
 	@mkdir -p test/elfs
 	solana program dump --url mainnet-beta $(METADATA_ID) $(METADATA_ELF)
 
-# Build all programs
+# Build all programs (on-chain, uses cargo build-sbf, no rocksdb)
 build:
 	@echo "Building tapedrive program..."
 	@cd programs/tapedrive && cargo build-sbf
@@ -65,7 +89,7 @@ build:
 	@echo "Building token program..."
 	@cd programs/token && cargo build-sbf
 
-# Run tests for all programs
+# Run tests for all programs (on-chain, uses cargo test-sbf)
 test:
 	@echo "Testing tapedrive program..."
 	@cd programs/tapedrive && cargo test-sbf

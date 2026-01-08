@@ -26,13 +26,15 @@ members = [
   "rpc/rpc-client",
   "rpc/rpc-test",
 ]
-# Programs require cargo build-sbf, exclude from default cargo build/check
+# Programs and test crates excluded from default cargo build/check:
+# - programs/*: require cargo build-sbf
+# - test: program testing, requires solana feature
+# - rpc/rpc-test: uses solana-test-validator, has rocksdb version conflict
 default-members = [
   "api",
   "core",
   "crypto",
   "solana",
-  "test",
   "metrics",
   "network/slicer",
   "network/node",
@@ -47,7 +49,6 @@ default-members = [
   "rpc/rpc",
   "rpc/rpc-solana",
   "rpc/rpc-client",
-  "rpc/rpc-test",
 ]
 
 [workspace.package]
