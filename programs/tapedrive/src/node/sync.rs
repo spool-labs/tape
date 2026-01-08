@@ -75,8 +75,14 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let total = SLICE_COUNT as u64;
 
     // Attest our weight for this epoch sync
-    epoch.state
+    let transitioned_to_active = epoch.state
         .add_sync_weight(weight, total);
+
+    // If we just transitioned to Active and there's no committee_prev (first epoch),
+    // immediately transition to NextReady since no one needs to advance
+    if transitioned_to_active && system.committee_prev_empty() {
+        epoch.state.set_next_ready();
+    }
 
     node.latest_epoch = current_epoch(epoch);
 
@@ -228,6 +234,82 @@ mod tests {
                 Check::account(&node_address).data(
                     Node {
                         latest_epoch: EpochNumber(42),
+                        ..node
+                    }.pack().as_ref()
+                ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_first_epoch_sync_skips_active() {
+        // Test that in the first epoch (empty committee_prev), when sync reaches
+        // supermajority, we skip Active and go directly to NextReady
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (node_address, _) = node_pda(authority);
+
+        let mut system = System::zeroed();
+        let mut epoch = Epoch::zeroed();
+        let mut node = Node::zeroed();
+
+        node.id = NodeId(1);
+        node.authority = authority;
+        node.latest_epoch = EpochNumber(1);
+
+        // First epoch - committee_prev is empty
+        system.committee_prev = Committee::new();
+        system.committee = Committee::from_members(&[
+            member(1, 3_000),
+        ]);
+        // Node gets all spools (supermajority threshold = 683)
+        system.spools = SpoolAssignment::try_from_counts(
+            &[SLICE_COUNT as u16]
+        ).expect("spools");
+
+        epoch.id = EpochNumber(2);
+        epoch.state = EpochState::syncing();
+
+        let instruction = build_epoch_sync_ix(
+            fee_payer,
+            authority,
+            node_address,
+            epoch.id,
+            &system.spools.spools_for_member(0)
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+
+        // When committee_prev is empty and we reach supermajority,
+        // state should skip Active and go directly to NextReady
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&epoch_address).data(
+                    Epoch {
+                        state: EpochState {
+                            phase: EpochPhase::NextEpochReady.into(),
+                            weight: 0,
+                        },
+                        ..epoch
+                    }.pack().as_ref()
+                ).build(),
+                Check::account(&node_address).data(
+                    Node {
+                        latest_epoch: EpochNumber(2),
                         ..node
                     }.pack().as_ref()
                 ).build(),
