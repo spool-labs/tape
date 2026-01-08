@@ -1,5 +1,6 @@
 //! Parallel downloader for slice retrieval.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -19,6 +20,8 @@ pub struct ParallelDownloader {
     node_addresses: Vec<String>,
     factory: NodeCommunicationFactory,
     concurrency: usize,
+    /// Slice indices to exclude from downloads (e.g., for recovery).
+    exclude_slices: HashSet<u16>,
 }
 
 impl ParallelDownloader {
@@ -38,6 +41,7 @@ impl ParallelDownloader {
             node_addresses,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
+            exclude_slices: HashSet::new(),
         }
     }
 
@@ -53,13 +57,31 @@ impl ParallelDownloader {
             node_addresses,
             factory,
             concurrency,
+            exclude_slices: HashSet::new(),
         }
+    }
+
+    /// Set slices to exclude from downloads.
+    ///
+    /// This is useful for recovery scenarios where you need to reconstruct
+    /// a specific slice and want to avoid requesting it from nodes that
+    /// don't have it.
+    pub fn with_excluded_slices(mut self, exclude: impl IntoIterator<Item = u16>) -> Self {
+        self.exclude_slices = exclude.into_iter().collect();
+        self
+    }
+
+    /// Exclude a single slice from downloads.
+    pub fn exclude_slice(mut self, slice_idx: u16) -> Self {
+        self.exclude_slices.insert(slice_idx);
+        self
     }
 
     /// Download at least DATA_SLICES (2f+1) valid slices.
     ///
     /// Requests slices in parallel (up to concurrency limit) and returns
-    /// as soon as enough are collected.
+    /// as soon as enough are collected. Respects any excluded slices set
+    /// via [`with_excluded_slices`] or [`exclude_slice`].
     pub async fn download_enough_slices(&self) -> Result<Vec<(u16, Vec<u8>)>, DownloadError> {
         if self.node_addresses.is_empty() {
             return Err(DownloadError::NoNodesAvailable);
@@ -72,8 +94,12 @@ impl ParallelDownloader {
         // Semaphore to limit concurrency
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
 
-        // Request all slices in parallel (bounded by semaphore)
+        // Request all slices in parallel (bounded by semaphore), skipping excluded
         for slice_idx in 0..SLICE_COUNT as u16 {
+            if self.exclude_slices.contains(&slice_idx) {
+                continue;
+            }
+
             let node_idx = slice_idx as usize % num_nodes;
             let address = self.node_addresses[node_idx].clone();
             let factory = self.factory.clone();
@@ -148,5 +174,35 @@ mod tests {
 
         // Just verify it creates without panic
         assert_eq!(downloader.track_id, "track_123");
+        assert!(downloader.exclude_slices.is_empty());
+    }
+
+    #[test]
+    fn test_downloader_with_exclusions() {
+        let factory = NodeCommunicationFactory::new();
+        let nodes = vec!["localhost:8080".to_string()];
+
+        let downloader = ParallelDownloader::new("track_123".to_string(), nodes, factory)
+            .exclude_slice(42)
+            .exclude_slice(100);
+
+        assert_eq!(downloader.exclude_slices.len(), 2);
+        assert!(downloader.exclude_slices.contains(&42));
+        assert!(downloader.exclude_slices.contains(&100));
+    }
+
+    #[test]
+    fn test_downloader_with_excluded_slices_iter() {
+        let factory = NodeCommunicationFactory::new();
+        let nodes = vec!["localhost:8080".to_string()];
+        let excludes = vec![10, 20, 30];
+
+        let downloader = ParallelDownloader::new("track_123".to_string(), nodes, factory)
+            .with_excluded_slices(excludes);
+
+        assert_eq!(downloader.exclude_slices.len(), 3);
+        assert!(downloader.exclude_slices.contains(&10));
+        assert!(downloader.exclude_slices.contains(&20));
+        assert!(downloader.exclude_slices.contains(&30));
     }
 }

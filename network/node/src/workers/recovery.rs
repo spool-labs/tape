@@ -6,7 +6,7 @@
 //! Recovery flow:
 //! 1. Poll recovery queue for pending items
 //! 2. For items ready for retry (based on exponential backoff)
-//! 3. Fetch DATA_SLICES from committee members
+//! 3. Fetch DATA_SLICES from committee members via SDK
 //! 4. Decode blob using Reed-Solomon
 //! 5. Re-encode to get all slices
 //! 6. Store the target slice
@@ -14,15 +14,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use solana_sdk::pubkey::Pubkey;
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::NodeId;
 use tape_crypto::merkle::hash_leaf;
 use tape_crypto::Hash;
-use tape_node_client::NodeClientBuilder;
-use tape_slicer::{BasicSlicer, Slicer, SliceIndex, SLICE_COUNT, DATA_SLICES, MERKLE_HEIGHT};
+use tape_sdk::communication::NodeCommunicationFactory;
+use tape_sdk::downloader::ParallelDownloader;
+use tape_sdk::error::DownloadError;
+use tape_slicer::{BasicSlicer, Slicer, SliceIndex, SLICE_COUNT, MERKLE_HEIGHT};
 use tape_store::ops::{is_ready_for_retry, Compression, RecoveryOps, SliceMeta};
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -31,14 +32,8 @@ use crate::context::NodeContext;
 /// Recovery polling interval.
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Default concurrency for slice fetching.
-const FETCH_CONCURRENCY: usize = 32;
-
 /// Maximum recovery attempts before giving up.
 const MAX_RECOVERY_ATTEMPTS: u8 = 10;
-
-/// HTTP client timeout for recovery requests.
-const RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Error type for recovery operations.
 #[derive(Debug, thiserror::Error)]
@@ -46,8 +41,8 @@ pub enum RecoveryError {
     #[error("storage error: {0}")]
     Storage(String),
 
-    #[error("insufficient slices: got {got}, need {need}")]
-    InsufficientSlices { got: usize, need: usize },
+    #[error("download failed: {0}")]
+    Download(#[from] DownloadError),
 
     #[error("decode error: {0}")]
     Decode(String),
@@ -77,6 +72,9 @@ pub async fn run(
 ) -> Result<(), RecoveryError> {
     info!("Recovery thread starting");
 
+    // Create a shared client factory for connection pooling across all recovery operations
+    let factory = NodeCommunicationFactory::new();
+
     let mut interval = tokio::time::interval(RECOVERY_POLL_INTERVAL);
 
     loop {
@@ -86,7 +84,7 @@ pub async fn run(
                 break;
             }
             _ = interval.tick() => {
-                if let Err(e) = process_recovery_queue(&ctx).await {
+                if let Err(e) = process_recovery_queue(&ctx, &factory).await {
                     error!(error = %e, "Error processing recovery queue");
                 }
             }
@@ -97,7 +95,10 @@ pub async fn run(
 }
 
 /// Process pending items in the recovery queue.
-async fn process_recovery_queue(ctx: &NodeContext) -> Result<(), RecoveryError> {
+async fn process_recovery_queue(
+    ctx: &NodeContext,
+    factory: &NodeCommunicationFactory,
+) -> Result<(), RecoveryError> {
     // Get all pending recoveries
     let pending = ctx
         .storage
@@ -115,6 +116,12 @@ async fn process_recovery_queue(ctx: &NodeContext) -> Result<(), RecoveryError> 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+
+    // Resolve committee addresses once per batch (cached by factory for HTTP connections)
+    let addresses = get_committee_addresses(ctx).await?;
+    if addresses.is_empty() {
+        return Err(RecoveryError::NoCommittee);
+    }
 
     let mut recovered = 0;
     let mut failed = 0;
@@ -142,7 +149,7 @@ async fn process_recovery_queue(ctx: &NodeContext) -> Result<(), RecoveryError> 
         let track_pubkey = Pubkey::from(track_address.to_bytes());
 
         // Attempt recovery
-        match recover_slice(ctx, spool_idx, track_pubkey).await {
+        match recover_slice(ctx, factory, &addresses, spool_idx, track_pubkey).await {
             Ok(()) => {
                 info!(
                     spool = spool_idx,
@@ -186,6 +193,8 @@ async fn process_recovery_queue(ctx: &NodeContext) -> Result<(), RecoveryError> 
 /// Recover a single slice via erasure decoding.
 async fn recover_slice(
     ctx: &NodeContext,
+    factory: &NodeCommunicationFactory,
+    addresses: &[String],
     target_spool_idx: SpoolIndex,
     track_address: Pubkey,
 ) -> Result<(), RecoveryError> {
@@ -195,26 +204,16 @@ async fn recover_slice(
         "Attempting slice recovery"
     );
 
-    // Get committee member addresses
-    let addresses = get_committee_addresses(ctx).await?;
-    if addresses.is_empty() {
-        return Err(RecoveryError::NoCommittee);
-    }
-
-    // Fetch enough slices from the committee
-    let slices = fetch_slices_from_committee(
-        &track_address.to_string(),
-        &addresses,
-        target_spool_idx,
+    // Use ParallelDownloader from SDK with client pooling via factory
+    let downloader = ParallelDownloader::new(
+        track_address.to_string(),
+        addresses.to_vec(),
+        factory.clone(),
     )
-    .await?;
+    .exclude_slice(target_spool_idx);
 
-    if slices.len() < DATA_SLICES {
-        return Err(RecoveryError::InsufficientSlices {
-            got: slices.len(),
-            need: DATA_SLICES,
-        });
-    }
+    // Fetch enough slices from the committee (excludes the target we're recovering)
+    let slices = downloader.download_enough_slices().await?;
 
     // Decode the blob
     let mut slicer = BasicSlicer::default();
@@ -266,11 +265,19 @@ async fn recover_slice(
 }
 
 /// Get network addresses for all committee members.
+///
+/// Resolves NodeId -> Node account -> NetworkAddress for each committee member.
+/// Skips empty slots (NodeId 0) and logs warnings for resolution failures.
 async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, RecoveryError> {
     let system = ctx.control_plane.get_system();
     let mut addresses = Vec::new();
 
     for member in system.committee.iter() {
+        // Skip empty slots (NodeId 0 means unoccupied)
+        if member.id == NodeId(0) {
+            continue;
+        }
+
         // Look up node to get network address
         match ctx.rpc.get_node_by_id(member.id).await {
             Ok((_pubkey, node)) => {
@@ -290,66 +297,6 @@ async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, Recov
     }
 
     Ok(addresses)
-}
-
-/// Fetch slices from committee members in parallel.
-async fn fetch_slices_from_committee(
-    track_id: &str,
-    addresses: &[String],
-    exclude_spool: SpoolIndex,
-) -> Result<Vec<(u16, Vec<u8>)>, RecoveryError> {
-    if addresses.is_empty() {
-        return Err(RecoveryError::NoCommittee);
-    }
-
-    let semaphore = Arc::new(Semaphore::new(FETCH_CONCURRENCY));
-    let mut futures = FuturesUnordered::new();
-    let num_nodes = addresses.len();
-
-    // Request all slices except the one we're recovering
-    for slice_idx in 0..SLICE_COUNT as u16 {
-        if slice_idx == exclude_spool {
-            continue;
-        }
-
-        let node_idx = slice_idx as usize % num_nodes;
-        let address = addresses[node_idx].clone();
-        let track_id = track_id.to_string();
-        let sem = semaphore.clone();
-
-        futures.push(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
-
-            // Create client for this request
-            let client = match NodeClientBuilder::new()
-                .request_timeout(RECOVERY_TIMEOUT)
-                .build(&address)
-            {
-                Ok(c) => c,
-                Err(_) => return None,
-            };
-
-            match client.get_slice(&track_id, slice_idx).await {
-                Ok(data) => Some((slice_idx, data)),
-                Err(_) => None,
-            }
-        });
-    }
-
-    // Collect slices until we have enough
-    let mut collected = Vec::with_capacity(DATA_SLICES);
-
-    while let Some(result) = futures.next().await {
-        if let Some((idx, data)) = result {
-            collected.push((idx, data));
-
-            if collected.len() >= DATA_SLICES {
-                break;
-            }
-        }
-    }
-
-    Ok(collected)
 }
 
 #[cfg(test)]

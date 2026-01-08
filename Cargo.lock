@@ -11232,6 +11232,7 @@ dependencies = [
  "tape-metrics",
  "tape-node-api",
  "tape-node-client",
+ "tape-sdk",
  "tape-slicer",
  "tape-store",
  "thiserror 2.0.17",
