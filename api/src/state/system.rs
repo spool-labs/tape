@@ -52,6 +52,15 @@ impl System {
     pub fn committee_prev_empty(&self) -> bool {
         self.committee_prev.size() == 0
     }
+
+    /// Rotate committees: prev <- current <- next <- empty.
+    /// Uses swap to avoid large stack allocations.
+    #[inline]
+    pub fn rotate_committees(&mut self) {
+        core::mem::swap(&mut self.committee_prev, &mut self.committee);
+        core::mem::swap(&mut self.committee, &mut self.committee_next);
+        bytemuck::bytes_of_mut(&mut self.committee_next).fill(0);
+    }
 }
 
 tape_solana::state!(AccountType, System);

@@ -77,15 +77,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         &system.committee_next,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
-    // Rotate committees
-    system.committee_prev = system.committee.clone();
-    system.committee = system.committee_next.clone();
+    // Rotate committees: prev <- current <- next <- empty
+    system.rotate_committees();
 
     system.committee
         .apply_weights_from_spools(&system.spools);
-
-    // Clear committee_next for the next epoch
-    system.committee_next = Committee::new();
 
     // Update future accounting
     let epoch_usage = archive.schedule
@@ -196,21 +192,21 @@ mod tests {
         epoch.state = EpochState::next_ready();
         epoch.last_epoch = last_epoch;
 
-        system.committee_prev = Committee::from_members(&[
-            member(2, 2_000, 8_000_000, 950),
-            member(1, 1_000, 9_000_000, 1150),
-        ]);
-        system.committee = Committee::from_members(&[
-            member(3, 3_000, 8_050_000, 1050),
-            member(2, 2_000, 9_050_000, 1250),
-            member(1, 1_000, 9_000_000, 1150),
-        ]);
-        system.committee_next = Committee::from_members(&[
-            member(3, 3_500, 1_500_000, 850),
-            member(4, 2_100, 9_000_000, 1250),
-            member(2, 2_000, 1_300_000, 1050),
-            member(1, 1_000, 1_100_000, 1150),
-        ]);
+        // Need >= MIN_COMMITTEE_SIZE (24) members for normal mode
+        let prev_members: Vec<CommitteeMember> = (1..=24)
+            .map(|i| member(i, 1_000 + i * 100, 8_000_000, 950))
+            .collect();
+        system.committee_prev = Committee::from_members(&prev_members);
+
+        let curr_members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000 + i * 100, 8_050_000, 1050))
+            .collect();
+        system.committee = Committee::from_members(&curr_members);
+
+        let next_members: Vec<CommitteeMember> = (1..=26)
+            .map(|i| member(i, 1_000 + i * 100, 1_500_000, 850))
+            .collect();
+        system.committee_next = Committee::from_members(&next_members);
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
         archive.schedule.reserve_capacity(
