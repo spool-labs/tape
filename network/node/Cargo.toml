@@ -19,6 +19,7 @@ tape-crypto = { workspace = true, features = ["wincode"] }
 tape-metrics = { workspace = true, features = ["metrics", "http"] }
 tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
+tape-slicer = { workspace = true }
 tape-store = { workspace = true }
 rpc-client = { workspace = true }
 rpc = { workspace = true }

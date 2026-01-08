@@ -33,6 +33,10 @@ pub struct NodeMetrics {
     // Spool sync metrics
     pub spools_synced_total: IntCounter,
 
+    // Recovery metrics
+    pub slices_recovered_total: IntCounter,
+    pub recovery_queue_len: IntGauge,
+
     // Storage metrics
     pub storage_bytes_used: IntGauge,
     pub tracks_stored: IntGauge,
@@ -154,6 +158,24 @@ impl NodeMetrics {
             .register(Box::new(spools_synced_total.clone()))
             .ok();
 
+        let slices_recovered_total = IntCounter::new(
+            "tape_node_slices_recovered_total",
+            "Total number of slices recovered via erasure coding",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(slices_recovered_total.clone()))
+            .ok();
+
+        let recovery_queue_len = IntGauge::new(
+            "tape_node_recovery_queue_len",
+            "Number of slices pending recovery",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(recovery_queue_len.clone()))
+            .ok();
+
         Self {
             request_duration,
             requests_total,
@@ -167,6 +189,8 @@ impl NodeMetrics {
             last_processed_slot,
             blocks_processed_total,
             spools_synced_total,
+            slices_recovered_total,
+            recovery_queue_len,
             storage_bytes_used,
             tracks_stored,
         }

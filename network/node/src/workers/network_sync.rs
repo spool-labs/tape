@@ -13,6 +13,8 @@ use tape_api::instruction::build_epoch_sync_ix;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
+use tape_store::ops::{RecoveryInfo, RecoveryOps, SliceOps};
+use tape_store::types::Pubkey as StorePubkey;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -107,7 +109,9 @@ async fn handle_event(
 
         NodeEvent::SpoolRecoveryNeeded { spool_idx } => {
             warn!(spool = spool_idx, "Spool needs erasure recovery");
-            // TODO: Queue for recovery
+            if let Err(e) = queue_spool_for_recovery(ctx, spool_idx).await {
+                error!(spool = spool_idx, error = %e, "Failed to queue spool for recovery");
+            }
         }
 
         NodeEvent::EpochSyncReady { epoch } => {
@@ -194,7 +198,9 @@ async fn handle_epoch_advanced(
                 }
                 Err(e) => {
                     warn!(spool = spool_idx, error = %e, "Failed to sync spool, queuing for recovery");
-                    // TODO: Queue for erasure recovery
+                    if let Err(qe) = queue_spool_for_recovery(ctx, *spool_idx).await {
+                        error!(spool = spool_idx, error = %qe, "Failed to queue spool for recovery");
+                    }
                 }
             }
         } else {
@@ -290,6 +296,49 @@ async fn submit_sync_epoch(ctx: &NodeContext, epoch: EpochNumber) -> Result<(), 
         .map_err(|e| NetworkSyncError::Rpc(format!("Failed to submit SyncEpoch: {}", e)))?;
 
     info!(epoch = epoch.as_u64(), "SyncEpoch submitted successfully");
+
+    Ok(())
+}
+
+/// Queue all slices in a spool for erasure recovery.
+///
+/// This enumerates all tracks that have slices in the given spool
+/// and queues each for recovery.
+async fn queue_spool_for_recovery(
+    ctx: &NodeContext,
+    spool_idx: SpoolIndex,
+) -> Result<(), NetworkSyncError> {
+    // Get all slices currently stored for this spool
+    let slices = ctx
+        .storage
+        .store
+        .get_spool_slices(spool_idx)
+        .map_err(|e| NetworkSyncError::Storage(e.to_string()))?;
+
+    if slices.is_empty() {
+        debug!(spool = spool_idx, "No slices to recover for spool");
+        return Ok(());
+    }
+
+    info!(
+        spool = spool_idx,
+        slice_count = slices.len(),
+        "Queuing spool slices for recovery"
+    );
+
+    let info = RecoveryInfo {
+        source_node: StorePubkey::default(), // Will fetch from committee
+        attempts: 0,
+        last_attempt: 0,
+    };
+
+    // Queue each slice for recovery
+    for (track_address, _meta) in slices {
+        ctx.storage
+            .store
+            .queue_recovery(spool_idx, track_address, info.clone())
+            .map_err(|e| NetworkSyncError::Storage(e.to_string()))?;
+    }
 
     Ok(())
 }

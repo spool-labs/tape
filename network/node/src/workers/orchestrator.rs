@@ -4,6 +4,7 @@
 //! - Thread A: Live updates (block processing)
 //! - Thread B: Network sync (epoch transitions)
 //! - Thread C: Challenges (storage proofs)
+//! - Thread D: Recovery (erasure coding recovery)
 
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use crate::context::NodeContext;
 use crate::events::NodeEvent;
 use crate::server::ServerHandle;
 
-use super::{challenges, live_updates, network_sync};
+use super::{challenges, live_updates, network_sync, recovery};
 
 /// Event channel capacity.
 const EVENT_CHANNEL_CAPACITY: usize = 10_000;
@@ -31,6 +32,9 @@ pub enum OrchestratorError {
 
     #[error("thread C (challenges) failed: {0}")]
     Challenges(String),
+
+    #[error("thread D (recovery) failed: {0}")]
+    Recovery(String),
 
     #[error("server error: {0}")]
     Server(String),
@@ -85,6 +89,17 @@ pub async fn run(
             challenges::run(ctx, cancel)
                 .await
                 .map_err(|e| OrchestratorError::Challenges(e.to_string()))
+        }
+    });
+
+    // Thread D: Recovery
+    tasks.spawn({
+        let ctx = Arc::clone(&ctx);
+        let cancel = cancel.clone();
+        async move {
+            recovery::run(ctx, cancel)
+                .await
+                .map_err(|e| OrchestratorError::Recovery(e.to_string()))
         }
     });
 

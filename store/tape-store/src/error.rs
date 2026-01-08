@@ -26,6 +26,10 @@ pub enum TapeStoreError {
     #[error("Committee not found for epoch {0}")]
     CommitteeNotFound(u64),
 
+    /// Recovery entry not found
+    #[error("Recovery entry not found: spool={0}, track={1:?}")]
+    RecoveryNotFound(u16, Pubkey),
+
     /// Invalid slice count
     #[error("Invalid slice count: expected 1024, got {0}")]
     InvalidSliceCount(usize),

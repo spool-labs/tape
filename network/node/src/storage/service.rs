@@ -36,8 +36,8 @@ pub enum StorageError {
 /// Wraps a `TapeStore` and provides methods for storing and retrieving
 /// slices with optional metrics tracking.
 pub struct StorageService<S: Store = RocksStore> {
-    /// The underlying tape store.
-    store: TapeStore<S>,
+    /// The underlying tape store (public for direct access to ops traits).
+    pub store: TapeStore<S>,
     /// Optional metrics for tracking operations.
     metrics: Option<Arc<NodeMetrics>>,
 }
