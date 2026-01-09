@@ -12,6 +12,8 @@ use rpc_client::{RpcConfig, RpcClient};
 use tape_core::bls::BlsPrivateKey;
 use tape_crypto::Pubkey;
 
+use tape_metrics::MetricsRegistry;
+
 use crate::config::NodeConfig;
 use crate::control_plane::ControlPlane;
 use crate::metrics::NodeMetrics;
@@ -126,8 +128,9 @@ impl NodeContext<RocksStore> {
         // 7. Initialize control plane cache
         let control_plane = ControlPlane::new(system, epoch, node);
 
-        // 8. Initialize metrics
-        let metrics = NodeMetrics::new();
+        // 8. Initialize metrics registry and node metrics
+        let registry = MetricsRegistry::init();
+        let metrics = NodeMetrics::with_registry(registry.prometheus_registry());
 
         Ok(Arc::new(Self {
             config: Arc::new(config),

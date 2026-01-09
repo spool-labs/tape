@@ -264,22 +264,11 @@ async fn init_node_config(config: Option<PathBuf>, force: bool) -> Result<()> {
 
 /// Start the storage node.
 async fn start_node(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
     let config_path = config.unwrap_or_else(default_config_path);
 
     // Load config
     let node_config = NodeConfig::from_yaml_file(&config_path)
         .with_context(|| format!("Failed to load node config from {}", config_path.display()))?;
-
-    // Initialize logging
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(filter)
-        .init();
 
     let rpc_url = ctx.rpc_url();
     tracing::info!("Starting Tapedrive storage node");

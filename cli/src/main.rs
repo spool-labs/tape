@@ -209,11 +209,11 @@ impl Context {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
+    // Initialize tracing (use RUST_LOG env var, default to info)
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::WARN.into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
