@@ -662,6 +662,17 @@ fn get_program_id(log: &str) -> Option<Pubkey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use tape_api::event::EventType;
+
+    // Helper to encode an event as a "Program data:" log line
+    fn encode_event<T: bytemuck::Pod>(event_type: EventType, event: &T) -> String {
+        let mut data = vec![0u8; 8];
+        data[0] = event_type as u8;
+        data.extend_from_slice(bytemuck::bytes_of(event));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+        format!("Program data: {}", encoded)
+    }
 
     #[test]
     fn test_parse_empty_block() {
@@ -700,9 +711,340 @@ mod tests {
     fn test_get_program_id() {
         let log = "Program 11111111111111111111111111111111 invoke [1]";
         let pubkey = get_program_id(log).unwrap();
-        assert_eq!(
-            pubkey.to_string(),
-            "11111111111111111111111111111111"
-        );
+        assert_eq!(pubkey.to_string(), "11111111111111111111111111111111");
+    }
+
+    // -------------------------------------------------------------------------
+    // Event parsing tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_epoch_advanced_event() {
+        let event = EpochAdvanced {
+            old_epoch: EpochNumber(5),
+            new_epoch: EpochNumber(6),
+            timestamp: [0; 8],
+            committee_size: [10, 0, 0, 0, 0, 0, 0, 0],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(1000),
+        };
+
+        let log = encode_event(EventType::EpochAdvanced, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::EpochAdvanced(e) => {
+                assert_eq!(e.old_epoch, EpochNumber(5));
+                assert_eq!(e.new_epoch, EpochNumber(6));
+            }
+            _ => panic!("Expected EpochAdvanced event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_track_certified_event() {
+        let track = Pubkey::new_unique();
+        let event = TrackCertified {
+            track,
+            epoch: EpochNumber(10),
+            signer_count: [5, 0, 0, 0, 0, 0, 0, 0],
+            signer_weight: [100, 0, 0, 0, 0, 0, 0, 0],
+        };
+
+        let log = encode_event(EventType::TrackCertified, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::TrackCertified(e) => {
+                assert_eq!(e.track, track);
+                assert_eq!(e.epoch, EpochNumber(10));
+            }
+            _ => panic!("Expected TrackCertified event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_track_registered_event() {
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let event = TrackRegistered {
+            track,
+            tape,
+            key: Hash::default(),
+            size: StorageUnits(500),
+            commitment: Hash::default(),
+            epoch: EpochNumber(3),
+        };
+
+        let log = encode_event(EventType::TrackRegistered, &event);
+        let parsed = parse_event_data(&log).unwrap().unwrap();
+
+        match parsed {
+            TapedriveEvent::TrackRegistered(e) => {
+                assert_eq!(e.track, track);
+                assert_eq!(e.tape, tape);
+                assert_eq!(e.epoch, EpochNumber(3));
+                assert_eq!(e.size, StorageUnits(500));
+            }
+            _ => panic!("Expected TrackRegistered event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_event_data() {
+        // Too short
+        let result = parse_event_data("Program data: AAAA").unwrap();
+        assert!(result.is_none());
+
+        // Invalid base64
+        let result = parse_event_data("Program data: !!!invalid!!!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_unknown_event_type() {
+        // Create data with unknown discriminator (0xFF)
+        let mut data = vec![0xFFu8; 8];
+        data.extend_from_slice(&[0u8; 32]); // Some padding
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+        let log = format!("Program data: {}", encoded);
+
+        let result = parse_event_data(&log).unwrap();
+        assert!(result.is_none()); // Unknown events are skipped, not errors
+    }
+
+    // -------------------------------------------------------------------------
+    // Event/instruction merge tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_merge_advance_epoch() {
+        let event = EpochAdvanced {
+            old_epoch: EpochNumber(5),
+            new_epoch: EpochNumber(6),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+        };
+
+        let instructions = vec![RawInstruction::AdvanceEpoch];
+        let events = vec![TapedriveEvent::EpochAdvanced(event)];
+
+        let merged = merge_instructions_and_events(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::AdvanceEpoch { event } => {
+                assert_eq!(event.old_epoch, EpochNumber(5));
+                assert_eq!(event.new_epoch, EpochNumber(6));
+            }
+            _ => panic!("Expected AdvanceEpoch"),
+        }
+    }
+
+    #[test]
+    fn test_merge_certify_track() {
+        let track = Pubkey::new_unique();
+        let event = TrackCertified {
+            track,
+            epoch: EpochNumber(10),
+            signer_count: [0; 8],
+            signer_weight: [0; 8],
+        };
+
+        let instructions = vec![RawInstruction::CertifyTrack { track }];
+        let events = vec![TapedriveEvent::TrackCertified(event)];
+
+        let merged = merge_instructions_and_events(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::CertifyTrack { track: t, event } => {
+                assert_eq!(*t, track);
+                assert_eq!(event.epoch, EpochNumber(10));
+            }
+            _ => panic!("Expected CertifyTrack"),
+        }
+    }
+
+    #[test]
+    fn test_merge_advance_epoch_missing_event() {
+        let instructions = vec![RawInstruction::AdvanceEpoch];
+        let events = vec![]; // No events!
+
+        let result = merge_instructions_and_events(instructions, events);
+        assert!(result.is_err());
+        match result {
+            Err(ParseError::EventMismatch(_)) => {}
+            _ => panic!("Expected EventMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_merge_certify_track_missing_event() {
+        let track = Pubkey::new_unique();
+        let instructions = vec![RawInstruction::CertifyTrack { track }];
+        let events = vec![]; // No events!
+
+        let result = merge_instructions_and_events(instructions, events);
+        assert!(result.is_err());
+        match result {
+            Err(ParseError::EventMismatch(_)) => {}
+            _ => panic!("Expected EventMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_merge_multiple_instructions() {
+        let track1 = Pubkey::new_unique();
+        let track2 = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        // Create events
+        let epoch_event = EpochAdvanced {
+            old_epoch: EpochNumber(1),
+            new_epoch: EpochNumber(2),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+        };
+
+        let register_event = TrackRegistered {
+            track: track1,
+            tape: Pubkey::new_unique(),
+            key: Hash::default(),
+            size: StorageUnits(100),
+            commitment: Hash::default(),
+            epoch: EpochNumber(2),
+        };
+
+        let certify_event = TrackCertified {
+            track: track2,
+            epoch: EpochNumber(2),
+            signer_count: [0; 8],
+            signer_weight: [0; 8],
+        };
+
+        let instructions = vec![
+            RawInstruction::AdvanceEpoch,
+            RawInstruction::RegisterTrack {
+                owner,
+                track: track1,
+                key: Hash::default(),
+                root: Hash::default(),
+                commitment: Hash::default(),
+                size: StorageUnits(100),
+            },
+            RawInstruction::CertifyTrack { track: track2 },
+        ];
+
+        let events = vec![
+            TapedriveEvent::EpochAdvanced(epoch_event),
+            TapedriveEvent::TrackRegistered(register_event),
+            TapedriveEvent::TrackCertified(certify_event),
+        ];
+
+        let merged = merge_instructions_and_events(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 3);
+
+        // Check AdvanceEpoch
+        match &merged[0] {
+            ParsedInstruction::AdvanceEpoch { event } => {
+                assert_eq!(event.new_epoch, EpochNumber(2));
+            }
+            _ => panic!("Expected AdvanceEpoch"),
+        }
+
+        // Check RegisterTrack
+        match &merged[1] {
+            ParsedInstruction::RegisterTrack { track, event, .. } => {
+                assert_eq!(*track, track1);
+                assert!(event.is_some());
+                assert_eq!(event.as_ref().unwrap().epoch, EpochNumber(2));
+            }
+            _ => panic!("Expected RegisterTrack"),
+        }
+
+        // Check CertifyTrack
+        match &merged[2] {
+            ParsedInstruction::CertifyTrack { track, event } => {
+                assert_eq!(*track, track2);
+                assert_eq!(event.epoch, EpochNumber(2));
+            }
+            _ => panic!("Expected CertifyTrack"),
+        }
+    }
+
+    #[test]
+    fn test_merge_optional_events() {
+        // DeleteTrack, InvalidateTrack, etc. have optional events
+        let track = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let instructions = vec![RawInstruction::DeleteTrack { owner, track }];
+        let events = vec![]; // No event (optional)
+
+        let merged = merge_instructions_and_events(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::DeleteTrack {
+                track: t,
+                event,
+                ..
+            } => {
+                assert_eq!(*t, track);
+                assert!(event.is_none()); // Event is optional
+            }
+            _ => panic!("Expected DeleteTrack"),
+        }
+    }
+
+    #[test]
+    fn test_merge_sync_epoch_no_event_needed() {
+        // SyncEpoch gets data from instruction, not event
+        let node = Pubkey::new_unique();
+        let instructions = vec![RawInstruction::SyncEpoch {
+            node,
+            epoch: EpochNumber(5),
+            spools_hash: Hash::default(),
+        }];
+        let events = vec![]; // SyncEpoch doesn't need event
+
+        let merged = merge_instructions_and_events(instructions, events).unwrap();
+
+        assert_eq!(merged.len(), 1);
+        match &merged[0] {
+            ParsedInstruction::SyncEpoch {
+                node: n,
+                epoch,
+                ..
+            } => {
+                assert_eq!(*n, node);
+                assert_eq!(*epoch, EpochNumber(5));
+            }
+            _ => panic!("Expected SyncEpoch"),
+        }
+    }
+
+    #[test]
+    fn test_merge_wrong_event_type() {
+        // AdvanceEpoch instruction with TrackCertified event should fail
+        let instructions = vec![RawInstruction::AdvanceEpoch];
+        let events = vec![TapedriveEvent::TrackCertified(TrackCertified {
+            track: Pubkey::new_unique(),
+            epoch: EpochNumber(1),
+            signer_count: [0; 8],
+            signer_weight: [0; 8],
+        })];
+
+        let result = merge_instructions_and_events(instructions, events);
+        assert!(result.is_err());
     }
 }
