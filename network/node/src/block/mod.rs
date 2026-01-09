@@ -23,9 +23,9 @@
 //! The block processor is typically run as a background task:
 //!
 //! ```ignore
-//! use tape_node::block_processor;
+//! use tape_node::block;
 //!
-//! let handle = tokio::spawn(block_processor::run(ctx, event_tx, cancel));
+//! let handle = tokio::spawn(block::run(ctx, event_tx, cancel));
 //! ```
 
 mod handlers;

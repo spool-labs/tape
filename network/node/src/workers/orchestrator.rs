@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::block_processor;
+use crate::block;
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
 use crate::server::ServerHandle;
@@ -65,7 +65,7 @@ pub async fn run(
         let event_tx = event_tx.clone();
         let cancel = cancel.clone();
         async move {
-            block_processor::run(ctx, event_tx, cancel)
+            block::run(ctx, event_tx, cancel)
                 .await
                 .map_err(|e| OrchestratorError::BlockProcessor(e.to_string()))
         }

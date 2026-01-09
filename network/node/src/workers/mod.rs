@@ -5,7 +5,7 @@
 //! - **Thread C (challenges)**: Responds to storage proof challenges
 //! - **Thread D (recovery)**: Recovers slices via erasure coding when sync fails
 //!
-//! Note: The block processor (Thread A) is in the `block_processor` module.
+//! Note: The block processor (Thread A) is in the `block` module.
 
 pub mod challenges;
 pub mod network_sync;

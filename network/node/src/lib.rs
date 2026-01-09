@@ -1,7 +1,7 @@
 //! Tapedrive storage node REST API server.
 
 // Core modules
-pub mod block_processor;
+pub mod block;
 pub mod config;
 pub mod context;
 pub mod control_plane;
