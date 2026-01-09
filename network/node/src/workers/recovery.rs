@@ -302,6 +302,7 @@ async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, Recov
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::erasure::DATA_SLICES;
 
     #[test]
     fn test_recovery_constants() {

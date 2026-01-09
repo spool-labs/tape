@@ -11259,6 +11259,7 @@ name = "tape-node-client"
 version = "0.3.0"
 dependencies = [
  "futures 0.3.31",
+ "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

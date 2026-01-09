@@ -321,6 +321,7 @@ mod tests {
             rewards: None,
             block_time: None,
             block_height: None,
+            num_reward_partitions: None,
         };
 
         let result = parse_block(&block).unwrap();

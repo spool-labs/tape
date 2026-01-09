@@ -20,17 +20,34 @@ pub enum NodeError {
         message: String,
     },
 
-    /// Slice not found on this node.
-    #[error("slice not found")]
+    /// Slice or track not found on this node.
+    #[error("not found")]
     NotFound,
 
     /// Node is not responsible for this spool.
     #[error("node not responsible for this spool")]
     NotResponsible,
 
+    /// Node is not in the current committee.
+    #[error("node is not in committee")]
+    NotInCommittee,
+
+    /// Node is missing slices for the requested track.
+    #[error("node missing slices: have {have}, need {need}")]
+    MissingSlices {
+        /// Number of slices the node currently has.
+        have: u16,
+        /// Number of slices the node needs.
+        need: u16,
+    },
+
     /// Serialization/deserialization error.
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// Connection error.
+    #[error("connection error: {0}")]
+    Connection(String),
 
     /// Connection timeout.
     #[error("connection timeout")]
@@ -54,11 +71,12 @@ impl NodeError {
         }
     }
 
-    /// Check if error is retryable.
+    /// Check if error is retryable (transient failure).
     pub fn is_retryable(&self) -> bool {
         match self {
             NodeError::Request(e) => e.is_timeout() || e.is_connect(),
             NodeError::Timeout => true,
+            NodeError::Connection(_) => true,
             NodeError::ServerError { status, .. } => {
                 // 5xx errors are potentially retryable
                 *status >= 500 && *status < 600

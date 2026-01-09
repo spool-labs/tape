@@ -7,6 +7,7 @@ pub mod api;
 pub mod builder;
 pub mod client;
 pub mod error;
+pub mod retry;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -14,6 +15,7 @@ pub mod metrics;
 pub use builder::NodeClientBuilder;
 pub use client::NodeClient;
 pub use error::NodeError;
+pub use retry::{RetryConfig, with_retry};
 
 // Re-export SignResponse from tape-node-api for convenience
 pub use tape_node_api::SignResponse;
