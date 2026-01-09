@@ -33,7 +33,7 @@ mod parser;
 mod worker;
 
 // Re-export the main entry point
-pub use worker::{run, LiveUpdateError};
+pub use worker::{run, BlockProcessorError};
 
 // Re-export parser types for use by other modules
 pub use parser::{parse_block, ParsedBlock, ParsedInstruction, ParseError};

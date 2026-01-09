@@ -23,9 +23,9 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 400;
 /// Maximum slots to process per iteration.
 const MAX_SLOTS_PER_BATCH: u64 = 100;
 
-/// Error type for live update operations.
+/// Error type for block processor operations.
 #[derive(Debug, thiserror::Error)]
-pub enum LiveUpdateError {
+pub enum BlockProcessorError {
     #[error("RPC error: {0}")]
     Rpc(String),
 
@@ -50,7 +50,7 @@ pub async fn run(
     ctx: Arc<NodeContext>,
     event_tx: mpsc::Sender<NodeEvent>,
     cancel: CancellationToken,
-) -> Result<(), LiveUpdateError> {
+) -> Result<(), BlockProcessorError> {
     info!("Block processor starting");
 
     let poll_interval = Duration::from_millis(
@@ -85,13 +85,13 @@ async fn poll_and_process(
     ctx: &NodeContext,
     event_tx: &mpsc::Sender<NodeEvent>,
     last_slot: &mut SlotNumber,
-) -> Result<(), LiveUpdateError> {
+) -> Result<(), BlockProcessorError> {
     // Get latest slot from RPC
     let latest_slot = ctx
         .rpc
         .get_slot()
         .await
-        .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+        .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
     let latest_slot = SlotNumber(latest_slot);
 
@@ -114,7 +114,7 @@ async fn poll_and_process(
     for slot in start_slot..=end_slot {
         match process_slot(ctx, event_tx, slot).await {
             Ok(_) => {}
-            Err(LiveUpdateError::Rpc(ref e)) if e.contains("SlotSkipped") => {
+            Err(BlockProcessorError::Rpc(ref e)) if e.contains("SlotSkipped") => {
                 // Slot was skipped (no block produced), this is normal
                 debug!(slot = slot, "Slot skipped");
             }
@@ -140,13 +140,13 @@ async fn process_slot(
     ctx: &NodeContext,
     event_tx: &mpsc::Sender<NodeEvent>,
     slot: u64,
-) -> Result<(), LiveUpdateError> {
+) -> Result<(), BlockProcessorError> {
     // Fetch the block
     let block = ctx
         .rpc
         .get_block(slot)
         .await
-        .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+        .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
     // Parse the block for tapedrive instructions
     let parsed = parse_block(&block)?;
@@ -177,7 +177,7 @@ async fn process_instruction(
     ctx: &NodeContext,
     event_tx: &mpsc::Sender<NodeEvent>,
     instruction: ParsedInstruction,
-) -> Result<(), LiveUpdateError> {
+) -> Result<(), BlockProcessorError> {
     match instruction {
         ParsedInstruction::AdvanceEpoch => {
             info!("Detected AdvanceEpoch instruction");
@@ -187,13 +187,13 @@ async fn process_instruction(
                 .rpc
                 .get_system()
                 .await
-                .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+                .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
             let epoch = ctx
                 .rpc
                 .get_epoch()
                 .await
-                .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+                .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
             let new_epoch = epoch.id;
 
@@ -227,7 +227,7 @@ async fn process_instruction(
             event_tx
                 .send(NodeEvent::EpochAdvanced { epoch: new_epoch })
                 .await
-                .map_err(|_| LiveUpdateError::ChannelClosed)?;
+                .map_err(|_| BlockProcessorError::ChannelClosed)?;
 
             ctx.metrics.epoch_transitions_total.inc();
             ctx.metrics.current_epoch.set(new_epoch.as_u64() as i64);
@@ -252,7 +252,7 @@ async fn process_instruction(
                     spools_hash,
                 })
                 .await
-                .map_err(|_| LiveUpdateError::ChannelClosed)?;
+                .map_err(|_| BlockProcessorError::ChannelClosed)?;
         }
 
         ParsedInstruction::RegisterTrack {
@@ -351,7 +351,7 @@ async fn process_instruction(
                 .rpc
                 .get_system()
                 .await
-                .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+                .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
             ctx.control_plane.update_system(system);
         }
@@ -364,7 +364,7 @@ async fn process_instruction(
                 .rpc
                 .get_system()
                 .await
-                .map_err(|e| LiveUpdateError::Rpc(e.to_string()))?;
+                .map_err(|e| BlockProcessorError::Rpc(e.to_string()))?;
 
             ctx.control_plane.update_system(system);
         }

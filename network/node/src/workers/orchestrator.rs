@@ -25,8 +25,8 @@ const EVENT_CHANNEL_CAPACITY: usize = 10_000;
 /// Error type for orchestrator.
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
-    #[error("thread A (live updates) failed: {0}")]
-    LiveUpdates(String),
+    #[error("block processor failed: {0}")]
+    BlockProcessor(String),
 
     #[error("thread B (network sync) failed: {0}")]
     NetworkSync(String),
@@ -67,7 +67,7 @@ pub async fn run(
         async move {
             block_processor::run(ctx, event_tx, cancel)
                 .await
-                .map_err(|e| OrchestratorError::LiveUpdates(e.to_string()))
+                .map_err(|e| OrchestratorError::BlockProcessor(e.to_string()))
         }
     });
 
@@ -125,7 +125,7 @@ pub async fn run(
                 }
                 Some(Err(join_error)) => {
                     error!(error = %join_error, "A worker task panicked");
-                    Err(OrchestratorError::LiveUpdates(join_error.to_string()))
+                    Err(OrchestratorError::BlockProcessor(join_error.to_string()))
                 }
                 None => {
                     // All tasks completed (shouldn't happen)
