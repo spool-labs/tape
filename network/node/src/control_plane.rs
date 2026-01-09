@@ -129,6 +129,13 @@ impl ControlPlane {
         inner.last_processed_slot = slot;
     }
 
+    /// Update just the epoch number (used during catch-up when we don't have
+    /// full epoch account data, only the event log).
+    pub fn set_current_epoch(&self, epoch: EpochNumber) {
+        let mut inner = self.inner.write().unwrap();
+        inner.epoch.id = epoch;
+    }
+
     // -------------------------------------------------------------------------
     // Query helpers
     // -------------------------------------------------------------------------

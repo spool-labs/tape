@@ -36,7 +36,7 @@ mod worker;
 pub use worker::{run, BlockProcessorError};
 
 // Re-export parser types for use by other modules
-pub use parser::{parse_block, ParsedBlock, ParsedInstruction, ParseError};
+pub use parser::{parse_block, ParsedBlock, ParsedInstruction, ParseError, TapedriveEvent};
 
 // Re-export handlers for direct use (e.g., in tests or CLI tools)
 pub use handlers::{

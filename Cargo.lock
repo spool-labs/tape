@@ -11207,7 +11207,9 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
+ "base64 0.22.1",
  "bs58",
+ "bytemuck",
  "clap 4.5.53",
  "dirs 5.0.1",
  "futures 0.3.31",
