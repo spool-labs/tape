@@ -1,4 +1,4 @@
-//! Thread A - Live Updates
+//! Block processor worker loop.
 //!
 //! Continuously polls Solana blocks and processes tapedrive-related
 //! transactions to keep local state synchronized with the chain.
@@ -13,9 +13,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
-use crate::handlers;
 
-use super::tx_parser::{parse_block, ParsedInstruction};
+use super::handlers;
+use super::parser::{parse_block, ParsedInstruction};
 
 /// Default polling interval (Solana slot time).
 const DEFAULT_POLL_INTERVAL_MS: u64 = 400;
@@ -30,10 +30,10 @@ pub enum LiveUpdateError {
     Rpc(String),
 
     #[error("parse error: {0}")]
-    Parse(#[from] super::tx_parser::ParseError),
+    Parse(#[from] super::parser::ParseError),
 
-    #[error("handler error: {0}")]
-    Handler(#[from] handlers::HandlerError),
+    #[error("storage error: {0}")]
+    Storage(#[from] tape_store::error::TapeStoreError),
 
     #[error("event channel closed")]
     ChannelClosed,
@@ -41,17 +41,17 @@ pub enum LiveUpdateError {
 
 /// Run the live updates loop.
 ///
-/// This is Thread A's main entry point. It:
+/// This is the main entry point for the block processor. It:
 /// 1. Polls for new Solana slots
 /// 2. Fetches and parses blocks
 /// 3. Updates the control plane cache
-/// 4. Emits events for Thread B
+/// 4. Emits events for other workers
 pub async fn run(
     ctx: Arc<NodeContext>,
     event_tx: mpsc::Sender<NodeEvent>,
     cancel: CancellationToken,
 ) -> Result<(), LiveUpdateError> {
-    info!("Live updates thread starting");
+    info!("Block processor starting");
 
     let poll_interval = Duration::from_millis(
         ctx.config
@@ -65,7 +65,7 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                info!("Live updates thread shutting down");
+                info!("Block processor shutting down");
                 break;
             }
             _ = tokio::time::sleep(poll_interval) => {
@@ -223,7 +223,7 @@ async fn process_instruction(
                 }
             }
 
-            // Emit event for Thread B
+            // Emit event for other workers
             event_tx
                 .send(NodeEvent::EpochAdvanced { epoch: new_epoch })
                 .await
@@ -244,7 +244,7 @@ async fn process_instruction(
                 "Detected SyncEpoch instruction"
             );
 
-            // Emit event so Thread B can track sync progress
+            // Emit event so other workers can track sync progress
             event_tx
                 .send(NodeEvent::NodeSynced {
                     node,

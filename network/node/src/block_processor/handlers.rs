@@ -10,19 +10,10 @@ use store::Store;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
+use tape_store::error::Result;
 use tape_store::ops::{GcOps, GcReason, GcStats, MetaOps, TrackInfo, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
-
-/// Error type for handler operations.
-#[derive(Debug, thiserror::Error)]
-pub enum HandlerError {
-    #[error("storage error: {0}")]
-    Storage(#[from] tape_store::error::TapeStoreError),
-}
-
-/// Result type for handler operations.
-pub type Result<T> = std::result::Result<T, HandlerError>;
 
 /// Handle RegisterTrack instruction.
 ///

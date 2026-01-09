@@ -12,11 +12,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+use crate::block_processor;
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
 use crate::server::ServerHandle;
 
-use super::{challenges, live_updates, network_sync, recovery};
+use super::{challenges, network_sync, recovery};
 
 /// Event channel capacity.
 const EVENT_CHANNEL_CAPACITY: usize = 10_000;
@@ -58,13 +59,13 @@ pub async fn run(
     // Spawn worker threads
     let mut tasks = tokio::task::JoinSet::new();
 
-    // Thread A: Live Updates
+    // Thread A: Block Processor (Live Updates)
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let event_tx = event_tx.clone();
         let cancel = cancel.clone();
         async move {
-            live_updates::run(ctx, event_tx, cancel)
+            block_processor::run(ctx, event_tx, cancel)
                 .await
                 .map_err(|e| OrchestratorError::LiveUpdates(e.to_string()))
         }
