@@ -1,13 +1,30 @@
 //! Blob upload/download commands.
+//!
+//! The upload command implements the full track lifecycle:
+//! 1. Encode blob with Reed-Solomon erasure coding
+//! 2. Register track on-chain (requires tape with capacity)
+//! 3. Upload slices to storage nodes
+//! 4. Collect BLS signatures from committee (certification)
+//! 5. Submit CertifyTrack on-chain
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
+use solana_sdk::signature::Signer;
 
+use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
+use tape_api::program::tapedrive::track_pda;
+use tape_core::types::{NodeId, StorageUnits};
+use tape_crypto::Hash;
+use tape_sdk::{
+    discover_committee_addresses, parse_hash, BlobEncoder, CertificationCollector,
+    RpcConfig, TapeClient,
+};
+
+use crate::utils::{get_keypair, resolve_authority, AuthorityType};
 use crate::Context;
-
-use tape_sdk::{discover_committee_addresses, RpcConfig};
 
 /// Minimum slice size to avoid excessive overhead.
 const MIN_SLICE_BYTES: usize = 1024;
@@ -17,16 +34,23 @@ const MAX_SLICE_BYTES: usize = 256 * 1024;
 
 #[derive(Subcommand, Debug)]
 pub enum StorageCommand {
-    /// Upload a file to storage nodes.
+    /// Upload a file to storage nodes with full track registration and certification.
     Upload {
         /// Path to file to upload.
         file: PathBuf,
 
-        /// Custom track ID (generates random if not provided).
-        #[arg(short, long)]
-        track_id: Option<String>,
+        /// Tape authority: pubkey (resolves keypair from ~/.tape/keys/tapes/{pubkey}.json)
+        /// or path to keypair file.
+        #[arg(long, short = 't')]
+        tape: String,
 
-        /// Override storage nodes.
+        /// Custom key hash (hex encoded, 32 bytes).
+        /// If not provided, computed from Blake3 hash of file content.
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Override storage nodes (comma-separated).
+        /// If not provided, auto-discovers from on-chain committee.
         #[arg(long, value_delimiter = ',')]
         nodes: Option<Vec<String>>,
 
@@ -34,9 +58,9 @@ pub enum StorageCommand {
         #[arg(long)]
         max_slice_bytes: Option<usize>,
 
-        /// Also register track on-chain.
+        /// Skip certification step (just register and upload).
         #[arg(long)]
-        register: bool,
+        skip_certify: bool,
     },
 
     /// Download a blob from storage nodes.
@@ -74,15 +98,25 @@ pub enum StorageCommand {
 
 pub async fn execute(ctx: &Context, cmd: StorageCommand) -> Result<()> {
     match cmd {
-        StorageCommand::Upload { file, track_id, nodes, max_slice_bytes, register } => {
-            upload(ctx, file, track_id, nodes, max_slice_bytes, register).await
-        }
-        StorageCommand::Download { track_id, output, nodes, verify } => {
-            download(ctx, &track_id, output, nodes, verify).await
-        }
-        StorageCommand::Verify { track_id, root, nodes } => {
-            verify(ctx, &track_id, &root, nodes).await
-        }
+        StorageCommand::Upload {
+            file,
+            tape,
+            key,
+            nodes,
+            max_slice_bytes,
+            skip_certify,
+        } => upload_with_certification(ctx, file, tape, key, nodes, max_slice_bytes, skip_certify).await,
+        StorageCommand::Download {
+            track_id,
+            output,
+            nodes,
+            verify,
+        } => download(ctx, &track_id, output, nodes, verify).await,
+        StorageCommand::Verify {
+            track_id,
+            root,
+            nodes,
+        } => verify(ctx, &track_id, &root, nodes).await,
     }
 }
 
@@ -151,21 +185,34 @@ async fn resolve_node_addresses(
     )
 }
 
-async fn upload(
+/// Upload a file with full track registration and certification.
+///
+/// This implements the complete flow:
+/// 1. Encode blob with Reed-Solomon erasure coding
+/// 2. Register track on-chain (requires tape with capacity)
+/// 3. Upload slices to storage nodes
+/// 4. Collect BLS signatures from committee (certification)
+/// 5. Submit CertifyTrack on-chain
+async fn upload_with_certification(
     ctx: &Context,
     file: PathBuf,
-    track_id: Option<String>,
+    tape_arg: String,
+    key_arg: Option<String>,
     nodes: Option<Vec<String>>,
     max_slice_bytes: Option<usize>,
-    _register: bool,
+    skip_certify: bool,
 ) -> Result<()> {
-    use tape_crypto::Pubkey;
-    use tape_sdk::TapeClient;
+    use tape_sdk::create_rpc_client;
 
-    // Resolve node addresses (auto-discover or use override/config)
-    let nodes = resolve_node_addresses(ctx, nodes).await?;
+    // 1. Load keypairs and resolve tape authority
+    let fee_payer = get_keypair(ctx)?;
+    let authority_keypair = resolve_authority(&tape_arg, AuthorityType::Tape)?;
+    let authority = authority_keypair.pubkey();
 
-    // Read file
+    ctx.debug(&format!("Fee payer: {}", fee_payer.pubkey()));
+    ctx.debug(&format!("Tape authority: {}", authority));
+
+    // 2. Read file
     let data = tokio::fs::read(&file)
         .await
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
@@ -173,40 +220,232 @@ async fn upload(
     let file_size = data.len();
     let slice_size = max_slice_bytes.unwrap_or_else(|| calculate_slice_size(file_size));
 
-    if !ctx.quiet {
-        eprintln!(
-            "Uploading {} ({} bytes, slice size: {} bytes)...",
-            file.display(),
-            file_size,
-            slice_size
+    // 3. Compute key hash (from argument or file content)
+    let key_hash: Hash = match key_arg {
+        Some(ref key_hex) => parse_hash(key_hex, "key").map_err(|e| anyhow::anyhow!("{}", e))?,
+        None => {
+            // Use Blake3 hash of file content as key
+            tape_crypto::hash::hash(&data)
+        }
+    };
+
+    // 4. Encode blob to get slices with merkle proofs
+    let mut encoder = BlobEncoder::with_max_slice_bytes(slice_size);
+    let (slices_with_proofs, merkle_root) = encoder
+        .encode_with_proofs(data.clone())
+        .context("Failed to encode blob")?;
+
+    // For RegisterTrack, root == commitment when using standard encoding
+    let commitment_hash: Hash = merkle_root.into();
+    let root_hash: Hash = merkle_root.into();
+    let storage_units = StorageUnits::from_bytes(file_size as u64);
+
+    // 5. Create RPC client and verify tape exists with capacity
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let tape = client
+        .get_tape(&authority)
+        .await
+        .context("Failed to fetch tape - ensure tape exists")?;
+
+    // Verify tape has enough capacity
+    let remaining_capacity = tape.capacity.as_u64().saturating_sub(tape.used.as_u64());
+    if storage_units.as_u64() > remaining_capacity {
+        anyhow::bail!(
+            "Tape has insufficient capacity: need {} MB, available {} MB",
+            storage_units.as_u64(),
+            remaining_capacity
         );
     }
 
-    // Generate or use provided track ID
-    let track_id = track_id.unwrap_or_else(|| {
-        let bytes: [u8; 32] = rand::random();
-        Pubkey::new_from_array(bytes).to_string()
-    });
+    // Display upload info
+    if !ctx.quiet {
+        eprintln!("Uploading file:");
+        eprintln!("  File: {}", file.display());
+        eprintln!("  Size: {} bytes ({} MB)", file_size, storage_units);
+        eprintln!("  Slice size: {} bytes", slice_size);
+        eprintln!("  Key: {}", hex::encode(key_hash));
+        eprintln!("  Merkle root: {}", hex::encode(merkle_root));
+        eprintln!("  Tape authority: {}", authority);
+    }
 
-    // Create client and upload
-    let client = TapeClient::builder()
-        .node_addresses(nodes.clone())
+    // Dry run check
+    if ctx.dry_run {
+        println!("Dry run - would upload file with key {}", hex::encode(key_hash));
+        return Ok(());
+    }
+
+    // 6. Register track on-chain
+    if !ctx.quiet {
+        eprintln!();
+        eprintln!("[1/4] Registering track on-chain...");
+    }
+
+    let register_ix = build_register_track_ix(
+        fee_payer.pubkey(),
+        authority,
+        storage_units,
+        root_hash,
+        commitment_hash,
+        key_hash,
+    );
+
+    let register_sig = if fee_payer.pubkey() != authority {
+        client
+            .send_instructions_with_signers(&fee_payer, vec![register_ix], &[&authority_keypair])
+            .await
+            .map_err(|e| anyhow::anyhow!("RegisterTrack failed: {}", e))?
+    } else {
+        client
+            .send_instructions(&fee_payer, vec![register_ix])
+            .await
+            .map_err(|e| anyhow::anyhow!("RegisterTrack failed: {}", e))?
+    };
+
+    if !ctx.quiet {
+        eprintln!("  Transaction: {}", register_sig);
+    }
+
+    // Derive track address for later use
+    let (track_address, _) = track_pda(authority, key_hash);
+
+    // 7. Resolve node addresses and upload slices
+    if !ctx.quiet {
+        eprintln!();
+        eprintln!("[2/4] Uploading slices to storage nodes...");
+    }
+
+    let node_addresses = resolve_node_addresses(ctx, nodes).await?;
+
+    if !ctx.quiet {
+        eprintln!("  Nodes: {}", node_addresses.len());
+    }
+
+    // Use track address as track_id (base58 string)
+    let track_id = track_address.to_string();
+
+    let tape_client = TapeClient::builder()
+        .node_addresses(node_addresses.clone())
         .max_slice_bytes(slice_size)
         .build();
 
-    let root = client
-        .upload_blob(&track_id, data)
+    tape_client
+        .upload_slices(&track_id, slices_with_proofs)
         .await
-        .context("Failed to upload blob")?;
+        .context("Failed to upload slices")?;
 
     if !ctx.quiet {
-        eprintln!("Upload complete!");
-        eprintln!();
+        eprintln!("  Upload complete");
     }
 
-    println!("Track ID: {}", track_id);
-    println!("Merkle Root: {}", hex::encode(root));
-    println!("Nodes: {}", nodes.join(", "));
+    // 8. Collect BLS signatures and certify (unless skipped)
+    let certify_sig = if skip_certify {
+        if !ctx.quiet {
+            eprintln!();
+            eprintln!("[3/4] Skipping certification (--skip-certify)");
+            eprintln!("[4/4] Skipping CertifyTrack (--skip-certify)");
+        }
+        None
+    } else {
+        if !ctx.quiet {
+            eprintln!();
+            eprintln!("[3/4] Collecting BLS signatures from committee...");
+        }
+
+        // Fetch current system state for committee info
+        let system = client
+            .get_system()
+            .await
+            .context("Failed to fetch system state")?;
+
+        // Build map of NodeId -> network address
+        let mut node_address_map: HashMap<NodeId, String> = HashMap::new();
+        for member in system.committee.iter() {
+            if member.id == NodeId(0) {
+                continue;
+            }
+            if let Ok((_, node)) = client.get_node_by_id(member.id).await {
+                if let Ok(socket_addr) = node.metadata.network_address.to_socket_addr() {
+                    node_address_map.insert(member.id, format!("http://{}", socket_addr));
+                }
+            }
+        }
+
+        if node_address_map.is_empty() {
+            anyhow::bail!("No committee members with valid network addresses found");
+        }
+
+        // Collect signatures using CertificationCollector
+        let collector = CertificationCollector::with_defaults();
+        let collected = collector
+            .collect_signatures(&track_address, &system, &node_address_map)
+            .await
+            .context("Failed to collect BLS signatures")?;
+
+        if !ctx.quiet {
+            eprintln!(
+                "  Signatures: {}/{}",
+                collected.signature_count, collected.committee_size
+            );
+            if collected.early_exit {
+                eprintln!("  (early exit - supermajority reached)");
+            }
+        }
+
+        // 9. Submit CertifyTrack instruction
+        if !ctx.quiet {
+            eprintln!();
+            eprintln!("[4/4] Certifying track on-chain...");
+        }
+
+        let certify_ix = build_certify_track_ix(
+            fee_payer.pubkey(),
+            authority,
+            key_hash,
+            collected.bitmap,
+            collected.aggregated_signature,
+        );
+
+        let sig = if fee_payer.pubkey() != authority {
+            client
+                .send_instructions_with_signers(&fee_payer, vec![certify_ix], &[&authority_keypair])
+                .await
+                .map_err(|e| anyhow::anyhow!("CertifyTrack failed: {}", e))?
+        } else {
+            client
+                .send_instructions(&fee_payer, vec![certify_ix])
+                .await
+                .map_err(|e| anyhow::anyhow!("CertifyTrack failed: {}", e))?
+        };
+
+        if !ctx.quiet {
+            eprintln!("  Transaction: {}", sig);
+        }
+
+        Some(sig)
+    };
+
+    // 10. Output final results
+    println!();
+    println!("Upload complete!");
+    println!();
+    println!("Track Details:");
+    println!("  Key: {}", hex::encode(key_hash));
+    println!("  Address: {}", track_address);
+    println!("  Tape authority: {}", authority);
+    println!("  Size: {} bytes ({} MB)", file_size, storage_units);
+    println!("  Merkle Root: {}", hex::encode(merkle_root));
+    if skip_certify {
+        println!("  Status: Registered (not certified)");
+    } else {
+        println!("  Status: Certified");
+    }
+    println!();
+    println!("Transactions:");
+    println!("  RegisterTrack: {}", register_sig);
+    if let Some(sig) = certify_sig {
+        println!("  CertifyTrack: {}", sig);
+    }
 
     Ok(())
 }

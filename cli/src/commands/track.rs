@@ -1,9 +1,8 @@
 //! Track/blob management commands.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use solana_sdk::signature::Signer;
-use solana_sdk::pubkey::Pubkey;
 
 use tape_sdk::{parse_hash, create_rpc_client};
 
@@ -302,15 +301,12 @@ async fn status(ctx: &Context, authority_arg: Option<String>, key: &str) -> Resu
     use tape_api::program::tapedrive::track_pda;
     use tape_core::tape::TrackPhase;
 
-    // For status, authority can be just a pubkey (no signing needed)
-    let authority_pubkey: Pubkey = match authority_arg {
-        Some(auth) => auth.parse()
-            .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
-        None => {
-            let keypair = get_keypair(ctx)?;
-            keypair.pubkey()
-        }
+    // Resolve authority keypair (same as other tape commands)
+    let authority_keypair = match authority_arg {
+        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
+        None => get_keypair(ctx)?,
     };
+    let authority_pubkey = authority_keypair.pubkey();
 
     let key_hash = parse_hash(key, "key").map_err(|e| anyhow::anyhow!("{}", e))?;
     let (track_address, _) = track_pda(authority_pubkey, key_hash);
@@ -365,15 +361,12 @@ async fn status(ctx: &Context, authority_arg: Option<String>, key: &str) -> Resu
 }
 
 async fn list(ctx: &Context, authority_arg: Option<String>) -> Result<()> {
-    // For list, authority can be just a pubkey (no signing needed)
-    let authority_pubkey: Pubkey = match authority_arg {
-        Some(auth) => auth.parse()
-            .with_context(|| format!("Invalid authority pubkey: {}", auth))?,
-        None => {
-            let keypair = get_keypair(ctx)?;
-            keypair.pubkey()
-        }
+    // Resolve authority keypair (same as other tape commands)
+    let authority_keypair = match authority_arg {
+        Some(auth) => resolve_authority(&auth, AuthorityType::Tape)?,
+        None => get_keypair(ctx)?,
     };
+    let authority_pubkey = authority_keypair.pubkey();
 
     if !ctx.quiet {
         eprintln!("Listing tracks for tape authority: {}", authority_pubkey);
