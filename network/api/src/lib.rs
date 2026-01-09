@@ -22,6 +22,8 @@ pub struct SignResponse {
     pub node_id: u64,
     /// Committee member index for bitmap construction.
     pub member_index: u8,
+    /// Epoch number that was signed (for message reconstruction).
+    pub epoch: u64,
 }
 
 /// API version prefix.

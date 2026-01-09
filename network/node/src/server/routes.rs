@@ -21,6 +21,7 @@ use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
 use crate::storage::service::{Compression, SliceMeta, StorageService, TrackInfo};
 use tape_core::bls::BlsPrivateKey;
+use tape_core::cert::CertifyMessage;
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 
@@ -426,10 +427,13 @@ pub async fn get_sign<S: Store>(
         }
     }
 
-    // Sign the track address (32 bytes)
-    // Message format: track_address.as_ref() (32 bytes) - no epoch binding
-    let message = track_address.as_ref();
-    let signature = state.bls_keypair.sign(message).map_err(|e| {
+    // Build certification message with domain separation and epoch binding
+    // Format: DOMAIN_TAG (8) || EPOCH (8 LE) || TRACK_ADDRESS (32) = 48 bytes
+    let current_epoch = state.control_plane.current_epoch();
+    let certify_message = CertifyMessage::new(current_epoch, track_address.to_bytes());
+    let message_bytes = certify_message.to_bytes();
+
+    let signature = state.bls_keypair.sign(&message_bytes).map_err(|e| {
         tracing::error!(error = ?e, "BLS signing failed");
         state
             .metrics
@@ -442,6 +446,7 @@ pub async fn get_sign<S: Store>(
         signature: signature.0.0,
         node_id: node_id.as_u64(),
         member_index,
+        epoch: current_epoch.0,
     };
 
     state

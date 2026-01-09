@@ -88,9 +88,16 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let decompressed_sig = G1Point::try_from(&args.signature.0)
         .map_err(|_| TapeError::BadSignature)?;
 
-    let message = track_address.as_ref();
+    // Build certification message with domain separation and epoch binding
+    // Must match the format used by storage nodes when signing
+    let certify_message = CertifyMessage::new(
+        current_epoch(epoch),
+        track_address.to_bytes(),
+    );
+    let message = certify_message.to_bytes();
+
     verify_aggregate(
-        message,
+        &message,
         &pubkeys,
         &decompressed_sig,
     ).map_err(|_| TapeError::BadSignature)?;
@@ -190,8 +197,9 @@ mod tests {
         signed_indices[0] = MEMBER_COUNT - 1; // non-trivial ordering
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
-        // Aggregate signature for the same post-order members
-        let message = track_address.as_ref();
+        // Build certification message with domain separation and epoch binding
+        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+        let message = certify_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
             .map(|&i| {
@@ -204,7 +212,7 @@ mod tests {
                     .find(|(_, pk)| *pk == member_pk)
                     .expect("matching sk for pk").0
                     .clone();
-                sk.sign(message).unwrap()
+                sk.sign(&message).unwrap()
             })
             .collect();
 

@@ -79,6 +79,14 @@ pub enum CertificationError {
     /// Collection was cancelled.
     #[error("signature collection cancelled")]
     Cancelled,
+
+    /// Nodes returned signatures for different epochs.
+    #[error("epoch mismatch: expected {expected}, got {got} from node {node_id}")]
+    EpochMismatch {
+        expected: u64,
+        got: u64,
+        node_id: NodeId,
+    },
 }
 
 /// Reason why a specific node failed to provide a signature.
@@ -192,6 +200,8 @@ pub struct CollectedSignatures {
     pub signature_count: usize,
     /// Total committee size.
     pub committee_size: usize,
+    /// The epoch that was signed (all responses must agree).
+    pub epoch: u64,
     /// Individual responses (for debugging/verification).
     pub responses: Vec<SignResponse>,
     /// Nodes that failed and why (for diagnostics).
@@ -332,15 +342,43 @@ impl CertificationCollector {
         let mut failures: Vec<(NodeId, NodeSignError)> = Vec::new();
         let mut received = 0;
         let mut early_exit_triggered = false;
+        let mut expected_epoch: Option<u64> = None;
 
         while let Some(node_result) = rx.recv().await {
             received += 1;
 
             match node_result.result {
                 Ok(response) => {
+                    // Verify epoch consistency - all signatures must be for the same epoch
+                    match expected_epoch {
+                        None => {
+                            expected_epoch = Some(response.epoch);
+                            tracing::debug!(epoch = response.epoch, "First signature epoch");
+                        }
+                        Some(expected) if response.epoch != expected => {
+                            // Epoch mismatch - this could happen during epoch transitions
+                            tracing::warn!(
+                                node_id = node_result.node_id.as_u64(),
+                                expected_epoch = expected,
+                                got_epoch = response.epoch,
+                                "Node returned signature for different epoch, skipping"
+                            );
+                            failures.push((
+                                node_result.node_id,
+                                NodeSignError::Other(format!(
+                                    "epoch mismatch: expected {}, got {}",
+                                    expected, response.epoch
+                                )),
+                            ));
+                            continue;
+                        }
+                        Some(_) => {} // Epoch matches, continue
+                    }
+
                     tracing::debug!(
                         node_id = node_result.node_id.as_u64(),
                         member_idx = node_result.member_idx,
+                        epoch = response.epoch,
                         "Got signature from node"
                     );
                     successful.push((node_result.member_idx, node_result.pubkey, response));
@@ -411,11 +449,15 @@ impl CertificationCollector {
         let responses: Vec<SignResponse> =
             successful.into_iter().map(|(_, _, resp)| resp).collect();
 
+        // Epoch should always be Some at this point since we have signatures
+        let epoch = expected_epoch.expect("should have epoch from successful signatures");
+
         Ok(CollectedSignatures {
             aggregated_signature,
             bitmap,
             signature_count: got,
             committee_size,
+            epoch,
             responses,
             failures,
             early_exit: early_exit_triggered,
