@@ -662,17 +662,256 @@ fn get_program_id(log: &str) -> Option<Pubkey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::test_utils::{encode_event, TestTransaction};
     use base64::Engine;
+    use solana_transaction_status::{UiRawMessage, UiTransaction};
     use tape_api::event::EventType;
+    use tape_api::instruction::TapeInstruction;
 
-    // Helper to encode an event as a "Program data:" log line
-    fn encode_event<T: bytemuck::Pod>(event_type: EventType, event: &T) -> String {
-        let mut data = vec![0u8; 8];
-        data[0] = event_type as u8;
-        data.extend_from_slice(bytemuck::bytes_of(event));
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-        format!("Program data: {}", encoded)
+    // -------------------------------------------------------------------------
+    // parse_transaction tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_transaction_advance_epoch() {
+        let event = EpochAdvanced {
+            old_epoch: EpochNumber(5),
+            new_epoch: EpochNumber(6),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+        };
+
+        // AdvanceEpoch has specific account layout, but we only need program ID
+        let tx = TestTransaction::new()
+            .with_instruction(TapeInstruction::AdvanceEpoch, vec![], vec![])
+            .with_event(EventType::EpochAdvanced, &event)
+            .build();
+
+        let result = parse_transaction(&tx).unwrap();
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ParsedInstruction::AdvanceEpoch { event } => {
+                assert_eq!(event.old_epoch, EpochNumber(5));
+                assert_eq!(event.new_epoch, EpochNumber(6));
+            }
+            _ => panic!("Expected AdvanceEpoch"),
+        }
     }
+
+    #[test]
+    fn test_parse_transaction_certify_track() {
+        let track = Pubkey::new_unique();
+
+        let event = TrackCertified {
+            track,
+            epoch: EpochNumber(10),
+            signer_count: [0; 8],
+            signer_weight: [0; 8],
+        };
+
+        // CertifyTrack: account[4] is the track
+        let tx = TestTransaction::new()
+            .with_account(Pubkey::new_unique()) // 0: authority
+            .with_account(Pubkey::new_unique()) // 1: system
+            .with_account(Pubkey::new_unique()) // 2: epoch
+            .with_account(Pubkey::new_unique()) // 3: node
+            .with_account(track)                // 4: track
+            .with_instruction(
+                TapeInstruction::CertifyTrack,
+                vec![0, 1, 2, 3, 4],
+                vec![], // CertifyTrack has no additional data
+            )
+            .with_event(EventType::TrackCertified, &event)
+            .build();
+
+        let result = parse_transaction(&tx).unwrap();
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ParsedInstruction::CertifyTrack {
+                track: t,
+                event: e,
+            } => {
+                assert_eq!(*t, track);
+                assert_eq!(e.epoch, EpochNumber(10));
+            }
+            _ => panic!("Expected CertifyTrack"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transaction_multiple_instructions() {
+        let track = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        let epoch_event = EpochAdvanced {
+            old_epoch: EpochNumber(1),
+            new_epoch: EpochNumber(2),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+        };
+
+        let certify_event = TrackCertified {
+            track,
+            epoch: EpochNumber(2),
+            signer_count: [0; 8],
+            signer_weight: [0; 8],
+        };
+
+        let tx = TestTransaction::new()
+            .with_account(owner)                // 0
+            .with_account(Pubkey::new_unique()) // 1
+            .with_account(Pubkey::new_unique()) // 2
+            .with_account(Pubkey::new_unique()) // 3
+            .with_account(track)                // 4
+            // First instruction: AdvanceEpoch
+            .with_instruction(TapeInstruction::AdvanceEpoch, vec![], vec![])
+            .with_event(EventType::EpochAdvanced, &epoch_event)
+            // Second instruction: CertifyTrack
+            .with_instruction(TapeInstruction::CertifyTrack, vec![0, 1, 2, 3, 4], vec![])
+            .with_event(EventType::TrackCertified, &certify_event)
+            .build();
+
+        let result = parse_transaction(&tx).unwrap();
+
+        assert_eq!(result.len(), 2);
+
+        match &result[0] {
+            ParsedInstruction::AdvanceEpoch { event } => {
+                assert_eq!(event.new_epoch, EpochNumber(2));
+            }
+            _ => panic!("Expected AdvanceEpoch"),
+        }
+
+        match &result[1] {
+            ParsedInstruction::CertifyTrack { track: t, event } => {
+                assert_eq!(*t, track);
+                assert_eq!(event.epoch, EpochNumber(2));
+            }
+            _ => panic!("Expected CertifyTrack"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transaction_failed_tx_skipped() {
+        let event = EpochAdvanced {
+            old_epoch: EpochNumber(5),
+            new_epoch: EpochNumber(6),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+        };
+
+        let tx = TestTransaction::new()
+            .with_instruction(TapeInstruction::AdvanceEpoch, vec![], vec![])
+            .with_event(EventType::EpochAdvanced, &event)
+            .as_failed() // Mark as failed
+            .build();
+
+        // Failed transactions should be detected
+        assert!(is_failed_transaction(&tx));
+
+        // parse_transaction still parses it (filtering happens in parse_block)
+        // But let's verify is_failed_transaction works
+    }
+
+    #[test]
+    fn test_parse_transaction_delete_track_optional_event() {
+        let track = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+
+        // DeleteTrack without event (event is optional)
+        let tx = TestTransaction::new()
+            .with_account(owner)                // 0: owner
+            .with_account(Pubkey::new_unique()) // 1: tape
+            .with_account(track)                // 2: track
+            .with_instruction(TapeInstruction::DeleteTrack, vec![0, 1, 2], vec![])
+            // No event - it's optional
+            .build();
+
+        let result = parse_transaction(&tx).unwrap();
+
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            ParsedInstruction::DeleteTrack {
+                owner: o,
+                track: t,
+                event,
+            } => {
+                assert_eq!(*o, owner);
+                assert_eq!(*t, track);
+                assert!(event.is_none());
+            }
+            _ => panic!("Expected DeleteTrack"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transaction_non_tapedrive_instruction_ignored() {
+        // Create a transaction with a non-tapedrive program
+        let other_program = Pubkey::new_unique();
+
+        let raw_message = UiRawMessage {
+            header: solana_sdk::message::MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 0,
+            },
+            account_keys: vec![other_program.to_string()],
+            recent_blockhash: "11111111111111111111111111111111".to_string(),
+            instructions: vec![UiCompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: bs58::encode(&[0u8]).into_string(),
+                stack_height: None,
+            }],
+            address_table_lookups: None,
+        };
+
+        let ui_tx = UiTransaction {
+            signatures: vec!["sig".to_string()],
+            message: UiMessage::Raw(raw_message),
+        };
+
+        let meta = UiTransactionStatusMeta {
+            err: None,
+            status: Ok(()),
+            fee: 5000,
+            pre_balances: vec![],
+            post_balances: vec![],
+            inner_instructions: OptionSerializer::None,
+            log_messages: OptionSerializer::Some(vec![]),
+            pre_token_balances: OptionSerializer::None,
+            post_token_balances: OptionSerializer::None,
+            rewards: OptionSerializer::None,
+            loaded_addresses: OptionSerializer::None,
+            return_data: OptionSerializer::None,
+            compute_units_consumed: OptionSerializer::None,
+            cost_units: OptionSerializer::None,
+        };
+
+        let tx = EncodedTransactionWithStatusMeta {
+            transaction: EncodedTransaction::Json(ui_tx),
+            meta: Some(meta),
+            version: None,
+        };
+
+        let result = parse_transaction(&tx).unwrap();
+        assert!(result.is_empty()); // Non-tapedrive instructions ignored
+    }
+
+    // -------------------------------------------------------------------------
+    // Original unit tests
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_parse_empty_block() {

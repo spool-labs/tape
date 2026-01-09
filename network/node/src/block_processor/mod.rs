@@ -30,6 +30,8 @@
 
 mod handlers;
 mod parser;
+#[cfg(test)]
+mod test_utils;
 mod worker;
 
 // Re-export the main entry point
