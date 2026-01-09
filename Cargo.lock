@@ -11276,6 +11276,7 @@ name = "tape-sdk"
 version = "0.3.0"
 dependencies = [
  "axum 0.8.8",
+ "bytemuck",
  "futures 0.3.31",
  "hex",
  "rand 0.8.5",
@@ -11285,6 +11286,7 @@ dependencies = [
  "serial_test",
  "solana-sdk",
  "store-memory",
+ "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-metrics",
@@ -11295,6 +11297,7 @@ dependencies = [
  "tape-store",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

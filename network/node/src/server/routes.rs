@@ -14,11 +14,13 @@ use axum::{
 use tape_crypto::Pubkey;
 use store::Store;
 use tape_metrics::OperationTimer;
-use tape_node_api::SlicePayload;
+use tape_node_api::{SlicePayload, SignResponse};
 
+use crate::control_plane::ControlPlane;
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
 use crate::storage::service::{Compression, SliceMeta, StorageService, TrackInfo};
+use tape_core::bls::BlsPrivateKey;
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 
@@ -28,12 +30,17 @@ pub use tape_node_api::{
     HEALTH_PATH as HEALTH_ENDPOINT, INFO_PATH as INFO_ENDPOINT,
     METADATA_PATH as METADATA_ENDPOINT, SLICE_PATH as SLICE_ENDPOINT,
     STATUS_PATH as STATUS_ENDPOINT, SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT,
+    SIGN_PATH as SIGN_ENDPOINT,
 };
 
 /// Shared state for API handlers.
 pub struct ApiState<S: Store = store_rocks::RocksStore> {
     pub metrics: Arc<NodeMetrics>,
     pub service: Arc<StorageService<S>>,
+    /// BLS private key for signing track certifications.
+    pub bls_keypair: Arc<BlsPrivateKey>,
+    /// Control plane for committee membership.
+    pub control_plane: Arc<ControlPlane>,
 }
 
 // Manual Clone impl since Arc<T> is Clone regardless of T
@@ -42,6 +49,8 @@ impl<S: Store> Clone for ApiState<S> {
         Self {
             metrics: self.metrics.clone(),
             service: self.service.clone(),
+            bls_keypair: self.bls_keypair.clone(),
+            control_plane: self.control_plane.clone(),
         }
     }
 }
@@ -55,6 +64,8 @@ pub fn create_router<S: Store + Send + Sync + 'static>(state: ApiState<S>) -> Ro
         .route(METADATA_ENDPOINT, get(get_metadata::<S>).put(put_metadata::<S>))
         // Status
         .route(STATUS_ENDPOINT, get(get_status::<S>))
+        // Certification signature
+        .route(SIGN_ENDPOINT, get(get_sign::<S>))
         // Health check
         .route(HEALTH_ENDPOINT, get(health_check))
         // Node info
@@ -361,6 +372,90 @@ pub async fn get_status<S: Store>(
     }
 }
 
+/// GET /v1/tracks/:track_id/sign
+///
+/// Returns a BLS signature over the track address for certification.
+/// Returns 404 if the node doesn't have any slice data for the track.
+/// Returns 403 if the node is not in the current committee.
+pub async fn get_sign<S: Store>(
+    State(state): State<ApiState<S>>,
+    Path(track_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let timer = OperationTimer::new();
+
+    // Parse track_id to Pubkey (base58)
+    let track_address = parse_track_id(&track_id)?;
+
+    // Check if node is in committee
+    if !state.control_plane.is_in_committee() {
+        state
+            .metrics
+            .record_request("get_sign", "forbidden", timer.elapsed_secs());
+        return Err(ApiError::Unauthorized);
+    }
+
+    // Get our member index for the bitmap
+    let node_id = state.control_plane.our_node_id();
+    let system = state.control_plane.get_system();
+    let member_index = system.committee.index_of(&node_id)
+        .ok_or_else(|| {
+            state
+                .metrics
+                .record_request("get_sign", "error", timer.elapsed_secs());
+            ApiError::Internal("Node is in committee but index_of failed".to_string())
+        })? as u8;
+
+    // Check if we have any slice data for this track
+    // We just need to verify track metadata exists (node has received at least some data)
+    match state.service.get_track_info(track_address) {
+        Ok(Some(_)) => {
+            // We have track info, proceed to sign
+        }
+        Ok(None) => {
+            state
+                .metrics
+                .record_request("get_sign", "not_found", timer.elapsed_secs());
+            return Err(ApiError::TrackNotFound);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to get track info for signing");
+            state
+                .metrics
+                .record_request("get_sign", "error", timer.elapsed_secs());
+            return Err(ApiError::Storage(e.to_string()));
+        }
+    }
+
+    // Sign the track address (32 bytes)
+    // Message format: track_address.as_ref() (32 bytes) - no epoch binding
+    let message = track_address.as_ref();
+    let signature = state.bls_keypair.sign(message).map_err(|e| {
+        tracing::error!(error = ?e, "BLS signing failed");
+        state
+            .metrics
+            .record_request("get_sign", "error", timer.elapsed_secs());
+        ApiError::Internal(format!("BLS signing failed: {:?}", e))
+    })?;
+
+    // Build response
+    let response = SignResponse {
+        signature: signature.0.0,
+        node_id: node_id.as_u64(),
+        member_index,
+    };
+
+    state
+        .metrics
+        .record_request("get_sign", "success", timer.elapsed_secs());
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&response).unwrap_or_default(),
+    )
+        .into_response())
+}
+
 /// GET /v1/health
 pub async fn health_check() -> Response {
     StatusCode::OK.into_response()
@@ -401,7 +496,9 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use rpc_client::prelude::Zeroable;
     use store_memory::MemoryStore;
+    use tape_api::state::{Epoch, Node, System};
     use tape_crypto::Hash;
     use tape_metrics::MetricsRegistry;
     use tape_store::TapeStore;
@@ -409,14 +506,23 @@ mod tests {
 
     fn create_test_state() -> ApiState<MemoryStore> {
         // Initialize metrics for API state (routes need metrics for recording)
-        let registry = match MetricsRegistry::get() {
+        let _registry = match MetricsRegistry::get() {
             Some(r) => r,
             None => MetricsRegistry::init(),
         };
-        let metrics = Arc::new(NodeMetrics::new(registry.prometheus_registry()));
+        let metrics = Arc::new(NodeMetrics::new());
         let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
-        ApiState { metrics, service }
+        // Create a mock BLS keypair
+        let bls_keypair = Arc::new(BlsPrivateKey::from_random());
+
+        // Create a mock control plane with default/zeroed state
+        let system = System::zeroed();
+        let epoch = Epoch::zeroed();
+        let node = Node::zeroed();
+        let control_plane = Arc::new(ControlPlane::new(system, epoch, node));
+
+        ApiState { metrics, service, bls_keypair, control_plane }
     }
 
     #[tokio::test]

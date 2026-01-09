@@ -12,8 +12,10 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::config::NodeConfig;
+use crate::control_plane::ControlPlane;
 use crate::metrics::NodeMetrics;
 use crate::storage::StorageService;
+use tape_core::bls::BlsPrivateKey;
 
 pub use routes::*;
 
@@ -36,6 +38,8 @@ pub struct Server<S: Store = RocksStore> {
     config: NodeConfig,
     metrics: Arc<NodeMetrics>,
     service: Arc<StorageService<S>>,
+    bls_keypair: Arc<BlsPrivateKey>,
+    control_plane: Arc<ControlPlane>,
 }
 
 impl Server<RocksStore> {
@@ -44,11 +48,15 @@ impl Server<RocksStore> {
         config: NodeConfig,
         metrics: Arc<NodeMetrics>,
         service: Arc<StorageService<RocksStore>>,
+        bls_keypair: Arc<BlsPrivateKey>,
+        control_plane: Arc<ControlPlane>,
     ) -> Self {
         Self {
             config,
             metrics,
             service,
+            bls_keypair,
+            control_plane,
         }
     }
 }
@@ -59,11 +67,15 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
         config: NodeConfig,
         metrics: Arc<NodeMetrics>,
         service: Arc<StorageService<S>>,
+        bls_keypair: Arc<BlsPrivateKey>,
+        control_plane: Arc<ControlPlane>,
     ) -> Self {
         Self {
             config,
             metrics,
             service,
+            bls_keypair,
+            control_plane,
         }
     }
 
@@ -72,6 +84,8 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
         let state = routes::ApiState {
             metrics: self.metrics.clone(),
             service: self.service.clone(),
+            bls_keypair: self.bls_keypair.clone(),
+            control_plane: self.control_plane.clone(),
         };
 
         // Merge with observability routes from tape-metrics
@@ -93,6 +107,8 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
         let state = routes::ApiState {
             metrics: self.metrics.clone(),
             service: self.service.clone(),
+            bls_keypair: self.bls_keypair.clone(),
+            control_plane: self.control_plane.clone(),
         };
 
         // Merge with observability routes from tape-metrics

@@ -13,14 +13,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use bytemuck::Zeroable;
 use serial_test::serial;
 use store_memory::MemoryStore;
+use tape_api::state::{Epoch, Node, System};
+use tape_core::bls::BlsPrivateKey;
+use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
 use tape_crypto::Pubkey;
+use tape_node::control_plane::ControlPlane;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
 use tape_sdk::TapeClient;
 use tape_store::TapeStore;
-use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
 use tokio::net::TcpListener;
 
 /// Start a test node on a random port with in-memory storage.
@@ -28,7 +32,20 @@ async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let metrics = Arc::new(NodeMetrics::new());
     let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
-    let state = ApiState { metrics, service };
+    // Create test BLS keypair and control plane with zeroed state
+    let bls_keypair = Arc::new(BlsPrivateKey::from_random());
+    let control_plane = Arc::new(ControlPlane::new(
+        System::zeroed(),
+        Epoch::zeroed(),
+        Node::zeroed(),
+    ));
+
+    let state = ApiState {
+        metrics,
+        service,
+        bls_keypair,
+        control_plane,
+    };
     let app: Router = create_router(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

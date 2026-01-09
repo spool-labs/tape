@@ -34,6 +34,7 @@
 //! let tape = rpc.get_tape_by_number(TapeNumber(42)).await?;
 //! ```
 
+pub mod certification;
 pub mod client;
 pub mod communication;
 pub mod decoder;
@@ -58,6 +59,11 @@ pub use uploader::{DistributedUploader, SliceWithProof};
 
 // Error types
 pub use error::{ClientError, DownloadError, UploadError};
+
+// Certification (BLS signature collection for tracks)
+pub use certification::{
+    CertificationCollector, CertificationConfig, CertificationError, CollectedSignatures,
+};
 
 // Routing
 pub use routing::{RoutingError, SliceRouter};

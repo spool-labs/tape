@@ -9,6 +9,7 @@ use solana_sdk::signer::Signer;
 use store::Store;
 use store_rocks::RocksStore;
 use rpc_client::{RpcConfig, RpcClient};
+use tape_core::bls::BlsPrivateKey;
 use tape_crypto::Pubkey;
 
 use crate::config::NodeConfig;
@@ -21,6 +22,9 @@ use crate::StorageService;
 pub enum ContextError {
     #[error("failed to load keypair: {0}")]
     Keypair(String),
+
+    #[error("failed to load BLS keypair: {0}")]
+    BlsKeypair(String),
 
     #[error("failed to initialize RPC client: {0}")]
     RpcClient(String),
@@ -47,6 +51,8 @@ pub struct NodeContext<S: Store = RocksStore> {
     pub config: Arc<NodeConfig>,
     /// This node's authority keypair.
     pub keypair: Arc<Keypair>,
+    /// BLS private key for committee signing.
+    pub bls_keypair: Arc<BlsPrivateKey>,
     /// Tape RPC client for chain interactions.
     pub rpc: Arc<RpcClient<SolanaRpc>>,
     /// Slice storage service.
@@ -62,19 +68,24 @@ impl NodeContext<RocksStore> {
     ///
     /// This handles:
     /// 1. Loading the Solana keypair
-    /// 2. Creating the RPC client
-    /// 3. Opening RocksDB storage
-    /// 4. Fetching initial on-chain state (System, Epoch, Node)
-    /// 5. Auto-registering node if account doesn't exist
-    /// 6. Initializing the ControlPlane cache
-    /// 7. Initializing metrics
+    /// 2. Loading the BLS keypair
+    /// 3. Creating the RPC client
+    /// 4. Opening RocksDB storage
+    /// 5. Fetching initial on-chain state (System, Epoch, Node)
+    /// 6. Auto-registering node if account doesn't exist
+    /// 7. Initializing the ControlPlane cache
+    /// 8. Initializing metrics
     pub async fn from_config(config: NodeConfig, rpc_url: &str) -> Result<Arc<Self>, ContextError> {
         // 1. Load keypair
         let keypair = load_keypair(&config.node_keypair)?;
         let authority = keypair.pubkey();
         tracing::info!(authority = %authority, "Loaded node keypair");
 
-        // 2. Create RPC client
+        // 2. Load BLS keypair
+        let bls_keypair = load_bls_keypair(&config.bls_keypair)?;
+        tracing::info!("Loaded BLS keypair");
+
+        // 3. Create RPC client
         let rpc_config = RpcConfig {
             endpoints: vec![rpc_url.to_string()],
             ..Default::default()
@@ -82,10 +93,10 @@ impl NodeContext<RocksStore> {
         let rpc = RpcClient::new(rpc_config)
             .map_err(|e| ContextError::RpcClient(e.to_string()))?;
 
-        // 3. Open storage
+        // 4. Open storage
         let storage = StorageService::open(Path::new(&config.storage_path))?;
 
-        // 4. Fetch initial on-chain state
+        // 5. Fetch initial on-chain state
         let system = rpc
             .get_system()
             .await
@@ -96,7 +107,7 @@ impl NodeContext<RocksStore> {
             .await
             .map_err(|e| ContextError::ChainState(format!("Failed to fetch epoch: {}", e)))?;
 
-        // 5. Get or register node
+        // 6. Get or register node
         let node = match rpc.get_node(&authority).await {
             Ok(node) => {
                 tracing::info!(node_id = node.id.as_u64(), "Found existing node account");
@@ -112,15 +123,16 @@ impl NodeContext<RocksStore> {
             }
         };
 
-        // 6. Initialize control plane cache
+        // 7. Initialize control plane cache
         let control_plane = ControlPlane::new(system, epoch, node);
 
-        // 7. Initialize metrics
+        // 8. Initialize metrics
         let metrics = NodeMetrics::new();
 
         Ok(Arc::new(Self {
             config: Arc::new(config),
             keypair: Arc::new(keypair),
+            bls_keypair: Arc::new(bls_keypair),
             rpc: Arc::new(rpc),
             storage: Arc::new(storage),
             control_plane: Arc::new(control_plane),
@@ -136,6 +148,7 @@ impl<S: Store> NodeContext<S> {
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
+        bls_keypair: BlsPrivateKey,
         rpc: RpcClient<SolanaRpc>,
         storage: StorageService<S>,
         control_plane: ControlPlane,
@@ -143,6 +156,7 @@ impl<S: Store> NodeContext<S> {
         Arc::new(Self {
             config: Arc::new(config),
             keypair: Arc::new(keypair),
+            bls_keypair: Arc::new(bls_keypair),
             rpc: Arc::new(rpc),
             storage: Arc::new(storage),
             control_plane: Arc::new(control_plane),
@@ -176,6 +190,28 @@ fn load_keypair(path: &str) -> Result<Keypair, ContextError> {
 
     Keypair::from_bytes(&keypair_json)
         .map_err(|e| ContextError::Keypair(format!("Invalid keypair bytes: {}", e)))
+}
+
+/// Load a BLS private key from a JSON file.
+///
+/// The file should contain a JSON array of 32 bytes.
+fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, ContextError> {
+    let contents = std::fs::read(path)
+        .map_err(|e| ContextError::BlsKeypair(format!("Failed to read BLS keypair file: {}", e)))?;
+
+    let bytes: Vec<u8> = serde_json::from_slice(&contents)
+        .map_err(|e| ContextError::BlsKeypair(format!("Failed to parse BLS keypair JSON: {}", e)))?;
+
+    if bytes.len() != 32 {
+        return Err(ContextError::BlsKeypair(format!(
+            "BLS keypair must be 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
 }
 
 #[cfg(test)]

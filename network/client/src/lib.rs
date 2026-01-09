@@ -15,5 +15,8 @@ pub use builder::NodeClientBuilder;
 pub use client::NodeClient;
 pub use error::NodeError;
 
+// Re-export SignResponse from tape-node-api for convenience
+pub use tape_node_api::SignResponse;
+
 #[cfg(feature = "metrics")]
 pub use metrics::NodeClientMetrics;

@@ -7,7 +7,7 @@ use std::time::Instant;
 use reqwest::Client;
 use url::Url;
 
-use tape_node_api::{SlicePayload, CONTENT_TYPE_WINCODE};
+use tape_node_api::{SlicePayload, SignResponse, CONTENT_TYPE_WINCODE};
 
 use crate::error::NodeError;
 
@@ -284,5 +284,65 @@ impl NodeClient {
         }
 
         Ok(bytes)
+    }
+
+    /// Request a BLS signature for track certification.
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier (base58-encoded pubkey)
+    ///
+    /// # Returns
+    /// * `Ok(SignResponse)` - The signature, node_id, and member_index
+    /// * `Err(NodeError::NotFound)` - Node doesn't have data for this track
+    /// * `Err(NodeError::Unauthorized)` - Node is not in the committee
+    pub async fn get_signature(&self, track_id: &str) -> Result<SignResponse, NodeError> {
+        #[cfg(feature = "metrics")]
+        let start = Instant::now();
+
+        let url = self.base_url
+            .join(&format!("/v1/tracks/{}/sign", track_id))?;
+
+        let response = self.inner
+            .get(url)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("get_signature", "not_found", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::NotFound);
+        }
+
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("get_signature", "unauthorized", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::server_error(status.as_u16(), "Node is not in committee"));
+        }
+
+        if !status.is_success() {
+            let message = response.text().await.unwrap_or_default();
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("get_signature", "error", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::server_error(status.as_u16(), message));
+        }
+
+        let sign_response: SignResponse = response
+            .json()
+            .await
+            .map_err(|e| NodeError::InvalidResponse(format!("Failed to parse SignResponse: {}", e)))?;
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = &self.metrics {
+            metrics.record_request("get_signature", "success", start.elapsed().as_secs_f64());
+        }
+
+        Ok(sign_response)
     }
 }

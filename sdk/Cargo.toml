@@ -14,6 +14,7 @@ metrics = ["tape-node-client/metrics", "tape-metrics/metrics"]
 
 [dependencies]
 # Internal crates
+tape-api = { path = "../api" }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }
@@ -21,6 +22,9 @@ tape-node-client = { workspace = true }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 rpc-client = { path = "../rpc/rpc-client" }
+
+# Logging
+tracing = "0.1"
 
 # Solana (for keypair helpers)
 solana-sdk = { workspace = true }
@@ -52,3 +56,4 @@ tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }
 axum = { workspace = true }
 serial_test = "3.1"
+bytemuck = { workspace = true }

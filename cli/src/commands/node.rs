@@ -300,6 +300,8 @@ async fn start_node(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
         node_config,
         node_ctx.metrics.clone(),
         node_ctx.storage.clone(),
+        node_ctx.bls_keypair.clone(),
+        node_ctx.control_plane.clone(),
     );
 
     let server_handle = server.start()

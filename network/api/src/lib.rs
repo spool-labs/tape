@@ -7,6 +7,23 @@ use serde::{Deserialize, Serialize};
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+// =============================================================================
+// Signature Response Type
+// =============================================================================
+
+/// Response from the signature endpoint.
+///
+/// Returned by GET /v1/tracks/{track_id}/sign
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignResponse {
+    /// BLS signature as raw bytes (32 bytes, compressed G1).
+    pub signature: [u8; 32],
+    /// NodeId of the signing node.
+    pub node_id: u64,
+    /// Committee member index for bitmap construction.
+    pub member_index: u8,
+}
+
 /// API version prefix.
 pub const API_V1: &str = "/v1";
 
@@ -94,6 +111,18 @@ pub const HEALTH_PATH: &str = "/v1/health";
 pub const INFO_PATH: &str = "/v1/info";
 
 // =============================================================================
+// Certification Operations
+// =============================================================================
+
+/// GET endpoint for track signature (BLS certification).
+///
+/// Path parameters:
+/// - `track_id`: The track identifier (base58 pubkey)
+///
+/// Returns: SignResponse with BLS signature, node_id, and member_index
+pub const SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
+
+// =============================================================================
 // Node-to-Node Operations
 // =============================================================================
 
@@ -139,6 +168,11 @@ pub fn status_url(track_id: &str) -> String {
     format!("/v1/tracks/{}/status", track_id)
 }
 
+/// Build a sign endpoint URL for a specific track.
+pub fn sign_url(track_id: &str) -> String {
+    format!("/v1/tracks/{}/sign", track_id)
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -158,6 +192,12 @@ mod tests {
     #[test]
     fn test_status_url() {
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
+    }
+
+    #[test]
+    fn test_sign_url() {
+        assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
+        assert_eq!(sign_url("track_123"), "/v1/tracks/track_123/sign");
     }
 
     #[test]
