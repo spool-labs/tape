@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
+use crate::handlers;
 
 use super::tx_parser::{parse_block, ParsedInstruction};
 
@@ -30,6 +31,9 @@ pub enum LiveUpdateError {
 
     #[error("parse error: {0}")]
     Parse(#[from] super::tx_parser::ParseError),
+
+    #[error("handler error: {0}")]
+    Handler(#[from] handlers::HandlerError),
 
     #[error("event channel closed")]
     ChannelClosed,
@@ -197,6 +201,28 @@ async fn process_instruction(
             ctx.control_plane.update_system(system);
             ctx.control_plane.update_epoch(epoch);
 
+            // Run GC for the epoch that just ended
+            let prev_epoch = EpochNumber(new_epoch.as_u64().saturating_sub(1));
+            let our_spools = ctx.control_plane.get_our_spools();
+
+            match handlers::run_epoch_gc(&ctx.storage.store, prev_epoch, &our_spools) {
+                Ok(stats) => {
+                    if stats.tracks_deleted > 0 || stats.slices_deleted > 0 {
+                        info!(
+                            epoch = prev_epoch.as_u64(),
+                            tracks = stats.tracks_deleted,
+                            slices = stats.slices_deleted,
+                            failed = stats.tracks_failed,
+                            "Epoch GC completed"
+                        );
+                    }
+                    ctx.metrics.gc_runs_total.inc();
+                }
+                Err(e) => {
+                    warn!(epoch = prev_epoch.as_u64(), error = %e, "Epoch GC failed");
+                }
+            }
+
             // Emit event for Thread B
             event_tx
                 .send(NodeEvent::EpochAdvanced { epoch: new_epoch })
@@ -234,7 +260,7 @@ async fn process_instruction(
             track,
             key: _,
             root: _,
-            commitment: _,
+            commitment,
             size,
         } => {
             debug!(
@@ -243,8 +269,14 @@ async fn process_instruction(
                 "Detected RegisterTrack instruction"
             );
 
-            // TODO: Store track info in local database if we're in committee
-            // This helps us know what slices to expect
+            // Store track info in local database
+            if let Err(e) = handlers::handle_register_track(
+                &ctx.storage.store,
+                track.to_bytes(),
+                commitment,
+            ) {
+                warn!(track = %track, error = %e, "Failed to store track info");
+            }
         }
 
         ParsedInstruction::CertifyTrack { track, epoch } => {
@@ -254,19 +286,42 @@ async fn process_instruction(
                 "Detected CertifyTrack instruction"
             );
 
-            // TODO: Update local track state to mark as certified
+            // Mark track as certified in local storage
+            if let Err(e) = handlers::handle_certify_track(
+                &ctx.storage.store,
+                track.to_bytes(),
+                epoch,
+            ) {
+                warn!(track = %track, error = %e, "Failed to mark track certified");
+            }
         }
 
         ParsedInstruction::DeleteTrack { owner: _, track } => {
             debug!(track = %track, "Detected DeleteTrack instruction");
 
-            // TODO: Schedule track data for GC
+            // Schedule track for GC with grace period
+            let current_epoch = ctx.control_plane.current_epoch();
+            if let Err(e) = handlers::handle_delete_track(
+                &ctx.storage.store,
+                track.to_bytes(),
+                current_epoch,
+            ) {
+                warn!(track = %track, error = %e, "Failed to schedule track for GC");
+            }
         }
 
         ParsedInstruction::InvalidateTrack { track } => {
             debug!(track = %track, "Detected InvalidateTrack instruction");
 
-            // TODO: Mark track as invalid, schedule for cleanup
+            // Schedule track for immediate GC
+            let current_epoch = ctx.control_plane.current_epoch();
+            if let Err(e) = handlers::handle_invalidate_track(
+                &ctx.storage.store,
+                track.to_bytes(),
+                current_epoch,
+            ) {
+                warn!(track = %track, error = %e, "Failed to schedule track for GC");
+            }
         }
 
         ParsedInstruction::ReserveTape { owner, tape } => {
@@ -277,7 +332,15 @@ async fn process_instruction(
         ParsedInstruction::DestroyTape { owner: _, tape } => {
             debug!(tape = %tape, "Detected DestroyTape instruction");
 
-            // TODO: Schedule all tracks in tape for GC
+            // Schedule tape for GC
+            let current_epoch = ctx.control_plane.current_epoch();
+            if let Err(e) = handlers::handle_destroy_tape(
+                &ctx.storage.store,
+                tape.to_bytes(),
+                current_epoch,
+            ) {
+                warn!(tape = %tape, error = %e, "Failed to schedule tape for GC");
+            }
         }
 
         ParsedInstruction::RegisterNode { authority, node } => {

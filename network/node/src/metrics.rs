@@ -37,6 +37,9 @@ pub struct NodeMetrics {
     pub slices_recovered_total: IntCounter,
     pub recovery_queue_len: IntGauge,
 
+    // GC metrics
+    pub gc_runs_total: IntCounter,
+
     // Storage metrics
     pub storage_bytes_used: IntGauge,
     pub tracks_stored: IntGauge,
@@ -176,6 +179,13 @@ impl NodeMetrics {
             .register(Box::new(recovery_queue_len.clone()))
             .ok();
 
+        let gc_runs_total = IntCounter::new(
+            "tape_node_gc_runs_total",
+            "Total number of garbage collection runs",
+        )
+        .expect("metric creation should not fail");
+        registry.register(Box::new(gc_runs_total.clone())).ok();
+
         Self {
             request_duration,
             requests_total,
@@ -191,6 +201,7 @@ impl NodeMetrics {
             spools_synced_total,
             slices_recovered_total,
             recovery_queue_len,
+            gc_runs_total,
             storage_bytes_used,
             tracks_stored,
         }

@@ -4,6 +4,8 @@
 //! across multiple column families through atomic batch operations.
 
 mod committee;
+mod gc;
+mod meta;
 mod recovery;
 mod slice;
 mod spool;
@@ -11,6 +13,8 @@ mod stats;
 mod track;
 
 pub use committee::{CommitteeCache, CommitteeMemberInfo, CommitteeOps};
+pub use gc::{delete_track_data, run_epoch_gc, GcEntry, GcOps, GcReason, GcStats};
+pub use meta::MetaOps;
 pub use recovery::{backoff_delay_secs, is_ready_for_retry, RecoveryOps};
 pub use slice::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
 pub use spool::{HandoffInfo, RecoveryInfo, SpoolOps, SpoolState, SpoolStatus};

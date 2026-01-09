@@ -6,6 +6,7 @@ pub mod context;
 pub mod control_plane;
 pub mod error;
 pub mod events;
+pub mod handlers;
 pub mod metrics;
 
 // Submodules

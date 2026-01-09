@@ -72,6 +72,18 @@ pub trait TrackOps {
     /// * `address` - The track address
     /// * `epoch` - The epoch in which it was certified
     fn mark_certified(&self, address: Pubkey, epoch: EpochNumber) -> Result<()>;
+
+    /// Delete track info (for GC)
+    ///
+    /// Removes the track info from storage. This is called during garbage
+    /// collection after all slices for the track have been deleted.
+    ///
+    /// # Arguments
+    /// * `address` - The track address to delete
+    ///
+    /// # Returns
+    /// Ok(true) if the track was deleted, Ok(false) if it didn't exist
+    fn delete_track_info(&self, address: Pubkey) -> Result<bool>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
@@ -112,6 +124,18 @@ impl<S: Store> TrackOps for TapeStore<S> {
         self.put::<Tracks>(&address, &info)?;
 
         Ok(())
+    }
+
+    fn delete_track_info(&self, address: Pubkey) -> Result<bool> {
+        // Check if track exists
+        let exists = self.get::<Tracks>(&address)?.is_some();
+        if !exists {
+            return Ok(false);
+        }
+
+        // Delete the track info
+        self.delete::<Tracks>(&address)?;
+        Ok(true)
     }
 }
 
@@ -194,5 +218,37 @@ mod tests {
 
         let result = store.get_track_info(address).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn delete_track_info_existing() {
+        let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
+        let info = TrackInfo {
+            commitment_hash: Hash::new_unique(),
+            certified_epoch: EpochNumber(0),
+            slice_count: 5,
+        };
+
+        // Create track
+        store.put_track_info(address, info).unwrap();
+        assert!(store.get_track_info(address).unwrap().is_some());
+
+        // Delete returns true (existed)
+        let result = store.delete_track_info(address).unwrap();
+        assert!(result);
+
+        // Track is gone
+        assert!(store.get_track_info(address).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_track_info_nonexistent() {
+        let store = TapeStore::new(MemoryStore::new());
+        let address = Pubkey::new_unique();
+
+        // Delete returns false (didn't exist)
+        let result = store.delete_track_info(address).unwrap();
+        assert!(!result);
     }
 }
