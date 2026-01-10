@@ -113,12 +113,9 @@ pub async fn discover_committee_addresses(
     let mut result = DiscoveryResult::default();
 
     // Iterate over committee members and resolve their network addresses
+    // Note: committee.iter() only returns active members (up to member_count),
+    // so we don't need to filter out empty slots - NodeId(0) is a valid ID.
     for member in system.committee.iter() {
-        // Skip empty slots (NodeId 0 means unoccupied)
-        if member.id == NodeId(0) {
-            continue;
-        }
-
         // Look up Node account by NodeId to get network_address
         match client.get_node_by_id(member.id).await {
             Ok((_pubkey, node)) => {

@@ -69,8 +69,8 @@ pub enum StorageCommand {
         track_id: String,
 
         /// Output file path (stdout if not specified).
-        #[arg(short, long)]
-        output: Option<PathBuf>,
+        #[arg(short = 'O', long = "outfile")]
+        outfile: Option<PathBuf>,
 
         /// Override storage nodes.
         #[arg(long, value_delimiter = ',')]
@@ -108,10 +108,10 @@ pub async fn execute(ctx: &Context, cmd: StorageCommand) -> Result<()> {
         } => upload_with_certification(ctx, file, tape, key, nodes, max_slice_bytes, skip_certify).await,
         StorageCommand::Download {
             track_id,
-            output,
+            outfile,
             nodes,
             verify,
-        } => download(ctx, &track_id, output, nodes, verify).await,
+        } => download(ctx, &track_id, outfile, nodes, verify).await,
         StorageCommand::Verify {
             track_id,
             root,
@@ -361,12 +361,33 @@ async fn upload_with_certification(
         // Build map of NodeId -> network address
         let mut node_address_map: HashMap<NodeId, String> = HashMap::new();
         for member in system.committee.iter() {
-            if member.id == NodeId(0) {
-                continue;
-            }
-            if let Ok((_, node)) = client.get_node_by_id(member.id).await {
-                if let Ok(socket_addr) = node.metadata.network_address.to_socket_addr() {
-                    node_address_map.insert(member.id, format!("http://{}", socket_addr));
+            // committee.iter() only returns active members, so all are valid
+            match client.get_node_by_id(member.id).await {
+                Ok((_, node)) => {
+                    match node.metadata.network_address.to_socket_addr() {
+                        Ok(socket_addr) => {
+                            ctx.debug(&format!(
+                                "Found node {} at {}",
+                                member.id.as_u64(),
+                                socket_addr
+                            ));
+                            node_address_map.insert(member.id, format!("http://{}", socket_addr));
+                        }
+                        Err(e) => {
+                            ctx.debug(&format!(
+                                "Node {} has invalid network address: {}",
+                                member.id.as_u64(),
+                                e
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    ctx.debug(&format!(
+                        "Failed to look up node {}: {}",
+                        member.id.as_u64(),
+                        e
+                    ));
                 }
             }
         }
@@ -453,7 +474,7 @@ async fn upload_with_certification(
 async fn download(
     ctx: &Context,
     track_id: &str,
-    output: Option<PathBuf>,
+    outfile: Option<PathBuf>,
     nodes: Option<Vec<String>>,
     verify: Option<String>,
 ) -> Result<()> {
@@ -503,7 +524,7 @@ async fn download(
         eprintln!("Download complete! ({} bytes)", data.len());
     }
 
-    match output {
+    match outfile {
         Some(path) => {
             tokio::fs::write(&path, &data)
                 .await

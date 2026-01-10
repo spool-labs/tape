@@ -553,7 +553,8 @@ fn parse_raw_instruction(
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
         TapeInstruction::SyncEpoch => {
-            let node = get_account(3)?;
+            // Account order: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=node
+            let node = get_account(4)?;
             let args = ix::SyncEpoch::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             Ok(Some(RawInstruction::SyncEpoch {
@@ -565,7 +566,7 @@ fn parse_raw_instruction(
 
         TapeInstruction::RegisterTrack => {
             let owner = get_account(0)?;
-            let track = get_account(3)?;
+            let track = get_account(4)?; // Account order: 0=fee_payer, 1=authority, 2=epoch, 3=tape, 4=track
             let args = ix::RegisterTrack::try_from_bytes(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             Ok(Some(RawInstruction::RegisterTrack {
@@ -579,13 +580,15 @@ fn parse_raw_instruction(
         }
 
         TapeInstruction::DeleteTrack => {
+            // Account order: 0=fee_payer, 1=authority, 2=tape, 3=track, 4=system, 5=rent
             let owner = get_account(0)?;
-            let track = get_account(2)?;
+            let track = get_account(3)?;
             Ok(Some(RawInstruction::DeleteTrack { owner, track }))
         }
 
         TapeInstruction::CertifyTrack => {
-            let track = get_account(4)?;
+            // Account order: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=tape, 5=track
+            let track = get_account(5)?;
             Ok(Some(RawInstruction::CertifyTrack { track }))
         }
 
@@ -595,25 +598,29 @@ fn parse_raw_instruction(
         }
 
         TapeInstruction::ReserveTape => {
+            // Account order: 0=fee_payer, 1=authority, 2=authority_ata, 3=tape, 4=epoch, 5=archive, 6=archive_ata, 7-9=programs
             let owner = get_account(0)?;
-            let tape = get_account(2)?;
+            let tape = get_account(3)?;
             Ok(Some(RawInstruction::ReserveTape { owner, tape }))
         }
 
         TapeInstruction::DestroyTape => {
+            // Account order: 0=fee_payer, 1=authority, 2=tape, 3=epoch, 4=archive, 5=system
             let owner = get_account(0)?;
-            let tape = get_account(1)?;
+            let tape = get_account(2)?;
             Ok(Some(RawInstruction::DestroyTape { owner, tape }))
         }
 
         TapeInstruction::RegisterNode => {
+            // Account order: 0=fee_payer, 1=authority, 2=system, 3=archive, 4=epoch, 5=node, 6=history, 7-8=programs
             let authority = get_account(0)?;
-            let node = get_account(4)?;
+            let node = get_account(5)?;
             Ok(Some(RawInstruction::RegisterNode { authority, node }))
         }
 
         TapeInstruction::JoinNetwork => {
-            let node = get_account(3)?;
+            // Account order: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=node
+            let node = get_account(4)?;
             Ok(Some(RawInstruction::JoinNetwork { node }))
         }
 
@@ -713,16 +720,18 @@ mod tests {
             signer_weight: [0; 8],
         };
 
-        // CertifyTrack: account[4] is the track
+        // CertifyTrack: account[5] is the track
+        // Account order: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=tape, 5=track
         let tx = TestTransaction::new()
-            .with_account(Pubkey::new_unique()) // 0: authority
-            .with_account(Pubkey::new_unique()) // 1: system
-            .with_account(Pubkey::new_unique()) // 2: epoch
-            .with_account(Pubkey::new_unique()) // 3: node
-            .with_account(track)                // 4: track
+            .with_account(Pubkey::new_unique()) // 0: fee_payer
+            .with_account(Pubkey::new_unique()) // 1: authority
+            .with_account(Pubkey::new_unique()) // 2: system
+            .with_account(Pubkey::new_unique()) // 3: epoch
+            .with_account(Pubkey::new_unique()) // 4: tape
+            .with_account(track)                // 5: track
             .with_instruction(
                 TapeInstruction::CertifyTrack,
-                vec![0, 1, 2, 3, 4],
+                vec![0, 1, 2, 3, 4, 5],
                 vec![], // CertifyTrack has no additional data
             )
             .with_event(EventType::TrackCertified, &event)
@@ -765,17 +774,19 @@ mod tests {
             signer_weight: [0; 8],
         };
 
+        // Account order for CertifyTrack: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=tape, 5=track
         let tx = TestTransaction::new()
-            .with_account(owner)                // 0
-            .with_account(Pubkey::new_unique()) // 1
-            .with_account(Pubkey::new_unique()) // 2
-            .with_account(Pubkey::new_unique()) // 3
-            .with_account(track)                // 4
+            .with_account(owner)                // 0: fee_payer
+            .with_account(Pubkey::new_unique()) // 1: authority
+            .with_account(Pubkey::new_unique()) // 2: system
+            .with_account(Pubkey::new_unique()) // 3: epoch
+            .with_account(Pubkey::new_unique()) // 4: tape
+            .with_account(track)                // 5: track
             // First instruction: AdvanceEpoch
             .with_instruction(TapeInstruction::AdvanceEpoch, vec![], vec![])
             .with_event(EventType::EpochAdvanced, &epoch_event)
             // Second instruction: CertifyTrack
-            .with_instruction(TapeInstruction::CertifyTrack, vec![0, 1, 2, 3, 4], vec![])
+            .with_instruction(TapeInstruction::CertifyTrack, vec![0, 1, 2, 3, 4, 5], vec![])
             .with_event(EventType::TrackCertified, &certify_event)
             .build();
 
@@ -830,11 +841,13 @@ mod tests {
         let owner = Pubkey::new_unique();
 
         // DeleteTrack without event (event is optional)
+        // Account order: 0=fee_payer, 1=authority, 2=tape, 3=track, 4=system, 5=rent
         let tx = TestTransaction::new()
-            .with_account(owner)                // 0: owner
-            .with_account(Pubkey::new_unique()) // 1: tape
-            .with_account(track)                // 2: track
-            .with_instruction(TapeInstruction::DeleteTrack, vec![0, 1, 2], vec![])
+            .with_account(owner)                // 0: fee_payer
+            .with_account(Pubkey::new_unique()) // 1: authority
+            .with_account(Pubkey::new_unique()) // 2: tape
+            .with_account(track)                // 3: track
+            .with_instruction(TapeInstruction::DeleteTrack, vec![0, 1, 2, 3], vec![])
             // No event - it's optional
             .build();
 

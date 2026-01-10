@@ -281,13 +281,10 @@ impl CertificationCollector {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent));
 
         // Spawn tasks for each committee member
+        // Note: committee.iter() only returns active members (up to member_count),
+        // so we don't need to filter out empty slots - NodeId(0) is a valid ID.
         let mut task_count = 0;
         for (member_idx, member) in committee.iter().enumerate() {
-            // Skip empty slots
-            if member.id == NodeId(0) {
-                continue;
-            }
-
             // Look up network address
             let address = match node_addresses.get(&member.id) {
                 Some(addr) => addr.clone(),
