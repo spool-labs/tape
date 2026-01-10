@@ -120,6 +120,9 @@ enum Commands {
         #[command(subcommand)]
         command: commands::network::NetworkCommand,
     },
+
+    /// Local testnet management.
+    Testnet(commands::testnet::TestnetArgs),
 }
 
 /// Execution context with resolved configuration.
@@ -235,5 +238,6 @@ async fn main() -> Result<()> {
         Commands::Db { command } => commands::db::execute(&ctx, command).await,
         Commands::Metrics { command } => commands::metrics::execute(&ctx, command).await,
         Commands::Network { command } => commands::network::execute(&ctx, command).await,
+        Commands::Testnet(args) => commands::testnet::execute(&ctx, args).await,
     }
 }

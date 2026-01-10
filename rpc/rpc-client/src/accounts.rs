@@ -337,7 +337,7 @@ impl<R: Rpc> RpcClient<R> {
     /// # Returns
     /// The Node account address and data, or an error if not found.
     pub async fn get_node_by_id(&self, node_id: NodeId) -> Result<(Pubkey, Node), RpcError> {
-        // Account layout: [discriminator (1 byte)][id (8 bytes)]...
+        // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
         // Filter on both discriminator and id field
         let id_bytes = node_id.as_u64().to_le_bytes();
 
@@ -348,9 +348,9 @@ impl<R: Rpc> RpcClient<R> {
                     0,
                     vec![AccountType::Node as u8],
                 )),
-                // Filter by NodeId at offset 1
+                // Filter by NodeId at offset 8 (after 8-byte discriminator)
                 RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    1,
+                    8,
                     id_bytes.to_vec(),
                 )),
             ]),
@@ -390,7 +390,7 @@ impl<R: Rpc> RpcClient<R> {
     /// # Returns
     /// The Tape account address and data, or an error if not found.
     pub async fn get_tape_by_number(&self, tape_number: TapeNumber) -> Result<(Pubkey, Tape), RpcError> {
-        // Account layout: [discriminator (1 byte)][id (8 bytes)]...
+        // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
         let id_bytes = tape_number.as_u64().to_le_bytes();
 
         let config = RpcProgramAccountsConfig {
@@ -400,9 +400,9 @@ impl<R: Rpc> RpcClient<R> {
                     0,
                     vec![AccountType::Tape as u8],
                 )),
-                // Filter by TapeNumber at offset 1
+                // Filter by TapeNumber at offset 8 (after 8-byte discriminator)
                 RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    1,
+                    8,
                     id_bytes.to_vec(),
                 )),
             ]),
@@ -442,7 +442,7 @@ impl<R: Rpc> RpcClient<R> {
     /// # Returns
     /// The Track account address and data, or an error if not found.
     pub async fn get_track_by_number(&self, track_number: TrackNumber) -> Result<(Pubkey, Track), RpcError> {
-        // Account layout: [discriminator (1 byte)][id (8 bytes)]...
+        // Account layout: [discriminator (8 bytes)][id (8 bytes)]...
         let id_bytes = track_number.as_u64().to_le_bytes();
 
         let config = RpcProgramAccountsConfig {
@@ -452,9 +452,9 @@ impl<R: Rpc> RpcClient<R> {
                     0,
                     vec![AccountType::Track as u8],
                 )),
-                // Filter by TrackNumber at offset 1
+                // Filter by TrackNumber at offset 8 (after 8-byte discriminator)
                 RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                    1,
+                    8,
                     id_bytes.to_vec(),
                 )),
             ]),
