@@ -10,7 +10,7 @@ mod output;
 mod commands;
 mod utils;
 
-use config::{Cluster, ConfigFile};
+use config::{Cluster, ConfigFile, expand_path};
 use output::OutputFormat;
 
 /// Tapedrive distributed storage CLI.
@@ -158,10 +158,7 @@ impl Context {
             .keypair
             .clone()
             .or_else(|| config.default_keypair())
-            .or_else(|| {
-                let default = dirs::home_dir()?.join(".config/solana/id.json");
-                if default.exists() { Some(default) } else { None }
-            });
+            .or_else(|| Some(expand_path("~/.config/solana/id.json")));
 
         // Resolve nodes (CLI > config)
         let nodes = cli
