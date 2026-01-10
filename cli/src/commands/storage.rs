@@ -22,6 +22,7 @@ use tape_sdk::{
     discover_committee_addresses, parse_hash, BlobEncoder, CertificationCollector,
     RpcConfig, TapeClient,
 };
+use rpc_client::Rpc;
 
 use crate::utils::{get_keypair, resolve_authority, AuthorityType};
 use crate::Context;
@@ -40,9 +41,9 @@ pub enum StorageCommand {
         file: PathBuf,
 
         /// Tape authority: pubkey (resolves keypair from ~/.tape/keys/tapes/{pubkey}.json)
-        /// or path to keypair file.
+        /// or path to keypair file. If not provided, auto-creates a new tape.
         #[arg(long, short = 't')]
-        tape: String,
+        tape: Option<String>,
 
         /// Custom key hash (hex encoded, 32 bytes).
         /// If not provided, computed from Blake3 hash of file content.
@@ -105,7 +106,7 @@ pub async fn execute(ctx: &Context, cmd: StorageCommand) -> Result<()> {
             nodes,
             max_slice_bytes,
             skip_certify,
-        } => upload_with_certification(ctx, file, tape, key, nodes, max_slice_bytes, skip_certify).await,
+        } => upload_with_certification(ctx, file, tape.as_deref(), key, nodes, max_slice_bytes, skip_certify).await,
         StorageCommand::Download {
             track_id,
             outfile,
@@ -185,39 +186,105 @@ async fn resolve_node_addresses(
     )
 }
 
-/// Upload a file with full track registration and certification.
-///
-/// This implements the complete flow:
-/// 1. Encode blob with Reed-Solomon erasure coding
-/// 2. Register track on-chain (requires tape with capacity)
-/// 3. Upload slices to storage nodes
-/// 4. Collect BLS signatures from committee (certification)
-/// 5. Submit CertifyTrack on-chain
+async fn create_tape_for_file<R: Rpc>(
+    ctx: &Context,
+    client: &rpc_client::RpcClient<R>,
+    fee_payer: &solana_sdk::signature::Keypair,
+    file_size: usize,
+) -> Result<solana_sdk::signature::Keypair> {
+    use solana_sdk::signature::{Keypair, Signer};
+    use tape_api::helpers::build_authority_with_tokens_ix;
+    use tape_api::instruction::build_reserve_tape_ix;
+    use tape_api::program::tapedrive::tape_pda;
+    use tape_core::types::EpochNumber;
+    use tape_core::types::coin::TAPE;
+    use crate::utils::save_tape_keypair;
+
+    let size_mb = ((file_size as u64 + 1024 * 1024 - 1) / (1024 * 1024)).max(1) + 1;
+
+    let epoch = client.get_epoch().await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch epoch: {}", e))?;
+    let start_epoch = epoch.id.as_u64();
+    let end_epoch = start_epoch + 10;
+
+    let archive = client.get_archive().await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch archive: {}", e))?;
+    let total_cost = archive.storage_price.as_u64()
+        .saturating_mul(size_mb)
+        .saturating_mul(end_epoch - start_epoch);
+
+    let tape_keypair = Keypair::new();
+    let tape_authority = tape_keypair.pubkey();
+    let (tape_address, _) = tape_pda(tape_authority);
+
+    if !ctx.quiet {
+        eprintln!("Auto-creating tape:");
+        eprintln!("  Tape: {}", tape_address);
+        eprintln!("  Size: {} MB", size_mb);
+        eprintln!("  Epochs: {}-{}", start_epoch, end_epoch);
+        eprintln!("  Cost: {} TAPE", TAPE(total_cost));
+    }
+
+    let mut instructions = build_authority_with_tokens_ix(
+        fee_payer.pubkey(),
+        tape_authority,
+        TAPE(total_cost),
+    );
+    instructions.push(build_reserve_tape_ix(
+        fee_payer.pubkey(),
+        tape_authority,
+        StorageUnits(size_mb),
+        EpochNumber(start_epoch),
+        EpochNumber(end_epoch),
+    ));
+
+    let sig = client
+        .send_instructions_with_signers(fee_payer, instructions, &[&tape_keypair])
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create tape: {}", e))?;
+
+    let (_, keypair_path) = save_tape_keypair(&tape_keypair)?;
+
+    if !ctx.quiet {
+        eprintln!("  Transaction: {}", sig);
+        eprintln!("  Keypair saved: {}", keypair_path.display());
+        eprintln!();
+    }
+
+    Ok(tape_keypair)
+}
+
 async fn upload_with_certification(
     ctx: &Context,
     file: PathBuf,
-    tape_arg: String,
+    tape_arg: Option<&str>,
     key_arg: Option<String>,
     nodes: Option<Vec<String>>,
     max_slice_bytes: Option<usize>,
     skip_certify: bool,
 ) -> Result<()> {
+    use solana_sdk::signature::Keypair;
     use tape_sdk::create_rpc_client;
 
-    // 1. Load keypairs and resolve tape authority
     let fee_payer = get_keypair(ctx)?;
-    let authority_keypair = resolve_authority(&tape_arg, AuthorityType::Tape)?;
-    let authority = authority_keypair.pubkey();
-
     ctx.debug(&format!("Fee payer: {}", fee_payer.pubkey()));
-    ctx.debug(&format!("Tape authority: {}", authority));
 
-    // 2. Read file
     let data = tokio::fs::read(&file)
         .await
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
     let file_size = data.len();
+
+    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let authority_keypair: Keypair = if let Some(tape) = tape_arg {
+        resolve_authority(tape, AuthorityType::Tape)?
+    } else {
+        create_tape_for_file(ctx, &client, &fee_payer, file_size).await?
+    };
+    let authority = authority_keypair.pubkey();
+    ctx.debug(&format!("Tape authority: {}", authority));
+
+    // 4. Calculate slice size
     let slice_size = max_slice_bytes.unwrap_or_else(|| calculate_slice_size(file_size));
 
     // 3. Compute key hash (from argument or file content)
@@ -240,9 +307,7 @@ async fn upload_with_certification(
     let root_hash: Hash = merkle_root.into();
     let storage_units = StorageUnits::from_bytes(file_size as u64);
 
-    // 5. Create RPC client and verify tape exists with capacity
-    let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
-
+    // 5. Verify tape exists with capacity
     let tape = client
         .get_tape(&authority)
         .await
