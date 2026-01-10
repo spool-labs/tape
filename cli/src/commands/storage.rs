@@ -484,6 +484,9 @@ async fn upload_with_certification(
             eprintln!("[4/4] Certifying track on-chain...");
         }
 
+        // BLS verification is expensive, request higher compute budget
+        let compute_budget_ix = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
+
         let certify_ix = build_certify_track_ix(
             fee_payer.pubkey(),
             authority,
@@ -494,12 +497,12 @@ async fn upload_with_certification(
 
         let sig = if fee_payer.pubkey() != authority {
             client
-                .send_instructions_with_signers(&fee_payer, vec![certify_ix], &[&authority_keypair])
+                .send_instructions_with_signers(&fee_payer, vec![compute_budget_ix, certify_ix], &[&authority_keypair])
                 .await
                 .map_err(|e| anyhow::anyhow!("CertifyTrack failed: {}", e))?
         } else {
             client
-                .send_instructions(&fee_payer, vec![certify_ix])
+                .send_instructions(&fee_payer, vec![compute_budget_ix, certify_ix])
                 .await
                 .map_err(|e| anyhow::anyhow!("CertifyTrack failed: {}", e))?
         };
