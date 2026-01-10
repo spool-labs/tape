@@ -15,7 +15,7 @@ use output::OutputFormat;
 
 /// Tapedrive distributed storage CLI.
 #[derive(Parser, Debug)]
-#[command(name = "tape")]
+#[command(name = "tapedrive")]
 #[command(author, version, about = "Tapedrive distributed storage CLI")]
 #[command(propagate_version = true)]
 pub struct Cli {
@@ -153,11 +153,15 @@ impl Context {
             .or_else(|| config.get_cluster().ok().flatten())
             .unwrap_or_default();
 
-        // Resolve keypair (CLI > config)
+        // Resolve keypair (CLI > config > default)
         let keypair = cli
             .keypair
             .clone()
-            .or_else(|| config.default_keypair());
+            .or_else(|| config.default_keypair())
+            .or_else(|| {
+                let default = dirs::home_dir()?.join(".config/solana/id.json");
+                if default.exists() { Some(default) } else { None }
+            });
 
         // Resolve nodes (CLI > config)
         let nodes = cli
@@ -210,6 +214,11 @@ impl Context {
     }
 }
 
+fn print_title() {
+    use colored::Colorize;
+    eprintln!("{}", format!("⊙⊙ TAPEDRIVE {}", env!("CARGO_PKG_VERSION")).bold());
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing (use RUST_LOG env var, default to info)
@@ -219,6 +228,8 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    print_title();
 
     let cli = Cli::parse();
     let ctx = Context::new(&cli)?;

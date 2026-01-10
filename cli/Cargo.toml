@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "tape"
+name = "tapedrive"
 path = "src/main.rs"
 
 [dependencies]

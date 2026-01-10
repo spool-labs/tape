@@ -53,7 +53,7 @@ impl Cluster {
 
 impl Default for Cluster {
     fn default() -> Self {
-        Cluster::Devnet
+        Cluster::Localnet
     }
 }
 
