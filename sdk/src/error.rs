@@ -1,5 +1,6 @@
 //! Error types for SDK operations.
 
+use tape_core::spooler::SpoolIndex;
 use tape_node_client::NodeError;
 use thiserror::Error;
 
@@ -75,5 +76,5 @@ pub enum DownloadError {
     Decoding(String),
 
     #[error("invalid slice index: {0}")]
-    InvalidSliceIndex(u16),
+    InvalidSliceIndex(SpoolIndex),
 }

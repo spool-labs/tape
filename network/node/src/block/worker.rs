@@ -269,6 +269,12 @@ async fn process_instruction(
                     .send(NodeEvent::EpochSyncReady { epoch })
                     .await
                     .map_err(|_| BlockProcessorError::ChannelClosed)?;
+
+                // Epoch should now be Active on-chain, trigger pool advancement
+                event_tx
+                    .send(NodeEvent::EpochActive { epoch })
+                    .await
+                    .map_err(|_| BlockProcessorError::ChannelClosed)?;
             }
 
             // Emit event so other workers can track sync progress

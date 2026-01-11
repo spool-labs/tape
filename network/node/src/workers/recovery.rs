@@ -11,6 +11,7 @@
 //! 5. Re-encode to get all slices
 //! 6. Store the target slice
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -117,9 +118,9 @@ async fn process_recovery_queue(
         .unwrap()
         .as_secs() as i64;
 
-    // Resolve committee addresses once per batch (cached by factory for HTTP connections)
-    let addresses = get_committee_addresses(ctx).await?;
-    if addresses.is_empty() {
+    // Build slice → address mapping once per batch using spool assignment
+    let slice_to_address = get_slice_address_mapping(ctx).await?;
+    if slice_to_address.is_empty() {
         return Err(RecoveryError::NoCommittee);
     }
 
@@ -149,7 +150,7 @@ async fn process_recovery_queue(
         let track_pubkey = Pubkey::from(track_address.to_bytes());
 
         // Attempt recovery
-        match recover_slice(ctx, factory, &addresses, spool_idx, track_pubkey).await {
+        match recover_slice(ctx, factory, &slice_to_address, spool_idx, track_pubkey).await {
             Ok(()) => {
                 info!(
                     spool = spool_idx,
@@ -194,7 +195,7 @@ async fn process_recovery_queue(
 async fn recover_slice(
     ctx: &NodeContext,
     factory: &NodeCommunicationFactory,
-    addresses: &[String],
+    slice_to_address: &HashMap<SpoolIndex, String>,
     target_spool_idx: SpoolIndex,
     track_address: Pubkey,
 ) -> Result<(), RecoveryError> {
@@ -207,7 +208,7 @@ async fn recover_slice(
     // Use ParallelDownloader from SDK with client pooling via factory
     let downloader = ParallelDownloader::new(
         track_address.to_string(),
-        addresses.to_vec(),
+        slice_to_address.clone(),
         factory.clone(),
     )
     .exclude_slice(target_spool_idx);
@@ -281,11 +282,15 @@ async fn recover_slice(
 ///
 /// Resolves NodeId -> Node account -> NetworkAddress for each committee member.
 /// Skips empty slots (NodeId 0) and logs warnings for resolution failures.
-async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, RecoveryError> {
+/// Build slice_index → address mapping using spool assignment for proper routing.
+async fn get_slice_address_mapping(ctx: &NodeContext) -> Result<HashMap<SpoolIndex, String>, RecoveryError> {
     let system = ctx.control_plane.get_system();
-    let mut addresses = Vec::new();
+    let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
 
-    for member in system.committee.iter() {
+    // Build member_index → address lookup
+    let mut member_addresses: Vec<Option<String>> = vec![None; 128];
+
+    for (member_idx, member) in system.committee.iter().enumerate() {
         // Skip empty slots (NodeId 0 means unoccupied)
         if member.id == NodeId(0) {
             continue;
@@ -296,7 +301,7 @@ async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, Recov
             Ok((_pubkey, node)) => {
                 match node.metadata.network_address.to_socket_addr() {
                     Ok(addr) => {
-                        addresses.push(format!("http://{}", addr));
+                        member_addresses[member_idx] = Some(format!("http://{}", addr));
                     }
                     Err(e) => {
                         debug!(node_id = member.id.as_u64(), error = %e, "Invalid network address");
@@ -309,7 +314,15 @@ async fn get_committee_addresses(ctx: &NodeContext) -> Result<Vec<String>, Recov
         }
     }
 
-    Ok(addresses)
+    // Build slice_index → address mapping using spool assignment
+    for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+        let member_idx = system.spools.0[slice_idx as usize] as usize;
+        if let Some(ref addr) = member_addresses.get(member_idx).and_then(|a| a.as_ref()) {
+            slice_to_address.insert(slice_idx, addr.to_string());
+        }
+    }
+
+    Ok(slice_to_address)
 }
 
 #[cfg(test)]

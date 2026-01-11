@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::Subcommand;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{
@@ -9,6 +10,8 @@ use tape_api::instruction::{
     build_initialize_mint_ix,
 };
 use rpc_client::{RpcConfig, RpcClient};
+
+use crate::utils::ADVANCE_EPOCH_COMPUTE_UNITS;
 
 use crate::Context;
 
@@ -125,9 +128,11 @@ async fn advance_epoch(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
-    let ix = build_advance_epoch_ix(keypair.pubkey(), keypair.pubkey());
+    let compute_budget_ix =
+        ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_EPOCH_COMPUTE_UNITS);
+    let advance_ix = build_advance_epoch_ix(keypair.pubkey(), keypair.pubkey());
     let sig = client
-        .send_instructions(&keypair, vec![ix])
+        .send_instructions(&keypair, vec![compute_budget_ix, advance_ix])
         .await
         .map_err(|e| anyhow::anyhow!("AdvanceEpoch failed: {}", e))?;
 

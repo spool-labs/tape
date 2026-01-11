@@ -2,6 +2,18 @@
 
 use std::path::PathBuf;
 
+// =============================================================================
+// Compute Budget Constants
+// =============================================================================
+
+/// Compute unit limit for AdvanceEpoch instruction.
+/// D'Hondt spool allocation with many nodes is expensive.
+pub const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
+
+/// Compute unit limit for CertifyTrack instruction.
+/// BLS signature verification is expensive.
+pub const CERTIFY_TRACK_COMPUTE_UNITS: u32 = 1_400_000;
+
 use anyhow::{Context as _, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use solana_sdk::pubkey::Pubkey;

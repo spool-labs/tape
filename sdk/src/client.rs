@@ -5,7 +5,7 @@
 
 pub use tape_api::program::MEMBER_COUNT;
 use tape_core::erasure::SLICE_COUNT;
-use tape_core::spooler::SpoolAssignment;
+use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::Committee;
 use tape_core::types::NetworkAddress;
 use tape_slicer::BlobMerkleRoot;
@@ -122,20 +122,21 @@ impl TapeClient {
     pub async fn download_slices(
         &self,
         track_id: &str,
-    ) -> Result<Vec<(u16, Vec<u8>)>, DownloadError> {
-        // Collect addresses from the router, prefixing with http:// for plain addresses
-        // (NodeClientBuilder defaults to https:// which won't work for plain HTTP nodes)
-        let addresses: Vec<String> = (0..self.router.committee_size())
-            .filter_map(|idx| {
-                self.router.get_cached_address(idx)
-                    .and_then(|addr| addr.to_socket_addr().ok())
-                    .map(|sock| format!("http://{}", sock))
-            })
-            .collect();
+    ) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
+        use std::collections::HashMap;
+
+        // Build slice_index → address mapping using proper spool-based routing
+        let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
+
+        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+            if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
+                slice_to_address.insert(slice_idx, format!("http://{}", sock));
+            }
+        }
 
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
-            addresses,
+            slice_to_address,
             self.node_factory.clone(),
         );
 
@@ -250,24 +251,25 @@ impl TapeClient {
     /// Randomized order ensures load is spread across nodes.
     pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
         use rand::seq::SliceRandom;
+        use std::collections::HashMap;
 
-        // Collect addresses from the router, prefixing with http:// for plain addresses
-        let addresses: Vec<String> = (0..self.router.committee_size())
-            .filter_map(|idx| {
-                self.router.get_cached_address(idx)
-                    .and_then(|addr| addr.to_socket_addr().ok())
-                    .map(|sock| format!("http://{}", sock))
-            })
-            .collect();
+        // Build slice_index → address mapping using proper spool-based routing
+        let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
+
+        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+            if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
+                slice_to_address.insert(slice_idx, format!("http://{}", sock));
+            }
+        }
 
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
-            addresses,
+            slice_to_address,
             self.node_factory.clone(),
         );
 
         // Generate random slice indices to spread load across nodes
-        let mut indices: Vec<u16> = (0..SLICE_COUNT as u16).collect();
+        let mut indices: Vec<SpoolIndex> = (0..SLICE_COUNT as SpoolIndex).collect();
         indices.shuffle(&mut rand::thread_rng());
 
         // Try slices in random order until one responds

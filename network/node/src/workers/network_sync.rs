@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use solana_sdk::signer::Signer;
-use tape_api::instruction::build_epoch_sync_ix;
+use tape_api::instruction::{build_advance_pool_ix, build_epoch_sync_ix};
 use tape_api::program::tapedrive::node_pda;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
@@ -133,6 +133,18 @@ async fn handle_event(
                 );
             }
         }
+
+        NodeEvent::EpochActive { epoch } => {
+            // Epoch has transitioned to Active - submit AdvancePool to contribute
+            // weight toward NextEpochReady transition
+            info!(
+                epoch = epoch.as_u64(),
+                "Epoch is Active, submitting AdvancePool"
+            );
+            if let Err(e) = submit_advance_pool(ctx, epoch).await {
+                error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
+            }
+        }
     }
 
     Ok(())
@@ -254,6 +266,17 @@ async fn handle_epoch_advanced(
         "Local sync complete, waiting for quorum"
     );
 
+    // If previous committee is empty (first epoch or bootstrap), submit immediately
+    // since there's nothing to actually sync from previous owners.
+    if system.committee_prev_empty() {
+        info!(
+            epoch = new_epoch.as_u64(),
+            "Empty previous committee, submitting SyncEpoch immediately"
+        );
+        submit_sync_epoch(ctx, new_epoch).await?;
+        return Ok(());
+    }
+
     // If quorum is already reached (e.g., we're late), check and submit now
     if ctx.control_plane.is_sync_quorum_reached() {
         info!(
@@ -341,6 +364,59 @@ async fn submit_sync_epoch(ctx: &NodeContext, epoch: EpochNumber) -> Result<(), 
         .map_err(|e| NetworkSyncError::Rpc(format!("Failed to submit SyncEpoch: {}", e)))?;
 
     info!(epoch = epoch.as_u64(), "SyncEpoch submitted successfully");
+
+    Ok(())
+}
+
+/// Submit AdvancePool transaction to contribute weight toward NextEpochReady.
+///
+/// This claims staking rewards and adds our spool weight to the epoch state,
+/// helping transition from Active to NextEpochReady when 2/3+ weight is reached.
+async fn submit_advance_pool(
+    ctx: &NodeContext,
+    epoch: EpochNumber,
+) -> Result<(), NetworkSyncError> {
+    // Check if we're in the committee
+    if !ctx.is_in_committee() {
+        debug!(
+            epoch = epoch.as_u64(),
+            "Not in committee, skipping AdvancePool"
+        );
+        return Ok(());
+    }
+
+    let authority = ctx.keypair.pubkey();
+    let (node_address, _) = node_pda(authority);
+
+    let ix = build_advance_pool_ix(authority, authority, node_address);
+
+    info!(
+        epoch = epoch.as_u64(),
+        node = %node_address,
+        "Submitting AdvancePool"
+    );
+
+    // Submit the transaction
+    match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
+        Ok(_) => {
+            info!(epoch = epoch.as_u64(), "AdvancePool submitted successfully");
+        }
+        Err(e) => {
+            // Check if it's AlreadyAdvanced error (0x62) - this is OK
+            let err_str = e.to_string();
+            if err_str.contains("0x62") || err_str.contains("AlreadyAdvanced") {
+                debug!(
+                    epoch = epoch.as_u64(),
+                    "Already advanced for this epoch, skipping"
+                );
+                return Ok(());
+            }
+            return Err(NetworkSyncError::Rpc(format!(
+                "Failed to submit AdvancePool: {}",
+                e
+            )));
+        }
+    }
 
     Ok(())
 }

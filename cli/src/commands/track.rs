@@ -6,7 +6,7 @@ use solana_sdk::signature::Signer;
 
 use tape_sdk::{parse_hash, create_rpc_client};
 
-use crate::utils::{get_keypair, resolve_authority, AuthorityType};
+use crate::utils::{get_keypair, resolve_authority, AuthorityType, CERTIFY_TRACK_COMPUTE_UNITS};
 use crate::Context;
 
 /// Track subcommand arguments with global authority flag.
@@ -273,18 +273,21 @@ async fn certify(
         return Ok(());
     }
 
-    let ix = build_certify_track_ix(fee_payer.pubkey(), authority, key_hash, committee_bitmap, bls_sig);
+    // BLS verification is expensive, request higher compute budget
+    let compute_budget_ix =
+        solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_COMPUTE_UNITS);
+    let certify_ix = build_certify_track_ix(fee_payer.pubkey(), authority, key_hash, committee_bitmap, bls_sig);
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let sig = if fee_payer.pubkey() != authority {
         client
-            .send_instructions_with_signers(&fee_payer, vec![ix], &[&authority_keypair])
+            .send_instructions_with_signers(&fee_payer, vec![compute_budget_ix, certify_ix], &[&authority_keypair])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     } else {
         client
-            .send_instructions(&fee_payer, vec![ix])
+            .send_instructions(&fee_payer, vec![compute_budget_ix, certify_ix])
             .await
             .map_err(|e| anyhow::anyhow!("Transaction failed: {}", e))?
     };

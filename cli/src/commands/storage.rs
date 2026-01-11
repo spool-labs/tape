@@ -24,7 +24,7 @@ use tape_sdk::{
 };
 use rpc_client::Rpc;
 
-use crate::utils::{get_keypair, resolve_authority, AuthorityType};
+use crate::utils::{get_keypair, resolve_authority, AuthorityType, CERTIFY_TRACK_COMPUTE_UNITS};
 use crate::Context;
 
 /// Minimum slice size to avoid excessive overhead.
@@ -510,7 +510,7 @@ async fn upload_with_certification(
         }
 
         // BLS verification is expensive, request higher compute budget
-        let compute_budget_ix = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
+        let compute_budget_ix = solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_COMPUTE_UNITS);
 
         let certify_ix = build_certify_track_ix(
             fee_payer.pubkey(),

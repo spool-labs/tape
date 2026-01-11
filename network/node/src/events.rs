@@ -52,4 +52,11 @@ pub enum NodeEvent {
         /// The epoch we're ready to sync.
         epoch: EpochNumber,
     },
+
+    /// Epoch has transitioned to Active state (sync quorum reached on-chain).
+    /// Triggers pool advancement for the previous epoch.
+    EpochActive {
+        /// The epoch that is now active.
+        epoch: EpochNumber,
+    },
 }

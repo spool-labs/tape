@@ -1,9 +1,10 @@
 //! Parallel downloader for slice retrieval.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
+use tape_core::spooler::SpoolIndex;
 use tokio::sync::Semaphore;
 
 use crate::communication::NodeCommunicationFactory;
@@ -17,28 +18,29 @@ const DEFAULT_CONCURRENCY: usize = 64;
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
     track_id: String,
-    node_addresses: Vec<String>,
+    /// Maps slice_index → node address (for proper spool-based routing)
+    slice_to_address: HashMap<SpoolIndex, String>,
     factory: NodeCommunicationFactory,
     concurrency: usize,
     /// Slice indices to exclude from downloads (e.g., for recovery).
-    exclude_slices: HashSet<u16>,
+    exclude_slices: HashSet<SpoolIndex>,
 }
 
 impl ParallelDownloader {
-    /// Create a new downloader with default concurrency (64).
+    /// Create a new downloader with spool-based routing.
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `node_addresses` - List of node addresses for the committee
+    /// * `slice_to_address` - Map of slice_index → node address (from spool assignment)
     /// * `factory` - Factory for creating node clients
     pub fn new(
         track_id: String,
-        node_addresses: Vec<String>,
+        slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
     ) -> Self {
         Self {
             track_id,
-            node_addresses,
+            slice_to_address,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
             exclude_slices: HashSet::new(),
@@ -48,13 +50,13 @@ impl ParallelDownloader {
     /// Create a new downloader with custom concurrency limit.
     pub fn with_concurrency(
         track_id: String,
-        node_addresses: Vec<String>,
+        slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
         concurrency: usize,
     ) -> Self {
         Self {
             track_id,
-            node_addresses,
+            slice_to_address,
             factory,
             concurrency,
             exclude_slices: HashSet::new(),
@@ -66,13 +68,13 @@ impl ParallelDownloader {
     /// This is useful for recovery scenarios where you need to reconstruct
     /// a specific slice and want to avoid requesting it from nodes that
     /// don't have it.
-    pub fn with_excluded_slices(mut self, exclude: impl IntoIterator<Item = u16>) -> Self {
+    pub fn with_excluded_slices(mut self, exclude: impl IntoIterator<Item = SpoolIndex>) -> Self {
         self.exclude_slices = exclude.into_iter().collect();
         self
     }
 
     /// Exclude a single slice from downloads.
-    pub fn exclude_slice(mut self, slice_idx: u16) -> Self {
+    pub fn exclude_slice(mut self, slice_idx: SpoolIndex) -> Self {
         self.exclude_slices.insert(slice_idx);
         self
     }
@@ -82,12 +84,11 @@ impl ParallelDownloader {
     /// Requests slices in parallel (up to concurrency limit) and returns
     /// as soon as enough are collected. Respects any excluded slices set
     /// via [`with_excluded_slices`] or [`exclude_slice`].
-    pub async fn download_enough_slices(&self) -> Result<Vec<(u16, Vec<u8>)>, DownloadError> {
-        if self.node_addresses.is_empty() {
+    pub async fn download_enough_slices(&self) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
+        if self.slice_to_address.is_empty() {
             return Err(DownloadError::NoNodesAvailable);
         }
 
-        let num_nodes = self.node_addresses.len();
         let mut collected_slices = Vec::with_capacity(DATA_SLICES);
         let mut futures = FuturesUnordered::new();
 
@@ -95,13 +96,16 @@ impl ParallelDownloader {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
 
         // Request all slices in parallel (bounded by semaphore), skipping excluded
-        for slice_idx in 0..SLICE_COUNT as u16 {
+        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
             if self.exclude_slices.contains(&slice_idx) {
                 continue;
             }
 
-            let node_idx = slice_idx as usize % num_nodes;
-            let address = self.node_addresses[node_idx].clone();
+            // Use spool-based routing: look up the correct node for this slice
+            let address = match self.slice_to_address.get(&slice_idx) {
+                Some(addr) => addr.clone(),
+                None => continue, // Skip slices without a known node
+            };
             let factory = self.factory.clone();
             let track_id = self.track_id.clone();
             let sem = semaphore.clone();
@@ -145,14 +149,9 @@ impl ParallelDownloader {
     }
 
     /// Download a specific slice.
-    pub async fn download_slice(&self, slice_idx: u16) -> Result<Vec<u8>, DownloadError> {
-        if self.node_addresses.is_empty() {
-            return Err(DownloadError::NoNodesAvailable);
-        }
-
-        let num_nodes = self.node_addresses.len();
-        let node_idx = slice_idx as usize % num_nodes;
-        let address = &self.node_addresses[node_idx];
+    pub async fn download_slice(&self, slice_idx: SpoolIndex) -> Result<Vec<u8>, DownloadError> {
+        let address = self.slice_to_address.get(&slice_idx)
+            .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
         let client = self.factory.client_for_address(address)?;
         let data = client.get_slice(&self.track_id, slice_idx).await?;
@@ -165,12 +164,18 @@ impl ParallelDownloader {
 mod tests {
     use super::*;
 
+    fn make_slice_map(addrs: &[&str]) -> HashMap<SpoolIndex, String> {
+        addrs.iter().enumerate()
+            .map(|(i, addr)| (i as SpoolIndex, addr.to_string()))
+            .collect()
+    }
+
     #[test]
     fn test_downloader_creation() {
         let factory = NodeCommunicationFactory::new();
-        let nodes = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
+        let slice_map = make_slice_map(&["localhost:8080", "localhost:8081"]);
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), nodes, factory);
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory);
 
         // Just verify it creates without panic
         assert_eq!(downloader.track_id, "track_123");
@@ -180,9 +185,9 @@ mod tests {
     #[test]
     fn test_downloader_with_exclusions() {
         let factory = NodeCommunicationFactory::new();
-        let nodes = vec!["localhost:8080".to_string()];
+        let slice_map = make_slice_map(&["localhost:8080"]);
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), nodes, factory)
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory)
             .exclude_slice(42)
             .exclude_slice(100);
 
@@ -194,10 +199,10 @@ mod tests {
     #[test]
     fn test_downloader_with_excluded_slices_iter() {
         let factory = NodeCommunicationFactory::new();
-        let nodes = vec!["localhost:8080".to_string()];
-        let excludes = vec![10, 20, 30];
+        let slice_map = make_slice_map(&["localhost:8080"]);
+        let excludes: Vec<SpoolIndex> = vec![10, 20, 30];
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), nodes, factory)
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory)
             .with_excluded_slices(excludes);
 
         assert_eq!(downloader.exclude_slices.len(), 3);
