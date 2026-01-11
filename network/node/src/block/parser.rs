@@ -1247,27 +1247,24 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_sync_epoch_no_event_needed() {
-        // SyncEpoch gets data from instruction, not event
+    fn test_merge_sync_epoch_with_event() {
+        // SyncEpoch requires NodeSynced event
         let node = Pubkey::new_unique();
-        let instructions = vec![RawInstruction::SyncEpoch {
+        let instructions = vec![RawInstruction::SyncEpoch];
+        let events = vec![TapedriveEvent::NodeSynced(NodeSynced {
             node,
+            id: NodeId::new(1),
             epoch: EpochNumber(5),
             spools_hash: Hash::default(),
-        }];
-        let events = vec![]; // SyncEpoch doesn't need event
+        })];
 
         let merged = merge_instructions_and_events(instructions, events).unwrap();
 
         assert_eq!(merged.len(), 1);
         match &merged[0] {
-            ParsedInstruction::SyncEpoch {
-                node: n,
-                epoch,
-                ..
-            } => {
-                assert_eq!(*n, node);
-                assert_eq!(*epoch, EpochNumber(5));
+            ParsedInstruction::SyncEpoch { event } => {
+                assert_eq!(event.node, node);
+                assert_eq!(event.epoch, EpochNumber(5));
             }
             _ => panic!("Expected SyncEpoch"),
         }

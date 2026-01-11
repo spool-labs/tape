@@ -36,6 +36,12 @@ pub enum ApiError {
 
     #[error("storage error: {0}")]
     Storage(String),
+
+    #[error("merkle proof verification failed")]
+    MerkleVerificationFailed,
+
+    #[error("incomplete slice data for signing")]
+    IncompleteSliceData,
 }
 
 impl IntoResponse for ApiError {
@@ -51,6 +57,8 @@ impl IntoResponse for ApiError {
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Serialization(_) => StatusCode::BAD_REQUEST,
             ApiError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::MerkleVerificationFailed => StatusCode::BAD_REQUEST,
+            ApiError::IncompleteSliceData => StatusCode::PRECONDITION_FAILED,
         };
 
         (status, self.to_string()).into_response()

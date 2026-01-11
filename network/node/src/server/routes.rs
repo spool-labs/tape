@@ -19,7 +19,7 @@ use tape_node_api::{SlicePayload, SignResponse};
 use crate::control_plane::ControlPlane;
 use crate::error::ApiError;
 use crate::metrics::NodeMetrics;
-use crate::storage::service::{Compression, SliceMeta, StorageService, TrackInfo};
+use crate::storage::service::{Compression, SliceMeta, StorageService, TrackInfo, MERKLE_HEIGHT};
 use crate::sync::types::{
     SignedSyncRequest, SyncSlice, SyncSpoolRequest, SyncSpoolResponse, track_id_from_pubkey,
 };
@@ -27,6 +27,7 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::cert::CertifyMessage;
 use tape_core::types::EpochNumber;
 use tape_crypto::ed25519::sig_verify;
+use tape_crypto::merkle::verify_proof;
 use tape_crypto::Hash;
 use tape_store::ops::SliceOps;
 
@@ -149,6 +150,18 @@ pub async fn put_slice<S: Store>(
         return Err(ApiError::InvalidSliceIndex);
     }
 
+    // Verify spool ownership - only accept slices for spools we're assigned to
+    let spool_idx = slice_index; // slice_index == spool_index by definition
+    if !state.control_plane.owns_spool(spool_idx) {
+        state
+            .metrics
+            .record_request("put_slice", "not_responsible", timer.elapsed_secs());
+        return Err(ApiError::NotResponsible);
+    }
+
+    // Parse track_id to Pubkey (needed early for metadata lookup)
+    let track_address = parse_track_id(&track_id)?;
+
     // Deserialize SlicePayload from wincode
     let payload = SlicePayload::from_bytes(&body).map_err(|e| {
         state
@@ -165,9 +178,24 @@ pub async fn put_slice<S: Store>(
         return Err(ApiError::InvalidBody("slice too large".into()));
     }
 
-    // Parse track_id to Pubkey
-    let track_address = parse_track_id(&track_id)?;
-    let spool_idx = slice_index; // Always identical by definition
+    // If track metadata exists (commitment_hash uploaded), verify merkle proof
+    if let Ok(Some(track_info)) = state.service.get_track_info(track_address) {
+        // Verify the merkle proof against the stored commitment (merkle root)
+        let is_valid = verify_proof(
+            &payload.data,
+            &track_info.commitment_hash,
+            &payload.merkle_proof,
+            spool_idx as u64,
+            MERKLE_HEIGHT,
+        );
+        if !is_valid {
+            state
+                .metrics
+                .record_request("put_slice", "merkle_failed", timer.elapsed_secs());
+            return Err(ApiError::MerkleVerificationFailed);
+        }
+    }
+    // Note: If no track metadata yet, verification happens at signing time
 
     // Build metadata from payload
     let meta = SliceMeta {
@@ -411,12 +439,9 @@ pub async fn get_sign<S: Store>(
             ApiError::Internal("Node is in committee but index_of failed".to_string())
         })? as u8;
 
-    // Check if we have any slice data for this track
-    // We just need to verify track metadata exists (node has received at least some data)
-    match state.service.get_track_info(track_address) {
-        Ok(Some(_)) => {
-            // We have track info, proceed to sign
-        }
+    // Get track metadata (contains commitment_hash for verification)
+    let track_info = match state.service.get_track_info(track_address) {
+        Ok(Some(info)) => info,
         Ok(None) => {
             state
                 .metrics
@@ -429,6 +454,53 @@ pub async fn get_sign<S: Store>(
                 .metrics
                 .record_request("get_sign", "error", timer.elapsed_secs());
             return Err(ApiError::Storage(e.to_string()));
+        }
+    };
+
+    // Get our assigned spools and verify we have valid slice data for each
+    let our_spools = state.control_plane.get_our_spools();
+    for spool_idx in &our_spools {
+        // Check if we have this slice
+        let (data, meta) = match state.service.get_slice(*spool_idx, track_address) {
+            Ok(Some((d, m))) => (d, m),
+            Ok(None) => {
+                tracing::warn!(
+                    track = %track_id,
+                    spool = spool_idx,
+                    "Missing slice data for owned spool"
+                );
+                state
+                    .metrics
+                    .record_request("get_sign", "incomplete", timer.elapsed_secs());
+                return Err(ApiError::IncompleteSliceData);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, spool = spool_idx, "Failed to get slice for signing");
+                state
+                    .metrics
+                    .record_request("get_sign", "error", timer.elapsed_secs());
+                return Err(ApiError::Storage(e.to_string()));
+            }
+        };
+
+        // Verify merkle proof against commitment_hash
+        let is_valid = verify_proof(
+            &data,
+            &track_info.commitment_hash,
+            &meta.merkle_proof,
+            *spool_idx as u64,
+            MERKLE_HEIGHT,
+        );
+        if !is_valid {
+            tracing::warn!(
+                track = %track_id,
+                spool = spool_idx,
+                "Merkle proof verification failed for slice"
+            );
+            state
+                .metrics
+                .record_request("get_sign", "merkle_failed", timer.elapsed_secs());
+            return Err(ApiError::MerkleVerificationFailed);
         }
     }
 
@@ -620,12 +692,25 @@ mod tests {
     use rpc_client::prelude::Zeroable;
     use store_memory::MemoryStore;
     use tape_api::state::{Epoch, Node, System};
+    use tape_core::spooler::SpoolAssignment;
+    use tape_core::system::{Committee, CommitteeMember};
+    use tape_core::types::{Coin, NodeId, TAPE};
     use tape_crypto::Hash;
     use tape_metrics::MetricsRegistry;
     use tape_store::TapeStore;
     use tower::ServiceExt;
 
+    /// Create test state with zeroed system (no spool ownership).
     fn create_test_state() -> ApiState<MemoryStore> {
+        create_test_state_with_spools(false)
+    }
+
+    /// Create test state where our node owns all spools.
+    fn create_test_state_with_ownership() -> ApiState<MemoryStore> {
+        create_test_state_with_spools(true)
+    }
+
+    fn create_test_state_with_spools(owns_spools: bool) -> ApiState<MemoryStore> {
         // Initialize metrics for API state (routes need metrics for recording)
         let _registry = match MetricsRegistry::get() {
             Some(r) => r,
@@ -637,10 +722,28 @@ mod tests {
         // Create a mock BLS keypair
         let bls_keypair = Arc::new(BlsPrivateKey::from_random());
 
-        // Create a mock control plane with default/zeroed state
-        let system = System::zeroed();
+        // Create a mock control plane
+        let (system, node) = if owns_spools {
+            // Set up a committee with our node owning all spools
+            let mut system = System::zeroed();
+            let mut node = Node::zeroed();
+            node.id = NodeId::new(1);
+
+            // Create committee with our node
+            let mut committee: Committee<128> = Committee::new();
+            let member = CommitteeMember::new(NodeId::new(1), Coin::<TAPE>::new(1000));
+            let _ = committee.try_join(&member);
+            system.committee = committee;
+
+            // Assign all spools to member 0 (our node)
+            system.spools = SpoolAssignment::new([0u8; SLICE_COUNT]);
+
+            (system, node)
+        } else {
+            (System::zeroed(), Node::zeroed())
+        };
+
         let epoch = Epoch::zeroed();
-        let node = Node::zeroed();
         let control_plane = Arc::new(ControlPlane::new(system, epoch, node));
 
         ApiState { metrics, service, bls_keypair, control_plane }
@@ -723,10 +826,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_and_get_slice() {
-        let state = create_test_state();
+        // Use state where our node owns all spools
+        let state = create_test_state_with_ownership();
         let track_id = Pubkey::new_unique().to_string();
 
-        // Create a valid SlicePayload
+        // Create a valid SlicePayload (no track metadata yet, so no merkle verification)
         let payload = SlicePayload::new(
             vec![0xAB; 1024],
             Hash::default(),
@@ -734,7 +838,7 @@ mod tests {
         );
         let body = payload.to_bytes();
 
-        // PUT the slice
+        // PUT the slice - should succeed since we own spool 0 and no metadata exists yet
         let app = create_router(state.clone());
         let response = app
             .oneshot(
@@ -771,8 +875,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_put_slice_invalid_payload() {
+    async fn test_put_slice_not_responsible() {
+        // Use state where our node owns NO spools
         let state = create_test_state();
+        let track_id = Pubkey::new_unique().to_string();
+
+        let payload = SlicePayload::new(
+            vec![0xAB; 1024],
+            Hash::default(),
+            [Hash::default(); tape_node_api::MERKLE_HEIGHT],
+        );
+        let body = payload.to_bytes();
+
+        // PUT should fail with 421 MISDIRECTED_REQUEST
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/v1/tracks/{}/slices/0", track_id))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_put_slice_invalid_payload() {
+        // Use state where our node owns spools, so we test payload validation
+        let state = create_test_state_with_ownership();
         let app = create_router(state);
         let track_id = Pubkey::new_unique().to_string();
 
