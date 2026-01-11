@@ -33,7 +33,12 @@
 //! ```
 
 use rpc_client::{RpcConfig, RpcClient};
+use tape_core::erasure::SLICE_COUNT;
+use tape_core::spooler::SpoolAssignment;
+use tape_core::system::Committee;
+use tape_core::types::network::NetworkAddress;
 use tape_core::types::NodeId;
+use tape_api::program::MEMBER_COUNT;
 use thiserror::Error;
 
 /// Errors that can occur during node discovery.
@@ -167,6 +172,100 @@ pub async fn discover_committee_addresses_required(
     }
 
     Ok(result.addresses)
+}
+
+/// Complete discovery result containing all data needed to build a TapeClient.
+#[derive(Debug)]
+pub struct NetworkState {
+    /// The current committee from on-chain System state.
+    pub committee: Committee<MEMBER_COUNT>,
+
+    /// The current spool assignment from on-chain System state.
+    pub spool_assignment: SpoolAssignment<SLICE_COUNT>,
+
+    /// Successfully resolved node addresses as (member_index, NetworkAddress) pairs.
+    pub node_addresses: Vec<(usize, NetworkAddress)>,
+
+    /// Warnings for nodes that could not be resolved.
+    pub warnings: Vec<String>,
+}
+
+impl NetworkState {
+    /// Returns true if at least one node was discovered.
+    pub fn has_nodes(&self) -> bool {
+        !self.node_addresses.is_empty()
+    }
+
+    /// Returns the number of discovered nodes.
+    pub fn node_count(&self) -> usize {
+        self.node_addresses.len()
+    }
+}
+
+/// Discover complete on-chain state needed to build a TapeClient.
+///
+/// This function fetches:
+/// 1. System account (committee and spool assignment)
+/// 2. For each committee member, the Node account to get network address
+///
+/// # Arguments
+/// * `rpc_config` - RPC configuration for connecting to Solana
+///
+/// # Returns
+/// A `NetworkState` containing committee, spool assignment, resolved
+/// node addresses, and any warnings.
+pub async fn discover_full(
+    rpc_config: &RpcConfig,
+) -> Result<NetworkState, DiscoveryError> {
+    let client = RpcClient::new(rpc_config.clone())
+        .map_err(|e| DiscoveryError::ClientCreation(e.to_string()))?;
+
+    // Fetch system to get committee and spool assignment
+    let system = client
+        .get_system()
+        .await
+        .map_err(|e| DiscoveryError::SystemFetch(e.to_string()))?;
+
+    let mut node_addresses = Vec::new();
+    let mut warnings = Vec::new();
+
+    // Iterate over committee members and resolve their network addresses
+    for (member_idx, member) in system.committee.iter().enumerate() {
+        match client.get_node_by_id(member.id).await {
+            Ok((_pubkey, node)) => {
+                node_addresses.push((member_idx, node.metadata.network_address));
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "Failed to fetch node {} (member {}): {}",
+                    member.id, member_idx, e
+                ));
+            }
+        }
+    }
+
+    Ok(NetworkState {
+        committee: system.committee,
+        spool_assignment: system.spools,
+        node_addresses,
+        warnings,
+    })
+}
+
+/// Discover complete on-chain state, returning an error if no nodes can be resolved.
+///
+/// This is a convenience wrapper around `discover_full` that returns an error
+/// if no nodes are found.
+pub async fn discover_full_required(
+    rpc_config: &RpcConfig,
+) -> Result<NetworkState, DiscoveryError> {
+    let result = discover_full(rpc_config).await?;
+
+    if result.node_addresses.is_empty() {
+        return Err(DiscoveryError::NoActiveNodes);
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

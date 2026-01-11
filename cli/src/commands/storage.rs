@@ -19,7 +19,7 @@ use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::Hash;
 use tape_sdk::{
-    discover_committee_addresses, parse_hash, BlobEncoder, CertificationCollector,
+    discover_full, parse_hash, BlobEncoder, CertificationCollector,
     RpcConfig, TapeClient,
 };
 use rpc_client::Rpc;
@@ -133,49 +133,72 @@ fn calculate_slice_size(data_len: usize) -> usize {
     min_needed.clamp(MIN_SLICE_BYTES, MAX_SLICE_BYTES)
 }
 
-/// Resolve node addresses: prefer explicit override, then auto-discover from on-chain, then config fallback.
-async fn resolve_node_addresses(
+/// Discover on-chain state (committee, spool assignment) and resolve node addresses.
+///
+/// This function always fetches on-chain state, then optionally allows overriding
+/// addresses via explicit nodes or config.
+async fn discover_network_state(
     ctx: &Context,
     explicit_nodes: Option<Vec<String>>,
-) -> Result<Vec<String>> {
-    // 1. Use explicit --nodes if provided
-    if let Some(nodes) = explicit_nodes {
-        if !nodes.is_empty() {
-            return Ok(nodes);
-        }
-    }
+) -> Result<tape_sdk::NetworkState> {
+    use tape_core::types::network::NetworkAddress;
 
-    // 2. Try auto-discovery from on-chain committee (via SDK)
     let rpc_config = RpcConfig {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
 
-    match discover_committee_addresses(&rpc_config).await {
-        Ok(result) => {
-            // Log any warnings
-            for warning in &result.warnings {
-                ctx.debug(warning);
-            }
+    // Always fetch on-chain state for committee and spool assignment
+    let mut result = discover_full(&rpc_config).await
+        .context("Failed to discover on-chain state")?;
 
-            if result.has_nodes() {
-                if !ctx.quiet {
-                    eprintln!("Discovered {} nodes from on-chain committee", result.node_count());
-                }
-                return Ok(result.addresses);
+    // Log any warnings from discovery
+    for warning in &result.warnings {
+        ctx.debug(warning);
+    }
+
+    // Override node addresses if explicit nodes provided
+    if let Some(nodes) = explicit_nodes {
+        if !nodes.is_empty() {
+            if !ctx.quiet {
+                eprintln!("Using {} explicitly specified nodes", nodes.len());
             }
-        }
-        Err(e) => {
-            ctx.debug(&format!("Auto-discovery failed: {}", e));
+            result.node_addresses = nodes
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, addr_str)| {
+                    let addr_str = addr_str.strip_prefix("http://").unwrap_or(&addr_str);
+                    let addr_str = addr_str.strip_prefix("https://").unwrap_or(addr_str);
+                    NetworkAddress::from(addr_str).ok().map(|addr| (idx, addr))
+                })
+                .collect();
+            return Ok(result);
         }
     }
 
-    // 3. Fall back to config
+    // Check if we have discovered addresses
+    if result.has_nodes() {
+        if !ctx.quiet {
+            eprintln!("Discovered {} nodes from on-chain committee", result.node_count());
+        }
+        return Ok(result);
+    }
+
+    // Fall back to config addresses
     if !ctx.nodes.is_empty() {
         if !ctx.quiet {
             eprintln!("Using {} nodes from config", ctx.nodes.len());
         }
-        return Ok(ctx.nodes.clone());
+        result.node_addresses = ctx.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, addr_str)| {
+                let addr_str = addr_str.strip_prefix("http://").unwrap_or(addr_str);
+                let addr_str = addr_str.strip_prefix("https://").unwrap_or(addr_str);
+                NetworkAddress::from(addr_str).ok().map(|addr| (idx, addr))
+            })
+            .collect();
+        return Ok(result);
     }
 
     anyhow::bail!(
@@ -374,23 +397,25 @@ async fn upload_with_certification(
     // Derive track address for later use
     let (track_address, _) = track_pda(authority, key_hash);
 
-    // 7. Resolve node addresses and upload slices
+    // 7. Discover network state and upload slices
     if !ctx.quiet {
         eprintln!();
         eprintln!("[2/4] Uploading slices to storage nodes...");
     }
 
-    let node_addresses = resolve_node_addresses(ctx, nodes).await?;
+    let discovery = discover_network_state(ctx, nodes).await?;
 
     if !ctx.quiet {
-        eprintln!("  Nodes: {}", node_addresses.len());
+        eprintln!("  Nodes: {}", discovery.node_count());
     }
 
     // Use track address as track_id (base58 string)
     let track_id = track_address.to_string();
 
     let tape_client = TapeClient::builder()
-        .node_addresses(node_addresses.clone())
+        .committee(discovery.committee.clone())
+        .spool_assignment(discovery.spool_assignment.clone())
+        .node_addresses(discovery.node_addresses.clone())
         .max_slice_bytes(slice_size)
         .build();
 
@@ -548,15 +573,17 @@ async fn download(
 ) -> Result<()> {
     use tape_sdk::TapeClient;
 
-    // Resolve node addresses (auto-discover or use override/config)
-    let nodes = resolve_node_addresses(ctx, nodes).await?;
+    // Discover network state (committee, spool assignment, node addresses)
+    let discovery = discover_network_state(ctx, nodes).await?;
 
     if !ctx.quiet {
         eprintln!("Downloading track {}...", track_id);
     }
 
     let client = TapeClient::builder()
-        .node_addresses(nodes)
+        .committee(discovery.committee)
+        .spool_assignment(discovery.spool_assignment)
+        .node_addresses(discovery.node_addresses)
         .build();
 
     let data = if let Some(commitment_hex) = verify {
@@ -620,8 +647,8 @@ async fn verify(
 ) -> Result<()> {
     use tape_sdk::{TapeClient, BlobEncoder, BlobMerkleRoot};
 
-    // Resolve node addresses (auto-discover or use override/config)
-    let nodes = resolve_node_addresses(ctx, nodes).await?;
+    // Discover network state (committee, spool assignment, node addresses)
+    let discovery = discover_network_state(ctx, nodes).await?;
 
     // Parse expected root
     let expected_bytes = hex::decode(root)
@@ -641,7 +668,9 @@ async fn verify(
 
     // Download the blob
     let client = TapeClient::builder()
-        .node_addresses(nodes)
+        .committee(discovery.committee)
+        .spool_assignment(discovery.spool_assignment)
+        .node_addresses(discovery.node_addresses)
         .build();
 
     let data = client

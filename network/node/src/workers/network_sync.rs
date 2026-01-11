@@ -152,6 +152,23 @@ async fn handle_epoch_advanced(
         return Ok(());
     }
 
+    // Fetch current epoch state from chain to check if syncing is needed.
+    // In low-quorum scenarios, the epoch may skip directly to NextEpochReady.
+    let epoch = ctx
+        .rpc
+        .get_epoch()
+        .await
+        .map_err(|e| NetworkSyncError::Rpc(format!("Failed to fetch epoch: {}", e)))?;
+
+    if !epoch.state.is_syncing() {
+        info!(
+            epoch = new_epoch.as_u64(),
+            phase = ?epoch.state,
+            "Epoch not in syncing phase, skipping spool sync (low-quorum mode)"
+        );
+        return Ok(());
+    }
+
     // Get current and previous spool assignments
     let system = ctx.control_plane.get_system();
     let our_node_id = ctx.control_plane.our_node_id();

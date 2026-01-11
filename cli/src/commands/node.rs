@@ -940,18 +940,21 @@ async fn blacklist_remove(ctx: &Context, config: Option<PathBuf>, index: u64, pr
 }
 
 async fn health_check(nodes: &[String]) -> Result<()> {
-    use tape_sdk::TapeClient;
+    use tape_sdk::communication::NodeCommunicationFactory;
 
-    let client = TapeClient::builder()
-        .node_addresses(nodes.to_vec())
-        .build();
+    let factory = NodeCommunicationFactory::new();
 
     println!("{:<45} {:>10} {:>10}", "Node", "Status", "Latency");
     println!("{}", "-".repeat(67));
 
     for node in nodes {
         let start = std::time::Instant::now();
-        match client.health_check(node).await {
+        let result = match factory.client_for_address(node) {
+            Ok(client) => client.health_check().await,
+            Err(e) => Err(e.into()),
+        };
+
+        match result {
             Ok(true) => {
                 let latency = start.elapsed();
                 println!(

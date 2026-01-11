@@ -69,7 +69,11 @@ pub use certification::{
 pub use routing::{RoutingError, SliceRouter};
 
 // Discovery (on-chain node address resolution)
-pub use discovery::{discover_committee_addresses, discover_committee_addresses_required, DiscoveryError, DiscoveryResult};
+pub use discovery::{
+    discover_committee_addresses, discover_committee_addresses_required,
+    discover_full, discover_full_required,
+    DiscoveryError, DiscoveryResult, NetworkState,
+};
 
 // Helpers (keypair loading, hash parsing, committee operations)
 pub use helpers::{
