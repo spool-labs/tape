@@ -3,9 +3,12 @@
 //! The control plane maintains a synchronized view of on-chain state
 //! that is updated by Thread A (live updates) as blocks are processed.
 
+use std::collections::HashSet;
 use std::sync::RwLock;
 
 use tape_api::state::{Epoch, Node, System};
+use tape_core::bft::is_supermajority;
+use tape_core::erasure::SLICE_COUNT;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
 
@@ -16,6 +19,64 @@ use tape_core::spooler::SpoolIndex;
 /// Other threads read from it to make decisions.
 pub struct ControlPlane {
     inner: RwLock<ControlPlaneInner>,
+}
+
+/// Tracks sync progress for an epoch transition.
+///
+/// Monitors which nodes have submitted SyncEpoch transactions and their
+/// cumulative spool weight. When supermajority (2/3+) of spools are
+/// covered by synced nodes, we consider the epoch ready for activation.
+#[derive(Clone, Debug)]
+pub struct EpochSyncTracker {
+    /// The epoch being tracked.
+    pub epoch: EpochNumber,
+    /// Set of nodes that have synced for this epoch.
+    synced_nodes: HashSet<NodeId>,
+    /// Cumulative spool weight from synced nodes.
+    cumulative_weight: u64,
+    /// Total weight (SLICE_COUNT).
+    total_weight: u64,
+}
+
+impl EpochSyncTracker {
+    /// Create a new tracker for an epoch.
+    pub fn new(epoch: EpochNumber) -> Self {
+        Self {
+            epoch,
+            synced_nodes: HashSet::new(),
+            cumulative_weight: 0,
+            total_weight: SLICE_COUNT as u64,
+        }
+    }
+
+    /// Record that a node has synced, returning true if quorum was just reached.
+    ///
+    /// If the node was already recorded, this is a no-op and returns false.
+    pub fn record_sync(&mut self, node_id: NodeId, spool_count: u64) -> bool {
+        if self.synced_nodes.insert(node_id) {
+            let was_quorum = self.is_quorum_reached();
+            self.cumulative_weight += spool_count;
+            // Return true only if we just crossed the quorum threshold
+            !was_quorum && self.is_quorum_reached()
+        } else {
+            false
+        }
+    }
+
+    /// Check if supermajority of spools are covered by synced nodes.
+    pub fn is_quorum_reached(&self) -> bool {
+        is_supermajority(self.cumulative_weight, self.total_weight)
+    }
+
+    /// Get the number of synced nodes.
+    pub fn synced_count(&self) -> usize {
+        self.synced_nodes.len()
+    }
+
+    /// Get the current cumulative weight.
+    pub fn cumulative_weight(&self) -> u64 {
+        self.cumulative_weight
+    }
 }
 
 struct ControlPlaneInner {
@@ -31,6 +92,10 @@ struct ControlPlaneInner {
     our_spools: Vec<SpoolIndex>,
     /// Whether we're in the current committee.
     in_committee: bool,
+    /// Tracks sync progress for the current epoch transition.
+    sync_tracker: Option<EpochSyncTracker>,
+    /// Epoch for which we've completed local sync (our own spools).
+    local_sync_complete: Option<EpochNumber>,
 }
 
 impl ControlPlane {
@@ -46,6 +111,8 @@ impl ControlPlane {
                 last_processed_slot: SlotNumber(0),
                 our_spools,
                 in_committee,
+                sync_tracker: None,
+                local_sync_complete: None,
             }),
         }
     }
@@ -134,6 +201,63 @@ impl ControlPlane {
     pub fn set_current_epoch(&self, epoch: EpochNumber) {
         let mut inner = self.inner.write().unwrap();
         inner.epoch.id = epoch;
+    }
+
+    // -------------------------------------------------------------------------
+    // Epoch sync quorum tracking
+    // -------------------------------------------------------------------------
+
+    /// Start tracking sync progress for a new epoch.
+    ///
+    /// Called when an epoch advances and we need to track node syncs.
+    /// Replaces any existing tracker.
+    pub fn start_epoch_sync(&self, epoch: EpochNumber) {
+        let mut inner = self.inner.write().unwrap();
+        inner.sync_tracker = Some(EpochSyncTracker::new(epoch));
+        inner.local_sync_complete = None;
+    }
+
+    /// Record that a node has synced for the current epoch.
+    ///
+    /// Returns true if this sync caused the quorum threshold to be reached.
+    /// Returns false if already recorded, wrong epoch, or quorum already reached.
+    pub fn record_node_sync(&self, epoch: EpochNumber, node_id: NodeId, spool_count: u64) -> bool {
+        let mut inner = self.inner.write().unwrap();
+        if let Some(ref mut tracker) = inner.sync_tracker {
+            if tracker.epoch == epoch {
+                return tracker.record_sync(node_id, spool_count);
+            }
+        }
+        false
+    }
+
+    /// Check if sync quorum has been reached for the current epoch.
+    pub fn is_sync_quorum_reached(&self) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner
+            .sync_tracker
+            .as_ref()
+            .map(|t| t.is_quorum_reached())
+            .unwrap_or(false)
+    }
+
+    /// Get the current sync tracker state (for logging/debugging).
+    pub fn get_sync_tracker(&self) -> Option<EpochSyncTracker> {
+        self.inner.read().unwrap().sync_tracker.clone()
+    }
+
+    /// Mark that we've completed our local sync for an epoch.
+    ///
+    /// This means we've synced all spools we're assigned to from previous owners.
+    pub fn mark_local_sync_complete(&self, epoch: EpochNumber) {
+        let mut inner = self.inner.write().unwrap();
+        inner.local_sync_complete = Some(epoch);
+    }
+
+    /// Check if we've completed our local sync for a given epoch.
+    pub fn is_local_sync_complete(&self, epoch: EpochNumber) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.local_sync_complete == Some(epoch)
     }
 
     // -------------------------------------------------------------------------

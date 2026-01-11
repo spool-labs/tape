@@ -22,7 +22,7 @@ use tape_crypto::Hash;
 use tape_sdk::communication::NodeCommunicationFactory;
 use tape_sdk::downloader::ParallelDownloader;
 use tape_sdk::error::DownloadError;
-use tape_slicer::{BasicSlicer, Slicer, SliceIndex, SLICE_COUNT, MERKLE_HEIGHT};
+use tape_slicer::{build_blob_merkle_tree, BasicSlicer, Slicer, SliceIndex, SLICE_COUNT, MERKLE_HEIGHT};
 use tape_store::ops::{is_ready_for_retry, Compression, RecoveryOps, SliceMeta};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -235,20 +235,33 @@ async fn recover_slice(
         .encode(blob)
         .map_err(|e| RecoveryError::Encode(e.to_string()))?;
 
-    // Find and store the target slice
-    let target_slice = all_slices
-        .iter()
-        .find(|s| *s.index as u16 == target_spool_idx)
-        .ok_or(RecoveryError::InvalidSliceIndex(target_spool_idx))?;
+    // Build merkle tree from all slices for proof generation
+    let merkle_tree = build_blob_merkle_tree(&all_slices);
+
+    // Collect leaves for proof creation (the raw slice data)
+    let leaves: Vec<&[u8]> = all_slices.iter().map(|s| s.data.as_slice()).collect();
+
+    // Create merkle proof for the target slice
+    let proof_vec = merkle_tree
+        .create_proof(&leaves, target_spool_idx as usize)
+        .map_err(|e| RecoveryError::Decode(format!("merkle proof error: {:?}", e)))?;
+
+    // Convert Vec<Hash> to [Hash; MERKLE_HEIGHT]
+    let merkle_proof: [Hash; MERKLE_HEIGHT] = proof_vec
+        .try_into()
+        .map_err(|_| RecoveryError::Decode("invalid merkle proof length".to_string()))?;
+
+    // Get the target slice
+    let target_slice = &all_slices[target_spool_idx as usize];
 
     // Compute leaf hash for the slice
     let leaf_hash = hash_leaf(&target_slice.data);
 
-    // Create minimal metadata for recovered slice
+    // Create metadata for recovered slice with proper merkle proof
     let meta = SliceMeta {
         len: target_slice.data.len() as u32,
         leaf_hash,
-        merkle_proof: [Hash::default(); MERKLE_HEIGHT], // TODO: compute proper proof
+        merkle_proof,
         compression: Compression::None,
         received_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -21,6 +21,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::NodeContext;
 use crate::events::NodeEvent;
+use crate::storage::service::{Compression, SliceMeta};
+use crate::sync::types::{track_id_to_pubkey, SyncSlice};
 use crate::sync::{SpoolSyncHandler, SyncError};
 
 /// Error type for network sync operations.
@@ -115,8 +117,20 @@ async fn handle_event(
         }
 
         NodeEvent::EpochSyncReady { epoch } => {
-            if let Err(e) = submit_sync_epoch(ctx, epoch).await {
-                error!(epoch = epoch.as_u64(), error = %e, "Failed to submit SyncEpoch");
+            // Only submit SyncEpoch if our local sync is complete
+            if ctx.control_plane.is_local_sync_complete(epoch) {
+                info!(
+                    epoch = epoch.as_u64(),
+                    "Quorum reached and local sync complete, submitting SyncEpoch"
+                );
+                if let Err(e) = submit_sync_epoch(ctx, epoch).await {
+                    error!(epoch = epoch.as_u64(), error = %e, "Failed to submit SyncEpoch");
+                }
+            } else {
+                debug!(
+                    epoch = epoch.as_u64(),
+                    "Quorum reached but local sync not complete, waiting..."
+                );
             }
         }
     }
@@ -214,8 +228,23 @@ async fn handle_epoch_advanced(
         debug!(spool = spool_idx, "Scheduling spool for GC");
     }
 
-    // Submit SyncEpoch transaction
-    submit_sync_epoch(ctx, new_epoch).await?;
+    // Mark local sync as complete - we've synced all our new spools
+    // SyncEpoch will be submitted when quorum is reached (EpochSyncReady event)
+    ctx.control_plane.mark_local_sync_complete(new_epoch);
+
+    info!(
+        epoch = new_epoch.as_u64(),
+        "Local sync complete, waiting for quorum"
+    );
+
+    // If quorum is already reached (e.g., we're late), check and submit now
+    if ctx.control_plane.is_sync_quorum_reached() {
+        info!(
+            epoch = new_epoch.as_u64(),
+            "Quorum already reached, submitting SyncEpoch"
+        );
+        submit_sync_epoch(ctx, new_epoch).await?;
+    }
 
     Ok(())
 }
@@ -245,18 +274,17 @@ async fn sync_spool_from_owner(
     // Sync the spool
     let storage = Arc::clone(&ctx.storage);
     let count = sync_handler
-        .sync_spool(spool_idx, from_epoch, &addr.to_string(), |track_id, idx, data| {
+        .sync_spool(spool_idx, from_epoch, &addr.to_string(), |slice: SyncSlice| {
             // Parse track ID and store the slice
-            use std::str::FromStr;
-            let track = tape_crypto::Pubkey::from_str(&track_id)
+            let track = track_id_to_pubkey(&slice.track_id)
                 .map_err(|e| SyncError::Storage(format!("Invalid track ID: {}", e)))?;
 
-            // Create minimal metadata for synced slices
-            let meta = crate::storage::service::SliceMeta {
-                len: data.len() as u32,
-                leaf_hash: tape_crypto::Hash::default(), // TODO: compute from data
-                merkle_proof: [tape_crypto::Hash::default(); crate::storage::service::MERKLE_HEIGHT],
-                compression: crate::storage::service::Compression::None,
+            // Use merkle proofs from sync response
+            let meta = SliceMeta {
+                len: slice.data.len() as u32,
+                leaf_hash: slice.leaf_hash,
+                merkle_proof: slice.merkle_proof,
+                compression: Compression::None,
                 received_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -264,7 +292,7 @@ async fn sync_spool_from_owner(
             };
 
             storage
-                .put_slice(idx, track, data, meta)
+                .put_slice(slice.slice_index, track, slice.data, meta)
                 .map_err(|e| SyncError::Storage(e.to_string()))
         })
         .await?;

@@ -9,7 +9,7 @@ use tape_node_client::{NodeClientBuilder, NodeError};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 
-use super::types::{SyncSpoolRequest, SyncSpoolResponse, TrackId};
+use super::types::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
 
 /// Default batch size for sync requests.
 const DEFAULT_BATCH_SIZE: usize = 1000;
@@ -77,7 +77,7 @@ impl SpoolSyncHandler {
     /// * `spool` - The spool index to sync
     /// * `from_epoch` - The epoch we're syncing from
     /// * `prev_owner_address` - Address of the previous owner node
-    /// * `on_slice` - Callback for each received slice
+    /// * `on_slice` - Callback for each received slice (includes merkle proofs)
     pub async fn sync_spool<F>(
         &self,
         spool: SpoolIndex,
@@ -86,7 +86,7 @@ impl SpoolSyncHandler {
         mut on_slice: F,
     ) -> Result<usize, SyncError>
     where
-        F: FnMut(TrackId, SpoolIndex, Vec<u8>) -> Result<(), SyncError>,
+        F: FnMut(SyncSlice) -> Result<(), SyncError>,
     {
         let _permit = self.permits.acquire().await.map_err(|_| {
             SyncError::Storage("semaphore closed".to_string())
@@ -123,7 +123,7 @@ impl SpoolSyncHandler {
 
             let slices = response.slices();
             for slice in slices {
-                on_slice(slice.track_id.clone(), slice.slice_index, slice.data.clone())?;
+                on_slice(slice.clone())?;
                 total_slices += 1;
             }
 
@@ -157,7 +157,7 @@ impl SpoolSyncHandler {
         on_slice: Arc<F>,
     ) -> Result<usize, SyncError>
     where
-        F: Fn(TrackId, SpoolIndex, Vec<u8>) -> Result<(), SyncError> + Send + Sync + 'static,
+        F: Fn(SyncSlice) -> Result<(), SyncError> + Send + Sync + 'static,
     {
         use futures::stream::{self, StreamExt};
 
@@ -168,8 +168,8 @@ impl SpoolSyncHandler {
 
                 async move {
                     handler
-                        .sync_spool(spool, from_epoch, address.as_str(), |track, idx, data| {
-                            on_slice(track, idx, data)
+                        .sync_spool(spool, from_epoch, address.as_str(), |slice| {
+                            on_slice(slice)
                         })
                         .await
                 }

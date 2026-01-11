@@ -19,10 +19,14 @@ use store_memory::MemoryStore;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
+use tape_core::spooler::SpoolAssignment;
+use tape_core::system::{Committee, CommitteeMember};
+use tape_core::types::{Coin, NetworkAddress, NodeId, TAPE};
 use tape_crypto::Pubkey;
 use tape_node::control_plane::ControlPlane;
 use tape_node::server::routes::{create_router, ApiState};
 use tape_node::{NodeMetrics, StorageService};
+use tape_sdk::client::MEMBER_COUNT;
 use tape_sdk::TapeClient;
 use tape_store::TapeStore;
 use tokio::net::TcpListener;
@@ -68,18 +72,67 @@ async fn start_test_nodes(count: usize) -> Vec<(SocketAddr, tokio::task::JoinHan
     nodes
 }
 
+/// Create a test committee with the specified number of members.
+fn make_test_committee(count: usize) -> Committee<MEMBER_COUNT> {
+    let mut committee = Committee::new();
+    for i in 0..count.min(MEMBER_COUNT) {
+        let member = CommitteeMember::new(
+            NodeId::new(i as u64 + 1),
+            Coin::<TAPE>::new(1000 - i as u64),
+        );
+        let _ = committee.try_join(&member);
+    }
+    committee
+}
+
+/// Create a uniform spool assignment (round-robin across members).
+fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
+    let mut spools = [0u8; SLICE_COUNT];
+    for i in 0..SLICE_COUNT {
+        spools[i] = (i % member_count) as u8;
+    }
+    SpoolAssignment::new(spools)
+}
+
 /// Create a test client with small slice sizes (4 KB instead of 1 MB).
 fn test_client(node_url: String) -> TapeClient {
+    let committee = make_test_committee(1);
+    let assignment = make_uniform_assignment(1);
+
+    // Parse the URL to get the address (strip http:// prefix)
+    let addr_str = node_url.strip_prefix("http://").unwrap_or(&node_url);
+    let addresses = vec![
+        (0, NetworkAddress::from(addr_str).expect("valid network address")),
+    ];
+
     TapeClient::builder()
-        .add_node(node_url)
+        .committee(committee)
+        .spool_assignment(assignment)
+        .node_addresses(addresses)
         .max_slice_bytes(4 * 1024) // 4 KB slices for testing
         .build()
 }
 
 /// Create a test client with multiple nodes.
 fn test_client_multi(node_urls: Vec<String>) -> TapeClient {
+    let num_nodes = node_urls.len();
+    let committee = make_test_committee(num_nodes);
+    let assignment = make_uniform_assignment(num_nodes);
+
+    // Convert URLs to (member_index, NetworkAddress) pairs
+    let addresses: Vec<(usize, NetworkAddress)> = node_urls
+        .iter()
+        .enumerate()
+        .map(|(idx, url)| {
+            let addr_str = url.strip_prefix("http://").unwrap_or(url);
+            (idx, NetworkAddress::from(addr_str).expect("valid network address"))
+        })
+        .collect();
+
     TapeClient::builder()
-        .node_addresses(node_urls)
+        .committee(committee)
+        .spool_assignment(assignment)
+        .node_addresses(addresses)
         .max_slice_bytes(4 * 1024)
         .build()
 }
@@ -223,13 +276,19 @@ async fn test_slice_not_found() {
 /// Test that the builder correctly sets max_slice_bytes.
 #[tokio::test]
 async fn test_client_builder() {
+    let committee = make_test_committee(1);
+    let assignment = make_uniform_assignment(1);
+    let addr = NetworkAddress::from("127.0.0.1:8080").unwrap();
+
     let client = TapeClient::builder()
-        .add_node("http://localhost:8080")
+        .committee(committee)
+        .spool_assignment(assignment)
+        .add_node(0, addr)
         .max_slice_bytes(4 * 1024)
         .build();
 
     assert_eq!(client.max_slice_bytes(), 4 * 1024);
-    assert_eq!(client.node_addresses().len(), 1);
+    assert_eq!(client.committee_size(), 1);
 }
 
 /// Benchmark: Sequential PUT/GET to measure server throughput

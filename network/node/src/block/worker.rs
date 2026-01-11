@@ -202,6 +202,9 @@ async fn process_instruction(
             // event data is sufficient and correct.
             ctx.control_plane.set_current_epoch(new_epoch);
 
+            // Start tracking node syncs for this epoch
+            ctx.control_plane.start_epoch_sync(new_epoch);
+
             // Run GC for the epoch that just ended (from event data)
             let our_spools = ctx.control_plane.get_our_spools();
 
@@ -233,23 +236,47 @@ async fn process_instruction(
             ctx.metrics.current_epoch.set(new_epoch.as_u64() as i64);
         }
 
-        ParsedInstruction::SyncEpoch {
-            node,
-            epoch,
-            spools_hash,
-        } => {
+        ParsedInstruction::SyncEpoch { event } => {
+            // NodeSynced event contains all the data we need including NodeId
+            let node_id = event.id;
+            let epoch = event.epoch;
+
             debug!(
-                node = %node,
+                node = %event.node,
+                node_id = ?node_id,
                 epoch = epoch.as_u64(),
                 "Detected SyncEpoch instruction"
             );
 
+            // Look up this node's spool weight from the committee
+            let system = ctx.control_plane.get_system();
+            let spool_count = match system.committee.index_of(&node_id) {
+                Some(idx) => system.spools.weight(idx) as u64,
+                None => {
+                    debug!(node_id = ?node_id, "Node not found in committee");
+                    0
+                }
+            };
+
+            let quorum_just_reached = ctx.control_plane.record_node_sync(epoch, node_id, spool_count);
+
+            if quorum_just_reached {
+                info!(
+                    epoch = epoch.as_u64(),
+                    "Sync quorum reached - epoch ready for activation"
+                );
+                event_tx
+                    .send(NodeEvent::EpochSyncReady { epoch })
+                    .await
+                    .map_err(|_| BlockProcessorError::ChannelClosed)?;
+            }
+
             // Emit event so other workers can track sync progress
             event_tx
                 .send(NodeEvent::NodeSynced {
-                    node,
+                    node: event.node,
                     epoch,
-                    spools_hash,
+                    spools_hash: event.spools_hash,
                 })
                 .await
                 .map_err(|_| BlockProcessorError::ChannelClosed)?;

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
+use tape_crypto::Hash;
+use tape_node_api::MERKLE_HEIGHT;
 
 /// Track identifier (Pubkey serialized as base58 string for JSON compatibility).
 pub type TrackId = String;
@@ -63,6 +65,10 @@ pub struct SyncSlice {
     pub slice_index: SpoolIndex,
     /// Raw slice data.
     pub data: Vec<u8>,
+    /// Merkle leaf hash of this slice (Blake3 hash of data).
+    pub leaf_hash: Hash,
+    /// Merkle proof path (MERKLE_HEIGHT sibling hashes).
+    pub merkle_proof: [Hash; MERKLE_HEIGHT],
 }
 
 /// Sync response message (versioned).
@@ -133,13 +139,13 @@ mod tests {
         let empty = SyncSpoolResponse::new_v1(vec![]);
         assert!(empty.is_empty());
 
-        let non_empty = SyncSpoolResponse::new_v1(vec![
-            SyncSlice {
-                track_id: "track_1".to_string(),
-                slice_index: 0,
-                data: vec![1, 2, 3],
-            },
-        ]);
+        let non_empty = SyncSpoolResponse::new_v1(vec![SyncSlice {
+            track_id: "track_1".to_string(),
+            slice_index: 0,
+            data: vec![1, 2, 3],
+            leaf_hash: Hash::default(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+        }]);
         assert!(!non_empty.is_empty());
     }
 

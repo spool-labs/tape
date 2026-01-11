@@ -1,5 +1,13 @@
 //! High-level blob client for upload/download operations.
+//!
+//! Uses proper spool-based routing from on-chain committee state to send
+//! each slice to the correct storage node.
 
+pub use tape_api::program::MEMBER_COUNT;
+use tape_core::erasure::SLICE_COUNT;
+use tape_core::spooler::SpoolAssignment;
+use tape_core::system::Committee;
+use tape_core::types::NetworkAddress;
 use tape_slicer::BlobMerkleRoot;
 
 use crate::communication::NodeCommunicationFactory;
@@ -7,6 +15,7 @@ use crate::decoder::BlobDecoder;
 use crate::downloader::ParallelDownloader;
 use crate::encoder::BlobEncoder;
 use crate::error::{ClientError, DownloadError, UploadError};
+use crate::routing::SliceRouter;
 use crate::uploader::{DistributedUploader, SliceWithProof};
 
 /// Default max slice size (1 MiB) - matches production settings.
@@ -16,28 +25,36 @@ pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20;
 ///
 /// Provides simple upload/download methods that handle:
 /// - Erasure coding (slicing)
-/// - Distributed upload to storage nodes
+/// - Distributed upload to storage nodes using proper spool-based routing
 /// - Parallel download with recovery
 /// - Merkle verification
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// // Production client (1 MiB slices, ~1 GB max blob)
-/// let client = TapeClient::new(node_addresses);
+/// // Build client from on-chain system state
+/// let system = rpc_client.get_system().await?;
+/// let node_addresses = fetch_node_addresses(&system.committee).await?;
+/// let client = TapeClient::from_system(
+///     system.committee.clone(),
+///     system.spools.clone(),
+///     node_addresses,
+/// );
 ///
-/// // Test client (4 KB slices, ~2.7 MB max blob, low memory)
+/// // Or use builder for more control
 /// let client = TapeClient::builder()
+///     .committee(system.committee)
+///     .spool_assignment(system.spools)
 ///     .node_addresses(node_addresses)
-///     .max_slice_bytes(4 * 1024)
+///     .max_slice_bytes(4 * 1024)  // For testing
 ///     .build();
 /// ```
 pub struct TapeClient {
     /// Factory for creating node clients.
     node_factory: NodeCommunicationFactory,
 
-    /// List of known storage node addresses.
-    node_addresses: Vec<String>,
+    /// Router for slice → node mapping based on spool assignments.
+    router: SliceRouter<MEMBER_COUNT>,
 
     /// Maximum slice size in bytes for encoding.
     /// Smaller values use less memory but limit max blob size.
@@ -45,16 +62,23 @@ pub struct TapeClient {
 }
 
 impl TapeClient {
-    /// Create a new tape client with default settings.
-    ///
-    /// Uses 1 MiB slice size (production default).
+    /// Create a new tape client from on-chain system state.
     ///
     /// # Arguments
-    /// * `node_addresses` - List of storage node addresses
-    pub fn new(node_addresses: Vec<String>) -> Self {
+    /// * `committee` - The active committee from System account
+    /// * `spool_assignment` - Spool assignments from System account
+    /// * `node_addresses` - List of (member_index, NetworkAddress) pairs
+    pub fn from_system(
+        committee: Committee<MEMBER_COUNT>,
+        spool_assignment: SpoolAssignment<SLICE_COUNT>,
+        node_addresses: impl IntoIterator<Item = (usize, NetworkAddress)>,
+    ) -> Self {
+        let mut router = SliceRouter::new(spool_assignment, committee);
+        router.set_addresses(node_addresses);
+
         Self {
             node_factory: NodeCommunicationFactory::new(),
-            node_addresses,
+            router,
             max_slice_bytes: DEFAULT_MAX_SLICE_BYTES,
         }
     }
@@ -64,15 +88,6 @@ impl TapeClient {
         TapeClientBuilder::default()
     }
 
-    /// Create a new tape client with a custom factory.
-    pub fn with_factory(node_addresses: Vec<String>, factory: NodeCommunicationFactory) -> Self {
-        Self {
-            node_factory: factory,
-            node_addresses,
-            max_slice_bytes: DEFAULT_MAX_SLICE_BYTES,
-        }
-    }
-
     /// Upload slices with proofs to the network.
     ///
     /// This is a lower-level method that uploads pre-encoded slices.
@@ -80,7 +95,7 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - Pre-encoded slices with merkle proofs (should be 1024)
+    /// * `slices` - Pre-encoded slices with merkle proofs (should be SLICE_COUNT)
     pub async fn upload_slices(
         &self,
         track_id: &str,
@@ -89,7 +104,7 @@ impl TapeClient {
         let uploader = DistributedUploader::new(
             track_id.to_string(),
             slices,
-            self.node_addresses.clone(),
+            self.router.clone(),
             self.node_factory.clone(),
         );
 
@@ -108,18 +123,27 @@ impl TapeClient {
         &self,
         track_id: &str,
     ) -> Result<Vec<(u16, Vec<u8>)>, DownloadError> {
+        // Collect addresses from the router
+        let addresses: Vec<String> = (0..self.router.committee_size())
+            .filter_map(|idx| {
+                self.router.get_cached_address(idx)
+                    .and_then(|addr| addr.to_socket_addr().ok())
+                    .map(|sock| sock.to_string())
+            })
+            .collect();
+
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
-            self.node_addresses.clone(),
+            addresses,
             self.node_factory.clone(),
         );
 
         downloader.download_enough_slices().await
     }
 
-    /// Get the list of node addresses.
-    pub fn node_addresses(&self) -> &[String] {
-        &self.node_addresses
+    /// Get the committee size.
+    pub fn committee_size(&self) -> usize {
+        self.router.committee_size()
     }
 
     /// Check if a specific node is healthy.
@@ -137,11 +161,23 @@ impl TapeClient {
             .map_err(|e| ClientError::Encoding(e.to_string()))
     }
 
-    /// Update the list of node addresses.
+    /// Update the router with new committee and spool assignments.
     ///
-    /// Call this when the committee changes.
-    pub fn set_node_addresses(&mut self, addresses: Vec<String>) {
-        self.node_addresses = addresses;
+    /// Call this when the committee changes (epoch transition).
+    pub fn update_router(
+        &mut self,
+        committee: Committee<MEMBER_COUNT>,
+        spool_assignment: SpoolAssignment<SLICE_COUNT>,
+        node_addresses: impl IntoIterator<Item = (usize, NetworkAddress)>,
+    ) {
+        let mut router = SliceRouter::new(spool_assignment, committee);
+        router.set_addresses(node_addresses);
+        self.router = router;
+    }
+
+    /// Get a reference to the internal router.
+    pub fn router(&self) -> &SliceRouter<MEMBER_COUNT> {
+        &self.router
     }
 
     // =========================================================================
@@ -158,7 +194,7 @@ impl TapeClient {
     /// This is the primary method for storing data. It:
     /// 1. Encodes the blob into SLICE_COUNT slices using Reed-Solomon
     /// 2. Computes the Merkle root commitment and proofs for each slice
-    /// 3. Uploads all slices with their proofs to storage nodes
+    /// 3. Uploads all slices with their proofs to the correct storage nodes
     ///
     /// # Arguments
     /// * `track_id` - The track identifier for this blob
@@ -184,11 +220,11 @@ impl TapeClient {
             .encode_with_proofs(data)
             .map_err(ClientError::Upload)?;
 
-        // Upload all slices with their proofs
+        // Upload all slices with their proofs using spool-based routing
         let uploader = DistributedUploader::new(
             track_id.to_string(),
             slices_with_proofs,
-            self.node_addresses.clone(),
+            self.router.clone(),
             self.node_factory.clone(),
         );
 
@@ -213,11 +249,19 @@ impl TapeClient {
     /// Randomized order ensures load is spread across nodes.
     pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
         use rand::seq::SliceRandom;
-        use tape_core::erasure::SLICE_COUNT;
+
+        // Collect addresses from the router
+        let addresses: Vec<String> = (0..self.router.committee_size())
+            .filter_map(|idx| {
+                self.router.get_cached_address(idx)
+                    .and_then(|addr| addr.to_socket_addr().ok())
+                    .map(|sock| sock.to_string())
+            })
+            .collect();
 
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
-            self.node_addresses.clone(),
+            addresses,
             self.node_factory.clone(),
         );
 
@@ -331,27 +375,46 @@ impl TapeClient {
 ///
 /// ```rust,ignore
 /// let client = TapeClient::builder()
-///     .node_addresses(vec!["node1:8080".into(), "node2:8080".into()])
+///     .committee(system.committee)
+///     .spool_assignment(system.spools)
+///     .node_addresses(addresses)
 ///     .max_slice_bytes(4 * 1024)  // 4 KB slices for testing
 ///     .build();
 /// ```
 #[derive(Default)]
 pub struct TapeClientBuilder {
-    node_addresses: Vec<String>,
+    committee: Option<Committee<MEMBER_COUNT>>,
+    spool_assignment: Option<SpoolAssignment<SLICE_COUNT>>,
+    node_addresses: Vec<(usize, NetworkAddress)>,
     node_factory: Option<NodeCommunicationFactory>,
     max_slice_bytes: Option<usize>,
 }
 
 impl TapeClientBuilder {
-    /// Set the storage node addresses.
-    pub fn node_addresses(mut self, addresses: Vec<String>) -> Self {
-        self.node_addresses = addresses;
+    /// Set the committee from on-chain System state.
+    pub fn committee(mut self, committee: Committee<MEMBER_COUNT>) -> Self {
+        self.committee = Some(committee);
+        self
+    }
+
+    /// Set the spool assignment from on-chain System state.
+    pub fn spool_assignment(mut self, assignment: SpoolAssignment<SLICE_COUNT>) -> Self {
+        self.spool_assignment = Some(assignment);
+        self
+    }
+
+    /// Set the node addresses (member_index, NetworkAddress pairs).
+    pub fn node_addresses(
+        mut self,
+        addresses: impl IntoIterator<Item = (usize, NetworkAddress)>,
+    ) -> Self {
+        self.node_addresses = addresses.into_iter().collect();
         self
     }
 
     /// Add a single node address.
-    pub fn add_node(mut self, address: impl Into<String>) -> Self {
-        self.node_addresses.push(address.into());
+    pub fn add_node(mut self, member_index: usize, address: NetworkAddress) -> Self {
+        self.node_addresses.push((member_index, address));
         self
     }
 
@@ -373,9 +436,18 @@ impl TapeClientBuilder {
     }
 
     /// Build the `TapeClient`.
+    ///
+    /// # Panics
+    /// Panics if committee or spool_assignment are not set.
     pub fn build(self) -> TapeClient {
+        let committee = self.committee.expect("committee is required");
+        let spool_assignment = self.spool_assignment.expect("spool_assignment is required");
+
+        let mut router = SliceRouter::new(spool_assignment, committee);
+        router.set_addresses(self.node_addresses);
+
         TapeClient {
-            node_addresses: self.node_addresses,
+            router,
             node_factory: self.node_factory.unwrap_or_default(),
             max_slice_bytes: self.max_slice_bytes.unwrap_or(DEFAULT_MAX_SLICE_BYTES),
         }
@@ -385,50 +457,71 @@ impl TapeClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::{Coin, NodeId, TAPE};
 
-    #[test]
-    fn test_client_creation() {
-        let nodes = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
-        let client = TapeClient::new(nodes.clone());
+    fn make_test_committee(count: usize) -> Committee<MEMBER_COUNT> {
+        let mut committee = Committee::new();
+        for i in 0..count.min(MEMBER_COUNT) {
+            let member = CommitteeMember::new(
+                NodeId::new(i as u64 + 1),
+                Coin::<TAPE>::new(1000 - i as u64),
+            );
+            let _ = committee.try_join(&member);
+        }
+        committee
+    }
 
-        assert_eq!(client.node_addresses(), nodes.as_slice());
+    fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
+        let mut spools = [0u8; SLICE_COUNT];
+        for i in 0..SLICE_COUNT {
+            spools[i] = (i % member_count) as u8;
+        }
+        SpoolAssignment::new(spools)
     }
 
     #[test]
-    fn test_client_with_factory() {
-        let nodes = vec!["localhost:8080".to_string()];
-        let factory =
-            NodeCommunicationFactory::new().with_connect_timeout(std::time::Duration::from_secs(10));
+    fn test_client_from_system() {
+        let committee = make_test_committee(2);
+        let assignment = make_uniform_assignment(2);
+        let addresses = vec![
+            (0, NetworkAddress::from("127.0.0.1:8080").unwrap()),
+            (1, NetworkAddress::from("127.0.0.1:8081").unwrap()),
+        ];
 
-        let client = TapeClient::with_factory(nodes.clone(), factory);
+        let client = TapeClient::from_system(committee, assignment, addresses);
 
-        assert_eq!(client.node_addresses(), nodes.as_slice());
+        assert_eq!(client.committee_size(), 2);
+        assert_eq!(client.max_slice_bytes(), DEFAULT_MAX_SLICE_BYTES);
     }
 
     #[test]
-    fn test_update_addresses() {
-        let mut client = TapeClient::new(vec!["localhost:8080".to_string()]);
+    fn test_builder_with_committee() {
+        let committee = make_test_committee(2);
+        let assignment = make_uniform_assignment(2);
+        let addresses = vec![
+            (0, NetworkAddress::from("127.0.0.1:8080").unwrap()),
+            (1, NetworkAddress::from("127.0.0.1:8081").unwrap()),
+        ];
 
-        let new_nodes = vec!["node1:8080".to_string(), "node2:8080".to_string()];
-        client.set_node_addresses(new_nodes.clone());
-
-        assert_eq!(client.node_addresses(), new_nodes.as_slice());
-    }
-
-    #[test]
-    fn test_builder_default() {
         let client = TapeClient::builder()
-            .node_addresses(vec!["node1:8080".into()])
+            .committee(committee)
+            .spool_assignment(assignment)
+            .node_addresses(addresses)
             .build();
 
-        assert_eq!(client.node_addresses(), &["node1:8080"]);
+        assert_eq!(client.committee_size(), 2);
         assert_eq!(client.max_slice_bytes(), DEFAULT_MAX_SLICE_BYTES);
     }
 
     #[test]
     fn test_builder_custom_slice_size() {
+        let committee = make_test_committee(1);
+        let assignment = make_uniform_assignment(1);
+
         let client = TapeClient::builder()
-            .node_addresses(vec!["node1:8080".into()])
+            .committee(committee)
+            .spool_assignment(assignment)
             .max_slice_bytes(4 * 1024)
             .build();
 
@@ -437,11 +530,41 @@ mod tests {
 
     #[test]
     fn test_builder_add_node() {
+        let committee = make_test_committee(2);
+        let assignment = make_uniform_assignment(2);
+
         let client = TapeClient::builder()
-            .add_node("node1:8080")
-            .add_node("node2:8080")
+            .committee(committee)
+            .spool_assignment(assignment)
+            .add_node(0, NetworkAddress::from("127.0.0.1:8080").unwrap())
+            .add_node(1, NetworkAddress::from("127.0.0.1:8081").unwrap())
             .build();
 
-        assert_eq!(client.node_addresses().len(), 2);
+        assert_eq!(client.committee_size(), 2);
+    }
+
+    #[test]
+    fn test_update_router() {
+        let committee = make_test_committee(2);
+        let assignment = make_uniform_assignment(2);
+        let addresses = vec![
+            (0, NetworkAddress::from("127.0.0.1:8080").unwrap()),
+            (1, NetworkAddress::from("127.0.0.1:8081").unwrap()),
+        ];
+
+        let mut client = TapeClient::from_system(committee, assignment, addresses);
+        assert_eq!(client.committee_size(), 2);
+
+        // Update to a new committee with 3 members
+        let new_committee = make_test_committee(3);
+        let new_assignment = make_uniform_assignment(3);
+        let new_addresses = vec![
+            (0, NetworkAddress::from("127.0.0.1:9080").unwrap()),
+            (1, NetworkAddress::from("127.0.0.1:9081").unwrap()),
+            (2, NetworkAddress::from("127.0.0.1:9082").unwrap()),
+        ];
+
+        client.update_router(new_committee, new_assignment, new_addresses);
+        assert_eq!(client.committee_size(), 3);
     }
 }

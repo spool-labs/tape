@@ -1,27 +1,37 @@
 //! Distributed uploader for parallel slice uploads.
+//!
+//! Uploads slices to storage nodes based on spool assignments from the
+//! on-chain committee. Each slice goes to the node that owns that spool.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
+use tape_core::system::Committee;
 use tape_crypto::Hash;
 use tape_node_api::SlicePayload;
 use tokio::sync::Semaphore;
+use tracing::{debug, warn};
 
 use crate::communication::NodeCommunicationFactory;
 use crate::encoder::SliceMerkleProof;
 use crate::error::UploadError;
+use crate::routing::SliceRouter;
 
 // Re-export erasure coding constants from tape-core
 pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
+// Re-export spool types for convenience
+pub use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
 
+/// Default number of retries per node.
+const DEFAULT_RETRY_COUNT: usize = 3;
+
 /// A slice with its merkle proof, ready for upload.
 #[derive(Clone)]
 pub struct SliceWithProof {
-    pub index: u16,
+    pub index: SpoolIndex,
     pub data: Vec<u8>,
     pub leaf_hash: Hash,
     pub merkle_proof: SliceMerkleProof,
@@ -29,7 +39,7 @@ pub struct SliceWithProof {
 
 impl SliceWithProof {
     /// Create a new slice with proof.
-    pub fn new(index: u16, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
+    pub fn new(index: SpoolIndex, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
         Self { index, data, leaf_hash, merkle_proof }
     }
 
@@ -40,34 +50,40 @@ impl SliceWithProof {
 }
 
 /// Distributed uploader for parallel slice uploads to storage nodes.
-pub struct DistributedUploader {
+///
+/// Uses proper spool-based routing from the on-chain committee. Each slice
+/// is sent to the node that owns that slice's spool according to the
+/// SpoolAssignment.
+pub struct DistributedUploader<const MEMBERS: usize> {
     track_id: String,
     slices: Vec<SliceWithProof>,
-    node_addresses: Vec<String>,
+    router: SliceRouter<MEMBERS>,
     factory: NodeCommunicationFactory,
     concurrency_limit: Arc<Semaphore>,
+    retry_count: usize,
 }
 
-impl DistributedUploader {
-    /// Create a new uploader.
+impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
+    /// Create a new uploader with proper spool-based routing.
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - The encoded slices with merkle proofs (should be 1024)
-    /// * `node_addresses` - List of node addresses for the committee
+    /// * `slices` - The encoded slices with merkle proofs (should be SLICE_COUNT)
+    /// * `router` - SliceRouter with committee and spool assignments
     /// * `factory` - Factory for creating node clients
     pub fn new(
         track_id: String,
         slices: Vec<SliceWithProof>,
-        node_addresses: Vec<String>,
+        router: SliceRouter<MEMBERS>,
         factory: NodeCommunicationFactory,
     ) -> Self {
         Self {
             track_id,
             slices,
-            node_addresses,
+            router,
             factory,
             concurrency_limit: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),
+            retry_count: DEFAULT_RETRY_COUNT,
         }
     }
 
@@ -77,70 +93,145 @@ impl DistributedUploader {
         self
     }
 
+    /// Set the retry count for failed uploads.
+    pub fn with_retry_count(mut self, count: usize) -> Self {
+        self.retry_count = count;
+        self
+    }
+
     /// Upload all slices to the network.
     ///
-    /// Returns when a quorum (2/3 + 1) of nodes have acknowledged.
+    /// Sends each slice to the correct spool owner based on the committee's
+    /// spool assignment. Returns when all nodes have been attempted.
+    /// Failed uploads are left for the recovery worker to handle.
     pub async fn upload_all(&self) -> Result<(), UploadError> {
-        if self.node_addresses.is_empty() {
+        if self.router.committee_size() == 0 {
             return Err(UploadError::NoNodesAvailable);
         }
 
-        let num_nodes = self.node_addresses.len();
+        // Group slices by the member that owns them (proper spool-based routing)
+        let member_groups = self.router.group_slices_by_member();
 
-        // Simple round-robin distribution of slices to nodes
-        // In production, this would use spool assignments from the committee
-        let mut slices_per_node: HashMap<usize, Vec<SliceWithProof>> = HashMap::new();
+        // Build a lookup from slice index to slice data
+        let slice_map: std::collections::HashMap<SpoolIndex, &SliceWithProof> = self
+            .slices
+            .iter()
+            .map(|s| (s.index, s))
+            .collect();
 
-        for slice in &self.slices {
-            let node_idx = slice.index as usize % num_nodes;
-            slices_per_node
-                .entry(node_idx)
-                .or_default()
-                .push(slice.clone());
-        }
-
-        // Upload to each node in parallel
-        let upload_futures: Vec<_> = slices_per_node
+        // Upload to each member in parallel
+        let upload_futures: Vec<_> = member_groups
             .into_iter()
-            .map(|(node_idx, slices)| {
+            .map(|(member_idx, slice_indices)| {
                 let factory = self.factory.clone();
                 let track_id = self.track_id.clone();
-                let address = self.node_addresses[node_idx].clone();
                 let permit = self.concurrency_limit.clone();
+                let retry_count = self.retry_count;
+
+                // Get the address for this member
+                let addr_result = self.router.socket_addr_for_slice(
+                    *slice_indices.first().unwrap_or(&0)
+                );
+
+                // Collect slices for this member
+                let slices: Vec<SliceWithProof> = slice_indices
+                    .iter()
+                    .filter_map(|idx| slice_map.get(idx).map(|s| (*s).clone()))
+                    .collect();
 
                 async move {
+                    let addr = addr_result.map_err(|e| {
+                        UploadError::Network(format!("address resolution: {}", e))
+                    })?;
+
                     let _permit = permit
                         .acquire()
                         .await
                         .map_err(|_| UploadError::Semaphore)?;
 
+                    let address = addr.to_string();
                     let client = factory.client_for_address(&address)?;
 
+                    let mut failed_slices = Vec::new();
+
                     for slice in slices {
-                        let payload = slice.to_payload();
-                        client.put_slice(&track_id, slice.index, &payload).await?;
+                        let mut last_error = None;
+
+                        for attempt in 0..retry_count {
+                            let payload = slice.to_payload();
+                            match client.put_slice(&track_id, slice.index, &payload).await {
+                                Ok(_) => {
+                                    last_error = None;
+                                    break;
+                                }
+                                Err(e) => {
+                                    if attempt < retry_count - 1 {
+                                        debug!(
+                                            slice = slice.index,
+                                            attempt = attempt + 1,
+                                            "Retrying slice upload"
+                                        );
+                                    }
+                                    last_error = Some(e);
+                                }
+                            }
+                        }
+
+                        if let Some(e) = last_error {
+                            warn!(
+                                slice = slice.index,
+                                member = member_idx,
+                                error = %e,
+                                "Slice upload failed after retries, left for recovery"
+                            );
+                            failed_slices.push(slice.index);
+                        }
                     }
 
-                    Ok::<_, UploadError>(node_idx)
+                    Ok::<_, UploadError>((member_idx, failed_slices))
                 }
             })
             .collect();
 
         // Wait for all uploads
-        let results: Vec<Result<usize, UploadError>> = stream::iter(upload_futures)
+        let results: Vec<Result<(usize, Vec<SpoolIndex>), UploadError>> = stream::iter(upload_futures)
             .buffer_unordered(DEFAULT_CONCURRENCY)
             .collect()
             .await;
 
-        // Check quorum - need 2f+1 (min_correct) nodes to acknowledge
-        let successful = results.iter().filter(|r| r.is_ok()).count();
-        let required = tape_core::bft::min_correct(num_nodes as u64) as usize;
+        // Count successful members (those with no errors, may have failed individual slices)
+        let mut total_failed_slices = 0;
+        let mut member_failures = 0;
 
-        if successful < required {
+        for result in &results {
+            match result {
+                Ok((_, failed)) => {
+                    total_failed_slices += failed.len();
+                }
+                Err(_) => {
+                    member_failures += 1;
+                }
+            }
+        }
+
+        // Check quorum - need 2f+1 (min_correct) members to acknowledge
+        let num_members = self.router.committee_size();
+        let successful_members = num_members - member_failures;
+        let required = tape_core::bft::min_correct(num_members as u64) as usize;
+
+        if successful_members < required {
             return Err(UploadError::InsufficientQuorum {
-                got: successful,
+                got: successful_members,
                 need: required,
             });
+        }
+
+        // Log if there were any slice-level failures (but we still succeeded overall)
+        if total_failed_slices > 0 {
+            warn!(
+                failed_slices = total_failed_slices,
+                "Some slices failed to upload, left for recovery worker"
+            );
         }
 
         Ok(())
@@ -152,9 +243,19 @@ impl DistributedUploader {
     }
 }
 
+/// Builder for constructing a SliceRouter from system state.
+pub fn build_router<const MEMBERS: usize>(
+    committee: Committee<MEMBERS>,
+    spool_assignment: SpoolAssignment<SLICE_COUNT>,
+) -> SliceRouter<MEMBERS> {
+    SliceRouter::new(spool_assignment, committee)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::{Coin, NodeId, TAPE};
     use tape_slicer::MERKLE_HEIGHT;
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
@@ -168,9 +269,28 @@ mod tests {
             .collect()
     }
 
+    fn make_test_router<const N: usize>(member_count: usize) -> SliceRouter<N> {
+        let mut committee = Committee::new();
+        for i in 0..member_count.min(N) {
+            let member = CommitteeMember::new(
+                NodeId::new(i as u64 + 1),
+                Coin::<TAPE>::new(1000 - i as u64),
+            );
+            let _ = committee.try_join(&member);
+        }
+
+        // Create uniform spool assignment
+        let mut spools = [0u8; SLICE_COUNT];
+        for i in 0..SLICE_COUNT {
+            spools[i] = (i % member_count) as u8;
+        }
+        let assignment = SpoolAssignment::new(spools);
+
+        SliceRouter::new(assignment, committee)
+    }
+
     #[test]
     fn test_constants() {
-        assert_eq!(SLICE_COUNT, 1024);
         assert_eq!(DATA_SLICES, 683);
         assert_eq!(PARITY_SLICES, 341);
         assert_eq!(DATA_SLICES + PARITY_SLICES, SLICE_COUNT);
@@ -180,10 +300,14 @@ mod tests {
     fn test_uploader_creation() {
         let factory = NodeCommunicationFactory::new();
         let slices = make_test_slices(10);
-        let nodes = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
+        let router: SliceRouter<10> = make_test_router(2);
 
-        let uploader =
-            DistributedUploader::new("track_123".to_string(), slices, nodes, factory);
+        let uploader = DistributedUploader::new(
+            "track_123".to_string(),
+            slices,
+            router,
+            factory,
+        );
 
         assert_eq!(uploader.slice_count(), 10);
     }
@@ -202,5 +326,18 @@ mod tests {
         assert_eq!(payload.data, slice.data);
         assert_eq!(payload.leaf_hash, slice.leaf_hash);
         assert_eq!(payload.merkle_proof, slice.merkle_proof);
+    }
+
+    #[test]
+    fn test_build_router() {
+        let mut committee: Committee<10> = Committee::new();
+        let member = CommitteeMember::new(NodeId::new(1), Coin::<TAPE>::new(1000));
+        let _ = committee.try_join(&member);
+
+        let spools = [0u8; SLICE_COUNT];
+        let assignment = SpoolAssignment::new(spools);
+
+        let router = build_router(committee, assignment);
+        assert_eq!(router.committee_size(), 1);
     }
 }

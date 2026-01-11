@@ -48,6 +48,9 @@ pub enum UploadError {
 
     #[error("slice encoding failed: {0}")]
     Encoding(String),
+
+    #[error("network error: {0}")]
+    Network(String),
 }
 
 /// Errors that can occur during download.

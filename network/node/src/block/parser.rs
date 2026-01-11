@@ -14,8 +14,8 @@ use solana_transaction_status::{
     UiCompiledInstruction, UiConfirmedBlock, UiInstruction, UiMessage, UiTransactionStatusMeta,
 };
 use tape_api::event::{
-    EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, TapeDestroyed, TrackCertified,
-    TrackDeleted, TrackInvalidated, TrackRegistered,
+    EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed,
+    TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_core::prelude::*;
@@ -54,6 +54,7 @@ pub enum TapedriveEvent {
     TapeDestroyed(TapeDestroyed),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
+    NodeSynced(NodeSynced),
 }
 
 /// Parsed tapedrive instruction with associated event data.
@@ -68,9 +69,7 @@ pub enum ParsedInstruction {
         event: EpochAdvanced,
     },
     SyncEpoch {
-        node: Pubkey,
-        epoch: EpochNumber,
-        spools_hash: Hash,
+        event: NodeSynced,
     },
 
     // Track management
@@ -207,11 +206,7 @@ fn parse_transaction(
 #[derive(Debug)]
 enum RawInstruction {
     AdvanceEpoch,
-    SyncEpoch {
-        node: Pubkey,
-        epoch: EpochNumber,
-        spools_hash: Hash,
-    },
+    SyncEpoch,
     RegisterTrack {
         owner: Pubkey,
         track: Pubkey,
@@ -345,6 +340,11 @@ fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError> {
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::NodeJoinedCommittee(*event)))
         }
+        EventType::NodeSynced => {
+            let event = bytemuck::try_from_bytes::<NodeSynced>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::NodeSynced(*event)))
+        }
         // Events we don't need to track
         _ => Ok(None),
     }
@@ -369,18 +369,13 @@ fn merge_instructions_and_events(
                 ParsedInstruction::AdvanceEpoch { event }
             }
 
-            RawInstruction::SyncEpoch {
-                node,
-                epoch,
-                spools_hash,
-            } => {
-                // SyncEpoch emits NodeSynced but we get epoch from instruction
-                // Skip matching event, we have the data we need
-                ParsedInstruction::SyncEpoch {
-                    node,
-                    epoch,
-                    spools_hash,
-                }
+            RawInstruction::SyncEpoch => {
+                // SyncEpoch always emits NodeSynced event with NodeId
+                let event = match event_iter.next() {
+                    Some(TapedriveEvent::NodeSynced(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected NodeSynced event")),
+                };
+                ParsedInstruction::SyncEpoch { event }
             }
 
             RawInstruction::RegisterTrack {
@@ -553,15 +548,8 @@ fn parse_raw_instruction(
         TapeInstruction::AdvanceEpoch => Ok(Some(RawInstruction::AdvanceEpoch)),
 
         TapeInstruction::SyncEpoch => {
-            // Account order: 0=fee_payer, 1=authority, 2=system, 3=epoch, 4=node
-            let node = get_account(4)?;
-            let args = ix::SyncEpoch::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            Ok(Some(RawInstruction::SyncEpoch {
-                node,
-                epoch: EpochNumber::unpack(args.epoch),
-                spools_hash: args.spools,
-            }))
+            // All data comes from the NodeSynced event
+            Ok(Some(RawInstruction::SyncEpoch))
         }
 
         TapeInstruction::RegisterTrack => {

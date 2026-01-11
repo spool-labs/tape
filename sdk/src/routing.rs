@@ -30,7 +30,7 @@
 use std::net::SocketAddr;
 
 use tape_core::erasure::SLICE_COUNT;
-use tape_core::spooler::SpoolAssignment;
+use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{NetworkAddress, NodeId};
 
@@ -38,7 +38,7 @@ use tape_core::types::{NetworkAddress, NodeId};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingError {
     /// The slice index is out of range (must be < SLICE_COUNT).
-    InvalidSliceIndex(u16),
+    InvalidSliceIndex(SpoolIndex),
     /// The member index from spool assignment points to an invalid committee slot.
     InvalidMemberIndex(u8),
     /// Committee member not found at the expected index.
@@ -107,7 +107,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// # Returns
     /// The committee member index that owns this slice's spool.
-    pub fn member_for_slice(&self, slice_index: u16) -> Result<usize, RoutingError> {
+    pub fn member_for_slice(&self, slice_index: SpoolIndex) -> Result<usize, RoutingError> {
         if slice_index as usize >= SLICE_COUNT {
             return Err(RoutingError::InvalidSliceIndex(slice_index));
         }
@@ -122,7 +122,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// # Returns
     /// The CommitteeMember that owns this slice's spool.
-    pub fn committee_member_for_slice(&self, slice_index: u16) -> Result<CommitteeMember, RoutingError> {
+    pub fn committee_member_for_slice(&self, slice_index: SpoolIndex) -> Result<CommitteeMember, RoutingError> {
         let member_idx = self.member_for_slice(slice_index)?;
         self.committee
             .member_at(member_idx)
@@ -136,7 +136,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// # Returns
     /// The NodeId of the storage node responsible for this slice.
-    pub fn node_id_for_slice(&self, slice_index: u16) -> Result<NodeId, RoutingError> {
+    pub fn node_id_for_slice(&self, slice_index: SpoolIndex) -> Result<NodeId, RoutingError> {
         let member = self.committee_member_for_slice(slice_index)?;
         Ok(member.id)
     }
@@ -148,12 +148,8 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// # Returns
     /// Vector of slice indices owned by this member.
-    pub fn slices_for_member(&self, member_index: usize) -> Vec<u16> {
-        self.spool_assignment
-            .spools_for_member(member_index)
-            .into_iter()
-            .map(|s| s as u16)
-            .collect()
+    pub fn slices_for_member(&self, member_index: usize) -> Vec<SpoolIndex> {
+        self.spool_assignment.spools_for_member(member_index)
     }
 
     /// Get the number of active committee members.
@@ -205,7 +201,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// # Returns
     /// The SocketAddr of the storage node, or an error if not cached or invalid.
-    pub fn socket_addr_for_slice(&self, slice_index: u16) -> Result<SocketAddr, RoutingError> {
+    pub fn socket_addr_for_slice(&self, slice_index: SpoolIndex) -> Result<SocketAddr, RoutingError> {
         let member_idx = self.member_for_slice(slice_index)?;
         let addr = self
             .get_cached_address(member_idx)
@@ -252,10 +248,10 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     ///
     /// Returns a map of member_index → list of slice indices.
     /// Useful for batching uploads/downloads to the same node.
-    pub fn group_slices_by_member(&self) -> Vec<(usize, Vec<u16>)> {
-        let mut groups: Vec<Vec<u16>> = vec![Vec::new(); MEMBERS];
+    pub fn group_slices_by_member(&self) -> Vec<(usize, Vec<SpoolIndex>)> {
+        let mut groups: Vec<Vec<SpoolIndex>> = vec![Vec::new(); MEMBERS];
 
-        for slice_idx in 0..SLICE_COUNT as u16 {
+        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
             if let Ok(member_idx) = self.member_for_slice(slice_idx) {
                 if member_idx < groups.len() {
                     groups[member_idx].push(slice_idx);
