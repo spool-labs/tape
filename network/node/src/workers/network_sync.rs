@@ -7,10 +7,11 @@
 //! - Submits SyncEpoch transaction when ready
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use solana_sdk::signer::Signer;
-use tape_api::instruction::{build_advance_pool_ix, build_epoch_sync_ix};
-use tape_api::program::tapedrive::node_pda;
+use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix};
+use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION};
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
 use tape_store::ops::{RecoveryInfo, RecoveryOps, SliceOps};
@@ -24,6 +25,13 @@ use crate::events::NodeEvent;
 use crate::storage::service::{Compression, SliceMeta};
 use crate::sync::types::{track_id_to_pubkey, SyncSlice};
 use crate::sync::{SpoolSyncHandler, SyncError};
+
+/// Polling interval for epoch advancement monitoring.
+const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Maximum time to monitor for epoch advancement (safety limit).
+/// After this duration, the monitor task exits to avoid resource leaks.
+const EPOCH_ADVANCE_MONITOR_TIMEOUT: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Error type for network sync operations.
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +70,7 @@ pub async fn run(
                 break;
             }
             Some(event) = event_rx.recv() => {
-                if let Err(e) = handle_event(&ctx, &sync_handler, event).await {
+                if let Err(e) = handle_event(Arc::clone(&ctx), &sync_handler, event).await {
                     error!(error = %e, "Error handling event");
                 }
             }
@@ -74,13 +82,13 @@ pub async fn run(
 
 /// Handle a single node event.
 async fn handle_event(
-    ctx: &NodeContext,
+    ctx: Arc<NodeContext>,
     sync_handler: &SpoolSyncHandler,
     event: NodeEvent,
 ) -> Result<(), NetworkSyncError> {
     match event {
         NodeEvent::EpochAdvanced { epoch } => {
-            handle_epoch_advanced(ctx, sync_handler, epoch).await?;
+            handle_epoch_advanced(&ctx, sync_handler, epoch).await?;
         }
 
         NodeEvent::NodeSynced {
@@ -111,7 +119,7 @@ async fn handle_event(
 
         NodeEvent::SpoolRecoveryNeeded { spool_idx } => {
             warn!(spool = spool_idx, "Spool needs erasure recovery");
-            if let Err(e) = queue_spool_for_recovery(ctx, spool_idx).await {
+            if let Err(e) = queue_spool_for_recovery(&ctx, spool_idx).await {
                 error!(spool = spool_idx, error = %e, "Failed to queue spool for recovery");
             }
         }
@@ -123,7 +131,7 @@ async fn handle_event(
                     epoch = epoch.as_u64(),
                     "Quorum reached and local sync complete, submitting SyncEpoch"
                 );
-                if let Err(e) = submit_sync_epoch(ctx, epoch).await {
+                if let Err(e) = submit_sync_epoch(&ctx, epoch).await {
                     error!(epoch = epoch.as_u64(), error = %e, "Failed to submit SyncEpoch");
                 }
             } else {
@@ -141,8 +149,42 @@ async fn handle_event(
                 epoch = epoch.as_u64(),
                 "Epoch is Active, submitting AdvancePool"
             );
-            if let Err(e) = submit_advance_pool(ctx, epoch).await {
+            if let Err(e) = submit_advance_pool(&ctx, epoch).await {
                 error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
+            }
+
+            // Start monitoring for NextReady state to auto-advance epoch
+            let ctx_clone = Arc::clone(&ctx);
+            tokio::spawn(async move {
+                monitor_epoch_for_advancement(ctx_clone, epoch).await;
+            });
+        }
+
+        NodeEvent::EpochNextReady {
+            epoch,
+            advance_after,
+        } => {
+            // Epoch is ready for advancement - check timing and submit
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            if now >= advance_after {
+                info!(
+                    epoch = epoch.as_u64(),
+                    "Epoch ready and time elapsed, submitting AdvanceEpoch"
+                );
+                if let Err(e) = submit_advance_epoch(&ctx, epoch).await {
+                    error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+                }
+            } else {
+                let wait_secs = advance_after - now;
+                info!(
+                    epoch = epoch.as_u64(),
+                    wait_secs = wait_secs,
+                    "Epoch ready but time not elapsed, waiting"
+                );
             }
         }
     }
@@ -419,6 +461,143 @@ async fn submit_advance_pool(
     }
 
     Ok(())
+}
+
+/// Submit AdvanceEpoch transaction to transition to the next epoch.
+///
+/// This triggers committee rotation and starts the new epoch's Syncing phase.
+/// Can only succeed when epoch is in NextReady state and EPOCH_DURATION has elapsed.
+async fn submit_advance_epoch(
+    ctx: &NodeContext,
+    epoch: EpochNumber,
+) -> Result<(), NetworkSyncError> {
+    let authority = ctx.keypair.pubkey();
+
+    let ix = build_advance_epoch_ix(authority, authority);
+
+    info!(epoch = epoch.as_u64(), "Submitting AdvanceEpoch");
+
+    // Submit the transaction
+    match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
+        Ok(_) => {
+            info!(epoch = epoch.as_u64(), "AdvanceEpoch submitted successfully");
+            ctx.metrics.epoch_transitions_total.inc();
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            // TooSoon (0x41) - epoch duration hasn't elapsed yet
+            if err_str.contains("0x41") || err_str.contains("TooSoon") {
+                debug!(
+                    epoch = epoch.as_u64(),
+                    "Epoch duration not elapsed yet, will retry"
+                );
+                return Ok(());
+            }
+            // BadEpochState (0x40) - epoch not in NextReady state
+            if err_str.contains("0x40") || err_str.contains("BadEpochState") {
+                debug!(
+                    epoch = epoch.as_u64(),
+                    "Epoch not in NextReady state, will retry"
+                );
+                return Ok(());
+            }
+            return Err(NetworkSyncError::Rpc(format!(
+                "Failed to submit AdvanceEpoch: {}",
+                e
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Monitor epoch state and submit AdvanceEpoch when conditions are met.
+///
+/// Polls epoch state periodically after Active phase is entered.
+/// When NextReady is reached and EPOCH_DURATION has elapsed, submits AdvanceEpoch.
+async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: EpochNumber) {
+    info!(
+        epoch = starting_epoch.as_u64(),
+        "Starting epoch advancement monitor"
+    );
+
+    let start_time = std::time::Instant::now();
+
+    loop {
+        tokio::time::sleep(EPOCH_ADVANCE_POLL_INTERVAL).await;
+
+        // Safety limit - exit if we've been monitoring too long
+        if start_time.elapsed() > EPOCH_ADVANCE_MONITOR_TIMEOUT {
+            warn!(
+                epoch = starting_epoch.as_u64(),
+                "Epoch advancement monitor timed out"
+            );
+            return;
+        }
+
+        // Fetch current epoch state from chain
+        let epoch = match ctx.rpc.get_epoch().await {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(error = %e, "Failed to fetch epoch state, retrying");
+                continue;
+            }
+        };
+
+        // If we've moved to a new epoch, stop monitoring
+        if epoch.id > starting_epoch {
+            info!(
+                old_epoch = starting_epoch.as_u64(),
+                new_epoch = epoch.id.as_u64(),
+                "Epoch already advanced, stopping monitor"
+            );
+            return;
+        }
+
+        // Check if epoch is in NextReady state
+        if !epoch.state.is_next_ready() {
+            debug!(
+                epoch = epoch.id.as_u64(),
+                "Epoch not in NextReady state yet"
+            );
+            continue;
+        }
+
+        // Check if enough time has elapsed
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let advance_after = epoch.last_epoch + EPOCH_DURATION;
+
+        if now < advance_after {
+            let wait_secs = advance_after - now;
+            debug!(
+                epoch = epoch.id.as_u64(),
+                wait_secs = wait_secs,
+                "NextReady but time not elapsed"
+            );
+            continue;
+        }
+
+        // Both conditions met - submit AdvanceEpoch
+        info!(
+            epoch = epoch.id.as_u64(),
+            "NextReady and time elapsed, submitting AdvanceEpoch"
+        );
+
+        match submit_advance_epoch(&ctx, epoch.id).await {
+            Ok(_) => {
+                info!(epoch = epoch.id.as_u64(), "AdvanceEpoch submitted");
+                return;
+            }
+            Err(e) => {
+                // Log error but continue polling - another node may have advanced it
+                warn!(epoch = epoch.id.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+            }
+        }
+    }
 }
 
 /// Queue all slices in a spool for erasure recovery.

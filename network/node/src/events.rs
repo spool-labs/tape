@@ -59,4 +59,13 @@ pub enum NodeEvent {
         /// The epoch that is now active.
         epoch: EpochNumber,
     },
+
+    /// Epoch has transitioned to NextReady state (pool advancement quorum reached).
+    /// Triggers automatic epoch advancement once EPOCH_DURATION has elapsed.
+    EpochNextReady {
+        /// The epoch that is now ready for advancement.
+        epoch: EpochNumber,
+        /// Unix timestamp when epoch can be advanced (last_epoch + EPOCH_DURATION).
+        advance_after: i64,
+    },
 }
