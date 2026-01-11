@@ -149,7 +149,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                         .await
                         .map_err(|_| UploadError::Semaphore)?;
 
-                    let address = addr.to_string();
+                    let address = format!("http://{}", addr);
                     let client = factory.client_for_address(&address)?;
 
                     let mut failed_slices = Vec::new();

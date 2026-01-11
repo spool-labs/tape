@@ -123,12 +123,13 @@ impl TapeClient {
         &self,
         track_id: &str,
     ) -> Result<Vec<(u16, Vec<u8>)>, DownloadError> {
-        // Collect addresses from the router
+        // Collect addresses from the router, prefixing with http:// for plain addresses
+        // (NodeClientBuilder defaults to https:// which won't work for plain HTTP nodes)
         let addresses: Vec<String> = (0..self.router.committee_size())
             .filter_map(|idx| {
                 self.router.get_cached_address(idx)
                     .and_then(|addr| addr.to_socket_addr().ok())
-                    .map(|sock| sock.to_string())
+                    .map(|sock| format!("http://{}", sock))
             })
             .collect();
 
@@ -250,12 +251,12 @@ impl TapeClient {
     pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
         use rand::seq::SliceRandom;
 
-        // Collect addresses from the router
+        // Collect addresses from the router, prefixing with http:// for plain addresses
         let addresses: Vec<String> = (0..self.router.committee_size())
             .filter_map(|idx| {
                 self.router.get_cached_address(idx)
                     .and_then(|addr| addr.to_socket_addr().ok())
-                    .map(|sock| sock.to_string())
+                    .map(|sock| format!("http://{}", sock))
             })
             .collect();
 

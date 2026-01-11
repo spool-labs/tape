@@ -32,17 +32,50 @@ use tape_store::TapeStore;
 use tokio::net::TcpListener;
 
 /// Start a test node on a random port with in-memory storage.
+/// Uses default single-node setup where node owns all spools.
 async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    start_test_node_with_config(0, 1).await
+}
+
+/// Start a test node with specific configuration.
+/// - `node_index`: This node's index in the committee (0-based)
+/// - `total_nodes`: Total number of nodes in the cluster
+async fn start_test_node_with_config(
+    node_index: usize,
+    total_nodes: usize,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let metrics = Arc::new(NodeMetrics::new());
     let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
 
-    // Create test BLS keypair and control plane with zeroed state
+    // Create test BLS keypair
     let bls_keypair = Arc::new(BlsPrivateKey::from_random());
-    let control_plane = Arc::new(ControlPlane::new(
-        System::zeroed(),
-        Epoch::zeroed(),
-        Node::zeroed(),
-    ));
+
+    // Set up system state with committee and spool assignment
+    let mut system = System::zeroed();
+
+    // Create committee with all nodes
+    let mut committee: Committee<MEMBER_COUNT> = Committee::new();
+    for i in 0..total_nodes.min(MEMBER_COUNT) {
+        let member = CommitteeMember::new(
+            NodeId::new(i as u64 + 1),
+            Coin::<TAPE>::new(1000 - i as u64),
+        );
+        let _ = committee.try_join(&member);
+    }
+    system.committee = committee;
+
+    // Create uniform spool assignment (round-robin across nodes)
+    let mut spools = [0u8; SLICE_COUNT];
+    for i in 0..SLICE_COUNT {
+        spools[i] = (i % total_nodes) as u8;
+    }
+    system.spools = SpoolAssignment::new(spools);
+
+    // Set up this node's identity
+    let mut node = Node::zeroed();
+    node.id = NodeId::new(node_index as u64 + 1);
+
+    let control_plane = Arc::new(ControlPlane::new(system, Epoch::zeroed(), node));
 
     let state = ApiState {
         metrics,
@@ -63,11 +96,11 @@ async fn start_test_node() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
-/// Start multiple test nodes.
+/// Start multiple test nodes, each configured with proper spool ownership.
 async fn start_test_nodes(count: usize) -> Vec<(SocketAddr, tokio::task::JoinHandle<()>)> {
     let mut nodes = Vec::with_capacity(count);
-    for _ in 0..count {
-        nodes.push(start_test_node().await);
+    for i in 0..count {
+        nodes.push(start_test_node_with_config(i, count).await);
     }
     nodes
 }
@@ -163,10 +196,7 @@ async fn test_upload_download_roundtrip() {
         .await
         .expect("upload should succeed");
 
-    println!(
-        "Upload complete! Commitment: {:?}",
-        &commitment.as_ref()[..8]
-    );
+    println!("Upload complete!");
 
     // Download
     let recovered = client
