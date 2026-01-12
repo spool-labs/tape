@@ -28,152 +28,25 @@
 //! cargo test -p rpc-client --test committee_stake_sync -- --ignored --test-threads=1
 //! ```
 
+mod common;
+
+use common::{create_client, initialize_system, setup_validator, ValidatorGuard};
 use rpc_client::RpcClient;
 use rpc_test::TestRpc;
-use solana_sdk::bpf_loader_upgradeable;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::pubkey;
 use solana_sdk::signature::{Keypair, Signer};
-use solana_test_validator::{TestValidatorGenesis, UpgradeableProgramInfo};
-use std::path::PathBuf;
 
 use tape_api::instruction::{
-    build_advance_epoch_ix, build_advance_pool_ix, build_create_system_ix,
-    build_expand_system_ix, build_initialize_ix, build_initialize_mint_ix,
-    build_join_network_ix, build_register_node_ix, build_stake_with_pool_ix,
+    build_advance_epoch_ix, build_advance_pool_ix, build_join_network_ix, build_register_node_ix,
+    build_stake_with_pool_ix,
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
 use tape_core::prelude::*;
 
-/// Metaplex Token Metadata program ID
-const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-
 // =============================================================================
-// Test Setup Helpers
+// Test-Specific Helpers
 // =============================================================================
-
-fn workspace_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-fn program_path(name: &str) -> PathBuf {
-    workspace_root()
-        .join("target/deploy")
-        .join(format!("{}.so", name))
-}
-
-fn external_program_path(name: &str) -> PathBuf {
-    workspace_root()
-        .join("test/elfs")
-        .join(format!("{}.so", name))
-}
-
-fn program_info(name: &str, program_id: Pubkey) -> UpgradeableProgramInfo {
-    UpgradeableProgramInfo {
-        program_id,
-        loader: bpf_loader_upgradeable::id(),
-        upgrade_authority: Pubkey::default(),
-        program_path: program_path(name),
-    }
-}
-
-fn external_program_info(name: &str, program_id: Pubkey) -> UpgradeableProgramInfo {
-    UpgradeableProgramInfo {
-        program_id,
-        loader: bpf_loader_upgradeable::id(),
-        upgrade_authority: Pubkey::default(),
-        program_path: external_program_path(name),
-    }
-}
-
-async fn setup_validator() -> (solana_test_validator::TestValidator, Keypair) {
-    TestValidatorGenesis::default()
-        .add_upgradeable_programs_with_path(&[
-            program_info("tapedrive", tape_api::program::tapedrive::ID),
-            program_info("token", tape_api::program::token::ID),
-            program_info("exchange", tape_api::program::exchange::ID),
-            program_info("staking", tape_api::program::staking::ID),
-            external_program_info("mpl_token_metadata", MPL_TOKEN_METADATA_ID),
-        ])
-        .start_async()
-        .await
-}
-
-fn create_client(validator: &solana_test_validator::TestValidator) -> RpcClient<TestRpc> {
-    let rpc = TestRpc::new(validator);
-    RpcClient::from_rpc(rpc)
-}
-
-/// Guard for cleanup without blocking
-struct ValidatorGuard(Option<solana_test_validator::TestValidator>);
-
-impl ValidatorGuard {
-    fn new(validator: solana_test_validator::TestValidator) -> Self {
-        Self(Some(validator))
-    }
-
-    fn validator(&self) -> &solana_test_validator::TestValidator {
-        self.0.as_ref().unwrap()
-    }
-}
-
-impl Drop for ValidatorGuard {
-    fn drop(&mut self) {
-        if let Some(v) = self.0.take() {
-            std::thread::spawn(move || drop(v));
-        }
-    }
-}
-
-/// Initialize the full system (mint + system + expand + epoch/archive)
-async fn initialize_system(client: &RpcClient<TestRpc>, payer: &Keypair) {
-    // Step 1: Initialize the TAPE token mint (mints MAX_SUPPLY to payer's ATA)
-    let mint_ix = build_initialize_mint_ix(payer.pubkey(), payer.pubkey());
-    client
-        .send_instructions(payer, vec![mint_ix])
-        .await
-        .expect("Failed to initialize mint");
-
-    // Step 2: Create the System singleton
-    let create_system_ix = build_create_system_ix(payer.pubkey(), payer.pubkey());
-    client
-        .send_instructions(payer, vec![create_system_ix])
-        .await
-        .expect("Failed to create system");
-
-    // Step 3: Expand System account to full size (~70KB)
-    for _ in 0..10 {
-        let expand_ix = build_expand_system_ix(payer.pubkey(), payer.pubkey());
-        match client.send_instructions(payer, vec![expand_ix]).await {
-            Ok(_) => {}
-            Err(e) => {
-                let err_str = format!("{:?}", e);
-                if err_str.contains("AccountAlreadyInitialized")
-                    || err_str.contains("already initialized")
-                    || err_str.contains("uninitialized account")
-                {
-                    break;
-                } else {
-                    panic!("Expand failed unexpectedly: {:?}", e);
-                }
-            }
-        }
-    }
-
-    // Step 4: Initialize Epoch and Archive
-    let init_ix = build_initialize_ix(payer.pubkey(), payer.pubkey());
-    client
-        .send_instructions(payer, vec![init_ix])
-        .await
-        .expect("Failed to initialize epoch/archive");
-}
 
 /// Register a node and return its keypair and node address
 async fn register_node(
@@ -228,12 +101,7 @@ async fn stake_to_node(
     node_address: Pubkey,
     amount: Coin<TAPE>,
 ) {
-    let stake_ix = build_stake_with_pool_ix(
-        staker.pubkey(),
-        staker.pubkey(),
-        node_address,
-        amount,
-    );
+    let stake_ix = build_stake_with_pool_ix(staker.pubkey(), staker.pubkey(), node_address, amount);
 
     client
         .send_instructions(staker, vec![stake_ix])
@@ -256,12 +124,13 @@ async fn transfer_tape(
     let dest_ata = ata(recipient);
 
     // Create recipient's ATA if needed
-    let create_ata_ix = spl_associated_token_account::instruction::create_associated_token_account_idempotent(
-        &payer.pubkey(),
-        recipient,
-        &mint_address,
-        &spl_token::id(),
-    );
+    let create_ata_ix =
+        spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+            &payer.pubkey(),
+            recipient,
+            &mint_address,
+            &spl_token::id(),
+        );
 
     // Transfer tokens
     let transfer_ix = spl_token::instruction::transfer(
@@ -286,11 +155,7 @@ async fn join_committee(
     node_keypair: &Keypair,
     node_address: Pubkey,
 ) -> Result<(), String> {
-    let join_ix = build_join_network_ix(
-        node_keypair.pubkey(),
-        node_keypair.pubkey(),
-        node_address,
-    );
+    let join_ix = build_join_network_ix(node_keypair.pubkey(), node_keypair.pubkey(), node_address);
 
     client
         .send_instructions(node_keypair, vec![join_ix])
@@ -316,11 +181,8 @@ async fn advance_pool(
     node_keypair: &Keypair,
     node_address: Pubkey,
 ) -> Result<(), String> {
-    let advance_ix = build_advance_pool_ix(
-        node_keypair.pubkey(),
-        node_keypair.pubkey(),
-        node_address,
-    );
+    let advance_ix =
+        build_advance_pool_ix(node_keypair.pubkey(), node_keypair.pubkey(), node_address);
 
     client
         .send_instructions(node_keypair, vec![advance_ix])
@@ -552,7 +414,9 @@ async fn test_fresh_stake_on_rejoin() {
     let nodes = vec![(&node_keypair, node_address)];
 
     // First advance - node moves to committee
-    advance_epoch(&client, &payer).await.expect("Failed to advance epoch 1");
+    advance_epoch(&client, &payer)
+        .await
+        .expect("Failed to advance epoch 1");
     println!("Epoch 1 advanced - node in committee");
 
     // Subsequent advances to activate stake
@@ -561,12 +425,18 @@ async fn test_fresh_stake_on_rejoin() {
 
     // Now test the re-join flow
     // Advance epoch again (committee_next is cleared)
-    advance_epoch(&client, &payer).await.expect("Failed to advance epoch");
+    advance_epoch(&client, &payer)
+        .await
+        .expect("Failed to advance epoch");
     println!("Epoch advanced - committee_next is now empty");
 
     // Verify committee_next is empty
     let system = client.get_system().await.expect("Failed to get system");
-    assert_eq!(system.committee_next.size(), 0, "committee_next should be empty");
+    assert_eq!(
+        system.committee_next.size(),
+        0,
+        "committee_next should be empty"
+    );
 
     // Node calls AdvancePool (required before re-join)
     advance_pool(&client, &node_keypair, node_address)
@@ -580,7 +450,10 @@ async fn test_fresh_stake_on_rejoin() {
         .await
         .expect("Failed to get node");
     let fresh_stake = node_after_advance.pool.stake;
-    println!("Fresh pool.stake after AdvancePool: {}", fresh_stake.as_u64());
+    println!(
+        "Fresh pool.stake after AdvancePool: {}",
+        fresh_stake.as_u64()
+    );
 
     // Verify stake is non-zero (it should be active now)
     assert!(
@@ -672,10 +545,7 @@ async fn test_returning_node_new_join_path() {
 
     // Advance multiple epochs to activate stake (stake activates at E+2)
     // Keep both nodes in committee during stake activation
-    let both_nodes = vec![
-        (&node1_keypair, node1_address),
-        (&node2_keypair, node2_address),
-    ];
+    let both_nodes = vec![(&node1_keypair, node1_address), (&node2_keypair, node2_address)];
     advance_epochs_with_nodes(&client, &payer, &both_nodes, 2).await;
     println!("Stake activated for both nodes");
 
