@@ -42,7 +42,8 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::BadEpochState.into());
     }
 
-    if node.latest_epoch >= epoch.id {
+    // Check if already synced this epoch
+    if node.latest_sync_epoch >= epoch.id {
         return Err(TapeError::AlreadySynced.into());
     }
 
@@ -85,7 +86,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         epoch.state.set_next_ready();
     }
 
-    node.latest_epoch = current_epoch(epoch);
+    node.latest_sync_epoch = current_epoch(epoch);
 
     NodeSynced {
         node: *node_info.key,
@@ -123,7 +124,7 @@ mod tests {
 
         node.id = NodeId(9000);
         node.authority = authority;
-        node.latest_epoch = EpochNumber(7);
+        node.latest_sync_epoch = EpochNumber(7);
 
         system.committee = Committee::from_members(&[
             member(3, 3_000),
@@ -173,7 +174,7 @@ mod tests {
                 ).build(),
                 Check::account(&node_address).data(
                     Node {
-                        latest_epoch: EpochNumber(42),
+                        latest_sync_epoch: EpochNumber(42),
                         ..node
                     }.pack().as_ref()
                 ).build(),
@@ -182,7 +183,7 @@ mod tests {
 
         // Test: fail to sync again
 
-        node.latest_epoch = EpochNumber(42);
+        node.latest_sync_epoch = EpochNumber(42);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -204,7 +205,7 @@ mod tests {
         // Add non-empty committee_prev so we transition to Active (not NextReady)
         system.committee_prev = Committee::from_members(&[member(99, 1_000)]);
 
-        node.latest_epoch = EpochNumber(7);
+        node.latest_sync_epoch = EpochNumber(7);
         system.spools = SpoolAssignment::try_from_counts(
             &[250, 700, 74]
         ).expect("spools");
@@ -243,7 +244,7 @@ mod tests {
                 ).build(),
                 Check::account(&node_address).data(
                     Node {
-                        latest_epoch: EpochNumber(42),
+                        latest_sync_epoch: EpochNumber(42),
                         ..node
                     }.pack().as_ref()
                 ).build(),

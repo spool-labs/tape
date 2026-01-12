@@ -82,7 +82,7 @@ async fn list_peers(ctx: &Context, show_all: bool) -> Result<()> {
         nodes.into_iter()
             .filter(|(_, node)| {
                 // Consider a node "active" if it was updated in the last 2 epochs
-                let epoch_diff = epoch.id.as_u64().saturating_sub(node.latest_epoch.as_u64());
+                let epoch_diff = epoch.id.as_u64().saturating_sub(node.latest_advance_epoch.as_u64());
                 epoch_diff <= 2
             })
             .collect()
@@ -102,7 +102,7 @@ async fn list_peers(ctx: &Context, show_all: bool) -> Result<()> {
                     "name": name,
                     "network_address": address,
                     "registered_epoch": node.registered_epoch.as_u64(),
-                    "latest_epoch": node.latest_epoch.as_u64(),
+                    "latest_advance_epoch": node.latest_advance_epoch.as_u64(),
                     "storage_capacity": node.preferences.storage_capacity.as_u64(),
                 })
             }).collect();
@@ -124,7 +124,7 @@ async fn list_peers(ctx: &Context, show_all: bool) -> Result<()> {
                     &if name.is_empty() { "(unnamed)".to_string() } else { name },
                     &address,
                     &format!("{} MB", node.preferences.storage_capacity.as_u64()),
-                    &node.latest_epoch.as_u64().to_string(),
+                    &node.latest_advance_epoch.as_u64().to_string(),
                 ]);
             }
 
@@ -299,7 +299,7 @@ async fn show_status(ctx: &Context) -> Result<()> {
     // Count active nodes (updated in last 2 epochs)
     let active_nodes = nodes.iter()
         .filter(|(_, node)| {
-            let epoch_diff = epoch.id.as_u64().saturating_sub(node.latest_epoch.as_u64());
+            let epoch_diff = epoch.id.as_u64().saturating_sub(node.latest_advance_epoch.as_u64());
             epoch_diff <= 2
         })
         .count();

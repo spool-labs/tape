@@ -84,7 +84,8 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     node.id                   = node_number.into();
     node.authority            = *authority_info.key;
     node.registered_epoch     = current_epoch(epoch);
-    node.latest_epoch         = current_epoch(epoch);
+    node.latest_sync_epoch    = current_epoch(epoch);
+    node.latest_advance_epoch = current_epoch(epoch);
 
     node.blacklist = Blacklist::new();
     node.pool = StakingPool::new(commission_rate);
@@ -114,7 +115,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     history.node              = node_address;
     history.registered_epoch  = node.registered_epoch;
-    history.latest_epoch      = node.latest_epoch;
+    history.latest_epoch      = node.latest_advance_epoch;
     history.inner             = PoolHistory::new();
 
     NodeRegistered {
@@ -220,7 +221,8 @@ mod tests {
                             storage_capacity: StorageUnits(1_000_000),
                         },
                         registered_epoch: epoch.id,
-                        latest_epoch: epoch.id,
+                        latest_sync_epoch: epoch.id,
+                        latest_advance_epoch: epoch.id,
                         ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),

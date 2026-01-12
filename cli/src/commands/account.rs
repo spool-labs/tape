@@ -548,7 +548,8 @@ fn print_node_account(node: &Node) {
     println!();
     println!("Registration:");
     println!("  Registered Epoch:  {}", node.registered_epoch);
-    println!("  Latest Epoch:      {}", node.latest_epoch);
+    println!("  Latest Sync:       {}", node.latest_sync_epoch);
+    println!("  Latest Advance:    {}", node.latest_advance_epoch);
 
     println!();
     println!("Staking Pool:");

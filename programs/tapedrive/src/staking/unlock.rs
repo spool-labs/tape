@@ -37,7 +37,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .as_account::<History>(&tapedrive::ID)?
         .assert(|h| h.node == *node_info.key)?;
 
-    if node.latest_epoch < prev_epoch(epoch) {
+    if node.latest_advance_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
@@ -108,7 +108,7 @@ mod tests {
         epoch.id = e2;
 
         node.id = NodeId(5);
-        node.latest_epoch = e2;
+        node.latest_advance_epoch = e2;
         node.pool.stake = TAPE(5000);
 
         history.node = pool_address;

@@ -438,21 +438,45 @@ async fn submit_advance_pool(
         "Submitting AdvancePool"
     );
 
-    // Submit the transaction
-    match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
-        Ok(_) => {
-            info!(epoch = epoch.as_u64(), "AdvancePool submitted successfully");
+    // Submit the transaction with timing
+    let start = std::time::Instant::now();
+    info!(epoch = epoch.as_u64(), "AdvancePool RPC call starting");
+
+    let result = ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await;
+    let elapsed = start.elapsed();
+
+    info!(
+        epoch = epoch.as_u64(),
+        elapsed_ms = elapsed.as_millis() as u64,
+        "AdvancePool RPC call completed"
+    );
+
+    match result {
+        Ok(sig) => {
+            info!(
+                epoch = epoch.as_u64(),
+                signature = %sig,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "AdvancePool submitted successfully"
+            );
         }
         Err(e) => {
             // Check if it's AlreadyAdvanced error (0x62) - this is OK
             let err_str = e.to_string();
             if err_str.contains("0x62") || err_str.contains("AlreadyAdvanced") {
-                debug!(
+                info!(
                     epoch = epoch.as_u64(),
+                    elapsed_ms = elapsed.as_millis() as u64,
                     "Already advanced for this epoch, skipping"
                 );
                 return Ok(());
             }
+            error!(
+                epoch = epoch.as_u64(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                error = %e,
+                "AdvancePool RPC call failed"
+            );
             return Err(NetworkSyncError::Rpc(format!(
                 "Failed to submit AdvancePool: {}",
                 e

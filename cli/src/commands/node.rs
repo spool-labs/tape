@@ -563,7 +563,8 @@ async fn show_status(ctx: &Context, config: Option<PathBuf>, node: Option<String
     println!();
     println!("Epochs:");
     println!("  Registered:   {}", node_account.registered_epoch);
-    println!("  Latest:       {}", node_account.latest_epoch);
+    println!("  Latest Sync:  {}", node_account.latest_sync_epoch);
+    println!("  Latest Adv:   {}", node_account.latest_advance_epoch);
 
     Ok(())
 }

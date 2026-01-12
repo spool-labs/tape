@@ -57,7 +57,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .assert(|t| t.owner() == *authority_info.key)?
         .assert(|t| t.mint() == MINT_ADDRESS)?;
 
-    if node.latest_epoch < prev_epoch(epoch) {
+    if node.latest_advance_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
@@ -172,7 +172,7 @@ mod tests {
         let e2: EpochNumber = e1 + EpochNumber(1);
 
         node.id = NodeId(4);
-        node.latest_epoch = epoch.id;
+        node.latest_advance_epoch = epoch.id;
         node.pool.stake = tape(5000);
         node.pool.shares = shares(5000);
 

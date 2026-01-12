@@ -52,8 +52,8 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::BadEpochState.into());
     }
 
-    // If this pool is already updated for this epoch, can't advance again
-    if node.latest_epoch >= epoch.id {
+    // Check if already advanced this epoch
+    if node.latest_advance_epoch >= epoch.id {
         return Err(TapeError::AlreadyAdvanced.into());
     }
 
@@ -91,7 +91,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     // Update node
 
-    node.latest_epoch = current_epoch(epoch);
+    node.latest_advance_epoch = current_epoch(epoch);
     node.pool
         .advance_epoch(current_epoch(epoch), rewards_owed)
         .map_err(|_| ProgramError::Custom(1))?;
@@ -101,7 +101,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let new_rate = node.pool
         .get_current_rate();
 
-    history.latest_epoch = node.latest_epoch;
+    history.latest_epoch = current_epoch(epoch);
     history.inner.push(current_epoch(epoch), new_rate);
 
     // Archive Reward Tracking
@@ -180,7 +180,7 @@ mod tests {
                 next_bls_pubkey: BlsPubkey::new_unique(),
                 ..NodeMetadata::zeroed()
             },
-            latest_epoch: EpochNumber(6),
+            latest_advance_epoch: EpochNumber(6),
             ..Node::zeroed()
         };
         let mut history = History {
@@ -230,7 +230,7 @@ mod tests {
             .rewards_paid
             .saturating_add(rewards_owed.into());
 
-        node.latest_epoch = e0;
+        node.latest_advance_epoch = e0;
         node.pool
             .advance_epoch(e0, rewards_owed)
             .expect("advance epoch");
@@ -239,7 +239,7 @@ mod tests {
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
 
         history.inner.push(e0, new_rate);
-        history.latest_epoch = node.latest_epoch;
+        history.latest_epoch = e0;
 
         let env = test_env();
         env.process_instruction(
@@ -295,7 +295,7 @@ mod tests {
                 next_bls_pubkey: BlsPubkey::new_unique(),
                 ..NodeMetadata::zeroed()
             },
-            latest_epoch: EpochNumber(6),
+            latest_advance_epoch: EpochNumber(6),
             ..Node::zeroed()
         };
 
@@ -343,12 +343,12 @@ mod tests {
         // 700 spools > 683 threshold, so should transition
         epoch.state.set_next_ready();
 
-        node.latest_epoch = e0;
+        node.latest_advance_epoch = e0;
         node.pool.advance_epoch(e0, rewards_owed).unwrap();
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
 
         history.inner.push(e0, node.pool.get_current_rate());
-        history.latest_epoch = node.latest_epoch;
+        history.latest_epoch = e0;
 
         let env = test_env();
         env.process_instruction(
@@ -416,7 +416,7 @@ mod tests {
                 next_bls_pubkey: BlsPubkey::new_unique(),
                 ..NodeMetadata::zeroed()
             },
-            latest_epoch: EpochNumber(1),
+            latest_advance_epoch: EpochNumber(1),
             ..Node::zeroed()
         };
 
@@ -449,12 +449,12 @@ mod tests {
         // rewards_owed should be zero (committee_prev empty)
         let rewards_owed = TAPE::zero();
 
-        node.latest_epoch = e0;
+        node.latest_advance_epoch = e0;
         node.pool.advance_epoch(e0, rewards_owed).unwrap();
         node.metadata.bls_pubkey = node.metadata.next_bls_pubkey;
 
         history.inner.push(e0, node.pool.get_current_rate());
-        history.latest_epoch = node.latest_epoch;
+        history.latest_epoch = node.latest_advance_epoch;
 
         // Epoch should transition to next_ready immediately
         epoch.state.set_next_ready();
@@ -537,7 +537,7 @@ mod tests {
                 next_bls_pubkey: BlsPubkey::new_unique(),
                 ..NodeMetadata::zeroed()
             },
-            latest_epoch: EpochNumber(4),
+            latest_advance_epoch: EpochNumber(4),
             ..Node::zeroed()
         };
 
@@ -572,7 +572,7 @@ mod tests {
         );
 
         let mut expected_node = node.clone();
-        expected_node.latest_epoch = EpochNumber(5);
+        expected_node.latest_advance_epoch = EpochNumber(5);
         expected_node.pool.advance_epoch(EpochNumber(5), rewards_owed).unwrap();
         expected_node.metadata.bls_pubkey = expected_node.metadata.next_bls_pubkey;
 
