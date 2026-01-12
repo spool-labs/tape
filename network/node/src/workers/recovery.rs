@@ -100,6 +100,12 @@ async fn process_recovery_queue(
     ctx: &NodeContext,
     factory: &NodeCommunicationFactory,
 ) -> Result<(), RecoveryError> {
+    // Skip recovery during catch-up - committee data may be stale
+    if ctx.control_plane.is_catching_up() {
+        debug!("Skipping recovery during catch-up");
+        return Ok(());
+    }
+
     // Get all pending recoveries
     let pending = ctx
         .storage

@@ -197,9 +197,6 @@ async fn process_instruction(
             );
 
             // Update control plane with new epoch from event
-            // Note: For real-time operation, we may still want to refresh
-            // system/epoch accounts periodically, but for catch-up this
-            // event data is sufficient and correct.
             ctx.control_plane.set_current_epoch(new_epoch);
 
             // Start tracking node syncs for this epoch

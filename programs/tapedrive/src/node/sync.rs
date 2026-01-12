@@ -61,10 +61,10 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let spools = system.spools
         .spools_for_member(member_index);
 
-    // Verify the seat hash matches
-    let seat_hash = get_spool_hash(&spools);
-    if seat_hash != args.spools {
-        return Err(TapeError::BadSeatHash.into());
+    // Verify the spool hash matches
+    let spool_hash = get_spool_hash(&spools);
+    if spool_hash != args.spools {
+        return Err(TapeError::BadSpoolHash.into());
     }
 
     // Verify the epoch ID matches

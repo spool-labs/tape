@@ -53,7 +53,15 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         if node.latest_advance_epoch != epoch.id {
             return Err(TapeError::NodeStale.into());
         }
-        node.pool.stake
+        // Use pool.stake if available, otherwise fall back to NEW JOIN logic
+        // This handles bootstrap case where stake was deposited but hasn't activated yet
+        if !node.pool.stake.is_zero() {
+            node.pool.stake
+        } else {
+            // Fall back to NEW JOIN logic for bootstrap nodes with pending stake
+            let activation_epoch = next_epoch(epoch);
+            node.pool.calculate_stake_at(activation_epoch)
+        }
     } else {
         // NEW JOIN: Use projected stake
         // During low-quorum mode, include all scheduled stake (bypass E+2 delay)
@@ -486,6 +494,88 @@ mod tests {
         let joined_member = CommitteeMember {
             id: node.id,
             stake: TAPE(6_000),  // Fresh stake from pool, not 1000 from committee
+            key: node.metadata.bls_pubkey,
+            blacklist: node.blacklist.total_size(),
+            preferences: node.preferences.clone(),
+            ..CommitteeMember::zeroed()
+        };
+
+        system
+            .committee_next
+            .try_join(&joined_member)
+            .expect("join committee");
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&system_address)
+                    .data(system.pack().as_ref())
+                    .build(),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_rejoin_bootstrap_with_pending_stake() {
+        // Test bootstrap case: node is in current committee with 0 pool.stake
+        // because stake was deposited but hasn't activated yet (E+2 delay)
+        // Should fall back to NEW JOIN logic and use pending stake
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let (node_address, _) = node_pda(authority);
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let instruction = build_join_network_ix(fee_payer, authority, node_address);
+
+        let mut system = System::zeroed();
+        let mut epoch = Epoch::zeroed();
+        let mut node = Node::zeroed();
+
+        // Current epoch is 2, stake was deposited at epoch 1 and activates at epoch 3
+        epoch.id = EpochNumber(2);
+
+        node.id = NodeId(5);
+        node.authority = authority;
+        // Bootstrap: pool.stake is 0 because stake hasn't activated yet
+        node.pool.stake = TAPE(0);
+        node.pool.shares = ShareAmount(0);
+        // AdvancePool was called this epoch (required for RE-JOIN)
+        node.latest_advance_epoch = EpochNumber(2);
+        // Stake scheduled for epoch 3 (E+2 from deposit at epoch 1)
+        node.pool.schedule.stake(EpochNumber(3), TAPE(1_000)).unwrap();
+        node.preferences = NodePreferences {
+            storage_price: TAPE(10),
+            storage_capacity: StorageUnits(1_000_000),
+        };
+
+        // Node IS in current committee (RE-JOIN path) but has 0 stake
+        system.committee = Committee::from_members(&[
+            member(5, 1_000),  // Our node (stake shown in committee from earlier)
+            member(6, 2_000),
+        ]);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        // Expected: falls back to NEW JOIN logic, uses calculate_stake_at(epoch 3)
+        // Stake scheduled for epoch 3 will be included
+        let activation_epoch = EpochNumber(3);
+        let balance = node.pool.calculate_stake_at(activation_epoch);
+        assert_eq!(balance, TAPE(1_000));
+
+        let joined_member = CommitteeMember {
+            id: node.id,
+            stake: balance,
             key: node.metadata.bls_pubkey,
             blacklist: node.blacklist.total_size(),
             preferences: node.preferences.clone(),

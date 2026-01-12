@@ -125,6 +125,12 @@ async fn handle_event(
         }
 
         NodeEvent::EpochSyncReady { epoch } => {
+            // Skip stale epochs
+            if ctx.control_plane.is_stale_epoch(epoch) {
+                debug!(epoch = epoch.as_u64(), "Skipping EpochSyncReady: stale epoch");
+                return Ok(());
+            }
+
             // Only submit SyncEpoch if our local sync is complete
             if ctx.control_plane.is_local_sync_complete(epoch) {
                 info!(
@@ -143,6 +149,12 @@ async fn handle_event(
         }
 
         NodeEvent::EpochSettling { epoch } => {
+            // Skip stale epochs
+            if ctx.control_plane.is_stale_epoch(epoch) {
+                debug!(epoch = epoch.as_u64(), "Skipping EpochSettling: stale epoch");
+                return Ok(());
+            }
+
             // Epoch has transitioned to Settling - submit AdvancePool to contribute
             // weight toward Active transition
             info!(
@@ -174,6 +186,12 @@ async fn handle_event(
             epoch,
             advance_after,
         } => {
+            // Skip stale epochs
+            if ctx.control_plane.is_stale_epoch(epoch) {
+                debug!(epoch = epoch.as_u64(), "Skipping EpochActive: stale epoch");
+                return Ok(());
+            }
+
             // Epoch is ready for advancement - check timing and submit
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -210,20 +228,43 @@ async fn handle_epoch_advanced(
 ) -> Result<(), NetworkSyncError> {
     info!(epoch = new_epoch.as_u64(), "Handling epoch advancement");
 
-    // Check if we're in the committee
-    if !ctx.is_in_committee() {
-        info!("Not in current committee, skipping epoch sync");
-        return Ok(());
-    }
-
-    // Fetch current epoch state from chain to check if syncing is needed.
-    // In low-quorum scenarios, the epoch may skip directly to Active.
+    // Fetch current epoch state from chain.
     let epoch = ctx
         .rpc
         .get_epoch()
         .await
         .map_err(|e| NetworkSyncError::Rpc(format!("Failed to fetch epoch: {}", e)))?;
 
+    // Update chain epoch for catch-up detection
+    ctx.control_plane.set_chain_epoch(epoch.id);
+
+    // Skip stale epochs - we're catching up on historical events
+    if ctx.control_plane.is_stale_epoch(new_epoch) {
+        info!(
+            event_epoch = new_epoch.as_u64(),
+            chain_epoch = epoch.id.as_u64(),
+            "Stale epoch: skipping (catching up on historical events)"
+        );
+        return Ok(());
+    }
+
+    // Real-time mode: we're processing the current epoch's AdvanceEpoch event.
+    // Fetch fresh system state since the committee just rotated.
+    info!(epoch = new_epoch.as_u64(), "Real-time mode: refreshing system state");
+    let system = ctx
+        .rpc
+        .get_system()
+        .await
+        .map_err(|e| NetworkSyncError::Rpc(format!("Failed to fetch system: {}", e)))?;
+    ctx.control_plane.update_system(system);
+
+    // Check if we're in the committee (after updating system state)
+    if !ctx.is_in_committee() {
+        info!("Not in current committee, skipping epoch sync");
+        return Ok(());
+    }
+
+    // In low-quorum scenarios, the epoch may skip directly to Active.
     if !epoch.state.is_syncing() {
         info!(
             epoch = new_epoch.as_u64(),
@@ -332,33 +373,18 @@ async fn handle_epoch_advanced(
     }
 
     // Mark local sync as complete - we've synced all our new spools
-    // SyncEpoch will be submitted when quorum is reached (EpochSyncReady event)
     ctx.control_plane.mark_local_sync_complete(new_epoch);
 
     info!(
         epoch = new_epoch.as_u64(),
-        "Local sync complete, waiting for quorum"
+        "Local sync complete, submitting SyncEpoch"
     );
 
-    // If previous committee is empty (first epoch or bootstrap), submit immediately
-    // since there's nothing to actually sync from previous owners.
-    if system.committee_prev_empty() {
-        info!(
-            epoch = new_epoch.as_u64(),
-            "Empty previous committee, submitting SyncEpoch immediately"
-        );
-        submit_sync_epoch(&ctx, new_epoch).await?;
-        return Ok(());
-    }
-
-    // If quorum is already reached (e.g., we're late), check and submit now
-    if ctx.control_plane.is_sync_quorum_reached() {
-        info!(
-            epoch = new_epoch.as_u64(),
-            "Quorum already reached, submitting SyncEpoch"
-        );
-        submit_sync_epoch(&ctx, new_epoch).await?;
-    }
+    // Submit SyncEpoch immediately after local sync completes.
+    // The on-chain logic aggregates weight from all submissions.
+    // Waiting for quorum before submitting would cause a deadlock
+    // since quorum requires submissions from other nodes.
+    submit_sync_epoch(&ctx, new_epoch).await?;
 
     Ok(())
 }

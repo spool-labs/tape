@@ -46,8 +46,8 @@ pub enum TapeError {
     BadMember           = 0x0052,
     #[error("not in committee")]
     NotInCommittee      = 0x0053,
-    #[error("bad seat hash")]
-    BadSeatHash         = 0x0054,
+    #[error("bad spool hash")]
+    BadSpoolHash        = 0x0054,
 
     // Node
     #[error("node stale")]

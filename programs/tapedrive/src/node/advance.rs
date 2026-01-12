@@ -6,7 +6,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let _args = AdvancePool::try_from_bytes(data)?;
     let [
         fee_payer_info,
-        authority_info,
+        _authority_info,  // Not required to be signer - permissionless
 
         system_info,
         archive_info,

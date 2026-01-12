@@ -82,7 +82,7 @@ impl EpochSyncTracker {
 struct ControlPlaneInner {
     /// System account state (committees, spool assignments).
     system: System,
-    /// Current epoch account state.
+    /// Current epoch account state (from event processing).
     epoch: Epoch,
     /// This node's on-chain state.
     node: Node,
@@ -96,12 +96,19 @@ struct ControlPlaneInner {
     sync_tracker: Option<EpochSyncTracker>,
     /// Epoch for which we've completed local sync (our own spools).
     local_sync_complete: Option<EpochNumber>,
+    /// Latest epoch known from the chain (from RPC).
+    /// Used to detect catch-up mode: if epoch.id < chain_epoch, we're catching up.
+    chain_epoch: EpochNumber,
 }
 
 impl ControlPlane {
     /// Create a new control plane cache with initial state.
+    ///
+    /// Initially assumes we're caught up (chain_epoch = epoch.id).
+    /// Call `set_chain_epoch` after fetching from RPC to update.
     pub fn new(system: System, epoch: Epoch, node: Node) -> Self {
         let (our_spools, in_committee) = compute_our_spools(&system, &node);
+        let chain_epoch = epoch.id;
 
         Self {
             inner: RwLock::new(ControlPlaneInner {
@@ -113,6 +120,7 @@ impl ControlPlane {
                 in_committee,
                 sync_tracker: None,
                 local_sync_complete: None,
+                chain_epoch,
             }),
         }
     }
@@ -272,6 +280,55 @@ impl ControlPlane {
     /// Get the number of spools this node owns.
     pub fn spool_count(&self) -> usize {
         self.inner.read().unwrap().our_spools.len()
+    }
+
+    // -------------------------------------------------------------------------
+    // Catch-up state tracking
+    // -------------------------------------------------------------------------
+
+    /// Check if we're in catch-up mode (processing historical blocks).
+    ///
+    /// Returns true if our locally-processed epoch is behind the chain's
+    /// current epoch. In catch-up mode, nodes should skip submitting
+    /// transactions (SyncEpoch, AdvancePool, etc.) since those epochs
+    /// have already passed.
+    pub fn is_catching_up(&self) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.epoch.id < inner.chain_epoch
+    }
+
+    /// Check if we're caught up with the chain.
+    ///
+    /// Returns true if our locally-processed epoch matches the chain's
+    /// current epoch. In real-time mode, the node should participate
+    /// in epoch sync and other consensus activities.
+    pub fn is_caught_up(&self) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.epoch.id >= inner.chain_epoch
+    }
+
+    /// Get the chain's current epoch (latest known from RPC).
+    pub fn chain_epoch(&self) -> EpochNumber {
+        self.inner.read().unwrap().chain_epoch
+    }
+
+    /// Update the chain epoch (called after fetching from RPC).
+    ///
+    /// This should be called periodically or when fetching epoch state
+    /// from the chain to keep catch-up detection accurate.
+    pub fn set_chain_epoch(&self, epoch: EpochNumber) {
+        let mut inner = self.inner.write().unwrap();
+        inner.chain_epoch = epoch;
+    }
+
+    /// Check if a specific epoch is stale (behind the chain).
+    ///
+    /// Returns true if the epoch has already passed on-chain. Event handlers
+    /// should skip submissions for stale epochs since those consensus
+    /// activities have already completed.
+    pub fn is_stale_epoch(&self, epoch: EpochNumber) -> bool {
+        let inner = self.inner.read().unwrap();
+        epoch < inner.chain_epoch
     }
 }
 
