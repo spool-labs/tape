@@ -53,19 +53,18 @@ impl System {
         self.committee_prev.size() == 0
     }
 
-    /// Rotate committees: prev <- current <- next <- current.
-    /// Uses swap and in-place copy to avoid large stack allocations.
-    /// After rotation, committee_next starts with the same members as committee,
-    /// so nodes don't need to rejoin unless they leave or get bumped.
-    /// Weights will be recomputed by D'Hondt allocation on the next advance.
+    /// Rotate committees: prev <- current <- next, then clear next.
+    /// Uses swap and in-place zeroing to avoid large stack allocations.
+    /// After rotation, committee_next is cleared. Nodes must call JoinNetwork
+    /// each epoch to re-establish membership in the next committee.
     #[inline]
     pub fn rotate_committees(&mut self) {
         core::mem::swap(&mut self.committee_prev, &mut self.committee);
         core::mem::swap(&mut self.committee, &mut self.committee_next);
-        // Copy current committee to next in-place to avoid stack allocation.
-        let src = bytemuck::bytes_of(&self.committee);
+        // Zero in-place instead of copy (avoids stack allocation)
+        // Nodes must call JoinNetwork each epoch to re-establish membership
         let dst = bytemuck::bytes_of_mut(&mut self.committee_next);
-        dst.copy_from_slice(src);
+        dst.fill(0);
     }
 }
 

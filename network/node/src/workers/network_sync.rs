@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use solana_sdk::signer::Signer;
-use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix};
+use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix};
 use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION};
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
@@ -151,6 +151,16 @@ async fn handle_event(
             );
             if let Err(e) = submit_advance_pool(&ctx, epoch).await {
                 error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
+            }
+
+            // After AdvancePool, submit JoinNetwork to re-join committee_next
+            // This is required each epoch since committee_next is cleared on rotation
+            info!(
+                epoch = epoch.as_u64(),
+                "Submitting JoinNetwork to re-join committee"
+            );
+            if let Err(e) = submit_join_network(&ctx, epoch).await {
+                error!(epoch = epoch.as_u64(), error = %e, "Failed to submit JoinNetwork");
             }
 
             // Start monitoring for Active state to auto-advance epoch
@@ -479,6 +489,73 @@ async fn submit_advance_pool(
             );
             return Err(NetworkSyncError::Rpc(format!(
                 "Failed to submit AdvancePool: {}",
+                e
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Submit JoinNetwork transaction to re-join committee_next.
+///
+/// After each epoch rotation, committee_next is cleared. Nodes must call JoinNetwork
+/// to re-establish membership for the next epoch. This must be called AFTER AdvancePool
+/// (which sets latest_advance_epoch) or the instruction will fail with NodeStale.
+async fn submit_join_network(
+    ctx: &NodeContext,
+    epoch: EpochNumber,
+) -> Result<(), NetworkSyncError> {
+    // Check if we're in the committee (only re-join if we're currently serving)
+    if !ctx.is_in_committee() {
+        debug!(
+            epoch = epoch.as_u64(),
+            "Not in committee, skipping JoinNetwork"
+        );
+        return Ok(());
+    }
+
+    let authority = ctx.keypair.pubkey();
+    let (node_address, _) = node_pda(authority);
+
+    let ix = build_join_network_ix(authority, authority, node_address);
+
+    info!(
+        epoch = epoch.as_u64(),
+        node = %node_address,
+        "Submitting JoinNetwork to re-join committee_next"
+    );
+
+    match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
+        Ok(sig) => {
+            info!(
+                epoch = epoch.as_u64(),
+                signature = %sig,
+                "JoinNetwork submitted successfully"
+            );
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            // NodeStale (0x60) - AdvancePool wasn't called first
+            if err_str.contains("0x60") || err_str.contains("NodeStale") {
+                error!(
+                    epoch = epoch.as_u64(),
+                    "JoinNetwork failed: AdvancePool must be called first"
+                );
+                return Err(NetworkSyncError::Rpc(
+                    "JoinNetwork failed: AdvancePool must be called first".to_string(),
+                ));
+            }
+            // Already present in committee_next - this is OK
+            if err_str.contains("AlreadyPresent") || err_str.contains("0x10") {
+                info!(
+                    epoch = epoch.as_u64(),
+                    "Already in committee_next, skipping"
+                );
+                return Ok(());
+            }
+            return Err(NetworkSyncError::Rpc(format!(
+                "Failed to submit JoinNetwork: {}",
                 e
             )));
         }
