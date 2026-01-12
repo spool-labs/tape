@@ -17,12 +17,13 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
-    // fee_payer does not need to be the pool authority
+    // AdvancePool is fully permissionless - anyone can advance any pool
+    // This allows stake withdrawals to not be locked if a node goes offline
+    // Safety: idempotent (AlreadyAdvanced), deterministic rewards from prior epoch state
     fee_payer_info
         .is_signer()?
         .is_writable()?;
-    authority_info
-        .is_signer()?;
+    // authority_info is NOT required to be signer - permissionless advancement
 
     let system = system_info
         .is_system()?

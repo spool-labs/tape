@@ -310,8 +310,29 @@ async fn start_node(ctx: &Context, config: Option<PathBuf>) -> Result<()> {
 /// Load node config from the specified path or default.
 fn load_node_config(config: Option<PathBuf>) -> Result<NodeConfig> {
     let config_path = config.unwrap_or_else(default_config_path);
+
+    if !config_path.exists() {
+        let default_path = default_config_path();
+        if config_path == default_path {
+            anyhow::bail!(
+                "Node config not found at default location: {}\n\n\
+                 Either:\n  \
+                 1. Run 'tape node init' to create a config file\n  \
+                 2. Use '--config <path>' to specify a different config file\n\n\
+                 For testnet nodes, configs are at: ~/.tape/testnet/node-N/node.yaml",
+                config_path.display()
+            );
+        } else {
+            anyhow::bail!(
+                "Node config not found: {}\n\n\
+                 Check that the file exists or run 'tape node init' to create one.",
+                config_path.display()
+            );
+        }
+    }
+
     NodeConfig::from_yaml_file(&config_path)
-        .with_context(|| format!("Failed to load node config from {}", config_path.display()))
+        .with_context(|| format!("Failed to parse node config from {}", config_path.display()))
 }
 
 /// Load the Solana keypair from node config.

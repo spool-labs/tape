@@ -88,7 +88,7 @@ async fn handle_event(
 ) -> Result<(), NetworkSyncError> {
     match event {
         NodeEvent::EpochAdvanced { epoch } => {
-            handle_epoch_advanced(&ctx, sync_handler, epoch).await?;
+            handle_epoch_advanced(Arc::clone(&ctx), sync_handler, epoch).await?;
         }
 
         NodeEvent::NodeSynced {
@@ -204,7 +204,7 @@ async fn handle_event(
 
 /// Handle an epoch advancement.
 async fn handle_epoch_advanced(
-    ctx: &NodeContext,
+    ctx: Arc<NodeContext>,
     sync_handler: &SpoolSyncHandler,
     new_epoch: EpochNumber,
 ) -> Result<(), NetworkSyncError> {
@@ -228,8 +228,30 @@ async fn handle_epoch_advanced(
         info!(
             epoch = new_epoch.as_u64(),
             phase = ?epoch.state,
-            "Epoch not in syncing phase, skipping spool sync (low-quorum mode)"
+            "Epoch not in syncing phase (low-quorum mode), handling pool maintenance"
         );
+
+        // In low-quorum mode, we still need to:
+        // 1. Advance our pool to process stake schedule and update latest_advance_epoch
+        // 2. Re-join committee_next for the next epoch
+        // 3. Start monitoring for epoch advancement
+
+        // Submit AdvancePool
+        if let Err(e) = submit_advance_pool(&ctx, new_epoch).await {
+            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit AdvancePool in low-quorum mode");
+        }
+
+        // Submit JoinNetwork to re-join committee_next
+        if let Err(e) = submit_join_network(&ctx, new_epoch).await {
+            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit JoinNetwork in low-quorum mode");
+        }
+
+        // Start monitoring for epoch advancement (since EpochSettling won't fire in low-quorum mode)
+        let ctx_clone = Arc::clone(&ctx);
+        tokio::spawn(async move {
+            monitor_epoch_for_advancement(ctx_clone, new_epoch).await;
+        });
+
         return Ok(());
     }
 
@@ -286,14 +308,14 @@ async fn handle_epoch_advanced(
 
         // Get their network address
         if let Some(prev_member) = system.committee_prev.member_at(prev_owner_member_idx) {
-            match sync_spool_from_owner(ctx, sync_handler, *spool_idx, prev_member.id).await {
+            match sync_spool_from_owner(&ctx, sync_handler, *spool_idx, prev_member.id).await {
                 Ok(count) => {
                     info!(spool = spool_idx, slices = count, "Synced spool");
                     ctx.metrics.spools_synced_total.inc();
                 }
                 Err(e) => {
                     warn!(spool = spool_idx, error = %e, "Failed to sync spool, queuing for recovery");
-                    if let Err(qe) = queue_spool_for_recovery(ctx, *spool_idx).await {
+                    if let Err(qe) = queue_spool_for_recovery(&ctx, *spool_idx).await {
                         error!(spool = spool_idx, error = %qe, "Failed to queue spool for recovery");
                     }
                 }
@@ -325,7 +347,7 @@ async fn handle_epoch_advanced(
             epoch = new_epoch.as_u64(),
             "Empty previous committee, submitting SyncEpoch immediately"
         );
-        submit_sync_epoch(ctx, new_epoch).await?;
+        submit_sync_epoch(&ctx, new_epoch).await?;
         return Ok(());
     }
 
@@ -335,7 +357,7 @@ async fn handle_epoch_advanced(
             epoch = new_epoch.as_u64(),
             "Quorum already reached, submitting SyncEpoch"
         );
-        submit_sync_epoch(ctx, new_epoch).await?;
+        submit_sync_epoch(&ctx, new_epoch).await?;
     }
 
     Ok(())
@@ -546,11 +568,15 @@ async fn submit_join_network(
                     "JoinNetwork failed: AdvancePool must be called first".to_string(),
                 ));
             }
-            // Already present in committee_next - this is OK
-            if err_str.contains("AlreadyPresent") || err_str.contains("0x10") {
+            // 0x10 = UnexpectedState - covers multiple non-fatal scenarios:
+            // - Already present in committee_next
+            // - Zero stake (would have failed earlier)
+            // - Committee full with lower stake than minimum
+            // All are acceptable outcomes when re-joining
+            if err_str.contains("0x10") {
                 info!(
                     epoch = epoch.as_u64(),
-                    "Already in committee_next, skipping"
+                    "JoinNetwork returned UnexpectedState (likely already in committee_next), skipping"
                 );
                 return Ok(());
             }

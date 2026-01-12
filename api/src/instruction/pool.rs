@@ -46,7 +46,8 @@ pub fn build_advance_pool_ix(
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
-            AccountMeta::new_readonly(authority, true),
+            // authority is NOT a signer - AdvancePool is permissionless
+            AccountMeta::new_readonly(authority, false),
 
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new(archive_address, false),
