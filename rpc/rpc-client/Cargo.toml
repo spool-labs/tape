@@ -46,3 +46,7 @@ metrics = ["tape-metrics/metrics", "rpc-solana/metrics"]
 rpc-test = { version = "0.3.0", path = "../rpc-test" }
 solana-test-validator.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
+
+# SPL token dependencies for E2E tests
+spl-token.workspace = true
+spl-associated-token-account.workspace = true

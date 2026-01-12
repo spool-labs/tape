@@ -5566,6 +5566,8 @@ dependencies = [
  "solana-sdk",
  "solana-test-validator",
  "solana-transaction-status",
+ "spl-associated-token-account",
+ "spl-token 4.0.2",
  "tape-api",
  "tape-core",
  "tape-metrics",
