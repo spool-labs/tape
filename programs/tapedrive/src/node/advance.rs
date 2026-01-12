@@ -75,11 +75,18 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         )
     };
 
-    // Only error on zero rewards if prev committee exists and node was in it
-    if rewards_owed.is_zero() && !system.committee_prev_empty() {
-        if system.committee_prev.index_of(&node.id).is_some() {
+    // Validate rewards only when they should exist
+    if rewards_owed.is_zero() {
+        // Skip validation if no previous committee
+        if system.committee_prev_empty() {
+            // OK: First epoch, no rewards expected
+        } else if archive.recent_usage.is_zero() {
+            // OK: No usage, no rewards to distribute
+        } else if system.committee_prev.index_of(&node.id).is_some() {
+            // ERROR: Node was in committee with usage, should have rewards
             return Err(TapeError::NoRewards.into());
         }
+        // Otherwise: Node wasn't in committee, zero rewards expected
     }
 
     // Update node
