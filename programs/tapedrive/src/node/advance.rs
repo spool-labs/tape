@@ -117,10 +117,10 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     }
 
     // State Transition
-    if epoch.state.is_active() {
+    if epoch.state.is_settling() {
         if system.committee_prev_empty() {
-            // First epoch: immediately transition to next_ready
-            epoch.state.set_next_ready();
+            // First epoch: immediately transition to active
+            epoch.state.set_settling();
         } else if let Some(member_index) = system.committee_prev.index_of(&node.id) {
             let weight = system.spools_prev.spools_for_member(member_index).len() as u64;
             epoch.state.add_advanced_weight(weight, SLICE_COUNT as u64);
@@ -163,7 +163,7 @@ mod tests {
         let mut epoch = Epoch::zeroed();
 
         epoch.id = EpochNumber(7);
-        epoch.state.set_active();
+        epoch.state.set_settling();
 
         // Minimal pool setup: non-zero stake/shares so rewards can be applied
         let mut node = Node {
@@ -279,7 +279,7 @@ mod tests {
         let mut epoch = Epoch::zeroed();
 
         epoch.id = EpochNumber(7);
-        epoch.state.set_active();
+        epoch.state.set_settling();
 
         let mut node = Node {
             id: NodeId(2),
@@ -341,7 +341,7 @@ mod tests {
         archive.rewards_paid = rewards_owed.into();
 
         // 700 spools > 683 threshold, so should transition
-        epoch.state.set_next_ready();
+        epoch.state.set_active();
 
         node.latest_advance_epoch = e0;
         node.pool.advance_epoch(e0, rewards_owed).unwrap();
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_first_epoch_advance() {
         // Test that in the first epoch (empty committee_prev), we skip rewards
-        // and immediately transition to next_ready
+        // and immediately transition to active
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let pool_owner = Pubkey::new_unique();
@@ -393,7 +393,7 @@ mod tests {
         let mut epoch = Epoch::zeroed();
 
         epoch.id = EpochNumber(2);
-        epoch.state.set_active();
+        epoch.state.set_settling();
 
         // Empty previous committee (first epoch after bootstrap)
         system.committee_prev = Committee::new();
@@ -456,8 +456,8 @@ mod tests {
         history.inner.push(e0, node.pool.get_current_rate());
         history.latest_epoch = node.latest_advance_epoch;
 
-        // Epoch should transition to next_ready immediately
-        epoch.state.set_next_ready();
+        // Epoch should transition to active immediately
+        epoch.state.set_active();
 
         // Archive should NOT have rewards_paid updated (empty committee_prev)
 

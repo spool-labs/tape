@@ -42,7 +42,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         // Low-quorum: relaxed checks - allow advancing in any state
     } else {
         // Normal mode: strict requirements
-        if !epoch.state.is_next_ready() {
+        if !epoch.state.is_active() {
             return Err(TapeError::BadEpochState.into());
         }
         if epoch.last_epoch + EPOCH_DURATION > now {
@@ -65,7 +65,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
             let _ = archive.schedule.advance_epoch();
             epoch.id = next_epoch(epoch);
             epoch.last_epoch = now;
-            epoch.state = EpochState::next_ready();
+            epoch.state = EpochState::active();
 
             EpochAdvanced {
                 old_epoch,
@@ -123,7 +123,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.id = next_epoch(epoch);
     epoch.last_epoch = now;
     epoch.state = if entering_low_quorum {
-        EpochState::next_ready()
+        EpochState::active()
     } else {
         EpochState::syncing()
     };
@@ -220,7 +220,7 @@ mod tests {
         let e100 = e0 + EpochNumber(100);
 
         epoch.id = e0;
-        epoch.state = EpochState::next_ready();
+        epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
         // Need >= MIN_COMMITTEE_SIZE (24) members for normal mode
@@ -357,7 +357,7 @@ mod tests {
         let last_epoch = env.now() - 100; // Only 100 seconds ago
 
         epoch.id = EpochNumber(2);
-        epoch.state = EpochState::next_ready();
+        epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
         // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_advance_bad_state() {
-        // Test that advance fails if not in NextReady state (in normal mode)
+        // Test that advance fails if not in Active state (in normal mode)
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();
@@ -409,7 +409,7 @@ mod tests {
         let last_epoch = env.now() - (EPOCH_DURATION + 100);
 
         epoch.id = EpochNumber(2);
-        epoch.state = EpochState::syncing(); // Wrong state - should be NextReady
+        epoch.state = EpochState::syncing(); // Wrong state - should be Active
         epoch.last_epoch = last_epoch;
 
         // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
@@ -464,7 +464,7 @@ mod tests {
         let e0 = EpochNumber(2);
 
         epoch.id = e0;
-        epoch.state = EpochState::next_ready();
+        epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
         // Current committee has only 1 node (< MIN_COMMITTEE_SIZE), so we're in low-quorum
@@ -488,10 +488,10 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // Expected state: epoch advances, state is next_ready (low-quorum), committee rotates
+        // Expected state: epoch advances, state is active (low-quorum), committee rotates
         let mut expected_epoch = Epoch::zeroed();
         expected_epoch.id = e0 + EpochNumber(1);
-        expected_epoch.state = EpochState::next_ready();  // Stays in next_ready (low-quorum)
+        expected_epoch.state = EpochState::active();  // Stays in next_ready (low-quorum)
         expected_epoch.last_epoch = env.now();
 
         // Should succeed despite not enough time passing
@@ -500,7 +500,7 @@ mod tests {
             &accounts,
             &[
                 Check::success(),
-                // Verify epoch state is next_ready (not syncing) since entering low-quorum
+                // Verify epoch state is active (not syncing) since entering low-quorum
                 Check::account(&epoch_address).data(
                     expected_epoch.pack().as_ref()
                 ).build(),
@@ -531,7 +531,7 @@ mod tests {
         let e0 = EpochNumber(5);
 
         epoch.id = e0;
-        epoch.state = EpochState::next_ready();
+        epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
         // Current committee has < MIN_COMMITTEE_SIZE, so we're in low-quorum
@@ -552,10 +552,10 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // Expected state: epoch counter advances, state stays next_ready
+        // Expected state: epoch counter advances, state stays active
         let mut expected_epoch = Epoch::zeroed();
         expected_epoch.id = e0 + EpochNumber(1);
-        expected_epoch.state = EpochState::next_ready();
+        expected_epoch.state = EpochState::active();
         expected_epoch.last_epoch = env.now();
 
         // Should succeed and advance epoch counter
@@ -596,7 +596,7 @@ mod tests {
         let e100 = e0 + EpochNumber(100);
 
         epoch.id = e0;
-        epoch.state = EpochState::next_ready();
+        epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
         // Current committee is small (low-quorum)

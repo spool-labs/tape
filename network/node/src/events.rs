@@ -53,17 +53,17 @@ pub enum NodeEvent {
         epoch: EpochNumber,
     },
 
-    /// Epoch has transitioned to Active state (sync quorum reached on-chain).
+    /// Epoch has transitioned to Settling state (sync quorum reached on-chain).
     /// Triggers pool advancement for the previous epoch.
-    EpochActive {
-        /// The epoch that is now active.
+    EpochSettling {
+        /// The epoch that is now settling.
         epoch: EpochNumber,
     },
 
-    /// Epoch has transitioned to NextReady state (pool advancement quorum reached).
+    /// Epoch has transitioned to Active state (pool advancement quorum reached).
     /// Triggers automatic epoch advancement once EPOCH_DURATION has elapsed.
-    EpochNextReady {
-        /// The epoch that is now ready for advancement.
+    EpochActive {
+        /// The epoch that is now active.
         epoch: EpochNumber,
         /// Unix timestamp when epoch can be advanced (last_epoch + EPOCH_DURATION).
         advance_after: i64,

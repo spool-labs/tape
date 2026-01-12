@@ -77,13 +77,13 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     let total = SLICE_COUNT as u64;
 
     // Attest our weight for this epoch sync
-    let transitioned_to_active = epoch.state
+    let transitioned_to_settling = epoch.state
         .add_sync_weight(weight, total);
 
-    // If we just transitioned to Active and there's no committee_prev (first epoch),
-    // immediately transition to NextReady since no one needs to advance
-    if transitioned_to_active && system.committee_prev_empty() {
-        epoch.state.set_next_ready();
+    // If we just transitioned to Settling and there's no committee_prev (first epoch),
+    // immediately transition to Active since no one needs to advance
+    if transitioned_to_settling && system.committee_prev_empty() {
+        epoch.state.set_active();
     }
 
     node.latest_sync_epoch = current_epoch(epoch);
@@ -201,8 +201,8 @@ mod tests {
             ]
         );
 
-        // Test: above threshold sync (should go to active)
-        // Add non-empty committee_prev so we transition to Active (not NextReady)
+        // Test: above threshold sync (should go to settling)
+        // Add non-empty committee_prev so we transition to Settling (not Active)
         system.committee_prev = Committee::from_members(&[member(99, 1_000)]);
 
         node.latest_sync_epoch = EpochNumber(7);
@@ -236,7 +236,7 @@ mod tests {
                 Check::account(&epoch_address).data(
                     Epoch {
                         state: EpochState {
-                            phase: EpochPhase::Active.into(),
+                            phase: EpochPhase::Settling.into(),
                             weight: 0,
                         },
                         ..epoch

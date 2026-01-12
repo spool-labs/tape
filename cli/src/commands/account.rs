@@ -183,8 +183,8 @@ fn format_epoch_phase(phase: u64) -> &'static str {
     match EpochPhase::try_from(phase) {
         Ok(EpochPhase::Unknown) => "Unknown",
         Ok(EpochPhase::Syncing) => "Syncing",
+        Ok(EpochPhase::Settling) => "Settling",
         Ok(EpochPhase::Active) => "Active",
-        Ok(EpochPhase::NextEpochReady) => "NextEpochReady",
         Err(_) => "Invalid",
     }
 }

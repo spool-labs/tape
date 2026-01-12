@@ -142,25 +142,25 @@ async fn handle_event(
             }
         }
 
-        NodeEvent::EpochActive { epoch } => {
-            // Epoch has transitioned to Active - submit AdvancePool to contribute
-            // weight toward NextEpochReady transition
+        NodeEvent::EpochSettling { epoch } => {
+            // Epoch has transitioned to Settling - submit AdvancePool to contribute
+            // weight toward Active transition
             info!(
                 epoch = epoch.as_u64(),
-                "Epoch is Active, submitting AdvancePool"
+                "Epoch is Settling, submitting AdvancePool"
             );
             if let Err(e) = submit_advance_pool(&ctx, epoch).await {
                 error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
             }
 
-            // Start monitoring for NextReady state to auto-advance epoch
+            // Start monitoring for Active state to auto-advance epoch
             let ctx_clone = Arc::clone(&ctx);
             tokio::spawn(async move {
                 monitor_epoch_for_advancement(ctx_clone, epoch).await;
             });
         }
 
-        NodeEvent::EpochNextReady {
+        NodeEvent::EpochActive {
             epoch,
             advance_after,
         } => {
@@ -207,7 +207,7 @@ async fn handle_epoch_advanced(
     }
 
     // Fetch current epoch state from chain to check if syncing is needed.
-    // In low-quorum scenarios, the epoch may skip directly to NextEpochReady.
+    // In low-quorum scenarios, the epoch may skip directly to Active.
     let epoch = ctx
         .rpc
         .get_epoch()
@@ -410,10 +410,10 @@ async fn submit_sync_epoch(ctx: &NodeContext, epoch: EpochNumber) -> Result<(), 
     Ok(())
 }
 
-/// Submit AdvancePool transaction to contribute weight toward NextEpochReady.
+/// Submit AdvancePool transaction to contribute weight toward Active.
 ///
 /// This claims staking rewards and adds our spool weight to the epoch state,
-/// helping transition from Active to NextEpochReady when 2/3+ weight is reached.
+/// helping transition from Settling to Active when 2/3+ weight is reached.
 async fn submit_advance_pool(
     ctx: &NodeContext,
     epoch: EpochNumber,
@@ -490,7 +490,7 @@ async fn submit_advance_pool(
 /// Submit AdvanceEpoch transaction to transition to the next epoch.
 ///
 /// This triggers committee rotation and starts the new epoch's Syncing phase.
-/// Can only succeed when epoch is in NextReady state and EPOCH_DURATION has elapsed.
+/// Can only succeed when epoch is in Active state and EPOCH_DURATION has elapsed.
 async fn submit_advance_epoch(
     ctx: &NodeContext,
     epoch: EpochNumber,
@@ -517,11 +517,11 @@ async fn submit_advance_epoch(
                 );
                 return Ok(());
             }
-            // BadEpochState (0x40) - epoch not in NextReady state
+            // BadEpochState (0x40) - epoch not in Active state
             if err_str.contains("0x40") || err_str.contains("BadEpochState") {
                 debug!(
                     epoch = epoch.as_u64(),
-                    "Epoch not in NextReady state, will retry"
+                    "Epoch not in Active state, will retry"
                 );
                 return Ok(());
             }
@@ -537,8 +537,8 @@ async fn submit_advance_epoch(
 
 /// Monitor epoch state and submit AdvanceEpoch when conditions are met.
 ///
-/// Polls epoch state periodically after Active phase is entered.
-/// When NextReady is reached and EPOCH_DURATION has elapsed, submits AdvanceEpoch.
+/// Polls epoch state periodically after Settling phase is entered.
+/// When Active is reached and EPOCH_DURATION has elapsed, submits AdvanceEpoch.
 async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: EpochNumber) {
     info!(
         epoch = starting_epoch.as_u64(),
@@ -578,11 +578,11 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
             return;
         }
 
-        // Check if epoch is in NextReady state
-        if !epoch.state.is_next_ready() {
+        // Check if epoch is in Active state
+        if !epoch.state.is_active() {
             debug!(
                 epoch = epoch.id.as_u64(),
-                "Epoch not in NextReady state yet"
+                "Epoch not in Active state yet"
             );
             continue;
         }
@@ -600,7 +600,7 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
             debug!(
                 epoch = epoch.id.as_u64(),
                 wait_secs = wait_secs,
-                "NextReady but time not elapsed"
+                "Active but time not elapsed"
             );
             continue;
         }
@@ -608,7 +608,7 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
         // Both conditions met - submit AdvanceEpoch
         info!(
             epoch = epoch.id.as_u64(),
-            "NextReady and time elapsed, submitting AdvanceEpoch"
+            "Active and time elapsed, submitting AdvanceEpoch"
         );
 
         match submit_advance_epoch(&ctx, epoch.id).await {

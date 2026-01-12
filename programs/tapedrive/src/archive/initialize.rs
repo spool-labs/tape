@@ -99,7 +99,7 @@ pub fn process_initialize(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 
     let epoch = epoch_info.as_account_mut::<Epoch>(&tapedrive::ID)?;
     epoch.id = EpochNumber(1);
-    epoch.state = EpochState::next_ready();  // Enable low-quorum mode from the start
+    epoch.state = EpochState::active();  // Enable low-quorum mode from the start
     epoch.last_epoch = 0;
 
     let archive = archive_info.as_account_mut::<Archive>(&tapedrive::ID)?;
@@ -171,7 +171,7 @@ mod tests {
                 Check::account(&epoch_address).data(
                     Epoch {
                         id: EpochNumber(1),
-                        state: EpochState::next_ready(),
+                        state: EpochState::active(),
                         last_epoch: 0,
                     }.pack().as_ref()
                 ).build(),

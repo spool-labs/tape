@@ -6,9 +6,12 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum EpochPhase {
     Unknown = 0,
+    /// Nodes are attesting they have synced their spool data.
     Syncing,
+    /// Previous committee members are settling rewards (AdvancePool).
+    Settling,
+    /// Main operational phase - committee is active, waiting for EPOCH_DURATION.
     Active,
-    NextEpochReady,
 }
 
 #[repr(C)]
@@ -17,7 +20,7 @@ pub struct EpochState {
     /// The epoch phase.
     pub phase: u64,
 
-    /// Accumulated weight for phase transitions (Syncing→Active, Active→NextReady).
+    /// Accumulated weight for phase transitions (Syncing→Settling, Settling→Active).
     pub weight: u64,
 }
 
@@ -38,18 +41,18 @@ impl EpochState {
         }
     }
 
-    /// Creates EpochState in Active phase.
-    pub const fn active() -> Self {
+    /// Creates EpochState in Settling phase.
+    pub const fn settling() -> Self {
         Self {
-            phase: EpochPhase::Active as u64,
+            phase: EpochPhase::Settling as u64,
             weight: 0,
         }
     }
 
-    /// Creates EpochState in NextEpochReady phase.
-    pub const fn next_ready() -> Self {
+    /// Creates EpochState in Active phase.
+    pub const fn active() -> Self {
         Self {
-            phase: EpochPhase::NextEpochReady as u64,
+            phase: EpochPhase::Active as u64,
             weight: 0,
         }
     }
@@ -61,16 +64,16 @@ impl EpochState {
         self
     }
 
-    /// Sets phase to Active.
-    pub fn set_active(&mut self) -> &mut Self {
-        self.phase = EpochPhase::Active.into();
+    /// Sets phase to Settling.
+    pub fn set_settling(&mut self) -> &mut Self {
+        self.phase = EpochPhase::Settling.into();
         self.weight = 0;
         self
     }
 
-    /// Sets phase to NextEpochReady.
-    pub fn set_next_ready(&mut self) -> &mut Self {
-        self.phase = EpochPhase::NextEpochReady.into();
+    /// Sets phase to Active.
+    pub fn set_active(&mut self) -> &mut Self {
+        self.phase = EpochPhase::Active.into();
         self.weight = 0;
         self
     }
@@ -80,19 +83,19 @@ impl EpochState {
         matches!(self.as_enum(), Some(EpochPhase::Syncing))
     }
 
+    /// Checks if phase is Settling.
+    pub fn is_settling(&self) -> bool {
+        matches!(self.as_enum(), Some(EpochPhase::Settling))
+    }
+
     /// Checks if phase is Active.
     pub fn is_active(&self) -> bool {
         matches!(self.as_enum(), Some(EpochPhase::Active))
     }
 
-    /// Checks if phase is NextEpochReady.
-    pub fn is_next_ready(&self) -> bool {
-        matches!(self.as_enum(), Some(EpochPhase::NextEpochReady))
-    }
-
-    /// Gets accumulated weight (used in Syncing and Active phases).
+    /// Gets accumulated weight (used in Syncing and Settling phases).
     pub fn weight(&self) -> Option<u64> {
-        if self.is_syncing() || self.is_active() {
+        if self.is_syncing() || self.is_settling() {
             Some(self.weight)
         } else {
             None
@@ -100,7 +103,7 @@ impl EpochState {
     }
 
     /// Adds sync attestation weight in Syncing phase.
-    /// Transitions to Active if supermajority reached.
+    /// Transitions to Settling if supermajority reached.
     /// Returns true if phase transitioned.
     pub fn add_sync_weight(&mut self, add_weight: u64, total: u64) -> bool {
         if !self.is_syncing() {
@@ -110,7 +113,7 @@ impl EpochState {
         let new_weight = self.weight.saturating_add(add_weight);
 
         if is_supermajority(new_weight, total) {
-            self.set_active();
+            self.set_settling();
             true
         } else {
             self.weight = new_weight;
@@ -118,18 +121,18 @@ impl EpochState {
         }
     }
 
-    /// Adds pool advancement weight in Active phase.
-    /// Transitions to NextReady if supermajority of committee_prev has advanced.
+    /// Adds pool advancement weight in Settling phase.
+    /// Transitions to Active if supermajority of committee_prev has advanced.
     /// Returns true if phase transitioned.
     pub fn add_advanced_weight(&mut self, add_weight: u64, total: u64) -> bool {
-        if !self.is_active() {
+        if !self.is_settling() {
             return false;
         }
 
         let new_weight = self.weight.saturating_add(add_weight);
 
         if is_supermajority(new_weight, total) {
-            self.set_next_ready();
+            self.set_active();
             true
         } else {
             self.weight = new_weight;
@@ -151,8 +154,8 @@ mod tests {
     fn new_zero() {
         let s = EpochState::new();
         assert!(!s.is_syncing());
+        assert!(!s.is_settling());
         assert!(!s.is_active());
-        assert!(!s.is_next_ready());
         assert_eq!(s.weight(), None);
 
         let z = EpochState::zeroed();
@@ -171,19 +174,19 @@ mod tests {
     }
 
     #[test]
-    fn set_active() {
+    fn set_settling() {
         let mut s = EpochState::new();
-        s.set_active();
-        assert!(s.is_active());
+        s.set_settling();
+        assert!(s.is_settling());
         assert_eq!(s.weight(), Some(0));
 
-        s.set_next_ready();
-        assert!(s.is_next_ready());
+        s.set_active();
+        assert!(s.is_active());
         assert_eq!(s.weight(), None);
     }
 
     #[test]
-    fn sync_to_active() {
+    fn sync_to_settling() {
         // total = 10, supermajority needs w >= 7
         let mut s = EpochState::new();
         s.set_syncing();
@@ -195,36 +198,36 @@ mod tests {
 
         let r2 = s.add_sync_weight(4, 10);
         assert!(r2);
-        assert!(s.is_active());
+        assert!(s.is_settling());
         assert_eq!(s.weight(), Some(0)); // reset on transition
     }
 
     #[test]
-    fn active_to_next() {
+    fn settling_to_active() {
         // total = 10, supermajority needs w >= 7
         let mut s = EpochState::new();
-        s.set_active();
+        s.set_settling();
         assert_eq!(s.weight(), Some(0));
 
         let r1 = s.add_advanced_weight(3, 10);
         assert!(!r1);
-        assert!(s.is_active());
+        assert!(s.is_settling());
         assert_eq!(s.weight(), Some(3));
 
         let r2 = s.add_advanced_weight(4, 10);
         assert!(r2);
-        assert!(s.is_next_ready());
+        assert!(s.is_active());
         assert_eq!(s.weight(), None);
     }
 
     #[test]
-    fn sync_noop_active() {
+    fn sync_noop_settling() {
         let mut s = EpochState::new();
-        s.set_active();
+        s.set_settling();
 
         let r = s.add_sync_weight(10, 10);
         assert!(!r);
-        assert!(s.is_active());
+        assert!(s.is_settling());
     }
 
     #[test]
@@ -245,7 +248,7 @@ mod tests {
         s.add_sync_weight(4, 7);
         let r = s.add_sync_weight(1, 7);
         assert!(r);
-        assert!(s.is_active());
+        assert!(s.is_settling());
     }
 
     #[test]
@@ -253,8 +256,8 @@ mod tests {
         let mut s = EpochState::new();
         s.phase = 99; // invalid
         assert!(!s.is_syncing());
+        assert!(!s.is_settling());
         assert!(!s.is_active());
-        assert!(!s.is_next_ready());
         assert_eq!(s.weight(), None);
     }
 }

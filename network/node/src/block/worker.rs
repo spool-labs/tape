@@ -270,9 +270,9 @@ async fn process_instruction(
                     .await
                     .map_err(|_| BlockProcessorError::ChannelClosed)?;
 
-                // Epoch should now be Active on-chain, trigger pool advancement
+                // Epoch should now be Settling on-chain, trigger pool advancement
                 event_tx
-                    .send(NodeEvent::EpochActive { epoch })
+                    .send(NodeEvent::EpochSettling { epoch })
                     .await
                     .map_err(|_| BlockProcessorError::ChannelClosed)?;
             }
