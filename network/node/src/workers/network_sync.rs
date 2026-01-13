@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
 use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix};
 use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION};
@@ -28,6 +29,11 @@ use crate::sync::{SpoolSyncHandler, SyncError};
 
 /// Polling interval for epoch advancement monitoring.
 const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Compute units required for AdvanceEpoch instruction.
+/// AdvanceEpoch performs committee rotation and spool reallocation which
+/// requires significant computation, especially with many nodes.
+const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
 
 /// Maximum time to monitor for epoch advancement (safety limit).
 /// After this duration, the monitor task exits to avoid resource leaks.
@@ -626,12 +632,19 @@ async fn submit_advance_epoch(
 ) -> Result<(), NetworkSyncError> {
     let authority = ctx.keypair.pubkey();
 
+    // AdvanceEpoch requires more compute units due to committee rotation and spool reallocation
+    let compute_budget_ix =
+        ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_EPOCH_COMPUTE_UNITS);
     let ix = build_advance_epoch_ix(authority, authority);
 
     info!(epoch = epoch.as_u64(), "Submitting AdvanceEpoch");
 
-    // Submit the transaction
-    match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
+    // Submit the transaction with compute budget
+    match ctx
+        .rpc
+        .send_instructions(&ctx.keypair, vec![compute_budget_ix, ix])
+        .await
+    {
         Ok(_) => {
             info!(epoch = epoch.as_u64(), "AdvanceEpoch submitted successfully");
             ctx.metrics.epoch_transitions_total.inc();

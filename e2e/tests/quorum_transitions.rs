@@ -5,6 +5,10 @@
 //!
 //! All tests spawn their own validator and run serially to avoid port conflicts.
 //!
+//! **Design principle**: After initial bootstrap (one manual epoch advance to activate
+//! nodes in committee_next), nodes handle subsequent epoch advancement autonomously.
+//! Tests observe and verify state transitions.
+//!
 //! ```bash
 //! cargo test -p tape-e2e --test quorum_transitions -- --ignored --nocapture
 //! ```
@@ -14,13 +18,8 @@ use std::time::Duration;
 use serial_test::serial;
 use tape_e2e::{
     Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc,
-    MIN_EPOCH_WAIT, MIN_COMMITTEE_SIZE,
+    wait_for_epoch_advance_from, MIN_EPOCH_WAIT, MIN_COMMITTEE_SIZE, LONG_TIMEOUT,
 };
-
-/// Wait for MIN_EPOCH_DURATION to pass before advancing epoch.
-async fn wait_for_epoch_advance() {
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-}
 
 /// Test transition from low-quorum to normal mode by adding nodes.
 ///
@@ -75,13 +74,28 @@ async fn test_low_to_normal_quorum_transition() {
     }
     println!("Registered {} initial nodes", INITIAL_NODES);
 
-    // Advance to activate
-    wait_for_epoch_advance().await;
+    // Fund nodes with SOL for transaction fees
+    for (i, node) in nodes.iter().enumerate() {
+        if let Err(e) = node.fund(&cli, 1.0) {
+            println!("Warning: Failed to fund node {}: {}", i, e);
+        }
+    }
+
+    // Start nodes BEFORE bootstrap
+    for node in nodes.iter_mut() {
+        let _ = node.start(&cli);
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Bootstrap: Manual epoch advance to activate nodes from committee_next to committee
+    println!("\n=== Bootstrap: Activating initial nodes ===");
+    println!("Waiting {}s for MIN_EPOCH_DURATION...", MIN_EPOCH_WAIT.as_secs());
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
     cli.admin_advance_epoch().expect("Failed to advance epoch");
 
     let system = cli.account_system().expect("Failed to get system");
     let epoch = cli.account_epoch().expect("Failed to get epoch");
-    println!("\nAfter initial activation:");
+    println!("After bootstrap:");
     println!("  Committee size: {}", system.committee_size.unwrap_or(0));
     println!("  Epoch: {}, Phase: {:?}", epoch.id.unwrap_or(0), epoch.phase);
 
@@ -90,23 +104,23 @@ async fn test_low_to_normal_quorum_transition() {
         "Should be in low-quorum mode"
     );
 
-    // Start initial nodes
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Observe epochs advancing autonomously in low-quorum mode
+    println!("\n=== Phase 2: Observing 5 epochs in low-quorum mode ===");
+    println!("(Nodes will advance epochs autonomously)");
 
-    // Advance a few epochs in low-quorum mode
-    println!("\n=== Phase 2: Running 5 epochs in low-quorum mode ===");
+    let mut last_epoch_id = epoch.id.unwrap_or(0);
     for i in 1..=5 {
-        wait_for_epoch_advance().await;
-        let _ = cli.admin_advance_epoch();
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
 
         let epoch = cli.account_epoch().expect("Failed to get epoch");
+        last_epoch_id = epoch.id.unwrap_or(0);
+
         println!(
             "  Epoch {}: id={}, phase={:?}",
             i,
-            epoch.id.unwrap_or(0),
+            last_epoch_id,
             epoch.phase
         );
 
@@ -138,25 +152,35 @@ async fn test_low_to_normal_quorum_transition() {
     }
     println!("  Total nodes now: {}", nodes.len());
 
-    // Check committee_next
-    let system = cli.account_system().expect("Failed to get system");
-    println!("Committee next size: {}", system.committee_next_size.unwrap_or(0));
-
-    // Advance epoch to activate new nodes
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance epoch");
-
-    let system = cli.account_system().expect("Failed to get system");
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
-    println!("\nAfter adding nodes:");
-    println!("  Committee size: {}", system.committee_size.unwrap_or(0));
-    println!("  Epoch: {}, Phase: {:?}", epoch.id.unwrap_or(0), epoch.phase);
+    // Fund new nodes with SOL for transaction fees
+    for (i, node) in nodes.iter().enumerate().skip(INITIAL_NODES) {
+        if let Err(e) = node.fund(&cli, 1.0) {
+            println!("Warning: Failed to fund node {}: {}", i, e);
+        }
+    }
 
     // Start new nodes
     for node in nodes.iter_mut().skip(INITIAL_NODES) {
         let _ = node.start(&cli);
     }
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Check committee_next
+    let system = cli.account_system().expect("Failed to get system");
+    println!("Committee next size: {}", system.committee_next_size.unwrap_or(0));
+
+    // Wait for epoch to advance (nodes will handle it)
+    println!("Waiting for epoch to advance and activate new nodes...");
+    wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+        .await
+        .expect("Epoch should advance");
+
+    let system = cli.account_system().expect("Failed to get system");
+    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    last_epoch_id = epoch.id.unwrap_or(0);
+    println!("\nAfter adding nodes:");
+    println!("  Committee size: {}", system.committee_size.unwrap_or(0));
+    println!("  Epoch: {}, Phase: {:?}", last_epoch_id, epoch.phase);
 
     // Verify transition to normal mode
     let committee_size = system.committee_size.unwrap_or(0);
@@ -167,19 +191,23 @@ async fn test_low_to_normal_quorum_transition() {
         let phase = epoch.phase.as_deref().unwrap_or("unknown");
         println!("Current phase: {}", phase);
 
-        // Run a few epochs in normal mode
-        println!("\n=== Phase 5: Running 5 epochs in normal mode ===");
+        // Observe epochs in normal mode
+        println!("\n=== Phase 5: Observing 5 epochs in normal mode ===");
+        println!("(Nodes will advance epochs autonomously)");
+
         for i in 1..=5 {
-            wait_for_epoch_advance().await;
-            let _ = cli.admin_advance_epoch();
+            wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+                .await
+                .expect("Epoch should advance");
 
             let epoch = cli.account_epoch().expect("Failed to get epoch");
             let system = cli.account_system().expect("Failed to get system");
+            last_epoch_id = epoch.id.unwrap_or(0);
 
             println!(
                 "  Epoch {}: id={}, phase={:?}, committee={}",
                 i,
-                epoch.id.unwrap_or(0),
+                last_epoch_id,
                 epoch.phase,
                 system.committee_size.unwrap_or(0)
             );
@@ -192,6 +220,14 @@ async fn test_low_to_normal_quorum_transition() {
     } else {
         println!("\nNote: Committee size {} still below threshold {}", committee_size, MIN_COMMITTEE_SIZE);
         println!("This can happen if stake activation is delayed");
+
+        // Still observe one more epoch to verify system stability
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
+
+        let epoch = cli.account_epoch().expect("Failed to get epoch");
+        println!("Final epoch: {:?}", epoch.id);
     }
 
     // Check for errors
@@ -265,8 +301,23 @@ async fn test_stake_weight_affects_allocations() {
         nodes.push(node);
     }
 
-    // Activate nodes
-    wait_for_epoch_advance().await;
+    // Fund nodes with SOL for transaction fees
+    for (i, node) in nodes.iter().enumerate() {
+        if let Err(e) = node.fund(&cli, 1.0) {
+            println!("Warning: Failed to fund node {}: {}", i, e);
+        }
+    }
+
+    // Start nodes BEFORE bootstrap
+    for node in nodes.iter_mut() {
+        let _ = node.start(&cli);
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Bootstrap: Manual epoch advance to activate nodes
+    println!("\n=== Bootstrap: Activating nodes ===");
+    println!("Waiting {}s for MIN_EPOCH_DURATION...", MIN_EPOCH_WAIT.as_secs());
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
     cli.admin_advance_epoch().expect("Failed to advance epoch");
 
     // Query node status to see spool allocations
@@ -294,23 +345,23 @@ async fn test_stake_weight_affects_allocations() {
     let total_allocations: u16 = initial_allocations.iter().sum();
     println!("\nTotal spool allocations: {}", total_allocations);
 
-    // Start nodes
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Observe several epochs advancing autonomously
+    println!("\n=== Observing 5 epochs ===");
+    println!("(Nodes will advance epochs autonomously)");
 
-    // Advance several epochs
-    println!("\n=== Running 5 epochs ===");
+    let mut last_epoch_id = cli.account_epoch().expect("epoch").id.unwrap_or(0);
     for epoch_num in 1..=5 {
-        wait_for_epoch_advance().await;
-        let _ = cli.admin_advance_epoch();
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
 
         let epoch = cli.account_epoch().expect("Failed to get epoch");
+        last_epoch_id = epoch.id.unwrap_or(0);
+
         println!(
             "  Epoch {}: id={}, phase={:?}",
             epoch_num,
-            epoch.id.unwrap_or(0),
+            last_epoch_id,
             epoch.phase
         );
     }
@@ -381,23 +432,43 @@ async fn test_dynamic_node_membership() {
         nodes.push(node);
     }
 
-    wait_for_epoch_advance().await;
+    // Fund nodes with SOL for transaction fees
+    for (i, node) in nodes.iter().enumerate() {
+        if let Err(e) = node.fund(&cli, 1.0) {
+            println!("Warning: Failed to fund node {}: {}", i, e);
+        }
+    }
+
+    // Start nodes BEFORE bootstrap
+    for node in nodes.iter_mut() {
+        let _ = node.start(&cli);
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Bootstrap: Manual epoch advance to activate nodes from committee_next to committee
+    println!("\n=== Bootstrap: Activating initial nodes ===");
+    println!("Waiting {}s for MIN_EPOCH_DURATION...", MIN_EPOCH_WAIT.as_secs());
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
     cli.admin_advance_epoch().expect("Failed to advance");
 
     let system = cli.account_system().expect("Failed to get system");
     println!("Committee size: {}", system.committee_size.unwrap_or(0));
 
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-
-    // Run a few epochs
+    // Run a few epochs (nodes advance autonomously)
     println!("\n=== Phase 2: Running 3 epochs with 3 nodes ===");
+    println!("(Nodes will advance epochs autonomously)");
+
+    let mut last_epoch_id = cli.account_epoch().expect("epoch").id.unwrap_or(0);
     for i in 1..=3 {
-        wait_for_epoch_advance().await;
-        let _ = cli.admin_advance_epoch();
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
+
         let system = cli.account_system().expect("Failed to get system");
-        println!("  Epoch {}: committee = {}", i, system.committee_size.unwrap_or(0));
+        let epoch = cli.account_epoch().expect("Failed to get epoch");
+        last_epoch_id = epoch.id.unwrap_or(0);
+
+        println!("  Epoch {}: id={}, committee={}", i, last_epoch_id, system.committee_size.unwrap_or(0));
     }
 
     // Add 2 more nodes
@@ -407,24 +478,39 @@ async fn test_dynamic_node_membership() {
         node.register(&cli).expect("Failed to register");
         node.stake(&cli, 1000).expect("Failed to stake");
         node.join(&cli).expect("Failed to join");
+        if let Err(e) = node.fund(&cli, 1.0) {
+            println!("Warning: Failed to fund node {}: {}", i, e);
+        }
         let _ = node.start(&cli);
         nodes.push(node);
         println!("  Added node {}", i);
     }
 
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
+    // Wait for epoch to advance and activate new nodes
+    println!("Waiting for epoch to advance and activate new nodes...");
+    wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+        .await
+        .expect("Epoch should advance");
 
     let system = cli.account_system().expect("Failed to get system");
+    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    last_epoch_id = epoch.id.unwrap_or(0);
     println!("Committee size after adding: {}", system.committee_size.unwrap_or(0));
 
-    // Run more epochs
+    // Run more epochs (nodes advance autonomously)
     println!("\n=== Phase 4: Running 3 epochs with 5 nodes ===");
+    println!("(Nodes will advance epochs autonomously)");
+
     for i in 1..=3 {
-        wait_for_epoch_advance().await;
-        let _ = cli.admin_advance_epoch();
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
+
         let system = cli.account_system().expect("Failed to get system");
-        println!("  Epoch {}: committee = {}", i, system.committee_size.unwrap_or(0));
+        let epoch = cli.account_epoch().expect("Failed to get epoch");
+        last_epoch_id = epoch.id.unwrap_or(0);
+
+        println!("  Epoch {}: id={}, committee={}", i, last_epoch_id, system.committee_size.unwrap_or(0));
     }
 
     // Stop 2 nodes (simulating departure)
@@ -437,19 +523,23 @@ async fn test_dynamic_node_membership() {
     // Note: Stopped nodes still count in committee until they miss attestations
     // and get removed. This tests the graceful degradation.
 
-    // Run more epochs
+    // Run more epochs (remaining nodes advance autonomously)
     println!("\n=== Phase 6: Running 3 epochs with 2 nodes stopped ===");
+    println!("(Remaining nodes will advance epochs autonomously)");
+
     for i in 1..=3 {
-        wait_for_epoch_advance().await;
-        let _ = cli.admin_advance_epoch();
+        wait_for_epoch_advance_from(&cli, last_epoch_id, LONG_TIMEOUT)
+            .await
+            .expect("Epoch should advance");
 
         let system = cli.account_system().expect("Failed to get system");
         let epoch = cli.account_epoch().expect("Failed to get epoch");
+        last_epoch_id = epoch.id.unwrap_or(0);
 
         println!(
             "  Epoch {}: id={}, committee={}",
             i,
-            epoch.id.unwrap_or(0),
+            last_epoch_id,
             system.committee_size.unwrap_or(0)
         );
     }
@@ -483,6 +573,8 @@ async fn test_dynamic_node_membership() {
 /// Test rapid epoch advances don't cause issues.
 ///
 /// Calls admin_advance_epoch repeatedly without waiting for full duration.
+/// Note: This test intentionally uses manual admin_advance_epoch() calls
+/// because testing rapid advance rejection IS the purpose of this test.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -512,14 +604,25 @@ async fn test_rapid_epoch_advance_attempts() {
     node.stake(&cli, 1000).expect("Failed to stake");
     node.join(&cli).expect("Failed to join");
 
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
+    // Fund node with SOL for transaction fees
+    if let Err(e) = node.fund(&cli, 1.0) {
+        println!("Warning: Failed to fund node: {}", e);
+    }
+
+    // Start node BEFORE bootstrap
     node.start(&cli).expect("Failed to start");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Bootstrap: Manual epoch advance to activate node
+    println!("Waiting {}s for MIN_EPOCH_DURATION...", MIN_EPOCH_WAIT.as_secs());
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
+    cli.admin_advance_epoch().expect("Failed to advance");
 
     let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
     println!("Initial epoch: {}", initial_epoch.id.unwrap_or(0));
 
     // Attempt rapid advances (most should fail due to timing)
+    // This is intentionally manual - we're testing that the system rejects rapid advances
     println!("\n=== Attempting 20 rapid advances ===");
     let mut successes = 0;
     let mut failures = 0;
@@ -550,7 +653,7 @@ async fn test_rapid_epoch_advance_attempts() {
 
     // Now wait proper duration and advance
     println!("\n=== Waiting full epoch duration ===");
-    wait_for_epoch_advance().await;
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
 
     match cli.admin_advance_epoch() {
         Ok(_) => println!("Advance after proper wait: SUCCESS"),
