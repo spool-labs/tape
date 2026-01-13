@@ -327,6 +327,119 @@ pub async fn wait_for_program_deployed(rpc_url: &str, program_id: &str, timeout:
     .await
 }
 
+/// Wait for committee size to reach an exact value.
+pub async fn wait_for_exact_committee_size(
+    cli: &Tapedrive,
+    size: usize,
+    timeout: Duration,
+) -> Result<()> {
+    wait_for_with_desc(
+        &format!("committee size = {}", size),
+        || async {
+            match cli.account_system() {
+                Ok(system) => Ok(system.committee_size.unwrap_or(0) == size),
+                Err(_) => Ok(false),
+            }
+        },
+        timeout,
+    )
+    .await
+}
+
+/// Wait for epoch to advance from a given starting epoch.
+pub async fn wait_for_epoch_advance_from(
+    cli: &Tapedrive,
+    from_epoch: u64,
+    timeout: Duration,
+) -> Result<()> {
+    wait_for_with_desc(
+        &format!("epoch > {}", from_epoch),
+        || async {
+            match cli.account_epoch() {
+                Ok(epoch) => Ok(epoch.id.unwrap_or(0) > from_epoch),
+                Err(_) => Ok(false),
+            }
+        },
+        timeout,
+    )
+    .await
+}
+
+/// Wait for all nodes in a list to be healthy.
+pub async fn wait_for_all_nodes_healthy(
+    node_urls: &[String],
+    timeout: Duration,
+) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    wait_for_with_desc(
+        &format!("all {} nodes healthy", node_urls.len()),
+        || async {
+            if start.elapsed() > timeout {
+                return Ok(false);
+            }
+
+            for url in node_urls {
+                let health_url = format!("{}/v1/health", url.trim_end_matches('/'));
+                let client = reqwest::Client::new();
+
+                match client
+                    .get(&health_url)
+                    .timeout(Duration::from_secs(2))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => continue,
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        },
+        timeout,
+    )
+    .await
+}
+
+/// Wait until the system is in low-quorum mode.
+pub async fn wait_for_low_quorum_mode(
+    cli: &Tapedrive,
+    timeout: Duration,
+) -> Result<()> {
+    use crate::MIN_COMMITTEE_SIZE;
+
+    wait_for_with_desc(
+        "low-quorum mode",
+        || async {
+            match cli.account_system() {
+                Ok(system) => Ok(system.committee_size.unwrap_or(0) < MIN_COMMITTEE_SIZE),
+                Err(_) => Ok(false),
+            }
+        },
+        timeout,
+    )
+    .await
+}
+
+/// Wait until the system is in normal (non-low-quorum) mode.
+pub async fn wait_for_normal_mode(
+    cli: &Tapedrive,
+    timeout: Duration,
+) -> Result<()> {
+    use crate::MIN_COMMITTEE_SIZE;
+
+    wait_for_with_desc(
+        "normal mode",
+        || async {
+            match cli.account_system() {
+                Ok(system) => Ok(system.committee_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE),
+                Err(_) => Ok(false),
+            }
+        },
+        timeout,
+    )
+    .await
+}
+
 /// Retry an operation with exponential backoff.
 ///
 /// # Arguments

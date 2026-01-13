@@ -460,6 +460,51 @@ impl Tapedrive {
             Err(_) => Ok(false),
         }
     }
+
+    // =========================================================================
+    // Utility commands
+    // =========================================================================
+
+    /// Airdrop SOL to an address (localnet only).
+    ///
+    /// Uses `solana airdrop` command.
+    pub fn airdrop(&self, address: &Pubkey, amount_sol: u64) -> Result<()> {
+        let mut cmd = Command::new("solana");
+        cmd.args(["airdrop", &amount_sol.to_string(), &address.to_string()]);
+        cmd.args(["--url", "http://127.0.0.1:8899"]);
+
+        let output = cmd.output().context("Failed to execute solana airdrop")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Airdrop might fail if already funded, which is okay
+            if !stderr.contains("airdrop request") {
+                bail!("Airdrop failed: {}", stderr.trim());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Transfer SOL from the CLI keypair to another address.
+    ///
+    /// Uses `solana transfer` command.
+    pub fn transfer_sol(&self, to: &Pubkey, amount_sol: f64) -> Result<()> {
+        let mut cmd = Command::new("solana");
+        cmd.args(["transfer", &to.to_string(), &amount_sol.to_string()]);
+        cmd.args(["--url", "http://127.0.0.1:8899"]);
+        cmd.args(["--keypair", self.keypair.to_str().unwrap_or("")]);
+        cmd.arg("--allow-unfunded-recipient");
+
+        let output = cmd.output().context("Failed to execute solana transfer")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Transfer failed: {}", stderr.trim());
+        }
+
+        Ok(())
+    }
 }
 
 // =============================================================================

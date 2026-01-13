@@ -169,6 +169,13 @@ impl TestNode {
         cli.node_sync(Some(&self.config_path))
     }
 
+    /// Fund this node's authority keypair with SOL for transaction fees.
+    ///
+    /// This is needed for the node to submit transactions (like SyncEpoch).
+    pub fn fund(&self, cli: &Tapedrive, amount_sol: f64) -> Result<()> {
+        cli.transfer_sol(&self.authority.pubkey(), amount_sol)
+    }
+
     /// Start the node process.
     ///
     /// Returns a handle that can be used to check status and stop the node.
