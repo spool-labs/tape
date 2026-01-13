@@ -3,7 +3,7 @@
 //! Handles starting and stopping the solana-test-validator with the
 //! Tapedrive programs pre-deployed.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -48,7 +48,16 @@ impl Validator {
     }
 
     /// Spawn with custom options.
+    ///
+    /// If a validator is already running on the same port, it will be killed first.
     pub async fn spawn_with_options(options: ValidatorOptions) -> Result<Self> {
+        // Kill any existing validator to ensure clean state
+        if Self::is_port_in_use(options.rpc_port).await {
+            Self::kill_existing();
+            // Wait for port to be released
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
         let workspace_root = find_workspace_root()?;
 
         // Create temporary ledger directory if not provided
@@ -96,7 +105,7 @@ impl Validator {
         // Spawn the process
         let process = cmd.spawn().context("Failed to spawn validator process")?;
 
-        let mut validator = Self {
+        let validator = Self {
             process: Some(process),
             ledger_dir,
             custom_ledger_path: options.ledger_path,
@@ -112,26 +121,25 @@ impl Validator {
         Ok(validator)
     }
 
-    /// Wait for the validator to be ready (accepting RPC requests).
+    /// Wait for the validator to be ready (processing slots).
+    ///
+    /// Waits for slot > 0 which implies RPC is responding and programs are loaded.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<()> {
         let start = std::time::Instant::now();
         let client = reqwest::Client::new();
 
         loop {
             if start.elapsed() > timeout {
-                bail!(
-                    "Validator did not become ready within {:?}",
-                    timeout
-                );
+                bail!("Validator did not become ready within {:?}", timeout);
             }
 
-            // Try a simple RPC health check
+            // Check if validator is processing slots (implies programs loaded)
             let result = client
                 .post(&self.rpc_url)
                 .json(&serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "getHealth"
+                    "method": "getSlot"
                 }))
                 .timeout(Duration::from_secs(2))
                 .send()
@@ -139,7 +147,13 @@ impl Validator {
 
             if let Ok(resp) = result {
                 if resp.status().is_success() {
-                    return Ok(());
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(slot) = json.get("result").and_then(|r| r.as_u64()) {
+                            if slot > 0 {
+                                return Ok(());
+                            }
+                        }
+                    }
                 }
             }
 
@@ -170,7 +184,7 @@ impl Validator {
             // Try graceful shutdown first
             #[cfg(unix)]
             {
-                use std::os::unix::process::CommandExt;
+                // SAFETY: sending SIGTERM to our child process
                 unsafe {
                     libc::kill(process.id() as i32, libc::SIGTERM);
                 }
@@ -184,6 +198,24 @@ impl Validator {
         }
     }
 
+    /// Check if something is listening on the given port.
+    async fn is_port_in_use(port: u16) -> bool {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}", port);
+
+        client
+            .post(&url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getHealth"
+            }))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok()
+    }
+
     /// Kill any existing validator processes.
     ///
     /// Useful for cleanup before starting a new test.
@@ -191,7 +223,7 @@ impl Validator {
         #[cfg(unix)]
         {
             let _ = Command::new("pkill")
-                .args(["-f", "solana-test-validator"])
+                .args(["-9", "-f", "solana-test-validator"])
                 .output();
         }
     }

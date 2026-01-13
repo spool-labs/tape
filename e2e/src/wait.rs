@@ -270,6 +270,63 @@ pub async fn wait_for_rpc(rpc_url: &str, timeout: Duration) -> Result<()> {
     .await
 }
 
+/// Wait for a program to be deployed (account exists and is executable).
+///
+/// This is necessary because `solana-test-validator` may respond to health
+/// checks before BPF programs are fully loaded.
+pub async fn wait_for_program_deployed(rpc_url: &str, program_id: &str, timeout: Duration) -> Result<()> {
+    let client = reqwest::Client::new();
+
+    wait_for_with_desc(
+        &format!("program {} deployed", program_id),
+        || {
+            let client = client.clone();
+            let rpc_url = rpc_url.to_string();
+            let program_id = program_id.to_string();
+            async move {
+                let result = client
+                    .post(&rpc_url)
+                    .json(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "getAccountInfo",
+                        "params": [
+                            program_id,
+                            { "encoding": "base64" }
+                        ]
+                    }))
+                    .timeout(Duration::from_secs(5))
+                    .send()
+                    .await;
+
+                match result {
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            return Ok(false);
+                        }
+                        // Check if the response contains account data with executable=true
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            if let Some(result) = json.get("result") {
+                                if let Some(value) = result.get("value") {
+                                    if !value.is_null() {
+                                        if let Some(executable) = value.get("executable") {
+                                            return Ok(executable.as_bool().unwrap_or(false));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(false)
+                    }
+                    Err(_) => Ok(false),
+                }
+            }
+        },
+        timeout,
+    )
+    .await
+}
+
 /// Retry an operation with exponential backoff.
 ///
 /// # Arguments

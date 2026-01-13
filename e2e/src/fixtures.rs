@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rand::RngCore;
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::signature::Keypair;
 use tempfile::{NamedTempFile, TempDir};
 
 /// Generate random bytes of specified size.

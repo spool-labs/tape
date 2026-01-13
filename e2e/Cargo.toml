@@ -36,3 +36,4 @@ solana-sdk = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+serial_test = "3"
