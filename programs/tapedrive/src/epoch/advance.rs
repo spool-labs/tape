@@ -39,7 +39,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Check epoch state and timing
     if system.is_low_quorum() {
-        // Low-quorum: relaxed checks - allow advancing in any state
+        // Low-quorum: relaxed state checks, but still enforce minimum timing
+        if epoch.last_epoch + MIN_EPOCH_DURATION > now {
+            return Err(TapeError::TooSoon.into());
+        }
     } else {
         // Normal mode: strict requirements
         if !epoch.state.is_active() {
@@ -353,8 +356,8 @@ mod tests {
         let mut archive = Archive::zeroed();
         let mut system = System::zeroed();
 
-        // Recent last_epoch - not enough time has passed
-        let last_epoch = env.now() - 100; // Only 100 seconds ago
+        // Recent last_epoch - not enough time has passed (EPOCH_DURATION is 60 seconds)
+        let last_epoch = env.now() - 30; // Only 30 seconds ago, need 60
 
         epoch.id = EpochNumber(2);
         epoch.state = EpochState::active();
@@ -504,6 +507,61 @@ mod tests {
                 Check::account(&epoch_address).data(
                     expected_epoch.pack().as_ref()
                 ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_low_quorum_too_soon() {
+        // Test that MIN_EPOCH_DURATION is still enforced in low-quorum mode
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        // Only 10 seconds ago - less than MIN_EPOCH_DURATION (30 seconds)
+        let last_epoch = env.now() - 10;
+
+        epoch.id = EpochNumber(2);
+        epoch.state = EpochState::active();
+        epoch.last_epoch = last_epoch;
+
+        // Current committee has only 1 node (< MIN_COMMITTEE_SIZE), so we're in low-quorum
+        system.committee = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+        ]);
+
+        // Next committee also has 1 node
+        system.committee_next = Committee::from_members(&[
+            member(1, 1_000, 1_000_000, 1000),
+        ]);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        // Should fail with TooSoon even in low-quorum mode
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(TapeError::TooSoon.into()),
             ]
         );
     }

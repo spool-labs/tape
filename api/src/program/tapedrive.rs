@@ -9,6 +9,7 @@ pub const FUTURE_EPOCHS:       usize = 256;
 pub const EPOCH_HISTORY:       usize = 256;
 pub const EPOCH_VALUES:        usize = 4;                  // Epoch N, N+1, N+2, N+3
 pub const EPOCH_DURATION:        i64 = 60;                 // 60 seconds for testnet (normally 1 week)
+pub const MIN_EPOCH_DURATION:    i64 = 30;                 // Minimum epoch duration (even in low-quorum mode)
 pub const BLACKLIST_SIZE:      usize = 24;                 // 2^24 blob entries in blocklist
 pub const STREAM_SEGMENTS:     usize = 18;                 // 2^18 = 262,144 segments (32MiB with 128B segments)
 
