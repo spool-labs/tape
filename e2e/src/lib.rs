@@ -26,6 +26,7 @@
 
 pub mod cli;
 pub mod consts;
+pub mod context;
 pub mod fixtures;
 pub mod node;
 pub mod validator;
@@ -33,6 +34,7 @@ pub mod wait;
 
 pub use cli::Tapedrive;
 pub use consts::*;
+pub use context::{TestContext, TestContextBuilder, VARYING_STAKES};
 pub use fixtures::*;
 pub use node::{TestCluster, TestNode};
 pub use validator::{Validator, ValidatorOptions};

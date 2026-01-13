@@ -15,21 +15,8 @@ use std::time::Duration;
 
 use serial_test::serial;
 use tape_e2e::{
-    Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc,
-    MIN_EPOCH_WAIT, EPOCH_WAIT, MIN_COMMITTEE_SIZE,
+    TestContext, MIN_EPOCH_WAIT, EPOCH_WAIT, MIN_COMMITTEE_SIZE,
 };
-
-/// Wait for MIN_EPOCH_DURATION to pass before advancing epoch
-async fn wait_for_epoch_advance() {
-    println!("  Waiting {}s for MIN_EPOCH_DURATION...", MIN_EPOCH_WAIT.as_secs());
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-}
-
-/// Wait for full EPOCH_DURATION to pass (normal mode)
-async fn wait_for_full_epoch() {
-    println!("  Waiting {}s for EPOCH_DURATION...", EPOCH_WAIT.as_secs());
-    tokio::time::sleep(EPOCH_WAIT).await;
-}
 
 /// Test that a node starting late correctly identifies stale epochs.
 ///
@@ -41,69 +28,45 @@ async fn wait_for_full_epoch() {
 #[ignore]
 #[serial]
 async fn test_late_node_detects_stale_epochs() {
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
+    const BASE_PORT: u16 = 8080;
 
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    println!("=== Late Node Stale Epoch Detection Test ===");
+
+    // Setup with single node
+    let mut ctx = TestContext::builder()
+        .nodes(1)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(120))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    // Initialize system
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
-
-    // Create and register first node
-    let mut node_a = TestNode::new(0, 8080).expect("Failed to create node A");
-
-    let addr_a = node_a.register(&cli).expect("Failed to register node A");
-    println!("Node A registered: {}", addr_a);
-
-    node_a.stake(&cli, 1000).expect("Failed to stake node A");
-    node_a.join(&cli).expect("Failed to join node A");
-
-    // Wait for MIN_EPOCH_DURATION then advance epoch
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance epoch");
-    println!("Epoch advanced - Node A in committee");
+        .expect("Failed to setup test context");
 
     // Check epoch state
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
-    println!("Current epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
+    let epoch = ctx.epoch().expect("Failed to get epoch");
+    println!("After bootstrap - epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
 
-    // Advance one more epoch (total 2 advances to save time)
-    wait_for_epoch_advance().await;
-    match cli.admin_advance_epoch() {
-        Ok(_) => println!("Advanced to next epoch"),
-        Err(e) => println!("Advance epoch: {}", e),
-    }
+    // Advance one more epoch
+    ctx.wait_and_advance_epoch()
+        .await
+        .expect("Failed to advance epoch");
 
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
-    println!("After advances - epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
+    let epoch = ctx.epoch().expect("Failed to get epoch");
+    println!("After advance - epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
 
-    // Now create a late-joining node B
-    let mut node_b = TestNode::new(1, 8081).expect("Failed to create node B");
+    // Add a late-joining node
+    println!("\n=== Adding late-joining node ===");
+    ctx.add_nodes(1, 1000)
+        .await
+        .expect("Failed to add late node");
 
-    let addr_b = node_b.register(&cli).expect("Failed to register node B");
-    println!("Node B registered: {}", addr_b);
+    // Advance epoch to include the new node
+    ctx.wait_and_advance_epoch()
+        .await
+        .expect("Failed to advance epoch for new node");
 
-    node_b.stake(&cli, 1000).expect("Failed to stake node B");
-    node_b.join(&cli).expect("Failed to join node B");
-
-    // Advance epoch to include node B
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance epoch for node B");
-
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
+    let system = ctx.system().expect("Failed to get system");
     println!("Final epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
-
-    // Both nodes should be in committee now
-    let system = cli.account_system().expect("Failed to get system");
     println!("Committee size: {:?}", system.committee_size);
 
     println!("\nTest passed: Late node registered and joined after multiple epochs");
@@ -119,57 +82,52 @@ async fn test_late_node_detects_stale_epochs() {
 #[ignore]
 #[serial]
 async fn test_node_startup_after_epoch_advances() {
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
+    const BASE_PORT: u16 = 8090;
 
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    println!("=== Node Startup After Epoch Advances Test ===");
+
+    // Build context without bootstrap - we want to control node start timing
+    let mut ctx = TestContext::builder()
+        .nodes(1)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(120))
+        .build()
         .await
-        .expect("Validator did not become ready");
+        .expect("Failed to setup test context");
 
-    let cli = Tapedrive::new_localnet();
-
-    // Initialize system
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
-
-    // Get current epoch
-    let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
+    // Get initial epoch
+    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("Initial epoch: {:?}", initial_epoch.id);
 
-    // Create and setup a node
-    let mut node = TestNode::new(0, 8090).expect("Failed to create node");
-
-    node.register(&cli).expect("Failed to register node");
-    node.stake(&cli, 1000).expect("Failed to stake");
-    node.join(&cli).expect("Failed to join");
-
-    // Advance epoch to activate
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance epoch");
+    // Advance epoch to activate node in committee_next
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
+    ctx.advance_epoch().expect("Failed to advance epoch");
 
     // Advance a couple more epochs BEFORE starting the node
     // This creates the scenario where the node has to catch up
     for i in 0..2 {
-        wait_for_epoch_advance().await;
-        match cli.admin_advance_epoch() {
+        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        match ctx.advance_epoch() {
             Ok(_) => println!("Pre-start: Advanced epoch {}", i + 2),
             Err(e) => println!("Pre-start: Epoch advance {}: {}", i + 2, e),
         }
     }
 
-    let pre_start_epoch = cli.account_epoch().expect("Failed to get epoch");
+    let pre_start_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("Epoch before node start: {:?}", pre_start_epoch.id);
 
-    // Now start the node - it should catch up on all the epochs
+    // Now fund and start the node - it should catch up on all the epochs
     // without trying to submit stale transactions
-    println!("\nStarting node (should catch up on {} epochs)...",
-        pre_start_epoch.id.unwrap_or(0) - initial_epoch.id.unwrap_or(0));
+    println!(
+        "\nStarting node (should catch up on {} epochs)...",
+        pre_start_epoch.id.unwrap_or(0) - initial_epoch.id.unwrap_or(0)
+    );
 
-    node.start(&cli).expect("Failed to start node");
+    let node = &mut ctx.nodes[0];
+    if let Err(e) = node.fund(&ctx.cli, 1.0) {
+        eprintln!("Warning: Failed to fund node: {}", e);
+    }
+    node.start(&ctx.cli).expect("Failed to start node");
 
     // Give node time to start and process blocks
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -186,9 +144,12 @@ async fn test_node_startup_after_epoch_advances() {
         println!("\nRecent log entries:");
         for line in recent.iter().rev() {
             // Look for stale epoch or catch-up related messages
-            if line.contains("stale") || line.contains("catch") ||
-               line.contains("Stale") || line.contains("Catch") ||
-               line.contains("epoch") {
+            if line.contains("stale")
+                || line.contains("catch")
+                || line.contains("Stale")
+                || line.contains("Catch")
+                || line.contains("epoch")
+            {
                 println!("  {}", line);
             }
         }
@@ -204,11 +165,16 @@ async fn test_node_startup_after_epoch_advances() {
             println!("\nWARNING: Found BadEpochId errors in logs!");
         }
 
-        assert!(!has_bad_spool_hash, "Node should not have BadSpoolHash errors during catch-up");
-        assert!(!has_bad_epoch_id, "Node should not have BadEpochId errors during catch-up");
+        assert!(
+            !has_bad_spool_hash,
+            "Node should not have BadSpoolHash errors during catch-up"
+        );
+        assert!(
+            !has_bad_epoch_id,
+            "Node should not have BadEpochId errors during catch-up"
+        );
     }
 
-    node.stop();
     println!("\nTest passed: Node started and caught up without stale epoch errors");
 }
 
@@ -220,65 +186,53 @@ async fn test_node_startup_after_epoch_advances() {
 #[ignore]
 #[serial]
 async fn test_staggered_node_joins() {
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
+    const BASE_PORT: u16 = 8070;
 
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    println!("=== Staggered Node Joins Test ===");
+
+    // Setup with 1 initial node
+    let mut ctx = TestContext::builder()
+        .nodes(1)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(120))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    // Initialize system
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
+        .expect("Failed to setup test context");
 
     // Track epochs where each node joins
     let mut join_epochs = Vec::new();
 
-    // Node 0 joins at epoch 1
-    let mut node_0 = TestNode::new(0, 8070).expect("Failed to create node 0");
-    node_0.register(&cli).expect("Failed to register node 0");
-    node_0.stake(&cli, 1000).expect("Failed to stake node 0");
-    node_0.join(&cli).expect("Failed to join node 0");
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
-
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
     join_epochs.push(("node_0", epoch.id.unwrap_or(0)));
     println!("Node 0 joined at epoch {}", epoch.id.unwrap_or(0));
 
-    // Node 1 joins next epoch
-    let mut node_1 = TestNode::new(1, 8071).expect("Failed to create node 1");
-    node_1.register(&cli).expect("Failed to register node 1");
-    node_1.stake(&cli, 1000).expect("Failed to stake node 1");
-    node_1.join(&cli).expect("Failed to join node 1");
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().ok();
+    // Add node 1 next epoch
+    ctx.add_nodes(1, 1000)
+        .await
+        .expect("Failed to add node 1");
+    ctx.wait_and_advance_epoch()
+        .await
+        .expect("Failed to advance");
 
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
     join_epochs.push(("node_1", epoch.id.unwrap_or(0)));
     println!("Node 1 joined at epoch {}", epoch.id.unwrap_or(0));
 
-    // Node 2 joins next epoch
-    let mut node_2 = TestNode::new(2, 8072).expect("Failed to create node 2");
-    node_2.register(&cli).expect("Failed to register node 2");
-    node_2.stake(&cli, 1000).expect("Failed to stake node 2");
-    node_2.join(&cli).expect("Failed to join node 2");
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().ok();
+    // Add node 2 next epoch
+    ctx.add_nodes(1, 1000)
+        .await
+        .expect("Failed to add node 2");
+    ctx.wait_and_advance_epoch()
+        .await
+        .expect("Failed to advance");
 
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
     join_epochs.push(("node_2", epoch.id.unwrap_or(0)));
     println!("Node 2 joined at epoch {}", epoch.id.unwrap_or(0));
 
     // Final state
-    let final_epoch = cli.account_epoch().expect("Failed to get epoch");
-    let system = cli.account_system().expect("Failed to get system");
+    let final_epoch = ctx.epoch().expect("Failed to get epoch");
+    let system = ctx.system().expect("Failed to get system");
 
     println!("\n=== Final State ===");
     println!("Epoch: {:?}", final_epoch.id);
@@ -298,39 +252,35 @@ async fn test_staggered_node_joins() {
 #[ignore]
 #[serial]
 async fn test_epoch_staleness_detection() {
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
+    const BASE_PORT: u16 = 8100;
 
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    println!("=== Epoch Staleness Detection Test ===");
+
+    // Setup without nodes - just need system initialized
+    let ctx = TestContext::builder()
+        .nodes(0)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(120))
+        .build()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    // Initialize
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
+        .expect("Failed to setup test context");
 
     // Get initial epoch
-    let initial = cli.account_epoch().expect("Failed to get epoch");
+    let initial = ctx.epoch().expect("Failed to get epoch");
     let initial_id = initial.id.unwrap_or(0);
     println!("Initial epoch: {}", initial_id);
 
     // Advance a couple epochs
     let advances = 2;
     for i in 0..advances {
-        wait_for_epoch_advance().await;
-        match cli.admin_advance_epoch() {
+        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        match ctx.advance_epoch() {
             Ok(_) => println!("Advanced epoch {}", i + 1),
             Err(e) => println!("Advance {}: {}", i, e),
         }
     }
 
-    let current = cli.account_epoch().expect("Failed to get epoch");
+    let current = ctx.epoch().expect("Failed to get epoch");
     let current_id = current.id.unwrap_or(0);
     println!("Current epoch: {}", current_id);
 
@@ -339,7 +289,11 @@ async fn test_epoch_staleness_detection() {
     println!("\nEpoch staleness (conceptual):");
     for epoch_id in initial_id..=current_id {
         let is_stale = epoch_id < current_id;
-        println!("  Epoch {}: {}", epoch_id, if is_stale { "STALE" } else { "CURRENT" });
+        println!(
+            "  Epoch {}: {}",
+            epoch_id,
+            if is_stale { "STALE" } else { "CURRENT" }
+        );
     }
 
     assert!(current_id >= initial_id, "Epoch should have advanced");
@@ -359,72 +313,43 @@ async fn test_epoch_staleness_detection() {
 #[ignore]
 #[serial]
 async fn test_catchup_normal_quorum() {
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
+    const BASE_PORT: u16 = 9000;
 
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    println!("=== Catch-up Normal Quorum Test ({} nodes) ===", MIN_COMMITTEE_SIZE);
+
+    // Build without bootstrap - we need custom timing for normal mode
+    let mut ctx = TestContext::builder()
+        .nodes(MIN_COMMITTEE_SIZE)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(600))
+        .build()
         .await
-        .expect("Validator did not become ready");
+        .expect("Failed to setup test context");
 
-    let cli = Tapedrive::new_localnet();
-
-    // Initialize system
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
-
-    let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
+    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("Initial epoch: {:?}", initial_epoch.id);
 
-    // Register MIN_COMMITTEE_SIZE nodes to exit low-quorum mode
-    println!("\n=== Registering {} nodes for normal quorum ===", MIN_COMMITTEE_SIZE);
-    let mut nodes: Vec<TestNode> = Vec::new();
-
-    for i in 0..MIN_COMMITTEE_SIZE {
-        let port = 9000 + i as u16;
-        let mut node = TestNode::new(i, port).expect(&format!("Failed to create node {}", i));
-
-        match node.register(&cli) {
-            Ok(addr) => println!("Node {} registered: {}", i, addr),
-            Err(e) => {
-                println!("Node {} register failed: {} (may already exist)", i, e);
-                // Try to continue - node might already be registered
-            }
-        }
-
-        match node.stake(&cli, 1000) {
-            Ok(_) => {},
-            Err(e) => println!("Node {} stake: {}", i, e),
-        }
-
-        match node.join(&cli) {
-            Ok(_) => println!("Node {} joined committee_next", i),
-            Err(e) => println!("Node {} join: {}", i, e),
-        }
-
-        nodes.push(node);
-    }
-
     // Check system state
-    let system = cli.account_system().expect("Failed to get system");
-    println!("\nCommittee size: {:?}", system.committee_size);
+    let system = ctx.system().expect("Failed to get system");
+    println!("Committee size: {:?}", system.committee_size);
     println!("Committee next size: {:?}", system.committee_next_size);
 
     // Wait for EPOCH_DURATION and advance to activate nodes
-    println!("\n=== Advancing to activate {} nodes ===", MIN_COMMITTEE_SIZE);
-    wait_for_full_epoch().await;
+    println!(
+        "\n=== Advancing to activate {} nodes (waiting {}s) ===",
+        MIN_COMMITTEE_SIZE,
+        EPOCH_WAIT.as_secs()
+    );
+    tokio::time::sleep(EPOCH_WAIT).await;
 
-    match cli.admin_advance_epoch() {
+    match ctx.advance_epoch() {
         Ok(_) => println!("Epoch advanced"),
         Err(e) => println!("Advance failed: {}", e),
     }
 
     // Check if we're in normal mode now
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
-    let system = cli.account_system().expect("Failed to get system");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
+    let system = ctx.system().expect("Failed to get system");
     println!("Epoch: {:?}, Phase: {:?}", epoch.id, epoch.phase);
     println!("Committee size: {:?}", system.committee_size);
 
@@ -435,10 +360,13 @@ async fn test_catchup_normal_quorum() {
         // In normal mode, epoch should be in Syncing phase
         println!("\nNormal mode detected - epoch should be in Syncing phase");
 
-        // Start nodes so they can submit SyncEpoch
+        // Fund and start nodes so they can submit SyncEpoch
         println!("\n=== Starting nodes for SyncEpoch attestations ===");
-        for (i, node) in nodes.iter_mut().enumerate() {
-            match node.start(&cli) {
+        for (i, node) in ctx.nodes.iter_mut().enumerate() {
+            if let Err(e) = node.fund(&ctx.cli, 1.0) {
+                eprintln!("Warning: Failed to fund node {}: {}", i, e);
+            }
+            match node.start(&ctx.cli) {
                 Ok(_) => println!("Node {} started", i),
                 Err(e) => println!("Node {} start failed: {}", i, e),
             }
@@ -449,41 +377,27 @@ async fn test_catchup_normal_quorum() {
         tokio::time::sleep(Duration::from_secs(10)).await;
 
         // Check epoch phase - should transition to Settling or Active
-        let epoch = cli.account_epoch().expect("Failed to get epoch");
-        println!("After node sync - Epoch: {:?}, Phase: {:?}", epoch.id, epoch.phase);
+        let epoch = ctx.epoch().expect("Failed to get epoch");
+        println!(
+            "After node sync - Epoch: {:?}, Phase: {:?}",
+            epoch.id, epoch.phase
+        );
 
         // Advance another epoch to test catch-up
         println!("\n=== Testing catch-up by advancing another epoch ===");
-        wait_for_full_epoch().await;
+        tokio::time::sleep(EPOCH_WAIT).await;
 
-        match cli.admin_advance_epoch() {
+        match ctx.advance_epoch() {
             Ok(_) => println!("Second epoch advanced"),
             Err(e) => println!("Second advance: {}", e),
         }
 
-        let epoch = cli.account_epoch().expect("Failed to get epoch");
+        let epoch = ctx.epoch().expect("Failed to get epoch");
         println!("Final epoch: {:?}, Phase: {:?}", epoch.id, epoch.phase);
 
-        // Check node logs for any catch-up related messages
-        if let Some(node) = nodes.first() {
-            if let Ok(log) = node.read_log() {
-                let has_errors = log.contains("BadSpoolHash") ||
-                                 log.contains("BadEpochId") ||
-                                 log.contains("0x54") ||
-                                 log.contains("0x43");
-
-                if has_errors {
-                    println!("\nWARNING: Found errors in node logs!");
-                }
-
-                assert!(!has_errors, "Nodes should not have stale epoch errors in normal mode");
-            }
-        }
-
-        // Stop all nodes
-        for node in nodes.iter_mut() {
-            node.stop();
-        }
+        // Check node logs for any catch-up related errors
+        ctx.check_node_logs()
+            .expect("Nodes should not have stale epoch errors in normal mode");
 
         println!("\nTest passed: Normal quorum catch-up completed successfully");
     } else {
@@ -493,10 +407,10 @@ async fn test_catchup_normal_quorum() {
         println!("Skipping normal-mode specific tests");
 
         // Advance one more epoch to test basic functionality
-        wait_for_epoch_advance().await;
-        cli.admin_advance_epoch().ok();
+        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        ctx.advance_epoch().ok();
 
-        let epoch = cli.account_epoch().expect("Failed to get epoch");
+        let epoch = ctx.epoch().expect("Failed to get epoch");
         println!("Final epoch: {:?}", epoch.id);
 
         println!("\nTest completed in low-quorum mode");

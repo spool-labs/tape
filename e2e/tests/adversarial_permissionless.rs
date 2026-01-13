@@ -10,20 +10,12 @@
 //! cargo test -p tape-e2e --test adversarial_permissionless -- --ignored --nocapture
 //! ```
 
-use std::time::Duration;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serial_test::serial;
-use tape_e2e::{
-    Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc,
-    MIN_EPOCH_WAIT,
-};
-
-/// Wait for MIN_EPOCH_DURATION to pass before advancing epoch.
-async fn wait_for_epoch_advance() {
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-}
+use tape_e2e::{Tapedrive, TestContext, TestNode, MIN_EPOCH_WAIT};
 
 /// Test concurrent AdvanceEpoch calls from multiple "attackers".
 ///
@@ -42,43 +34,20 @@ async fn test_concurrent_advance_epoch_spam() {
     const BASE_PORT: u16 = 12100;
 
     println!("=== Concurrent AdvanceEpoch Spam Test ===");
-    println!("Nodes: {}, Attackers: {}, Rounds: {}", NUM_NODES, NUM_ATTACKERS, SPAM_ROUNDS);
+    println!(
+        "Nodes: {}, Attackers: {}, Rounds: {}",
+        NUM_NODES, NUM_ATTACKERS, SPAM_ROUNDS
+    );
 
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(300))
-    )
-    .await
-    .expect("Failed to spawn validator");
-
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    let ctx = TestContext::builder()
+        .nodes(NUM_NODES)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(300))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
+        .expect("Failed to setup test context");
 
-    let cli = Tapedrive::new_localnet();
-
-    cli.admin_init().expect("Failed to initialize system");
-    println!("System initialized");
-
-    // Register and start nodes
-    let mut nodes: Vec<TestNode> = Vec::new();
-    for i in 0..NUM_NODES {
-        let mut node = TestNode::new(i, BASE_PORT).expect("Failed to create node");
-        node.register(&cli).expect("Failed to register");
-        node.stake(&cli, 1000).expect("Failed to stake");
-        node.join(&cli).expect("Failed to join");
-        nodes.push(node);
-    }
-
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
-
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
+    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("Initial epoch: {}", initial_epoch.id.unwrap_or(0));
 
     // Spam AdvanceEpoch from multiple concurrent tasks
@@ -124,7 +93,7 @@ async fn test_concurrent_advance_epoch_spam() {
         }
 
         // Check system state after spam
-        if let Ok(epoch) = cli.account_epoch() {
+        if let Ok(epoch) = ctx.epoch() {
             println!(
                 "  After round {}: epoch={}, phase={:?}",
                 round + 1,
@@ -151,7 +120,7 @@ async fn test_concurrent_advance_epoch_spam() {
     // Check nodes are still healthy
     println!("\n=== Checking node health ===");
     let mut all_healthy = true;
-    for node in &nodes {
+    for node in &ctx.nodes {
         let healthy = node.is_healthy().await;
         if !healthy {
             all_healthy = false;
@@ -162,26 +131,12 @@ async fn test_concurrent_advance_epoch_spam() {
     assert!(all_healthy, "Nodes should remain healthy during spam");
 
     // Check for errors in logs
-    let mut found_errors = false;
-    for node in &nodes {
-        if let Ok(log) = node.read_log() {
-            if log.contains("panic") || log.contains("PANIC") {
-                found_errors = true;
-                println!("Error in {}", node.name);
-            }
-        }
-    }
-
-    assert!(!found_errors, "Nodes should not crash during spam attack");
+    ctx.check_node_logs()
+        .expect("Nodes should not crash during spam attack");
 
     // Verify epoch advanced correctly (considering spam)
-    let final_epoch = cli.account_epoch().expect("Failed to get epoch");
+    let final_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("\nFinal epoch: {}", final_epoch.id.unwrap_or(0));
-
-    // Cleanup
-    for node in nodes.iter_mut() {
-        node.stop();
-    }
 
     println!("\nTest passed: System survived concurrent AdvanceEpoch spam");
 }
@@ -199,38 +154,13 @@ async fn test_advance_pool_spam() {
 
     println!("=== AdvancePool Spam Test ===");
 
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(180))
-    )
-    .await
-    .expect("Failed to spawn validator");
-
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    let ctx = TestContext::builder()
+        .nodes(NUM_NODES)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(180))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    cli.admin_init().expect("Failed to initialize system");
-
-    // Register and start nodes
-    let mut nodes: Vec<TestNode> = Vec::new();
-    for i in 0..NUM_NODES {
-        let mut node = TestNode::new(i, BASE_PORT).expect("Failed to create node");
-        node.register(&cli).expect("Failed to register");
-        node.stake(&cli, 1000).expect("Failed to stake");
-        node.join(&cli).expect("Failed to join");
-        nodes.push(node);
-    }
-
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
-
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+        .expect("Failed to setup test context");
 
     println!("Nodes started");
 
@@ -242,9 +172,9 @@ async fn test_advance_pool_spam() {
 
     for round in 0..10 {
         // Call advance_pool on each node rapidly
-        for node in &nodes {
+        for node in &ctx.nodes {
             for _ in 0..5 {
-                match node.advance_pool(&cli) {
+                match node.advance_pool(&ctx.cli) {
                     Ok(_) => pool_successes += 1,
                     Err(_) => pool_failures += 1,
                 }
@@ -255,7 +185,12 @@ async fn test_advance_pool_spam() {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         if round % 3 == 0 {
-            println!("  Round {}: {} successes, {} failures", round + 1, pool_successes, pool_failures);
+            println!(
+                "  Round {}: {} successes, {} failures",
+                round + 1,
+                pool_successes,
+                pool_failures
+            );
         }
     }
 
@@ -265,7 +200,7 @@ async fn test_advance_pool_spam() {
 
     // Check node health
     let mut all_healthy = true;
-    for node in &nodes {
+    for node in &ctx.nodes {
         if !node.is_healthy().await {
             all_healthy = false;
             println!("  {} NOT healthy", node.name);
@@ -276,20 +211,13 @@ async fn test_advance_pool_spam() {
 
     // Advance a few epochs to verify normal operation continues
     println!("\n=== Verifying normal operation ===");
-    for i in 1..=5 {
-        wait_for_epoch_advance().await;
-        if let Err(e) = cli.admin_advance_epoch() {
-            println!("  Epoch {} advance: {}", i, e);
-        }
 
-        let epoch = cli.account_epoch().expect("Failed to get epoch");
-        println!("  Epoch {}: id={}", i, epoch.id.unwrap_or(0));
-    }
-
-    // Cleanup
-    for node in nodes.iter_mut() {
-        node.stop();
-    }
+    ctx.observe_epochs(5, |epoch, _system| {
+        println!("  Epoch: id={}", epoch.id.unwrap_or(0));
+        Ok(())
+    })
+    .await
+    .expect("Failed to observe epochs");
 
     println!("\nTest passed: System survived AdvancePool spam");
 }
@@ -303,44 +231,19 @@ async fn test_advance_pool_spam() {
 #[serial]
 async fn test_interleaved_permissionless_calls() {
     const NUM_NODES: usize = 4;
-    const TEST_DURATION_SECS: u64 = 120;  // 2 minutes
+    const TEST_DURATION_SECS: u64 = 120; // 2 minutes
     const BASE_PORT: u16 = 12300;
 
     println!("=== Interleaved Permissionless Calls Test ===");
     println!("Duration: {}s", TEST_DURATION_SECS);
 
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(180))
-    )
-    .await
-    .expect("Failed to spawn validator");
-
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    let ctx = TestContext::builder()
+        .nodes(NUM_NODES)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(180))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    cli.admin_init().expect("Failed to initialize system");
-
-    // Register and start nodes
-    let mut nodes: Vec<TestNode> = Vec::new();
-    for i in 0..NUM_NODES {
-        let mut node = TestNode::new(i, BASE_PORT).expect("Failed to create node");
-        node.register(&cli).expect("Failed to register");
-        node.stake(&cli, 1000).expect("Failed to stake");
-        node.join(&cli).expect("Failed to join");
-        nodes.push(node);
-    }
-
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
-
-    for node in nodes.iter_mut() {
-        let _ = node.start(&cli);
-    }
-    tokio::time::sleep(Duration::from_secs(3)).await;
+        .expect("Failed to setup test context");
 
     println!("Nodes started");
 
@@ -352,7 +255,6 @@ async fn test_interleaved_permissionless_calls() {
     // Spawn background task that continuously calls permissionless functions
     let stop_clone = Arc::clone(&stop_flag);
     let epoch_clone = Arc::clone(&epoch_advances);
-    let pool_clone = Arc::clone(&pool_advances);
 
     let spammer_handle = tokio::spawn(async move {
         let cli = Tapedrive::new_localnet();
@@ -373,14 +275,17 @@ async fn test_interleaved_permissionless_calls() {
     });
 
     // Run test for specified duration
-    println!("\n=== Running for {}s with background spam ===", TEST_DURATION_SECS);
+    println!(
+        "\n=== Running for {}s with background spam ===",
+        TEST_DURATION_SECS
+    );
 
     let start = std::time::Instant::now();
     let mut last_epoch_id = 0u64;
 
     while start.elapsed().as_secs() < TEST_DURATION_SECS {
         // Do normal operations - check epoch, call advance_pool
-        if let Ok(epoch) = cli.account_epoch() {
+        if let Ok(epoch) = ctx.epoch() {
             let current_id = epoch.id.unwrap_or(0);
             if current_id != last_epoch_id {
                 println!(
@@ -395,8 +300,8 @@ async fn test_interleaved_permissionless_calls() {
         }
 
         // Call advance_pool on nodes
-        for node in &nodes {
-            if node.advance_pool(&cli).is_ok() {
+        for node in &ctx.nodes {
+            if node.advance_pool(&ctx.cli).is_ok() {
                 pool_advances.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -404,7 +309,7 @@ async fn test_interleaved_permissionless_calls() {
         // Check node health periodically
         if start.elapsed().as_secs() % 30 == 0 {
             let mut healthy_count = 0;
-            for node in &nodes {
+            for node in &ctx.nodes {
                 if node.is_healthy().await {
                     healthy_count += 1;
                 }
@@ -428,15 +333,22 @@ async fn test_interleaved_permissionless_calls() {
     let _ = spammer_handle.await;
 
     println!("\n=== Test Results ===");
-    println!("Epoch advances: {}", epoch_advances.load(Ordering::Relaxed));
+    println!(
+        "Epoch advances: {}",
+        epoch_advances.load(Ordering::Relaxed)
+    );
     println!("Pool advances: {}", pool_advances.load(Ordering::Relaxed));
 
     // Final health check
     println!("\n=== Final Health Check ===");
     let mut all_healthy = true;
-    for node in &nodes {
+    for node in &ctx.nodes {
         let healthy = node.is_healthy().await;
-        println!("  {}: {}", node.name, if healthy { "healthy" } else { "NOT healthy" });
+        println!(
+            "  {}: {}",
+            node.name,
+            if healthy { "healthy" } else { "NOT healthy" }
+        );
         if !healthy {
             all_healthy = false;
         }
@@ -444,32 +356,10 @@ async fn test_interleaved_permissionless_calls() {
 
     // Check logs for errors
     println!("\n=== Checking Logs ===");
-    let mut found_errors = false;
-    for node in &nodes {
-        if let Ok(log) = node.read_log() {
-            let has_panic = log.contains("panic") || log.contains("PANIC");
-            let has_bad_spool = log.contains("BadSpoolHash");
-            let has_bad_epoch = log.contains("BadEpochId");
-
-            if has_panic || has_bad_spool || has_bad_epoch {
-                found_errors = true;
-                println!("  {}: ERRORS FOUND", node.name);
-                if has_panic { println!("    - panic"); }
-                if has_bad_spool { println!("    - BadSpoolHash"); }
-                if has_bad_epoch { println!("    - BadEpochId"); }
-            } else {
-                println!("  {}: no errors", node.name);
-            }
-        }
-    }
+    ctx.check_node_logs()
+        .expect("No errors should be found in logs");
 
     assert!(all_healthy, "All nodes should be healthy after test");
-    assert!(!found_errors, "No errors should be found in logs");
-
-    // Cleanup
-    for node in nodes.iter_mut() {
-        node.stop();
-    }
 
     println!("\nTest passed: System survived interleaved permissionless calls");
 }
@@ -486,35 +376,18 @@ async fn test_epoch_boundary_timing() {
 
     println!("=== Epoch Boundary Timing Test ===");
 
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(180))
-    )
-    .await
-    .expect("Failed to spawn validator");
-
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    let ctx = TestContext::builder()
+        .nodes(1)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(180))
+        .build_and_bootstrap()
         .await
-        .expect("Validator did not become ready");
-
-    let cli = Tapedrive::new_localnet();
-
-    cli.admin_init().expect("Failed to initialize system");
-
-    // Register a node
-    let mut node = TestNode::new(0, BASE_PORT).expect("Failed to create node");
-    node.register(&cli).expect("Failed to register");
-    node.stake(&cli, 1000).expect("Failed to stake");
-    node.join(&cli).expect("Failed to join");
-
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
-    let _ = node.start(&cli);
+        .expect("Failed to setup test context");
 
     println!("Node started");
 
     // Get current epoch timing
-    let epoch = cli.account_epoch().expect("Failed to get epoch");
+    let epoch = ctx.epoch().expect("Failed to get epoch");
     let last_epoch = epoch.last_epoch.unwrap_or(0);
     println!("Last epoch timestamp: {}", last_epoch);
 
@@ -532,13 +405,17 @@ async fn test_epoch_boundary_timing() {
         // Try rapid advances right around the boundary
         let mut attempts = Vec::new();
         for _i in 0..20 {
-            let result = cli.admin_advance_epoch().is_ok();
+            let result = ctx.advance_epoch().is_ok();
             attempts.push(result);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         let successes: usize = attempts.iter().filter(|&&r| r).count();
-        println!("  Attempts around boundary: {} successes out of {}", successes, attempts.len());
+        println!(
+            "  Attempts around boundary: {} successes out of {}",
+            successes,
+            attempts.len()
+        );
 
         // Should have exactly 1 success (at most)
         assert!(
@@ -547,19 +424,19 @@ async fn test_epoch_boundary_timing() {
         );
 
         // Check node health
-        assert!(node.is_healthy().await, "Node should remain healthy");
+        assert!(
+            ctx.nodes[0].is_healthy().await,
+            "Node should remain healthy"
+        );
     }
 
     // Final verification
-    let final_epoch = cli.account_epoch().expect("Failed to get epoch");
+    let final_epoch = ctx.epoch().expect("Failed to get epoch");
     println!("\nFinal epoch: {}", final_epoch.id.unwrap_or(0));
 
     // Check logs
-    if let Ok(log) = node.read_log() {
-        assert!(!log.contains("panic"), "Node should not panic");
-    }
+    ctx.check_node_logs().expect("Node should not have errors");
 
-    node.stop();
     println!("\nTest passed: Epoch boundary timing handled correctly");
 }
 
@@ -575,63 +452,45 @@ async fn test_invalid_state_calls() {
 
     println!("=== Invalid State Calls Test ===");
 
-    let validator = Validator::spawn_with_options(
-        ValidatorOptions::default()
-            .with_timeout(Duration::from_secs(120))
-    )
-    .await
-    .expect("Failed to spawn validator");
-
-    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+    // Build context without nodes - we'll add one manually to test various states
+    let mut ctx = TestContext::builder()
+        .nodes(0)
+        .port(BASE_PORT)
+        .timeout(Duration::from_secs(120))
+        .build()
         .await
-        .expect("Validator did not become ready");
+        .expect("Failed to setup test context");
 
-    let cli = Tapedrive::new_localnet();
-
-    // Try operations before system initialization
-    println!("\n=== Before System Init ===");
-
-    // These should fail gracefully
-    let pre_init_results = vec![
-        ("admin_advance_epoch", cli.admin_advance_epoch().is_err()),
-        ("account_system", cli.account_system().is_err()),
-        ("account_epoch", cli.account_epoch().is_err()),
-    ];
-
-    for (name, failed) in &pre_init_results {
-        println!("  {}: {}", name, if *failed { "failed (expected)" } else { "succeeded" });
-    }
-
-    // Now initialize
-    cli.admin_init().expect("Failed to initialize system");
-    println!("\nSystem initialized");
-
-    // Try operations before any nodes
+    // Try operations before system initialization is handled by build() which calls admin_init
+    // So test operations with no nodes
     println!("\n=== Before Any Nodes ===");
 
     // AdvanceEpoch with no committee
-    let result = cli.admin_advance_epoch();
+    let result = ctx.advance_epoch();
     println!("  advance_epoch (no nodes): {:?}", result.is_err());
 
     // Create a node but don't stake/join
     let mut node = TestNode::new(0, BASE_PORT).expect("Failed to create node");
-    node.register(&cli).expect("Failed to register");
+    node.register(&ctx.cli).expect("Failed to register");
 
     // Try to start without joining committee
     // This might succeed but node won't participate
     println!("\n=== Node Without Committee Membership ===");
-    let _ = node.start(&cli);
+    if let Err(e) = node.fund(&ctx.cli, 1.0) {
+        eprintln!("Warning: Failed to fund node: {}", e);
+    }
+    let _ = node.start(&ctx.cli);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let healthy = node.is_healthy().await;
     println!("  Node healthy (not in committee): {}", healthy);
 
     // Now properly join
-    node.stake(&cli, 1000).expect("Failed to stake");
-    node.join(&cli).expect("Failed to join");
+    node.stake(&ctx.cli, 1000).expect("Failed to stake");
+    node.join(&ctx.cli).expect("Failed to join");
 
-    wait_for_epoch_advance().await;
-    cli.admin_advance_epoch().expect("Failed to advance");
+    tokio::time::sleep(MIN_EPOCH_WAIT).await;
+    ctx.advance_epoch().expect("Failed to advance");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -640,17 +499,25 @@ async fn test_invalid_state_calls() {
 
     // Try double-join (should fail gracefully)
     println!("\n=== Double Join Attempt ===");
-    let double_join = node.join(&cli);
+    let double_join = node.join(&ctx.cli);
     println!("  Double join: {:?}", double_join.is_err());
 
     // Verify node is still healthy
-    assert!(node.is_healthy().await, "Node should survive invalid state calls");
+    assert!(
+        node.is_healthy().await,
+        "Node should survive invalid state calls"
+    );
 
     // Check logs
     if let Ok(log) = node.read_log() {
-        assert!(!log.contains("panic"), "Node should not panic from invalid calls");
+        assert!(
+            !log.contains("panic"),
+            "Node should not panic from invalid calls"
+        );
     }
 
-    node.stop();
+    // Add node to context for proper cleanup
+    ctx.nodes.push(node);
+
     println!("\nTest passed: Invalid state calls handled gracefully");
 }
