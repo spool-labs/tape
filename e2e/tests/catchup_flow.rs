@@ -5,18 +5,16 @@
 //! - Refreshing system state when caught up
 //! - Participating in current epoch after catch-up
 //!
-//! ## Running Tests
+//! All tests spawn their own validator and run serially to avoid port conflicts.
 //!
-//! These tests require a running validator (`make validator`):
 //! ```bash
-//! cargo test -p tape-e2e --test catchup -- --ignored --nocapture
+//! cargo test -p tape-e2e --test catchup_flow -- --ignored --nocapture
 //! ```
 
 use std::time::Duration;
 
-use tape_e2e::{Tapedrive, TestNode};
-
-const LOCALNET_RPC: &str = "http://127.0.0.1:8899";
+use serial_test::serial;
+use tape_e2e::{Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc};
 
 /// Minimum epoch duration in low-quorum mode (must match MIN_EPOCH_DURATION)
 const MIN_EPOCH_WAIT: Duration = Duration::from_secs(31);
@@ -39,23 +37,6 @@ async fn wait_for_full_epoch() {
     tokio::time::sleep(EPOCH_WAIT).await;
 }
 
-/// Check if a validator is already running.
-async fn validator_is_running() -> bool {
-    let client = reqwest::Client::new();
-    client
-        .post(LOCALNET_RPC)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getHealth"
-        }))
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
-}
-
 /// Test that a node starting late correctly identifies stale epochs.
 ///
 /// Scenario:
@@ -64,18 +45,24 @@ async fn validator_is_running() -> bool {
 /// 3. Node B should recognize it's behind and skip stale epoch processing
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_late_node_detects_stale_epochs() {
-    if !validator_is_running().await {
-        panic!("Validator not running. Start with: make validator");
-    }
+    let validator = Validator::spawn_with_options(
+        ValidatorOptions::default()
+            .with_timeout(Duration::from_secs(120))
+    )
+    .await
+    .expect("Failed to spawn validator");
+
+    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+        .await
+        .expect("Validator did not become ready");
 
     let cli = Tapedrive::new_localnet();
 
     // Initialize system
-    match cli.admin_init() {
-        Ok(_) => println!("System initialized"),
-        Err(e) => println!("Init: {} (may already be initialized)", e),
-    }
+    cli.admin_init().expect("Failed to initialize system");
+    println!("System initialized");
 
     // Create and register first node
     let mut node_a = TestNode::new(0, 8080).expect("Failed to create node A");
@@ -136,18 +123,24 @@ async fn test_late_node_detects_stale_epochs() {
 /// - Node should not attempt to submit SyncEpoch for old epochs
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_node_startup_after_epoch_advances() {
-    if !validator_is_running().await {
-        panic!("Validator not running. Start with: make validator");
-    }
+    let validator = Validator::spawn_with_options(
+        ValidatorOptions::default()
+            .with_timeout(Duration::from_secs(120))
+    )
+    .await
+    .expect("Failed to spawn validator");
+
+    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+        .await
+        .expect("Validator did not become ready");
 
     let cli = Tapedrive::new_localnet();
 
     // Initialize system
-    match cli.admin_init() {
-        Ok(_) => println!("System initialized"),
-        Err(e) => println!("Init: {} (may already be initialized)", e),
-    }
+    cli.admin_init().expect("Failed to initialize system");
+    println!("System initialized");
 
     // Get current epoch
     let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
@@ -231,18 +224,24 @@ async fn test_node_startup_after_epoch_advances() {
 /// different epochs and must catch up.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_staggered_node_joins() {
-    if !validator_is_running().await {
-        panic!("Validator not running. Start with: make validator");
-    }
+    let validator = Validator::spawn_with_options(
+        ValidatorOptions::default()
+            .with_timeout(Duration::from_secs(120))
+    )
+    .await
+    .expect("Failed to spawn validator");
+
+    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+        .await
+        .expect("Validator did not become ready");
 
     let cli = Tapedrive::new_localnet();
 
     // Initialize system
-    match cli.admin_init() {
-        Ok(_) => println!("System initialized"),
-        Err(e) => println!("Init: {} (may already be initialized)", e),
-    }
+    cli.admin_init().expect("Failed to initialize system");
+    println!("System initialized");
 
     // Track epochs where each node joins
     let mut join_epochs = Vec::new();
@@ -303,18 +302,24 @@ async fn test_staggered_node_joins() {
 /// Verifies that is_stale_epoch correctly identifies old epochs.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_epoch_staleness_detection() {
-    if !validator_is_running().await {
-        panic!("Validator not running. Start with: make validator");
-    }
+    let validator = Validator::spawn_with_options(
+        ValidatorOptions::default()
+            .with_timeout(Duration::from_secs(120))
+    )
+    .await
+    .expect("Failed to spawn validator");
+
+    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+        .await
+        .expect("Validator did not become ready");
 
     let cli = Tapedrive::new_localnet();
 
     // Initialize
-    match cli.admin_init() {
-        Ok(_) => println!("System initialized"),
-        Err(_) => println!("Already initialized"),
-    }
+    cli.admin_init().expect("Failed to initialize system");
+    println!("System initialized");
 
     // Get initial epoch
     let initial = cli.account_epoch().expect("Failed to get epoch");
@@ -358,18 +363,24 @@ async fn test_epoch_staleness_detection() {
 /// Note: This test takes ~3-4 minutes due to EPOCH_DURATION waits.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_catchup_normal_quorum() {
-    if !validator_is_running().await {
-        panic!("Validator not running. Start with: make validator");
-    }
+    let validator = Validator::spawn_with_options(
+        ValidatorOptions::default()
+            .with_timeout(Duration::from_secs(120))
+    )
+    .await
+    .expect("Failed to spawn validator");
+
+    wait_for_rpc(validator.rpc_url(), Duration::from_secs(30))
+        .await
+        .expect("Validator did not become ready");
 
     let cli = Tapedrive::new_localnet();
 
     // Initialize system
-    match cli.admin_init() {
-        Ok(_) => println!("System initialized"),
-        Err(e) => println!("Init: {} (may already be initialized)", e),
-    }
+    cli.admin_init().expect("Failed to initialize system");
+    println!("System initialized");
 
     let initial_epoch = cli.account_epoch().expect("Failed to get epoch");
     println!("Initial epoch: {:?}", initial_epoch.id);
