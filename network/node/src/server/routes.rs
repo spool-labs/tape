@@ -544,11 +544,12 @@ pub async fn health_check() -> Response {
 }
 
 /// GET /v1/info
-pub async fn get_info<S: Store>(State(_state): State<ApiState<S>>) -> Response {
-    // TODO: Return node info (version, pubkey, etc.)
+pub async fn get_info<S: Store>(State(state): State<ApiState<S>>) -> Response {
+    let node_id = state.control_plane.our_node_id();
     let info = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        "status": "running"
+        "status": "running",
+        "node_id": node_id.as_u64(),
     });
 
     (

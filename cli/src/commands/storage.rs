@@ -135,21 +135,24 @@ fn calculate_slice_size(data_len: usize) -> usize {
 
 /// Discover on-chain state (committee, spool assignment) and resolve node addresses.
 ///
-/// This function always fetches on-chain state, then optionally allows overriding
-/// addresses via explicit nodes or config.
+/// This function always fetches on-chain state for committee and spool assignment.
+/// Node addresses are resolved from on-chain Node accounts to ensure correct
+/// member index mapping for spool routing.
+///
+/// Note: Explicit node addresses (--nodes) are NOT supported for normal mode
+/// uploads because they cannot be correctly mapped to committee member indices
+/// without querying on-chain state. Use on-chain discovery instead.
 async fn discover_network_state(
     ctx: &Context,
     explicit_nodes: Option<Vec<String>>,
 ) -> Result<tape_sdk::NetworkState> {
-    use tape_core::types::network::NetworkAddress;
-
     let rpc_config = RpcConfig {
         endpoints: vec![ctx.rpc_url()],
         ..Default::default()
     };
 
-    // Always fetch on-chain state for committee and spool assignment
-    let mut result = discover_full(&rpc_config).await
+    // Always fetch on-chain state for committee, spool assignment, AND addresses
+    let result = discover_full(&rpc_config).await
         .context("Failed to discover on-chain state")?;
 
     // Log any warnings from discovery
@@ -157,22 +160,16 @@ async fn discover_network_state(
         ctx.debug(warning);
     }
 
-    // Override node addresses if explicit nodes provided
+    // Warn if explicit nodes were provided but we're using on-chain discovery
     if let Some(nodes) = explicit_nodes {
-        if !nodes.is_empty() {
+        if !nodes.is_empty() && result.has_nodes() {
             if !ctx.quiet {
-                eprintln!("Using {} explicitly specified nodes", nodes.len());
+                eprintln!(
+                    "Note: Ignoring --nodes flag; using {} nodes from on-chain discovery \
+                     for correct spool routing",
+                    result.node_count()
+                );
             }
-            result.node_addresses = nodes
-                .into_iter()
-                .enumerate()
-                .filter_map(|(idx, addr_str)| {
-                    let addr_str = addr_str.strip_prefix("http://").unwrap_or(&addr_str);
-                    let addr_str = addr_str.strip_prefix("https://").unwrap_or(addr_str);
-                    NetworkAddress::from(addr_str).ok().map(|addr| (idx, addr))
-                })
-                .collect();
-            return Ok(result);
         }
     }
 
@@ -184,28 +181,9 @@ async fn discover_network_state(
         return Ok(result);
     }
 
-    // Fall back to config addresses
-    if !ctx.nodes.is_empty() {
-        if !ctx.quiet {
-            eprintln!("Using {} nodes from config", ctx.nodes.len());
-        }
-        result.node_addresses = ctx.nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, addr_str)| {
-                let addr_str = addr_str.strip_prefix("http://").unwrap_or(addr_str);
-                let addr_str = addr_str.strip_prefix("https://").unwrap_or(addr_str);
-                NetworkAddress::from(addr_str).ok().map(|addr| (idx, addr))
-            })
-            .collect();
-        return Ok(result);
-    }
-
     anyhow::bail!(
-        "No storage nodes available. Either:\n  \
-         - Ensure active nodes are registered on-chain, or\n  \
-         - Use --nodes to specify manually, or\n  \
-         - Set 'nodes' in config file"
+        "No storage nodes available. Ensure nodes are registered on-chain \
+         with valid network addresses."
     )
 }
 

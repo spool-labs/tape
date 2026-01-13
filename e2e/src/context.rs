@@ -29,10 +29,11 @@
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
+use solana_sdk::signature::Signer;
 
 use crate::cli::{EpochAccount, SystemAccount};
-use crate::consts::MIN_EPOCH_WAIT;
 use crate::node::TestNode;
+use tape_api::program::MIN_EPOCH_DURATION;
 use crate::validator::{Validator, ValidatorOptions};
 use crate::wait::{wait_for_epoch_advance_from, wait_for_rpc, LONG_TIMEOUT};
 use crate::Tapedrive;
@@ -73,9 +74,12 @@ impl TestContext {
         Ok(())
     }
 
-    /// Wait for MIN_EPOCH_DURATION and then advance the epoch.
+    /// Wait for remaining MIN_EPOCH_DURATION and then advance the epoch.
     pub async fn wait_and_advance_epoch(&self) -> Result<()> {
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        let wait = remaining_epoch_wait(&self.cli);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         self.advance_epoch()
     }
 
@@ -203,6 +207,28 @@ impl Drop for TestContext {
     }
 }
 
+/// Calculate remaining time until MIN_EPOCH_DURATION has passed.
+///
+/// Returns Duration::ZERO if enough time has already elapsed.
+fn remaining_epoch_wait(cli: &Tapedrive) -> Duration {
+    let epoch = cli.account_epoch().ok();
+    let last_epoch_ts = epoch.and_then(|e| e.last_epoch).unwrap_or(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let elapsed = now - last_epoch_ts;
+    let remaining = (MIN_EPOCH_DURATION + 1) - elapsed;
+
+    if remaining > 0 {
+        Duration::from_secs(remaining as u64)
+    } else {
+        Duration::ZERO
+    }
+}
+
 /// Builder for creating test contexts.
 ///
 /// Use `TestContext::builder()` to create a new builder.
@@ -275,6 +301,7 @@ impl TestContextBuilder {
     /// 4. Create and register nodes (if num_nodes > 0)
     ///
     /// Nodes will be registered, staked, and joined but NOT started or bootstrapped.
+    /// Node creation and on-chain registration run in parallel for speed.
     pub async fn build(self) -> Result<TestContext> {
         // Spawn validator
         let validator = Validator::spawn_with_options(
@@ -292,22 +319,45 @@ impl TestContextBuilder {
         let cli = Tapedrive::new_localnet();
         cli.admin_init().context("Failed to initialize system")?;
 
-        // Create nodes
-        let mut nodes = Vec::with_capacity(self.num_nodes);
+        let num_nodes = self.num_nodes;
+        let base_port = self.base_port;
+        let stake_amount = self.stake_amount;
 
-        for i in 0..self.num_nodes {
-            let mut node = TestNode::new(i, self.base_port)
-                .with_context(|| format!("Failed to create node {}", i))?;
+        let nodes = if num_nodes > 0 {
+            // Run full node setup pipeline (create → register → stake → join) in parallel
+            // Each task handles one node independently
+            let node_futures: Vec<_> = (0..num_nodes)
+                .map(|i| {
+                    let bp = base_port;
+                    let cli_clone = cli.clone();
+                    let stake = stake_amount;
+                    tokio::task::spawn_blocking(move || -> Result<TestNode> {
+                        let mut node = TestNode::new(i, bp)
+                            .with_context(|| format!("Failed to create node {}", i))?;
+                        node.register(&cli_clone)
+                            .with_context(|| format!("Failed to register node {}", i))?;
+                        node.stake(&cli_clone, stake)
+                            .with_context(|| format!("Failed to stake node {}", i))?;
+                        node.join(&cli_clone)
+                            .with_context(|| format!("Failed to join node {}", i))?;
+                        Ok(node)
+                    })
+                })
+                .collect();
 
-            node.register(&cli)
-                .with_context(|| format!("Failed to register node {}", i))?;
-            node.stake(&cli, self.stake_amount)
-                .with_context(|| format!("Failed to stake node {}", i))?;
-            node.join(&cli)
-                .with_context(|| format!("Failed to join node {}", i))?;
+            // Collect all results
+            let mut created_nodes = Vec::with_capacity(num_nodes);
+            for (i, fut) in node_futures.into_iter().enumerate() {
+                let node = fut.await
+                    .with_context(|| format!("Node {} task panicked", i))?
+                    .with_context(|| format!("Node {} setup failed", i))?;
+                created_nodes.push(node);
+            }
 
-            nodes.push(node);
-        }
+            created_nodes
+        } else {
+            Vec::new()
+        };
 
         Ok(TestContext {
             validator,
@@ -321,7 +371,7 @@ impl TestContextBuilder {
     ///
     /// This will:
     /// 1. Call `build()` to set up everything
-    /// 2. Fund all nodes with SOL for transaction fees
+    /// 2. Fund all nodes with SOL for transaction fees (in parallel)
     /// 3. Start all nodes
     /// 4. Wait for MIN_EPOCH_DURATION
     /// 5. Advance epoch to activate nodes (bootstrap)
@@ -335,14 +385,23 @@ impl TestContextBuilder {
             return Ok(ctx);
         }
 
-        // Fund nodes with SOL for transaction fees
-        for (i, node) in ctx.nodes.iter().enumerate() {
-            if let Err(e) = node.fund(&ctx.cli, fund_amount) {
+        // Fund all nodes in parallel
+        let fund_futures: Vec<_> = ctx.nodes.iter().enumerate().map(|(i, node)| {
+            let cli_clone = ctx.cli.clone();
+            let pubkey = node.authority.pubkey();
+            tokio::task::spawn_blocking(move || {
+                cli_clone.transfer_sol(&pubkey, fund_amount)
+                    .map_err(|e| (i, e))
+            })
+        }).collect();
+
+        for fut in fund_futures {
+            if let Err((i, e)) = fut.await.unwrap_or(Err((0, anyhow::anyhow!("task panicked")))) {
                 eprintln!("Warning: Failed to fund node {}: {}", i, e);
             }
         }
 
-        // Start all nodes
+        // Start all nodes (spawning processes) - do this sequentially to avoid process spawn issues
         for (i, node) in ctx.nodes.iter_mut().enumerate() {
             if let Err(e) = node.start(&ctx.cli) {
                 eprintln!("Warning: Failed to start node {}: {}", i, e);
@@ -353,7 +412,12 @@ impl TestContextBuilder {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Bootstrap: advance epoch to activate nodes from committee_next to committee
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        // Calculate remaining wait time - epoch clock started at admin_init, so
+        // some/all of MIN_EPOCH_DURATION may have already elapsed during node setup
+        let wait = remaining_epoch_wait(&ctx.cli);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         ctx.cli
             .admin_advance_epoch()
             .context("Bootstrap epoch advance failed")?;
@@ -436,8 +500,11 @@ impl TestContextBuilder {
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        // Bootstrap
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
+        // Bootstrap - calculate remaining wait time
+        let wait = remaining_epoch_wait(&ctx.cli);
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         ctx.cli
             .admin_advance_epoch()
             .context("Bootstrap epoch advance failed")?;

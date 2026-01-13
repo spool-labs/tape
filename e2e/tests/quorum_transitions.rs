@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serial_test::serial;
 use tape_e2e::{
-    TestContext, MIN_COMMITTEE_SIZE, MIN_EPOCH_WAIT, VARYING_STAKES,
+    TestContext, MIN_COMMITTEE_SIZE, VARYING_STAKES,
 };
 
 /// Test transition from low-quorum to normal mode by adding nodes.
@@ -369,10 +369,8 @@ async fn test_rapid_epoch_advance_attempts() {
     );
 
     // Now wait proper duration and advance
-    println!("\n=== Waiting full epoch duration ===");
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-
-    match ctx.cli.admin_advance_epoch() {
+    println!("\n=== Waiting remaining epoch duration ===");
+    match ctx.wait_and_advance_epoch().await {
         Ok(_) => println!("Advance after proper wait: SUCCESS"),
         Err(e) => println!("Advance after proper wait: {}", e),
     }

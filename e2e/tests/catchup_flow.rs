@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serial_test::serial;
 use tape_e2e::{
-    TestContext, MIN_EPOCH_WAIT, EPOCH_WAIT, MIN_COMMITTEE_SIZE,
+    TestContext, EPOCH_WAIT, MIN_COMMITTEE_SIZE,
 };
 
 /// Test that a node starting late correctly identifies stale epochs.
@@ -100,14 +100,12 @@ async fn test_node_startup_after_epoch_advances() {
     println!("Initial epoch: {:?}", initial_epoch.id);
 
     // Advance epoch to activate node in committee_next
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-    ctx.advance_epoch().expect("Failed to advance epoch");
+    ctx.wait_and_advance_epoch().await.expect("Failed to advance epoch");
 
     // Advance a couple more epochs BEFORE starting the node
     // This creates the scenario where the node has to catch up
     for i in 0..2 {
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
-        match ctx.advance_epoch() {
+        match ctx.wait_and_advance_epoch().await {
             Ok(_) => println!("Pre-start: Advanced epoch {}", i + 2),
             Err(e) => println!("Pre-start: Epoch advance {}: {}", i + 2, e),
         }
@@ -273,8 +271,7 @@ async fn test_epoch_staleness_detection() {
     // Advance a couple epochs
     let advances = 2;
     for i in 0..advances {
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
-        match ctx.advance_epoch() {
+        match ctx.wait_and_advance_epoch().await {
             Ok(_) => println!("Advanced epoch {}", i + 1),
             Err(e) => println!("Advance {}: {}", i, e),
         }
@@ -407,8 +404,7 @@ async fn test_catchup_normal_quorum() {
         println!("Skipping normal-mode specific tests");
 
         // Advance one more epoch to test basic functionality
-        tokio::time::sleep(MIN_EPOCH_WAIT).await;
-        ctx.advance_epoch().ok();
+        ctx.wait_and_advance_epoch().await.ok();
 
         let epoch = ctx.epoch().expect("Failed to get epoch");
         println!("Final epoch: {:?}", epoch.id);

@@ -27,6 +27,17 @@ impl<R: Rpc> RpcClient<R> {
 
         let result = async {
             let account = self.rpc().get_account(&SYSTEM_ADDRESS).await?;
+
+            // Check account size before unpacking to avoid panic on partially initialized accounts
+            let expected_size = std::mem::size_of::<System>() + 8; // +8 for discriminator
+            if account.data.len() < expected_size {
+                return Err(RpcError::Deserialization(format!(
+                    "System account too small: {} bytes (expected {})",
+                    account.data.len(),
+                    expected_size
+                )));
+            }
+
             System::unpack_with_discriminator(&account.data)
                 .map(|s| *s)
                 .map_err(|e| RpcError::Deserialization(e.to_string()))

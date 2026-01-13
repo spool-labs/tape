@@ -1,0 +1,52 @@
+[package]
+name = "tape-monitor"
+description = "Real-time TUI network monitor for Tapedrive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "tape-monitor"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_input"
+path = "src/bin/test_input.rs"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# HTTP client for node health checks
+reqwest = { version = "0.12", features = ["json"] }
+
+# JSON parsing for health check responses
+serde_json = "1.0"
+
+# Async utilities
+futures = "0.3"
+
+# Tapedrive dependencies
+rpc-client = { version = "0.3.0", path = "../../rpc/rpc-client" }
+tape-api = { version = "0.3.0", path = "../../api" }
+tape-core = { version = "0.3.0", path = "../../core" }
+
+# Re-export solana types
+solana-sdk = "=2.3"

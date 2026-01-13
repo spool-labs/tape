@@ -489,8 +489,7 @@ async fn test_invalid_state_calls() {
     node.stake(&ctx.cli, 1000).expect("Failed to stake");
     node.join(&ctx.cli).expect("Failed to join");
 
-    tokio::time::sleep(MIN_EPOCH_WAIT).await;
-    ctx.advance_epoch().expect("Failed to advance");
+    ctx.wait_and_advance_epoch().await.expect("Failed to advance");
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
