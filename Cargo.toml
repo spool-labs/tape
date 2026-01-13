@@ -25,6 +25,7 @@ members = [
   "rpc/rpc-solana",
   "rpc/rpc-client",
   "rpc/rpc-test",
+  "e2e",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
@@ -49,6 +50,7 @@ default-members = [
   "rpc/rpc",
   "rpc/rpc-solana",
   "rpc/rpc-client",
+  "e2e",
 ]
 
 [workspace.package]

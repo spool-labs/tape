@@ -11193,6 +11193,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-e2e"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs 5.0.1",
+ "hex",
+ "libc",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "solana-sdk",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tape-metrics"
 version = "0.3.0"
 dependencies = [
