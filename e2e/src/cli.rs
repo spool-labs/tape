@@ -45,12 +45,16 @@ impl Tapedrive {
     /// - Cluster: `l` (localnet)
     /// - Keypair: `~/.config/solana/id.json`
     pub fn new_localnet() -> Self {
-        let bin_path = std::env::current_dir()
-            .unwrap_or_default()
-            .join("target/debug/tape");
+        let bin_path = find_workspace_root()
+            .map(|root| root.join("target/debug/tape"))
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("target/debug/tape")
+            });
 
         let keypair = dirs::home_dir()
-            .map(|h| h.join(".config/solana/id.json"))
+            .map(|h: PathBuf| h.join(".config/solana/id.json"))
             .unwrap_or_else(|| PathBuf::from("~/.config/solana/id.json"));
 
         Self::new(bin_path, "l", keypair)
@@ -79,6 +83,13 @@ impl Tapedrive {
         let mut cmd = Command::new(&self.bin_path);
         cmd.args(["-u", &self.cluster]);
         cmd.args(["-k", self.keypair.to_str().unwrap_or("")]);
+        // Note: -o json not supported by all commands, use selectively
+        cmd
+    }
+
+    /// Build command with JSON output format (for commands that support it).
+    fn cmd_json(&self) -> Command {
+        let mut cmd = self.cmd();
         cmd.args(["-o", &self.output_format]);
         cmd
     }
@@ -511,6 +522,25 @@ pub struct PingResult {
 // =============================================================================
 // Helper functions
 // =============================================================================
+
+/// Find the workspace root directory.
+fn find_workspace_root() -> Result<PathBuf> {
+    let mut current = std::env::current_dir()?;
+
+    loop {
+        if current.join("Cargo.toml").exists() {
+            // Check if this is the workspace root (has [workspace] section)
+            let content = std::fs::read_to_string(current.join("Cargo.toml"))?;
+            if content.contains("[workspace]") {
+                return Ok(current);
+            }
+        }
+
+        if !current.pop() {
+            bail!("Could not find workspace root");
+        }
+    }
+}
 
 /// Try to extract a pubkey from CLI output.
 ///

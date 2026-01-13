@@ -11198,6 +11198,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytemuck",
  "dirs 5.0.1",
  "hex",
  "libc",

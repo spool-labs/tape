@@ -12,6 +12,9 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 use tempfile::TempDir;
 
+use tape_core::bls::BlsPrivateKey;
+use tape_crypto::bls12254::min_sig::PrivKey;
+
 use crate::Tapedrive;
 
 /// A test node with all its configuration and state.
@@ -132,10 +135,11 @@ impl TestNode {
     /// Register this node on-chain.
     ///
     /// This calls `tape node register` with this node's config.
+    /// The CLI's fee payer pays for the transaction; the node authority
+    /// is loaded from the node's config file (node_keypair field).
     pub fn register(&mut self, cli: &Tapedrive) -> Result<Pubkey> {
-        // Use CLI with the node's keypair for signing
-        let cli_with_key = cli.with_keypair(&self.base_dir.join("keys/node.json"));
-        let address = cli_with_key.node_register(Some(&self.config_path))?;
+        // Use the original CLI - fee payer from CLI, authority from node config
+        let address = cli.node_register(Some(&self.config_path))?;
         self.node_address = Some(address);
         Ok(address)
     }
@@ -152,20 +156,17 @@ impl TestNode {
 
     /// Join the committee.
     pub fn join(&self, cli: &Tapedrive) -> Result<()> {
-        let cli_with_key = cli.with_keypair(&self.base_dir.join("keys/node.json"));
-        cli_with_key.node_join(Some(&self.config_path))
+        cli.node_join(Some(&self.config_path))
     }
 
     /// Advance pool accounting.
     pub fn advance_pool(&self, cli: &Tapedrive) -> Result<()> {
-        let cli_with_key = cli.with_keypair(&self.base_dir.join("keys/node.json"));
-        cli_with_key.node_advance(Some(&self.config_path))
+        cli.node_advance(Some(&self.config_path))
     }
 
     /// Submit epoch sync attestation.
     pub fn sync(&self, cli: &Tapedrive) -> Result<()> {
-        let cli_with_key = cli.with_keypair(&self.base_dir.join("keys/node.json"));
-        cli_with_key.node_sync(Some(&self.config_path))
+        cli.node_sync(Some(&self.config_path))
     }
 
     /// Start the node process.
@@ -176,8 +177,7 @@ impl TestNode {
             bail!("Node already running");
         }
 
-        let cli_with_key = cli.with_keypair(&self.base_dir.join("keys/node.json"));
-        let child = cli_with_key.node_start_detached(Some(&self.config_path))?;
+        let child = cli.node_start_detached(Some(&self.config_path))?;
 
         self.process = Some(child);
         Ok(())
@@ -329,10 +329,7 @@ fn generate_keypair(path: &Path) -> Result<Keypair> {
 }
 
 /// Generate or load a BLS keypair.
-///
-/// Note: This generates a random 32-byte secret. In production, the actual
-/// BLS key derivation is more complex, but for testing purposes this works.
-fn generate_bls_keypair(path: &Path) -> Result<[u8; 32]> {
+fn generate_bls_keypair(path: &Path) -> Result<BlsPrivateKey> {
     if path.exists() {
         let json = std::fs::read_to_string(path)?;
         let bytes: Vec<u8> = serde_json::from_str(&json)?;
@@ -341,14 +338,13 @@ fn generate_bls_keypair(path: &Path) -> Result<[u8; 32]> {
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
-        Ok(arr)
+        Ok(BlsPrivateKey(PrivKey(arr)))
     } else {
-        let mut key = [0u8; 32];
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut key);
-        let json = serde_json::to_string(&key.to_vec())?;
+        let bls_key = BlsPrivateKey::from_random();
+        let bytes: &[u8] = bytemuck::bytes_of(&bls_key);
+        let json = serde_json::to_string(&bytes.to_vec())?;
         std::fs::write(path, &json)?;
-        Ok(key)
+        Ok(bls_key)
     }
 }
 

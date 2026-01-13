@@ -10,9 +10,17 @@
 //! 7. Upload data
 //! 8. Download and verify
 //!
-//! Run with: `cargo test -p tape-e2e --test basic_flow`
+//! ## Running Tests
 //!
-//! Note: Requires a local validator to be running (`make validator`).
+//! Tests that spawn their own validator:
+//! ```bash
+//! cargo test -p tape-e2e --test basic_flow test_system_init -- --ignored
+//! ```
+//!
+//! Tests that assume validator is already running (`make validator`):
+//! ```bash
+//! cargo test -p tape-e2e --test basic_flow test_with_running_validator -- --ignored --nocapture
+//! ```
 
 use std::time::Duration;
 
@@ -21,6 +29,25 @@ use tape_e2e::{
     wait_for_node_health, wait_for_rpc,
     temp_file_with_content, random_blob, sizes,
 };
+
+const LOCALNET_RPC: &str = "http://127.0.0.1:8899";
+
+/// Check if a validator is already running.
+async fn validator_is_running() -> bool {
+    let client = reqwest::Client::new();
+    client
+        .post(LOCALNET_RPC)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getHealth"
+        }))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
 
 /// Basic single-node test.
 ///
@@ -246,6 +273,62 @@ async fn test_staking_flow() {
     assert_eq!(system.committee_size, Some(1));
 
     println!("Staking flow completed successfully");
+}
+
+/// Quick test that assumes validator is already running.
+///
+/// This is the best test for quick iteration during development.
+/// Start validator with `make validator`, then run:
+/// ```bash
+/// cargo test -p tape-e2e --test basic_flow test_with_running_validator -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore]
+async fn test_with_running_validator() {
+    // Check validator is running
+    if !validator_is_running().await {
+        panic!("Validator not running. Start with: make validator");
+    }
+
+    println!("Validator is running at {}", LOCALNET_RPC);
+
+    let cli = Tapedrive::new_localnet();
+    println!("Using CLI: {:?}", cli);
+
+    // Initialize system (may fail if already initialized)
+    match cli.admin_init() {
+        Ok(_) => println!("System initialized"),
+        Err(e) => println!("Init: {} (may already be initialized)", e),
+    }
+
+    // Create and register a test node
+    let mut node = TestNode::new(0, 9080)  // Use port 9080 to avoid conflicts
+        .expect("Failed to create test node");
+
+    println!("\nCreated test node:");
+    println!("  Config: {}", node.config_path.display());
+    println!("  URL: {}", node.url());
+
+    let node_addr = node.register(&cli)
+        .expect("Failed to register node");
+    println!("  Registered: {}", node_addr);
+
+    // Stake
+    let stake_addr = node.stake(&cli, 1000)
+        .expect("Failed to stake");
+    println!("  Staked: {}", stake_addr);
+
+    // Join
+    node.join(&cli)
+        .expect("Failed to join committee");
+    println!("  Joined committee");
+
+    // Advance epoch
+    cli.admin_advance_epoch()
+        .expect("Failed to advance epoch");
+    println!("  Epoch advanced");
+
+    println!("\nTest passed! Node registered, staked, joined, and epoch advanced.");
 }
 
 /// Test that helps with manual debugging.
