@@ -121,7 +121,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if epoch.state.is_settling() {
         if system.committee_prev_empty() {
             // First epoch: immediately transition to active
-            epoch.state.set_settling();
+            epoch.state.set_active();
         } else if let Some(member_index) = system.committee_prev.index_of(&node.id) {
             let weight = system.spools_prev.spools_for_member(member_index).len() as u64;
             epoch.state.add_advanced_weight(weight, SLICE_COUNT as u64);

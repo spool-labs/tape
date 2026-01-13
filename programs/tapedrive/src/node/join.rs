@@ -11,6 +11,34 @@ fn calculate_total_pending_stake<const N: usize>(pool: &StakingPool<N>) -> Coin<
         .saturating_sub(pool.schedule.total_outgoing())
 }
 
+/// Explicit representation of how a node is joining the committee.
+/// Making this an enum forces all cases to be handled explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinPath {
+    /// Node is in current committee, pool has active stake from AdvancePool.
+    RejoinWithActiveStake,
+    /// Node is in current committee, but pool.stake is zero (bootstrap edge case).
+    /// Must fall back to projected stake calculation.
+    RejoinBootstrap,
+    /// New node joining during low-quorum mode (bypass E+2 activation delay).
+    NewJoinLowQuorum,
+    /// New node joining during normal operation.
+    NewJoinNormal,
+}
+
+fn determine_join_path(
+    in_current_committee: bool,
+    is_low_quorum: bool,
+    pool_stake_is_zero: bool,
+) -> JoinPath {
+    match (in_current_committee, is_low_quorum, pool_stake_is_zero) {
+        (true, _, false) => JoinPath::RejoinWithActiveStake,
+        (true, _, true)  => JoinPath::RejoinBootstrap,
+        (false, true, _) => JoinPath::NewJoinLowQuorum,
+        (false, false, _) => JoinPath::NewJoinNormal,
+    }
+}
+
 pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinNetwork::try_from_bytes(data)?;
     let [
@@ -48,28 +76,32 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     // Check if node is already in the current committee (re-join path)
     let in_current_committee = system.committee.index_of(&node.id).is_some();
 
-    let balance = if in_current_committee {
-        // RE-JOIN: Must have advanced pool this epoch to ensure fresh stake
-        if node.latest_advance_epoch != epoch.id {
-            return Err(TapeError::NodeStale.into());
-        }
-        // Use pool.stake if available, otherwise fall back to NEW JOIN logic
-        // This handles bootstrap case where stake was deposited but hasn't activated yet
-        if !node.pool.stake.is_zero() {
+    // RE-JOIN requires AdvancePool to be called first to ensure fresh stake
+    if in_current_committee && node.latest_advance_epoch != epoch.id {
+        return Err(TapeError::NodeStale.into());
+    }
+
+    let activation_epoch = next_epoch(epoch);
+
+    let balance = match determine_join_path(
+        in_current_committee,
+        system.is_low_quorum(),
+        node.pool.stake.is_zero(),
+    ) {
+        JoinPath::RejoinWithActiveStake => {
+            // Fresh stake from AdvancePool
             node.pool.stake
-        } else {
-            // Fall back to NEW JOIN logic for bootstrap nodes with pending stake
-            let activation_epoch = next_epoch(epoch);
+        }
+        JoinPath::RejoinBootstrap => {
+            // Bootstrap: stake deposited but not yet activated
             node.pool.calculate_stake_at(activation_epoch)
         }
-    } else {
-        // NEW JOIN: Use projected stake
-        // During low-quorum mode, include all scheduled stake (bypass E+2 delay)
-        // In normal mode, use the stake balance at activation epoch (1 epoch from now)
-        if system.is_low_quorum() {
+        JoinPath::NewJoinLowQuorum => {
+            // Bypass E+2 delay to accelerate committee formation
             calculate_total_pending_stake(&node.pool)
-        } else {
-            let activation_epoch = next_epoch(epoch);
+        }
+        JoinPath::NewJoinNormal => {
+            // Standard projection to next epoch
             node.pool.calculate_stake_at(activation_epoch)
         }
     };
