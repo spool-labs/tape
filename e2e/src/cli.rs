@@ -1,4 +1,4 @@
-//! CLI wrapper for calling the `tape` binary.
+//! CLI wrapper for calling the `tapedrive` binary.
 //!
 //! Provides a type-safe interface to all CLI commands, executing them
 //! as subprocesses and parsing their output.
@@ -12,7 +12,7 @@ use solana_sdk::pubkey::Pubkey;
 
 use tape_core::types::EpochNumber;
 
-/// CLI wrapper for the `tape` binary.
+/// CLI wrapper for the `tapedrive` binary.
 ///
 /// All methods execute the CLI as a subprocess and return parsed results.
 #[derive(Debug, Clone)]
@@ -41,16 +41,16 @@ impl Tapedrive {
     /// Create a CLI wrapper configured for localnet with default paths.
     ///
     /// Uses:
-    /// - Binary: `target/debug/tape` (relative to workspace root)
+    /// - Binary: `target/debug/tapedrive` (relative to workspace root)
     /// - Cluster: `l` (localnet)
     /// - Keypair: `~/.config/solana/id.json`
     pub fn new_localnet() -> Self {
         let bin_path = find_workspace_root()
-            .map(|root| root.join("target/debug/tape"))
+            .map(|root| root.join("target/debug/tapedrive"))
             .unwrap_or_else(|_| {
                 std::env::current_dir()
                     .unwrap_or_default()
-                    .join("target/debug/tape")
+                    .join("target/debug/tapedrive")
             });
 
         let keypair = dirs::home_dir()
@@ -96,7 +96,7 @@ impl Tapedrive {
 
     /// Execute command and check for success.
     fn exec(&self, mut cmd: Command) -> Result<Output> {
-        let output = cmd.output().context("Failed to execute tape CLI")?;
+        let output = cmd.output().context("Failed to execute tapedrive CLI")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
