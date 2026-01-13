@@ -338,7 +338,8 @@ impl Tapedrive {
         if let Some(nodes) = nodes {
             cmd.args(["--nodes", &nodes.join(",")]);
         }
-        self.exec_json(cmd)
+        let output = self.exec_stdout(cmd)?;
+        parse_storage_upload_output(&output)
     }
 
     /// Download a blob from storage.
@@ -673,6 +674,83 @@ fn parse_pubkey_from_output(output: &str) -> Result<Pubkey> {
     }
 
     bail!("Could not find pubkey in output: {}", output)
+}
+
+/// Parse storage upload output.
+///
+/// Expected format includes lines like:
+/// - Key: <hex>
+/// - Merkle root: <hex>
+/// - Tape: <pubkey>
+/// - Track: <pubkey>
+fn parse_storage_upload_output(output: &str) -> Result<StorageUploadResult> {
+    let mut track_address = None;
+    let mut tape_address = None;
+    let mut merkle_root = None;
+    let mut commitment = None;
+
+    for line in output.lines() {
+        let line = line.trim();
+        // Filter out ANSI escape codes
+        let clean_line = strip_ansi_codes(line);
+        let clean_line = clean_line.trim();
+
+        // The Address field is the track PDA - this is what's used for slice storage/retrieval
+        if clean_line.starts_with("Address:") {
+            if let Some(value) = clean_line.strip_prefix("Address:") {
+                track_address = Some(value.trim().to_string());
+            }
+        } else if clean_line.starts_with("Tape:") {
+            if let Some(value) = clean_line.strip_prefix("Tape:") {
+                tape_address = Some(value.trim().to_string());
+            }
+        } else if clean_line.starts_with("Merkle root:") || clean_line.starts_with("Merkle Root:") {
+            if let Some(value) = clean_line.split(':').nth(1) {
+                merkle_root = Some(value.trim().to_string());
+            }
+        } else if clean_line.starts_with("Commitment:") {
+            if let Some(value) = clean_line.strip_prefix("Commitment:") {
+                commitment = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    let track_id = track_address.clone()
+        .ok_or_else(|| anyhow::anyhow!("Could not find Address in upload output"))?;
+
+    Ok(StorageUploadResult {
+        track_id,
+        track_address,
+        tape_address,
+        merkle_root,
+        commitment,
+    })
+}
+
+/// Strip ANSI escape codes from a string.
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip escape sequence
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Skip until we hit a letter (end of sequence)
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]

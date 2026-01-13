@@ -25,13 +25,15 @@
 //! ```
 
 pub mod cli;
-pub mod validator;
-pub mod node;
-pub mod wait;
+pub mod consts;
 pub mod fixtures;
+pub mod node;
+pub mod validator;
+pub mod wait;
 
 pub use cli::Tapedrive;
-pub use validator::{Validator, ValidatorOptions};
-pub use node::{TestNode, TestCluster};
-pub use wait::*;
+pub use consts::*;
 pub use fixtures::*;
+pub use node::{TestCluster, TestNode};
+pub use validator::{Validator, ValidatorOptions};
+pub use wait::*;

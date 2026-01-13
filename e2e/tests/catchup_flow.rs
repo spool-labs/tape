@@ -14,16 +14,10 @@
 use std::time::Duration;
 
 use serial_test::serial;
-use tape_e2e::{Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc};
-
-/// Minimum epoch duration in low-quorum mode (must match MIN_EPOCH_DURATION)
-const MIN_EPOCH_WAIT: Duration = Duration::from_secs(31);
-
-/// Full epoch duration in normal mode (must match EPOCH_DURATION)
-const EPOCH_WAIT: Duration = Duration::from_secs(61);
-
-/// Minimum committee size for normal (non-low-quorum) mode
-const MIN_COMMITTEE_SIZE: usize = 24;
+use tape_e2e::{
+    Tapedrive, TestNode, Validator, ValidatorOptions, wait_for_rpc,
+    MIN_EPOCH_WAIT, EPOCH_WAIT, MIN_COMMITTEE_SIZE,
+};
 
 /// Wait for MIN_EPOCH_DURATION to pass before advancing epoch
 async fn wait_for_epoch_advance() {
