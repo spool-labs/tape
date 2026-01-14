@@ -1,46 +1,28 @@
 //! Block processor for real-time event streaming.
 //!
-//! Parses Solana blocks to extract tapedrive-related events directly from
-//! transaction logs, providing real-time visibility into network activity.
-//!
-//! This is adapted from the tape-node block parser to provide actual on-chain
-//! events rather than polling-based change detection.
+//! Uses tape-blocks for parsing and provides UI-specific functionality.
 
-use base64::Engine;
 use rpc_client::{Rpc, RpcClient};
 use solana_sdk::pubkey::Pubkey;
-use solana_transaction_status::{
-    option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
-    UiConfirmedBlock, UiMessage, UiTransactionStatusMeta,
-};
-use tape_api::event::{
-    EpochAdvanced, EventType as TapeEventType, NodeJoinedCommittee, NodeRegistered, NodeSynced,
-    TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackRegistered,
-};
+use solana_transaction_status::UiConfirmedBlock;
+
+// Re-export event type from shared crate
+pub use tape_blocks::TapedriveEvent;
 
 use crate::app::{EventType, NetworkEvent};
 
 // ============================================================================
-// Tapedrive Event Types (from on-chain program logs)
+// UI Conversion (monitor-specific)
 // ============================================================================
 
-/// Parsed tapedrive event from transaction logs.
-#[derive(Debug, Clone)]
-pub enum TapedriveEvent {
-    EpochAdvanced(EpochAdvanced),
-    TrackRegistered(TrackRegistered),
-    TrackCertified(TrackCertified),
-    TrackDeleted(TrackDeleted),
-    TapeReserved(TapeReserved),
-    TapeDestroyed(TapeDestroyed),
-    NodeRegistered(NodeRegistered),
-    NodeJoinedCommittee(NodeJoinedCommittee),
-    NodeSynced(NodeSynced),
+/// Extension trait for converting events to UI display format.
+pub trait ToNetworkEvent {
+    fn to_network_event(&self) -> NetworkEvent;
 }
 
-impl TapedriveEvent {
+impl ToNetworkEvent for TapedriveEvent {
     /// Convert to a NetworkEvent for display in the UI.
-    pub fn to_network_event(&self) -> NetworkEvent {
+    fn to_network_event(&self) -> NetworkEvent {
         match self {
             TapedriveEvent::EpochAdvanced(e) => NetworkEvent::new(
                 EventType::EpochTransition,
@@ -71,6 +53,12 @@ impl TapedriveEvent {
                 truncate_pubkey(&e.track),
             ),
 
+            TapedriveEvent::TrackInvalidated(e) => NetworkEvent::new(
+                EventType::TrackRegistered,
+                format!("Track invalidated (epoch {})", e.epoch),
+                truncate_pubkey(&e.track),
+            ),
+
             TapedriveEvent::TapeReserved(e) => NetworkEvent::new(
                 EventType::TapeReserved,
                 format!(
@@ -82,7 +70,7 @@ impl TapedriveEvent {
 
             TapedriveEvent::TapeDestroyed(e) => NetworkEvent::new(
                 EventType::TapeReserved, // Reuse type
-                "Tape destroyed".to_string(),
+                "Tape destroyed",
                 truncate_pubkey(&e.authority),
             ),
 
@@ -122,10 +110,10 @@ fn truncate_pubkey(pubkey: &Pubkey) -> String {
 }
 
 // ============================================================================
-// Block Parsing
+// Block Parsing (using shared crate)
 // ============================================================================
 
-/// Result of parsing a single block.
+/// Result of parsing a single block (monitor-specific view).
 #[derive(Debug, Default)]
 pub struct ParsedBlock {
     /// Parsed events from successful transactions.
@@ -134,178 +122,15 @@ pub struct ParsedBlock {
     pub tx_count: usize,
 }
 
-/// Parse a confirmed block for tapedrive events.
+/// Parse a confirmed block for tapedrive events (monitor interface).
 pub fn parse_block(block: &UiConfirmedBlock) -> ParsedBlock {
-    let mut result = ParsedBlock::default();
-
-    let Some(transactions) = &block.transactions else {
-        return result;
-    };
-
-    for tx in transactions {
-        if is_failed_transaction(tx) {
-            continue;
-        }
-
-        result.tx_count += 1;
-
-        // Parse events from this transaction
-        if let Ok(events) = parse_transaction_events(tx) {
-            result.events.extend(events);
-        }
+    match tape_blocks::parse(block) {
+        Ok(raw) => ParsedBlock {
+            events: raw.events,
+            tx_count: raw.tx_count,
+        },
+        Err(_) => ParsedBlock::default(),
     }
-
-    result
-}
-
-/// Parse events from a single transaction's log messages.
-fn parse_transaction_events(
-    tx: &EncodedTransactionWithStatusMeta,
-) -> Result<Vec<TapedriveEvent>, ()> {
-    let EncodedTransaction::Json(ui_tx) = &tx.transaction else {
-        return Ok(Vec::new());
-    };
-
-    let UiMessage::Raw(_) = &ui_tx.message else {
-        return Ok(Vec::new());
-    };
-
-    // Extract events from log messages
-    let Some(meta) = &tx.meta else {
-        return Ok(Vec::new());
-    };
-
-    parse_log_messages(meta)
-}
-
-/// Parse events from transaction log messages.
-fn parse_log_messages(meta: &UiTransactionStatusMeta) -> Result<Vec<TapedriveEvent>, ()> {
-    let mut events = Vec::new();
-
-    let OptionSerializer::Some(log_messages) = &meta.log_messages else {
-        return Ok(events);
-    };
-
-    let mut program_stack: Vec<Pubkey> = Vec::new();
-
-    for log in log_messages {
-        if is_program_invoke(log) {
-            if let Some(program_id) = get_program_id(log) {
-                program_stack.push(program_id);
-            }
-        } else if is_program_success(log) || is_program_failure(log) {
-            program_stack.pop();
-        }
-
-        // Only parse events from tapedrive program
-        let is_tapedrive = program_stack.last() == Some(&tape_api::program::tapedrive::ID);
-
-        if is_tapedrive && is_program_data(log) {
-            if let Some(event) = parse_event_data(log) {
-                events.push(event);
-            }
-        }
-    }
-
-    Ok(events)
-}
-
-/// Parse event data from a "Program data:" log line.
-fn parse_event_data(log: &str) -> Option<TapedriveEvent> {
-    let encoded_data = log.strip_prefix("Program data: ")?;
-
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(encoded_data)
-        .ok()?;
-
-    if data.len() < 8 {
-        return None;
-    }
-
-    // First byte of discriminator is the EventType
-    let discriminator = data[0];
-    let event_type = TapeEventType::try_from(discriminator).ok()?;
-
-    // Event data starts after 8-byte discriminator
-    let event_data = &data[8..];
-
-    match event_type {
-        TapeEventType::EpochAdvanced => {
-            let event = bytemuck::try_from_bytes::<EpochAdvanced>(event_data).ok()?;
-            Some(TapedriveEvent::EpochAdvanced(*event))
-        }
-        TapeEventType::TrackRegistered => {
-            let event = bytemuck::try_from_bytes::<TrackRegistered>(event_data).ok()?;
-            Some(TapedriveEvent::TrackRegistered(*event))
-        }
-        TapeEventType::TrackCertified => {
-            let event = bytemuck::try_from_bytes::<TrackCertified>(event_data).ok()?;
-            Some(TapedriveEvent::TrackCertified(*event))
-        }
-        TapeEventType::TrackDeleted => {
-            let event = bytemuck::try_from_bytes::<TrackDeleted>(event_data).ok()?;
-            Some(TapedriveEvent::TrackDeleted(*event))
-        }
-        TapeEventType::TapeReserved => {
-            let event = bytemuck::try_from_bytes::<TapeReserved>(event_data).ok()?;
-            Some(TapedriveEvent::TapeReserved(*event))
-        }
-        TapeEventType::TapeDestroyed => {
-            let event = bytemuck::try_from_bytes::<TapeDestroyed>(event_data).ok()?;
-            Some(TapedriveEvent::TapeDestroyed(*event))
-        }
-        TapeEventType::NodeRegistered => {
-            let event = bytemuck::try_from_bytes::<NodeRegistered>(event_data).ok()?;
-            Some(TapedriveEvent::NodeRegistered(*event))
-        }
-        TapeEventType::NodeJoinedCommittee => {
-            let event = bytemuck::try_from_bytes::<NodeJoinedCommittee>(event_data).ok()?;
-            Some(TapedriveEvent::NodeJoinedCommittee(*event))
-        }
-        TapeEventType::NodeSynced => {
-            let event = bytemuck::try_from_bytes::<NodeSynced>(event_data).ok()?;
-            Some(TapedriveEvent::NodeSynced(*event))
-        }
-        // Events we don't need to display
-        _ => None,
-    }
-}
-
-/// Check if a transaction failed.
-fn is_failed_transaction(tx: &EncodedTransactionWithStatusMeta) -> bool {
-    tx.meta
-        .as_ref()
-        .map(|meta| meta.status.is_err())
-        .unwrap_or(true)
-}
-
-/// Check if log indicates program invoke.
-fn is_program_invoke(log: &str) -> bool {
-    log.starts_with("Program ") && log.contains(" invoke ")
-}
-
-/// Check if log indicates program success.
-fn is_program_success(log: &str) -> bool {
-    log.starts_with("Program ") && log.contains(" success")
-}
-
-/// Check if log indicates program failure.
-fn is_program_failure(log: &str) -> bool {
-    log.starts_with("Program ") && log.contains(" failed")
-}
-
-/// Check if log contains program data (event).
-fn is_program_data(log: &str) -> bool {
-    log.starts_with("Program data: ")
-}
-
-/// Extract program ID from invoke log.
-fn get_program_id(log: &str) -> Option<Pubkey> {
-    let parts: Vec<&str> = log.split_whitespace().collect();
-    if parts.len() >= 3 {
-        return parts[1].parse::<Pubkey>().ok();
-    }
-    None
 }
 
 // ============================================================================

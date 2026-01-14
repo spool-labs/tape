@@ -378,9 +378,9 @@ async fn process_instruction(
             }
         }
 
-        ParsedInstruction::ReserveTape { owner, tape } => {
+        ParsedInstruction::ReserveTape { owner, tape, .. } => {
             debug!(tape = %tape, owner = %owner, "Detected ReserveTape instruction");
-            // Informational only for now
+            // Informational only for now - event available if needed
         }
 
         ParsedInstruction::DestroyTape {

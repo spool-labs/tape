@@ -1,0 +1,32 @@
+[package]
+name = "tape-blocks"
+description = "Block parsing for Tapedrive on-chain events and instructions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
+
+[dependencies]
+# Internal crates
+tape-api = { workspace = true }
+tape-core = { workspace = true }
+tape-crypto = { workspace = true }
+
+# Solana types for block parsing
+solana-sdk = { workspace = true }
+solana-transaction-status = { workspace = true }
+
+# Serialization/parsing
+base64 = { workspace = true }
+bs58 = "0.5"
+bytemuck = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[features]
+default = []
+test-utils = []

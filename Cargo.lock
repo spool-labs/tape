@@ -11045,7 +11045,6 @@ name = "store"
 version = "0.3.0"
 dependencies = [
  "serde",
- "store-memory",
  "tape-metrics",
  "thiserror 2.0.17",
  "wincode 0.1.2",
@@ -11278,6 +11277,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-blocks"
+version = "0.3.0"
+dependencies = [
+ "base64 0.13.1",
+ "bs58",
+ "bytemuck",
+ "solana-sdk",
+ "solana-transaction-status",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "tape-cli"
 version = "0.3.0"
 dependencies = [
@@ -11412,6 +11426,7 @@ dependencies = [
  "solana-sdk",
  "solana-transaction-status",
  "tape-api",
+ "tape-blocks",
  "tape-core",
  "tape-crypto",
  "tape-node-api",
@@ -11448,6 +11463,7 @@ dependencies = [
  "store-memory",
  "store-rocks",
  "tape-api",
+ "tape-blocks",
  "tape-core",
  "tape-crypto",
  "tape-metrics",

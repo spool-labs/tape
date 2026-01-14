@@ -22,7 +22,7 @@ mod cache;
 mod events;
 mod fetcher;
 
-pub use block_processor::{BlockProcessor, TapedriveEvent};
+pub use block_processor::{BlockProcessor, TapedriveEvent, ToNetworkEvent};
 pub use cache::DataCache;
 pub use events::EventWatcher;
 pub use fetcher::{DataFetcher, TapeStats};

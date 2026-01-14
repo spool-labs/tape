@@ -13,6 +13,7 @@ default = []
 
 [dependencies]
 # Internal crates
+tape-blocks = { workspace = true }
 tape-core = { workspace = true }
 tape-api = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }

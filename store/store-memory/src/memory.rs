@@ -498,6 +498,15 @@ mod tests {
     }
 
     #[test]
+    fn batch_empty() {
+        let store = MemoryStore::new();
+        let batch = WriteBatch::new();
+
+        // Empty batch should succeed without error
+        store.write_batch(batch).unwrap();
+    }
+
+    #[test]
     fn batch_atomic() {
         let store = MemoryStore::new();
 
@@ -517,6 +526,97 @@ mod tests {
         assert_eq!(store.get("test", b"key1").unwrap(), Some(b"new1".to_vec()));
         assert_eq!(store.get("test", b"key2").unwrap(), None);
         assert_eq!(store.get("test", b"key3").unwrap(), Some(b"new3".to_vec()));
+    }
+
+    #[test]
+    fn batch_multi_cf() {
+        let store = MemoryStore::new();
+
+        let mut batch = WriteBatch::new();
+        batch.put("cf1", b"key", b"value1");
+        batch.put("cf2", b"key", b"value2");
+        batch.delete("cf3", b"key");
+
+        store.write_batch(batch).unwrap();
+
+        assert_eq!(store.get("cf1", b"key").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(store.get("cf2", b"key").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(store.get("cf3", b"key").unwrap(), None);
+    }
+
+    #[test]
+    fn iter() {
+        let store = MemoryStore::new();
+
+        store.put("test", b"c", b"3").unwrap();
+        store.put("test", b"a", b"1").unwrap();
+        store.put("test", b"b", b"2").unwrap();
+
+        let entries: Vec<_> = store.iter("test").unwrap().collect();
+        assert_eq!(entries.len(), 3);
+        // Should be sorted
+        assert_eq!(entries[0], (b"a".to_vec(), b"1".to_vec()));
+        assert_eq!(entries[1], (b"b".to_vec(), b"2".to_vec()));
+        assert_eq!(entries[2], (b"c".to_vec(), b"3".to_vec()));
+    }
+
+    #[test]
+    fn iter_prefix() {
+        let store = MemoryStore::new();
+
+        store.put("test", b"user:1", b"alice").unwrap();
+        store.put("test", b"user:2", b"bob").unwrap();
+        store.put("test", b"post:1", b"hello").unwrap();
+        store.put("test", b"user:3", b"charlie").unwrap();
+
+        let users: Vec<_> = store.iter_prefix("test", b"user:").unwrap().collect();
+        assert_eq!(users.len(), 3);
+        assert_eq!(users[0].1, b"alice".to_vec());
+        assert_eq!(users[1].1, b"bob".to_vec());
+        assert_eq!(users[2].1, b"charlie".to_vec());
+
+        let posts: Vec<_> = store.iter_prefix("test", b"post:").unwrap().collect();
+        assert_eq!(posts.len(), 1);
+    }
+
+    #[test]
+    fn iter_from() {
+        let store = MemoryStore::new();
+
+        store.put("test", b"a", b"1").unwrap();
+        store.put("test", b"b", b"2").unwrap();
+        store.put("test", b"c", b"3").unwrap();
+        store.put("test", b"d", b"4").unwrap();
+
+        // Ascending from "b"
+        let asc: Vec<_> = store.iter_from("test", b"b", Direction::Asc).unwrap().collect();
+        assert_eq!(asc.len(), 3);
+        assert_eq!(asc[0].0, b"b".to_vec());
+        assert_eq!(asc[1].0, b"c".to_vec());
+        assert_eq!(asc[2].0, b"d".to_vec());
+
+        // Descending from "c"
+        let desc: Vec<_> = store.iter_from("test", b"c", Direction::Desc).unwrap().collect();
+        assert_eq!(desc.len(), 3);
+        assert_eq!(desc[0].0, b"c".to_vec());
+        assert_eq!(desc[1].0, b"b".to_vec());
+        assert_eq!(desc[2].0, b"a".to_vec());
+    }
+
+    #[test]
+    fn iter_range() {
+        let store = MemoryStore::new();
+
+        store.put("test", b"a", b"1").unwrap();
+        store.put("test", b"b", b"2").unwrap();
+        store.put("test", b"c", b"3").unwrap();
+        store.put("test", b"d", b"4").unwrap();
+
+        // Range [b, d) should return b and c
+        let range: Vec<_> = store.iter_range("test", b"b", b"d").unwrap().collect();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].0, b"b".to_vec());
+        assert_eq!(range[1].0, b"c".to_vec());
     }
 
     #[test]

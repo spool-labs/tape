@@ -2,10 +2,9 @@
 //!
 //! These tests verify that metrics are properly recorded for all Store operations.
 
-#![cfg(feature = "metrics")]
-
 use store::{get_metrics, init_metrics, Store, WriteBatch};
-use store_memory::MemoryStore;
+
+use crate::MemoryStore;
 use tape_metrics::MetricsRegistry;
 
 fn setup_metrics() {

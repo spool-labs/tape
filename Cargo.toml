@@ -5,6 +5,7 @@ members = [
   "core",
   "crypto",
   "solana",
+  "blocks",
   "test",
   "metrics",
   "programs/exchange",
@@ -37,6 +38,7 @@ default-members = [
   "core",
   "crypto",
   "solana",
+  "blocks",
   "metrics",
   "network/slicer",
   "network/node",
@@ -67,6 +69,7 @@ keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
 tape-api = { version = "0.3.0", path = "./api" }
+tape-blocks = { version = "0.3.0", path = "./blocks" }
 tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
 tape-solana = { version = "0.3.0", path = "./solana" }

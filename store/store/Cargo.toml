@@ -13,6 +13,3 @@ thiserror.workspace = true
 serde.workspace = true
 wincode = "0.1"
 tape-metrics = { workspace = true, optional = true }
-
-[dev-dependencies]
-store-memory.workspace = true

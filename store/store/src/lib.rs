@@ -13,7 +13,7 @@
 //!
 //! # Low-level Example
 //!
-//! ```
+//! ```ignore
 //! use store::{Store, WriteBatch};
 //! use store_memory::MemoryStore;
 //!
@@ -34,7 +34,7 @@
 //!
 //! # Typed Column Example
 //!
-//! ```
+//! ```ignore
 //! use store::{Column, TypedStore};
 //! use store_memory::MemoryStore;
 //!

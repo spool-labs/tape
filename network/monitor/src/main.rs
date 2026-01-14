@@ -47,7 +47,7 @@ use tokio::sync::mpsc;
 use std::collections::BTreeMap;
 
 use app::{App, EpochPhase, NodeState as AppNodeState, StakeScheduleEntry};
-use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats, TapedriveEvent};
+use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats, TapedriveEvent, ToNetworkEvent};
 use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_api::state::{Archive, Epoch, Node, System};
 use tape_core::spooler::SpoolIndex;
