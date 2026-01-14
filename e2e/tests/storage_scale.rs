@@ -9,10 +9,6 @@
 //! large number of nodes. Each test may take 5-15+ minutes depending on
 //! data sizes and operations.
 //!
-//! **Limitation**: The on-chain program has memory limits that restrict
-//! committee size. Tests use 50 nodes which is well above the MIN_COMMITTEE_SIZE
-//! of 24 for normal mode operation.
-//!
 //! ```bash
 //! cargo test -p tape-e2e --test storage_scale -- --ignored --nocapture
 //! ```
