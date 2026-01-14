@@ -94,97 +94,121 @@ impl<'a> Dashboard<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner.height < 5 || inner.width < 30 {
+        if inner.height < 1 || inner.width < 15 {
             return;
         }
 
-        // Build full-width progress bar for storage
+        // Build storage display
         let storage_pct = self.app.stats.storage_percentage();
         let storage_display = self.app.stats.storage_display();
         let pct_str = format!("{}%", storage_pct);
-        // Calculate bar width: total width - "Storage: " (9) - storage_display - "  " (2) - pct_str - " " (1)
-        let prefix_len = 9 + storage_display.len() + 2;
+
+        // Progress bar - use available width minus percentage suffix
         let suffix_len = pct_str.len() + 1;
-        let bar_width = (inner.width as usize).saturating_sub(prefix_len + suffix_len);
+        let bar_width = (inner.width as usize).saturating_sub(suffix_len).max(5);
         let filled = (bar_width * storage_pct as usize) / 100;
         let empty = bar_width.saturating_sub(filled);
         let filled_str: String = std::iter::repeat('█').take(filled).collect();
         let empty_str: String = std::iter::repeat('░').take(empty).collect();
 
-        let lines = vec![
-            Line::from(vec![
+        // Build lines dynamically - only add what fits
+        let mut lines = Vec::new();
+        let max_lines = inner.height as usize;
+
+        // Storage label + value
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
                 Span::styled("Storage: ", self.theme.text_style()),
                 Span::styled(storage_display, self.theme.text_style()),
-                Span::raw("  "),
+            ]));
+        }
+        // Progress bar
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
                 Span::styled(filled_str, Style::default().fg(self.theme.progress_fg)),
                 Span::styled(empty_str, Style::default().fg(self.theme.progress_bg)),
                 Span::raw(" "),
                 Span::styled(pct_str, self.theme.text_style()),
-            ]),
-            Line::from(vec![
-                Span::styled("Tracks:     ", self.theme.text_style()),
+            ]));
+        }
+        // Tracks
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
+                Span::styled("Tracks:  ", self.theme.text_style()),
                 Span::styled(
-                    format!("{} certified", format_number(self.app.stats.tracks_certified)),
+                    format!("{}", format_number(self.app.stats.tracks_certified)),
                     self.theme.text_style(),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Tapes:      ", self.theme.text_style()),
+            ]));
+        }
+        // Tapes
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
+                Span::styled("Tapes:   ", self.theme.text_style()),
                 Span::styled(
-                    format!("{} active", format_number(self.app.stats.tapes_active)),
+                    format!("{}", format_number(self.app.stats.tapes_active)),
                     self.theme.text_style(),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Rewards:    ", self.theme.text_style()),
+            ]));
+        }
+        // Rewards
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
+                Span::styled("Rewards: ", self.theme.text_style()),
                 Span::styled(
                     format!("{} TAPE", format_tape(self.app.stats.rewards_pool)),
                     Style::default().fg(self.theme.primary),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Paid Out:   ", self.theme.text_style()),
+            ]));
+        }
+        // Paid Out
+        if lines.len() < max_lines {
+            lines.push(Line::from(vec![
+                Span::styled("Paid:    ", self.theme.text_style()),
                 Span::styled(
                     format!("{} TAPE", format_tape(self.app.stats.rewards_paid)),
                     self.theme.text_style(),
                 ),
-            ]),
-            Line::default(),
-            // Throughput from node stats
+            ]));
+        }
+        // Throughput
+        if lines.len() < max_lines {
             if self.app.stats.upload_throughput > 0 || self.app.stats.download_throughput > 0 {
-                Line::from(vec![
-                    Span::styled("Throughput: ", self.theme.text_style()),
+                lines.push(Line::from(vec![
+                    Span::styled("Traffic: ", self.theme.text_style()),
                     Span::styled(
-                        format!("↑ {} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
+                        format!("↑{} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
                         Style::default().fg(ratatui::style::Color::Blue),
                     ),
                     Span::styled(
-                        format!("↓ {}", format_bytes_per_sec(self.app.stats.download_throughput)),
+                        format!("↓{}", format_bytes_per_sec(self.app.stats.download_throughput)),
                         Style::default().fg(ratatui::style::Color::Magenta),
                     ),
-                ])
+                ]));
             } else {
-                Line::from(vec![
-                    Span::styled("Throughput: ", self.theme.text_style()),
+                lines.push(Line::from(vec![
+                    Span::styled("Traffic: ", self.theme.text_style()),
                     Span::styled("--", self.theme.dim_style()),
-                ])
-            },
-            // Requests per second
+                ]));
+            }
+        }
+        // Requests per second
+        if lines.len() < max_lines {
             if self.app.stats.requests_per_sec > 0 {
-                Line::from(vec![
-                    Span::styled("Requests:   ", self.theme.text_style()),
+                lines.push(Line::from(vec![
+                    Span::styled("Reqs:    ", self.theme.text_style()),
                     Span::styled(
-                        format!("{} req/s", format_number(self.app.stats.requests_per_sec as u64)),
+                        format!("{}/s", format_number(self.app.stats.requests_per_sec as u64)),
                         self.theme.text_style(),
                     ),
-                ])
+                ]));
             } else {
-                Line::from(vec![
-                    Span::styled("Requests:   ", self.theme.text_style()),
+                lines.push(Line::from(vec![
+                    Span::styled("Reqs:    ", self.theme.text_style()),
                     Span::styled("--", self.theme.dim_style()),
-                ])
-            },
-        ];
+                ]));
+            }
+        }
 
         Paragraph::new(lines).render(inner, buf);
     }
@@ -194,9 +218,8 @@ impl<'a> Dashboard<'a> {
         let keybindings = vec![
             ("q", "Quit"),
             ("n", "Nodes"),
-            ("t", "Tracks"),
+            ("v", "Events"),
             ("e", "Epoch"),
-            ("/", "Search"),
             ("?", "Help"),
         ];
 

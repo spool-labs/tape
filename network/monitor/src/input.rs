@@ -27,10 +27,8 @@ pub enum Action {
     NodeList,
     /// Switch to epoch history view.
     EpochHistory,
-    /// Open track search.
-    TrackSearch,
-    /// Open search.
-    Search,
+    /// Switch to event list view.
+    EventList,
     /// Show help.
     Help,
     /// Page up.
@@ -75,10 +73,9 @@ pub fn handle_key_event(key: KeyEvent) -> Action {
         KeyCode::Char('d') | KeyCode::Char('D') => Action::Dashboard,
         KeyCode::Char('n') | KeyCode::Char('N') => Action::NodeList,
         KeyCode::Char('e') | KeyCode::Char('E') => Action::EpochHistory,
-        KeyCode::Char('t') | KeyCode::Char('T') => Action::TrackSearch,
+        KeyCode::Char('v') | KeyCode::Char('V') => Action::EventList,
 
-        // Search and help
-        KeyCode::Char('/') => Action::Search,
+        // Help
         KeyCode::Char('?') => Action::Help,
 
         // Pagination
@@ -98,27 +95,10 @@ pub fn handle_key_event(key: KeyEvent) -> Action {
     }
 }
 
-/// Input mode for different view states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputMode {
-    /// Normal navigation mode.
-    #[default]
-    Normal,
-    /// Search input mode (typing search query).
-    Search,
-}
-
-impl InputMode {
-    /// Check if we're in search input mode.
-    pub fn is_search(&self) -> bool {
-        matches!(self, InputMode::Search)
-    }
-}
-
 /// Handle keyboard input and update application state.
 /// This is the main input handler called from the event loop.
 pub fn handle_input(app: &mut crate::app::App, key: KeyEvent) {
-    use crate::app::{View, NodeSortOrder, NodeFilter};
+    use crate::app::{View, NodeSortOrder, NodeFilter, EventFilter};
 
     // Handle view-specific keys first
     if app.current_view == View::NodeList {
@@ -155,6 +135,64 @@ pub fn handle_input(app: &mut crate::app::App, key: KeyEvent) {
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 app.node_filter = NodeFilter::Offline;
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // Handle event list view-specific keys
+    if app.current_view == View::EventList {
+        match key.code {
+            // Filter keys
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                app.event_filter = EventFilter::All;
+                return;
+            }
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                app.event_filter = EventFilter::Tracks;
+                return;
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                app.event_filter = EventFilter::Tapes;
+                return;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                app.event_filter = EventFilter::Nodes;
+                return;
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                app.event_filter = EventFilter::System;
+                return;
+            }
+            // Scroll in event list
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.event_auto_scroll = false;
+                app.event_scroll = app.event_scroll.saturating_sub(1);
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.event_auto_scroll = false;
+                app.event_scroll = app.event_scroll.saturating_add(1);
+                return;
+            }
+            KeyCode::PageUp => {
+                app.event_auto_scroll = false;
+                app.event_scroll = app.event_scroll.saturating_sub(20);
+                return;
+            }
+            KeyCode::PageDown => {
+                app.event_auto_scroll = false;
+                app.event_scroll = app.event_scroll.saturating_add(20);
+                return;
+            }
+            KeyCode::Home => {
+                app.event_auto_scroll = false;
+                app.event_scroll = 0;
+                return;
+            }
+            KeyCode::End => {
+                app.event_auto_scroll = true;
                 return;
             }
             _ => {}
@@ -201,11 +239,8 @@ pub fn handle_input(app: &mut crate::app::App, key: KeyEvent) {
         Action::EpochHistory => {
             app.current_view = View::EpochHistory;
         }
-        Action::TrackSearch => {
-            app.current_view = View::Search(String::new());
-        }
-        Action::Search => {
-            app.current_view = View::Search(String::new());
+        Action::EventList => {
+            app.current_view = View::EventList;
         }
         Action::Help => {
             app.current_view = View::Help;
@@ -226,27 +261,5 @@ pub fn handle_input(app: &mut crate::app::App, key: KeyEvent) {
             app.event_auto_scroll = !app.event_auto_scroll;
         }
         Action::None => {}
-    }
-}
-
-/// Handle key event in search mode.
-/// Returns the action and optionally a character to add to the search query.
-pub fn handle_search_key_event(key: KeyEvent) -> (Action, Option<char>) {
-    match key.code {
-        // Exit search
-        KeyCode::Esc => (Action::Back, None),
-        KeyCode::Enter => (Action::Select, None),
-
-        // Character input
-        KeyCode::Char(c) => (Action::None, Some(c)),
-
-        // Backspace handled by the app
-        KeyCode::Backspace => (Action::None, None),
-
-        // Navigation still works
-        KeyCode::Up => (Action::Up, None),
-        KeyCode::Down => (Action::Down, None),
-
-        _ => (Action::None, None),
     }
 }

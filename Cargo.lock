@@ -11399,6 +11399,9 @@ name = "tape-monitor"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "bs58",
+ "bytemuck",
  "clap 4.5.53",
  "crossterm 0.28.1",
  "futures 0.3.31",
@@ -11407,8 +11410,10 @@ dependencies = [
  "rpc-client",
  "serde_json",
  "solana-sdk",
+ "solana-transaction-status",
  "tape-api",
  "tape-core",
+ "tape-crypto",
  "tape-node-api",
  "tokio",
  "tracing",

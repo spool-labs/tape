@@ -35,6 +35,11 @@ const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// requires significant computation, especially with many nodes.
 const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
 
+/// Compute units required for AdvancePool instruction.
+/// AdvancePool calculates rewards based on committee size and spool assignment,
+/// which can exceed the default 200k CU limit with larger committees.
+const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
+
 /// Maximum time to monitor for epoch advancement (safety limit).
 /// After this duration, the monitor task exits to avoid resource leaks.
 const EPOCH_ADVANCE_MONITOR_TIMEOUT: Duration = Duration::from_secs(3600); // 1 hour
@@ -494,6 +499,8 @@ async fn submit_advance_pool(
     let authority = ctx.keypair.pubkey();
     let (node_address, _) = node_pda(authority);
 
+    // Set compute budget for AdvancePool (needs more than default 200k CUs)
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_POOL_COMPUTE_UNITS);
     let ix = build_advance_pool_ix(authority, authority, node_address);
 
     info!(
@@ -506,7 +513,7 @@ async fn submit_advance_pool(
     let start = std::time::Instant::now();
     info!(epoch = epoch.as_u64(), "AdvancePool RPC call starting");
 
-    let result = ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await;
+    let result = ctx.rpc.send_instructions(&ctx.keypair, vec![cu_ix, ix]).await;
     let elapsed = start.elapsed();
 
     info!(

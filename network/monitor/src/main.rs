@@ -41,12 +41,13 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use rpc_client::RpcConfig;
 use tokio::sync::mpsc;
 
 use std::collections::BTreeMap;
 
 use app::{App, EpochPhase, NodeState as AppNodeState, StakeScheduleEntry};
-use data::{DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats};
+use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats, TapedriveEvent};
 use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_api::state::{Archive, Epoch, Node, System};
 use tape_core::spooler::SpoolIndex;
@@ -170,11 +171,55 @@ async fn main() -> Result<()> {
     // Channel for receiving fetch results from background task
     let (tx, mut rx) = mpsc::channel::<FetchResult>(1);
 
+    // Channel for receiving block events from block processor
+    let (block_tx, mut block_rx) = mpsc::channel::<Vec<TapedriveEvent>>(16);
+
     // Spawn background data fetcher
     let fetch_trigger = Arc::new(Mutex::new(false));
     let fetch_trigger_clone = fetch_trigger.clone();
 
     if let Ok(fetcher) = DataFetcher::new(&rpc_url) {
+        // Create a separate RPC client for the block processor
+        let block_rpc_url = rpc_url.clone();
+        tokio::spawn(async move {
+            // Create RPC client for block processor
+            let rpc_config = RpcConfig {
+                endpoints: vec![block_rpc_url],
+                ..Default::default()
+            };
+            let rpc = match rpc_client::RpcClient::new(rpc_config) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Failed to create block processor RPC client: {}", e);
+                    return;
+                }
+            };
+
+            let mut block_processor = BlockProcessor::new(0);
+
+            // Wait a bit for RPC to connect and get initial slot
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            // Initialize starting slot
+            if let Ok(slot) = rpc.get_slot().await {
+                // Start from recent slot (not genesis)
+                block_processor.set_last_slot(slot.saturating_sub(10));
+            }
+
+            loop {
+                // Get latest slot
+                if let Ok(latest_slot) = rpc.get_slot().await {
+                    // Process up to 50 slots per iteration (catch up faster than node's 100)
+                    let (events, _) = block_processor.process_slots(&rpc, latest_slot, 50).await;
+                    if !events.is_empty() {
+                        let _ = block_tx.send(events).await;
+                    }
+                }
+
+                // Poll at ~400ms like the node (Solana slot time)
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        });
         let fetcher = Arc::new(fetcher);
         tokio::spawn(async move {
             loop {
@@ -238,7 +283,7 @@ async fn main() -> Result<()> {
     let mut event_watcher = EventWatcher::new();
 
     // Run the main loop
-    let result = run_app(&mut terminal, &mut app, &mut rx, &fetch_trigger, &mut cache, &mut event_watcher).await;
+    let result = run_app(&mut terminal, &mut app, &mut rx, &mut block_rx, &fetch_trigger, &mut cache, &mut event_watcher).await;
 
     // Restore terminal
     disable_raw_mode().context("Failed to disable raw mode")?;
@@ -258,6 +303,7 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     rx: &mut mpsc::Receiver<FetchResult>,
+    block_rx: &mut mpsc::Receiver<Vec<TapedriveEvent>>,
     fetch_trigger: &Arc<Mutex<bool>>,
     cache: &mut DataCache,
     event_watcher: &mut EventWatcher,
@@ -372,6 +418,14 @@ async fn run_app(
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // Fetcher task died
                 app.rpc_connected = false;
+            }
+        }
+
+        // Check for block events from block processor (non-blocking)
+        while let Ok(events) = block_rx.try_recv() {
+            for event in events {
+                let network_event = event.to_network_event();
+                app.add_event(network_event);
             }
         }
 

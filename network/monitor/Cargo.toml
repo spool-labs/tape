@@ -47,7 +47,14 @@ futures = "0.3"
 rpc-client = { version = "0.3.0", path = "../../rpc/rpc-client" }
 tape-api = { version = "0.3.0", path = "../../api" }
 tape-core = { version = "0.3.0", path = "../../core" }
+tape-crypto = { version = "0.3.0", path = "../../crypto" }
 tape-node-api = { version = "0.3.0", path = "../api" }
 
 # Re-export solana types
 solana-sdk = "=2.3"
+solana-transaction-status = { version = "=2.3" }
+
+# Block parsing
+bs58 = "0.5"
+base64 = "0.22"
+bytemuck = "1.12"

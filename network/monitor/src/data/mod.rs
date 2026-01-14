@@ -17,10 +17,12 @@
 //!       └── Event Stream (transaction subscription)
 //! ```
 
+mod block_processor;
 mod cache;
 mod events;
 mod fetcher;
 
+pub use block_processor::{BlockProcessor, TapedriveEvent};
 pub use cache::DataCache;
 pub use events::EventWatcher;
 pub use fetcher::{DataFetcher, TapeStats};

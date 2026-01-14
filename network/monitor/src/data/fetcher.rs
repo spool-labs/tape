@@ -86,6 +86,11 @@ impl DataFetcher {
         self.health_timeout = Duration::from_millis(timeout_ms);
     }
 
+    /// Get a reference to the underlying RPC client.
+    pub fn rpc(&self) -> &RpcClient<SolanaRpc> {
+        &self.rpc_client
+    }
+
     // ========================================================================
     // On-Chain State Fetching
     // ========================================================================

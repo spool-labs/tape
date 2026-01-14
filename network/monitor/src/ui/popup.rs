@@ -407,16 +407,12 @@ pub fn render_help_popup(area: Rect, buf: &mut Buffer, theme: &Theme) {
             Span::styled("Node list", theme.text_style()),
         ]),
         Line::from(vec![
-            Span::styled("t       ", theme.keybind_style()),
-            Span::styled("Track search", theme.text_style()),
+            Span::styled("v       ", theme.keybind_style()),
+            Span::styled("Event list", theme.text_style()),
         ]),
         Line::from(vec![
             Span::styled("e       ", theme.keybind_style()),
             Span::styled("Epoch history", theme.text_style()),
-        ]),
-        Line::from(vec![
-            Span::styled("s       ", theme.keybind_style()),
-            Span::styled("Spool map", theme.text_style()),
         ]),
         Line::default(),
         Line::styled("ACTIONS", theme.header_style()),
@@ -424,10 +420,6 @@ pub fn render_help_popup(area: Rect, buf: &mut Buffer, theme: &Theme) {
         Line::from(vec![
             Span::styled("r       ", theme.keybind_style()),
             Span::styled("Force refresh", theme.text_style()),
-        ]),
-        Line::from(vec![
-            Span::styled("/       ", theme.keybind_style()),
-            Span::styled("Search", theme.text_style()),
         ]),
         Line::from(vec![
             Span::styled("q       ", theme.keybind_style()),

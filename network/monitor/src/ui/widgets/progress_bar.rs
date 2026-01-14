@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
+use tape_core::erasure::DATA_SLICES;
 
 use crate::app::{App, EpochPhase};
 use crate::theme::Theme;
@@ -57,14 +58,14 @@ impl<'a> EpochProgress<'a> {
             EpochPhase::Syncing => {
                 spans.push(Span::styled(" | Attestations: ", self.theme.text_style()));
                 spans.push(Span::styled(
-                    format!("{}/2f+1", self.app.epoch_weight),
+                    format!("{}/{}", self.app.epoch_weight, DATA_SLICES),
                     self.theme.text_style(),
                 ));
             }
             EpochPhase::Settling => {
                 spans.push(Span::styled(" | Pools Advanced: ", self.theme.text_style()));
                 spans.push(Span::styled(
-                    format!("{}/2f+1", self.app.epoch_weight),
+                    format!("{}/{}", self.app.epoch_weight, DATA_SLICES),
                     self.theme.text_style(),
                 ));
             }

@@ -286,17 +286,20 @@ async fn test_node_stake_status() {
     println!("\nTest passed: Node stake status query works");
 }
 
-/// Test multiple epoch advances with reward tracking.
+/// Test multiple epoch advances with timing verification.
 ///
-/// This test runs through several epochs to observe the full reward cycle:
-/// 1. Upload data (generates fees)
-/// 2. Advance epochs multiple times
-/// 3. Track rewards_pool and rewards_paid changes
+/// This test verifies:
+/// 1. Epoch 2 (bootstrap): Settling→Active is instant (committee_prev empty)
+/// 2. Epoch 3+: Settling→Active takes time (needs supermajority of AdvancePool)
+/// 3. Epochs 3+ should have consistent timing (all have real committee_prev)
+///
+/// Bootstrap does the only manual advance (epoch 1→2). After that, nodes
+/// advance epochs autonomously when EPOCH_DURATION (60s) has elapsed.
 #[tokio::test]
 #[ignore]
 #[serial]
 async fn test_multi_epoch_reward_cycle() {
-    println!("=== Multi-Epoch Reward Cycle Test ({} nodes) ===", STAKING_NODE_COUNT);
+    println!("=== Multi-Epoch Timing Verification Test ({} nodes) ===", STAKING_NODE_COUNT);
 
     let ctx = TestContext::builder()
         .nodes(STAKING_NODE_COUNT)
@@ -308,24 +311,12 @@ async fn test_multi_epoch_reward_cycle() {
         .await
         .expect("Failed to setup test context");
 
-    wait_for_active_epoch(&ctx, 60).await;
+    // Track timing for bootstrap epoch (epoch 2)
+    println!("\n=== Waiting for bootstrap epoch (2) to become Active ===");
+    let bootstrap_settling_time = wait_for_active_epoch_timed(&ctx, 60).await;
+    println!("  Bootstrap epoch settling time: {:?}", bootstrap_settling_time);
 
     let node_urls = ctx.node_urls();
-
-    // Initial state
-    let mut epoch_states = Vec::new();
-    let initial_epoch = ctx.epoch().expect("epoch").id.unwrap_or(0);
-    let initial_archive = ctx.cli.account_archive().expect("archive");
-    epoch_states.push((
-        initial_epoch,
-        initial_archive.rewards_pool.unwrap_or(0),
-        initial_archive.rewards_paid.unwrap_or(0),
-    ));
-
-    println!("\n=== Initial State ===");
-    println!("  Epoch: {}", initial_epoch);
-    println!("  Rewards Pool: {}", initial_archive.rewards_pool.unwrap_or(0));
-    println!("  Rewards Paid: {}", initial_archive.rewards_paid.unwrap_or(0));
 
     // Upload some data to generate fees
     println!("\n=== Uploading data ===");
@@ -337,78 +328,143 @@ async fn test_multi_epoch_reward_cycle() {
         }
     }
 
-    // Advance through multiple epochs
-    let num_advances = 3;
-    println!("\n=== Advancing {} epochs ===", num_advances);
+    // Observe autonomous epoch advances (nodes advance when EPOCH_DURATION elapses)
+    // Bootstrap already did epoch 1→2, so we observe epochs 3, 4, 5, 6
+    let num_epochs_to_observe = 4;
+    let mut epoch_timings: Vec<(u64, Duration)> = Vec::new();
 
-    for i in 0..num_advances {
-        println!("\n--- Epoch advance {} ---", i + 1);
-        tokio::time::sleep(EPOCH_WAIT).await;
+    println!("\n=== Observing {} autonomous epoch advances ===", num_epochs_to_observe);
+    println!("(Nodes advance epochs every ~60s when conditions are met)");
 
-        match ctx.cli.admin_advance_epoch() {
-            Ok(_) => {
-                // Wait for nodes to process
-                tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut current_epoch = ctx.epoch().expect("epoch").id.unwrap_or(2);
 
-                let epoch = ctx.epoch().expect("epoch").id.unwrap_or(0);
-                let archive = ctx.cli.account_archive().expect("archive");
-                let pool = archive.rewards_pool.unwrap_or(0);
-                let paid = archive.rewards_paid.unwrap_or(0);
+    for _i in 0..num_epochs_to_observe {
+        let target_epoch = current_epoch + 1;
+        println!("\n--- Waiting for epoch {} ---", target_epoch);
 
-                println!("  Epoch: {}", epoch);
-                println!("  Rewards Pool: {}", pool);
-                println!("  Rewards Paid: {}", paid);
+        // Wait for epoch to change (nodes advance autonomously)
+        let epoch_change_timeout = Duration::from_secs(180); // 3 minutes max per epoch
+        let poll_interval = Duration::from_millis(500);
+        let wait_start = std::time::Instant::now();
 
-                epoch_states.push((epoch, pool, paid));
+        loop {
+            if wait_start.elapsed() > epoch_change_timeout {
+                panic!("Timed out waiting for epoch {} to start", target_epoch);
             }
-            Err(e) => {
-                println!("  Failed to advance: {}", e);
+
+            let epoch = ctx.epoch().expect("epoch");
+            let epoch_id = epoch.id.unwrap_or(0);
+
+            if epoch_id >= target_epoch {
+                let phase = epoch.phase.as_deref().unwrap_or("Unknown");
+                println!("  Epoch {} started (phase: {})", epoch_id, phase);
+
+                // Time how long it takes to reach Active phase
+                let settling_time = wait_for_active_epoch_timed(&ctx, 120).await;
+                println!("  Epoch {} settling time: {:?}", epoch_id, settling_time);
+
+                epoch_timings.push((epoch_id, settling_time));
+                current_epoch = epoch_id;
+                break;
             }
+
+            tokio::time::sleep(poll_interval).await;
         }
     }
 
-    // Print summary
-    println!("\n=== Epoch State History ===");
-    println!("{:>6} {:>15} {:>15}", "Epoch", "Pool", "Paid");
-    println!("{}", "-".repeat(40));
-    for (epoch, pool, paid) in &epoch_states {
-        println!("{:>6} {:>15} {:>15}", epoch, pool, paid);
+    // Print timing summary
+    println!("\n=== Epoch Timing Summary ===");
+    println!("{:>6} {:>15}", "Epoch", "Settling (ms)");
+    println!("{}", "-".repeat(25));
+    println!("{:>6} {:>15}", 2, bootstrap_settling_time.as_millis());
+    for (epoch, settling) in &epoch_timings {
+        println!("{:>6} {:>15}", epoch, settling.as_millis());
     }
 
-    // Verify epochs advanced
-    let final_epoch = epoch_states.last().map(|(e, _, _)| *e).unwrap_or(0);
-    assert!(
-        final_epoch > initial_epoch,
-        "Epochs should have advanced: {} -> {}",
-        initial_epoch, final_epoch
-    );
+    // Verify timing expectations
+    println!("\n=== Timing Verification ===");
 
-    println!("\nTest passed: Multi-epoch reward cycle completed");
+    // Check bootstrap epoch was fast (committee_prev empty)
+    let bootstrap_settling_ms = bootstrap_settling_time.as_millis();
+    println!("  Bootstrap (epoch 2) settling: {}ms", bootstrap_settling_ms);
+    assert!(
+        bootstrap_settling_ms < 5000,
+        "Bootstrap epoch settling should be fast (< 5s) since committee_prev is empty, got {}ms",
+        bootstrap_settling_ms
+    );
+    println!("  ✓ Bootstrap epoch settling was fast (committee_prev empty)");
+
+    // Check epochs 3+ settling times
+    let settling_times: Vec<u128> = epoch_timings.iter().map(|(_, s)| s.as_millis()).collect();
+    let min_settling = settling_times.iter().copied().min().unwrap_or(0);
+    let max_settling = settling_times.iter().copied().max().unwrap_or(0);
+    let avg_settling: u128 = settling_times.iter().sum::<u128>() / settling_times.len() as u128;
+
+    println!("  Epochs 3+ settling times:");
+    println!("    Min: {}ms", min_settling);
+    println!("    Max: {}ms", max_settling);
+    println!("    Avg: {}ms", avg_settling);
+
+    // Epochs 3+ should have consistent timing
+    if min_settling > 0 {
+        let ratio = max_settling as f64 / min_settling as f64;
+        println!("    Max/Min ratio: {:.2}x", ratio);
+        assert!(
+            ratio < 5.0,
+            "Epoch settling times should be consistent (ratio < 5x), got {:.2}x",
+            ratio
+        );
+        println!("  ✓ Epochs 3+ have consistent settling times");
+    }
+
+    // Verify we observed enough epochs
+    let final_epoch = epoch_timings.last().map(|(e, _)| *e).unwrap_or(0);
+    assert!(
+        final_epoch >= 5,
+        "Should have observed at least epoch 5, got {}",
+        final_epoch
+    );
+    println!("  ✓ Successfully observed epochs up to {}", final_epoch);
+
+    println!("\nTest passed: Multi-epoch timing verification completed");
 }
 
 // =============================================================================
 // Helper functions
 // =============================================================================
 
-/// Wait for epoch to become Active phase.
-async fn wait_for_active_epoch(ctx: &TestContext, max_wait_secs: u64) {
-    let mut waited = 0;
+/// Wait for epoch to become Active phase, returning the time spent waiting.
+///
+/// Polls every 100ms for faster timing resolution.
+/// Returns the duration from when we first saw a non-Active phase until Active.
+async fn wait_for_active_epoch_timed(ctx: &TestContext, max_wait_secs: u64) -> Duration {
+    let start = std::time::Instant::now();
+    let max_wait = Duration::from_secs(max_wait_secs);
+    let poll_interval = Duration::from_millis(100);
+
     loop {
         if let Ok(epoch) = ctx.epoch() {
             let phase = epoch.phase.as_deref().unwrap_or("Unknown");
             if phase == "Active" {
-                println!("  Epoch {} is Active", epoch.id.unwrap_or(0));
-                break;
+                let elapsed = start.elapsed();
+                println!("  Epoch {} is Active (took {:?})", epoch.id.unwrap_or(0), elapsed);
+                return elapsed;
             }
-            if waited % 10 == 0 {
-                println!("  Current phase: {} (waiting...)", phase);
+            // Log phase transitions
+            if start.elapsed().as_secs() % 5 == 0 && start.elapsed().as_millis() % 5000 < 100 {
+                println!("  Current phase: {} (elapsed: {:?})", phase, start.elapsed());
             }
         }
-        if waited >= max_wait_secs {
-            println!("  Warning: Epoch still not Active after {}s", waited);
-            break;
+        if start.elapsed() >= max_wait {
+            println!("  Warning: Epoch still not Active after {:?}", start.elapsed());
+            return start.elapsed();
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        waited += 1;
+        tokio::time::sleep(poll_interval).await;
     }
+}
+
+/// Wait for epoch to become Active phase (simple version without timing).
+#[allow(dead_code)]
+async fn wait_for_active_epoch(ctx: &TestContext, max_wait_secs: u64) {
+    wait_for_active_epoch_timed(ctx, max_wait_secs).await;
 }

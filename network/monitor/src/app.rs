@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
+use tape_core::erasure::DATA_SLICES;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{BasisPoints, EpochNumber, NodeId, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
@@ -74,8 +75,8 @@ pub enum View {
     NodeDetail(usize),
     /// Epoch history view.
     EpochHistory,
-    /// Search view.
-    Search(String),
+    /// Full-screen event list view.
+    EventList,
     /// Help screen.
     Help,
 }
@@ -422,6 +423,10 @@ pub struct App {
     pub node_sort: NodeSortOrder,
     /// Current filter for node list.
     pub node_filter: NodeFilter,
+
+    // Event list view state
+    /// Current filter for event list.
+    pub event_filter: EventFilter,
 }
 
 /// Sort order for the node list.
@@ -442,6 +447,44 @@ pub enum NodeFilter {
     All,
     Online,
     Offline,
+}
+
+/// Filter for the event list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventFilter {
+    /// Show all events.
+    #[default]
+    All,
+    /// Track events (certified, registered, deleted).
+    Tracks,
+    /// Tape events (reserved, destroyed).
+    Tapes,
+    /// Node events (online, offline).
+    Nodes,
+    /// System events (epoch transitions, errors).
+    System,
+}
+
+impl EventFilter {
+    /// Check if an event type matches this filter.
+    pub fn matches(&self, event_type: EventType) -> bool {
+        match self {
+            EventFilter::All => true,
+            EventFilter::Tracks => matches!(
+                event_type,
+                EventType::TrackCertified | EventType::TrackRegistered
+            ),
+            EventFilter::Tapes => matches!(event_type, EventType::TapeReserved),
+            EventFilter::Nodes => matches!(
+                event_type,
+                EventType::NodeOnline | EventType::NodeOffline
+            ),
+            EventFilter::System => matches!(
+                event_type,
+                EventType::EpochTransition | EventType::Error | EventType::SliceUploaded | EventType::BlobDownloaded
+            ),
+        }
+    }
 }
 
 impl Default for App {
@@ -491,6 +534,8 @@ impl App {
 
             node_sort: NodeSortOrder::default(),
             node_filter: NodeFilter::default(),
+
+            event_filter: EventFilter::default(),
         }
     }
 
@@ -525,8 +570,8 @@ impl App {
     pub fn epoch_progress(&self) -> u8 {
         match self.phase {
             EpochPhase::Syncing | EpochPhase::Settling => {
-                // Progress toward supermajority (2/3 of 1024 = 683)
-                let threshold = 683u64;
+                // Progress toward supermajority threshold
+                let threshold = DATA_SLICES as u64;
                 ((self.epoch_weight * 100) / threshold).min(100) as u8
             }
             EpochPhase::Active | EpochPhase::Unknown => {

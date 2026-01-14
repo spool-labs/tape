@@ -161,7 +161,7 @@ impl Theme {
     pub fn highlight_style(&self) -> Style {
         Style::default()
             .fg(self.primary)
-            .bg(Color::Rgb(50, 50, 60))
+            .bg(Color::Rgb(65, 65, 75))
             .add_modifier(Modifier::BOLD)
     }
 

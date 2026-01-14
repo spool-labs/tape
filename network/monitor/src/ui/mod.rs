@@ -6,16 +6,16 @@
 
 pub mod dashboard;
 pub mod epoch;
+pub mod events;
 pub mod nodes;
 pub mod popup;
-pub mod tracks;
 pub mod widgets;
 
 pub use dashboard::Dashboard;
 pub use epoch::render_epoch_history;
+pub use events::render_event_list;
 pub use nodes::render_node_list;
 pub use popup::{render_help_popup, NodeDetailPopup};
-pub use tracks::render_track_search;
 pub use widgets::{EpochProgress, EventLog, NodeGrid, SpoolBar};
 
 use ratatui::{buffer::Buffer, layout::Rect, Frame};
@@ -55,9 +55,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
             // Full-screen epoch history view
             render_epoch_history(area, frame.buffer_mut(), app, theme);
         }
-        View::Search(query) => {
-            // Full-screen search view
-            render_track_search(area, frame.buffer_mut(), app, theme, query);
+        View::EventList => {
+            // Full-screen event list view
+            render_event_list(area, frame.buffer_mut(), app, theme);
         }
     }
 }
