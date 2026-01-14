@@ -14,6 +14,8 @@ pub struct NodeMetrics {
     // Request metrics
     pub request_duration: HistogramVec,
     pub requests_total: IntCounterVec,
+    /// Simple total counter for all requests (for rate calculation).
+    pub requests_handled_total: IntCounter,
 
     // Slice storage metrics
     pub slices_stored_total: IntGauge,
@@ -70,6 +72,15 @@ impl NodeMetrics {
         )
         .expect("metric creation should not fail");
         registry.register(Box::new(requests_total.clone())).ok();
+
+        let requests_handled_total = IntCounter::new(
+            "tape_node_requests_handled_total",
+            "Total number of requests handled (for rate calculation)",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(requests_handled_total.clone()))
+            .ok();
 
         let slices_stored_total = IntGauge::new(
             "tape_node_slices_stored_total",
@@ -189,6 +200,7 @@ impl NodeMetrics {
         Self {
             request_duration,
             requests_total,
+            requests_handled_total,
             slices_stored_total,
             slices_retrieved_total,
             bytes_stored_total,
@@ -223,5 +235,6 @@ impl NodeMetrics {
         self.requests_total
             .with_label_values(&[endpoint, status])
             .inc();
+        self.requests_handled_total.inc();
     }
 }

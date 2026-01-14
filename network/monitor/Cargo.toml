@@ -47,6 +47,7 @@ futures = "0.3"
 rpc-client = { version = "0.3.0", path = "../../rpc/rpc-client" }
 tape-api = { version = "0.3.0", path = "../../api" }
 tape-core = { version = "0.3.0", path = "../../core" }
+tape-node-api = { version = "0.3.0", path = "../api" }
 
 # Re-export solana types
 solana-sdk = "=2.3"

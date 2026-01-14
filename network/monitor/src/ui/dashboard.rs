@@ -98,23 +98,28 @@ impl<'a> Dashboard<'a> {
             return;
         }
 
-        // Build mini progress bar for storage
+        // Build full-width progress bar for storage
         let storage_pct = self.app.stats.storage_percentage();
-        let bar_width = 6;
+        let storage_display = self.app.stats.storage_display();
+        let pct_str = format!("{}%", storage_pct);
+        // Calculate bar width: total width - "Storage: " (9) - storage_display - "  " (2) - pct_str - " " (1)
+        let prefix_len = 9 + storage_display.len() + 2;
+        let suffix_len = pct_str.len() + 1;
+        let bar_width = (inner.width as usize).saturating_sub(prefix_len + suffix_len);
         let filled = (bar_width * storage_pct as usize) / 100;
-        let empty = bar_width - filled;
+        let empty = bar_width.saturating_sub(filled);
         let filled_str: String = std::iter::repeat('█').take(filled).collect();
         let empty_str: String = std::iter::repeat('░').take(empty).collect();
 
         let lines = vec![
             Line::from(vec![
-                Span::styled("Storage:    ", self.theme.text_style()),
-                Span::styled(self.app.stats.storage_display(), self.theme.text_style()),
-                Span::raw("  ["),
+                Span::styled("Storage: ", self.theme.text_style()),
+                Span::styled(storage_display, self.theme.text_style()),
+                Span::raw("  "),
                 Span::styled(filled_str, Style::default().fg(self.theme.progress_fg)),
                 Span::styled(empty_str, Style::default().fg(self.theme.progress_bg)),
-                Span::raw("] "),
-                Span::styled(format!("{}%", storage_pct), self.theme.text_style()),
+                Span::raw(" "),
+                Span::styled(pct_str, self.theme.text_style()),
             ]),
             Line::from(vec![
                 Span::styled("Tracks:     ", self.theme.text_style()),
@@ -145,25 +150,26 @@ impl<'a> Dashboard<'a> {
                 ),
             ]),
             Line::default(),
-            // Throughput and requests require node metrics endpoints (not yet implemented)
+            // Throughput from node stats
             if self.app.stats.upload_throughput > 0 || self.app.stats.download_throughput > 0 {
                 Line::from(vec![
                     Span::styled("Throughput: ", self.theme.text_style()),
                     Span::styled(
-                        format!("^ {} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
+                        format!("↑ {} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
                         Style::default().fg(ratatui::style::Color::Blue),
                     ),
                     Span::styled(
-                        format!("v {}", format_bytes_per_sec(self.app.stats.download_throughput)),
+                        format!("↓ {}", format_bytes_per_sec(self.app.stats.download_throughput)),
                         Style::default().fg(ratatui::style::Color::Magenta),
                     ),
                 ])
             } else {
                 Line::from(vec![
                     Span::styled("Throughput: ", self.theme.text_style()),
-                    Span::styled("N/A", self.theme.dim_style()),
+                    Span::styled("--", self.theme.dim_style()),
                 ])
             },
+            // Requests per second
             if self.app.stats.requests_per_sec > 0 {
                 Line::from(vec![
                     Span::styled("Requests:   ", self.theme.text_style()),
@@ -175,7 +181,7 @@ impl<'a> Dashboard<'a> {
             } else {
                 Line::from(vec![
                     Span::styled("Requests:   ", self.theme.text_style()),
-                    Span::styled("N/A", self.theme.dim_style()),
+                    Span::styled("--", self.theme.dim_style()),
                 ])
             },
         ];

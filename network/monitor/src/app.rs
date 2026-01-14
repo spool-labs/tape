@@ -5,8 +5,12 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{BasisPoints, EpochNumber, NodeId, StorageUnits};
+use tape_core::types::coin::{Coin, TAPE};
+use tape_node_api::NodeStats;
 
 /// Maximum number of events to keep in the event log.
 pub const MAX_EVENTS: usize = 1000;
@@ -80,6 +84,15 @@ pub enum View {
 // Node State
 // ============================================================================
 
+/// Stake schedule entry for a specific epoch.
+#[derive(Debug, Clone, Default)]
+pub struct StakeScheduleEntry {
+    /// Incoming stake (additions).
+    pub incoming: Coin<TAPE>,
+    /// Outgoing stake (pre-active cancellations).
+    pub cancels: Coin<TAPE>,
+}
+
 /// State of a single committee node.
 #[derive(Debug, Clone)]
 pub struct NodeState {
@@ -97,14 +110,20 @@ pub struct NodeState {
     pub latency_ms: Option<u32>,
     /// Last health check timestamp.
     pub last_check: Instant,
-    /// Stake amount in TAPE flux units.
-    pub stake: u64,
+    /// Committee stake (stake used for committee membership).
+    pub stake: Coin<TAPE>,
+    /// Pool stake (current active pool balance).
+    pub pool_stake: Coin<TAPE>,
+    /// Stake schedule by epoch (incoming/cancels per epoch).
+    pub stake_schedule: BTreeMap<EpochNumber, StakeScheduleEntry>,
     /// Commission in basis points.
     pub commission: BasisPoints,
     /// Number of spools assigned.
     pub spool_count: u16,
     /// List of assigned spool indices.
     pub assigned_spools: Vec<SpoolIndex>,
+    /// Block processor stats from the node (if online).
+    pub stats: Option<NodeStats>,
 }
 
 impl Default for NodeState {
@@ -117,10 +136,13 @@ impl Default for NodeState {
             health: HealthStatus::Unknown,
             latency_ms: None,
             last_check: Instant::now(),
-            stake: 0,
+            stake: TAPE::zero(),
+            pool_stake: TAPE::zero(),
+            stake_schedule: BTreeMap::new(),
             commission: BasisPoints(0),
             spool_count: 0,
             assigned_spools: Vec::new(),
+            stats: None,
         }
     }
 }
@@ -128,12 +150,13 @@ impl Default for NodeState {
 impl NodeState {
     /// Get stake amount formatted with K/M suffix.
     pub fn stake_display(&self) -> String {
-        if self.stake >= 1_000_000_000_000 {
-            format!("{:.1}M", self.stake as f64 / 1_000_000_000_000.0)
-        } else if self.stake >= 1_000_000_000 {
-            format!("{:.0}K", self.stake as f64 / 1_000_000_000.0)
+        let flux = self.stake.0;
+        if flux >= 1_000_000_000_000 {
+            format!("{:.1}M", flux as f64 / 1_000_000_000_000.0)
+        } else if flux >= 1_000_000_000 {
+            format!("{:.0}K", flux as f64 / 1_000_000_000.0)
         } else {
-            format!("{}", self.stake / 1_000_000)
+            format!("{}", flux / 1_000_000)
         }
     }
 
@@ -345,10 +368,16 @@ pub struct App {
     pub phase: EpochPhase,
     /// Timestamp of last epoch start (Unix seconds).
     pub epoch_start: i64,
-    /// Epoch duration in seconds.
+    /// Epoch duration in seconds (EPOCH_DURATION or MIN_EPOCH_DURATION in low-quorum).
     pub epoch_duration: u64,
     /// Current slot number.
     pub current_slot: u64,
+    /// Accumulated weight for phase transitions (Syncing/Settling progress).
+    pub epoch_weight: u64,
+    /// Whether currently in low-quorum mode (<24 nodes in committee).
+    pub is_low_quorum: bool,
+    /// Size of next committee (committee_next).
+    pub committee_next_size: usize,
 
     // Committee data
     /// Current committee nodes.
@@ -377,6 +406,16 @@ pub struct App {
     pub rpc_connected: bool,
     /// Recent fetch errors (cleared on successful fetch).
     pub fetch_errors: Vec<String>,
+
+    // Rate tracking for throughput/requests calculation
+    /// Previous total bytes uploaded (for rate calculation).
+    pub prev_bytes_uploaded: u64,
+    /// Previous total bytes downloaded (for rate calculation).
+    pub prev_bytes_downloaded: u64,
+    /// Previous total requests (for rate calculation).
+    pub prev_requests_total: u64,
+    /// Timestamp of last rate calculation.
+    pub last_rate_calc: Instant,
 
     // Node list view state
     /// Current sort order for node list.
@@ -427,6 +466,9 @@ impl App {
             epoch_start: 0,
             epoch_duration: 604_800, // 1 week
             current_slot: 0,
+            epoch_weight: 0,
+            is_low_quorum: false,
+            committee_next_size: 0,
 
             nodes: Vec::new(),
             spool_assignments: Vec::new(),
@@ -441,6 +483,11 @@ impl App {
 
             rpc_connected: false,
             fetch_errors: Vec::new(),
+
+            prev_bytes_uploaded: 0,
+            prev_bytes_downloaded: 0,
+            prev_requests_total: 0,
+            last_rate_calc: now,
 
             node_sort: NodeSortOrder::default(),
             node_filter: NodeFilter::default(),
@@ -473,16 +520,38 @@ impl App {
     }
 
     /// Calculate epoch progress as percentage (0-100).
+    /// For Active phase: time-based progress.
+    /// For Syncing/Settling phases: weight-based progress toward 2/3 threshold.
     pub fn epoch_progress(&self) -> u8 {
-        if self.epoch_duration == 0 {
-            return 0;
+        match self.phase {
+            EpochPhase::Syncing | EpochPhase::Settling => {
+                // Progress toward supermajority (2/3 of 1024 = 683)
+                let threshold = 683u64;
+                ((self.epoch_weight * 100) / threshold).min(100) as u8
+            }
+            EpochPhase::Active | EpochPhase::Unknown => {
+                // Time-based progress
+                if self.epoch_duration == 0 {
+                    return 0;
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let elapsed = (now - self.epoch_start).max(0) as u64;
+                ((elapsed * 100) / self.epoch_duration).min(100) as u8
+            }
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let elapsed = (now - self.epoch_start).max(0) as u64;
-        ((elapsed * 100) / self.epoch_duration).min(100) as u8
+    }
+
+    /// Get description of what epoch progress represents.
+    pub fn epoch_progress_label(&self) -> &'static str {
+        match self.phase {
+            EpochPhase::Syncing => "sync attestations",
+            EpochPhase::Settling => "pools advanced",
+            EpochPhase::Active => "elapsed",
+            EpochPhase::Unknown => "elapsed",
+        }
     }
 
     /// Calculate time remaining in epoch.
@@ -615,10 +684,13 @@ impl App {
                     _ => None,
                 },
                 last_check: Instant::now(),
-                stake: *stake * 1_000_000, // Convert to flux units
+                stake: TAPE(*stake * 1_000_000), // Convert to flux units
+                pool_stake: TAPE(*stake * 1_000_000),
+                stake_schedule: BTreeMap::new(),
                 commission: BasisPoints(200),
                 spool_count: *spools,
                 assigned_spools: (0..*spools).collect(),
+                stats: None,
             })
             .collect();
 
@@ -633,10 +705,13 @@ impl App {
                 health,
                 latency_ms: if health == HealthStatus::Online { Some(50 + i as u32) } else { None },
                 last_check: Instant::now(),
-                stake: (200_000 - i as u64 * 1000) * 1_000_000,
+                stake: TAPE((200_000 - i as u64 * 1000) * 1_000_000),
+                pool_stake: TAPE((200_000 - i as u64 * 1000) * 1_000_000),
+                stake_schedule: BTreeMap::new(),
                 commission: BasisPoints(200 + i as u64 * 10),
                 spool_count: (50 - i as u16 / 2).max(5),
                 assigned_spools: Vec::new(),
+                stats: None,
             });
         }
 

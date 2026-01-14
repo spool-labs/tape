@@ -11409,6 +11409,7 @@ dependencies = [
  "solana-sdk",
  "tape-api",
  "tape-core",
+ "tape-node-api",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -29,6 +29,7 @@ use solana_sdk::pubkey::Pubkey;
 use std::time::Instant;
 use tape_api::state::Node;
 use tape_core::types::NodeId;
+use tape_node_api::NodeStats;
 
 // ============================================================================
 // Shared Types
@@ -89,6 +90,9 @@ pub struct NodeState {
     pub latency_ms: Option<u32>,
     /// Timestamp of the last health check.
     pub last_check: Instant,
+    /// Block processor stats from /v1/stats endpoint.
+    /// None if the node is offline or stats couldn't be fetched.
+    pub stats: Option<NodeStats>,
 }
 
 impl NodeState {
@@ -100,6 +104,7 @@ impl NodeState {
             health: HealthStatus::Unknown,
             latency_ms: None,
             last_check: Instant::now(),
+            stats: None,
         }
     }
 

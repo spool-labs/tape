@@ -160,8 +160,8 @@ impl Theme {
     /// Style for highlighted/selected items.
     pub fn highlight_style(&self) -> Style {
         Style::default()
-            .fg(self.bg)
-            .bg(self.primary)
+            .fg(self.primary)
+            .bg(Color::Rgb(50, 50, 60))
             .add_modifier(Modifier::BOLD)
     }
 

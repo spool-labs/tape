@@ -298,6 +298,18 @@ impl DataFetcher {
                                         state.latency_ms = Some(latency);
                                     }
                                 }
+
+                                // If node is online, also fetch stats
+                                if state.health != HealthStatus::Offline {
+                                    let stats_url = format!("http://{}/v1/stats", network_addr);
+                                    if let Ok(stats_resp) = client.get(&stats_url).send().await {
+                                        if stats_resp.status().is_success() {
+                                            if let Ok(stats) = stats_resp.json::<tape_node_api::NodeStats>().await {
+                                                state.stats = Some(stats);
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 state.health = HealthStatus::Offline;
                             }

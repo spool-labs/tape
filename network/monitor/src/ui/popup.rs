@@ -87,13 +87,6 @@ impl<'a> NodeDetailPopup<'a> {
             ]),
             Line::default(),
             Line::from(vec![
-                Span::styled("Stake:      ", self.theme.text_style()),
-                Span::styled(
-                    format!("{} TAPE", self.node.stake_display()),
-                    Style::default().fg(self.theme.primary),
-                ),
-            ]),
-            Line::from(vec![
                 Span::styled("Spools:     ", self.theme.text_style()),
                 Span::styled(
                     format!("{} / 1024 ({:.1}%)",
@@ -108,6 +101,78 @@ impl<'a> NodeDetailPopup<'a> {
                 Span::styled(self.node.commission_display(), self.theme.text_style()),
             ]),
         ]
+    }
+
+    /// Build stake schedule section.
+    fn build_stake_section(&self) -> Vec<Line<'a>> {
+        let mut lines = vec![
+            Line::default(),
+            Line::styled("STAKE", self.theme.header_style()),
+            Line::styled("-".repeat(40), self.theme.dim_style()),
+            Line::from(vec![
+                Span::styled("Committee:    ", self.theme.text_style()),
+                Span::styled(
+                    format!("{} TAPE", format_tape(self.node.stake.0)),
+                    Style::default().fg(self.theme.primary),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Pool:         ", self.theme.text_style()),
+                Span::styled(
+                    format!("{} TAPE", format_tape(self.node.pool_stake.0)),
+                    self.theme.text_style(),
+                ),
+            ]),
+        ];
+
+        // Show stake schedule table if there are any scheduled changes
+        if !self.node.stake_schedule.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::styled("SCHEDULE", self.theme.header_style()));
+            // Header row
+            lines.push(Line::from(vec![
+                Span::styled("Epoch     ", self.theme.dim_style()),
+                Span::styled("Incoming      ", self.theme.dim_style()),
+                Span::styled("Cancels", self.theme.dim_style()),
+            ]));
+            lines.push(Line::styled("-".repeat(40), self.theme.dim_style()));
+
+            // Data rows for each scheduled epoch
+            for (epoch, entry) in &self.node.stake_schedule {
+                let incoming_str = if entry.incoming.0 > 0 {
+                    format!("+{}", format_tape(entry.incoming.0))
+                } else {
+                    "-".to_string()
+                };
+                let cancels_str = if entry.cancels.0 > 0 {
+                    format!("-{}", format_tape(entry.cancels.0))
+                } else {
+                    "-".to_string()
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{:<10}", epoch.0), self.theme.text_style()),
+                    Span::styled(
+                        format!("{:<14}", incoming_str),
+                        if entry.incoming.0 > 0 {
+                            Style::default().fg(ratatui::style::Color::Green)
+                        } else {
+                            self.theme.dim_style()
+                        },
+                    ),
+                    Span::styled(
+                        cancels_str,
+                        if entry.cancels.0 > 0 {
+                            Style::default().fg(ratatui::style::Color::Red)
+                        } else {
+                            self.theme.dim_style()
+                        },
+                    ),
+                ]));
+            }
+        }
+
+        lines
     }
 
     /// Build metrics section.
@@ -135,6 +200,67 @@ impl<'a> NodeDetailPopup<'a> {
                 ),
             ]),
         ]
+    }
+
+    /// Build node stats section.
+    fn build_stats_section(&self) -> Vec<Line<'a>> {
+        let mut lines = vec![
+            Line::default(),
+            Line::styled("STORAGE", self.theme.header_style()),
+            Line::styled("-".repeat(40), self.theme.dim_style()),
+        ];
+
+        if let Some(stats) = &self.node.stats {
+            lines.push(Line::from(vec![
+                Span::styled("Slices:       ", self.theme.text_style()),
+                Span::styled(
+                    format_number(stats.slices_stored),
+                    self.theme.text_style(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Tracks:       ", self.theme.text_style()),
+                Span::styled(
+                    format_number(stats.tracks_stored),
+                    self.theme.text_style(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Disk used:    ", self.theme.text_style()),
+                Span::styled(
+                    format_bytes(stats.storage_bytes_used),
+                    self.theme.text_style(),
+                ),
+            ]));
+            lines.push(Line::default());
+            lines.push(Line::styled("TRAFFIC", self.theme.header_style()));
+            lines.push(Line::styled("-".repeat(40), self.theme.dim_style()));
+            lines.push(Line::from(vec![
+                Span::styled("Uploaded:     ", self.theme.text_style()),
+                Span::styled(
+                    format_bytes(stats.bytes_uploaded),
+                    self.theme.text_style(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Downloaded:   ", self.theme.text_style()),
+                Span::styled(
+                    format_bytes(stats.bytes_downloaded),
+                    self.theme.text_style(),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Requests:     ", self.theme.text_style()),
+                Span::styled(
+                    format_number(stats.requests_total),
+                    self.theme.text_style(),
+                ),
+            ]));
+        } else {
+            lines.push(Line::styled("No stats available", self.theme.dim_style()));
+        }
+
+        lines
     }
 
     /// Build assigned spools section.
@@ -195,12 +321,48 @@ impl Widget for NodeDetailPopup<'_> {
 
         // Build content
         let mut lines = self.build_info_lines();
+        lines.extend(self.build_stake_section());
         lines.extend(self.build_metrics_section());
+        lines.extend(self.build_stats_section());
         lines.extend(self.build_spools_section());
 
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
         paragraph.render(inner, buf);
     }
+}
+
+/// Format a number with thousand separators.
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
+/// Format bytes with appropriate unit.
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000_000 {
+        format!("{:.1} TB", bytes as f64 / 1_000_000_000_000.0)
+    } else if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Format TAPE amount (flux units to display with thousand separators).
+fn format_tape(flux: u64) -> String {
+    let tape = flux / 1_000_000; // Convert from flux (6 decimals)
+    format_number(tape)
 }
 
 /// Render the help popup.

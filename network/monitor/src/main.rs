@@ -43,11 +43,15 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
-use app::{App, EpochPhase, NodeState as AppNodeState};
+use std::collections::BTreeMap;
+
+use app::{App, EpochPhase, NodeState as AppNodeState, StakeScheduleEntry};
 use data::{DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats};
 use tape_api::program::tapedrive::EPOCH_DURATION;
-use tape_api::state::{Archive, Epoch, System};
+use tape_api::state::{Archive, Epoch, Node, System};
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::coin::TAPE;
+use tape_core::types::EpochNumber;
 
 /// Solana cluster/network selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,15 +404,22 @@ fn update_app_from_data(
     };
     app.epoch_start = epoch.last_epoch;
     app.epoch_duration = EPOCH_DURATION as u64;
+    app.epoch_weight = epoch.state.weight;
+    app.is_low_quorum = system.is_low_quorum();
+    app.committee_next_size = system.committee_next.size();
 
     // Convert data layer NodeState to app layer NodeState
     app.nodes = nodes
         .iter()
         .map(|data_node| {
             let node = &data_node.node;
-            // Find this node's position in the committee
+            // Find this node's position in the committee and get stake from CommitteeMember
             let active_members = system.committee.active_members();
             let member_pos = active_members.iter().position(|&id| id == node.id);
+
+            // Get stake from CommitteeMember (the stake used for committee membership)
+            let stake = system.committee.get_stake(&node.id)
+                .unwrap_or(TAPE::zero());
 
             let spools: Vec<SpoolIndex> = if let Some(pos) = member_pos {
                 system
@@ -436,10 +447,13 @@ fn update_app_from_data(
                 health: convert_health_status(data_node.health),
                 latency_ms: data_node.latency_ms,
                 last_check: data_node.last_check,
-                stake: node.pool.stake.0,
+                stake,
+                pool_stake: node.pool.stake,
+                stake_schedule: extract_stake_schedule(node),
                 commission: node.pool.commission_rate,
                 spool_count: spools.len() as u16,
                 assigned_spools: spools,
+                stats: data_node.stats.clone(),
             }
         })
         .collect();
@@ -463,6 +477,53 @@ fn update_app_from_data(
             count: n.spool_count,
         })
         .collect();
+
+    // Compute throughput and request rates from node stats
+    compute_rates(app);
+}
+
+/// Compute throughput and request rates from aggregated node stats.
+fn compute_rates(app: &mut App) {
+    use std::time::Instant;
+
+    let now = Instant::now();
+    let elapsed = now.duration_since(app.last_rate_calc).as_secs_f64();
+
+    // Only compute rates if enough time has passed (at least 0.5 seconds)
+    if elapsed < 0.5 {
+        return;
+    }
+
+    // Aggregate stats from all online nodes
+    let (total_bytes_up, total_bytes_down, total_requests) = app
+        .nodes
+        .iter()
+        .filter(|n| n.health == app::HealthStatus::Online)
+        .filter_map(|n| n.stats.as_ref())
+        .fold((0u64, 0u64, 0u64), |(up, down, req), stats| {
+            (
+                up + stats.bytes_uploaded,
+                down + stats.bytes_downloaded,
+                req + stats.requests_total,
+            )
+        });
+
+    // Compute rates from deltas
+    if app.prev_bytes_uploaded > 0 || app.prev_bytes_downloaded > 0 || app.prev_requests_total > 0 {
+        let bytes_up_delta = total_bytes_up.saturating_sub(app.prev_bytes_uploaded);
+        let bytes_down_delta = total_bytes_down.saturating_sub(app.prev_bytes_downloaded);
+        let requests_delta = total_requests.saturating_sub(app.prev_requests_total);
+
+        app.stats.upload_throughput = (bytes_up_delta as f64 / elapsed) as u64;
+        app.stats.download_throughput = (bytes_down_delta as f64 / elapsed) as u64;
+        app.stats.requests_per_sec = (requests_delta as f64 / elapsed) as u32;
+    }
+
+    // Update previous values for next calculation
+    app.prev_bytes_uploaded = total_bytes_up;
+    app.prev_bytes_downloaded = total_bytes_down;
+    app.prev_requests_total = total_requests;
+    app.last_rate_calc = now;
 }
 
 /// Convert data layer HealthStatus to app layer HealthStatus.
@@ -473,6 +534,30 @@ fn convert_health_status(status: data::HealthStatus) -> app::HealthStatus {
         data::HealthStatus::Syncing => app::HealthStatus::Syncing,
         data::HealthStatus::Unknown => app::HealthStatus::Unknown,
     }
+}
+
+/// Extract stake schedule from a node's pool schedule.
+/// Returns a BTreeMap of epoch -> (incoming, cancels).
+fn extract_stake_schedule(node: &Node) -> BTreeMap<EpochNumber, StakeScheduleEntry> {
+    let mut schedule: BTreeMap<EpochNumber, StakeScheduleEntry> = BTreeMap::new();
+
+    // Add incoming tokens by epoch
+    let incoming = &node.pool.schedule.incoming_tokens;
+    for i in 0..incoming.len() {
+        let epoch = incoming.keys[i];
+        let amount = incoming.values[i];
+        schedule.entry(epoch).or_default().incoming = TAPE(amount);
+    }
+
+    // Add outgoing tokens (cancels) by epoch
+    let outgoing = &node.pool.schedule.outgoing_tokens;
+    for i in 0..outgoing.len() {
+        let epoch = outgoing.keys[i];
+        let amount = outgoing.values[i];
+        schedule.entry(epoch).or_default().cancels = TAPE(amount);
+    }
+
+    schedule
 }
 
 /// Convert data layer NetworkEvent to app layer NetworkEvent.
@@ -523,6 +608,7 @@ fn update_app_from_partial_data(
         };
         app.epoch_start = epoch.last_epoch;
         app.epoch_duration = EPOCH_DURATION as u64;
+        app.epoch_weight = epoch.state.weight;
     }
 
     // Update archive stats if available
@@ -537,15 +623,22 @@ fn update_app_from_partial_data(
     app.stats.tapes_active = tape_stats.active_tapes;
     app.stats.tracks_certified = tape_stats.track_count;
 
-    // Convert data layer NodeState to app layer NodeState
+    // Update system-derived fields and convert nodes
     if let Some(system) = system {
+        app.is_low_quorum = system.is_low_quorum();
+        app.committee_next_size = system.committee_next.size();
+
         app.nodes = nodes
             .iter()
             .map(|data_node| {
                 let node = &data_node.node;
-                // Find this node's position in the committee
+                // Find this node's position in the committee and get stake from CommitteeMember
                 let active_members = system.committee.active_members();
                 let member_pos = active_members.iter().position(|&id| id == node.id);
+
+                // Get stake from CommitteeMember (the stake used for committee membership)
+                let stake = system.committee.get_stake(&node.id)
+                    .unwrap_or(TAPE::zero());
 
                 let spools: Vec<SpoolIndex> = if let Some(pos) = member_pos {
                     system
@@ -573,10 +666,13 @@ fn update_app_from_partial_data(
                     health: convert_health_status(data_node.health),
                     latency_ms: data_node.latency_ms,
                     last_check: data_node.last_check,
-                    stake: node.pool.stake.0,
+                    stake,
+                    pool_stake: node.pool.stake,
+                    stake_schedule: extract_stake_schedule(node),
                     commission: node.pool.commission_rate,
                     spool_count: spools.len() as u16,
                     assigned_spools: spools,
+                    stats: data_node.stats.clone(),
                 }
             })
             .collect();
@@ -594,6 +690,7 @@ fn update_app_from_partial_data(
             .collect();
     } else if !nodes.is_empty() {
         // No system data, but we have nodes - show them without spool info
+        // Use pool stake as committee stake (no committee data to get actual value)
         app.nodes = nodes
             .iter()
             .map(|data_node| {
@@ -606,12 +703,18 @@ fn update_app_from_partial_data(
                     health: convert_health_status(data_node.health),
                     latency_ms: data_node.latency_ms,
                     last_check: data_node.last_check,
-                    stake: node.pool.stake.0,
+                    stake: node.pool.stake,
+                    pool_stake: node.pool.stake,
+                    stake_schedule: extract_stake_schedule(node),
                     commission: node.pool.commission_rate,
                     spool_count: 0,
                     assigned_spools: Vec::new(),
+                    stats: data_node.stats.clone(),
                 }
             })
             .collect();
     }
+
+    // Compute throughput and request rates from node stats
+    compute_rates(app);
 }

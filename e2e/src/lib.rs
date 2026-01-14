@@ -32,7 +32,7 @@ pub mod node;
 pub mod validator;
 pub mod wait;
 
-pub use cli::Tapedrive;
+pub use cli::{Tapedrive, ArchiveAccount, NodeStatus, CommitteeInfo, CommitteeMember};
 pub use consts::*;
 pub use context::{TestContext, TestContextBuilder, VARYING_STAKES};
 pub use fixtures::*;

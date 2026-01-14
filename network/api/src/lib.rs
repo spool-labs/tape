@@ -112,6 +112,38 @@ pub const HEALTH_PATH: &str = "/v1/health";
 /// GET endpoint for node information.
 pub const INFO_PATH: &str = "/v1/info";
 
+/// GET endpoint for node statistics (block processor metrics).
+pub const STATS_PATH: &str = "/v1/stats";
+
+/// Response from the stats endpoint.
+///
+/// Returned by GET /v1/stats
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NodeStats {
+    /// Last Solana slot processed by the block processor.
+    pub last_processed_slot: u64,
+    /// Total blocks (with tapedrive instructions) processed.
+    pub blocks_processed: u64,
+    /// Total epoch transitions seen.
+    pub epoch_transitions: u64,
+    /// Current epoch number.
+    pub current_epoch: u64,
+    /// Number of spools owned by this node.
+    pub owned_spools: u64,
+    /// Number of tracks stored.
+    pub tracks_stored: u64,
+    /// Storage bytes used.
+    pub storage_bytes_used: u64,
+    /// Total slices stored.
+    pub slices_stored: u64,
+    /// Cumulative bytes uploaded (received by this node).
+    pub bytes_uploaded: u64,
+    /// Cumulative bytes downloaded (served by this node).
+    pub bytes_downloaded: u64,
+    /// Cumulative total requests handled.
+    pub requests_total: u64,
+}
+
 // =============================================================================
 // Certification Operations
 // =============================================================================

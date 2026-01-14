@@ -404,6 +404,23 @@ impl Tapedrive {
         parse_epoch_account(&output)
     }
 
+    /// Get archive account raw output.
+    ///
+    /// Equivalent to: `tape account archive`
+    pub fn account_archive_raw(&self) -> Result<String> {
+        let mut cmd = self.cmd();
+        cmd.args(["account", "archive"]);
+        self.exec_stdout(cmd)
+    }
+
+    /// Get archive account state (parses text output).
+    ///
+    /// Equivalent to: `tape account archive`
+    pub fn account_archive(&self) -> Result<ArchiveAccount> {
+        let output = self.account_archive_raw()?;
+        parse_archive_account(&output)
+    }
+
     /// Get committee members.
     ///
     /// Equivalent to: `tape account committee [--epoch <n>]`
@@ -576,6 +593,17 @@ pub struct NodeAccount {
     pub network_address: Option<String>,
 }
 
+/// Archive account state.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchiveAccount {
+    pub storage_capacity: Option<u64>,
+    pub storage_price: Option<u64>,
+    pub recent_usage: Option<u64>,
+    pub rewards_pool: Option<u64>,
+    pub rewards_paid: Option<u64>,
+    pub tape_count: Option<u64>,
+}
+
 /// Ping result.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PingResult {
@@ -675,6 +703,37 @@ fn parse_epoch_account(output: &str) -> Result<EpochAccount> {
             }
         } else if line.starts_with("Weight:") {
             account.weight = extract_number(line);
+        }
+    }
+
+    Ok(account)
+}
+
+/// Parse archive account from text output.
+fn parse_archive_account(output: &str) -> Result<ArchiveAccount> {
+    let mut account = ArchiveAccount {
+        storage_capacity: None,
+        storage_price: None,
+        recent_usage: None,
+        rewards_pool: None,
+        rewards_paid: None,
+        tape_count: None,
+    };
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("Storage Capacity:") {
+            account.storage_capacity = extract_number(line);
+        } else if line.starts_with("Storage Price:") {
+            account.storage_price = extract_number(line);
+        } else if line.starts_with("Recent Usage:") {
+            account.recent_usage = extract_number(line);
+        } else if line.starts_with("Rewards Pool:") {
+            account.rewards_pool = extract_number(line);
+        } else if line.starts_with("Rewards Paid:") {
+            account.rewards_paid = extract_number(line);
+        } else if line.starts_with("Tape Count:") {
+            account.tape_count = extract_number(line);
         }
     }
 

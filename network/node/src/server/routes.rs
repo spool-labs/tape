@@ -14,7 +14,7 @@ use axum::{
 use tape_crypto::Pubkey;
 use store::Store;
 use tape_metrics::OperationTimer;
-use tape_node_api::{SlicePayload, SignResponse};
+use tape_node_api::{NodeStats, SlicePayload, SignResponse};
 
 use crate::control_plane::ControlPlane;
 use crate::error::ApiError;
@@ -36,8 +36,8 @@ pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};
 pub use tape_node_api::{
     HEALTH_PATH as HEALTH_ENDPOINT, INFO_PATH as INFO_ENDPOINT,
     METADATA_PATH as METADATA_ENDPOINT, SLICE_PATH as SLICE_ENDPOINT,
-    STATUS_PATH as STATUS_ENDPOINT, SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT,
-    SIGN_PATH as SIGN_ENDPOINT,
+    STATS_PATH as STATS_ENDPOINT, STATUS_PATH as STATUS_ENDPOINT,
+    SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT, SIGN_PATH as SIGN_ENDPOINT,
 };
 
 /// Shared state for API handlers.
@@ -77,6 +77,8 @@ pub fn create_router<S: Store + Send + Sync + 'static>(state: ApiState<S>) -> Ro
         .route(HEALTH_ENDPOINT, get(health_check))
         // Node info
         .route(INFO_ENDPOINT, get(get_info::<S>))
+        // Node stats (block processor metrics)
+        .route(STATS_ENDPOINT, get(get_stats::<S>))
         // Spool sync (node-to-node)
         .route(SYNC_SPOOL_ENDPOINT, post(sync_spool::<S>))
         .with_state(state)
@@ -556,6 +558,32 @@ pub async fn get_info<S: Store>(State(state): State<ApiState<S>>) -> Response {
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/json")],
         serde_json::to_string(&info).unwrap_or_default(),
+    )
+        .into_response()
+}
+
+/// GET /v1/stats
+///
+/// Returns block processor and storage metrics.
+pub async fn get_stats<S: Store>(State(state): State<ApiState<S>>) -> Response {
+    let stats = NodeStats {
+        last_processed_slot: state.metrics.last_processed_slot.get() as u64,
+        blocks_processed: state.metrics.blocks_processed_total.get(),
+        epoch_transitions: state.metrics.epoch_transitions_total.get(),
+        current_epoch: state.metrics.current_epoch.get() as u64,
+        owned_spools: state.metrics.owned_spools.get() as u64,
+        tracks_stored: state.metrics.tracks_stored.get() as u64,
+        storage_bytes_used: state.metrics.storage_bytes_used.get() as u64,
+        slices_stored: state.metrics.slices_stored_total.get() as u64,
+        bytes_uploaded: state.metrics.bytes_stored_total.get() as u64,
+        bytes_downloaded: state.metrics.bytes_retrieved_total.get() as u64,
+        requests_total: state.metrics.requests_handled_total.get(),
+    };
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&stats).unwrap_or_default(),
     )
         .into_response()
 }
