@@ -46,7 +46,7 @@ futures = "0.3"
 # Tapedrive dependencies
 rpc-client = { version = "0.3.0", path = "../../rpc/rpc-client" }
 tape-api = { version = "0.3.0", path = "../../api" }
-tape-blocks = { version = "0.3.0", path = "../../blocks" }
+tape-blocks = { version = "0.3.0", path = "../blocks" }
 tape-core = { version = "0.3.0", path = "../../core" }
 tape-crypto = { version = "0.3.0", path = "../../crypto" }
 tape-node-api = { version = "0.3.0", path = "../api" }
