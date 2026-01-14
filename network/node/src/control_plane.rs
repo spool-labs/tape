@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::sync::RwLock;
 
+use tape_api::fsm::{NodeAction, NodeStateMachine};
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::SLICE_COUNT;
@@ -329,6 +330,26 @@ impl ControlPlane {
     pub fn is_stale_epoch(&self, epoch: EpochNumber) -> bool {
         let inner = self.inner.read().unwrap();
         epoch < inner.chain_epoch
+    }
+
+    // -------------------------------------------------------------------------
+    // FSM integration
+    // -------------------------------------------------------------------------
+
+    /// Determine what action this node should take based on cached on-chain state.
+    ///
+    /// Returns the FSM action along with whether we're catching up (stale).
+    /// If catching_up is true, the action should be logged but NOT executed.
+    pub fn determine_action(&self, current_time: i64) -> (NodeAction, bool) {
+        let inner = self.inner.read().unwrap();
+        let action = NodeStateMachine::determine_action(
+            &inner.system,
+            &inner.epoch,
+            &inner.node,
+            current_time,
+        );
+        let catching_up = inner.epoch.id < inner.chain_epoch;
+        (action, catching_up)
     }
 }
 

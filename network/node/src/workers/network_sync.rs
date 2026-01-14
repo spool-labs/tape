@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
+use tape_api::fsm::NodeAction;
 use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix};
-use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION, MIN_COMMITTEE_SIZE};
+use tape_api::program::tapedrive::node_pda;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
 use tape_store::ops::{RecoveryInfo, RecoveryOps, SliceOps};
@@ -43,6 +44,14 @@ const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
 // Note: We no longer use a fixed timeout for epoch advancement monitoring.
 // Instead, we use exponential backoff when the system is stuck waiting for
 // nodes to join committee_next. This allows recovery without arbitrary limits.
+
+/// Get the current Unix timestamp in seconds.
+fn current_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
 
 /// Error type for network sync operations.
 #[derive(Debug, thiserror::Error)]
@@ -166,22 +175,27 @@ async fn handle_event(
                 return Ok(());
             }
 
+            // Use FSM to determine expected action and log it
+            let now = current_timestamp();
+            let (action, _) = ctx.control_plane.determine_action(now);
+            log_fsm_action(&action, epoch);
+
+            // Skip if not in committee
+            if matches!(action, NodeAction::NotInCommittee) {
+                debug!(epoch = epoch.as_u64(), "Not in committee, skipping settling");
+                return Ok(());
+            }
+
             // Epoch has transitioned to Settling - submit AdvancePool to contribute
             // weight toward Active transition
-            info!(
-                epoch = epoch.as_u64(),
-                "Epoch is Settling, submitting AdvancePool"
-            );
+            info!(epoch = epoch.as_u64(), "Epoch is Settling, submitting AdvancePool");
             if let Err(e) = submit_advance_pool(&ctx, epoch).await {
                 error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
             }
 
-            // After AdvancePool, submit JoinNetwork to re-join committee_next
+            // Submit JoinNetwork to re-join committee_next
             // This is required each epoch since committee_next is cleared on rotation
-            info!(
-                epoch = epoch.as_u64(),
-                "Submitting JoinNetwork to re-join committee"
-            );
+            info!(epoch = epoch.as_u64(), "Submitting JoinNetwork to re-join committee");
             if let Err(e) = submit_join_network(&ctx, epoch).await {
                 error!(epoch = epoch.as_u64(), error = %e, "Failed to submit JoinNetwork");
             }
@@ -203,27 +217,55 @@ async fn handle_event(
                 return Ok(());
             }
 
-            // Epoch is ready for advancement - check timing and submit
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64;
+            // Use FSM to determine what action to take
+            let now = current_timestamp();
+            let (action, _) = ctx.control_plane.determine_action(now);
+            log_fsm_action(&action, epoch);
 
-            if now >= advance_after {
-                info!(
-                    epoch = epoch.as_u64(),
-                    "Epoch ready and time elapsed, submitting AdvanceEpoch"
-                );
-                if let Err(e) = submit_advance_epoch(&ctx, epoch).await {
-                    error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+            match action {
+                NodeAction::AdvanceEpoch => {
+                    info!(epoch = epoch.as_u64(), "FSM says AdvanceEpoch - submitting");
+                    if let Err(e) = submit_advance_epoch(&ctx, epoch).await {
+                        error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+                    }
                 }
-            } else {
-                let wait_secs = advance_after - now;
-                info!(
-                    epoch = epoch.as_u64(),
-                    wait_secs = wait_secs,
-                    "Epoch ready but time not elapsed, waiting"
-                );
+                NodeAction::WaitForEpochDuration { seconds_remaining } => {
+                    info!(
+                        epoch = epoch.as_u64(),
+                        seconds = seconds_remaining,
+                        "Epoch active but duration not elapsed, waiting"
+                    );
+                }
+                NodeAction::WaitForCommitteeThreshold {
+                    current_size,
+                    required_size,
+                } => {
+                    info!(
+                        epoch = epoch.as_u64(),
+                        current = current_size,
+                        required = required_size,
+                        "Waiting for committee_next threshold"
+                    );
+                }
+                NodeAction::EpochBlocked { committee_next_size } => {
+                    warn!(
+                        epoch = epoch.as_u64(),
+                        committee_next = committee_next_size,
+                        "Epoch blocked: committee_next below threshold"
+                    );
+                }
+                _ => {
+                    // Fall back to legacy timing check if FSM returns unexpected state
+                    if now >= advance_after {
+                        info!(
+                            epoch = epoch.as_u64(),
+                            "Epoch ready and time elapsed, submitting AdvanceEpoch"
+                        );
+                        if let Err(e) = submit_advance_epoch(&ctx, epoch).await {
+                            error!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+                        }
+                    }
+                }
             }
         }
     }
@@ -239,7 +281,7 @@ async fn handle_epoch_advanced(
 ) -> Result<(), NetworkSyncError> {
     info!(epoch = new_epoch.as_u64(), "Handling epoch advancement");
 
-    // Fetch current epoch state from chain.
+    // Fetch current epoch state from chain
     let epoch = ctx
         .rpc
         .get_epoch()
@@ -259,8 +301,7 @@ async fn handle_epoch_advanced(
         return Ok(());
     }
 
-    // Real-time mode: we're processing the current epoch's AdvanceEpoch event.
-    // Fetch fresh system state since the committee just rotated.
+    // Real-time mode: fetch fresh system state since the committee just rotated
     info!(epoch = new_epoch.as_u64(), "Real-time mode: refreshing system state");
     let system = ctx
         .rpc
@@ -268,55 +309,95 @@ async fn handle_epoch_advanced(
         .await
         .map_err(|e| NetworkSyncError::Rpc(format!("Failed to fetch system: {}", e)))?;
     ctx.control_plane.update_system(system);
+    ctx.control_plane.update_epoch(epoch);
 
-    // Check if we're in the committee (after updating system state)
-    if !ctx.is_in_committee() {
-        info!("Not in current committee, skipping epoch sync");
-        return Ok(());
-    }
+    // Use FSM to determine what action to take
+    let now = current_timestamp();
+    let (action, _catching_up) = ctx.control_plane.determine_action(now);
 
-    // During bootstrap (first epoch with empty committee_prev), the epoch may already
-    // be in Active state. In normal operation, we expect Syncing state after AdvanceEpoch.
-    if epoch.state.is_active() {
-        info!(
-            epoch = new_epoch.as_u64(),
-            "Epoch in Active state (likely bootstrap), performing maintenance"
-        );
+    log_fsm_action(&action, new_epoch);
 
-        // Even in bootstrap, we need to:
-        // 1. Advance our pool to process stake schedule and update latest_advance_epoch
-        // 2. Re-join committee_next for the next epoch
-        // 3. Start monitoring for epoch advancement
-
-        // Submit AdvancePool
-        if let Err(e) = submit_advance_pool(&ctx, new_epoch).await {
-            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
+    match action {
+        NodeAction::NotInCommittee => {
+            info!("Not in current committee, skipping epoch sync");
+            Ok(())
         }
-
-        // Submit JoinNetwork to re-join committee_next
-        if let Err(e) = submit_join_network(&ctx, new_epoch).await {
-            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit JoinNetwork");
+        NodeAction::SyncEpoch => {
+            // Normal syncing phase - sync spools and submit SyncEpoch
+            sync_spools_and_submit(&ctx, sync_handler, new_epoch).await
         }
+        NodeAction::WaitForSyncQuorum { current_weight } => {
+            // Already synced this epoch
+            info!(
+                epoch = new_epoch.as_u64(),
+                weight = current_weight,
+                "Already synced for this epoch, waiting for quorum"
+            );
+            Ok(())
+        }
+        NodeAction::AdvancePool | NodeAction::JoinNetwork => {
+            // Bootstrap/Active case - FSM says we need maintenance
+            handle_epoch_maintenance(Arc::clone(&ctx), new_epoch).await
+        }
+        NodeAction::WaitForEpochDuration { .. }
+        | NodeAction::WaitForSettleQuorum { .. }
+        | NodeAction::WaitForCommitteeThreshold { .. }
+        | NodeAction::AdvanceEpoch => {
+            // Active phase states - still need to do maintenance and start monitor
+            handle_epoch_maintenance(Arc::clone(&ctx), new_epoch).await
+        }
+        NodeAction::EpochBlocked { committee_next_size } => {
+            warn!(
+                epoch = new_epoch.as_u64(),
+                committee_next = committee_next_size,
+                "Epoch blocked due to insufficient committee_next"
+            );
+            // Still do maintenance and start monitor
+            handle_epoch_maintenance(Arc::clone(&ctx), new_epoch).await
+        }
+        NodeAction::UnknownPhase { phase } => {
+            error!(epoch = new_epoch.as_u64(), phase, "Unknown epoch phase");
+            Ok(())
+        }
+    }
+}
 
-        // Start monitoring for epoch advancement
-        let ctx_clone = Arc::clone(&ctx);
-        tokio::spawn(async move {
-            monitor_epoch_for_advancement(ctx_clone, new_epoch).await;
-        });
+/// Handle epoch maintenance tasks (AdvancePool, JoinNetwork, start monitor).
+///
+/// Called during bootstrap or when epoch is already in Active state.
+async fn handle_epoch_maintenance(
+    ctx: Arc<NodeContext>,
+    epoch: EpochNumber,
+) -> Result<(), NetworkSyncError> {
+    info!(
+        epoch = epoch.as_u64(),
+        "Performing epoch maintenance (AdvancePool, JoinNetwork)"
+    );
 
-        return Ok(());
+    // Submit AdvancePool
+    if let Err(e) = submit_advance_pool(&ctx, epoch).await {
+        warn!(epoch = epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
     }
 
-    // If not in Syncing state at this point, something unexpected happened
-    if !epoch.state.is_syncing() {
-        warn!(
-            epoch = new_epoch.as_u64(),
-            phase = ?epoch.state,
-            "Unexpected epoch state after AdvanceEpoch, expected Syncing"
-        );
-        return Ok(());
+    // Submit JoinNetwork to re-join committee_next
+    if let Err(e) = submit_join_network(&ctx, epoch).await {
+        warn!(epoch = epoch.as_u64(), error = %e, "Failed to submit JoinNetwork");
     }
 
+    // Start monitoring for epoch advancement
+    tokio::spawn(async move {
+        monitor_epoch_for_advancement(ctx, epoch).await;
+    });
+
+    Ok(())
+}
+
+/// Sync spools from previous owners and submit SyncEpoch.
+async fn sync_spools_and_submit(
+    ctx: &NodeContext,
+    sync_handler: &SpoolSyncHandler,
+    new_epoch: EpochNumber,
+) -> Result<(), NetworkSyncError> {
     // Get current and previous spool assignments
     let system = ctx.control_plane.get_system();
     let our_node_id = ctx.control_plane.our_node_id();
@@ -325,7 +406,7 @@ async fn handle_epoch_advanced(
     let curr_index = match system.committee.index_of(&our_node_id) {
         Some(idx) => idx,
         None => {
-            warn!("Not found in current committee despite is_in_committee=true");
+            warn!("Not found in current committee despite FSM saying SyncEpoch");
             return Ok(());
         }
     };
@@ -370,14 +451,14 @@ async fn handle_epoch_advanced(
 
         // Get their network address
         if let Some(prev_member) = system.committee_prev.member_at(prev_owner_member_idx) {
-            match sync_spool_from_owner(&ctx, sync_handler, *spool_idx, prev_member.id).await {
+            match sync_spool_from_owner(ctx, sync_handler, *spool_idx, prev_member.id).await {
                 Ok(count) => {
                     info!(spool = spool_idx, slices = count, "Synced spool");
                     ctx.metrics.spools_synced_total.inc();
                 }
                 Err(e) => {
                     warn!(spool = spool_idx, error = %e, "Failed to sync spool, queuing for recovery");
-                    if let Err(qe) = queue_spool_for_recovery(&ctx, *spool_idx).await {
+                    if let Err(qe) = queue_spool_for_recovery(ctx, *spool_idx).await {
                         error!(spool = spool_idx, error = %qe, "Failed to queue spool for recovery");
                     }
                 }
@@ -405,7 +486,7 @@ async fn handle_epoch_advanced(
     // The on-chain logic aggregates weight from all submissions.
     // Waiting for quorum before submitting would cause a deadlock
     // since quorum requires submissions from other nodes.
-    submit_sync_epoch(&ctx, new_epoch).await?;
+    submit_sync_epoch(ctx, new_epoch).await?;
 
     Ok(())
 }
@@ -697,8 +778,8 @@ async fn submit_advance_epoch(
 /// Monitor epoch state and submit AdvanceEpoch when conditions are met.
 ///
 /// Polls epoch state periodically after Settling phase is entered.
-/// When Active is reached, EPOCH_DURATION has elapsed, and committee_next >= threshold,
-/// submits AdvanceEpoch. Uses exponential backoff when system is stuck waiting for nodes.
+/// Uses FSM to determine when conditions are met for epoch advancement.
+/// Uses exponential backoff when system is stuck waiting for nodes.
 async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: EpochNumber) {
     info!(
         epoch = starting_epoch.as_u64(),
@@ -731,36 +812,7 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
             return;
         }
 
-        // Check if epoch is in Active state
-        if !epoch.state.is_active() {
-            debug!(
-                epoch = epoch.id.as_u64(),
-                "Epoch not in Active state yet"
-            );
-            backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff on progress
-            continue;
-        }
-
-        // Check if enough time has elapsed
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        let advance_after = epoch.last_epoch + EPOCH_DURATION;
-
-        if now < advance_after {
-            let wait_secs = advance_after - now;
-            debug!(
-                epoch = epoch.id.as_u64(),
-                wait_secs = wait_secs,
-                "Active but time not elapsed"
-            );
-            backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff
-            continue;
-        }
-
-        // Check if committee_next has enough nodes to advance
+        // Fetch system state for committee_next check
         let system = match ctx.rpc.get_system().await {
             Ok(s) => s,
             Err(e) => {
@@ -769,35 +821,81 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
             }
         };
 
-        if system.committee_next.size() < MIN_COMMITTEE_SIZE {
-            debug!(
-                epoch = epoch.id.as_u64(),
-                committee_next = system.committee_next.size(),
-                threshold = MIN_COMMITTEE_SIZE,
-                backoff_secs = backoff.as_secs(),
-                "Epoch blocked: waiting for more nodes to join"
-            );
-            // Use exponential backoff when stuck, don't timeout
-            backoff = (backoff * 2).min(MAX_BACKOFF);
-            continue;
-        }
+        // Update control plane with fresh state for FSM
+        ctx.control_plane.update_system(system);
+        ctx.control_plane.update_epoch(epoch.clone());
 
-        // All conditions met - submit AdvanceEpoch
-        info!(
-            epoch = epoch.id.as_u64(),
-            committee_next = system.committee_next.size(),
-            "Active, time elapsed, and quorum met - submitting AdvanceEpoch"
-        );
+        // Use FSM to determine what action to take
+        let now = current_timestamp();
+        let (action, _) = ctx.control_plane.determine_action(now);
 
-        match submit_advance_epoch(&ctx, epoch.id).await {
-            Ok(_) => {
-                info!(epoch = epoch.id.as_u64(), "AdvanceEpoch submitted");
-                return;
+        match action {
+            NodeAction::AdvanceEpoch => {
+                info!(
+                    epoch = epoch.id.as_u64(),
+                    "FSM says AdvanceEpoch - all conditions met"
+                );
+                match submit_advance_epoch(&ctx, epoch.id).await {
+                    Ok(_) => {
+                        info!(epoch = epoch.id.as_u64(), "AdvanceEpoch submitted");
+                        return;
+                    }
+                    Err(e) => {
+                        // Log error but continue polling - another node may have advanced it
+                        warn!(epoch = epoch.id.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+                        backoff = EPOCH_ADVANCE_POLL_INTERVAL;
+                    }
+                }
             }
-            Err(e) => {
-                // Log error but continue polling - another node may have advanced it
-                warn!(epoch = epoch.id.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
-                backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff on attempted submit
+            NodeAction::WaitForEpochDuration { seconds_remaining } => {
+                debug!(
+                    epoch = epoch.id.as_u64(),
+                    seconds = seconds_remaining,
+                    "Waiting for epoch duration to elapse"
+                );
+                backoff = EPOCH_ADVANCE_POLL_INTERVAL;
+            }
+            NodeAction::WaitForSettleQuorum { current_weight } => {
+                debug!(
+                    epoch = epoch.id.as_u64(),
+                    weight = current_weight,
+                    "Waiting for settle quorum"
+                );
+                backoff = EPOCH_ADVANCE_POLL_INTERVAL;
+            }
+            NodeAction::WaitForCommitteeThreshold {
+                current_size,
+                required_size,
+            } => {
+                debug!(
+                    epoch = epoch.id.as_u64(),
+                    current = current_size,
+                    required = required_size,
+                    backoff_secs = backoff.as_secs(),
+                    "Waiting for committee_next threshold"
+                );
+                // Use exponential backoff when waiting for more nodes
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            NodeAction::EpochBlocked { committee_next_size } => {
+                debug!(
+                    epoch = epoch.id.as_u64(),
+                    committee_next = committee_next_size,
+                    backoff_secs = backoff.as_secs(),
+                    "Epoch blocked: waiting for more nodes to join"
+                );
+                // Use exponential backoff when stuck
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            _ => {
+                // Other states (SyncEpoch, AdvancePool, JoinNetwork, etc.)
+                // shouldn't happen in this monitor, but reset backoff
+                debug!(
+                    epoch = epoch.id.as_u64(),
+                    action = ?action,
+                    "Unexpected FSM state in advancement monitor"
+                );
+                backoff = EPOCH_ADVANCE_POLL_INTERVAL;
             }
         }
     }
@@ -844,6 +942,69 @@ async fn queue_spool_for_recovery(
     }
 
     Ok(())
+}
+
+/// Log FSM action for debugging and observability.
+fn log_fsm_action(action: &NodeAction, epoch: EpochNumber) {
+    match action {
+        NodeAction::SyncEpoch => {
+            info!(epoch = epoch.as_u64(), "FSM action: SyncEpoch");
+        }
+        NodeAction::AdvancePool => {
+            info!(epoch = epoch.as_u64(), "FSM action: AdvancePool");
+        }
+        NodeAction::JoinNetwork => {
+            info!(epoch = epoch.as_u64(), "FSM action: JoinNetwork");
+        }
+        NodeAction::AdvanceEpoch => {
+            info!(epoch = epoch.as_u64(), "FSM action: AdvanceEpoch");
+        }
+        NodeAction::WaitForSyncQuorum { current_weight } => {
+            debug!(
+                epoch = epoch.as_u64(),
+                weight = current_weight,
+                "FSM state: waiting for sync quorum"
+            );
+        }
+        NodeAction::WaitForSettleQuorum { current_weight } => {
+            debug!(
+                epoch = epoch.as_u64(),
+                weight = current_weight,
+                "FSM state: waiting for settle quorum"
+            );
+        }
+        NodeAction::WaitForEpochDuration { seconds_remaining } => {
+            debug!(
+                epoch = epoch.as_u64(),
+                seconds = seconds_remaining,
+                "FSM state: waiting for epoch duration"
+            );
+        }
+        NodeAction::WaitForCommitteeThreshold {
+            current_size,
+            required_size,
+        } => {
+            debug!(
+                epoch = epoch.as_u64(),
+                current = current_size,
+                required = required_size,
+                "FSM state: waiting for committee threshold"
+            );
+        }
+        NodeAction::NotInCommittee => {
+            debug!(epoch = epoch.as_u64(), "FSM state: not in committee");
+        }
+        NodeAction::EpochBlocked { committee_next_size } => {
+            warn!(
+                epoch = epoch.as_u64(),
+                committee_next = committee_next_size,
+                "FSM state: epoch blocked"
+            );
+        }
+        NodeAction::UnknownPhase { phase } => {
+            error!(epoch = epoch.as_u64(), phase, "FSM state: unknown phase");
+        }
+    }
 }
 
 #[cfg(test)]
