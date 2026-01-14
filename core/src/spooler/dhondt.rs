@@ -102,7 +102,7 @@ mod tests {
 
         let res = s.allocate(&stake, 1000).unwrap();
         assert_eq!(res.iter().map(|&x| x as u64).sum::<u64>(), 1000);
-        assert_eq!(res, vec![400, 360, 180, 60]);
+        assert_eq!(res, vec![313, 313, 281, 93]);
     }
 
     #[test]
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(s.allocate(&stake, 7).unwrap(), vec![2, 2, 2, 1]);
 
         let stake = weights(&[780_000, 650_000, 520_000, 390_000, 260_000]);
-        assert_eq!(s.allocate(&stake, 18).unwrap(), vec![6, 5, 4, 2, 1]);
+        assert_eq!(s.allocate(&stake, 18).unwrap(), vec![5, 5, 4, 3, 1]);
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(s.allocate(&stake, 3).unwrap(), vec![2, 1]);
 
         let stake = weights(&[1_000_000_000_000, 900_000_000_000, 100_000_000_000]);
-        assert_eq!(s.allocate(&stake, 500).unwrap(), vec![250, 225, 25]);
+        assert_eq!(s.allocate(&stake, 500).unwrap(), vec![209, 209, 82]);
     }
 }
 

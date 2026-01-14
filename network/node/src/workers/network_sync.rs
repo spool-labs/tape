@@ -12,7 +12,7 @@ use std::time::Duration;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
 use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix};
-use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION};
+use tape_api::program::tapedrive::{node_pda, EPOCH_DURATION, MIN_COMMITTEE_SIZE};
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
 use tape_store::ops::{RecoveryInfo, RecoveryOps, SliceOps};
@@ -40,9 +40,9 @@ const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
 /// which can exceed the default 200k CU limit with larger committees.
 const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
 
-/// Maximum time to monitor for epoch advancement (safety limit).
-/// After this duration, the monitor task exits to avoid resource leaks.
-const EPOCH_ADVANCE_MONITOR_TIMEOUT: Duration = Duration::from_secs(3600); // 1 hour
+// Note: We no longer use a fixed timeout for epoch advancement monitoring.
+// Instead, we use exponential backoff when the system is stuck waiting for
+// nodes to join committee_next. This allows recovery without arbitrary limits.
 
 /// Error type for network sync operations.
 #[derive(Debug, thiserror::Error)]
@@ -275,35 +275,45 @@ async fn handle_epoch_advanced(
         return Ok(());
     }
 
-    // In low-quorum scenarios, the epoch may skip directly to Active.
-    if !epoch.state.is_syncing() {
+    // During bootstrap (first epoch with empty committee_prev), the epoch may already
+    // be in Active state. In normal operation, we expect Syncing state after AdvanceEpoch.
+    if epoch.state.is_active() {
         info!(
             epoch = new_epoch.as_u64(),
-            phase = ?epoch.state,
-            "Epoch not in syncing phase (low-quorum mode), handling pool maintenance"
+            "Epoch in Active state (likely bootstrap), performing maintenance"
         );
 
-        // In low-quorum mode, we still need to:
+        // Even in bootstrap, we need to:
         // 1. Advance our pool to process stake schedule and update latest_advance_epoch
         // 2. Re-join committee_next for the next epoch
         // 3. Start monitoring for epoch advancement
 
         // Submit AdvancePool
         if let Err(e) = submit_advance_pool(&ctx, new_epoch).await {
-            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit AdvancePool in low-quorum mode");
+            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit AdvancePool");
         }
 
         // Submit JoinNetwork to re-join committee_next
         if let Err(e) = submit_join_network(&ctx, new_epoch).await {
-            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit JoinNetwork in low-quorum mode");
+            warn!(epoch = new_epoch.as_u64(), error = %e, "Failed to submit JoinNetwork");
         }
 
-        // Start monitoring for epoch advancement (since EpochSettling won't fire in low-quorum mode)
+        // Start monitoring for epoch advancement
         let ctx_clone = Arc::clone(&ctx);
         tokio::spawn(async move {
             monitor_epoch_for_advancement(ctx_clone, new_epoch).await;
         });
 
+        return Ok(());
+    }
+
+    // If not in Syncing state at this point, something unexpected happened
+    if !epoch.state.is_syncing() {
+        warn!(
+            epoch = new_epoch.as_u64(),
+            phase = ?epoch.state,
+            "Unexpected epoch state after AdvanceEpoch, expected Syncing"
+        );
         return Ok(());
     }
 
@@ -687,26 +697,20 @@ async fn submit_advance_epoch(
 /// Monitor epoch state and submit AdvanceEpoch when conditions are met.
 ///
 /// Polls epoch state periodically after Settling phase is entered.
-/// When Active is reached and EPOCH_DURATION has elapsed, submits AdvanceEpoch.
+/// When Active is reached, EPOCH_DURATION has elapsed, and committee_next >= threshold,
+/// submits AdvanceEpoch. Uses exponential backoff when system is stuck waiting for nodes.
 async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: EpochNumber) {
     info!(
         epoch = starting_epoch.as_u64(),
         "Starting epoch advancement monitor"
     );
 
-    let start_time = std::time::Instant::now();
+    // Use exponential backoff when stuck, reset on progress
+    let mut backoff = EPOCH_ADVANCE_POLL_INTERVAL;
+    const MAX_BACKOFF: Duration = Duration::from_secs(300); // 5 minutes max
 
     loop {
-        tokio::time::sleep(EPOCH_ADVANCE_POLL_INTERVAL).await;
-
-        // Safety limit - exit if we've been monitoring too long
-        if start_time.elapsed() > EPOCH_ADVANCE_MONITOR_TIMEOUT {
-            warn!(
-                epoch = starting_epoch.as_u64(),
-                "Epoch advancement monitor timed out"
-            );
-            return;
-        }
+        tokio::time::sleep(backoff).await;
 
         // Fetch current epoch state from chain
         let epoch = match ctx.rpc.get_epoch().await {
@@ -733,6 +737,7 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
                 epoch = epoch.id.as_u64(),
                 "Epoch not in Active state yet"
             );
+            backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff on progress
             continue;
         }
 
@@ -751,13 +756,37 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
                 wait_secs = wait_secs,
                 "Active but time not elapsed"
             );
+            backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff
             continue;
         }
 
-        // Both conditions met - submit AdvanceEpoch
+        // Check if committee_next has enough nodes to advance
+        let system = match ctx.rpc.get_system().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "Failed to fetch system state, retrying");
+                continue;
+            }
+        };
+
+        if system.committee_next.size() < MIN_COMMITTEE_SIZE {
+            debug!(
+                epoch = epoch.id.as_u64(),
+                committee_next = system.committee_next.size(),
+                threshold = MIN_COMMITTEE_SIZE,
+                backoff_secs = backoff.as_secs(),
+                "Epoch blocked: waiting for more nodes to join"
+            );
+            // Use exponential backoff when stuck, don't timeout
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+            continue;
+        }
+
+        // All conditions met - submit AdvanceEpoch
         info!(
             epoch = epoch.id.as_u64(),
-            "Active and time elapsed, submitting AdvanceEpoch"
+            committee_next = system.committee_next.size(),
+            "Active, time elapsed, and quorum met - submitting AdvanceEpoch"
         );
 
         match submit_advance_epoch(&ctx, epoch.id).await {
@@ -768,6 +797,7 @@ async fn monitor_epoch_for_advancement(ctx: Arc<NodeContext>, starting_epoch: Ep
             Err(e) => {
                 // Log error but continue polling - another node may have advanced it
                 warn!(epoch = epoch.id.as_u64(), error = %e, "Failed to submit AdvanceEpoch");
+                backoff = EPOCH_ADVANCE_POLL_INTERVAL; // Reset backoff on attempted submit
             }
         }
     }

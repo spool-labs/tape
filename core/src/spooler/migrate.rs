@@ -434,8 +434,8 @@ mod tests {
         let out = migrate_spools(&spools, &current, &next, &counts).unwrap();
         let node_spools = out_to_nodes(&out, &next);
 
-        assert_eq!(spool_count(&node_spools, NodeId(1)), 6);
-        assert_eq!(spool_count(&node_spools, NodeId(2)), 3);
+        assert_eq!(spool_count(&node_spools, NodeId(1)), 5);
+        assert_eq!(spool_count(&node_spools, NodeId(2)), 4);
         assert_eq!(spool_count(&node_spools, NodeId(3)), 1);
     }
 

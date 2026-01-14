@@ -10,6 +10,7 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         authority_info,
         authority_ata_info,
 
+        system_info,
         epoch_info,
         node_info,
         stake_info,
@@ -42,6 +43,10 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_program(&staking::ID)?;
     rent_info
         .is_sysvar(&sysvar::rent::ID)?;
+
+    let system = system_info
+        .is_system()?
+        .as_account::<System>(&tapedrive::ID)?;
 
     let epoch = epoch_info
         .is_epoch()?
@@ -82,8 +87,18 @@ pub fn process_stake_with_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         return Err(ProgramError::InvalidArgument);
     }
 
+    // Determine activation epoch based on system state
+    let current = current_epoch(epoch);
+    let activation_epoch = if system.will_be_low_quorum() {
+        // Low-quorum: activate immediately so node can join
+        current
+    } else {
+        // Normal mode: standard E+2 delay
+        current + EpochNumber(2)
+    };
+
     let staked_tape = node.pool
-        .stake_with_pool(current_epoch(epoch), amount.into())
+        .stake_with_pool_at(activation_epoch, amount.into())
         .map_err(|_| TapeError::StakingFailed)?;
 
     // Create the state account
@@ -146,6 +161,10 @@ mod tests {
     fn tape(v: u64) -> Coin<TAPE> { TAPE(v) }
     fn shares(v: u64) -> ShareAmount { ShareAmount(v) }
 
+    fn member(id: u64, stake: u64) -> CommitteeMember {
+        CommitteeMember::new(NodeId(id), TAPE(stake))
+    }
+
     #[test]
     fn test_stake_with_node() {
         let fee_payer = Pubkey::new_unique();
@@ -156,14 +175,22 @@ mod tests {
         let instruction = build_stake_with_pool_ix(fee_payer, authority, pool_address, amount.into());
 
         let authority_ata = ata_address(&authority);
+        let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda();
         let (stake_address, _) = stake_pda(authority);
         let (vault_address, _) = vault_pda(stake_address);
 
         // Setup existing accounts
 
+        let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
+
+        // Normal mode: committee_next has 25 nodes (>= MIN_COMMITTEE_SIZE)
+        let members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000))
+            .collect();
+        system.committee_next = Committee::from_members(&members);
 
         epoch.id = EpochNumber(42);
 
@@ -192,6 +219,7 @@ mod tests {
             sol(authority, 0),
             token(authority_ata, authority, initial_token_balance),
 
+            pda(system_address, system.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
             pda(pool_address, node.pack(), tapedrive::ID),
             empty(stake_address),
@@ -245,10 +273,87 @@ mod tests {
                 ).build(),
                 Check::account(&vault_address).data(
                     token(
-                        vault_address, 
-                        vault_address, 
+                        vault_address,
+                        vault_address,
                         amount
                     ).1.data.as_ref()
+                ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_stake_with_node_low_quorum_immediate() {
+        // Test that in low-quorum mode, stake activates immediately (E+0)
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let pool_address = Pubkey::new_unique();
+        let amount: u64 = 1000;
+
+        let instruction = build_stake_with_pool_ix(fee_payer, authority, pool_address, amount.into());
+
+        let authority_ata = ata_address(&authority);
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (stake_address, _) = stake_pda(authority);
+        let (vault_address, _) = vault_pda(stake_address);
+
+        let mut system = System::zeroed();
+        let mut epoch = Epoch::zeroed();
+        let mut node = Node::zeroed();
+
+        // Low-quorum mode: committee_next has < 25 nodes
+        let members: Vec<CommitteeMember> = (1..=10)
+            .map(|i| member(i, 1_000))
+            .collect();
+        system.committee_next = Committee::from_members(&members);
+
+        epoch.id = EpochNumber(42);
+
+        let e0: EpochNumber = epoch.id;
+
+        node.id = NodeId(4);
+        node.latest_advance_epoch = epoch.id;
+        node.pool.stake = tape(5000);
+        node.pool.shares = shares(5000);
+
+        let initial_token_balance: u64 = 1_000_000_000;
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, initial_token_balance),
+
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(pool_address, node.pack(), tapedrive::ID),
+            empty(stake_address),
+            empty(vault_address),
+            mint(0),
+
+            token_program(),
+            system_program(),
+            staking_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                // Activation epoch is E+0 (immediate) in low-quorum mode
+                Check::account(&stake_address).data(
+                    Stake {
+                        authority: authority,
+                        pool: pool_address,
+                        inner: StakedTape {
+                            amount: amount.into(),
+                            activation_epoch: e0,  // Immediate activation
+                            state: *StakeState::new().set_staked(),
+                        },
+                    }.pack().as_ref()
                 ).build(),
             ]
         );

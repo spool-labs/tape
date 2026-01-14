@@ -48,8 +48,8 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_account_mut::<History>(&tapedrive::ID)?
         .assert_mut(|h| h.node == *node_info.key)?;
 
-    // Skip syncing check during low-quorum mode
-    if !system.is_low_quorum() && epoch.state.is_syncing() {
+    // Cannot advance pool during Syncing phase - wait for settling
+    if epoch.state.is_syncing() {
         return Err(TapeError::BadEpochState.into());
     }
 
@@ -493,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn test_low_quorum_syncing_allowed() {
-        // Test that in low-quorum mode, advancing during syncing state is allowed
+    fn test_syncing_blocks_advance() {
+        // Test that advancing during syncing state is blocked (regardless of committee size)
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let pool_owner = Pubkey::new_unique();
@@ -512,13 +512,12 @@ mod tests {
         let mut epoch = Epoch::zeroed();
 
         epoch.id = EpochNumber(5);
-        epoch.state = EpochState::syncing(); // Normally would block advance_pool
+        epoch.state = EpochState::syncing(); // Should always block advance_pool
 
-        // Small committee (low-quorum mode)
+        // Even with small committee, syncing blocks advancement
         system.committee = Committee::from_members(&[
             member(2, 1_000, 0),
         ]);
-        // Small prev committee
         system.committee_prev = Committee::from_members(&[
             member(2, 1_000, 0),
         ]);
@@ -563,43 +562,13 @@ mod tests {
             pda(history_address, history.pack(), tapedrive::ID),
         ];
 
-        // Expected state after instruction
-        let rewards_owed = calc_rewards(
-            node.id,
-            archive.recent_usage,
-            &system.committee_prev,
-            &system.spools_prev,
-            archive.rewards_pool,
-        );
-
-        let mut expected_node = node.clone();
-        expected_node.latest_advance_epoch = EpochNumber(5);
-        expected_node.pool.advance_epoch(EpochNumber(5), rewards_owed).unwrap();
-        expected_node.metadata.bls_pubkey = expected_node.metadata.next_bls_pubkey;
-
-        let mut expected_archive = archive.clone();
-        expected_archive.rewards_paid = rewards_owed.into();
-
-        let mut expected_history = history.clone();
-        expected_history.latest_epoch = EpochNumber(5);
-        expected_history.inner.push(EpochNumber(5), expected_node.pool.get_current_rate());
-
-        // In low-quorum mode, syncing check is skipped
+        // Syncing state should block advancement with BadEpochState error
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[
-                Check::success(),
-                Check::account(&pool_address)
-                    .data(expected_node.pack().as_ref())
-                    .build(),
-                Check::account(&archive_address)
-                    .data(expected_archive.pack().as_ref())
-                    .build(),
-                Check::account(&history_address)
-                    .data(expected_history.pack().as_ref())
-                    .build(),
+                Check::err(TapeError::BadEpochState.into()),
             ],
         );
     }

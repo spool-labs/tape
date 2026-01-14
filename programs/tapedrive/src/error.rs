@@ -48,6 +48,8 @@ pub enum TapeError {
     NotInCommittee      = 0x0053,
     #[error("bad spool hash")]
     BadSpoolHash        = 0x0054,
+    #[error("insufficient committee")]
+    InsufficientCommittee = 0x0055,
 
     // Node
     #[error("node stale")]

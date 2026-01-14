@@ -28,12 +28,13 @@ pub use sainte_lague::*;
 
 use crate::types::{Coin, TAPE};
 
-/// No committee member may have more than 2% of the spools
-/// (for sufficiently large committees).
+/// Maximum 5% of spools per node (1/20 = 5%).
 const MAX_SPOOL_ALLOCATION: u64 = 20;
 
-/// Minimum committee size needed to enforce max per-node share.
-const MIN_MEMBER_COUNT: u64 = 32;
+/// Minimum committee size for enforcing the max per-node spool cap.
+/// This MUST match MIN_COMMITTEE_SIZE in tape_api::program::tapedrive.
+/// (Cannot import directly due to crate dependency: tape_api depends on tape_core)
+const MIN_COMMITTEE_SIZE: u64 = 25;
 
 pub type SpoolIndex = u16;
 pub type SpoolCount = u16;
@@ -69,10 +70,10 @@ pub fn cap_spools(node_count: u64, spool_count: u64) -> u64 {
     if spool_count == 0 || node_count == 0 {
         return 0;
     }
-    if node_count >= MIN_MEMBER_COUNT {
+    if node_count >= MIN_COMMITTEE_SIZE {
         spool_count / MAX_SPOOL_ALLOCATION
     } else {
-        let num = spool_count.saturating_mul(MIN_MEMBER_COUNT);
+        let num = spool_count.saturating_mul(MIN_COMMITTEE_SIZE);
         let den = node_count.saturating_mul(MAX_SPOOL_ALLOCATION);
         num.saturating_add(den - 1) / den
     }

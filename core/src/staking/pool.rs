@@ -156,11 +156,21 @@ impl<const N: usize> StakingPool<N> {
         current_epoch: EpochNumber,
         stake_amount: Coin<TAPE>,
     ) -> Result<StakedTape, PoolError> {
+        let activation_epoch = current_epoch + EpochNumber(2);
+        self.stake_with_pool_at(activation_epoch, stake_amount)
+    }
+
+    /// Stake tokens with explicit activation epoch.
+    /// Used for conditional immediate activation in low-quorum mode.
+    pub fn stake_with_pool_at(
+        &mut self,
+        activation_epoch: EpochNumber,
+        stake_amount: Coin<TAPE>,
+    ) -> Result<StakedTape, PoolError> {
         if stake_amount.is_zero() {
             return Err(PoolError::ZeroStake);
         }
 
-        let activation_epoch = current_epoch + EpochNumber(2);
         self.schedule
             .stake(activation_epoch, stake_amount)
             .map_err(|_| PoolError::ScheduleFailed)?;

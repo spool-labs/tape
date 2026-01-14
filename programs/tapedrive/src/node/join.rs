@@ -3,42 +3,6 @@ use tape_api::prelude::*;
 use tape_api::event::NodeJoinedCommittee;
 use crate::error::*;
 
-/// Calculate total stake including all scheduled additions.
-/// Used during low-quorum mode to bypass E+2 activation delay.
-fn calculate_total_pending_stake<const N: usize>(pool: &StakingPool<N>) -> Coin<TAPE> {
-    pool.stake
-        .saturating_add(pool.schedule.total_incoming())
-        .saturating_sub(pool.schedule.total_outgoing())
-}
-
-/// Explicit representation of how a node is joining the committee.
-/// Making this an enum forces all cases to be handled explicitly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JoinPath {
-    /// Node is in current committee, pool has active stake from AdvancePool.
-    RejoinWithActiveStake,
-    /// Node is in current committee, but pool.stake is zero (bootstrap edge case).
-    /// Must fall back to projected stake calculation.
-    RejoinBootstrap,
-    /// New node joining during low-quorum mode (bypass E+2 activation delay).
-    NewJoinLowQuorum,
-    /// New node joining during normal operation.
-    NewJoinNormal,
-}
-
-fn determine_join_path(
-    in_current_committee: bool,
-    is_low_quorum: bool,
-    pool_stake_is_zero: bool,
-) -> JoinPath {
-    match (in_current_committee, is_low_quorum, pool_stake_is_zero) {
-        (true, _, false) => JoinPath::RejoinWithActiveStake,
-        (true, _, true)  => JoinPath::RejoinBootstrap,
-        (false, true, _) => JoinPath::NewJoinLowQuorum,
-        (false, false, _) => JoinPath::NewJoinNormal,
-    }
-}
-
 pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = JoinNetwork::try_from_bytes(data)?;
     let [
@@ -81,33 +45,12 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(TapeError::NodeStale.into());
     }
 
-    let activation_epoch = next_epoch(epoch);
-
-    let balance = match determine_join_path(
-        in_current_committee,
-        system.is_low_quorum(),
-        node.pool.stake.is_zero(),
-    ) {
-        JoinPath::RejoinWithActiveStake => {
-            // Fresh stake from AdvancePool
-            node.pool.stake
-        }
-        JoinPath::RejoinBootstrap => {
-            // Bootstrap: stake deposited but not yet activated
-            node.pool.calculate_stake_at(activation_epoch)
-        }
-        JoinPath::NewJoinLowQuorum => {
-            // Bypass E+2 delay to accelerate committee formation
-            calculate_total_pending_stake(&node.pool)
-        }
-        JoinPath::NewJoinNormal => {
-            // Standard projection to next epoch
-            node.pool.calculate_stake_at(activation_epoch)
-        }
-    };
+    // All paths use only active stake - no projections
+    // Stake must be deposited AND activated before joining
+    let balance = node.pool.stake;
 
     if balance.is_zero() {
-        return Err(TapeError::UnexpectedState.into());
+        return Err(TapeError::NotStaked.into());
     }
 
     let member = CommitteeMember {
@@ -184,11 +127,8 @@ mod tests {
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
-        // Expected state after instruction
-        let e0: EpochNumber = epoch.id;
-        let e1: EpochNumber = e0 + EpochNumber(1);
-
-        let balance = node.pool.calculate_stake_at(e1);
+        // Expected state after instruction - uses pool.stake directly
+        let balance = node.pool.stake;
 
         let member = CommitteeMember {
             id: node.id,
@@ -224,8 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn test_join_low_quorum_pending_stake() {
-        // Test that in low-quorum mode, pending stake is included
+    fn test_join_pending_stake_not_used() {
+        // Test that pending stake is NOT used - only active stake counts
+        // Even with scheduled stake, joining fails if pool.stake is zero
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -235,28 +176,21 @@ mod tests {
 
         let instruction = build_join_network_ix(fee_payer, authority, node_address);
 
-        // Setup existing accounts
         let mut system = System::zeroed();
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
-
-        // System has only 1 member - low-quorum mode
-        system.committee = Committee::from_members(&[
-            member(99, 1_000),
-        ]);
 
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
         node.authority = authority;
 
-        // Pool has no active stake, only scheduled stake
+        // Pool has NO active stake, only scheduled stake
         node.pool.stake = TAPE(0);
         node.pool.shares = ShareAmount(0);
 
-        // Schedule 2000 for epoch 44 and 500 for epoch 45
+        // Schedule 2000 for epoch 44 - this should NOT be used
         node.pool.schedule.stake(EpochNumber(44), TAPE(2000)).unwrap();
-        node.pool.schedule.stake(EpochNumber(45), TAPE(500)).unwrap();
 
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
@@ -271,41 +205,20 @@ mod tests {
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
-        // In low-quorum mode, balance should include all pending stake
-        // total_incoming = 2000 + 500 = 2500
-        let total_pending = calculate_total_pending_stake(&node.pool);
-        assert_eq!(total_pending, TAPE(2500));
-
-        let member = CommitteeMember {
-            id: node.id,
-            stake: total_pending,
-            key: node.metadata.bls_pubkey,
-            blacklist: node.blacklist.total_size(),
-            preferences: node.preferences.clone(),
-            ..CommitteeMember::zeroed()
-        };
-
-        system
-            .committee_next
-            .try_join(&member)
-            .expect("join committee");
-
+        // Should fail because pool.stake is 0 (pending stake is not used)
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[
-                Check::success(),
-                Check::account(&system_address)
-                    .data(system.pack().as_ref())
-                    .build(),
+                Check::err(TapeError::NotStaked.into()),
             ],
         );
     }
 
     #[test]
     fn test_join_zero_stake_fails() {
-        // Test that joining with zero stake fails
+        // Test that joining with zero active stake fails
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -319,16 +232,11 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
-        // Low-quorum mode
-        system.committee = Committee::from_members(&[
-            member(99, 1_000),
-        ]);
-
         epoch.id = EpochNumber(42);
 
         node.id = NodeId(5);
         node.authority = authority;
-        // No stake at all
+        // No active stake at all
         node.pool.stake = TAPE(0);
         node.pool.shares = ShareAmount(0);
 
@@ -345,7 +253,7 @@ mod tests {
             &instruction,
             &accounts,
             &[
-                Check::err(TapeError::UnexpectedState.into()),
+                Check::err(TapeError::NotStaked.into()),
             ],
         );
     }
@@ -551,10 +459,9 @@ mod tests {
     }
 
     #[test]
-    fn test_rejoin_bootstrap_with_pending_stake() {
-        // Test bootstrap case: node is in current committee with 0 pool.stake
-        // because stake was deposited but hasn't activated yet (E+2 delay)
-        // Should fall back to NEW JOIN logic and use pending stake
+    fn test_rejoin_with_zero_stake_fails() {
+        // Test that re-join fails if pool.stake is zero
+        // Even with scheduled stake, joining requires active stake
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -568,26 +475,25 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
-        // Current epoch is 2, stake was deposited at epoch 1 and activates at epoch 3
         epoch.id = EpochNumber(2);
 
         node.id = NodeId(5);
         node.authority = authority;
-        // Bootstrap: pool.stake is 0 because stake hasn't activated yet
+        // pool.stake is 0 (stake hasn't activated yet)
         node.pool.stake = TAPE(0);
         node.pool.shares = ShareAmount(0);
-        // AdvancePool was called this epoch (required for RE-JOIN)
+        // AdvancePool was called this epoch
         node.latest_advance_epoch = EpochNumber(2);
-        // Stake scheduled for epoch 3 (E+2 from deposit at epoch 1)
+        // Stake scheduled for future - should NOT be used
         node.pool.schedule.stake(EpochNumber(3), TAPE(1_000)).unwrap();
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
             storage_capacity: StorageUnits(1_000_000),
         };
 
-        // Node IS in current committee (RE-JOIN path) but has 0 stake
+        // Node IS in current committee but has 0 active stake
         system.committee = Committee::from_members(&[
-            member(5, 1_000),  // Our node (stake shown in committee from earlier)
+            member(5, 1_000),  // Our node
             member(6, 2_000),
         ]);
 
@@ -599,42 +505,20 @@ mod tests {
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
-        // Expected: falls back to NEW JOIN logic, uses calculate_stake_at(epoch 3)
-        // Stake scheduled for epoch 3 will be included
-        let activation_epoch = EpochNumber(3);
-        let balance = node.pool.calculate_stake_at(activation_epoch);
-        assert_eq!(balance, TAPE(1_000));
-
-        let joined_member = CommitteeMember {
-            id: node.id,
-            stake: balance,
-            key: node.metadata.bls_pubkey,
-            blacklist: node.blacklist.total_size(),
-            preferences: node.preferences.clone(),
-            ..CommitteeMember::zeroed()
-        };
-
-        system
-            .committee_next
-            .try_join(&joined_member)
-            .expect("join committee");
-
+        // Should fail because pool.stake is 0
         let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,
             &[
-                Check::success(),
-                Check::account(&system_address)
-                    .data(system.pack().as_ref())
-                    .build(),
+                Check::err(TapeError::NotStaked.into()),
             ],
         );
     }
 
     #[test]
-    fn test_returning_node_treated_as_new() {
-        // Test that a returning node (NOT in current committee) takes NEW JOIN path
+    fn test_returning_node_uses_active_stake() {
+        // Test that a returning node (NOT in current committee) uses pool.stake
         // Should succeed even with stale latest_advance_epoch
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
@@ -655,9 +539,9 @@ mod tests {
         node.authority = authority;
         node.pool.stake = TAPE(2_000);
         node.pool.shares = ShareAmount(2_000);
-        // OLD: Node hasn't called AdvancePool in a while
+        // Stale latest_advance_epoch is OK for NEW JOIN (not in current committee)
         node.latest_advance_epoch = EpochNumber(7);
-        // Schedule some stake for activation
+        // Scheduled stake is NOT used
         node.pool.schedule.stake(EpochNumber(11), TAPE(500)).unwrap();
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
@@ -683,11 +567,8 @@ mod tests {
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
-        // Expected: NEW JOIN path - uses calculate_stake_at(activation_epoch)
-        // activation_epoch = 11, scheduled stake activates at E+2 = 12
-        // So stake at epoch 11 = current stake only = 2000
-        let activation_epoch = EpochNumber(11);
-        let balance = node.pool.calculate_stake_at(activation_epoch);
+        // Expected: uses pool.stake directly = 2000 (not projected stake)
+        let balance = node.pool.stake;
 
         let joined_member = CommitteeMember {
             id: node.id,

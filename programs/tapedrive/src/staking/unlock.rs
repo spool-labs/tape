@@ -1,6 +1,15 @@
 use crate::error::*;
 use tape_api::prelude::*;
 use tape_api::event::StakeUnlockRequested;
+use solana_program::clock::Clock;
+use solana_program::sysvar::Sysvar;
+
+/// Check if system has been stuck for 2x EPOCH_DURATION.
+/// This allows emergency unstaking when AdvanceEpoch is blocked.
+fn is_system_stuck(epoch: &Epoch) -> Result<bool, ProgramError> {
+    let now = Clock::get()?.unix_timestamp;
+    Ok(epoch.last_epoch + STUCK_SYSTEM_THRESHOLD < now)
+}
 
 pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = RequestStakeUnlock::try_from_bytes(data)?;
@@ -37,7 +46,9 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         .as_account::<History>(&tapedrive::ID)?
         .assert(|h| h.node == *node_info.key)?;
 
-    if node.latest_advance_epoch < prev_epoch(epoch) {
+    // Skip staleness check during emergency unstaking
+    let system_stuck = is_system_stuck(&epoch)?;
+    if !system_stuck && node.latest_advance_epoch < prev_epoch(epoch) {
         return Err(TapeError::NodeStale.into());
     }
 
@@ -53,6 +64,44 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     }
 
     let staked_tape = &mut stake.inner;
+    let current = current_epoch(epoch);
+
+    // Emergency unstaking path: bypass E+2 delay when system is stuck
+    if system_stuck {
+        if staked_tape.activation_epoch > current {
+            // Pre-active stake: use cancel logic (immediate return)
+            node.pool
+                .request_cancel(staked_tape, current)
+                .map_err(|_| TapeError::StakingFailed)?;
+        } else {
+            // Active stake: bypass E+2 delay, set withdraw_epoch = current
+            let activation_rate = history.inner
+                .rate_at(staked_tape.activation_epoch)
+                .ok_or(TapeError::RateMissing)?;
+
+            let shares: ShareAmount = activation_rate
+                .convert_to_other_amount(staked_tape.amount.into())
+                .into();
+
+            node.pool.schedule
+                .unstake(current, shares)
+                .map_err(|_| TapeError::StakingFailed)?;
+
+            staked_tape.state.set_withdrawing(current);
+        }
+
+        StakeUnlockRequested {
+            stake: stake_address,
+            authority: *authority_info.key,
+            pool: *node_info.key,
+            amount: staked_tape.amount.as_u64().to_le_bytes(),
+            withdraw_epoch: staked_tape.state.withdraw_epoch().unwrap_or(current),
+        }.log();
+
+        return Ok(());
+    }
+
+    // NORMAL PATH: Standard E+2 delay
     let activation_rate = history.inner
         .rate_at(staked_tape.activation_epoch)
         .ok_or(TapeError::RateMissing)?;
@@ -60,7 +109,7 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
     solana_program::msg!("Activation rate: {:?}", activation_rate);
 
     node.pool
-        .request_withdraw(staked_tape, current_epoch(epoch), activation_rate)
+        .request_withdraw(staked_tape, current, activation_rate)
         .map_err(|_| TapeError::StakingFailed)?;
 
     StakeUnlockRequested {
@@ -70,8 +119,6 @@ pub fn process_request_stake_unlock(accounts: &[AccountInfo<'_>], data: &[u8]) -
         amount: staked_tape.amount.as_u64().to_le_bytes(),
         withdraw_epoch: staked_tape.state.withdraw_epoch().unwrap_or(EpochNumber(0)),
     }.log();
-
-    // TODO: update/advance the node's state?
 
     Ok(())
 }

@@ -66,6 +66,7 @@ pub fn build_stake_with_pool_ix(
     amount: Coin<TAPE>,
 ) -> Instruction {
 
+    let (system_address, _) = system_pda();
     let (epoch_address, _)  = epoch_pda();
     let (mint_address, _)   = mint_pda();
     let (stake_address, _)  = stake_pda(authority);
@@ -81,6 +82,7 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new_readonly(authority, true),
             AccountMeta::new(authority_ata, false),
 
+            AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(pool, false),
             AccountMeta::new(stake_address, false),
