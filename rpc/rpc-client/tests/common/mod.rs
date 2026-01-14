@@ -485,3 +485,149 @@ pub async fn assert_fsm_action(
         );
     }
 }
+
+/// Test context with initialized system and working committee at epoch 4.
+/// This provides a fully operational post-bootstrap environment for testing
+/// storage operations (tapes, tracks, certification, rewards, etc.).
+pub struct TestContext {
+    pub client: RpcClient<TestRpc>,
+    pub payer: Keypair,
+    pub nodes: Vec<(Keypair, Pubkey)>,
+    pub node_ids: Vec<NodeId>,
+    pub _guard: ValidatorGuard,
+}
+
+/// Setup a fully operational committee at epoch 4 (post-bootstrap).
+/// Returns TestContext with MIN_COMMITTEE_SIZE nodes ready for testing.
+///
+/// Timeline:
+/// - Epoch 1: Initialize, nodes join
+/// - Epoch 2: First advance (bootstrap), nodes sync/rejoin
+/// - Epoch 3: Second advance (bootstrap complete), nodes sync/rejoin
+/// - Epoch 4: Third advance (post-bootstrap), ready for testing
+pub async fn setup_epoch4_committee() -> TestContext {
+    use tape_api::program::{EPOCH_DURATION, MIN_COMMITTEE_SIZE};
+
+    let (validator, payer) = setup_validator().await;
+    let guard = ValidatorGuard::new(validator);
+    let client = create_client(guard.validator());
+
+    // Wait for fees to stabilize
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    initialize_system(&client, &payer).await;
+
+    // Register MIN_COMMITTEE_SIZE nodes
+    let mut nodes: Vec<(Keypair, Pubkey)> = Vec::new();
+    let stake_amount = Coin::<TAPE>::new(1_000_000_000);
+
+    for i in 0..MIN_COMMITTEE_SIZE {
+        let (node_keypair, node_address) =
+            register_node(&client, &payer, &format!("node-{}", i)).await;
+        transfer_tape(&client, &payer, &node_keypair.pubkey(), stake_amount.as_u64()).await;
+        stake_to_node(&client, &node_keypair, node_address, stake_amount).await;
+        nodes.push((node_keypair, node_address));
+    }
+
+    // All nodes join
+    for (node_keypair, node_address) in &nodes {
+        join_committee(&client, node_keypair, *node_address)
+            .await
+            .expect("join failed");
+    }
+
+    // Fetch node IDs
+    let mut node_ids: Vec<NodeId> = Vec::new();
+    for (node_keypair, _) in &nodes {
+        let node_data = client.get_node(&node_keypair.pubkey()).await.expect("get node");
+        node_ids.push(node_data.id);
+    }
+
+    // Advance through epochs 1->2->3->4
+    for target_epoch in 2..=4 {
+        wait_for_epoch_duration((EPOCH_DURATION + 1) as u64).await;
+        advance_epoch(&client, &payer)
+            .await
+            .expect(&format!("advance to epoch {}", target_epoch));
+
+        // Sync nodes (stop when supermajority reached)
+        let system = Box::new(client.get_system().await.expect("get system"));
+        let epoch = Box::new(client.get_epoch().await.expect("get epoch"));
+        let epoch_id = epoch.id;
+
+        for ((node_keypair, node_address), node_id) in nodes.iter().zip(node_ids.iter()) {
+            let current_epoch = client.get_epoch().await.expect("get epoch");
+            if !current_epoch.state.is_syncing() {
+                break;
+            }
+            let sync_ix = build_sync_ix_for_node(&system, epoch_id, *node_id, node_keypair, *node_address)
+                .expect("build sync ix");
+            client.send_instructions(node_keypair, vec![sync_ix]).await.ok();
+        }
+
+        // Wait for settling if needed
+        let epoch = client.get_epoch().await.expect("get epoch");
+        if epoch.state.is_settling() {
+            wait_for_epoch_duration((EPOCH_DURATION + 1) as u64).await;
+        }
+
+        // All nodes advance_pool and rejoin for next epoch (except last iteration)
+        if target_epoch < 4 {
+            for (node_keypair, node_address) in &nodes {
+                advance_pool(&client, node_keypair, *node_address).await.ok();
+            }
+            for (node_keypair, node_address) in &nodes {
+                join_committee(&client, node_keypair, *node_address).await.ok();
+            }
+        }
+    }
+
+    // Verify we're at epoch 4
+    let epoch = client.get_epoch().await.expect("get epoch");
+    assert_eq!(epoch.id.as_u64(), 4, "Should be at epoch 4");
+
+    TestContext {
+        client,
+        payer,
+        nodes,
+        node_ids,
+        _guard: guard,
+    }
+}
+
+/// Setup a minimal single-node test environment (bootstrap mode, epoch 2).
+/// Use this for tests that don't need full committee (faster setup).
+pub async fn setup_single_node() -> TestContext {
+    use tape_api::program::EPOCH_DURATION;
+
+    let (validator, payer) = setup_validator().await;
+    let guard = ValidatorGuard::new(validator);
+    let client = create_client(guard.validator());
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    initialize_system(&client, &payer).await;
+
+    let (node_keypair, node_address) = register_node(&client, &payer, "test-node").await;
+    let stake_amount = Coin::<TAPE>::new(1_000_000_000);
+    transfer_tape(&client, &payer, &node_keypair.pubkey(), stake_amount.as_u64()).await;
+    stake_to_node(&client, &node_keypair, node_address, stake_amount).await;
+    join_committee(&client, &node_keypair, node_address).await.expect("join");
+
+    let node_data = client.get_node(&node_keypair.pubkey()).await.expect("get node");
+    let node_ids = vec![node_data.id];
+
+    // Advance to epoch 2
+    wait_for_epoch_duration((EPOCH_DURATION + 1) as u64).await;
+    advance_epoch(&client, &payer).await.expect("advance");
+    sync_epoch(&client, &node_keypair, node_address).await.expect("sync");
+
+    let nodes = vec![(node_keypair, node_address)];
+
+    TestContext {
+        client,
+        payer,
+        nodes,
+        node_ids,
+        _guard: guard,
+    }
+}
