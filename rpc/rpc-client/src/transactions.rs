@@ -278,13 +278,14 @@ impl<R: Rpc> RpcClient<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rpc_solana::RpcConfig;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::system_instruction;
 
     #[tokio::test]
     #[ignore] // Requires actual RPC endpoint
     async fn test_send_instructions() {
-        let config = rpc::RpcConfig::default();
+        let config = RpcConfig::default();
         let client = RpcClient::new(config).unwrap();
 
         let payer = Keypair::new();

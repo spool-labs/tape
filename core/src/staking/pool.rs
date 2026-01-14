@@ -157,13 +157,17 @@ impl<const N: usize> StakingPool<N> {
         stake_amount: Coin<TAPE>,
     ) -> Result<StakedTape, PoolError> {
         let activation_epoch = current_epoch + EpochNumber(2);
-        self.stake_with_pool_at(activation_epoch, stake_amount)
+        self.stake_with_pool_at(current_epoch, activation_epoch, stake_amount)
     }
 
     /// Stake tokens with explicit activation epoch.
     /// Used for conditional immediate activation in low-quorum mode.
+    ///
+    /// If activation_epoch == current_epoch, the stake is applied immediately
+    /// so the node can join committee_next without waiting for advance_pool.
     pub fn stake_with_pool_at(
         &mut self,
+        current_epoch: EpochNumber,
         activation_epoch: EpochNumber,
         stake_amount: Coin<TAPE>,
     ) -> Result<StakedTape, PoolError> {
@@ -171,14 +175,29 @@ impl<const N: usize> StakingPool<N> {
             return Err(PoolError::ZeroStake);
         }
 
-        self.schedule
-            .stake(activation_epoch, stake_amount)
-            .map_err(|_| PoolError::ScheduleFailed)?;
+        let mut state = StakeState::new();
+
+        // If activation is immediate, apply stake now and skip scheduling.
+        // Otherwise, schedule for future activation via advance_pool.
+        if activation_epoch == current_epoch {
+            let rate = self.get_current_rate();
+            let shares: ShareAmount = rate.convert_to_other_amount(stake_amount.into()).into();
+
+            self.stake = self.stake.saturating_add(stake_amount);
+            self.shares = self.shares.saturating_add(shares);
+
+            state.set_staked();
+        } else {
+            // Only schedule if activation is in the future
+            self.schedule
+                .stake(activation_epoch, stake_amount)
+                .map_err(|_| PoolError::ScheduleFailed)?;
+        }
 
         Ok(StakedTape {
             activation_epoch,
             amount: stake_amount,
-            state: StakeState::new(),
+            state,
         })
     }
 
@@ -1041,5 +1060,39 @@ mod tests {
         let err = p.claim_commission().unwrap_err();
 
         assert!(matches!(err, PoolError::ZeroCommission));
+    }
+
+    #[test]
+    fn stake_immediate_activation() {
+        let mut p = TestPool::new(BasisPoints(0));
+
+        // Stake at current epoch (E5) with activation also at E5 (immediate)
+        let s = p.stake_with_pool_at(epoch(5), epoch(5), tape(1000)).unwrap();
+
+        assert_eq!(s.activation_epoch, epoch(5));
+
+        // Pool should have the stake and shares applied immediately
+        assert_eq!(p.stake, tape(1000), "pool.stake should be updated immediately");
+        assert!(!p.shares.is_zero(), "pool.shares should be updated immediately");
+
+        // Schedule should also have the stake (for bookkeeping)
+        assert_eq!(p.schedule.stake_sum(epoch(5)), tape(1000));
+    }
+
+    #[test]
+    fn stake_delayed_activation() {
+        let mut p = TestPool::new(BasisPoints(0));
+
+        // Stake at current epoch (E5) with activation at E7 (delayed)
+        let s = p.stake_with_pool_at(epoch(5), epoch(7), tape(1000)).unwrap();
+
+        assert_eq!(s.activation_epoch, epoch(7));
+
+        // Pool should NOT have stake applied yet (will be applied at E7)
+        assert_eq!(p.stake, tape(0), "pool.stake should still be zero");
+        assert!(p.shares.is_zero(), "pool.shares should still be zero");
+
+        // Schedule should have the stake for future activation
+        assert_eq!(p.schedule.stake_sum(epoch(7)), tape(1000));
     }
 }
