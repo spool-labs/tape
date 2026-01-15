@@ -54,8 +54,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let old_epoch = epoch.id;
 
     // Block epoch advancement if committee_next is below threshold
-    // Exception: Allow bootstrap (first epoch with empty committee_prev)
-    if system.will_be_low_quorum() && !system.committee_prev_empty() {
+    // Exception: Allow bootstrap (first epoch where current committee is empty)
+    // Note: We check committee_empty() not committee_prev_empty() because
+    // the current committee will become committee_prev after rotation.
+    if system.will_be_low_quorum() && !system.committee_empty() {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -320,21 +322,20 @@ mod tests {
         let mut archive = Archive::zeroed();
         let mut system = System::zeroed();
 
-        // Recent last_epoch - not enough time has passed (EPOCH_DURATION is 60 seconds)
-        let last_epoch = env.now() - 30; // Only 30 seconds ago, need 60
+        // Recent last_epoch - not enough time has passed (EPOCH_DURATION is 5 seconds locally)
+        let last_epoch = env.now() - 2; // Only 2 seconds ago, need 5
 
         epoch.id = EpochNumber(2);
         epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
-        // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
+        // Need >= MIN_COMMITTEE_SIZE members in both committees to test timing check
         let members: Vec<CommitteeMember> = (1..=25)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&members);
-        system.committee_next = Committee::from_members(&[
-            member(1, 3_000, 1_000_000, 1000),
-        ]);
+        // committee_next must have >= 25 to pass the low-quorum check and reach TooSoon
+        system.committee_next = Committee::from_members(&members);
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
@@ -552,7 +553,8 @@ mod tests {
 
     #[test]
     fn test_advance_bootstrap_exception() {
-        // Test that first epoch (empty committee_prev) can advance with < MIN_COMMITTEE_SIZE
+        // Test that first epoch (empty committee) can advance with < MIN_COMMITTEE_SIZE
+        // Bootstrap = committee is empty, only committee_next has nodes
         let env = test_env();
 
         let fee_payer = Pubkey::new_unique();
@@ -578,16 +580,13 @@ mod tests {
         epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
-        // Current committee has just 5 nodes (bootstrap)
-        let curr_members: Vec<CommitteeMember> = (1..=5)
-            .map(|i| member(i, 1_000, 1_000_000, 1000))
-            .collect();
-        system.committee = Committee::from_members(&curr_members);
+        // Current committee is EMPTY (true bootstrap - first epoch)
+        system.committee = Committee::new();
 
-        // Previous committee is EMPTY (first epoch/bootstrap)
+        // Previous committee is also EMPTY
         system.committee_prev = Committee::new();
 
-        // Next committee also has < MIN_COMMITTEE_SIZE (10 nodes)
+        // Next committee has < MIN_COMMITTEE_SIZE (10 nodes joining)
         let next_members: Vec<CommitteeMember> = (1..=10)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
@@ -613,7 +612,7 @@ mod tests {
             last_epoch: env.now(),
         };
 
-        // Should succeed due to bootstrap exception (empty committee_prev)
+        // Should succeed due to bootstrap exception (empty committee)
         env.process_instruction(
             &instruction,
             &accounts,
@@ -622,6 +621,68 @@ mod tests {
                 Check::account(&epoch_address).data(
                     expected_epoch.pack().as_ref()
                 ).build(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_advance_blocked_after_bootstrap() {
+        // Test that once we have a functioning committee, low quorum is blocked
+        // even if committee_prev is empty (second epoch scenario)
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
+        let e0 = EpochNumber(2);
+
+        epoch.id = e0;
+        epoch.state = EpochState::active();
+        epoch.last_epoch = last_epoch;
+
+        // Current committee has 25 nodes (functioning committee)
+        let curr_members: Vec<CommitteeMember> = (1..=25)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee = Committee::from_members(&curr_members);
+
+        // Previous committee is EMPTY (this is epoch 2, first real epoch)
+        system.committee_prev = Committee::new();
+
+        // Next committee has < MIN_COMMITTEE_SIZE (only 10 rejoined)
+        let next_members: Vec<CommitteeMember> = (1..=10)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee_next = Committee::from_members(&next_members);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        // Should FAIL - committee is non-empty so bootstrap exception doesn't apply
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(TapeError::InsufficientCommittee.into()),
             ]
         );
     }

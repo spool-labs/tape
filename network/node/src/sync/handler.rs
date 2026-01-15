@@ -42,6 +42,8 @@ pub struct SpoolSyncHandler {
     permits: Arc<Semaphore>,
     /// Batch size for sync requests.
     batch_size: usize,
+    /// Accept invalid TLS certificates (for local testing with self-signed certs).
+    accept_invalid_certs: bool,
 }
 
 impl Default for SpoolSyncHandler {
@@ -56,6 +58,7 @@ impl SpoolSyncHandler {
         Self {
             permits: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_SYNCS)),
             batch_size: DEFAULT_BATCH_SIZE,
+            accept_invalid_certs: false,
         }
     }
 
@@ -68,6 +71,14 @@ impl SpoolSyncHandler {
     /// Set the batch size for sync requests.
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
+        self
+    }
+
+    /// Accept invalid TLS certificates (for local testing with self-signed certs).
+    ///
+    /// WARNING: Only use this for local development/testing. Never enable in production.
+    pub fn with_insecure(mut self, insecure: bool) -> Self {
+        self.accept_invalid_certs = insecure;
         self
     }
 
@@ -93,6 +104,7 @@ impl SpoolSyncHandler {
         })?;
 
         let client = NodeClientBuilder::new()
+            .accept_invalid_certs(self.accept_invalid_certs)
             .build(prev_owner_address)?;
 
         let mut starting_track = String::new();
@@ -192,6 +204,7 @@ impl Clone for SpoolSyncHandler {
         Self {
             permits: Arc::clone(&self.permits),
             batch_size: self.batch_size,
+            accept_invalid_certs: self.accept_invalid_certs,
         }
     }
 }

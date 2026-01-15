@@ -16,6 +16,7 @@ use crate::metrics::NodeClientMetrics;
 pub struct NodeClientBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
+    accept_invalid_certs: bool,
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<NodeClientMetrics>>,
 }
@@ -32,6 +33,7 @@ impl NodeClientBuilder {
         Self {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
+            accept_invalid_certs: false,
             #[cfg(feature = "metrics")]
             metrics: None,
         }
@@ -56,6 +58,14 @@ impl NodeClientBuilder {
         self
     }
 
+    /// Accept invalid TLS certificates (for self-signed certs in local testing).
+    ///
+    /// WARNING: Only use this for local development/testing. Never enable in production.
+    pub fn accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.accept_invalid_certs = accept;
+        self
+    }
+
     /// Build a client for the given node address.
     ///
     /// # Arguments
@@ -71,6 +81,7 @@ impl NodeClientBuilder {
         let client = Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout)
+            .danger_accept_invalid_certs(self.accept_invalid_certs)
             .build()
             .map_err(NodeError::Request)?;
 
@@ -90,6 +101,7 @@ impl NodeClientBuilder {
         let client = Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout)
+            .danger_accept_invalid_certs(self.accept_invalid_certs)
             .build()
             .map_err(NodeError::Request)?;
 

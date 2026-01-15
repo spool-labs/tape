@@ -52,7 +52,7 @@ pub enum FsmSignal {
 }
 
 /// Polling interval for epoch advancement monitoring.
-const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Compute units required for AdvanceEpoch instruction.
 /// AdvanceEpoch performs committee rotation and spool reallocation which
@@ -72,16 +72,18 @@ const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
 /// - `RetryLater`: The action isn't ready yet, try again next loop
 /// - `Err`: Fatal error, report and stop
 fn categorize_tx_error(err: &str, action_name: &str) -> Result<HandlerOutcome, NetworkSyncError> {
-    // Already completed (by us or another node)
+    // Already completed (by us or another node) or not applicable
     if err.contains("0x40") ||  // BadEpochState - epoch not in expected phase
        err.contains("0x62") ||  // AlreadyAdvanced - already did AdvancePool
        err.contains("0x10") ||  // UnexpectedState - already in committee
        err.contains("0x4a") ||  // AlreadySynced - already synced this epoch
+       err.contains("0x72") ||  // NotStaked - can't join without stake
        err.contains("AlreadyInCommittee") ||
        err.contains("BadEpochState") ||
        err.contains("AlreadyAdvanced") ||
-       err.contains("AlreadySynced") {
-        info!("{} already complete (or not needed)", action_name);
+       err.contains("AlreadySynced") ||
+       err.contains("NotStaked") {
+        info!("{} already complete (or not applicable)", action_name);
         return Ok(HandlerOutcome::Completed);
     }
 
@@ -147,13 +149,20 @@ async fn try_advance_pool(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSy
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_POOL_COMPUTE_UNITS);
     let ix = build_advance_pool_ix(authority, authority, node_address);
 
-    match ctx.rpc.send_instructions(&ctx.keypair, vec![cu_ix, ix]).await {
+    let result = match ctx.rpc.send_instructions(&ctx.keypair, vec![cu_ix, ix]).await {
         Ok(_) => {
             info!("AdvancePool submitted successfully");
             Ok(HandlerOutcome::Completed)
         }
         Err(e) => categorize_tx_error(&e.to_string(), "AdvancePool"),
+    };
+
+    // Always refresh node state after AdvancePool attempt so FSM sees latest_advance_epoch
+    if let Ok(node) = ctx.rpc.get_node(&authority).await {
+        ctx.control_plane.update_node(node);
     }
+
+    result
 }
 
 /// Try to join the network (re-join committee_next).
@@ -301,7 +310,8 @@ pub async fn run(
 
     let sync_handler = SpoolSyncHandler::new()
         .with_max_concurrent(ctx.config.sync_concurrency.unwrap_or(4))
-        .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000));
+        .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000))
+        .with_insecure(ctx.config.insecure);
 
     // Wait for catch-up to complete before making FSM decisions
     loop {
@@ -323,6 +333,7 @@ pub async fn run(
 
     info!("Catch-up complete, entering main FSM loop");
     let mut interval = tokio::time::interval(EPOCH_ADVANCE_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -357,6 +368,18 @@ pub async fn run(
         if catching_up {
             warn!("Unexpectedly catching up in main loop, skipping action");
             continue;
+        }
+
+        // Log non-trivial actions for debugging
+        if action.requires_transaction() {
+            let node_id = ctx.control_plane.our_node_id();
+            let in_committee = ctx.control_plane.is_in_committee();
+            debug!(
+                node_id = node_id.as_u64(),
+                in_committee = in_committee,
+                action = ?action,
+                "FSM determined action"
+            );
         }
 
         // Execute action

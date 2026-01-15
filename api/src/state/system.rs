@@ -53,6 +53,12 @@ impl System {
         self.committee_prev.size() == 0
     }
 
+    /// Current committee is empty (true bootstrap - first epoch with no serving committee).
+    #[inline]
+    pub fn committee_empty(&self) -> bool {
+        self.committee.size() == 0
+    }
+
     /// Rotate committees: prev <- current <- next, then clear next.
     /// Uses swap and in-place zeroing to avoid large stack allocations.
     /// After rotation, committee_next is cleared. Nodes must call JoinNetwork

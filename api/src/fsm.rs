@@ -210,8 +210,15 @@ impl NodeStateMachine {
             };
         }
 
-        // Not in committee_prev - can't contribute to settling
-        // But might want to join committee_next
+        // Not in committee_prev - check if we have pending stake to activate.
+        // Nodes with delayed stake activation (E+2) need to AdvancePool to
+        // process their scheduled stake additions before they can join.
+        let has_pending_stake = node.pool.schedule.stake_sum(epoch.id) > node.pool.schedule.cancel_sum(epoch.id);
+        if node.latest_advance_epoch < epoch.id && has_pending_stake {
+            return NodeAction::AdvancePool;
+        }
+
+        // Can join if we have active stake
         if !in_committee_next && node.pool.stake.as_u64() > 0 {
             return NodeAction::JoinNetwork;
         }
@@ -242,6 +249,19 @@ impl NodeStateMachine {
 
             // Check if we need to JoinNetwork
             if !in_committee_next {
+                return NodeAction::JoinNetwork;
+            }
+        } else {
+            // Not in committee - check if we have pending stake to activate.
+            // Nodes with delayed stake activation (E+2) need to AdvancePool to
+            // process their scheduled stake additions before they can join.
+            let has_pending_stake = node.pool.schedule.stake_sum(epoch.id) > node.pool.schedule.cancel_sum(epoch.id);
+            if node.latest_advance_epoch < epoch.id && has_pending_stake {
+                return NodeAction::AdvancePool;
+            }
+
+            // Can join if we have active stake but not in committee_next
+            if !in_committee_next && node.pool.stake.as_u64() > 0 {
                 return NodeAction::JoinNetwork;
             }
         }
@@ -603,5 +623,91 @@ mod tests {
         assert!(NodeAction::NotInCommittee.is_blocked());
         assert!(NodeAction::EpochBlocked { committee_next_size: 1 }.is_blocked());
         assert!(!NodeAction::SyncEpoch.is_blocked());
+    }
+
+    /// Create a node with pending stake scheduled for activation.
+    fn make_node_with_pending_stake(id: u64, pending_stake: u64, activation_epoch: u64, advance_epoch: u64) -> Node {
+        let mut node = Node::zeroed();
+        node.id = NodeId(id);
+        node.registered_epoch = EpochNumber(1);
+        node.latest_sync_epoch = EpochNumber(0);
+        node.latest_advance_epoch = EpochNumber(advance_epoch);
+        node.pool.stake = TAPE(0); // No active stake yet
+        // Schedule pending stake for future activation
+        node.pool.schedule.stake(EpochNumber(activation_epoch), TAPE(pending_stake).into())
+            .expect("schedule stake");
+        node
+    }
+
+    #[test]
+    fn test_settling_non_committee_with_pending_stake() {
+        // Node NOT in committee_prev, but has pending stake to activate
+        let other_members = vec![make_member(2, 1000)];
+        let system = make_system(
+            make_committee(&other_members), // committee_prev (different node)
+            Committee::new(),
+            Committee::new(),
+        );
+        let epoch = make_epoch(5, EpochState::settling(), 0);
+        // Node has pending stake scheduled for epoch 5, hasn't advanced yet
+        let node = make_node_with_pending_stake(1, 1000, 5, 4);
+
+        let action = NodeStateMachine::determine_action(&system, &epoch, &node, 0);
+        // Should tell node to AdvancePool to activate pending stake
+        assert_eq!(action, NodeAction::AdvancePool);
+    }
+
+    #[test]
+    fn test_active_non_committee_with_pending_stake() {
+        // Node NOT in committee, but has pending stake to activate
+        let other_members = vec![make_member(2, 1000)];
+        let system = make_system(
+            Committee::new(),
+            make_committee(&other_members), // committee (different node)
+            Committee::new(),
+        );
+        let epoch = make_epoch(5, EpochState::active(), 0);
+        // Node has pending stake scheduled for epoch 5, hasn't advanced yet
+        let node = make_node_with_pending_stake(1, 1000, 5, 4);
+
+        let action = NodeStateMachine::determine_action(&system, &epoch, &node, 0);
+        // Should tell node to AdvancePool to activate pending stake
+        assert_eq!(action, NodeAction::AdvancePool);
+    }
+
+    #[test]
+    fn test_active_non_committee_after_advance_can_join() {
+        // Node NOT in committee, has advanced and now has active stake
+        let other_members = vec![make_member(2, 1000)];
+        let system = make_system(
+            Committee::new(),
+            make_committee(&other_members), // committee (different node)
+            Committee::new(),
+        );
+        let epoch = make_epoch(5, EpochState::active(), 0);
+        // Node has active stake and has already advanced
+        let node = make_node(1, 1000, 5, 5);
+
+        let action = NodeStateMachine::determine_action(&system, &epoch, &node, 0);
+        // Should tell node to JoinNetwork now that stake is active
+        assert_eq!(action, NodeAction::JoinNetwork);
+    }
+
+    #[test]
+    fn test_settling_non_committee_after_advance_can_join() {
+        // Node NOT in committee_prev, has advanced and now has active stake
+        let other_members = vec![make_member(2, 1000)];
+        let system = make_system(
+            make_committee(&other_members), // committee_prev (different node)
+            Committee::new(),
+            Committee::new(),
+        );
+        let epoch = make_epoch(5, EpochState::settling(), 0);
+        // Node has active stake and has already advanced
+        let node = make_node(1, 1000, 5, 5);
+
+        let action = NodeStateMachine::determine_action(&system, &epoch, &node, 0);
+        // Should tell node to JoinNetwork now that stake is active
+        assert_eq!(action, NodeAction::JoinNetwork);
     }
 }

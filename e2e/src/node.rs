@@ -313,6 +313,9 @@ tls:
   generate_self_signed: true
 
 storage_path: {data_dir}
+
+# Accept self-signed certs from other test nodes
+insecure: true
 "#,
         name = name,
         keys_dir = keys_dir.display(),

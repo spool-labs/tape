@@ -62,6 +62,10 @@ pub struct NodeConfig {
 
     /// Commission rate in basis points (0-10000). Used during registration.
     pub commission: Option<u64>,
+
+    /// Accept invalid TLS certificates from other nodes (for local testing).
+    /// WARNING: Only enable for local development/testing with self-signed certs.
+    pub insecure: bool,
 }
 
 impl NodeConfig {
@@ -193,6 +197,10 @@ struct RawNodeConfig {
     /// Commission rate in basis points (0-10000). Used during registration.
     #[serde(default)]
     pub commission: Option<u64>,
+
+    /// Accept invalid TLS certificates from other nodes (for local testing).
+    #[serde(default)]
+    pub insecure: bool,
 }
 
 fn default_version() -> u32 {
@@ -227,6 +235,7 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             sync_concurrency: raw.sync_concurrency,
             sync_batch_size: raw.sync_batch_size,
             commission: raw.commission,
+            insecure: raw.insecure,
         })
     }
 }
