@@ -28,7 +28,7 @@ use tape_store::ops::{is_ready_for_retry, Compression, RecoveryOps, SliceMeta};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::context::NodeContext;
+use crate::core::context::NodeContext;
 
 /// Recovery polling interval.
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);

@@ -11,11 +11,12 @@ use tape_core::types::EpochNumber;
 
 use super::types::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
 
+// TODO: Move these constants to crate::core::constants when that module is created.
 /// Default batch size for sync requests.
-const DEFAULT_BATCH_SIZE: usize = 1000;
+pub const DEFAULT_BATCH_SIZE: usize = 1000;
 
 /// Default max concurrent sync operations.
-const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 4;
+pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 4;
 
 /// Error type for spool sync operations.
 #[derive(Debug, thiserror::Error)]

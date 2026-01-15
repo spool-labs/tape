@@ -50,7 +50,7 @@ impl IntoResponse for ApiError {
             ApiError::InvalidSliceIndex => StatusCode::BAD_REQUEST,
             ApiError::InvalidTrackId => StatusCode::BAD_REQUEST,
             ApiError::InvalidBody(_) => StatusCode::BAD_REQUEST,
-            ApiError::NotResponsible => StatusCode::MISDIRECTED_REQUEST, // 421
+            ApiError::NotResponsible => StatusCode::MISDIRECTED_REQUEST,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::TrackNotFound => StatusCode::NOT_FOUND,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,

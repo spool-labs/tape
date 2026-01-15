@@ -3,21 +3,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rpc_client::{RpcClient, RpcConfig};
 use rpc_solana::SolanaRpc;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
 use store_rocks::RocksStore;
-use rpc_client::{RpcConfig, RpcClient};
 use tape_core::bls::BlsPrivateKey;
 use tape_crypto::Pubkey;
-
 use tape_metrics::MetricsRegistry;
 
-use crate::config::NodeConfig;
-use crate::control_plane::ControlPlane;
+use super::config::NodeConfig;
+use super::utils::{load_bls_keypair, load_keypair, KeypairError};
+use crate::features::epoch_sync::ControlPlane;
+use crate::features::storage::{StorageError, StorageService};
 use crate::metrics::NodeMetrics;
-use crate::StorageService;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +32,7 @@ pub enum ContextError {
     RpcClient(String),
 
     #[error("failed to open storage: {0}")]
-    Storage(#[from] crate::StorageError),
+    Storage(#[from] StorageError),
 
     #[error("failed to fetch on-chain state: {0}")]
     ChainState(String),
@@ -42,6 +42,15 @@ pub enum ContextError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl From<KeypairError> for ContextError {
+    fn from(err: KeypairError) -> Self {
+        match err {
+            KeypairError::Keypair(msg) => ContextError::Keypair(msg),
+            KeypairError::BlsKeypair(msg) => ContextError::BlsKeypair(msg),
+        }
+    }
 }
 
 /// Central context holding all shared node state.
@@ -181,40 +190,6 @@ impl<S: Store> NodeContext<S> {
     pub fn our_spools(&self) -> Vec<tape_core::spooler::SpoolIndex> {
         self.control_plane.get_our_spools()
     }
-}
-
-/// Load a Solana keypair from a JSON file.
-fn load_keypair(path: &str) -> Result<Keypair, ContextError> {
-    let keypair_bytes = std::fs::read(path)
-        .map_err(|e| ContextError::Keypair(format!("Failed to read keypair file: {}", e)))?;
-
-    let keypair_json: Vec<u8> = serde_json::from_slice(&keypair_bytes)
-        .map_err(|e| ContextError::Keypair(format!("Failed to parse keypair JSON: {}", e)))?;
-
-    Keypair::from_bytes(&keypair_json)
-        .map_err(|e| ContextError::Keypair(format!("Invalid keypair bytes: {}", e)))
-}
-
-/// Load a BLS private key from a JSON file.
-///
-/// The file should contain a JSON array of 32 bytes.
-fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey, ContextError> {
-    let contents = std::fs::read(path)
-        .map_err(|e| ContextError::BlsKeypair(format!("Failed to read BLS keypair file: {}", e)))?;
-
-    let bytes: Vec<u8> = serde_json::from_slice(&contents)
-        .map_err(|e| ContextError::BlsKeypair(format!("Failed to parse BLS keypair JSON: {}", e)))?;
-
-    if bytes.len() != 32 {
-        return Err(ContextError::BlsKeypair(format!(
-            "BLS keypair must be 32 bytes, got {}",
-            bytes.len()
-        )));
-    }
-
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(BlsPrivateKey(tape_crypto::bls12254::min_sig::PrivKey(arr)))
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use super::utils::expand_path;
+
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -91,20 +93,6 @@ impl NodeConfig {
     pub fn network_address(&self) -> String {
         format!("{}:{}", self.public_host, self.public_port)
     }
-}
-
-/// Default node config file path (~/.tape/node.yaml).
-pub fn default_config_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".tape").join("node.yaml"))
-        .unwrap_or_else(|| PathBuf::from(".tape/node.yaml"))
-}
-
-/// Expand ~ and environment variables in a path.
-pub fn expand_path(path: &str) -> PathBuf {
-    shellexpand::full(path)
-        .map(|s| PathBuf::from(s.as_ref()))
-        .unwrap_or_else(|_| PathBuf::from(path))
 }
 
 /// Default node config content for initialization.

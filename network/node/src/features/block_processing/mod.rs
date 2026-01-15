@@ -6,6 +6,7 @@
 //! - **parser**: Parses Solana blocks into tapedrive-specific instructions
 //! - **handlers**: Processes parsed instructions (storage updates, GC scheduling)
 //! - **worker**: The main polling loop that drives block processing
+//! - **events**: Node events for inter-thread communication
 //!
 //! # Architecture
 //!
@@ -23,11 +24,12 @@
 //! The block processor is typically run as a background task:
 //!
 //! ```ignore
-//! use tape_node::block;
+//! use tape_node::features::block_processing;
 //!
-//! let handle = tokio::spawn(block::run(ctx, event_tx, cancel));
+//! let handle = tokio::spawn(block_processing::run(ctx, event_tx, cancel));
 //! ```
 
+pub mod events;
 mod handlers;
 mod parser;
 #[cfg(test)]
@@ -46,3 +48,6 @@ pub use handlers::{
     handle_destroy_tape, handle_invalidate_track, handle_register_track,
     run_epoch_gc, set_cluster_hash, set_cursor,
 };
+
+// Re-export events
+pub use events::NodeEvent;

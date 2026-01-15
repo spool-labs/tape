@@ -12,12 +12,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::block;
-use crate::context::NodeContext;
-use crate::server::ServerHandle;
-
-use super::network_sync::FsmSignal;
-use super::{challenges, network_sync, recovery};
+use crate::core::context::NodeContext;
+use crate::features::api::ServerHandle;
+use crate::features::block_processing as block;
+use crate::features::challenges;
+use crate::features::epoch_sync::{self as network_sync, FsmSignal};
+use crate::features::recovery;
 
 /// Signal channel capacity (small - only FSM wake-up signals).
 const SIGNAL_CHANNEL_CAPACITY: usize = 32;

@@ -14,16 +14,22 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::context::NodeContext;
-use crate::workers::network_sync::FsmSignal;
+use crate::core::context::NodeContext;
+use crate::features::epoch_sync::FsmSignal;
 
 use super::handlers;
 use super::parser::{parse_block, ParsedInstruction};
 
 /// Default polling interval (Solana slot time).
+///
+/// Note: This constant is local to the block processor. If a centralized
+/// constants module is added to tape-core, consider moving this there.
 const DEFAULT_POLL_INTERVAL_MS: u64 = 400;
 
 /// Maximum slots to process per iteration.
+///
+/// Note: This constant is local to the block processor. If a centralized
+/// constants module is added to tape-core, consider moving this there.
 const MAX_SLOTS_PER_BATCH: u64 = 100;
 
 /// Error type for block processor operations.

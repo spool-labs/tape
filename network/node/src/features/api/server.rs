@@ -1,6 +1,4 @@
-//! Server module.
-
-pub mod routes;
+//! Server setup and lifecycle management.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -11,13 +9,13 @@ use store_rocks::RocksStore;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use crate::config::NodeConfig;
-use crate::control_plane::ControlPlane;
+use crate::core::config::NodeConfig;
+use crate::features::epoch_sync::ControlPlane;
 use crate::metrics::NodeMetrics;
-use crate::storage::StorageService;
+use crate::features::storage::StorageService;
 use tape_core::bls::BlsPrivateKey;
 
-pub use routes::*;
+use super::routes::{create_router, ApiState};
 
 /// Handle for controlling a running server.
 pub struct ServerHandle {
@@ -81,7 +79,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
     /// Run the server (blocking).
     pub async fn run(self) -> anyhow::Result<()> {
-        let state = routes::ApiState {
+        let state = ApiState {
             metrics: self.metrics.clone(),
             service: self.service.clone(),
             bls_keypair: self.bls_keypair.clone(),
@@ -90,7 +88,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
         // Merge with observability routes from tape-metrics
         let app = Router::new()
-            .merge(routes::create_router(state))
+            .merge(create_router(state))
             .merge(tape_metrics::observability_router());
 
         let listener = TcpListener::bind(self.config.bind_address).await?;
@@ -104,7 +102,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
     /// Start the server in the background and return a handle for control.
     pub async fn start(self) -> anyhow::Result<ServerHandle> {
-        let state = routes::ApiState {
+        let state = ApiState {
             metrics: self.metrics.clone(),
             service: self.service.clone(),
             bls_keypair: self.bls_keypair.clone(),
@@ -113,7 +111,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
         // Merge with observability routes from tape-metrics
         let app = Router::new()
-            .merge(routes::create_router(state))
+            .merge(create_router(state))
             .merge(tape_metrics::observability_router());
 
         let listener = TcpListener::bind(self.config.bind_address).await?;
