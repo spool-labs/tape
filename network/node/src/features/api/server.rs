@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::core::config::NodeConfig;
-use crate::features::epoch_sync::ControlPlane;
+use crate::control_plane::ControlPlane;
 use crate::metrics::NodeMetrics;
 use crate::features::storage::StorageService;
 use tape_core::bls::BlsPrivateKey;

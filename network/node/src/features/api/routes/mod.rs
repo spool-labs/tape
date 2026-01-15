@@ -14,7 +14,7 @@ use axum::{routing::{get, post}, Router};
 use store::Store;
 use tape_crypto::Pubkey;
 
-use crate::features::epoch_sync::ControlPlane;
+use crate::control_plane::ControlPlane;
 use super::errors::ApiError;
 use crate::metrics::NodeMetrics;
 use crate::features::storage::StorageService;

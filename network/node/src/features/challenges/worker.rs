@@ -77,7 +77,7 @@ pub async fn run(_ctx: Arc<NodeContext>, cancel: CancellationToken) -> Result<()
 /// Derive which nodes/slices to challenge based on nonce.
 #[allow(dead_code)]
 fn derive_challenges(
-    _control_plane: &crate::features::epoch_sync::ControlPlane,
+    _control_plane: &crate::control_plane::ControlPlane,
     _nonce: [u8; 32],
 ) -> Vec<ChallengeTarget> {
     Vec::new()

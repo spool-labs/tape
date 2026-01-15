@@ -15,7 +15,7 @@ use tape_metrics::MetricsRegistry;
 
 use super::config::NodeConfig;
 use super::utils::{load_bls_keypair, load_keypair, KeypairError};
-use crate::features::epoch_sync::ControlPlane;
+use crate::control_plane::ControlPlane;
 use crate::features::storage::{StorageError, StorageService};
 use crate::metrics::NodeMetrics;
 
