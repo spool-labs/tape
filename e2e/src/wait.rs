@@ -400,38 +400,21 @@ pub async fn wait_for_all_nodes_healthy(
     .await
 }
 
-/// Wait until the system is in low-quorum mode.
-pub async fn wait_for_low_quorum_mode(
+/// Wait until the system has sufficient committee_next for epoch advancement.
+///
+/// Returns Ok when committee_next.size() >= MIN_COMMITTEE_SIZE, meaning
+/// AdvanceEpoch will succeed.
+pub async fn wait_for_sufficient_committee_next(
     cli: &Tapedrive,
     timeout: Duration,
 ) -> Result<()> {
     use crate::MIN_COMMITTEE_SIZE;
 
     wait_for_with_desc(
-        "low-quorum mode",
+        &format!("committee_next >= {}", MIN_COMMITTEE_SIZE),
         || async {
             match cli.account_system() {
-                Ok(system) => Ok(system.committee_size.unwrap_or(0) < MIN_COMMITTEE_SIZE),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait until the system is in normal (non-low-quorum) mode.
-pub async fn wait_for_normal_mode(
-    cli: &Tapedrive,
-    timeout: Duration,
-) -> Result<()> {
-    use crate::MIN_COMMITTEE_SIZE;
-
-    wait_for_with_desc(
-        "normal mode",
-        || async {
-            match cli.account_system() {
-                Ok(system) => Ok(system.committee_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE),
+                Ok(system) => Ok(system.committee_next_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE),
                 Err(_) => Ok(false),
             }
         },

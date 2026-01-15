@@ -16,6 +16,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     advance_epoch, advance_pool, assert_fsm_action, create_client, debug_state, initialize_system,
     join_committee, register_node, setup_validator, stake_to_node, sync_epoch, transfer_tape,
@@ -28,6 +30,7 @@ use tape_core::types::coin::{Coin, TAPE};
 /// Test that committee_next is cleared (not copied) after epoch rotation.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_committee_cleared_on_rotation() {
     println!("Starting test_committee_cleared_on_rotation...");
 
@@ -89,6 +92,7 @@ async fn test_committee_cleared_on_rotation() {
 /// Test that re-joining requires AdvancePool to be called first.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_rejoin_requires_advance_pool() {
     println!("Starting test_rejoin_requires_advance_pool...");
 
@@ -141,6 +145,7 @@ async fn test_rejoin_requires_advance_pool() {
 /// Test that fresh stake from pool.stake is used on re-join.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_fresh_stake_on_rejoin() {
     println!("Starting test_fresh_stake_on_rejoin...");
 
@@ -240,6 +245,7 @@ async fn test_fresh_stake_on_rejoin() {
 /// Test that a returning node (not in current committee) uses the new-join path.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_returning_node_new_join_path() {
     println!("Starting test_returning_node_new_join_path...");
 
@@ -356,6 +362,7 @@ async fn test_returning_node_new_join_path() {
 /// FSM-traced test: Walk through a single epoch cycle step by step.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_fsm_single_epoch_flow() {
     use tape_api::fsm::NodeStateMachine;
 
@@ -453,6 +460,7 @@ async fn test_fsm_single_epoch_flow() {
 /// FSM-traced test: Verify immediate stake activation in low-quorum mode.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_fsm_stake_activation_flow() {
     println!("Starting test_fsm_stake_activation_flow...");
 

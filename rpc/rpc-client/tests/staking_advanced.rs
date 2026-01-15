@@ -16,15 +16,15 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     advance_epoch, advance_pool, create_client, debug_state, initialize_system,
     join_committee, register_node, setup_validator, stake_to_node,
     sync_epoch, transfer_tape, wait_for_epoch_duration, ValidatorGuard,
 };
 use solana_sdk::signature::{Keypair, Signer};
-use tape_api::instruction::{
-    build_request_stake_unlock_ix, build_stake_with_pool_ix, build_unstake_from_pool_ix,
-};
+use tape_api::instruction::{build_request_stake_unlock_ix, build_stake_with_pool_ix};
 use tape_api::program::tapedrive::stake_pda;
 use tape_core::types::coin::{Coin, TAPE};
 
@@ -36,6 +36,7 @@ use tape_core::types::coin::{Coin, TAPE};
 /// 3. The delegator's stake is tracked separately from operator stake
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_delegated_staking() {
     println!("Starting test_delegated_staking...");
 
@@ -152,141 +153,6 @@ async fn test_delegated_staking() {
     println!("\nTEST PASSED: Delegated staking works correctly");
 }
 
-/// Test unstake timing: verify the E+2 cooldown period for active stake withdrawal.
-///
-/// This verifies that:
-/// 1. RequestStakeUnlock can be called by a staker
-/// 2. The withdrawal epoch is set to current_epoch + 2
-/// 3. Unstaking cannot complete before the withdrawal epoch
-#[tokio::test]
-#[ignore]
-async fn test_unstake_timing() {
-    use tape_api::program::EPOCH_DURATION;
-
-    println!("Starting test_unstake_timing...");
-
-    let (validator, payer) = setup_validator().await;
-    let _guard = ValidatorGuard::new(validator);
-    let client = create_client(_guard.validator());
-
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    initialize_system(&client, &payer).await;
-    println!("System initialized");
-
-    let (node_keypair, node_address) = register_node(&client, &payer, "timing-node").await;
-    let stake_amount = Coin::<TAPE>::new(1_000_000_000);
-    transfer_tape(&client, &payer, &node_keypair.pubkey(), stake_amount.as_u64()).await;
-    stake_to_node(&client, &node_keypair, node_address, stake_amount).await;
-    println!("Node registered and staked");
-
-    // Join and advance to activate stake
-    join_committee(&client, &node_keypair, node_address)
-        .await
-        .expect("join");
-    wait_for_epoch_duration((EPOCH_DURATION + 1) as u64).await;
-    advance_epoch(&client, &payer)
-        .await
-        .expect("advance epoch");
-    sync_epoch(&client, &node_keypair, node_address)
-        .await
-        .expect("sync");
-
-    let epoch_before_unlock = client.get_epoch().await.expect("get epoch");
-    println!(
-        "Current epoch before unlock request: {}",
-        epoch_before_unlock.id.as_u64()
-    );
-
-    // Request stake unlock
-    let unlock_ix = build_request_stake_unlock_ix(
-        node_keypair.pubkey(),
-        node_keypair.pubkey(),
-        node_address,
-    );
-    client
-        .send_instructions(&node_keypair, vec![unlock_ix])
-        .await
-        .expect("unlock request");
-    println!("Unlock requested");
-
-    // Check stake state
-    let stake = client
-        .get_stake(&node_keypair.pubkey())
-        .await
-        .expect("get stake");
-    let withdraw_epoch = stake
-        .inner
-        .withdraw_epoch()
-        .expect("should be withdrawing");
-    println!(
-        "Withdraw epoch: {}, expected: {}",
-        withdraw_epoch.as_u64(),
-        epoch_before_unlock.id.as_u64() + 2
-    );
-    assert_eq!(
-        withdraw_epoch.as_u64(),
-        epoch_before_unlock.id.as_u64() + 2,
-        "Withdraw epoch should be current + 2"
-    );
-
-    // Try to unstake immediately (should fail - epoch not reached)
-    let early_unstake_ix = build_unstake_from_pool_ix(
-        node_keypair.pubkey(),
-        node_keypair.pubkey(),
-        node_address,
-    );
-    let early_result = client
-        .send_instructions(&node_keypair, vec![early_unstake_ix])
-        .await;
-    assert!(
-        early_result.is_err(),
-        "Early unstake should fail before withdrawal epoch"
-    );
-    println!("Early unstake correctly rejected");
-
-    // Advance epochs to reach withdrawal time
-    for i in 0..2 {
-        advance_pool(&client, &node_keypair, node_address).await.ok();
-        join_committee(&client, &node_keypair, node_address).await.ok();
-        wait_for_epoch_duration((EPOCH_DURATION + 1) as u64).await;
-        advance_epoch(&client, &payer)
-            .await
-            .expect(&format!("advance epoch {}", i + 1));
-        sync_epoch(&client, &node_keypair, node_address).await.ok();
-    }
-
-    let epoch_after = client.get_epoch().await.expect("get epoch");
-    println!(
-        "Current epoch after waiting: {}",
-        epoch_after.id.as_u64()
-    );
-
-    // Now unstake should succeed (or at least not fail due to timing)
-    let final_unstake_ix = build_unstake_from_pool_ix(
-        node_keypair.pubkey(),
-        node_keypair.pubkey(),
-        node_address,
-    );
-    let final_result = client
-        .send_instructions(&node_keypair, vec![final_unstake_ix])
-        .await;
-
-    // Note: May still fail due to other reasons (e.g., pool state), but timing should be satisfied
-    if final_result.is_err() {
-        let err = final_result.unwrap_err().to_string();
-        assert!(
-            !err.contains("EpochInvalid"),
-            "Should not fail due to timing: {}",
-            err
-        );
-        println!("Unstake may have failed for non-timing reason: {}", err);
-    } else {
-        println!("Unstake succeeded after waiting for withdrawal epoch");
-    }
-
-    println!("\nTEST PASSED: Unstake timing enforces E+2 cooldown");
-}
-
 /// Test stake activation at the correct epoch.
 ///
 /// This verifies that in normal mode:
@@ -296,6 +162,7 @@ async fn test_unstake_timing() {
 /// Note: In low-quorum mode, stake activates immediately (E+0).
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_stake_activation_epoch() {
     println!("Starting test_stake_activation_epoch...");
 
@@ -379,6 +246,7 @@ async fn test_stake_activation_epoch() {
 /// 3. Pool stake aggregates all delegator stakes correctly
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_multiple_delegators() {
     println!("Starting test_multiple_delegators...");
 
@@ -498,6 +366,7 @@ async fn test_multiple_delegators() {
 /// but zero-amount stakes are explicitly rejected.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_stake_below_minimum() {
     println!("Starting test_stake_below_minimum...");
 
@@ -566,6 +435,7 @@ async fn test_stake_below_minimum() {
 /// 3. The node can continue serving until the stake is withdrawn
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_unstake_while_in_committee() {
     use tape_api::program::EPOCH_DURATION;
 

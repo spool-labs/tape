@@ -10,6 +10,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     create_client, initialize_system, setup_validator, ValidatorGuard,
 };
@@ -71,6 +73,7 @@ async fn reserve_test_tape(
 /// 3. The tape's track count is incremented
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_write_track() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -146,6 +149,7 @@ async fn test_write_track() {
 /// Verifies that attempting to register a track without a tape fails.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_track_requires_tape() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -185,6 +189,7 @@ async fn test_track_requires_tape() {
 /// Verifies that all track fields match the registration parameters.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_track_metadata_storage() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -256,6 +261,7 @@ async fn test_track_metadata_storage() {
 /// Verifies the commitment hash field is properly set during registration.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_track_commitment() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -325,6 +331,7 @@ async fn test_track_commitment() {
 /// 4. Tape used storage increases appropriately
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_multiple_tracks_on_tape() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);

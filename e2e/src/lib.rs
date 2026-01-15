@@ -28,7 +28,9 @@ pub mod cli;
 pub mod consts;
 pub mod context;
 pub mod fixtures;
+pub mod fsm;
 pub mod node;
+pub mod rpc;
 pub mod validator;
 pub mod wait;
 
@@ -36,6 +38,8 @@ pub use cli::{Tapedrive, ArchiveAccount, NodeStatus, CommitteeInfo, CommitteeMem
 pub use consts::*;
 pub use context::{TestContext, TestContextBuilder, VARYING_STAKES};
 pub use fixtures::*;
+pub use fsm::*;
 pub use node::{TestCluster, TestNode};
+pub use rpc::*;
 pub use validator::{Validator, ValidatorOptions};
 pub use wait::*;

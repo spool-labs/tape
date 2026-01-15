@@ -11,6 +11,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     create_client, initialize_system, register_node, setup_basic_validator, setup_validator,
     ValidatorGuard,
@@ -19,6 +21,7 @@ use solana_sdk::signature::{Keypair, Signer};
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_get_slot() {
     let (validator, _payer) = setup_basic_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -30,6 +33,7 @@ async fn test_get_slot() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_initialize_system() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -53,6 +57,7 @@ async fn test_initialize_system() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_register_node() {
     use tape_api::utils::to_name;
 
@@ -73,6 +78,7 @@ async fn test_register_node() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_get_all_nodes() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -97,6 +103,7 @@ async fn test_get_all_nodes() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_fetch_nonexistent_account() {
     let (validator, _payer) = setup_basic_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -108,6 +115,7 @@ async fn test_fetch_nonexistent_account() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_transaction_insufficient_funds() {
     let (validator, _payer) = setup_basic_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -129,6 +137,7 @@ async fn test_transaction_insufficient_funds() {
 
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_concurrent_reads() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);

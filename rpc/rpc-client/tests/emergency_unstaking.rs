@@ -20,6 +20,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     advance_epoch, advance_pool, create_client, debug_state, initialize_system, join_committee,
     register_node, setup_single_node, setup_validator, stake_to_node, sync_epoch, transfer_tape,
@@ -36,6 +38,7 @@ use tape_core::types::coin::{Coin, TAPE};
 /// bypass the normal E+2 withdrawal delay and request immediate unstaking.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_emergency_unstake_stuck_system() {
     println!("Starting test_emergency_unstake_stuck_system...");
     println!(
@@ -152,6 +155,7 @@ async fn test_emergency_unstake_stuck_system() {
 /// RequestStakeUnlock instruction should use the standard E+2 delay path.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_emergency_unstake_blocked_normal() {
     println!("Starting test_emergency_unstake_blocked_normal...");
 
@@ -254,6 +258,7 @@ async fn test_emergency_unstake_blocked_normal() {
 /// how many committee members are online - it's a safety escape hatch.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_emergency_unstake_partial_committee() {
     println!("Starting test_emergency_unstake_partial_committee...");
 
@@ -353,6 +358,7 @@ async fn test_emergency_unstake_partial_committee() {
 /// - At or after STUCK_SYSTEM_THRESHOLD: uses emergency immediate path
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_emergency_unstake_timing() {
     println!("Starting test_emergency_unstake_timing...");
     println!(

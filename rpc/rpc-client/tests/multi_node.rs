@@ -11,6 +11,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{
     advance_epoch, advance_pool, build_sync_ix_for_node, create_client, debug_fsm, get_fsm_action,
     initialize_system, join_committee, register_node, setup_validator, stake_to_node, sync_epoch,
@@ -29,6 +31,7 @@ use tape_core::types::NodeId;
 /// 3. Node lifecycle across multiple epochs
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_multi_epoch_flow() {
     use tape_api::program::{EPOCH_DURATION, MIN_COMMITTEE_SIZE};
 
@@ -273,6 +276,7 @@ async fn test_multi_epoch_flow() {
 /// - Post-bootstrap: requires MIN_COMMITTEE_SIZE nodes in committee_next
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_insufficient_committee_blocks_advance() {
     use tape_api::program::EPOCH_DURATION;
 

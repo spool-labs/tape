@@ -14,6 +14,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::{create_client, initialize_system, setup_validator, transfer_tape, ValidatorGuard};
 use solana_sdk::signature::{Keypair, Signer};
 use tape_api::instruction::{build_register_track_ix, build_reserve_tape_ix};
@@ -49,6 +51,7 @@ async fn reserve_tape(
 /// Verifies that a user can allocate a tape with valid parameters.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_allocate_tape() {
     println!("Starting test_allocate_tape...");
 
@@ -131,6 +134,7 @@ async fn test_allocate_tape() {
 /// 3. Verify tape used storage increases
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_tape_lifecycle() {
     println!("Starting test_tape_lifecycle...");
 
@@ -244,6 +248,7 @@ async fn test_tape_lifecycle() {
 /// This is different from node operations which require committee membership.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_tape_requires_committee_membership() {
     println!("Starting test_tape_requires_committee_membership...");
     println!("(Testing that tape allocation does NOT require committee membership)");
@@ -322,6 +327,7 @@ async fn test_tape_requires_committee_membership() {
 /// 2. Tracks exceeding tape capacity are rejected
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_tape_capacity_limits() {
     println!("Starting test_tape_capacity_limits...");
 
@@ -436,6 +442,7 @@ async fn test_tape_capacity_limits() {
 /// This test verifies this behavior.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_multiple_tape_allocation() {
     println!("Starting test_multiple_tape_allocation...");
 

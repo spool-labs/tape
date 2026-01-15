@@ -15,6 +15,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::*;
 use solana_sdk::signature::{Keypair, Signer};
 use tape_api::instruction::build_reserve_tape_ix;
@@ -32,6 +34,7 @@ use tape_core::types::{EpochNumber, StorageUnits};
 /// - Tape count is zero
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_archive_initialization() {
     let (validator, payer) = setup_validator().await;
     let _guard = ValidatorGuard::new(validator);
@@ -108,6 +111,7 @@ async fn test_archive_initialization() {
 /// - Tokens are transferred from user to archive ATA
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_archive_pricing() {
     let ctx = setup_single_node().await;
     let client = &ctx.client;
@@ -216,6 +220,7 @@ async fn test_archive_pricing() {
 /// - Schedule advances correctly with epoch advancement
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_archive_capacity_tracking() {
     let ctx = setup_single_node().await;
     let client = &ctx.client;
@@ -299,6 +304,7 @@ async fn test_archive_capacity_tracking() {
 /// - Leftover rewards carry over to next epoch
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_archive_reward_pool() {
     use tape_api::program::EPOCH_DURATION;
 
@@ -420,6 +426,7 @@ async fn test_archive_reward_pool() {
 /// - Schedule is updated with reserved capacity and fees
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_archive_fee_collection() {
     let ctx = setup_single_node().await;
     let client = &ctx.client;

@@ -33,7 +33,7 @@ use solana_sdk::signature::Signer;
 
 use crate::cli::{EpochAccount, SystemAccount};
 use crate::node::TestNode;
-use tape_api::program::MIN_EPOCH_DURATION;
+use tape_api::program::EPOCH_DURATION;
 use crate::validator::{Validator, ValidatorOptions};
 use crate::wait::{wait_for_epoch_advance_from, wait_for_rpc, LONG_TIMEOUT};
 use crate::Tapedrive;
@@ -68,13 +68,13 @@ impl TestContext {
         self.cli.account_system()
     }
 
-    /// Manually advance the epoch (requires MIN_EPOCH_DURATION to have passed).
+    /// Manually advance the epoch (requires EPOCH_DURATION to have passed).
     pub fn advance_epoch(&self) -> Result<()> {
         self.cli.admin_advance_epoch()?;
         Ok(())
     }
 
-    /// Wait for remaining MIN_EPOCH_DURATION and then advance the epoch.
+    /// Wait for remaining EPOCH_DURATION and then advance the epoch.
     pub async fn wait_and_advance_epoch(&self) -> Result<()> {
         let wait = remaining_epoch_wait(&self.cli);
         if !wait.is_zero() {
@@ -207,7 +207,7 @@ impl Drop for TestContext {
     }
 }
 
-/// Calculate remaining time until MIN_EPOCH_DURATION has passed.
+/// Calculate remaining time until EPOCH_DURATION has passed.
 ///
 /// Returns Duration::ZERO if enough time has already elapsed.
 fn remaining_epoch_wait(cli: &Tapedrive) -> Duration {
@@ -220,7 +220,7 @@ fn remaining_epoch_wait(cli: &Tapedrive) -> Duration {
         .unwrap_or(0);
 
     let elapsed = now - last_epoch_ts;
-    let remaining = (MIN_EPOCH_DURATION + 1) - elapsed;
+    let remaining = (EPOCH_DURATION + 1) - elapsed;
 
     if remaining > 0 {
         Duration::from_secs(remaining as u64)
@@ -373,7 +373,7 @@ impl TestContextBuilder {
     /// 1. Call `build()` to set up everything
     /// 2. Fund all nodes with SOL for transaction fees (in parallel)
     /// 3. Start all nodes
-    /// 4. Wait for MIN_EPOCH_DURATION
+    /// 4. Wait for EPOCH_DURATION
     /// 5. Advance epoch to activate nodes (bootstrap)
     ///
     /// After this, nodes are in the committee and will advance epochs autonomously.
@@ -413,7 +413,7 @@ impl TestContextBuilder {
 
         // Bootstrap: advance epoch to activate nodes from committee_next to committee
         // Calculate remaining wait time - epoch clock started at admin_init, so
-        // some/all of MIN_EPOCH_DURATION may have already elapsed during node setup
+        // some/all of EPOCH_DURATION may have already elapsed during node setup
         let wait = remaining_epoch_wait(&ctx.cli);
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;

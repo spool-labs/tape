@@ -11,6 +11,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::*;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Keypair, Signer};
@@ -76,6 +78,7 @@ async fn create_tape_and_track(
 /// - The aggregated BLS signature is valid
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_submit_certificate() {
     println!("Starting test_submit_certificate...");
 
@@ -181,6 +184,7 @@ async fn test_submit_certificate() {
 /// to provide valid signatures for certification.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_certificate_requires_committee_member() {
     println!("Starting test_certificate_requires_committee_member...");
 
@@ -272,6 +276,7 @@ async fn test_certificate_requires_committee_member() {
 /// - Tampered signatures are detected
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_certificate_signature_verification() {
     println!("Starting test_certificate_signature_verification...");
 
@@ -382,6 +387,7 @@ async fn test_certificate_signature_verification() {
 /// This prevents signature replay attacks across epoch boundaries.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_certificate_epoch_binding() {
     println!("Starting test_certificate_epoch_binding...");
 
@@ -499,6 +505,7 @@ async fn test_certificate_epoch_binding() {
 /// - Partial sets of signatures (below threshold) are rejected
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_aggregate_certificates() {
     println!("Starting test_aggregate_certificates...");
 

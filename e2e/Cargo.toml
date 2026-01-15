@@ -10,6 +10,8 @@ description = "End-to-end testing framework for Tapedrive"
 tape-api = { workspace = true }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true }
+rpc-client = { workspace = true }
+rpc-solana = { workspace = true }
 bytemuck = { workspace = true }
 
 # Async

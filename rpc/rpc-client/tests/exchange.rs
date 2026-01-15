@@ -15,6 +15,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::*;
 use rpc::Rpc;
 use solana_sdk::signature::{Keypair, Signer};
@@ -113,6 +115,7 @@ async fn setup_exchange(
 /// - User receives correct amount of TAPE
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_sol_to_tape_exchange() {
     println!("Starting test_sol_to_tape_exchange...");
 
@@ -216,6 +219,7 @@ async fn test_sol_to_tape_exchange() {
 /// - User receives correct amount of SOL
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_tape_to_sol_exchange() {
     println!("Starting test_tape_to_sol_exchange...");
 
@@ -330,6 +334,7 @@ async fn test_tape_to_sol_exchange() {
 /// - Rate conversion formulas work correctly for both directions
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_exchange_rate() {
     println!("Starting test_exchange_rate...");
 
@@ -481,6 +486,7 @@ async fn test_exchange_rate() {
 /// - Error is returned for amounts exceeding available balance
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_exchange_slippage() {
     println!("Starting test_exchange_slippage...");
 
@@ -585,6 +591,7 @@ async fn test_exchange_slippage() {
 /// - Very small amounts are handled correctly (rounding)
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_exchange_min_amount() {
     println!("Starting test_exchange_min_amount...");
 

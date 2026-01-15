@@ -17,6 +17,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::*;
 use solana_sdk::signature::Signer;
 use tape_api::instruction::{
@@ -28,6 +30,7 @@ use tape_core::types::coin::{Coin, TAPE};
 /// Test that commission rate can be set and updated.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_commission_rate_setting() {
     println!("Starting test_commission_rate_setting...");
 
@@ -88,6 +91,7 @@ async fn test_commission_rate_setting() {
 /// Test that commission rate is capped at 10000 (100%).
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_commission_caps() {
     println!("Starting test_commission_caps...");
 
@@ -136,9 +140,9 @@ async fn test_commission_caps() {
         "Setting commission above 10000 bps should fail"
     );
     let err_str = format!("{:?}", result.unwrap_err());
-    // Should fail with InvalidArgument
+    // Should fail with InvalidArgument (shown as "invalid program argument" in RPC errors)
     assert!(
-        err_str.contains("InvalidArgument") || err_str.contains("0x1"),
+        err_str.contains("InvalidArgument") || err_str.contains("invalid program argument"),
         "Expected InvalidArgument error, got: {}",
         err_str
     );
@@ -150,6 +154,7 @@ async fn test_commission_caps() {
 /// Test that rewards are distributed correctly to nodes.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_reward_distribution() {
     println!("Starting test_reward_distribution...");
 
@@ -201,6 +206,7 @@ async fn test_reward_distribution() {
 /// Test that commission is deducted from rewards correctly.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_commission_deduction() {
     println!("Starting test_commission_deduction...");
 
@@ -257,6 +263,7 @@ async fn test_commission_deduction() {
 /// Test that node operators can claim accumulated commission.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_claim_rewards() {
     println!("Starting test_claim_rewards...");
 
@@ -327,6 +334,7 @@ async fn test_claim_rewards() {
 /// Test that delegators receive their share of rewards.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_delegator_rewards() {
     println!("Starting test_delegator_rewards...");
 
@@ -393,6 +401,7 @@ async fn test_delegator_rewards() {
 /// Test that sync must be called before claiming rewards.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_reward_requires_sync() {
     println!("Starting test_reward_requires_sync...");
 
@@ -458,6 +467,7 @@ async fn test_reward_requires_sync() {
 /// Test requesting unstake and claiming rewards via UnstakeFromPool.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_unstake_with_rewards() {
     println!("Starting test_unstake_with_rewards...");
 

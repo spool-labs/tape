@@ -15,6 +15,8 @@
 
 mod common;
 
+use serial_test::serial;
+
 use common::*;
 use solana_sdk::signature::{Keypair, Signer};
 use tape_api::instruction::{
@@ -31,6 +33,7 @@ use tape_core::types::coin::{Coin, TAPE};
 /// via the SetName instruction.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_update_node_name() {
     println!("Starting test_update_node_name...");
 
@@ -90,6 +93,7 @@ async fn test_update_node_name() {
 /// for P2P communication.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_update_node_network_address() {
     println!("Starting test_update_node_network_address...");
 
@@ -154,6 +158,7 @@ async fn test_update_node_network_address() {
 /// Commission rate changes are typically scheduled for future epochs.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_update_commission_rate() {
     println!("Starting test_update_commission_rate...");
 
@@ -221,6 +226,7 @@ async fn test_update_commission_rate() {
 /// can choose not to rejoin and will eventually be removed from active duty.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_leave_committee() {
     use tape_api::program::EPOCH_DURATION;
 
@@ -291,6 +297,7 @@ async fn test_leave_committee() {
 /// waiting for the unlock period, then UnstakeFromPool.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_node_deactivation() {
     println!("Starting test_node_deactivation...");
 
@@ -346,6 +353,7 @@ async fn test_node_deactivation() {
 /// by calling JoinNetwork again if it still has active stake.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_node_reactivation() {
     use tape_api::program::EPOCH_DURATION;
 
@@ -425,6 +433,7 @@ async fn test_node_reactivation() {
 /// This test verifies the SetBlsPubkey instruction works correctly.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_bls_key_rotation() {
     println!("Starting test_bls_key_rotation...");
 
@@ -492,6 +501,7 @@ async fn test_bls_key_rotation() {
 /// without conflicts.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_combined_metadata_updates() {
     println!("Starting test_combined_metadata_updates...");
 
@@ -570,6 +580,7 @@ async fn test_combined_metadata_updates() {
 /// Verifies that unauthorized parties cannot modify node settings.
 #[tokio::test]
 #[ignore]
+#[serial]
 async fn test_unauthorized_update_fails() {
     println!("Starting test_unauthorized_update_fails...");
 

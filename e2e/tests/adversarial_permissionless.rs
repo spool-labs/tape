@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serial_test::serial;
-use tape_e2e::{Tapedrive, TestContext, TestNode, MIN_EPOCH_WAIT};
+use tape_e2e::{Tapedrive, TestContext, TestNode, EPOCH_WAIT};
 
 /// Test concurrent AdvanceEpoch calls from multiple "attackers".
 ///
@@ -398,7 +398,7 @@ async fn test_epoch_boundary_timing() {
         println!("\nBoundary test {}:", test_num);
 
         // Wait until just before epoch can advance
-        let target_wait = MIN_EPOCH_WAIT.as_secs() - 2;
+        let target_wait = EPOCH_WAIT.as_secs() - 2;
         println!("  Waiting {}s (2s before boundary)...", target_wait);
         tokio::time::sleep(Duration::from_secs(target_wait)).await;
 
