@@ -31,6 +31,12 @@ pub fn process_set_commission_rate(accounts: &[AccountInfo<'_>], data: &[u8]) ->
 
     let commission_rate = BasisPoints::unpack(args.commission_rate);
 
+    // Commission rate must be <= 10000 bps (100%)
+    const MAX_COMMISSION_RATE: u64 = 10_000;
+    if commission_rate.as_u64() > MAX_COMMISSION_RATE {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     // Even if the node is not in the current or next committee, we force
     // the change to take effect in 2 epochs to avoid commission rate
     // abuse by nodes joining and leaving committees.
@@ -49,6 +55,47 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    #[test]
+    fn test_set_commission_rate_cap() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let (epoch_address, _) = epoch_pda();
+        let (node_address, _) = node_pda(authority);
+
+        // Try to set commission above 10000 bps
+        let invalid_commission = BasisPoints(15000);
+        let instruction = build_set_commission_ix(fee_payer, authority, node_address, invalid_commission);
+
+        let epoch = Epoch {
+            id: EpochNumber(42),
+            state: EpochState::new(),
+            last_epoch: 0,
+        };
+
+        let node = Node {
+            id: NodeId(9000),
+            authority,
+            pool: StakingPool::new(BasisPoints(500)),
+            ..Node::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(node_address, node.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(ProgramError::InvalidArgument),
+            ],
+        );
+    }
 
     #[test]
     fn test_set_commission_rate() {

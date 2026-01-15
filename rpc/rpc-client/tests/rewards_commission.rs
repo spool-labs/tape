@@ -135,6 +135,13 @@ async fn test_commission_caps() {
         result.is_err(),
         "Setting commission above 10000 bps should fail"
     );
+    let err_str = format!("{:?}", result.unwrap_err());
+    // Should fail with InvalidArgument
+    assert!(
+        err_str.contains("InvalidArgument") || err_str.contains("0x1"),
+        "Expected InvalidArgument error, got: {}",
+        err_str
+    );
     println!("Commission rate above 10000 bps rejected as expected");
 
     println!("TEST PASSED: Commission caps enforced");

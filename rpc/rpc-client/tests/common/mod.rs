@@ -621,6 +621,12 @@ pub async fn setup_single_node() -> TestContext {
     advance_epoch(&client, &payer).await.expect("advance");
     sync_epoch(&client, &node_keypair, node_address).await.expect("sync");
 
+    // Call AdvancePool to record exchange rate in History.
+    // This is required for unlock operations that need rate_at(activation_epoch).
+    // In bootstrap mode (epoch 2, committee_prev empty), the epoch transitions
+    // directly from Syncing -> Active via SyncEpoch, so we can call AdvancePool now.
+    advance_pool(&client, &node_keypair, node_address).await.expect("advance_pool");
+
     let nodes = vec![(node_keypair, node_address)];
 
     TestContext {

@@ -265,9 +265,10 @@ impl NodeStateMachine {
             return NodeAction::AdvanceEpoch;
         }
 
-        // Epoch blocked - not enough nodes in committee_next
-        NodeAction::EpochBlocked {
-            committee_next_size,
+        // Waiting for more nodes to join committee_next
+        NodeAction::WaitForCommitteeThreshold {
+            current_size: committee_next_size,
+            required_size: MIN_COMMITTEE_SIZE,
         }
     }
 }
@@ -538,10 +539,10 @@ mod tests {
             NodeAction::WaitForEpochDuration { seconds_remaining } => {
                 assert_eq!(seconds_remaining, EPOCH_DURATION - 100);
             }
-            NodeAction::EpochBlocked { .. } => {
+            NodeAction::WaitForCommitteeThreshold { .. } => {
                 // Also acceptable - committee_next is below threshold
             }
-            _ => panic!("Expected WaitForEpochDuration or EpochBlocked, got {:?}", action),
+            _ => panic!("Expected WaitForEpochDuration or WaitForCommitteeThreshold, got {:?}", action),
         }
     }
 
@@ -564,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn test_active_blocked_low_quorum() {
+    fn test_active_waiting_for_committee_threshold() {
         // Not bootstrap, committee_next below threshold
         let members = vec![make_member(1, 1000)];
         let prev_members = vec![make_member(2, 1000)]; // Non-empty committee_prev
@@ -579,7 +580,10 @@ mod tests {
         let node = make_node(1, 1000, 5, 5);
 
         let action = NodeStateMachine::determine_action(&system, &epoch, &node, current_time);
-        assert_eq!(action, NodeAction::EpochBlocked { committee_next_size: 1 });
+        assert_eq!(action, NodeAction::WaitForCommitteeThreshold {
+            current_size: 1,
+            required_size: MIN_COMMITTEE_SIZE
+        });
     }
 
     #[test]

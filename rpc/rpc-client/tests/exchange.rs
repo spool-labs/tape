@@ -226,9 +226,9 @@ async fn test_tape_to_sol_exchange() {
     let tape_rate: u64 = 100_000_000;
     let sol_rate: u64 = 1_000_000_000;
 
-    // Provide liquidity: 10 SOL
+    // Provide liquidity: 1 SOL (fits within setup_exchange's 2 SOL budget)
     let tape_liquidity = Coin::<TAPE>::new(0);
-    let sol_liquidity = Coin::<SOL>::new(10_000_000_000);
+    let sol_liquidity = Coin::<SOL>::new(1_000_000_000);
 
     let exchange_address = setup_exchange(
         &ctx,

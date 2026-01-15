@@ -118,6 +118,10 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     history.latest_epoch      = node.latest_advance_epoch;
     history.inner             = PoolHistory::new();
 
+    // Push initial flat rate so stakes that activate immediately (low-quorum mode)
+    // have a valid rate_at(activation_epoch) lookup during unlock.
+    history.inner.push(node.registered_epoch, ExchangeRate::flat());
+
     NodeRegistered {
         node: node_address,
         id: node.id,
@@ -226,13 +230,17 @@ mod tests {
                         ..Node::zeroed()
                     }.pack().as_ref()
                 ).build(),
-                Check::account(&history_address).data(
-                    History {
+                Check::account(&history_address).data({
+                    let mut expected_history = History {
                         node: node_address,
                         registered_epoch: epoch.id,
                         latest_epoch: epoch.id,
                         inner: PoolHistory::new(),
-                    }.pack().as_ref()
+                    };
+                    // Initial flat rate is pushed during registration
+                    expected_history.inner.push(epoch.id, ExchangeRate::flat());
+                    expected_history
+                }.pack().as_ref()
                 ).build(),
             ]
         );
