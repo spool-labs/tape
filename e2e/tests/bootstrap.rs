@@ -19,7 +19,7 @@ use std::time::Duration;
 use serial_test::serial;
 use solana_sdk::signature::Signer;
 use tape_e2e::{
-    E2eRpcClient, TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
+    TestRpcClient, TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
     get_fsm_action, debug_all_nodes_fsm, wait_for_epoch_phase_rpc,
 };
 
@@ -51,7 +51,7 @@ async fn test_bootstrap_flow_small_committee() {
         .expect("Failed to setup test context");
 
     // Create RPC client for state verification
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
+    let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
         .expect("Failed to create RPC client");
 
@@ -154,7 +154,7 @@ async fn test_bootstrap_flow_full_committee() {
         .expect("Failed to setup and bootstrap");
 
     // Create RPC client for verification
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
+    let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
         .expect("Failed to create RPC client");
 
@@ -207,7 +207,7 @@ async fn test_post_bootstrap_requires_min_committee() {
         .await
         .expect("Failed to bootstrap");
 
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
+    let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
         .expect("Failed to create RPC client");
 

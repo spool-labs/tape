@@ -247,11 +247,15 @@ impl NodeStateMachine {
         }
 
         // Check if we can advance the epoch
+        // Add 1 second buffer to account for clock skew between local time and Solana cluster time.
+        // The on-chain program uses `last_epoch + EPOCH_DURATION > now` which can fail if the
+        // cluster clock is slightly behind local time.
         let time_elapsed = current_time.saturating_sub(epoch.last_epoch);
+        let required_elapsed = EPOCH_DURATION + 1;
 
-        if time_elapsed < EPOCH_DURATION {
+        if time_elapsed < required_elapsed {
             return NodeAction::WaitForEpochDuration {
-                seconds_remaining: EPOCH_DURATION - time_elapsed,
+                seconds_remaining: required_elapsed - time_elapsed,
             };
         }
 

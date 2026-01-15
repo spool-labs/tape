@@ -32,7 +32,7 @@ use anyhow::{Context as _, Result};
 use solana_sdk::signature::Signer;
 
 use crate::node::TestNode;
-use crate::rpc::E2eRpcClient;
+use crate::rpc::TestRpcClient;
 use crate::validator::{Validator, ValidatorOptions};
 use crate::wait::{wait_for_rpc, LONG_TIMEOUT};
 use crate::Tapedrive;
@@ -49,7 +49,7 @@ pub struct TestContext {
     /// CLI wrapper for mutations (register, stake, join, advance, etc.).
     pub cli: Tapedrive,
     /// RPC client for state queries.
-    pub rpc: E2eRpcClient,
+    pub rpc: TestRpcClient,
     /// Test nodes (may be empty if not using nodes).
     pub nodes: Vec<TestNode>,
     /// Whether nodes have been bootstrapped (activated in committee).
@@ -356,7 +356,7 @@ impl TestContextBuilder {
         cli.admin_init().context("Failed to initialize system")?;
 
         // Create RPC client
-        let rpc = E2eRpcClient::new(validator.rpc_url())
+        let rpc = TestRpcClient::new(validator.rpc_url())
             .await
             .context("Failed to create RPC client")?;
 
@@ -464,6 +464,11 @@ impl TestContextBuilder {
             .admin_advance_epoch()
             .context("Bootstrap epoch advance failed")?;
 
+        // Wait for epoch to reach Active phase (goes through Syncing -> Settling -> Active)
+        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
+            .await
+            .context("Epoch did not reach Active phase after bootstrap")?;
+
         ctx.bootstrapped = true;
 
         Ok(ctx)
@@ -497,7 +502,7 @@ impl TestContextBuilder {
         cli.admin_init().context("Failed to initialize system")?;
 
         // Create RPC client
-        let rpc = E2eRpcClient::new(validator.rpc_url())
+        let rpc = TestRpcClient::new(validator.rpc_url())
             .await
             .context("Failed to create RPC client")?;
 

@@ -14,13 +14,13 @@ use tracing::{error, info};
 
 use crate::block;
 use crate::context::NodeContext;
-use crate::events::NodeEvent;
 use crate::server::ServerHandle;
 
+use super::network_sync::FsmSignal;
 use super::{challenges, network_sync, recovery};
 
-/// Event channel capacity.
-const EVENT_CHANNEL_CAPACITY: usize = 10_000;
+/// Signal channel capacity (small - only FSM wake-up signals).
+const SIGNAL_CHANNEL_CAPACITY: usize = 32;
 
 /// Error type for orchestrator.
 #[derive(Debug, thiserror::Error)]
@@ -50,33 +50,29 @@ pub async fn run(
 ) -> Result<(), OrchestratorError> {
     info!("Orchestrator starting");
 
-    // Create event channel for inter-thread communication
-    let (event_tx, event_rx) = mpsc::channel::<NodeEvent>(EVENT_CHANNEL_CAPACITY);
+    // Create signal channel: block processor -> FSM loop
+    let (signal_tx, signal_rx) = mpsc::channel::<FsmSignal>(SIGNAL_CHANNEL_CAPACITY);
 
-    // Create cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
-
-    // Spawn worker threads
     let mut tasks = tokio::task::JoinSet::new();
 
-    // Thread A: Block Processor (Live Updates)
+    // Block processor: parses blocks, signals FSM when state changes
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
-        let event_tx = event_tx.clone();
         let cancel = cancel.clone();
         async move {
-            block::run(ctx, event_tx, cancel)
+            block::run(ctx, signal_tx, cancel)
                 .await
                 .map_err(|e| OrchestratorError::BlockProcessor(e.to_string()))
         }
     });
 
-    // Thread B: Network Sync
+    // FSM loop: executes actions based on on-chain state
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let cancel = cancel.clone();
         async move {
-            network_sync::run(ctx, event_rx, cancel)
+            network_sync::run(ctx, signal_rx, cancel)
                 .await
                 .map_err(|e| OrchestratorError::NetworkSync(e.to_string()))
         }

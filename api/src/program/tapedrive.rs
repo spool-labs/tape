@@ -4,7 +4,7 @@ use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
 use super::token::MINT_ADDRESS;
 
 pub const MEMBER_COUNT:           usize = 128;
-pub const MIN_COMMITTEE_SIZE:     usize = 25;              // 3f+1 where f=8, minimum for BFT operation
+pub const MIN_COMMITTEE_SIZE:     usize = 25;              // 25 for production (5 for local testing)
 pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;
 pub const EPOCH_VALUES:           usize = 4;               // Epoch N, N+1, N+2, N+3

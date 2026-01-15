@@ -34,12 +34,12 @@ pub async fn create_rpc_client(rpc_url: &str) -> Result<RpcClient<SolanaRpc>> {
 }
 
 /// Wrapper around RpcClient with convenience methods for e2e tests.
-pub struct E2eRpcClient {
+pub struct TestRpcClient {
     inner: RpcClient<SolanaRpc>,
 }
 
-impl E2eRpcClient {
-    /// Create a new E2eRpcClient connected to the specified URL.
+impl TestRpcClient {
+    /// Create a new TestRpcClient connected to the specified URL.
     pub async fn new(rpc_url: &str) -> Result<Self> {
         let inner = create_rpc_client(rpc_url).await?;
         Ok(Self { inner })
@@ -122,7 +122,7 @@ impl E2eRpcClient {
 
 /// Wait for epoch phase using RPC client.
 pub async fn wait_for_epoch_phase_rpc(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     phase: &str,
     timeout: Duration,
 ) -> Result<()> {
@@ -143,7 +143,7 @@ pub async fn wait_for_epoch_phase_rpc(
 
 /// Wait for epoch ID to reach a specific value using RPC client.
 pub async fn wait_for_epoch_id_rpc(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     epoch_id: EpochNumber,
     timeout: Duration,
 ) -> Result<()> {
@@ -164,7 +164,7 @@ pub async fn wait_for_epoch_id_rpc(
 
 /// Wait for committee size to reach a minimum value using RPC client.
 pub async fn wait_for_committee_size_rpc(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     min_size: usize,
     timeout: Duration,
 ) -> Result<()> {
@@ -185,7 +185,7 @@ pub async fn wait_for_committee_size_rpc(
 
 /// Wait for committee_next to reach a minimum value using RPC client.
 pub async fn wait_for_committee_next_size_rpc(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     min_size: usize,
     timeout: Duration,
 ) -> Result<()> {
@@ -205,7 +205,7 @@ pub async fn wait_for_committee_next_size_rpc(
 }
 
 /// Debug print current state from RPC.
-pub async fn debug_rpc_state(rpc: &E2eRpcClient, label: &str) {
+pub async fn debug_rpc_state(rpc: &TestRpcClient, label: &str) {
     println!("\n[{}]", label);
 
     match rpc.get_epoch().await {
@@ -253,7 +253,7 @@ pub async fn debug_rpc_state(rpc: &E2eRpcClient, label: &str) {
 }
 
 /// Debug print node state from RPC.
-pub async fn debug_node_state(rpc: &E2eRpcClient, authority: &Pubkey, label: &str) {
+pub async fn debug_node_state(rpc: &TestRpcClient, authority: &Pubkey, label: &str) {
     match rpc.get_node(authority).await {
         Ok(node) => {
             println!(

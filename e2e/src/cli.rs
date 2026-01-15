@@ -370,40 +370,6 @@ impl Tapedrive {
     // Account query commands
     // =========================================================================
 
-    /// Get system account state as raw text.
-    ///
-    /// Equivalent to: `tape account system`
-    pub fn account_system_raw(&self) -> Result<String> {
-        let mut cmd = self.cmd();
-        cmd.args(["account", "system"]);
-        self.exec_stdout(cmd)
-    }
-
-    /// Get epoch account state as raw text.
-    ///
-    /// Equivalent to: `tape account epoch`
-    pub fn account_epoch_raw(&self) -> Result<String> {
-        let mut cmd = self.cmd();
-        cmd.args(["account", "epoch"]);
-        self.exec_stdout(cmd)
-    }
-
-    /// Get system account state (parses text output).
-    ///
-    /// Equivalent to: `tape account system`
-    pub fn account_system(&self) -> Result<SystemAccount> {
-        let output = self.account_system_raw()?;
-        parse_system_account(&output)
-    }
-
-    /// Get epoch account state (parses text output).
-    ///
-    /// Equivalent to: `tape account epoch`
-    pub fn account_epoch(&self) -> Result<EpochAccount> {
-        let output = self.account_epoch_raw()?;
-        parse_epoch_account(&output)
-    }
-
     /// Get archive account raw output.
     ///
     /// Equivalent to: `tape account archive`
@@ -430,17 +396,6 @@ impl Tapedrive {
         if let Some(epoch) = epoch {
             cmd.args(["--epoch", &epoch.0.to_string()]);
         }
-        // TODO: Parse text output when needed
-        self.exec_json(cmd)
-    }
-
-    /// Get node account by authority.
-    ///
-    /// Equivalent to: `tape account node <authority>`
-    pub fn account_node(&self, authority: &Pubkey) -> Result<NodeAccount> {
-        let mut cmd = self.cmd();
-        cmd.args(["account", "node", &authority.to_string()]);
-        // TODO: Parse text output when needed
         self.exec_json(cmd)
     }
 
@@ -550,24 +505,6 @@ pub struct NodeStatus {
     pub network_address: Option<String>,
 }
 
-/// System account state.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SystemAccount {
-    pub total_nodes: Option<u64>,
-    pub total_tapes: Option<u64>,
-    pub committee_size: Option<usize>,
-    pub committee_next_size: Option<usize>,
-}
-
-/// Epoch account state.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EpochAccount {
-    pub id: Option<u64>,
-    pub phase: Option<String>,
-    pub last_epoch: Option<i64>,
-    pub weight: Option<u64>,
-}
-
 /// Committee info.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommitteeInfo {
@@ -581,16 +518,6 @@ pub struct CommitteeMember {
     pub node_id: Option<u64>,
     pub stake: Option<u64>,
     pub spool_count: Option<u16>,
-}
-
-/// Node account state.
-#[derive(Debug, Clone, Deserialize)]
-pub struct NodeAccount {
-    pub id: Option<u64>,
-    pub authority: Option<String>,
-    pub name: Option<String>,
-    pub commission: Option<u64>,
-    pub network_address: Option<String>,
 }
 
 /// Archive account state.
@@ -632,81 +559,6 @@ fn find_workspace_root() -> Result<PathBuf> {
             bail!("Could not find workspace root");
         }
     }
-}
-
-/// Parse system account from text output.
-fn parse_system_account(output: &str) -> Result<SystemAccount> {
-    let mut account = SystemAccount {
-        total_nodes: None,
-        total_tapes: None,
-        committee_size: None,
-        committee_next_size: None,
-    };
-
-    for line in output.lines() {
-        let line = line.trim();
-        if line.starts_with("Total Nodes:") {
-            account.total_nodes = extract_number(line);
-        } else if line.starts_with("Total Tapes:") {
-            account.total_tapes = extract_number(line);
-        } else if line.starts_with("Current Committee") {
-            // Format: "Current Committee (N members):"
-            if let Some(start) = line.find('(') {
-                if let Some(end) = line.find(" members") {
-                    if let Ok(n) = line[start + 1..end].parse::<usize>() {
-                        account.committee_size = Some(n);
-                    }
-                }
-            }
-        } else if line.starts_with("Next Committee") {
-            if let Some(start) = line.find('(') {
-                if let Some(end) = line.find(" members") {
-                    if let Ok(n) = line[start + 1..end].parse::<usize>() {
-                        account.committee_next_size = Some(n);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(account)
-}
-
-/// Parse epoch account from text output.
-fn parse_epoch_account(output: &str) -> Result<EpochAccount> {
-    let mut account = EpochAccount {
-        id: None,
-        phase: None,
-        last_epoch: None,
-        weight: None,
-    };
-
-    for line in output.lines() {
-        let line = line.trim();
-        if line.starts_with("Epoch Number:") {
-            // Format: "Epoch Number:  epoch:2"
-            if let Some(idx) = line.find("epoch:") {
-                if let Ok(n) = line[idx + 6..].trim().parse::<u64>() {
-                    account.id = Some(n);
-                }
-            }
-        } else if line.starts_with("Phase:") {
-            // Format: "Phase:         Active"
-            let parts: Vec<&str> = line.splitn(2, ':').collect();
-            if parts.len() == 2 {
-                account.phase = Some(parts[1].trim().to_string());
-            }
-        } else if line.starts_with("Last Epoch:") {
-            // Format: "Last Epoch:    1768264479 (unix timestamp)"
-            if let Some(num) = extract_number(line) {
-                account.last_epoch = Some(num as i64);
-            }
-        } else if line.starts_with("Weight:") {
-            account.weight = extract_number(line);
-        }
-    }
-
-    Ok(account)
 }
 
 /// Parse archive account from text output.

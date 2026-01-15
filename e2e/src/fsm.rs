@@ -13,7 +13,7 @@ use solana_sdk::signature::Signer;
 use tape_api::fsm::{NodeAction, NodeStateMachine};
 use tape_api::prelude::{Epoch, Node, System};
 
-use crate::rpc::E2eRpcClient;
+use crate::rpc::TestRpcClient;
 use crate::node::TestNode;
 use crate::wait::wait_for_with_desc;
 
@@ -21,10 +21,11 @@ use crate::wait::wait_for_with_desc;
 ///
 /// Fetches current System, Epoch, and Node state from the chain,
 /// then runs the FSM to determine what action the node should take.
-pub async fn get_fsm_action(rpc: &E2eRpcClient, authority: &Pubkey) -> Result<NodeAction> {
-    let system = rpc.get_system().await?;
-    let epoch = rpc.get_epoch().await?;
-    let node = rpc.get_node(authority).await?;
+pub async fn get_fsm_action(rpc: &TestRpcClient, authority: &Pubkey) -> Result<NodeAction> {
+    // Box all structs to avoid stack overflow (System is ~40KB+)
+    let system = Box::new(rpc.get_system().await?);
+    let epoch = Box::new(rpc.get_epoch().await?);
+    let node = Box::new(rpc.get_node(authority).await?);
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -38,13 +39,14 @@ pub async fn get_fsm_action(rpc: &E2eRpcClient, authority: &Pubkey) -> Result<No
 ///
 /// Use this when you need to control the time (e.g., testing epoch duration).
 pub async fn get_fsm_action_at_time(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     authority: &Pubkey,
     timestamp: i64,
 ) -> Result<NodeAction> {
-    let system = rpc.get_system().await?;
-    let epoch = rpc.get_epoch().await?;
-    let node = rpc.get_node(authority).await?;
+    // Box all structs to avoid stack overflow (System is ~40KB+)
+    let system = Box::new(rpc.get_system().await?);
+    let epoch = Box::new(rpc.get_epoch().await?);
+    let node = Box::new(rpc.get_node(authority).await?);
 
     Ok(NodeStateMachine::determine_action(&system, &epoch, &node, timestamp))
 }
@@ -60,7 +62,7 @@ pub fn get_fsm_action_from_state(system: &System, epoch: &Epoch, node: &Node, ti
 ///
 /// Panics with debug state if the action doesn't match.
 pub async fn assert_fsm_action(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     authority: &Pubkey,
     expected: NodeAction,
     context: &str,
@@ -84,7 +86,7 @@ pub async fn assert_fsm_action(
 ///
 /// Use this for flexible matching (e.g., matching multiple valid actions).
 pub async fn assert_fsm_action_matches<F>(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     authority: &Pubkey,
     predicate: F,
     description: &str,
@@ -109,7 +111,7 @@ where
 
 /// Wait for a node's FSM action to match the expected action.
 pub async fn wait_for_fsm_action(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     authority: &Pubkey,
     expected: NodeAction,
     timeout: Duration,
@@ -129,7 +131,7 @@ pub async fn wait_for_fsm_action(
 
 /// Wait for a node's FSM action to match a predicate.
 pub async fn wait_for_fsm_action_matches<F>(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     authority: &Pubkey,
     predicate: F,
     description: &str,
@@ -155,9 +157,10 @@ where
 }
 
 /// Debug print FSM state for a node.
-pub async fn debug_fsm(rpc: &E2eRpcClient, authority: &Pubkey, label: &str) {
+pub async fn debug_fsm(rpc: &TestRpcClient, authority: &Pubkey, label: &str) {
+    // Box all structs to avoid stack overflow (System is ~40KB+)
     let system = match rpc.get_system().await {
-        Ok(s) => s,
+        Ok(s) => Box::new(s),
         Err(e) => {
             println!("[FSM {}] ERROR getting system: {}", label, e);
             return;
@@ -165,7 +168,7 @@ pub async fn debug_fsm(rpc: &E2eRpcClient, authority: &Pubkey, label: &str) {
     };
 
     let epoch = match rpc.get_epoch().await {
-        Ok(e) => e,
+        Ok(e) => Box::new(e),
         Err(e) => {
             println!("[FSM {}] ERROR getting epoch: {}", label, e);
             return;
@@ -173,7 +176,7 @@ pub async fn debug_fsm(rpc: &E2eRpcClient, authority: &Pubkey, label: &str) {
     };
 
     let node = match rpc.get_node(authority).await {
-        Ok(n) => n,
+        Ok(n) => Box::new(n),
         Err(e) => {
             println!("[FSM {}] ERROR getting node: {}", label, e);
             return;
@@ -229,7 +232,7 @@ pub async fn debug_fsm(rpc: &E2eRpcClient, authority: &Pubkey, label: &str) {
 
 /// Verify all nodes have the expected FSM action.
 pub async fn assert_all_nodes_action(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     nodes: &[TestNode],
     expected: NodeAction,
     context: &str,
@@ -243,7 +246,7 @@ pub async fn assert_all_nodes_action(
 
 /// Verify all nodes' FSM actions match a predicate.
 pub async fn assert_all_nodes_action_matches<F>(
-    rpc: &E2eRpcClient,
+    rpc: &TestRpcClient,
     nodes: &[TestNode],
     predicate: F,
     description: &str,
@@ -267,7 +270,7 @@ where
 }
 
 /// Debug print FSM state for all nodes.
-pub async fn debug_all_nodes_fsm(rpc: &E2eRpcClient, nodes: &[TestNode], label: &str) {
+pub async fn debug_all_nodes_fsm(rpc: &TestRpcClient, nodes: &[TestNode], label: &str) {
     println!("\n=== FSM State: {} ===", label);
     for node in nodes {
         let authority = node.authority.pubkey();
@@ -280,7 +283,7 @@ pub async fn debug_all_nodes_fsm(rpc: &E2eRpcClient, nodes: &[TestNode], label: 
 }
 
 /// Check if any node has a blocked FSM action.
-pub async fn any_node_blocked(rpc: &E2eRpcClient, nodes: &[TestNode]) -> Result<bool> {
+pub async fn any_node_blocked(rpc: &TestRpcClient, nodes: &[TestNode]) -> Result<bool> {
     for node in nodes {
         let authority = node.authority.pubkey();
         let action = get_fsm_action(rpc, &authority).await?;
@@ -292,7 +295,7 @@ pub async fn any_node_blocked(rpc: &E2eRpcClient, nodes: &[TestNode]) -> Result<
 }
 
 /// Check if all nodes are waiting (not blocked, not ready to act).
-pub async fn all_nodes_waiting(rpc: &E2eRpcClient, nodes: &[TestNode]) -> Result<bool> {
+pub async fn all_nodes_waiting(rpc: &TestRpcClient, nodes: &[TestNode]) -> Result<bool> {
     for node in nodes {
         let authority = node.authority.pubkey();
         let action = get_fsm_action(rpc, &authority).await?;
@@ -304,7 +307,7 @@ pub async fn all_nodes_waiting(rpc: &E2eRpcClient, nodes: &[TestNode]) -> Result
 }
 
 /// Check if any node requires a transaction submission.
-pub async fn any_node_requires_transaction(rpc: &E2eRpcClient, nodes: &[TestNode]) -> Result<bool> {
+pub async fn any_node_requires_transaction(rpc: &TestRpcClient, nodes: &[TestNode]) -> Result<bool> {
     for node in nodes {
         let authority = node.authority.pubkey();
         let action = get_fsm_action(rpc, &authority).await?;
@@ -349,7 +352,7 @@ impl From<&NodeAction> for ActionCategory {
 }
 
 /// Categorize a node's FSM action.
-pub async fn categorize_action(rpc: &E2eRpcClient, authority: &Pubkey) -> Result<ActionCategory> {
+pub async fn categorize_action(rpc: &TestRpcClient, authority: &Pubkey) -> Result<ActionCategory> {
     let action = get_fsm_action(rpc, authority).await?;
     Ok(ActionCategory::from(&action))
 }
