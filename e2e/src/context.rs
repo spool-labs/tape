@@ -453,16 +453,18 @@ impl TestContextBuilder {
         // Wait for nodes to initialize
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        // Bootstrap: advance epoch to activate nodes from committee_next to committee
+        // Bootstrap: wait for nodes to advance the epoch autonomously
+        // (they will call AdvanceEpoch once EPOCH_DURATION elapses)
         // Calculate remaining wait time - epoch clock started at admin_init, so
         // some/all of EPOCH_DURATION may have already elapsed during node setup
         let wait = ctx.remaining_epoch_wait().await;
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
-        ctx.cli
-            .admin_advance_epoch()
-            .context("Bootstrap epoch advance failed")?;
+        // Wait for nodes to advance the epoch (don't call manually - nodes handle it)
+        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), Duration::from_secs(30))
+            .await
+            .context("Nodes did not advance epoch during bootstrap")?;
 
         // Wait for epoch to reach Active phase (goes through Syncing -> Settling -> Active)
         crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
@@ -553,14 +555,20 @@ impl TestContextBuilder {
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        // Bootstrap - calculate remaining wait time
+        // Bootstrap: wait for nodes to advance the epoch autonomously
         let wait = ctx.remaining_epoch_wait().await;
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
-        ctx.cli
-            .admin_advance_epoch()
-            .context("Bootstrap epoch advance failed")?;
+        // Wait for nodes to advance the epoch (don't call manually - nodes handle it)
+        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), Duration::from_secs(30))
+            .await
+            .context("Nodes did not advance epoch during bootstrap")?;
+
+        // Wait for epoch to reach Active phase
+        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
+            .await
+            .context("Epoch did not reach Active phase after bootstrap")?;
 
         ctx.bootstrapped = true;
 
