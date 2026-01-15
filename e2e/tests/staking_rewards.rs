@@ -150,7 +150,7 @@ async fn test_rewards_distribution_across_epochs() {
         }
     }
 
-    let epoch_before = ctx.epoch().expect("Failed to get epoch").id.unwrap_or(0);
+    let epoch_before = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     let archive_before = ctx.cli.account_archive().expect("Failed to get archive");
     println!("\n=== Before Epoch Advance ===");
     println!("  Epoch: {}", epoch_before);
@@ -166,7 +166,7 @@ async fn test_rewards_distribution_across_epochs() {
     println!("  Waiting for nodes to process epoch change...");
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let epoch_after = ctx.epoch().expect("Failed to get epoch").id.unwrap_or(0);
+    let epoch_after = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     let archive_after = ctx.cli.account_archive().expect("Failed to get archive");
     println!("\n=== After Epoch Advance ===");
     println!("  Epoch: {}", epoch_after);
@@ -336,7 +336,7 @@ async fn test_multi_epoch_reward_cycle() {
     println!("\n=== Observing {} autonomous epoch advances ===", num_epochs_to_observe);
     println!("(Nodes advance epochs every ~60s when conditions are met)");
 
-    let mut current_epoch = ctx.epoch().expect("epoch").id.unwrap_or(2);
+    let mut current_epoch = ctx.epoch().await.expect("epoch").id.as_u64();
 
     for _i in 0..num_epochs_to_observe {
         let target_epoch = current_epoch + 1;
@@ -352,11 +352,14 @@ async fn test_multi_epoch_reward_cycle() {
                 panic!("Timed out waiting for epoch {} to start", target_epoch);
             }
 
-            let epoch = ctx.epoch().expect("epoch");
-            let epoch_id = epoch.id.unwrap_or(0);
+            let epoch = ctx.epoch().await.expect("epoch");
+            let epoch_id = epoch.id.as_u64();
 
             if epoch_id >= target_epoch {
-                let phase = epoch.phase.as_deref().unwrap_or("Unknown");
+                let phase = if epoch.state.is_syncing() { "Syncing" }
+                    else if epoch.state.is_settling() { "Settling" }
+                    else if epoch.state.is_active() { "Active" }
+                    else { "Unknown" };
                 println!("  Epoch {} started (phase: {})", epoch_id, phase);
 
                 // Time how long it takes to reach Active phase
@@ -443,11 +446,14 @@ async fn wait_for_active_epoch_timed(ctx: &TestContext, max_wait_secs: u64) -> D
     let poll_interval = Duration::from_millis(100);
 
     loop {
-        if let Ok(epoch) = ctx.epoch() {
-            let phase = epoch.phase.as_deref().unwrap_or("Unknown");
+        if let Ok(epoch) = ctx.epoch().await {
+            let phase = if epoch.state.is_syncing() { "Syncing" }
+                else if epoch.state.is_settling() { "Settling" }
+                else if epoch.state.is_active() { "Active" }
+                else { "Unknown" };
             if phase == "Active" {
                 let elapsed = start.elapsed();
-                println!("  Epoch {} is Active (took {:?})", epoch.id.unwrap_or(0), elapsed);
+                println!("  Epoch {} is Active (took {:?})", epoch.id.as_u64(), elapsed);
                 return elapsed;
             }
             // Log phase transitions

@@ -20,7 +20,7 @@
 //!     // Test logic here - nodes are registered, staked, started, and bootstrapped
 //!
 //!     ctx.observe_epochs(10, |epoch, system| {
-//!         println!("Epoch {}: phase={:?}", epoch.id.unwrap_or(0), epoch.phase);
+//!         println!("Epoch {}: committee={}", epoch.id.as_u64(), system.committee.size());
 //!         Ok(())
 //!     }).await.unwrap();
 //! }
@@ -31,21 +31,25 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use solana_sdk::signature::Signer;
 
-use crate::cli::{EpochAccount, SystemAccount};
 use crate::node::TestNode;
-use tape_api::program::EPOCH_DURATION;
+use crate::rpc::E2eRpcClient;
 use crate::validator::{Validator, ValidatorOptions};
-use crate::wait::{wait_for_epoch_advance_from, wait_for_rpc, LONG_TIMEOUT};
+use crate::wait::{wait_for_rpc, LONG_TIMEOUT};
 use crate::Tapedrive;
+use tape_api::prelude::{Epoch, System};
+use tape_api::program::EPOCH_DURATION;
+use tape_core::types::EpochNumber;
 
-/// Test context containing validator, CLI, and nodes.
+/// Test context containing validator, CLI, RPC client, and nodes.
 ///
 /// Created via the builder pattern. Handles cleanup automatically on drop.
 pub struct TestContext {
     /// The local validator instance.
     pub validator: Validator,
-    /// CLI wrapper for interacting with the system.
+    /// CLI wrapper for mutations (register, stake, join, advance, etc.).
     pub cli: Tapedrive,
+    /// RPC client for state queries.
+    pub rpc: E2eRpcClient,
     /// Test nodes (may be empty if not using nodes).
     pub nodes: Vec<TestNode>,
     /// Whether nodes have been bootstrapped (activated in committee).
@@ -58,14 +62,39 @@ impl TestContext {
         TestContextBuilder::default()
     }
 
-    /// Get the current epoch from the chain.
-    pub fn epoch(&self) -> Result<EpochAccount> {
-        self.cli.account_epoch()
+    /// Get the current epoch from the chain via RPC.
+    pub async fn epoch(&self) -> Result<Epoch> {
+        self.rpc.get_epoch().await
     }
 
-    /// Get the current system state from the chain.
-    pub fn system(&self) -> Result<SystemAccount> {
-        self.cli.account_system()
+    /// Get the current epoch ID from the chain via RPC.
+    pub async fn epoch_id(&self) -> Result<EpochNumber> {
+        self.rpc.get_epoch_id().await
+    }
+
+    /// Get the current epoch phase from the chain via RPC.
+    pub async fn epoch_phase(&self) -> Result<String> {
+        self.rpc.get_epoch_phase().await
+    }
+
+    /// Get the current system state from the chain via RPC.
+    pub async fn system(&self) -> Result<System> {
+        self.rpc.get_system().await
+    }
+
+    /// Get the current committee size via RPC.
+    pub async fn committee_size(&self) -> Result<usize> {
+        self.rpc.get_committee_size().await
+    }
+
+    /// Get the current committee_next size via RPC.
+    pub async fn committee_next_size(&self) -> Result<usize> {
+        self.rpc.get_committee_next_size().await
+    }
+
+    /// Check if system is in bootstrap mode (committee_prev empty).
+    pub async fn is_bootstrap_mode(&self) -> Result<bool> {
+        self.rpc.is_bootstrap_mode().await
     }
 
     /// Manually advance the epoch (requires EPOCH_DURATION to have passed).
@@ -76,11 +105,31 @@ impl TestContext {
 
     /// Wait for remaining EPOCH_DURATION and then advance the epoch.
     pub async fn wait_and_advance_epoch(&self) -> Result<()> {
-        let wait = remaining_epoch_wait(&self.cli);
+        let wait = self.remaining_epoch_wait().await;
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
         self.advance_epoch()
+    }
+
+    /// Calculate remaining time until EPOCH_DURATION has passed.
+    async fn remaining_epoch_wait(&self) -> Duration {
+        let epoch = self.rpc.get_epoch().await.ok();
+        let last_epoch_ts = epoch.map(|e| e.last_epoch).unwrap_or(0);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let elapsed = now - last_epoch_ts;
+        let remaining = (EPOCH_DURATION + 1) - elapsed;
+
+        if remaining > 0 {
+            Duration::from_secs(remaining as u64)
+        } else {
+            Duration::ZERO
+        }
     }
 
     /// Observe epochs advancing autonomously.
@@ -94,19 +143,29 @@ impl TestContext {
     /// * `check` - Callback to run after each epoch advance
     pub async fn observe_epochs<F>(&self, count: u64, mut check: F) -> Result<()>
     where
-        F: FnMut(&EpochAccount, &SystemAccount) -> Result<()>,
+        F: FnMut(&Epoch, &System) -> Result<()>,
     {
-        let mut last_epoch_id = self.epoch()?.id.unwrap_or(0);
+        let mut last_epoch_id = self.epoch_id().await?.as_u64();
         let mut observed = 0u64;
 
         while observed < count {
-            wait_for_epoch_advance_from(&self.cli, last_epoch_id, LONG_TIMEOUT)
-                .await
-                .context("Epoch should advance")?;
+            // Wait for epoch to advance
+            crate::wait::wait_for_with_desc(
+                &format!("epoch > {}", last_epoch_id),
+                || async {
+                    match self.epoch_id().await {
+                        Ok(id) => Ok(id.as_u64() > last_epoch_id),
+                        Err(_) => Ok(false),
+                    }
+                },
+                LONG_TIMEOUT,
+            )
+            .await
+            .context("Epoch should advance")?;
 
-            let epoch = self.epoch()?;
-            let system = self.system()?;
-            let epoch_id = epoch.id.unwrap_or(0);
+            let epoch = self.epoch().await?;
+            let system = self.system().await?;
+            let epoch_id = epoch.id.as_u64();
 
             observed += epoch_id - last_epoch_id;
             last_epoch_id = epoch_id;
@@ -155,11 +214,9 @@ impl TestContext {
         }
     }
 
-    /// Check if the system is in low-quorum mode.
-    pub fn is_low_quorum(&self) -> Result<bool> {
-        let system = self.system()?;
-        let committee_size = system.committee_size.unwrap_or(0);
-        Ok(committee_size < crate::consts::MIN_COMMITTEE_SIZE)
+    /// Check if the system would block epoch advancement.
+    pub async fn would_block_advance(&self) -> Result<bool> {
+        self.rpc.would_block_advance().await
     }
 
     /// Get node URLs for all nodes.
@@ -204,28 +261,6 @@ impl TestContext {
 impl Drop for TestContext {
     fn drop(&mut self) {
         self.stop_nodes();
-    }
-}
-
-/// Calculate remaining time until EPOCH_DURATION has passed.
-///
-/// Returns Duration::ZERO if enough time has already elapsed.
-fn remaining_epoch_wait(cli: &Tapedrive) -> Duration {
-    let epoch = cli.account_epoch().ok();
-    let last_epoch_ts = epoch.and_then(|e| e.last_epoch).unwrap_or(0);
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let elapsed = now - last_epoch_ts;
-    let remaining = (EPOCH_DURATION + 1) - elapsed;
-
-    if remaining > 0 {
-        Duration::from_secs(remaining as u64)
-    } else {
-        Duration::ZERO
     }
 }
 
@@ -298,7 +333,8 @@ impl TestContextBuilder {
     /// 1. Spawn a validator
     /// 2. Wait for RPC to be ready
     /// 3. Initialize the system
-    /// 4. Create and register nodes (if num_nodes > 0)
+    /// 4. Create RPC client
+    /// 5. Create and register nodes (if num_nodes > 0)
     ///
     /// Nodes will be registered, staked, and joined but NOT started or bootstrapped.
     /// Node creation and on-chain registration run in parallel for speed.
@@ -318,6 +354,11 @@ impl TestContextBuilder {
         // Create CLI and initialize system
         let cli = Tapedrive::new_localnet();
         cli.admin_init().context("Failed to initialize system")?;
+
+        // Create RPC client
+        let rpc = E2eRpcClient::new(validator.rpc_url())
+            .await
+            .context("Failed to create RPC client")?;
 
         let num_nodes = self.num_nodes;
         let base_port = self.base_port;
@@ -362,6 +403,7 @@ impl TestContextBuilder {
         Ok(TestContext {
             validator,
             cli,
+            rpc,
             nodes,
             bootstrapped: false,
         })
@@ -414,7 +456,7 @@ impl TestContextBuilder {
         // Bootstrap: advance epoch to activate nodes from committee_next to committee
         // Calculate remaining wait time - epoch clock started at admin_init, so
         // some/all of EPOCH_DURATION may have already elapsed during node setup
-        let wait = remaining_epoch_wait(&ctx.cli);
+        let wait = ctx.remaining_epoch_wait().await;
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }
@@ -454,6 +496,11 @@ impl TestContextBuilder {
         let cli = Tapedrive::new_localnet();
         cli.admin_init().context("Failed to initialize system")?;
 
+        // Create RPC client
+        let rpc = E2eRpcClient::new(validator.rpc_url())
+            .await
+            .context("Failed to create RPC client")?;
+
         // Create nodes with varying stakes
         let mut nodes = Vec::with_capacity(VARYING_STAKES.len());
 
@@ -474,6 +521,7 @@ impl TestContextBuilder {
         Ok(TestContext {
             validator,
             cli,
+            rpc,
             nodes,
             bootstrapped: false,
         })
@@ -501,7 +549,7 @@ impl TestContextBuilder {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Bootstrap - calculate remaining wait time
-        let wait = remaining_epoch_wait(&ctx.cli);
+        let wait = ctx.remaining_epoch_wait().await;
         if !wait.is_zero() {
             tokio::time::sleep(wait).await;
         }

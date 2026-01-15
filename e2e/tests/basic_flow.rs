@@ -94,13 +94,14 @@ async fn test_system_init() {
         .expect("Failed to setup test context");
 
     // Query system state
-    let system = ctx.system().expect("Failed to get system account");
-    assert_eq!(system.total_nodes, Some(0));
+    let system = ctx.system().await.expect("Failed to get system account");
+    assert_eq!(system.total_nodes, 0);
 
     // Query epoch state
-    let epoch = ctx.epoch().expect("Failed to get epoch account");
-    assert!(epoch.id.is_some(), "Expected epoch ID to be set");
-    assert_eq!(epoch.phase.as_deref(), Some("Active"));
+    let epoch = ctx.epoch().await.expect("Failed to get epoch account");
+    // Epoch ID is always set now - just check it's valid
+    assert!(epoch.id.as_u64() >= 1, "Expected epoch ID to be set");
+    assert!(epoch.state.is_active(), "Expected epoch to be in Active phase");
 
     println!("System initialized successfully");
 }
@@ -121,8 +122,8 @@ async fn test_node_registration() {
         .expect("Failed to setup test context");
 
     // Verify system state
-    let system = ctx.system().expect("Failed to get system account");
-    assert_eq!(system.total_nodes, Some(3));
+    let system = ctx.system().await.expect("Failed to get system account");
+    assert_eq!(system.total_nodes, 3);
 
     println!("All {} nodes registered successfully", ctx.nodes.len());
 }
@@ -144,8 +145,8 @@ async fn test_staking_flow() {
         .expect("Failed to setup test context");
 
     // Check committee_next (node joined but not yet in committee)
-    let system = ctx.system().expect("Failed to get system account");
-    assert_eq!(system.committee_next_size, Some(1));
+    let system = ctx.system().await.expect("Failed to get system account");
+    assert_eq!(system.committee_next.size(), 1);
 
     // Advance epoch to activate node
     ctx.wait_and_advance_epoch()
@@ -153,8 +154,8 @@ async fn test_staking_flow() {
         .expect("Failed to advance epoch");
 
     // Check committee
-    let system = ctx.system().expect("Failed to get system account");
-    assert_eq!(system.committee_size, Some(1));
+    let system = ctx.system().await.expect("Failed to get system account");
+    assert_eq!(system.committee.size(), 1);
 
     println!("Staking flow completed successfully");
 }
@@ -175,8 +176,8 @@ async fn test_with_running_validator() {
         .expect("Failed to setup test context");
 
     // Verify committee after bootstrap
-    let system = ctx.system().expect("Failed to get system account");
-    assert_eq!(system.committee_size, Some(1));
+    let system = ctx.system().await.expect("Failed to get system account");
+    assert_eq!(system.committee.size(), 1);
 
     println!("Test passed! Node registered, staked, joined, and epoch advanced.");
 }

@@ -186,7 +186,10 @@ async fn test_multiple_epoch_cycles() {
     println!("\n=== Observing {} epoch cycles ===", NUM_CYCLES);
 
     ctx.observe_epochs(NUM_CYCLES, |epoch, system| {
-        let phase = epoch.phase.as_deref().unwrap_or("unknown");
+        let phase = if epoch.state.is_syncing() { "Syncing" }
+            else if epoch.state.is_settling() { "Settling" }
+            else if epoch.state.is_active() { "Active" }
+            else { "Unknown" };
 
         match phase {
             "Syncing" => syncing_count += 1,
@@ -197,14 +200,14 @@ async fn test_multiple_epoch_cycles() {
 
         println!(
             "  Epoch {}: phase={}, committee={}",
-            epoch.id.unwrap_or(0),
+            epoch.id.as_u64(),
             phase,
-            system.committee_size.unwrap_or(0)
+            system.committee.size()
         );
 
         // Committee should stay stable
         assert!(
-            system.committee_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE,
+            system.committee.size() >= MIN_COMMITTEE_SIZE,
             "Committee should not drop below minimum"
         );
 

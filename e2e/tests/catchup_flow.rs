@@ -42,16 +42,24 @@ async fn test_late_node_detects_stale_epochs() {
         .expect("Failed to setup test context");
 
     // Check epoch state
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("After bootstrap - epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let phase = if epoch.state.is_syncing() { "Syncing" }
+        else if epoch.state.is_settling() { "Settling" }
+        else if epoch.state.is_active() { "Active" }
+        else { "Unknown" };
+    println!("After bootstrap - epoch: {}, phase: {}", epoch.id.as_u64(), phase);
 
     // Advance one more epoch
     ctx.wait_and_advance_epoch()
         .await
         .expect("Failed to advance epoch");
 
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("After advance - epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let phase = if epoch.state.is_syncing() { "Syncing" }
+        else if epoch.state.is_settling() { "Settling" }
+        else if epoch.state.is_active() { "Active" }
+        else { "Unknown" };
+    println!("After advance - epoch: {}, phase: {}", epoch.id.as_u64(), phase);
 
     // Add a late-joining node
     println!("\n=== Adding late-joining node ===");
@@ -64,10 +72,14 @@ async fn test_late_node_detects_stale_epochs() {
         .await
         .expect("Failed to advance epoch for new node");
 
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    let system = ctx.system().expect("Failed to get system");
-    println!("Final epoch: {:?}, phase: {:?}", epoch.id, epoch.phase);
-    println!("Committee size: {:?}", system.committee_size);
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let system = ctx.system().await.expect("Failed to get system");
+    let phase = if epoch.state.is_syncing() { "Syncing" }
+        else if epoch.state.is_settling() { "Settling" }
+        else if epoch.state.is_active() { "Active" }
+        else { "Unknown" };
+    println!("Final epoch: {}, phase: {}", epoch.id.as_u64(), phase);
+    println!("Committee size: {}", system.committee.size());
 
     println!("\nTest passed: Late node registered and joined after multiple epochs");
 }
@@ -96,8 +108,8 @@ async fn test_node_startup_after_epoch_advances() {
         .expect("Failed to setup test context");
 
     // Get initial epoch
-    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("Initial epoch: {:?}", initial_epoch.id);
+    let initial_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("Initial epoch: {}", initial_epoch.id.as_u64());
 
     // Advance epoch to activate node in committee_next
     ctx.wait_and_advance_epoch().await.expect("Failed to advance epoch");
@@ -111,14 +123,14 @@ async fn test_node_startup_after_epoch_advances() {
         }
     }
 
-    let pre_start_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("Epoch before node start: {:?}", pre_start_epoch.id);
+    let pre_start_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("Epoch before node start: {}", pre_start_epoch.id.as_u64());
 
     // Now fund and start the node - it should catch up on all the epochs
     // without trying to submit stale transactions
     println!(
         "\nStarting node (should catch up on {} epochs)...",
-        pre_start_epoch.id.unwrap_or(0) - initial_epoch.id.unwrap_or(0)
+        pre_start_epoch.id.as_u64() - initial_epoch.id.as_u64()
     );
 
     let node = &mut ctx.nodes[0];
@@ -200,9 +212,9 @@ async fn test_staggered_node_joins() {
     // Track epochs where each node joins
     let mut join_epochs = Vec::new();
 
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    join_epochs.push(("node_0", epoch.id.unwrap_or(0)));
-    println!("Node 0 joined at epoch {}", epoch.id.unwrap_or(0));
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    join_epochs.push(("node_0", epoch.id.as_u64()));
+    println!("Node 0 joined at epoch {}", epoch.id.as_u64());
 
     // Add node 1 next epoch
     ctx.add_nodes(1, 1000)
@@ -212,9 +224,9 @@ async fn test_staggered_node_joins() {
         .await
         .expect("Failed to advance");
 
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    join_epochs.push(("node_1", epoch.id.unwrap_or(0)));
-    println!("Node 1 joined at epoch {}", epoch.id.unwrap_or(0));
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    join_epochs.push(("node_1", epoch.id.as_u64()));
+    println!("Node 1 joined at epoch {}", epoch.id.as_u64());
 
     // Add node 2 next epoch
     ctx.add_nodes(1, 1000)
@@ -224,17 +236,17 @@ async fn test_staggered_node_joins() {
         .await
         .expect("Failed to advance");
 
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    join_epochs.push(("node_2", epoch.id.unwrap_or(0)));
-    println!("Node 2 joined at epoch {}", epoch.id.unwrap_or(0));
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    join_epochs.push(("node_2", epoch.id.as_u64()));
+    println!("Node 2 joined at epoch {}", epoch.id.as_u64());
 
     // Final state
-    let final_epoch = ctx.epoch().expect("Failed to get epoch");
-    let system = ctx.system().expect("Failed to get system");
+    let final_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let system = ctx.system().await.expect("Failed to get system");
 
     println!("\n=== Final State ===");
-    println!("Epoch: {:?}", final_epoch.id);
-    println!("Committee size: {:?}", system.committee_size);
+    println!("Epoch: {}", final_epoch.id.as_u64());
+    println!("Committee size: {}", system.committee.size());
     println!("Join history:");
     for (name, epoch) in &join_epochs {
         println!("  {} joined at epoch {}", name, epoch);
@@ -264,8 +276,8 @@ async fn test_epoch_staleness_detection() {
         .expect("Failed to setup test context");
 
     // Get initial epoch
-    let initial = ctx.epoch().expect("Failed to get epoch");
-    let initial_id = initial.id.unwrap_or(0);
+    let initial = ctx.epoch().await.expect("Failed to get epoch");
+    let initial_id = initial.id.as_u64();
     println!("Initial epoch: {}", initial_id);
 
     // Advance a couple epochs
@@ -277,8 +289,8 @@ async fn test_epoch_staleness_detection() {
         }
     }
 
-    let current = ctx.epoch().expect("Failed to get epoch");
-    let current_id = current.id.unwrap_or(0);
+    let current = ctx.epoch().await.expect("Failed to get epoch");
+    let current_id = current.id.as_u64();
     println!("Current epoch: {}", current_id);
 
     // All epochs before current_id should be stale
@@ -323,13 +335,13 @@ async fn test_catchup_normal_quorum() {
         .await
         .expect("Failed to setup test context");
 
-    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("Initial epoch: {:?}", initial_epoch.id);
+    let initial_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("Initial epoch: {}", initial_epoch.id.as_u64());
 
     // Check system state
-    let system = ctx.system().expect("Failed to get system");
-    println!("Committee size: {:?}", system.committee_size);
-    println!("Committee next size: {:?}", system.committee_next_size);
+    let system = ctx.system().await.expect("Failed to get system");
+    println!("Committee size: {}", system.committee.size());
+    println!("Committee next size: {}", system.committee_next.size());
 
     // Wait for EPOCH_DURATION and advance to activate nodes
     println!(
@@ -345,12 +357,16 @@ async fn test_catchup_normal_quorum() {
     }
 
     // Check if we're in normal mode now
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    let system = ctx.system().expect("Failed to get system");
-    println!("Epoch: {:?}, Phase: {:?}", epoch.id, epoch.phase);
-    println!("Committee size: {:?}", system.committee_size);
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let system = ctx.system().await.expect("Failed to get system");
+    let phase = if epoch.state.is_syncing() { "Syncing" }
+        else if epoch.state.is_settling() { "Settling" }
+        else if epoch.state.is_active() { "Active" }
+        else { "Unknown" };
+    println!("Epoch: {}, Phase: {}", epoch.id.as_u64(), phase);
+    println!("Committee size: {}", system.committee.size());
 
-    let in_normal_mode = system.committee_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE;
+    let in_normal_mode = system.committee.size() >= MIN_COMMITTEE_SIZE;
     println!("In normal mode: {}", in_normal_mode);
 
     if in_normal_mode {
@@ -374,10 +390,14 @@ async fn test_catchup_normal_quorum() {
         tokio::time::sleep(Duration::from_secs(10)).await;
 
         // Check epoch phase - should transition to Settling or Active
-        let epoch = ctx.epoch().expect("Failed to get epoch");
+        let epoch = ctx.epoch().await.expect("Failed to get epoch");
+        let phase = if epoch.state.is_syncing() { "Syncing" }
+            else if epoch.state.is_settling() { "Settling" }
+            else if epoch.state.is_active() { "Active" }
+            else { "Unknown" };
         println!(
-            "After node sync - Epoch: {:?}, Phase: {:?}",
-            epoch.id, epoch.phase
+            "After node sync - Epoch: {}, Phase: {}",
+            epoch.id.as_u64(), phase
         );
 
         // Advance another epoch to test catch-up
@@ -389,8 +409,12 @@ async fn test_catchup_normal_quorum() {
             Err(e) => println!("Second advance: {}", e),
         }
 
-        let epoch = ctx.epoch().expect("Failed to get epoch");
-        println!("Final epoch: {:?}, Phase: {:?}", epoch.id, epoch.phase);
+        let epoch = ctx.epoch().await.expect("Failed to get epoch");
+        let phase = if epoch.state.is_syncing() { "Syncing" }
+            else if epoch.state.is_settling() { "Settling" }
+            else if epoch.state.is_active() { "Active" }
+            else { "Unknown" };
+        println!("Final epoch: {}, Phase: {}", epoch.id.as_u64(), phase);
 
         // Check node logs for any catch-up related errors
         ctx.check_node_logs()
@@ -406,8 +430,8 @@ async fn test_catchup_normal_quorum() {
         // Advance one more epoch to test basic functionality
         ctx.wait_and_advance_epoch().await.ok();
 
-        let epoch = ctx.epoch().expect("Failed to get epoch");
-        println!("Final epoch: {:?}", epoch.id);
+        let epoch = ctx.epoch().await.expect("Failed to get epoch");
+        println!("Final epoch: {}", epoch.id.as_u64());
 
         println!("\nTest completed in low-quorum mode");
     }

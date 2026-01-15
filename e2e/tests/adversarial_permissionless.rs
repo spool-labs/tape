@@ -47,8 +47,8 @@ async fn test_concurrent_advance_epoch_spam() {
         .await
         .expect("Failed to setup test context");
 
-    let initial_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("Initial epoch: {}", initial_epoch.id.unwrap_or(0));
+    let initial_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("Initial epoch: {}", initial_epoch.id.as_u64());
 
     // Spam AdvanceEpoch from multiple concurrent tasks
     println!("\n=== Starting spam attack ===");
@@ -93,12 +93,16 @@ async fn test_concurrent_advance_epoch_spam() {
         }
 
         // Check system state after spam
-        if let Ok(epoch) = ctx.epoch() {
+        if let Ok(epoch) = ctx.epoch().await {
+            let phase = if epoch.state.is_syncing() { "Syncing" }
+                else if epoch.state.is_settling() { "Settling" }
+                else if epoch.state.is_active() { "Active" }
+                else { "Unknown" };
             println!(
-                "  After round {}: epoch={}, phase={:?}",
+                "  After round {}: epoch={}, phase={}",
                 round + 1,
-                epoch.id.unwrap_or(0),
-                epoch.phase
+                epoch.id.as_u64(),
+                phase
             );
         }
     }
@@ -135,8 +139,8 @@ async fn test_concurrent_advance_epoch_spam() {
         .expect("Nodes should not crash during spam attack");
 
     // Verify epoch advanced correctly (considering spam)
-    let final_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("\nFinal epoch: {}", final_epoch.id.unwrap_or(0));
+    let final_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("\nFinal epoch: {}", final_epoch.id.as_u64());
 
     println!("\nTest passed: System survived concurrent AdvanceEpoch spam");
 }
@@ -213,7 +217,7 @@ async fn test_advance_pool_spam() {
     println!("\n=== Verifying normal operation ===");
 
     ctx.observe_epochs(5, |epoch, _system| {
-        println!("  Epoch: id={}", epoch.id.unwrap_or(0));
+        println!("  Epoch: id={}", epoch.id.as_u64());
         Ok(())
     })
     .await
@@ -285,15 +289,19 @@ async fn test_interleaved_permissionless_calls() {
 
     while start.elapsed().as_secs() < TEST_DURATION_SECS {
         // Do normal operations - check epoch, call advance_pool
-        if let Ok(epoch) = ctx.epoch() {
-            let current_id = epoch.id.unwrap_or(0);
+        if let Ok(epoch) = ctx.epoch().await {
+            let current_id = epoch.id.as_u64();
             if current_id != last_epoch_id {
+                let phase = if epoch.state.is_syncing() { "Syncing" }
+                    else if epoch.state.is_settling() { "Settling" }
+                    else if epoch.state.is_active() { "Active" }
+                    else { "Unknown" };
                 println!(
-                    "  [{:3}s] Epoch changed: {} -> {}, phase: {:?}",
+                    "  [{:3}s] Epoch changed: {} -> {}, phase: {}",
                     start.elapsed().as_secs(),
                     last_epoch_id,
                     current_id,
-                    epoch.phase
+                    phase
                 );
                 last_epoch_id = current_id;
             }
@@ -387,9 +395,8 @@ async fn test_epoch_boundary_timing() {
     println!("Node started");
 
     // Get current epoch timing
-    let epoch = ctx.epoch().expect("Failed to get epoch");
-    let last_epoch = epoch.last_epoch.unwrap_or(0);
-    println!("Last epoch timestamp: {}", last_epoch);
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("Current epoch: {}", epoch.id.as_u64());
 
     // Run multiple epoch boundary tests
     println!("\n=== Testing epoch boundaries ===");
@@ -431,8 +438,8 @@ async fn test_epoch_boundary_timing() {
     }
 
     // Final verification
-    let final_epoch = ctx.epoch().expect("Failed to get epoch");
-    println!("\nFinal epoch: {}", final_epoch.id.unwrap_or(0));
+    let final_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    println!("\nFinal epoch: {}", final_epoch.id.as_u64());
 
     // Check logs
     ctx.check_node_logs().expect("Node should not have errors");

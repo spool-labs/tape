@@ -2,13 +2,13 @@
 //!
 //! Provides async functions that poll for various conditions to be met,
 //! with configurable timeouts and retry logic.
+//!
+//! For blockchain state queries, use the RPC-based wait functions in `rpc.rs`.
 
 use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-
-use crate::Tapedrive;
 
 /// Default poll interval.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -94,88 +94,6 @@ where
     }
 }
 
-/// Wait for a specific epoch phase.
-///
-/// # Arguments
-///
-/// * `cli` - CLI wrapper
-/// * `phase` - Expected phase ("Active", "Syncing", "Settling")
-/// * `timeout` - Maximum time to wait
-pub async fn wait_for_epoch_phase(
-    cli: &Tapedrive,
-    phase: &str,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("epoch phase = {}", phase),
-        || async {
-            match cli.account_epoch() {
-                Ok(epoch) => Ok(epoch.phase.as_deref() == Some(phase)),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait for epoch to reach a specific ID.
-pub async fn wait_for_epoch_id(
-    cli: &Tapedrive,
-    epoch_id: u64,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("epoch id = {}", epoch_id),
-        || async {
-            match cli.account_epoch() {
-                Ok(epoch) => Ok(epoch.id == Some(epoch_id)),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait for committee to reach a minimum size.
-pub async fn wait_for_committee_size(
-    cli: &Tapedrive,
-    min_size: usize,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("committee size >= {}", min_size),
-        || async {
-            match cli.account_system() {
-                Ok(system) => Ok(system.committee_size.unwrap_or(0) >= min_size),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait for committee_next to reach a minimum size.
-pub async fn wait_for_committee_next_size(
-    cli: &Tapedrive,
-    min_size: usize,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("committee_next size >= {}", min_size),
-        || async {
-            match cli.account_system() {
-                Ok(system) => Ok(system.committee_next_size.unwrap_or(0) >= min_size),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
 /// Wait for a node to be healthy via HTTP health check.
 pub async fn wait_for_node_health(url: &str, timeout: Duration) -> Result<()> {
     let health_url = format!("{}/v1/health", url.trim_end_matches('/'));
@@ -217,25 +135,6 @@ pub async fn wait_for_nodes_health(urls: &[String], timeout: Duration) -> Result
     }
 
     Ok(())
-}
-
-/// Wait for a track to be certified.
-///
-/// Note: This requires the track_id format and may need adjustment
-/// based on actual CLI output.
-pub async fn wait_for_track_certified(
-    _cli: &Tapedrive,
-    _authority: &solana_sdk::pubkey::Pubkey,
-    _key_hash: &str,
-    timeout: Duration,
-) -> Result<()> {
-    // TODO: Implement when track status CLI output is stable
-    wait_for_with_desc(
-        "track certified",
-        || async { Ok(false) }, // Placeholder
-        timeout,
-    )
-    .await
 }
 
 /// Wait for RPC to be ready.
@@ -327,44 +226,6 @@ pub async fn wait_for_program_deployed(rpc_url: &str, program_id: &str, timeout:
     .await
 }
 
-/// Wait for committee size to reach an exact value.
-pub async fn wait_for_exact_committee_size(
-    cli: &Tapedrive,
-    size: usize,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("committee size = {}", size),
-        || async {
-            match cli.account_system() {
-                Ok(system) => Ok(system.committee_size.unwrap_or(0) == size),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait for epoch to advance from a given starting epoch.
-pub async fn wait_for_epoch_advance_from(
-    cli: &Tapedrive,
-    from_epoch: u64,
-    timeout: Duration,
-) -> Result<()> {
-    wait_for_with_desc(
-        &format!("epoch > {}", from_epoch),
-        || async {
-            match cli.account_epoch() {
-                Ok(epoch) => Ok(epoch.id.unwrap_or(0) > from_epoch),
-                Err(_) => Ok(false),
-            }
-        },
-        timeout,
-    )
-    .await
-}
-
 /// Wait for all nodes in a list to be healthy.
 pub async fn wait_for_all_nodes_healthy(
     node_urls: &[String],
@@ -394,29 +255,6 @@ pub async fn wait_for_all_nodes_healthy(
                 }
             }
             Ok(true)
-        },
-        timeout,
-    )
-    .await
-}
-
-/// Wait until the system has sufficient committee_next for epoch advancement.
-///
-/// Returns Ok when committee_next.size() >= MIN_COMMITTEE_SIZE, meaning
-/// AdvanceEpoch will succeed.
-pub async fn wait_for_sufficient_committee_next(
-    cli: &Tapedrive,
-    timeout: Duration,
-) -> Result<()> {
-    use crate::MIN_COMMITTEE_SIZE;
-
-    wait_for_with_desc(
-        &format!("committee_next >= {}", MIN_COMMITTEE_SIZE),
-        || async {
-            match cli.account_system() {
-                Ok(system) => Ok(system.committee_next_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE),
-                Err(_) => Ok(false),
-            }
         },
         timeout,
     )

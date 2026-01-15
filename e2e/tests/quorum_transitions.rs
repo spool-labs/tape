@@ -71,10 +71,19 @@ async fn test_stake_weight_affects_allocations() {
     println!("\n=== Observing 5 epochs ===");
 
     ctx.observe_epochs(5, |epoch, _system| {
+        let phase = if epoch.state.is_syncing() {
+            "Syncing"
+        } else if epoch.state.is_settling() {
+            "Settling"
+        } else if epoch.state.is_active() {
+            "Active"
+        } else {
+            "Unknown"
+        };
         println!(
-            "  Epoch: id={}, phase={:?}",
-            epoch.id.unwrap_or(0),
-            epoch.phase
+            "  Epoch: id={}, phase={}",
+            epoch.id.as_u64(),
+            phase
         );
         Ok(())
     })
@@ -126,8 +135,8 @@ async fn test_dynamic_node_membership() {
     ctx.observe_epochs(3, |epoch, system| {
         println!(
             "  Epoch: id={}, committee={}",
-            epoch.id.unwrap_or(0),
-            system.committee_size.unwrap_or(0)
+            epoch.id.as_u64(),
+            system.committee.size()
         );
         Ok(())
     })
@@ -146,8 +155,8 @@ async fn test_dynamic_node_membership() {
     ctx.observe_epochs(1, |epoch, system| {
         println!(
             "After adding: epoch={}, committee={}",
-            epoch.id.unwrap_or(0),
-            system.committee_size.unwrap_or(0)
+            epoch.id.as_u64(),
+            system.committee.size()
         );
         Ok(())
     })
@@ -160,8 +169,8 @@ async fn test_dynamic_node_membership() {
     ctx.observe_epochs(3, |epoch, system| {
         println!(
             "  Epoch: id={}, committee={}",
-            epoch.id.unwrap_or(0),
-            system.committee_size.unwrap_or(0)
+            epoch.id.as_u64(),
+            system.committee.size()
         );
         Ok(())
     })
@@ -169,9 +178,9 @@ async fn test_dynamic_node_membership() {
     .expect("Failed to observe epochs");
 
     // Final state
-    let system = ctx.system().expect("Failed to get system");
+    let system = ctx.system().await.expect("Failed to get system");
     println!("\n=== Final State ===");
-    println!("Committee size: {}", system.committee_size.unwrap_or(0));
+    println!("Committee size: {}", system.committee.size());
 
     println!("\nTest passed: Dynamic node membership handled correctly");
 }

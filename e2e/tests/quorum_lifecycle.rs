@@ -1,6 +1,6 @@
 //! Epoch lifecycle tests across many epochs.
 //!
-//! Tests that verify correct behavior over extended periods (20+ epochs).
+//! Tests that verify correct behavior over extended periods (5+ epochs).
 //!
 //! All tests spawn their own validator and run serially to avoid port conflicts.
 //!
@@ -50,8 +50,8 @@ async fn test_normal_mode_lifecycle_5_epochs() {
         .expect("Failed to setup test context");
 
     // Verify we're in normal mode
-    let system = ctx.system().expect("Failed to get system");
-    let committee_size = system.committee_size.unwrap_or(0);
+    let system = ctx.system().await.expect("Failed to get system");
+    let committee_size = system.committee.size();
     println!("Committee size: {}", committee_size);
 
     assert!(
@@ -71,21 +71,29 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     let mut epochs_completed = 0u64;
     ctx.observe_epochs(NUM_EPOCHS, |epoch, system| {
         epochs_completed += 1;
-        let phase = epoch.phase.as_deref().unwrap_or("unknown").to_string();
+        let phase = if epoch.state.is_syncing() {
+            "Syncing"
+        } else if epoch.state.is_settling() {
+            "Settling"
+        } else if epoch.state.is_active() {
+            "Active"
+        } else {
+            "Unknown"
+        };
 
-        *phase_counts.entry(phase.clone()).or_insert(0) += 1;
+        *phase_counts.entry(phase.to_string()).or_insert(0) += 1;
 
         println!(
             "  Epoch {}: id={}, phase={}, committee={}",
             epochs_completed,
-            epoch.id.unwrap_or(0),
+            epoch.id.as_u64(),
             phase,
-            system.committee_size.unwrap_or(0)
+            system.committee.size()
         );
 
         // Committee size should remain >= MIN_COMMITTEE_SIZE
         assert!(
-            system.committee_size.unwrap_or(0) >= MIN_COMMITTEE_SIZE,
+            system.committee.size() >= MIN_COMMITTEE_SIZE,
             "Committee size dropped below minimum"
         );
 
@@ -101,13 +109,23 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     }
 
     // Verify final state
-    let final_epoch = ctx.epoch().expect("Failed to get epoch");
-    let final_system = ctx.system().expect("Failed to get system");
+    let final_epoch = ctx.epoch().await.expect("Failed to get epoch");
+    let final_system = ctx.system().await.expect("Failed to get system");
+
+    let final_phase = if final_epoch.state.is_syncing() {
+        "Syncing"
+    } else if final_epoch.state.is_settling() {
+        "Settling"
+    } else if final_epoch.state.is_active() {
+        "Active"
+    } else {
+        "Unknown"
+    };
 
     println!("\n=== Final State ===");
-    println!("Epoch: {}", final_epoch.id.unwrap_or(0));
-    println!("Phase: {:?}", final_epoch.phase);
-    println!("Committee size: {}", final_system.committee_size.unwrap_or(0));
+    println!("Epoch: {}", final_epoch.id.as_u64());
+    println!("Phase: {}", final_phase);
+    println!("Committee size: {}", final_system.committee.size());
 
     println!("\nTest passed: Normal mode lifecycle completed {} epoch cycles successfully", NUM_EPOCHS);
 }

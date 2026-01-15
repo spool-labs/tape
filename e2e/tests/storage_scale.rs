@@ -58,8 +58,8 @@ async fn test_scale_basic_upload_download() {
         .expect("Failed to setup test context");
 
     // Verify committee formed
-    let system = ctx.system().expect("Failed to get system");
-    let committee_size = system.committee_size.unwrap_or(0);
+    let system = ctx.system().await.expect("Failed to get system");
+    let committee_size = system.committee.size();
     println!("Committee size: {}", committee_size);
     assert!(committee_size >= 24, "Expected normal mode committee");
 
@@ -68,10 +68,13 @@ async fn test_scale_basic_upload_download() {
     let mut wait_count = 0;
     let max_wait = 60; // Max 60 iterations (30s)
     loop {
-        let epoch = ctx.epoch().expect("Failed to get epoch");
-        let phase = epoch.phase.as_deref().unwrap_or("Unknown");
+        let epoch = ctx.epoch().await.expect("Failed to get epoch");
+        let phase = if epoch.state.is_syncing() { "Syncing" }
+            else if epoch.state.is_settling() { "Settling" }
+            else if epoch.state.is_active() { "Active" }
+            else { "Unknown" };
         if phase == "Active" {
-            println!("Epoch {} is Active", epoch.id.unwrap_or(0));
+            println!("Epoch {} is Active", epoch.id.as_u64());
             break;
         }
         if wait_count >= max_wait {
@@ -160,8 +163,8 @@ async fn test_scale_multiple_uploads() {
         .await
         .expect("Failed to setup test context");
 
-    let system = ctx.system().expect("Failed to get system");
-    println!("Committee size: {}", system.committee_size.unwrap_or(0));
+    let system = ctx.system().await.expect("Failed to get system");
+    println!("Committee size: {}", system.committee.size());
 
     let node_urls = ctx.node_urls();
     let upload_nodes: Vec<String> = node_urls.iter().take(20).cloned().collect();
@@ -244,8 +247,8 @@ async fn test_scale_large_file() {
         .await
         .expect("Failed to setup test context");
 
-    let system = ctx.system().expect("Failed to get system");
-    println!("Committee size: {}", system.committee_size.unwrap_or(0));
+    let system = ctx.system().await.expect("Failed to get system");
+    println!("Committee size: {}", system.committee.size());
 
     let node_urls = ctx.node_urls();
     let upload_nodes: Vec<String> = node_urls.iter().take(30).cloned().collect();
@@ -320,7 +323,7 @@ async fn test_scale_upload_across_epochs() {
         .await
         .expect("Failed to setup test context");
 
-    let epoch_before = ctx.epoch().expect("Failed to get epoch").id.unwrap_or(0);
+    let epoch_before = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     println!("Initial epoch: {}", epoch_before);
 
     let node_urls = ctx.node_urls();
@@ -344,7 +347,7 @@ async fn test_scale_upload_across_epochs() {
     tokio::time::sleep(EPOCH_WAIT).await;
     ctx.cli.admin_advance_epoch().expect("Failed to advance epoch");
 
-    let epoch_after = ctx.epoch().expect("Failed to get epoch").id.unwrap_or(0);
+    let epoch_after = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     println!("Epoch after advance: {}", epoch_after);
     assert!(epoch_after > epoch_before, "Epoch should have advanced");
 
@@ -389,8 +392,8 @@ async fn test_scale_partial_download() {
         .await
         .expect("Failed to setup test context");
 
-    let system = ctx.system().expect("Failed to get system");
-    println!("Committee size: {}", system.committee_size.unwrap_or(0));
+    let system = ctx.system().await.expect("Failed to get system");
+    println!("Committee size: {}", system.committee.size());
 
     let node_urls = ctx.node_urls();
 

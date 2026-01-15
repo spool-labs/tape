@@ -17,7 +17,7 @@ use serial_test::serial;
 use solana_sdk::signature::Signer;
 use tape_api::fsm::NodeAction;
 use tape_e2e::{
-    E2eRpcClient, TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
+    TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
     get_fsm_action, debug_all_nodes_fsm, debug_rpc_state,
     wait_for_epoch_phase_rpc,
 };
@@ -50,21 +50,17 @@ async fn test_blocked_epoch_insufficient_committee() {
         .await
         .expect("Failed to setup and bootstrap");
 
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
-        .await
-        .expect("Failed to create RPC client");
-
     // Verify we're in normal operation
     println!("\n=== Initial State ===");
-    debug_rpc_state(&rpc, "After bootstrap").await;
+    debug_rpc_state(&ctx.rpc, "After bootstrap").await;
 
-    let committee_size = rpc.get_committee_size().await.expect("get committee size");
+    let committee_size = ctx.committee_size().await.expect("get committee size");
     assert!(committee_size >= MIN_COMMITTEE_SIZE, "Should have full committee");
 
     // Run an epoch to establish normal operation
     println!("\n=== Running 1 epoch in normal mode ===");
     ctx.observe_epochs(1, |epoch, system| {
-        println!("  Epoch {}: committee={}", epoch.id.unwrap_or(0), system.committee_size.unwrap_or(0));
+        println!("  Epoch {}: committee={}", epoch.id.as_u64(), system.committee.size());
         Ok(())
     })
     .await
@@ -82,13 +78,13 @@ async fn test_blocked_epoch_insufficient_committee() {
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Check committee_next size
-    debug_rpc_state(&rpc, "After nodes stopped").await;
+    debug_rpc_state(&ctx.rpc, "After nodes stopped").await;
 
     // Check FSM - active nodes should show WaitForCommitteeThreshold
     println!("\n=== Checking FSM Actions ===");
     for node in ctx.nodes.iter().skip(NODES_TO_STOP) {
         let authority = node.authority.pubkey();
-        let action = get_fsm_action(&rpc, &authority).await;
+        let action = get_fsm_action(&ctx.rpc, &authority).await;
         match action {
             Ok(a) => {
                 println!("  {}: {:?}", node.name, a);
@@ -108,7 +104,7 @@ async fn test_blocked_epoch_insufficient_committee() {
     }
 
     // Check final state
-    debug_rpc_state(&rpc, "Final state").await;
+    debug_rpc_state(&ctx.rpc, "Final state").await;
 
     println!("\nTest completed: Verified blocked epoch behavior");
 }
@@ -141,17 +137,13 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
         .await
         .expect("Failed to setup and bootstrap");
 
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
-        .await
-        .expect("Failed to create RPC client");
-
     println!("\n=== Initial State ===");
-    debug_rpc_state(&rpc, "After bootstrap").await;
+    debug_rpc_state(&ctx.rpc, "After bootstrap").await;
 
     // Run a few epochs
     println!("\n=== Running 2 epochs in normal mode ===");
     ctx.observe_epochs(2, |epoch, system| {
-        println!("  Epoch {}: committee={}", epoch.id.unwrap_or(0), system.committee_size.unwrap_or(0));
+        println!("  Epoch {}: committee={}", epoch.id.as_u64(), system.committee.size());
         Ok(())
     })
     .await
@@ -168,7 +160,7 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     println!("\n=== State After Stopping Nodes ===");
-    debug_rpc_state(&rpc, "After stops").await;
+    debug_rpc_state(&ctx.rpc, "After stops").await;
 
     // Add new nodes
     println!("\n=== Adding {} new nodes ===", NEW_NODES);
@@ -182,10 +174,10 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     tokio::time::sleep(EPOCH_WAIT).await;
 
     println!("\n=== State After Adding Nodes ===");
-    debug_rpc_state(&rpc, "After adding nodes").await;
+    debug_rpc_state(&ctx.rpc, "After adding nodes").await;
 
     // Check committee_next
-    let committee_next = rpc.get_committee_next_size().await.expect("get committee_next");
+    let committee_next = ctx.committee_next_size().await.expect("get committee_next");
     println!("Committee next size: {}", committee_next);
 
     // Try to advance epoch
@@ -196,7 +188,7 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
             println!("  AdvanceEpoch succeeded!");
 
             // Wait for epoch to transition
-            wait_for_epoch_phase_rpc(&rpc, "Active", Duration::from_secs(120))
+            wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
                 .await
                 .expect("Epoch should reach Active");
 
@@ -209,7 +201,7 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     }
 
     // Check final state
-    debug_rpc_state(&rpc, "Final state").await;
+    debug_rpc_state(&ctx.rpc, "Final state").await;
 
     // Verify no errors in logs for running nodes
     for node in ctx.nodes.iter().skip(NODES_TO_STOP) {
@@ -244,16 +236,12 @@ async fn test_fsm_during_blocked_epoch() {
         .await
         .expect("Failed to setup and bootstrap");
 
-    let rpc = E2eRpcClient::new(ctx.validator.rpc_url())
-        .await
-        .expect("Failed to create RPC client");
-
     // Wait for EPOCH_DURATION
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Check FSM state for all nodes
     println!("\n=== FSM State After EPOCH_DURATION ===");
-    debug_all_nodes_fsm(&rpc, &ctx.nodes, "After waiting").await;
+    debug_all_nodes_fsm(&ctx.rpc, &ctx.nodes, "After waiting").await;
 
     // Verify nodes can advance or are waiting for something specific
     let mut has_advance_epoch = false;
@@ -261,7 +249,7 @@ async fn test_fsm_during_blocked_epoch() {
 
     for node in &ctx.nodes {
         let authority = node.authority.pubkey();
-        match get_fsm_action(&rpc, &authority).await {
+        match get_fsm_action(&ctx.rpc, &authority).await {
             Ok(NodeAction::AdvanceEpoch) => has_advance_epoch = true,
             Ok(NodeAction::WaitForCommitteeThreshold { .. }) => has_waiting = true,
             Ok(NodeAction::WaitForEpochDuration { .. }) => has_waiting = true,
