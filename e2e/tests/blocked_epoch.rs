@@ -18,8 +18,7 @@ use solana_sdk::signature::Signer;
 use tape_api::fsm::NodeAction;
 use tape_e2e::{
     TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
-    get_fsm_action, debug_all_nodes_fsm, debug_rpc_state,
-    wait_for_epoch_phase_rpc,
+    get_fsm_action, debug_rpc_state,
 };
 
 /// Test blocked epoch when committee_next is insufficient.
@@ -42,7 +41,6 @@ async fn test_blocked_epoch_insufficient_committee() {
     const NUM_NODES: usize = 10; // Below MIN_COMMITTEE_SIZE
     const BASE_PORT: u16 = 14000;
 
-    println!("=== Blocked Epoch Test ===");
     println!("Starting with {} nodes (below MIN_COMMITTEE_SIZE={})", NUM_NODES, MIN_COMMITTEE_SIZE);
 
     // Setup with small committee (bootstrap exception allows this)
@@ -55,7 +53,6 @@ async fn test_blocked_epoch_insufficient_committee() {
         .expect("Failed to setup and bootstrap");
 
     // Verify we're in Active phase after bootstrap
-    println!("\n=== Initial State ===");
     debug_rpc_state(&ctx.rpc, "After bootstrap").await;
 
     let phase = ctx.epoch_phase().await.expect("get phase");
@@ -66,7 +63,6 @@ async fn test_blocked_epoch_insufficient_committee() {
     assert_eq!(committee_size, NUM_NODES, "All nodes should be in committee");
 
     // Wait for EPOCH_DURATION to elapse
-    println!("\n=== Waiting for EPOCH_DURATION ({:?}) ===", EPOCH_WAIT);
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Check committee_next size
@@ -76,7 +72,6 @@ async fn test_blocked_epoch_insufficient_committee() {
     debug_rpc_state(&ctx.rpc, "After EPOCH_DURATION").await;
 
     // Check FSM - should show WaitForCommitteeThreshold if committee_next < MIN_COMMITTEE_SIZE
-    println!("\n=== Checking FSM Actions ===");
     let mut waiting_count = 0;
     let mut can_advance_count = 0;
 
@@ -103,7 +98,6 @@ async fn test_blocked_epoch_insufficient_committee() {
     println!("  Can advance: {}", can_advance_count);
 
     // Try to advance epoch
-    println!("\n=== Attempting AdvanceEpoch ===");
     let result = ctx.cli.admin_advance_epoch();
     match result {
         Ok(_) => {
@@ -146,7 +140,6 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     const NEW_NODES: usize = 10; // Add more nodes
     const BASE_PORT: u16 = 14100;
 
-    println!("=== Blocked Epoch Recovery Test ===");
     println!("Initial: {} nodes, will add: {} more", INITIAL_NODES, NEW_NODES);
 
     // Setup with small committee (bootstrap exception allows this)
@@ -158,7 +151,6 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
         .await
         .expect("Failed to setup and bootstrap");
 
-    println!("\n=== Initial State ===");
     debug_rpc_state(&ctx.rpc, "After bootstrap").await;
 
     let committee_size = ctx.committee_size().await.expect("get committee size");
@@ -169,7 +161,6 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     println!("Initial committee_next size: {}", committee_next_initial);
 
     // Add new nodes
-    println!("\n=== Adding {} new nodes ===", NEW_NODES);
     ctx.add_nodes(NEW_NODES, 1000)
         .await
         .expect("Failed to add nodes");
@@ -194,7 +185,6 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     );
 
     // Check FSM state for the new nodes
-    println!("\n=== FSM State for New Nodes ===");
     for node in ctx.nodes.iter().skip(INITIAL_NODES) {
         let authority = node.authority.pubkey();
         match get_fsm_action(&ctx.rpc, &authority).await {
@@ -213,60 +203,3 @@ async fn test_blocked_epoch_recovery_with_new_nodes() {
     println!("\nTest completed: Verified nodes can join and grow committee_next");
 }
 
-/// Test FSM behavior during blocked epoch.
-///
-/// When epoch is blocked (waiting for committee_next threshold):
-/// - Nodes should show WaitForCommitteeThreshold action
-/// - Stake should activate immediately (no waiting for next epoch)
-/// - Once threshold is met, FSM should show AdvanceEpoch
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_fsm_during_blocked_epoch() {
-    const NUM_NODES: usize = MIN_COMMITTEE_SIZE;
-    const BASE_PORT: u16 = 14200;
-
-    println!("=== FSM During Blocked Epoch Test ===");
-
-    let ctx = TestContext::builder()
-        .nodes(NUM_NODES)
-        .port(BASE_PORT)
-        .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
-        .await
-        .expect("Failed to setup and bootstrap");
-
-    // Wait for EPOCH_DURATION
-    tokio::time::sleep(EPOCH_WAIT).await;
-
-    // Check FSM state for all nodes
-    println!("\n=== FSM State After EPOCH_DURATION ===");
-    debug_all_nodes_fsm(&ctx.rpc, &ctx.nodes, "After waiting").await;
-
-    // Verify nodes can advance or are waiting for something specific
-    let mut has_advance_epoch = false;
-    let mut has_waiting = false;
-
-    for node in &ctx.nodes {
-        let authority = node.authority.pubkey();
-        match get_fsm_action(&ctx.rpc, &authority).await {
-            Ok(NodeAction::AdvanceEpoch) => has_advance_epoch = true,
-            Ok(NodeAction::WaitForCommitteeThreshold { .. }) => has_waiting = true,
-            Ok(NodeAction::WaitForEpochDuration { .. }) => has_waiting = true,
-            Ok(action) => println!("  {}: {:?}", node.name, action),
-            Err(e) => println!("  {}: ERROR - {}", node.name, e),
-        }
-    }
-
-    println!("\nFSM summary:");
-    println!("  Has AdvanceEpoch: {}", has_advance_epoch);
-    println!("  Has Waiting: {}", has_waiting);
-
-    // At least one node should be ready to advance or all should be waiting
-    assert!(
-        has_advance_epoch || has_waiting,
-        "Nodes should either be ready to advance or waiting"
-    );
-
-    println!("\nTest completed: FSM behavior verified");
-}

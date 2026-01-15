@@ -38,7 +38,6 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     const NUM_EPOCHS: u64 = 5;
     const BASE_PORT: u16 = 10200;
 
-    println!("=== Normal Mode Lifecycle Test ({} nodes, {} epochs) ===", NUM_NODES, NUM_EPOCHS);
 
     // Setup with timeout for MIN_COMMITTEE_SIZE nodes
     let ctx = TestContext::builder()
@@ -65,7 +64,6 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     let mut phase_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     // Observe epochs advancing autonomously
-    println!("\n=== Observing {} epoch cycles in normal mode ===", NUM_EPOCHS);
     println!("(Nodes handle all phase transitions autonomously)");
 
     let mut epochs_completed = 0u64;
@@ -103,7 +101,6 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     .expect("Failed to observe epochs");
 
     // Show phase distribution
-    println!("\n=== Phase Distribution ===");
     for (phase, count) in &phase_counts {
         println!("  {}: {} occurrences", phase, count);
     }
@@ -122,7 +119,6 @@ async fn test_normal_mode_lifecycle_5_epochs() {
         "Unknown"
     };
 
-    println!("\n=== Final State ===");
     println!("Epoch: {}", final_epoch.id.as_u64());
     println!("Phase: {}", final_phase);
     println!("Committee size: {}", final_system.committee.size());
@@ -142,7 +138,6 @@ async fn test_node_health_across_epochs() {
     const NUM_EPOCHS: u64 = 5;
     const BASE_PORT: u16 = 10300;
 
-    println!("=== Node Health Test ({} nodes, {} epochs) ===", NUM_NODES, NUM_EPOCHS);
 
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
@@ -173,7 +168,6 @@ async fn test_node_health_across_epochs() {
         }
     }
 
-    println!("\n=== Health Summary ===");
     println!("Total health checks: {}", total_checks);
     println!("Healthy checks: {}", healthy_checks);
     println!("Health rate: {:.1}%", 100.0 * healthy_checks as f64 / total_checks as f64);

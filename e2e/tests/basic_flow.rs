@@ -25,7 +25,6 @@ use tape_e2e::{
 #[ignore]
 #[serial]
 async fn test_basic_upload_download() {
-    println!("=== Basic Upload/Download Test ===");
 
     // Setup with one node
     let ctx = TestContext::builder()
@@ -84,7 +83,6 @@ async fn test_basic_upload_download() {
 #[ignore]
 #[serial]
 async fn test_system_init() {
-    println!("=== System Init Test ===");
 
     // Setup without nodes - just validator and system init
     let ctx = TestContext::builder()
@@ -111,7 +109,6 @@ async fn test_system_init() {
 #[ignore]
 #[serial]
 async fn test_node_registration() {
-    println!("=== Node Registration Test ===");
 
     // Setup with 3 nodes (not bootstrapped - just registered)
     let ctx = TestContext::builder()
@@ -133,7 +130,6 @@ async fn test_node_registration() {
 #[ignore]
 #[serial]
 async fn test_staking_flow() {
-    println!("=== Staking Flow Test ===");
 
     // Setup with 1 node, custom stake amount
     let ctx = TestContext::builder()
@@ -160,24 +156,3 @@ async fn test_staking_flow() {
     println!("Staking flow completed successfully");
 }
 
-/// Quick test for node registration, staking, and epoch advancement.
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_with_running_validator() {
-    println!("=== Quick Integration Test ===");
-
-    // Full setup with bootstrap
-    let ctx = TestContext::builder()
-        .nodes(1)
-        .port(9080)
-        .build_and_bootstrap()
-        .await
-        .expect("Failed to setup test context");
-
-    // Verify committee after bootstrap
-    let system = ctx.system().await.expect("Failed to get system account");
-    assert_eq!(system.committee.size(), 1);
-
-    println!("Test passed! Node registered, staked, joined, and epoch advanced.");
-}

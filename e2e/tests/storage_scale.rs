@@ -44,7 +44,6 @@ const SCALE_TIMEOUT: Duration = Duration::from_secs(1200); // 20 minutes
 #[ignore]
 #[serial]
 async fn test_scale_basic_upload_download() {
-    println!("=== Scale Basic Upload/Download Test ({} nodes) ===", SCALE_NODE_COUNT);
     println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
 
     // Setup with many nodes using build_and_bootstrap() - nodes created/registered in parallel
@@ -113,7 +112,6 @@ async fn test_scale_basic_upload_download() {
     let blob = deterministic_blob(sizes::SMALL, seed);
     let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
 
-    println!("\n=== Uploading {} bytes ===", blob.len());
 
     // Upload using explicit nodes (CLI queries /v1/info to map to correct committee members)
     let upload_result = ctx.cli.storage_upload(
@@ -126,7 +124,6 @@ async fn test_scale_basic_upload_download() {
     println!("Merkle root: {:?}", upload_result.merkle_root);
 
     // Download from nodes
-    println!("\n=== Downloading ===");
     let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");
 
     ctx.cli.storage_download(
@@ -151,7 +148,6 @@ async fn test_scale_basic_upload_download() {
 #[ignore]
 #[serial]
 async fn test_scale_multiple_uploads() {
-    println!("=== Scale Multiple Uploads Test ({} nodes) ===", SCALE_NODE_COUNT);
     println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
 
     let ctx = TestContext::builder()
@@ -179,7 +175,6 @@ async fn test_scale_multiple_uploads() {
 
     let mut upload_results = Vec::new();
 
-    println!("\n=== Uploading {} files ===", test_sizes.len());
     for (i, (size, name)) in test_sizes.iter().enumerate() {
         let seed = (i + 100) as u64;
         let blob = deterministic_blob(*size, seed);
@@ -198,7 +193,6 @@ async fn test_scale_multiple_uploads() {
         }
     }
 
-    println!("\n=== Verifying {} uploads ===", upload_results.len());
     let mut verified = 0;
     for (track_id, seed, size) in &upload_results {
         let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");
@@ -219,7 +213,6 @@ async fn test_scale_multiple_uploads() {
         }
     }
 
-    println!("\n=== Results ===");
     println!("Uploaded: {}/{}", upload_results.len(), test_sizes.len());
     println!("Verified: {}/{}", verified, upload_results.len());
 
@@ -235,7 +228,6 @@ async fn test_scale_multiple_uploads() {
 #[ignore]
 #[serial]
 async fn test_scale_large_file() {
-    println!("=== Scale Large File Test ({} nodes) ===", SCALE_NODE_COUNT);
     println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
 
     let ctx = TestContext::builder()
@@ -258,7 +250,6 @@ async fn test_scale_large_file() {
     let blob = deterministic_blob(sizes::LARGE, seed);
     let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
 
-    println!("\n=== Uploading large file ({} bytes / {} MB) ===", blob.len(), blob.len() / sizes::MB);
 
     let start = std::time::Instant::now();
     let upload_result = ctx.cli.storage_upload(
@@ -272,7 +263,6 @@ async fn test_scale_large_file() {
     println!("Track: {}", upload_result.track_id);
 
     // Download and verify
-    println!("\n=== Downloading large file ===");
     let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");
 
     let start = std::time::Instant::now();
@@ -290,7 +280,6 @@ async fn test_scale_large_file() {
     assert_eq!(blob.len(), downloaded.len(), "Size mismatch");
     assert!(verify_deterministic_blob(&downloaded, seed), "Data integrity check failed");
 
-    println!("\n=== Performance Summary ===");
     println!("File size: {} MB", blob.len() / sizes::MB);
     println!("Upload time: {:.2}s ({:.2} MB/s)",
         upload_duration.as_secs_f64(),
@@ -311,7 +300,6 @@ async fn test_scale_large_file() {
 #[ignore]
 #[serial]
 async fn test_scale_upload_across_epochs() {
-    println!("=== Scale Upload Across Epochs Test ({} nodes) ===", SCALE_NODE_COUNT);
     println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
 
     let ctx = TestContext::builder()
@@ -334,7 +322,6 @@ async fn test_scale_upload_across_epochs() {
     let blob = deterministic_blob(sizes::KB * 100, seed);
     let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
 
-    println!("\n=== Uploading {} bytes ===", blob.len());
     let upload_result = ctx.cli.storage_upload(
         upload_file.path(),
         None,
@@ -343,7 +330,6 @@ async fn test_scale_upload_across_epochs() {
     println!("Track: {}", upload_result.track_id);
 
     // Advance epoch
-    println!("\n=== Advancing epoch (waiting {}s) ===", EPOCH_WAIT.as_secs());
     tokio::time::sleep(EPOCH_WAIT).await;
     ctx.cli.admin_advance_epoch().expect("Failed to advance epoch");
 
@@ -355,7 +341,6 @@ async fn test_scale_upload_across_epochs() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Download and verify
-    println!("\n=== Downloading after epoch advance ===");
     let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");
 
     ctx.cli.storage_download(
@@ -380,7 +365,6 @@ async fn test_scale_upload_across_epochs() {
 #[ignore]
 #[serial]
 async fn test_scale_partial_download() {
-    println!("=== Scale Partial Download Test ({} nodes) ===", SCALE_NODE_COUNT);
     println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
 
     let ctx = TestContext::builder()
@@ -404,7 +388,6 @@ async fn test_scale_partial_download() {
     let blob = deterministic_blob(sizes::KB * 50, seed);
     let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
 
-    println!("\n=== Uploading {} bytes to {} nodes ===", blob.len(), upload_nodes.len());
     let upload_result = ctx.cli.storage_upload(
         upload_file.path(),
         None,
@@ -419,7 +402,6 @@ async fn test_scale_partial_download() {
         (20, "Reduced set (20 nodes)"),
     ];
 
-    println!("\n=== Testing downloads with different node counts ===");
     for (count, desc) in test_cases {
         let download_nodes: Vec<String> = node_urls.iter().take(count).cloned().collect();
         let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");

@@ -33,7 +33,6 @@ async fn test_concurrent_advance_epoch_spam() {
     const SPAM_ROUNDS: usize = 10;
     const BASE_PORT: u16 = 12100;
 
-    println!("=== Concurrent AdvanceEpoch Spam Test ===");
     println!(
         "Nodes: {}, Attackers: {}, Rounds: {}",
         NUM_NODES, NUM_ATTACKERS, SPAM_ROUNDS
@@ -51,7 +50,6 @@ async fn test_concurrent_advance_epoch_spam() {
     println!("Initial epoch: {}", initial_epoch.id.as_u64());
 
     // Spam AdvanceEpoch from multiple concurrent tasks
-    println!("\n=== Starting spam attack ===");
 
     let success_count = Arc::new(AtomicU32::new(0));
     let failure_count = Arc::new(AtomicU32::new(0));
@@ -110,7 +108,6 @@ async fn test_concurrent_advance_epoch_spam() {
     let total_success = success_count.load(Ordering::SeqCst);
     let total_failure = failure_count.load(Ordering::SeqCst);
 
-    println!("\n=== Spam Results ===");
     println!("Total attempts: {}", total_success + total_failure);
     println!("Successes: {}", total_success);
     println!("Failures: {}", total_failure);
@@ -122,7 +119,6 @@ async fn test_concurrent_advance_epoch_spam() {
     );
 
     // Check nodes are still healthy
-    println!("\n=== Checking node health ===");
     let mut all_healthy = true;
     for node in &ctx.nodes {
         let healthy = node.is_healthy().await;
@@ -156,7 +152,6 @@ async fn test_advance_pool_spam() {
     const NUM_NODES: usize = 3;
     const BASE_PORT: u16 = 12200;
 
-    println!("=== AdvancePool Spam Test ===");
 
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
@@ -169,7 +164,6 @@ async fn test_advance_pool_spam() {
     println!("Nodes started");
 
     // Spam AdvancePool for each node
-    println!("\n=== Spamming AdvancePool ===");
 
     let mut pool_successes = 0;
     let mut pool_failures = 0;
@@ -214,7 +208,6 @@ async fn test_advance_pool_spam() {
     assert!(all_healthy, "Nodes should survive AdvancePool spam");
 
     // Advance a few epochs to verify normal operation continues
-    println!("\n=== Verifying normal operation ===");
 
     ctx.observe_epochs(5, |epoch, _system| {
         println!("  Epoch: id={}", epoch.id.as_u64());
@@ -238,7 +231,6 @@ async fn test_interleaved_permissionless_calls() {
     const TEST_DURATION_SECS: u64 = 120; // 2 minutes
     const BASE_PORT: u16 = 12300;
 
-    println!("=== Interleaved Permissionless Calls Test ===");
     println!("Duration: {}s", TEST_DURATION_SECS);
 
     let ctx = TestContext::builder()
@@ -340,7 +332,6 @@ async fn test_interleaved_permissionless_calls() {
     stop_flag.store(true, Ordering::Relaxed);
     let _ = spammer_handle.await;
 
-    println!("\n=== Test Results ===");
     println!(
         "Epoch advances: {}",
         epoch_advances.load(Ordering::Relaxed)
@@ -348,7 +339,6 @@ async fn test_interleaved_permissionless_calls() {
     println!("Pool advances: {}", pool_advances.load(Ordering::Relaxed));
 
     // Final health check
-    println!("\n=== Final Health Check ===");
     let mut all_healthy = true;
     for node in &ctx.nodes {
         let healthy = node.is_healthy().await;
@@ -363,7 +353,6 @@ async fn test_interleaved_permissionless_calls() {
     }
 
     // Check logs for errors
-    println!("\n=== Checking Logs ===");
     ctx.check_node_logs()
         .expect("No errors should be found in logs");
 
@@ -382,7 +371,6 @@ async fn test_interleaved_permissionless_calls() {
 async fn test_epoch_boundary_timing() {
     const BASE_PORT: u16 = 12400;
 
-    println!("=== Epoch Boundary Timing Test ===");
 
     let ctx = TestContext::builder()
         .nodes(1)
@@ -399,7 +387,6 @@ async fn test_epoch_boundary_timing() {
     println!("Current epoch: {}", epoch.id.as_u64());
 
     // Run multiple epoch boundary tests
-    println!("\n=== Testing epoch boundaries ===");
 
     for test_num in 1..=5 {
         println!("\nBoundary test {}:", test_num);
@@ -457,7 +444,6 @@ async fn test_epoch_boundary_timing() {
 async fn test_invalid_state_calls() {
     const BASE_PORT: u16 = 12500;
 
-    println!("=== Invalid State Calls Test ===");
 
     // Build context without nodes - we'll add one manually to test various states
     let mut ctx = TestContext::builder()
@@ -470,7 +456,6 @@ async fn test_invalid_state_calls() {
 
     // Try operations before system initialization is handled by build() which calls admin_init
     // So test operations with no nodes
-    println!("\n=== Before Any Nodes ===");
 
     // AdvanceEpoch with no committee
     let result = ctx.advance_epoch();
@@ -482,7 +467,6 @@ async fn test_invalid_state_calls() {
 
     // Try to start without joining committee
     // This might succeed but node won't participate
-    println!("\n=== Node Without Committee Membership ===");
     if let Err(e) = node.fund(&ctx.cli, 1.0) {
         eprintln!("Warning: Failed to fund node: {}", e);
     }
@@ -504,7 +488,6 @@ async fn test_invalid_state_calls() {
     println!("  Node healthy (in committee): {}", healthy);
 
     // Try double-join (should fail gracefully)
-    println!("\n=== Double Join Attempt ===");
     let double_join = node.join(&ctx.cli);
     println!("  Double join: {:?}", double_join.is_err());
 

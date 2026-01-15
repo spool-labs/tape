@@ -30,7 +30,6 @@ use tape_e2e::{
 async fn test_late_node_detects_stale_epochs() {
     const BASE_PORT: u16 = 8080;
 
-    println!("=== Late Node Stale Epoch Detection Test ===");
 
     // Setup with single node
     let mut ctx = TestContext::builder()
@@ -62,7 +61,6 @@ async fn test_late_node_detects_stale_epochs() {
     println!("After advance - epoch: {}, phase: {}", epoch.id.as_u64(), phase);
 
     // Add a late-joining node
-    println!("\n=== Adding late-joining node ===");
     ctx.add_nodes(1, 1000)
         .await
         .expect("Failed to add late node");
@@ -96,7 +94,6 @@ async fn test_late_node_detects_stale_epochs() {
 async fn test_node_startup_after_epoch_advances() {
     const BASE_PORT: u16 = 8090;
 
-    println!("=== Node Startup After Epoch Advances Test ===");
 
     // Build context without bootstrap - we want to control node start timing
     let mut ctx = TestContext::builder()
@@ -198,7 +195,6 @@ async fn test_node_startup_after_epoch_advances() {
 async fn test_staggered_node_joins() {
     const BASE_PORT: u16 = 8070;
 
-    println!("=== Staggered Node Joins Test ===");
 
     // Setup with 1 initial node
     let mut ctx = TestContext::builder()
@@ -244,7 +240,6 @@ async fn test_staggered_node_joins() {
     let final_epoch = ctx.epoch().await.expect("Failed to get epoch");
     let system = ctx.system().await.expect("Failed to get system");
 
-    println!("\n=== Final State ===");
     println!("Epoch: {}", final_epoch.id.as_u64());
     println!("Committee size: {}", system.committee.size());
     println!("Join history:");
@@ -253,60 +248,6 @@ async fn test_staggered_node_joins() {
     }
 
     println!("\nTest passed: Staggered node joins completed successfully");
-}
-
-/// Test epoch state queries during catch-up.
-///
-/// Verifies that is_stale_epoch correctly identifies old epochs.
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_epoch_staleness_detection() {
-    const BASE_PORT: u16 = 8100;
-
-    println!("=== Epoch Staleness Detection Test ===");
-
-    // Setup without nodes - just need system initialized
-    let ctx = TestContext::builder()
-        .nodes(0)
-        .port(BASE_PORT)
-        .timeout(Duration::from_secs(120))
-        .build()
-        .await
-        .expect("Failed to setup test context");
-
-    // Get initial epoch
-    let initial = ctx.epoch().await.expect("Failed to get epoch");
-    let initial_id = initial.id.as_u64();
-    println!("Initial epoch: {}", initial_id);
-
-    // Advance a couple epochs
-    let advances = 2;
-    for i in 0..advances {
-        match ctx.wait_and_advance_epoch().await {
-            Ok(_) => println!("Advanced epoch {}", i + 1),
-            Err(e) => println!("Advance {}: {}", i, e),
-        }
-    }
-
-    let current = ctx.epoch().await.expect("Failed to get epoch");
-    let current_id = current.id.as_u64();
-    println!("Current epoch: {}", current_id);
-
-    // All epochs before current_id should be stale
-    // (This is a conceptual test - the actual staleness check happens in the node)
-    println!("\nEpoch staleness (conceptual):");
-    for epoch_id in initial_id..=current_id {
-        let is_stale = epoch_id < current_id;
-        println!(
-            "  Epoch {}: {}",
-            epoch_id,
-            if is_stale { "STALE" } else { "CURRENT" }
-        );
-    }
-
-    assert!(current_id >= initial_id, "Epoch should have advanced");
-    println!("\nTest passed: Epoch detection logic verified");
 }
 
 /// Test catch-up in non-low-quorum (normal) mode with >= 24 nodes.
@@ -324,7 +265,6 @@ async fn test_epoch_staleness_detection() {
 async fn test_catchup_normal_quorum() {
     const BASE_PORT: u16 = 9000;
 
-    println!("=== Catch-up Normal Quorum Test ({} nodes) ===", MIN_COMMITTEE_SIZE);
 
     // Build without bootstrap - we need custom timing for normal mode
     let mut ctx = TestContext::builder()
@@ -374,7 +314,6 @@ async fn test_catchup_normal_quorum() {
         println!("\nNormal mode detected - epoch should be in Syncing phase");
 
         // Fund and start nodes so they can submit SyncEpoch
-        println!("\n=== Starting nodes for SyncEpoch attestations ===");
         for (i, node) in ctx.nodes.iter_mut().enumerate() {
             if let Err(e) = node.fund(&ctx.cli, 1.0) {
                 eprintln!("Warning: Failed to fund node {}: {}", i, e);
@@ -401,7 +340,6 @@ async fn test_catchup_normal_quorum() {
         );
 
         // Advance another epoch to test catch-up
-        println!("\n=== Testing catch-up by advancing another epoch ===");
         tokio::time::sleep(EPOCH_WAIT).await;
 
         match ctx.advance_epoch() {

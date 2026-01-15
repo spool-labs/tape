@@ -176,6 +176,39 @@ impl TestContext {
         Ok(())
     }
 
+    /// Wait for the system to reach a specific epoch in Active phase.
+    ///
+    /// This is the primary helper for tests that need to reach epoch 4+
+    /// where the system is fully operational (committee_prev is populated).
+    ///
+    /// Nodes advance epochs autonomously, so this just waits for them
+    /// to reach the target epoch.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - The epoch number to wait for
+    /// * `timeout` - Maximum time to wait
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Wait for epoch 4 (first epoch with full committee rotation)
+    /// ctx.wait_for_epoch(EpochNumber(4), Duration::from_secs(120)).await?;
+    /// ```
+    pub async fn wait_for_epoch(&self, target: EpochNumber, timeout: Duration) -> Result<()> {
+        // Wait for epoch ID to reach target
+        crate::rpc::wait_for_epoch_id_rpc(&self.rpc, target, timeout)
+            .await
+            .with_context(|| format!("Epoch {} not reached", target.as_u64()))?;
+
+        // Wait for Active phase
+        crate::rpc::wait_for_epoch_phase_rpc(&self.rpc, "Active", timeout)
+            .await
+            .with_context(|| format!("Epoch {} did not reach Active phase", target.as_u64()))?;
+
+        Ok(())
+    }
+
     /// Check all node logs for common errors.
     ///
     /// Returns an error if any node has errors like BadSpoolHash, BadEpochId, or panics.
@@ -472,6 +505,39 @@ impl TestContextBuilder {
             .context("Epoch did not reach Active phase after bootstrap")?;
 
         ctx.bootstrapped = true;
+
+        Ok(ctx)
+    }
+
+    /// Build, bootstrap, and wait for a specific epoch.
+    ///
+    /// This is the primary builder for tests that need the system to be
+    /// fully operational (epoch 4+). It:
+    /// 1. Calls `build_and_bootstrap()` to set up and activate nodes
+    /// 2. Waits for the system to reach the target epoch in Active phase
+    ///
+    /// # Arguments
+    ///
+    /// * `target_epoch` - The epoch to wait for (e.g., 4 for full committee rotation)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let ctx = TestContext::builder()
+    ///     .nodes(5)
+    ///     .build_and_bootstrap_to_epoch(EpochNumber(4))
+    ///     .await?;
+    ///
+    /// // System is now in epoch 4+ with committee_prev populated
+    /// ```
+    pub async fn build_and_bootstrap_to_epoch(self, target_epoch: EpochNumber) -> Result<TestContext> {
+        let timeout = self.timeout;
+        let ctx = self.build_and_bootstrap().await?;
+
+        // Wait for target epoch
+        ctx.wait_for_epoch(target_epoch, timeout)
+            .await
+            .with_context(|| format!("Failed to reach epoch {}", target_epoch.as_u64()))?;
 
         Ok(ctx)
     }

@@ -42,7 +42,6 @@ async fn test_full_epoch_cycle() {
     const NUM_NODES: usize = MIN_COMMITTEE_SIZE;
     const BASE_PORT: u16 = 15000;
 
-    println!("=== Full Epoch Cycle Test ({} nodes) ===", NUM_NODES);
 
     // Bootstrap system
     let ctx = TestContext::builder()
@@ -65,15 +64,12 @@ async fn test_full_epoch_cycle() {
     println!("Starting at epoch {}, phase {}", epoch_before.as_u64(), phase);
 
     // Check initial FSM state
-    println!("\n=== Initial FSM State (Active Phase) ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "Initial").await;
 
     // Wait for EPOCH_DURATION to elapse
-    println!("\n=== Waiting for EPOCH_DURATION ({:?}) ===", EPOCH_WAIT);
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Check FSM - should show AdvanceEpoch for at least some nodes
-    println!("\n=== FSM After EPOCH_DURATION ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "After waiting").await;
 
     // Count action categories
@@ -92,7 +88,6 @@ async fn test_full_epoch_cycle() {
     // Wait for epoch to increment - phases may transition very quickly with small committees
     // so instead of catching each phase, we verify the end result (epoch number increment)
     let target_epoch = EpochNumber(epoch_before.as_u64() + 1);
-    println!("\n=== Waiting for Epoch {} (autonomous advancement) ===", target_epoch.as_u64());
     wait_for_epoch_id_rpc(&rpc, target_epoch, Duration::from_secs(60))
         .await
         .expect("Epoch should advance autonomously");
@@ -101,11 +96,9 @@ async fn test_full_epoch_cycle() {
     debug_rpc_state(&rpc, "After autonomous advancement").await;
 
     // Check FSM state after epoch increment
-    println!("\n=== FSM After Epoch Advancement ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "After advance").await;
 
     // Wait for system to stabilize in Active phase
-    println!("\n=== Waiting for Active Phase ===");
     wait_for_epoch_phase_rpc(&rpc, "Active", Duration::from_secs(30))
         .await
         .expect("Epoch should return to Active phase");
@@ -118,7 +111,6 @@ async fn test_full_epoch_cycle() {
     assert!(epoch_after > epoch_before, "Epoch should have incremented");
 
     // Check final FSM state
-    println!("\n=== Final FSM State (Active Phase) ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "Final").await;
 
     // Verify committee state
@@ -141,7 +133,6 @@ async fn test_multiple_epoch_cycles() {
     const NUM_CYCLES: u64 = 3;
     const BASE_PORT: u16 = 15100;
 
-    println!("=== Multiple Epoch Cycles Test ({} nodes, {} cycles) ===", NUM_NODES, NUM_CYCLES);
 
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
@@ -161,7 +152,6 @@ async fn test_multiple_epoch_cycles() {
     let mut active_count = 0;
 
     // Observe epochs autonomously
-    println!("\n=== Observing {} epoch cycles ===", NUM_CYCLES);
 
     ctx.observe_epochs(NUM_CYCLES, |epoch, system| {
         let phase = if epoch.state.is_syncing() { "Syncing" }
@@ -194,13 +184,11 @@ async fn test_multiple_epoch_cycles() {
     .await
     .expect("Failed to observe epochs");
 
-    println!("\n=== Phase Distribution ===");
     println!("  Syncing: {}", syncing_count);
     println!("  Settling: {}", settling_count);
     println!("  Active: {}", active_count);
 
     // Final FSM check
-    println!("\n=== Final FSM State ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "After {} cycles").await;
 
     // Verify no errors
@@ -219,7 +207,6 @@ async fn test_fsm_action_correctness() {
     const NUM_NODES: usize = MIN_COMMITTEE_SIZE;
     const BASE_PORT: u16 = 15200;
 
-    println!("=== FSM Action Correctness Test ===");
 
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
@@ -234,7 +221,6 @@ async fn test_fsm_action_correctness() {
         .expect("Failed to create RPC client");
 
     // In Active phase after bootstrap, nodes might need to rejoin or wait
-    println!("\n=== Active Phase FSM Check ===");
     let phase = rpc.get_epoch_phase().await.expect("get phase");
     assert_eq!(phase, "Active");
 
@@ -260,7 +246,6 @@ async fn test_fsm_action_correctness() {
     }
 
     // Wait for Syncing phase
-    println!("\n=== Triggering Phase Transition ===");
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Force advance if needed
@@ -268,7 +253,6 @@ async fn test_fsm_action_correctness() {
 
     // Wait for Syncing
     if let Ok(()) = wait_for_epoch_phase_rpc(&rpc, "Syncing", Duration::from_secs(30)).await {
-        println!("\n=== Syncing Phase FSM Check ===");
 
         for node in &ctx.nodes {
             let authority = node.authority.pubkey();
@@ -302,7 +286,6 @@ async fn test_fsm_action_correctness() {
 async fn test_epoch_timing() {
     const BASE_PORT: u16 = 15300;
 
-    println!("=== Epoch Timing Test ===");
 
     let ctx = TestContext::builder()
         .nodes(MIN_COMMITTEE_SIZE)
@@ -320,7 +303,6 @@ async fn test_epoch_timing() {
     println!("Starting epoch: {}", epoch_before.as_u64());
 
     // Try to advance immediately - should fail (duration not elapsed)
-    println!("\n=== Testing Premature Advance ===");
     let result = ctx.cli.admin_advance_epoch();
     println!("Immediate advance result: {}", if result.is_ok() { "succeeded (unexpected)" } else { "failed (expected)" });
 
@@ -330,11 +312,9 @@ async fn test_epoch_timing() {
     println!("FSM action: {:?}", action);
 
     // Wait for EPOCH_DURATION
-    println!("\n=== Waiting for EPOCH_DURATION ({:?}) ===", EPOCH_WAIT);
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Now advance should work
-    println!("\n=== Testing Advance After Duration ===");
     let result = ctx.cli.admin_advance_epoch();
     println!("Advance after waiting: {}", if result.is_ok() { "succeeded" } else { "failed" });
 

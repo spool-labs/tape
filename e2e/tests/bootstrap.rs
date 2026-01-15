@@ -38,7 +38,6 @@ async fn test_bootstrap_flow_small_committee() {
     const NUM_NODES: usize = 5; // Below MIN_COMMITTEE_SIZE, but bootstrap exception allows
     const BASE_PORT: u16 = 13000;
 
-    println!("=== Bootstrap Flow Test ({} nodes) ===", NUM_NODES);
     println!("(Bootstrap exception allows < {} nodes when committee_prev is empty)", MIN_COMMITTEE_SIZE);
 
     // Setup: spawn validator, initialize system, register/stake/join nodes
@@ -56,7 +55,6 @@ async fn test_bootstrap_flow_small_committee() {
         .expect("Failed to create RPC client");
 
     // Verify initial state - committee_prev should be empty (bootstrap mode)
-    println!("\n=== Verifying Initial State ===");
     let is_bootstrap = rpc.is_bootstrap_mode().await.expect("get bootstrap mode");
     assert!(is_bootstrap, "Should be in bootstrap mode (committee_prev empty)");
 
@@ -65,7 +63,6 @@ async fn test_bootstrap_flow_small_committee() {
     assert_eq!(committee_next_size, NUM_NODES, "All nodes should be in committee_next");
 
     // Check FSM action for nodes - should show AdvanceEpoch
-    println!("\n=== Checking FSM Actions Before Bootstrap ===");
     for node in &ctx.nodes {
         let authority = node.authority.pubkey();
         let action = get_fsm_action(&rpc, &authority)
@@ -75,11 +72,9 @@ async fn test_bootstrap_flow_small_committee() {
     }
 
     // Wait for EPOCH_DURATION to elapse
-    println!("\n=== Waiting for EPOCH_DURATION ({:?}) ===", EPOCH_WAIT);
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Advance epoch (bootstrap exception)
-    println!("\n=== Advancing Epoch (Bootstrap) ===");
     ctx.cli.admin_advance_epoch().expect("Bootstrap epoch advance should succeed");
 
     // Verify epoch is now in Syncing phase
@@ -88,11 +83,9 @@ async fn test_bootstrap_flow_small_committee() {
     assert_eq!(phase, "Syncing", "Epoch should be in Syncing phase");
 
     // Check FSM action - should show SyncEpoch for committee members
-    println!("\n=== Checking FSM Actions During Syncing ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "After AdvanceEpoch").await;
 
     // Fund and start nodes so they can sync
-    println!("\n=== Starting Nodes ===");
     for (i, node) in ctx.nodes.iter().enumerate() {
         if let Err(e) = node.fund(&ctx.cli, 1.0) {
             println!("Warning: Failed to fund node {}: {}", i, e);
@@ -109,7 +102,6 @@ async fn test_bootstrap_flow_small_committee() {
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Wait for epoch to reach Active (bootstrap skips Settling since committee_prev is empty)
-    println!("\n=== Waiting for Epoch to Reach Active ===");
     wait_for_epoch_phase_rpc(&rpc, "Active", Duration::from_secs(60))
         .await
         .expect("Epoch should reach Active phase");
@@ -122,7 +114,6 @@ async fn test_bootstrap_flow_small_committee() {
     assert_eq!(committee_size, NUM_NODES, "All nodes should be in committee");
 
     // Check FSM shows waiting for epoch duration or join network
-    println!("\n=== Final FSM State ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "Final State").await;
 
     // Verify no errors in logs
@@ -142,7 +133,6 @@ async fn test_bootstrap_flow_full_committee() {
     const NUM_NODES: usize = MIN_COMMITTEE_SIZE;
     const BASE_PORT: u16 = 13100;
 
-    println!("=== Full Committee Bootstrap Test ({} nodes) ===", NUM_NODES);
 
     // Use build_and_bootstrap which handles the full flow
     let ctx = TestContext::builder()
@@ -196,7 +186,6 @@ async fn test_post_bootstrap_requires_min_committee() {
     const NUM_NODES: usize = 5; // Below MIN_COMMITTEE_SIZE
     const BASE_PORT: u16 = 13200;
 
-    println!("=== Post-Bootstrap Committee Requirement Test ===");
 
     // Bootstrap with small committee
     let ctx = TestContext::builder()
@@ -212,7 +201,6 @@ async fn test_post_bootstrap_requires_min_committee() {
         .expect("Failed to create RPC client");
 
     // Wait for a full epoch cycle
-    println!("\n=== Waiting for Epoch Duration ===");
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Now committee_prev is NOT empty, so bootstrap exception doesn't apply

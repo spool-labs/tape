@@ -37,7 +37,6 @@ const STAKING_TIMEOUT: Duration = Duration::from_secs(1200);
 #[ignore]
 #[serial]
 async fn test_rewards_pool_accumulation() {
-    println!("=== Rewards Pool Accumulation Test ({} nodes) ===", STAKING_NODE_COUNT);
 
     let ctx = TestContext::builder()
         .nodes(STAKING_NODE_COUNT)
@@ -56,7 +55,6 @@ async fn test_rewards_pool_accumulation() {
     // Check initial archive state
     let archive_before = ctx.cli.account_archive()
         .expect("Failed to get archive before uploads");
-    println!("\n=== Initial Archive State ===");
     println!("  Rewards Pool: {:?}", archive_before.rewards_pool);
     println!("  Rewards Paid: {:?}", archive_before.rewards_paid);
     println!("  Recent Usage: {:?}", archive_before.recent_usage);
@@ -72,7 +70,6 @@ async fn test_rewards_pool_accumulation() {
     let node_urls = ctx.node_urls();
 
     // Upload multiple files to generate storage fees
-    println!("\n=== Uploading files to generate storage fees ===");
     let upload_sizes = [
         (sizes::KB * 10, "10 KB"),
         (sizes::KB * 50, "50 KB"),
@@ -94,7 +91,6 @@ async fn test_rewards_pool_accumulation() {
     // Check archive state after uploads
     let archive_after = ctx.cli.account_archive()
         .expect("Failed to get archive after uploads");
-    println!("\n=== Archive State After Uploads ===");
     println!("  Rewards Pool: {:?}", archive_after.rewards_pool);
     println!("  Rewards Paid: {:?}", archive_after.rewards_paid);
     println!("  Recent Usage: {:?}", archive_after.recent_usage);
@@ -104,7 +100,6 @@ async fn test_rewards_pool_accumulation() {
     let pool_before = archive_before.rewards_pool.unwrap_or(0);
     let pool_after = archive_after.rewards_pool.unwrap_or(0);
 
-    println!("\n=== Results ===");
     println!("  Rewards pool change: {} -> {}", pool_before, pool_after);
 
     // In a real network, uploads would add to the rewards pool
@@ -124,7 +119,6 @@ async fn test_rewards_pool_accumulation() {
 #[ignore]
 #[serial]
 async fn test_rewards_distribution_across_epochs() {
-    println!("=== Rewards Distribution Across Epochs Test ({} nodes) ===", STAKING_NODE_COUNT);
 
     let ctx = TestContext::builder()
         .nodes(STAKING_NODE_COUNT)
@@ -141,7 +135,6 @@ async fn test_rewards_distribution_across_epochs() {
     let node_urls = ctx.node_urls();
 
     // Upload files to generate rewards
-    println!("\n=== Uploading files ===");
     for i in 0..3 {
         let blob = deterministic_blob(sizes::KB * 50, (i + 100) as u64);
         let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
@@ -152,13 +145,11 @@ async fn test_rewards_distribution_across_epochs() {
 
     let epoch_before = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     let archive_before = ctx.cli.account_archive().expect("Failed to get archive");
-    println!("\n=== Before Epoch Advance ===");
     println!("  Epoch: {}", epoch_before);
     println!("  Rewards Pool: {:?}", archive_before.rewards_pool);
     println!("  Rewards Paid: {:?}", archive_before.rewards_paid);
 
     // Advance epoch - nodes will call AdvancePool which distributes rewards
-    println!("\n=== Advancing epoch ===");
     tokio::time::sleep(EPOCH_WAIT).await;
     ctx.cli.admin_advance_epoch().expect("Failed to advance epoch");
 
@@ -168,7 +159,6 @@ async fn test_rewards_distribution_across_epochs() {
 
     let epoch_after = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     let archive_after = ctx.cli.account_archive().expect("Failed to get archive");
-    println!("\n=== After Epoch Advance ===");
     println!("  Epoch: {}", epoch_after);
     println!("  Rewards Pool: {:?}", archive_after.rewards_pool);
     println!("  Rewards Paid: {:?}", archive_after.rewards_paid);
@@ -178,7 +168,6 @@ async fn test_rewards_distribution_across_epochs() {
     // Check if rewards_paid increased (indicates AdvancePool was called)
     let paid_before = archive_before.rewards_paid.unwrap_or(0);
     let paid_after = archive_after.rewards_paid.unwrap_or(0);
-    println!("\n=== Results ===");
     println!("  Epoch advanced: {} -> {}", epoch_before, epoch_after);
     println!("  Rewards paid change: {} -> {}", paid_before, paid_after);
 
@@ -194,7 +183,6 @@ async fn test_rewards_distribution_across_epochs() {
 #[ignore]
 #[serial]
 async fn test_stake_based_spool_allocation() {
-    println!("=== Stake-Based Spool Allocation Test ===");
 
     // Use varying stakes for this test
     let ctx = TestContext::builder()
@@ -213,7 +201,6 @@ async fn test_stake_based_spool_allocation() {
     let committee = ctx.cli.account_committee(None)
         .expect("Failed to get committee");
 
-    println!("\n=== Committee Members ===");
     if let Some(members) = &committee.members {
         let mut total_stake = 0u64;
         let mut total_spools = 0u16;
@@ -229,7 +216,6 @@ async fn test_stake_based_spool_allocation() {
             );
         }
 
-        println!("\n=== Summary ===");
         println!("  Total members: {}", members.len());
         println!("  Sample total stake (first 10): {}", total_stake);
         println!("  Sample total spools (first 10): {}", total_spools);
@@ -249,7 +235,6 @@ async fn test_stake_based_spool_allocation() {
 #[ignore]
 #[serial]
 async fn test_node_stake_status() {
-    println!("=== Node Stake Status Test ({} nodes) ===", STAKING_NODE_COUNT);
 
     let ctx = TestContext::builder()
         .nodes(STAKING_NODE_COUNT)
@@ -264,7 +249,6 @@ async fn test_node_stake_status() {
     wait_for_active_epoch(&ctx, 60).await;
 
     // Check status of a few nodes
-    println!("\n=== Node Status ===");
     for (i, node) in ctx.nodes.iter().enumerate().take(5) {
         match ctx.cli.node_status(Some(&node.config_path), None) {
             Ok(status) => {
@@ -299,7 +283,6 @@ async fn test_node_stake_status() {
 #[ignore]
 #[serial]
 async fn test_multi_epoch_reward_cycle() {
-    println!("=== Multi-Epoch Timing Verification Test ({} nodes) ===", STAKING_NODE_COUNT);
 
     let ctx = TestContext::builder()
         .nodes(STAKING_NODE_COUNT)
@@ -312,14 +295,12 @@ async fn test_multi_epoch_reward_cycle() {
         .expect("Failed to setup test context");
 
     // Track timing for bootstrap epoch (epoch 2)
-    println!("\n=== Waiting for bootstrap epoch (2) to become Active ===");
     let bootstrap_settling_time = wait_for_active_epoch_timed(&ctx, 60).await;
     println!("  Bootstrap epoch settling time: {:?}", bootstrap_settling_time);
 
     let node_urls = ctx.node_urls();
 
     // Upload some data to generate fees
-    println!("\n=== Uploading data ===");
     for i in 0..2 {
         let blob = deterministic_blob(sizes::KB * 100, (i + 200) as u64);
         let upload_file = temp_file_with_content(&blob).expect("temp file");
@@ -333,7 +314,6 @@ async fn test_multi_epoch_reward_cycle() {
     let num_epochs_to_observe = 4;
     let mut epoch_timings: Vec<(u64, Duration)> = Vec::new();
 
-    println!("\n=== Observing {} autonomous epoch advances ===", num_epochs_to_observe);
     println!("(Nodes advance epochs every ~60s when conditions are met)");
 
     let mut current_epoch = ctx.epoch().await.expect("epoch").id.as_u64();
@@ -376,7 +356,6 @@ async fn test_multi_epoch_reward_cycle() {
     }
 
     // Print timing summary
-    println!("\n=== Epoch Timing Summary ===");
     println!("{:>6} {:>15}", "Epoch", "Settling (ms)");
     println!("{}", "-".repeat(25));
     println!("{:>6} {:>15}", 2, bootstrap_settling_time.as_millis());
@@ -385,7 +364,6 @@ async fn test_multi_epoch_reward_cycle() {
     }
 
     // Verify timing expectations
-    println!("\n=== Timing Verification ===");
 
     // Check bootstrap epoch was fast (committee_prev empty)
     let bootstrap_settling_ms = bootstrap_settling_time.as_millis();

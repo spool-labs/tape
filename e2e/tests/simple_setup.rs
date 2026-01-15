@@ -28,7 +28,6 @@ async fn test_simple_setup() {
     const BASE_PORT: u16 = 16000;
     const OBSERVE_DURATION: Duration = Duration::from_secs(300); // 5 minutes
 
-    println!("=== Simple Setup Test ({} nodes) ===", NUM_NODES);
     println!("This test will observe the system for {:?}", OBSERVE_DURATION);
 
     // Build context WITHOUT bootstrapping - we want to manually control the advance
@@ -46,11 +45,9 @@ async fn test_simple_setup() {
         .expect("Failed to create RPC client");
 
     // Debug initial state
-    println!("\n=== Initial State (before starting nodes) ===");
     debug_rpc_state(&rpc, "Initial").await;
 
     // Show all node stakes
-    println!("\n=== Node Stakes (after register/stake/join) ===");
     for node in &ctx.nodes {
         let authority = node.authority.pubkey();
         match rpc.get_node(&authority).await {
@@ -71,7 +68,6 @@ async fn test_simple_setup() {
     }
 
     // Fund and start all nodes
-    println!("\n=== Funding and Starting Nodes ===");
     for (i, node) in ctx.nodes.iter_mut().enumerate() {
         if let Err(e) = ctx.cli.transfer_sol(&node.authority.pubkey(), 1.0) {
             eprintln!("Warning: Failed to fund node {}: {}", i, e);
@@ -85,24 +81,19 @@ async fn test_simple_setup() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Show committee state
-    println!("\n=== Committee State (after starting nodes) ===");
     debug_rpc_state(&rpc, "After start").await;
 
     // Show FSM state for all nodes
-    println!("\n=== FSM State (before advance) ===");
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "Before advance").await;
 
     // Wait for EPOCH_DURATION
-    println!("\n=== Waiting for EPOCH_DURATION ({:?}) ===", EPOCH_WAIT);
     tokio::time::sleep(EPOCH_WAIT).await;
 
     // Debug state after waiting
-    println!("\n=== State After EPOCH_DURATION ===");
     debug_rpc_state(&rpc, "After EPOCH_DURATION").await;
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "After EPOCH_DURATION").await;
 
     // Single manual advance epoch call
-    println!("\n=== Manually Advancing Epoch ===");
     match ctx.cli.admin_advance_epoch() {
         Ok(_) => println!("Epoch advance succeeded"),
         Err(e) => println!("Epoch advance failed: {}", e),
@@ -112,11 +103,9 @@ async fn test_simple_setup() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Debug state after advance
-    println!("\n=== State After Manual Advance ===");
     debug_rpc_state(&rpc, "After manual advance").await;
 
     // Now observe for 5 minutes
-    println!("\n=== Beginning 5-minute observation period ===");
 
     let start = std::time::Instant::now();
     let mut last_status = std::time::Instant::now();
@@ -175,12 +164,10 @@ async fn test_simple_setup() {
     }
 
     // Final state
-    println!("\n=== Final State (after 5 minutes) ===");
     debug_rpc_state(&rpc, "Final").await;
     debug_all_nodes_fsm(&rpc, &ctx.nodes, "Final").await;
 
     // Show all node stakes at the end
-    println!("\n=== Final Node Stakes ===");
     for node in &ctx.nodes {
         let authority = node.authority.pubkey();
         match rpc.get_node(&authority).await {
@@ -204,9 +191,7 @@ async fn test_simple_setup() {
 
     // Check for errors in logs
     if let Err(e) = ctx.check_node_logs() {
-        println!("\n=== Node Log Errors ===");
         println!("{}", e);
     }
 
-    println!("\n=== Test Complete ===");
 }
