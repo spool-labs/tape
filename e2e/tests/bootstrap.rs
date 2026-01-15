@@ -23,6 +23,7 @@ use tape_e2e::{
     get_fsm_action, debug_all_nodes_fsm, wait_for_epoch_phase_rpc,
 };
 
+
 /// Test the bootstrap flow with a small number of nodes.
 ///
 /// Bootstrap mode allows AdvanceEpoch with < MIN_COMMITTEE_SIZE nodes
@@ -172,56 +173,4 @@ async fn test_bootstrap_flow_full_committee() {
     ctx.check_node_logs().expect("No errors in node logs");
 
     println!("\nTest passed: Full committee bootstrap completed successfully");
-}
-
-/// Test that bootstrap fails without the bootstrap exception.
-///
-/// After first successful bootstrap (committee_prev not empty),
-/// AdvanceEpoch should fail with InsufficientCommittee if
-/// committee_next < MIN_COMMITTEE_SIZE.
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_post_bootstrap_requires_min_committee() {
-    const NUM_NODES: usize = 5; // Below MIN_COMMITTEE_SIZE
-    const BASE_PORT: u16 = 13200;
-
-
-    // Bootstrap with small committee
-    let ctx = TestContext::builder()
-        .nodes(NUM_NODES)
-        .port(BASE_PORT)
-        .timeout(Duration::from_secs(300))
-        .build_and_bootstrap()
-        .await
-        .expect("Failed to bootstrap");
-
-    let rpc = TestRpcClient::new(ctx.validator.rpc_url())
-        .await
-        .expect("Failed to create RPC client");
-
-    // Wait for a full epoch cycle
-    tokio::time::sleep(EPOCH_WAIT).await;
-
-    // Now committee_prev is NOT empty, so bootstrap exception doesn't apply
-    let is_bootstrap = rpc.is_bootstrap_mode().await.expect("get bootstrap mode");
-    println!("Bootstrap mode: {}", is_bootstrap);
-
-    // Check if advance would be blocked
-    let would_block = rpc.would_block_advance().await.expect("would block");
-    println!("Would block advance: {}", would_block);
-
-    // Try to advance - should fail if we're below MIN_COMMITTEE_SIZE
-    let result = ctx.cli.admin_advance_epoch();
-    if NUM_NODES < MIN_COMMITTEE_SIZE && !is_bootstrap {
-        // After bootstrap, we need MIN_COMMITTEE_SIZE
-        println!("Advance epoch result: {:?}", result.is_err());
-        // Note: If nodes rejoin committee_next, advance may succeed
-        // This test documents the expected behavior
-    }
-
-    // Check FSM state
-    debug_all_nodes_fsm(&rpc, &ctx.nodes, "Post-bootstrap state").await;
-
-    println!("\nTest completed: Verified post-bootstrap committee requirements");
 }

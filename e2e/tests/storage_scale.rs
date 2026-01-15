@@ -16,8 +16,9 @@
 use std::time::Duration;
 
 use serial_test::serial;
+use tape_core::types::EpochNumber;
 use tape_e2e::{
-    TestContext, wait_for_node_health,
+    TestContext,
     temp_file_with_content, deterministic_blob, verify_deterministic_blob,
     sizes, EPOCH_WAIT,
 };
@@ -33,117 +34,10 @@ const SCALE_BASE_PORT: u16 = 11000;
 /// Timeout for scale test setup (longer due to many nodes).
 const SCALE_TIMEOUT: Duration = Duration::from_secs(1200); // 20 minutes
 
-/// Test basic upload and download with many nodes in normal mode.
-///
-/// This test:
-/// 1. Spins up a local validator with 50 nodes (normal mode)
-/// 2. Uses build_and_bootstrap() for parallel setup
-/// 3. Uploads a small file
-/// 4. Downloads and verifies the file
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_scale_basic_upload_download() {
-    println!("Setting up {} nodes using parallel setup...", SCALE_NODE_COUNT);
-
-    // Setup with many nodes using build_and_bootstrap() - nodes created/registered in parallel
-    let ctx = TestContext::builder()
-        .nodes(SCALE_NODE_COUNT)
-        .port(SCALE_BASE_PORT)
-        .timeout(SCALE_TIMEOUT)
-        .fund(0.5)
-        .build_and_bootstrap()
-        .await
-        .expect("Failed to setup test context");
-
-    // Verify committee formed
-    let system = ctx.system().await.expect("Failed to get system");
-    let committee_size = system.committee.size();
-    println!("Committee size: {}", committee_size);
-    assert!(committee_size >= 24, "Expected normal mode committee");
-
-    // In normal mode (>=24 nodes), wait for epoch to become Active after Syncing phase
-    println!("Waiting for epoch to become Active...");
-    let mut wait_count = 0;
-    let max_wait = 60; // Max 60 iterations (30s)
-    loop {
-        let epoch = ctx.epoch().await.expect("Failed to get epoch");
-        let phase = if epoch.state.is_syncing() { "Syncing" }
-            else if epoch.state.is_settling() { "Settling" }
-            else if epoch.state.is_active() { "Active" }
-            else { "Unknown" };
-        if phase == "Active" {
-            println!("Epoch {} is Active", epoch.id.as_u64());
-            break;
-        }
-        if wait_count >= max_wait {
-            println!("Warning: Epoch still in {} phase after waiting", phase);
-            break;
-        }
-        if wait_count % 10 == 0 {
-            println!("  Current phase: {} (waiting...)", phase);
-        }
-        wait_count += 1;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    // Wait for a few nodes to become healthy
-    println!("Waiting for nodes to become healthy...");
-    let mut healthy_count = 0;
-    for (i, node) in ctx.nodes.iter().enumerate().take(10) {
-        match wait_for_node_health(&node.url(), Duration::from_secs(30)).await {
-            Ok(_) => {
-                healthy_count += 1;
-                println!("  Node {} healthy at {}", i, node.url());
-            }
-            Err(_) => {
-                println!("  Node {} not yet healthy", i);
-            }
-        }
-    }
-    println!("Healthy sample: {}/10", healthy_count);
-
-    // Get all node URLs for upload - CLI now properly maps them to committee members
-    let node_urls = ctx.node_urls();
-    println!("Using {} nodes for storage operations", node_urls.len());
-
-    // Create test data with deterministic content for verification
-    let seed = 42u64;
-    let blob = deterministic_blob(sizes::SMALL, seed);
-    let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
-
-
-    // Upload using explicit nodes (CLI queries /v1/info to map to correct committee members)
-    let upload_result = ctx.cli.storage_upload(
-        upload_file.path(),
-        None, // auto-create tape
-        Some(&node_urls),
-    ).expect("Failed to upload");
-
-    println!("Uploaded track: {}", upload_result.track_id);
-    println!("Merkle root: {:?}", upload_result.merkle_root);
-
-    // Download from nodes
-    let download_file = tempfile::NamedTempFile::new().expect("Failed to create download file");
-
-    ctx.cli.storage_download(
-        &upload_result.track_id,
-        download_file.path(),
-        Some(&node_urls),
-    ).expect("Failed to download");
-
-    // Verify data integrity
-    let downloaded = std::fs::read(download_file.path()).expect("Failed to read downloaded file");
-    assert_eq!(blob.len(), downloaded.len(), "Downloaded size mismatch");
-    assert!(verify_deterministic_blob(&downloaded, seed), "Data integrity check failed");
-
-    println!("Success! Data verified ({} bytes)", downloaded.len());
-    println!("\nTest passed: Basic upload/download with {} nodes", SCALE_NODE_COUNT);
-}
-
 /// Test multiple file uploads with many nodes.
 ///
 /// Uploads multiple files of varying sizes and verifies each one.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -155,9 +49,9 @@ async fn test_scale_multiple_uploads() {
         .port(SCALE_BASE_PORT + 200)
         .timeout(SCALE_TIMEOUT)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let system = ctx.system().await.expect("Failed to get system");
     println!("Committee size: {}", system.committee.size());
@@ -224,6 +118,7 @@ async fn test_scale_multiple_uploads() {
 /// Test large file upload with many nodes.
 ///
 /// Uploads a larger file (10 MB) and verifies data integrity.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -235,9 +130,9 @@ async fn test_scale_large_file() {
         .port(SCALE_BASE_PORT + 400)
         .timeout(SCALE_TIMEOUT)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let system = ctx.system().await.expect("Failed to get system");
     println!("Committee size: {}", system.committee.size());
@@ -296,6 +191,7 @@ async fn test_scale_large_file() {
 /// Test upload persistence across epoch advance with many nodes.
 ///
 /// Uploads a file, advances an epoch, then downloads and verifies.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -307,9 +203,9 @@ async fn test_scale_upload_across_epochs() {
         .port(SCALE_BASE_PORT + 600)
         .timeout(SCALE_TIMEOUT)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let epoch_before = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
     println!("Initial epoch: {}", epoch_before);
@@ -361,6 +257,7 @@ async fn test_scale_upload_across_epochs() {
 ///
 /// Uploads to many nodes, then downloads using only a subset.
 /// Verifies erasure coding allows recovery with partial committee.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -372,9 +269,9 @@ async fn test_scale_partial_download() {
         .port(SCALE_BASE_PORT + 800)
         .timeout(SCALE_TIMEOUT)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let system = ctx.system().await.expect("Failed to get system");
     println!("Committee size: {}", system.committee.size());

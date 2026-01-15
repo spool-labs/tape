@@ -35,6 +35,8 @@ use tape_e2e::{
 /// 1. FSM shows correct actions at each phase
 /// 2. Epoch transitions through all phases
 /// 3. Nodes rejoin committee_next after Active
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -43,14 +45,14 @@ async fn test_full_epoch_cycle() {
     const BASE_PORT: u16 = 15000;
 
 
-    // Bootstrap system
+    // Bootstrap system and advance to epoch 4+ for normal operation
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup and bootstrap");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
@@ -125,6 +127,7 @@ async fn test_full_epoch_cycle() {
 /// Test multiple epoch cycles in succession.
 ///
 /// Verifies system stability over multiple epoch transitions.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -138,9 +141,9 @@ async fn test_multiple_epoch_cycles() {
         .nodes(NUM_NODES)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup and bootstrap");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
@@ -200,6 +203,7 @@ async fn test_multiple_epoch_cycles() {
 /// Test FSM actions match expected transitions.
 ///
 /// For each phase, verify FSM returns correct action types.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -212,9 +216,9 @@ async fn test_fsm_action_correctness() {
         .nodes(NUM_NODES)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup and bootstrap");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await
@@ -280,6 +284,7 @@ async fn test_fsm_action_correctness() {
 /// Test epoch transition timing.
 ///
 /// Verify that epoch advances respect EPOCH_DURATION timing.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -291,9 +296,9 @@ async fn test_epoch_timing() {
         .nodes(MIN_COMMITTEE_SIZE)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(300))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup and bootstrap");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let rpc = TestRpcClient::new(ctx.validator.rpc_url())
         .await

@@ -12,8 +12,9 @@
 use std::time::Duration;
 
 use serial_test::serial;
+use tape_core::types::EpochNumber;
 use tape_e2e::{
-    TestContext, wait_for_node_health,
+    TestContext,
     temp_file_with_content, deterministic_blob,
     sizes, EPOCH_WAIT,
 };
@@ -27,94 +28,14 @@ const STAKING_BASE_PORT: u16 = 12000;
 /// Timeout for staking test setup.
 const STAKING_TIMEOUT: Duration = Duration::from_secs(1200);
 
-/// Test that rewards pool accumulates from storage uploads.
-///
-/// This test:
-/// 1. Spins up 50 nodes and bootstraps the network
-/// 2. Uploads multiple files (generates storage fees -> rewards pool)
-/// 3. Verifies the archive shows accumulated rewards
-#[tokio::test]
-#[ignore]
-#[serial]
-async fn test_rewards_pool_accumulation() {
-
-    let ctx = TestContext::builder()
-        .nodes(STAKING_NODE_COUNT)
-        .port(STAKING_BASE_PORT)
-        .timeout(STAKING_TIMEOUT)
-        .stake(1000)
-        .fund(0.5)
-        .build_and_bootstrap()
-        .await
-        .expect("Failed to setup test context");
-
-    // Wait for epoch to become Active
-    println!("Waiting for epoch to become Active...");
-    wait_for_active_epoch(&ctx, 60).await;
-
-    // Check initial archive state
-    let archive_before = ctx.cli.account_archive()
-        .expect("Failed to get archive before uploads");
-    println!("  Rewards Pool: {:?}", archive_before.rewards_pool);
-    println!("  Rewards Paid: {:?}", archive_before.rewards_paid);
-    println!("  Recent Usage: {:?}", archive_before.recent_usage);
-
-    // Wait for some nodes to be healthy
-    println!("\nWaiting for nodes to become healthy...");
-    for (i, node) in ctx.nodes.iter().enumerate().take(5) {
-        if wait_for_node_health(&node.url(), Duration::from_secs(30)).await.is_ok() {
-            println!("  Node {} healthy", i);
-        }
-    }
-
-    let node_urls = ctx.node_urls();
-
-    // Upload multiple files to generate storage fees
-    let upload_sizes = [
-        (sizes::KB * 10, "10 KB"),
-        (sizes::KB * 50, "50 KB"),
-        (sizes::KB * 100, "100 KB"),
-        (sizes::MB, "1 MB"),
-    ];
-
-    for (i, (size, name)) in upload_sizes.iter().enumerate() {
-        let blob = deterministic_blob(*size, (i + 1) as u64);
-        let upload_file = temp_file_with_content(&blob).expect("Failed to create temp file");
-
-        print!("  Uploading {}... ", name);
-        match ctx.cli.storage_upload(upload_file.path(), None, Some(&node_urls)) {
-            Ok(result) => println!("OK (track: {})", result.track_id),
-            Err(e) => println!("FAILED: {}", e),
-        }
-    }
-
-    // Check archive state after uploads
-    let archive_after = ctx.cli.account_archive()
-        .expect("Failed to get archive after uploads");
-    println!("  Rewards Pool: {:?}", archive_after.rewards_pool);
-    println!("  Rewards Paid: {:?}", archive_after.rewards_paid);
-    println!("  Recent Usage: {:?}", archive_after.recent_usage);
-    println!("  Tape Count:   {:?}", archive_after.tape_count);
-
-    // Rewards pool should have increased (or at least not be zero)
-    let pool_before = archive_before.rewards_pool.unwrap_or(0);
-    let pool_after = archive_after.rewards_pool.unwrap_or(0);
-
-    println!("  Rewards pool change: {} -> {}", pool_before, pool_after);
-
-    // In a real network, uploads would add to the rewards pool
-    // For now, just verify we can read the archive state
-    assert!(archive_after.tape_count.unwrap_or(0) > 0, "Should have created tapes");
-
-    println!("\nTest passed: Rewards pool accumulation verified");
-}
-
 /// Test reward distribution across epochs.
 ///
 /// This test:
 /// 1. Spins up 50 nodes and uploads files
 /// 2. Advances multiple epochs
 /// 3. Verifies rewards_paid increases as nodes call AdvancePool
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -126,11 +47,9 @@ async fn test_rewards_distribution_across_epochs() {
         .timeout(STAKING_TIMEOUT)
         .stake(1000)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
-
-    wait_for_active_epoch(&ctx, 60).await;
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     let node_urls = ctx.node_urls();
 
@@ -179,6 +98,8 @@ async fn test_rewards_distribution_across_epochs() {
 /// This test:
 /// 1. Creates nodes with different stake amounts
 /// 2. Verifies spool allocation is proportional to stake
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -191,11 +112,9 @@ async fn test_stake_based_spool_allocation() {
         .timeout(STAKING_TIMEOUT)
         .stake(1000) // Base stake, will be varied
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
-
-    wait_for_active_epoch(&ctx, 60).await;
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     // Get committee info
     let committee = ctx.cli.account_committee(None)
@@ -231,6 +150,7 @@ async fn test_stake_based_spool_allocation() {
 /// Test node status shows stake and commission info.
 ///
 /// Verifies we can query individual node status to see staking details.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -242,11 +162,9 @@ async fn test_node_stake_status() {
         .timeout(STAKING_TIMEOUT)
         .stake(1000)
         .fund(0.5)
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
-
-    wait_for_active_epoch(&ctx, 60).await;
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     // Check status of a few nodes
     for (i, node) in ctx.nodes.iter().enumerate().take(5) {

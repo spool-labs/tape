@@ -15,7 +15,7 @@ use tape_node::core::{
     NodeConfig, NodeContext, default_config_content, default_config_path, expand_path,
 };
 use tape_node::features::api::Server;
-use tape_node::workers::orchestrator;
+use tape_node::orchestrator;
 
 use tape_sdk::{
     load_solana_keypair, load_bls_keypair, load_tls_keypair,

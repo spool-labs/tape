@@ -21,6 +21,7 @@
 use std::time::Duration;
 
 use serial_test::serial;
+use tape_core::types::EpochNumber;
 use tape_e2e::{TestContext, MIN_COMMITTEE_SIZE, VARYING_STAKES};
 
 /// Test that stake changes affect committee membership.
@@ -29,6 +30,8 @@ use tape_e2e::{TestContext, MIN_COMMITTEE_SIZE, VARYING_STAKES};
 /// 1. Registers nodes with varying stake amounts
 /// 2. Verifies spool allocations reflect stake weight
 /// 3. Changes stake and verifies reallocation
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -37,13 +40,17 @@ async fn test_stake_weight_affects_allocations() {
 
     println!("Stake amounts: {:?}", VARYING_STAKES);
 
-    // Setup with varying stakes
+    // Setup with varying stakes and advance to epoch 4+
     let ctx = TestContext::builder()
         .port(BASE_PORT)
         .timeout(Duration::from_secs(300))
         .build_with_varying_stakes_and_bootstrap()
         .await
         .expect("Failed to setup test context");
+
+    ctx.wait_for_epoch(EpochNumber(4), Duration::from_secs(120))
+        .await
+        .expect("Failed to reach epoch 4");
 
     // Query node status to see spool allocations
     let mut total_allocations = 0u16;
@@ -106,6 +113,8 @@ async fn test_stake_weight_affects_allocations() {
 /// 1. Starts with MIN_COMMITTEE_SIZE nodes
 /// 2. Adds new nodes mid-test
 /// 3. Verifies committee adjusts correctly
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -113,14 +122,14 @@ async fn test_dynamic_node_membership() {
     const BASE_PORT: u16 = 11300;
 
 
-    // Start with minimum nodes for normal operation
+    // Start with minimum nodes for normal operation, advance to epoch 4+
     let mut ctx = TestContext::builder()
         .nodes(MIN_COMMITTEE_SIZE)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     println!("Started with {} nodes", ctx.nodes.len());
 

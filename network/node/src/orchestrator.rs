@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, Instrument};
 
 use crate::core::context::NodeContext;
 use crate::features::api::ServerHandle;
@@ -48,6 +48,16 @@ pub async fn run(
     ctx: Arc<NodeContext>,
     server_handle: ServerHandle,
 ) -> Result<(), OrchestratorError> {
+    let node_id = ctx.control_plane.our_node_id();
+    run_inner(ctx, server_handle)
+        .instrument(tracing::info_span!("", node = node_id.as_u64()))
+        .await
+}
+
+async fn run_inner(
+    ctx: Arc<NodeContext>,
+    server_handle: ServerHandle,
+) -> Result<(), OrchestratorError> {
     info!("Orchestrator starting");
 
     // Create signal channel: block processor -> FSM loop
@@ -56,12 +66,17 @@ pub async fn run(
     let cancel = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
 
+    // Capture span for spawned tasks (they don't inherit parent span automatically)
+    let span = tracing::Span::current();
+
     // Block processor: parses blocks, signals FSM when state changes
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let cancel = cancel.clone();
+        let span = span.clone();
         async move {
             block::run(ctx, signal_tx, cancel)
+                .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::BlockProcessor(e.to_string()))
         }
@@ -71,8 +86,10 @@ pub async fn run(
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let cancel = cancel.clone();
+        let span = span.clone();
         async move {
             network_sync::run(ctx, signal_rx, cancel)
+                .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::NetworkSync(e.to_string()))
         }
@@ -82,8 +99,10 @@ pub async fn run(
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let cancel = cancel.clone();
+        let span = span.clone();
         async move {
             challenges::run(ctx, cancel)
+                .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::Challenges(e.to_string()))
         }
@@ -92,9 +111,11 @@ pub async fn run(
     // Thread D: Recovery
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
+        let span = span.clone();
         let cancel = cancel.clone();
         async move {
             recovery::run(ctx, cancel)
+                .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::Recovery(e.to_string()))
         }

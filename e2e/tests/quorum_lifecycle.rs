@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use serial_test::serial;
+use tape_core::types::EpochNumber;
 use tape_e2e::{TestContext, MIN_COMMITTEE_SIZE};
 
 /// Test normal mode lifecycle over multiple epochs.
@@ -30,6 +31,8 @@ use tape_e2e::{TestContext, MIN_COMMITTEE_SIZE};
 /// 3. Phase transitions occur correctly (Active -> Syncing -> Settling -> Active)
 /// 4. Committee size meets minimum
 /// 5. Multiple epochs complete without errors
+///
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -39,14 +42,14 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     const BASE_PORT: u16 = 10200;
 
 
-    // Setup with timeout for MIN_COMMITTEE_SIZE nodes
+    // Setup and advance to epoch 4+ for normal operation
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     // Verify we're in normal mode
     let system = ctx.system().await.expect("Failed to get system");
@@ -130,6 +133,7 @@ async fn test_normal_mode_lifecycle_5_epochs() {
 ///
 /// Verifies that nodes remain healthy throughout epoch transitions.
 /// Nodes handle epoch advancement autonomously.
+/// Starts at epoch 4+ to test normal operation after bootstrap period.
 #[tokio::test]
 #[ignore]
 #[serial]
@@ -143,9 +147,9 @@ async fn test_node_health_across_epochs() {
         .nodes(NUM_NODES)
         .port(BASE_PORT)
         .timeout(Duration::from_secs(600))
-        .build_and_bootstrap()
+        .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
-        .expect("Failed to setup test context");
+        .expect("Failed to setup and bootstrap to epoch 4");
 
     // Wait for nodes to initialize
     tokio::time::sleep(Duration::from_secs(5)).await;
