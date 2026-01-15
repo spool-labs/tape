@@ -16,6 +16,7 @@ use serial_test::serial;
 use common::*;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Keypair, Signer};
+use tape_api::errors::TapeError;
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix, build_reserve_tape_ix};
 use tape_api::program::tapedrive::{track_pda, CommitteeBitmap};
 use tape_core::bls::{BlsPrivateKey, BlsSignature};
@@ -165,14 +166,17 @@ async fn test_submit_certificate() {
         .send_instructions(&tape_owner, vec![budget_ix, certify_ix])
         .await;
 
-    // The instruction should fail with BadSignature (0x21) because our mock
+    // The instruction should fail with BadSignature because our mock
     // BLS keys don't match the on-chain committee keys
     assert!(result.is_err(), "Expected BadSignature error with mock keys");
     let err_str = format!("{:?}", result.unwrap_err());
+    // Use typed error parsing
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x21") || err_str.contains("BadSignature"),
-        "Expected BadSignature error, got: {}",
-        err_str
+        tape_err == Some(TapeError::BadSignature),
+        "Expected BadSignature error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
     println!("TEST PASSED: Certificate submission instruction structure verified");
@@ -256,13 +260,13 @@ async fn test_certificate_requires_committee_member() {
     // since the aggregate pubkeys don't match the committee's registered keys.
     assert!(result.is_err(), "Expected signature verification to fail");
     let err_str = format!("{:?}", result.unwrap_err());
-    // The error could be BadSignature (0x21) or NoQuorum (0x50) depending on
-    // verification order in the program
+    // Use typed error parsing - error could be BadSignature or NoQuorum
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x21") || err_str.contains("BadSignature")
-            || err_str.contains("0x50") || err_str.contains("NoQuorum"),
-        "Expected BadSignature or NoQuorum error, got: {}",
-        err_str
+        tape_err == Some(TapeError::BadSignature) || tape_err == Some(TapeError::NoQuorum),
+        "Expected BadSignature or NoQuorum error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
     println!("TEST PASSED: Non-committee signatures correctly rejected");
@@ -457,10 +461,13 @@ async fn test_certificate_epoch_binding() {
     // Should fail because the signature was made for a different epoch
     assert!(result.is_err(), "Wrong epoch signature should be rejected");
     let err_str = format!("{:?}", result.unwrap_err());
+    // Use typed error parsing
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x21") || err_str.contains("BadSignature"),
-        "Expected signature verification error, got: {}",
-        err_str
+        tape_err == Some(TapeError::BadSignature),
+        "Expected BadSignature error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
     // Also test with a future epoch
@@ -576,11 +583,13 @@ async fn test_aggregate_certificates() {
 
     assert!(result.is_err(), "Insufficient signatures should be rejected");
     let err_str = format!("{:?}", result.unwrap_err());
-    // Should fail with NoQuorum (0x50) when not enough signers
+    // Use typed error parsing - should fail with NoQuorum or BadSignature
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x50") || err_str.contains("NoQuorum") || err_str.contains("0x21"),
-        "Expected NoQuorum or BadSignature error, got: {}",
-        err_str
+        tape_err == Some(TapeError::NoQuorum) || tape_err == Some(TapeError::BadSignature),
+        "Expected NoQuorum or BadSignature error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
     println!("Insufficient signatures correctly rejected");
 

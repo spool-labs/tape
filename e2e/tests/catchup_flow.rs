@@ -162,8 +162,8 @@ async fn test_node_startup_after_epoch_advances() {
         }
 
         // Verify no BadSpoolHash or BadEpochId errors
-        let has_bad_spool_hash = log.contains("BadSpoolHash") || log.contains("0x54");
-        let has_bad_epoch_id = log.contains("BadEpochId") || log.contains("0x43");
+        let has_bad_spool_hash = log.contains("BadSpoolHash") || log.contains("bad spool hash");
+        let has_bad_epoch_id = log.contains("BadEpochId") || log.contains("bad epoch id");
 
         if has_bad_spool_hash {
             println!("\nWARNING: Found BadSpoolHash errors in logs!");

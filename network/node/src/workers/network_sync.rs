@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
+use tape_api::errors::TapeError;
 use tape_api::fsm::NodeAction;
 use tape_api::instruction::{build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix};
 use tape_api::program::tapedrive::node_pda;
@@ -72,35 +73,39 @@ const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
 /// - `RetryLater`: The action isn't ready yet, try again next loop
 /// - `Err`: Fatal error, report and stop
 fn categorize_tx_error(err: &str, action_name: &str) -> Result<HandlerOutcome, NetworkSyncError> {
-    // Already completed (by us or another node) or not applicable
-    if err.contains("0x40") ||  // BadEpochState - epoch not in expected phase
-       err.contains("0x62") ||  // AlreadyAdvanced - already did AdvancePool
-       err.contains("0x10") ||  // UnexpectedState - already in committee
-       err.contains("0x4a") ||  // AlreadySynced - already synced this epoch
-       err.contains("0x72") ||  // NotStaked - can't join without stake
-       err.contains("AlreadyInCommittee") ||
-       err.contains("BadEpochState") ||
-       err.contains("AlreadyAdvanced") ||
-       err.contains("AlreadySynced") ||
-       err.contains("NotStaked") {
-        info!("{} already complete (or not applicable)", action_name);
-        return Ok(HandlerOutcome::Completed);
-    }
+    // Try to parse as a typed TapeError
+    if let Some(tape_err) = TapeError::from_error_string(err) {
+        return match tape_err {
+            // Already completed (by us or another node) or not applicable
+            e if e.is_already_done() => {
+                info!("{} already complete: {}", action_name, e);
+                Ok(HandlerOutcome::Completed)
+            }
 
-    // Timing/threshold issues - retry later
-    if err.contains("0x41") ||  // TooSoon - epoch duration not elapsed
-       err.contains("0x55") ||  // InsufficientCommittee - committee_next too small
-       err.contains("TooSoon") ||
-       err.contains("InsufficientCommittee") {
-        debug!("{} not ready yet, will retry", action_name);
-        return Ok(HandlerOutcome::RetryLater);
-    }
+            // Not staked - can't join without stake
+            TapeError::NotStaked => {
+                info!("{} not applicable: not staked", action_name);
+                Ok(HandlerOutcome::Completed)
+            }
 
-    // Fatal errors - node state is invalid
-    if err.contains("0x60") || err.contains("NodeStale") {
-        return Err(NetworkSyncError::Rpc(
-            format!("{} failed: AdvancePool required first (NodeStale)", action_name)
-        ));
+            // Timing/threshold issues - retry later
+            e if e.is_retriable() => {
+                debug!("{} not ready yet ({}), will retry", action_name, e);
+                Ok(HandlerOutcome::RetryLater)
+            }
+
+            // Node state is stale - requires AdvancePool first
+            TapeError::NodeStale => {
+                Err(NetworkSyncError::Rpc(
+                    format!("{} failed: AdvancePool required first (NodeStale)", action_name)
+                ))
+            }
+
+            // Other known errors - treat as fatal
+            _ => Err(NetworkSyncError::Rpc(
+                format!("{} failed: {} ({})", action_name, tape_err.user_message(), tape_err)
+            )),
+        };
     }
 
     // Unknown error - treat as fatal to avoid silent failures

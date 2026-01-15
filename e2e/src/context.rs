@@ -217,8 +217,8 @@ impl TestContext {
 
         for node in &self.nodes {
             if let Ok(log) = node.read_log() {
-                let has_bad_spool = log.contains("BadSpoolHash") || log.contains("0x54");
-                let has_bad_epoch = log.contains("BadEpochId") || log.contains("0x43");
+                let has_bad_spool = log.contains("BadSpoolHash") || log.contains("bad spool hash");
+                let has_bad_epoch = log.contains("BadEpochId") || log.contains("bad epoch id");
                 let has_panic = log.contains("panic") || log.contains("PANIC");
 
                 if has_bad_spool {

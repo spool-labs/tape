@@ -18,6 +18,7 @@ use serial_test::serial;
 
 use common::{create_client, initialize_system, setup_validator, transfer_tape, ValidatorGuard};
 use solana_sdk::signature::{Keypair, Signer};
+use tape_api::errors::TapeError;
 use tape_api::instruction::{build_register_track_ix, build_reserve_tape_ix};
 use tape_core::prelude::*;
 use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
@@ -425,10 +426,13 @@ async fn test_tape_capacity_limits() {
     );
 
     let err_str = format!("{:?}", result.unwrap_err());
+    // Use typed error parsing
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x31") || err_str.contains("NoSpace"),
-        "Expected NoSpace error (0x31), got: {}",
-        err_str
+        tape_err == Some(TapeError::NoSpace),
+        "Expected NoSpace error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
     println!("Oversized track correctly rejected with NoSpace error");
 

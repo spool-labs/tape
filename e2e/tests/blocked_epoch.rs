@@ -16,6 +16,7 @@ use std::time::Duration;
 use serial_test::serial;
 use solana_sdk::signature::Signer;
 use tape_api::fsm::NodeAction;
+use tape_api::errors::TapeError;
 use tape_e2e::{
     TestContext, MIN_COMMITTEE_SIZE, EPOCH_WAIT,
     get_fsm_action, debug_rpc_state,
@@ -106,11 +107,16 @@ async fn test_blocked_epoch_insufficient_committee() {
         }
         Err(e) => {
             let err_str = e.to_string();
-            if err_str.contains("InsufficientCommittee") || err_str.contains("0x") {
-                println!("  AdvanceEpoch blocked as expected: {}", e);
-                // Verify we're still in Active phase
-                let phase = ctx.epoch_phase().await.expect("get phase");
-                assert_eq!(phase, "Active", "Should still be in Active phase when blocked");
+            // Use typed error parsing to check for InsufficientCommittee
+            if let Some(tape_err) = TapeError::from_error_string(&err_str) {
+                if tape_err == TapeError::InsufficientCommittee {
+                    println!("  AdvanceEpoch blocked as expected: {}", tape_err);
+                    // Verify we're still in Active phase
+                    let phase = ctx.epoch_phase().await.expect("get phase");
+                    assert_eq!(phase, "Active", "Should still be in Active phase when blocked");
+                } else {
+                    println!("  AdvanceEpoch failed with unexpected error: {}", tape_err);
+                }
             } else {
                 println!("  AdvanceEpoch failed with error: {}", e);
             }

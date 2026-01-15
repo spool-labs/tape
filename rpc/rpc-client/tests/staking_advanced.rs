@@ -24,6 +24,7 @@ use common::{
     sync_epoch, transfer_tape, wait_for_epoch_duration, ValidatorGuard,
 };
 use solana_sdk::signature::{Keypair, Signer};
+use tape_api::errors::TapeError;
 use tape_api::instruction::{build_request_stake_unlock_ix, build_stake_with_pool_ix};
 use tape_api::program::tapedrive::stake_pda;
 use tape_core::types::coin::{Coin, TAPE};
@@ -402,11 +403,13 @@ async fn test_stake_below_minimum() {
     let err_str = result.unwrap_err().to_string();
     println!("Zero stake error: {}", err_str);
 
-    // The error should indicate invalid stake amount
-    // ZeroStake error code in the program
+    // Use typed error parsing - should be ZeroShares
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x") || err_str.contains("Error"),
-        "Should return a program error for zero stake"
+        tape_err == Some(TapeError::ZeroShares),
+        "Should return ZeroShares error for zero stake, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
     // Now stake a valid amount to verify normal operation

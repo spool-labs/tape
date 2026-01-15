@@ -18,6 +18,7 @@ tape-solana.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
 num_enum.workspace = true
+thiserror.workspace = true
 solana-program.workspace = true
 mpl-token-metadata.workspace = true
 spl-token.workspace = true

@@ -1,4 +1,5 @@
 pub mod consts;
+pub mod errors;
 pub mod event;
 pub mod fsm;
 pub mod helpers;

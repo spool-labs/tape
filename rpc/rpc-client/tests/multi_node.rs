@@ -19,6 +19,7 @@ use common::{
     transfer_tape, wait_for_epoch_duration, ValidatorGuard,
 };
 use solana_sdk::signature::Signer;
+use tape_api::errors::TapeError;
 use tape_api::fsm::NodeAction;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::NodeId;
@@ -380,12 +381,15 @@ async fn test_insufficient_committee_blocks_advance() {
 
     assert!(result.is_err(), "Epoch 3->4 should be blocked");
     let err_str = result.unwrap_err();
+    // Use typed error parsing
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x55"),
-        "Error should be InsufficientCommittee (0x55), got: {}",
-        err_str
+        tape_err == Some(TapeError::InsufficientCommittee),
+        "Error should be InsufficientCommittee, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
-    println!("Epoch 3->4: Blocked with InsufficientCommittee (0x55) - correct!");
+    println!("Epoch 3->4: Blocked with InsufficientCommittee - correct!");
     println!("\nTEST PASSED: Hard gate verified");
 }

@@ -20,6 +20,7 @@ use serial_test::serial;
 use common::*;
 use rpc::Rpc;
 use solana_sdk::signature::{Keypair, Signer};
+use tape_api::errors::ExchangeError;
 use tape_api::instruction::{
     build_deposit_sol_ix, build_deposit_tape_ix, build_register_exchange_ix,
     build_set_exchange_rate_ix, build_swap_for_sol_ix, build_swap_for_tape_ix,
@@ -557,11 +558,13 @@ async fn test_exchange_slippage() {
     let err_str = result.unwrap_err().to_string();
     println!("Expected error received: {}", err_str);
 
-    // The error should be InsufficientFunds (0x10)
+    // Use typed error parsing
+    let exchange_err = ExchangeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x10") || err_str.contains("InsufficientFunds"),
-        "Error should indicate insufficient funds, got: {}",
-        err_str
+        exchange_err == Some(ExchangeError::InsufficientFunds),
+        "Error should be InsufficientFunds, got: {} (parsed: {:?})",
+        err_str,
+        exchange_err
     );
 
     // Now try a smaller swap that should succeed
@@ -657,11 +660,13 @@ async fn test_exchange_min_amount() {
     assert!(result.is_err(), "Zero amount swap should fail");
     let err_str = result.unwrap_err().to_string();
     println!("Zero amount error: {}", err_str);
-    // Error should be UnexpectedState (0x20)
+    // Use typed error parsing
+    let exchange_err = ExchangeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x20") || err_str.contains("UnexpectedState"),
-        "Error should indicate unexpected state for zero amount, got: {}",
-        err_str
+        exchange_err == Some(ExchangeError::UnexpectedState),
+        "Error should be UnexpectedState for zero amount, got: {} (parsed: {:?})",
+        err_str,
+        exchange_err
     );
 
     // Test 2: Very small amount (1 lamport)

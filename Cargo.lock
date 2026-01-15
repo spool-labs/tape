@@ -11275,6 +11275,7 @@ dependencies = [
  "spl-token 4.0.2",
  "tape-core",
  "tape-solana",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

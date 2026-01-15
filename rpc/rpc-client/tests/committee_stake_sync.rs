@@ -24,6 +24,7 @@ use common::{
     ValidatorGuard,
 };
 use solana_sdk::signature::Signer;
+use tape_api::errors::TapeError;
 use tape_api::fsm::NodeAction;
 use tape_core::types::coin::{Coin, TAPE};
 
@@ -133,10 +134,13 @@ async fn test_rejoin_requires_advance_pool() {
 
     assert!(result.is_err(), "JoinNetwork should fail without AdvancePool");
     let err_str = result.unwrap_err();
+    // Use typed error parsing
+    let tape_err = TapeError::from_error_string(&err_str);
     assert!(
-        err_str.contains("0x60") || err_str.contains("NodeStale"),
-        "Expected NodeStale (0x60) error, got: {}",
-        err_str
+        tape_err == Some(TapeError::NodeStale),
+        "Expected NodeStale error, got: {} (parsed: {:?})",
+        err_str,
+        tape_err
     );
 
     println!("TEST PASSED: Re-join requires AdvancePool");
