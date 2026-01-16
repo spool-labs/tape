@@ -16,7 +16,7 @@ use tape_core::types::EpochNumber;
 use tape_e2e::{
     TestContext,
     temp_file_with_content, deterministic_blob,
-    sizes, EPOCH_WAIT,
+    sizes,
 };
 
 /// Number of nodes for staking tests.
@@ -63,30 +63,30 @@ async fn test_rewards_distribution_across_epochs() {
     }
 
     let epoch_before = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
-    let archive_before = ctx.cli.account_archive().expect("Failed to get archive");
+    let archive_before = ctx.archive().await.expect("Failed to get archive");
     println!("  Epoch: {}", epoch_before);
-    println!("  Rewards Pool: {:?}", archive_before.rewards_pool);
-    println!("  Rewards Paid: {:?}", archive_before.rewards_paid);
+    println!("  Rewards Pool: {}", archive_before.rewards_pool.as_u64());
+    println!("  Rewards Paid: {}", archive_before.rewards_paid.as_u64());
 
-    // Advance epoch - nodes will call AdvancePool which distributes rewards
-    tokio::time::sleep(EPOCH_WAIT).await;
-    ctx.cli.admin_advance_epoch().expect("Failed to advance epoch");
-
-    // Give nodes time to process epoch change and call AdvancePool
-    println!("  Waiting for nodes to process epoch change...");
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // Observe epochs - nodes advance automatically and call AdvancePool
+    ctx.observe_epochs(2, |epoch, _system| {
+        println!("  Epoch: id={}", epoch.id.as_u64());
+        Ok(())
+    })
+    .await
+    .expect("Failed to observe epochs");
 
     let epoch_after = ctx.epoch().await.expect("Failed to get epoch").id.as_u64();
-    let archive_after = ctx.cli.account_archive().expect("Failed to get archive");
+    let archive_after = ctx.archive().await.expect("Failed to get archive");
     println!("  Epoch: {}", epoch_after);
-    println!("  Rewards Pool: {:?}", archive_after.rewards_pool);
-    println!("  Rewards Paid: {:?}", archive_after.rewards_paid);
+    println!("  Rewards Pool: {}", archive_after.rewards_pool.as_u64());
+    println!("  Rewards Paid: {}", archive_after.rewards_paid.as_u64());
 
     assert!(epoch_after > epoch_before, "Epoch should have advanced");
 
     // Check if rewards_paid increased (indicates AdvancePool was called)
-    let paid_before = archive_before.rewards_paid.unwrap_or(0);
-    let paid_after = archive_after.rewards_paid.unwrap_or(0);
+    let paid_before = archive_before.rewards_paid.as_u64();
+    let paid_after = archive_after.rewards_paid.as_u64();
     println!("  Epoch advanced: {} -> {}", epoch_before, epoch_after);
     println!("  Rewards paid change: {} -> {}", paid_before, paid_after);
 
@@ -116,33 +116,26 @@ async fn test_stake_based_spool_allocation() {
         .await
         .expect("Failed to setup and bootstrap to epoch 4");
 
-    // Get committee info
-    let committee = ctx.cli.account_committee(None)
-        .expect("Failed to get committee");
+    // Get committee info via RPC
+    let system = ctx.system().await.expect("Failed to get system");
+    let committee = &system.committee;
 
-    if let Some(members) = &committee.members {
-        let mut total_stake = 0u64;
-        let mut total_spools = 0u16;
-
-        for (i, member) in members.iter().enumerate().take(10) {
-            let stake = member.stake.unwrap_or(0);
-            let spools = member.spool_count.unwrap_or(0);
-            total_stake += stake;
-            total_spools += spools;
-            println!(
-                "  Member {}: node_id={:?}, stake={}, spools={}",
-                i, member.node_id, stake, spools
-            );
-        }
-
-        println!("  Total members: {}", members.len());
-        println!("  Sample total stake (first 10): {}", total_stake);
-        println!("  Sample total spools (first 10): {}", total_spools);
-
-        // With 50 nodes and 1024 spools, each node should have ~20 spools on average
-        // (capped at 51 = 1024/20 for stake concentration limit)
-        assert!(members.len() >= 24, "Should have enough members for normal mode");
+    let mut total_stake = 0u64;
+    for (i, member) in committee.iter().enumerate().take(10) {
+        let stake = member.stake.as_u64();
+        total_stake += stake;
+        println!(
+            "  Member {}: node_id={}, stake={}",
+            i, member.id.as_u64(), stake
+        );
     }
+
+    println!("  Total members: {}", committee.size());
+    println!("  Sample total stake (first 10): {}", total_stake);
+
+    // With 50 nodes and 1024 spools, each node should have ~20 spools on average
+    // (capped at 51 = 1024/20 for stake concentration limit)
+    assert!(committee.size() >= 24, "Should have enough members for normal mode");
 
     println!("\nTest passed: Stake-based spool allocation verified");
 }

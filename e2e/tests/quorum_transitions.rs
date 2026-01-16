@@ -147,23 +147,26 @@ async fn test_dynamic_node_membership() {
     .expect("Failed to observe epochs");
 
     // Add 2 more nodes
+    // In normal mode, stake takes E+2 epochs to activate
     ctx.add_nodes(2, 1000)
         .await
         .expect("Failed to add nodes");
 
     println!("Total nodes now: {}", ctx.nodes.len());
 
-    // Wait for epoch to advance and activate new nodes
-    ctx.observe_epochs(1, |epoch, system| {
+    // Wait for epochs to advance and activate new nodes
+    // Stake needs E+2 epochs to activate, then nodes join, then they're in committee
+    ctx.observe_epochs(4, |epoch, system| {
         println!(
-            "After adding: epoch={}, committee={}",
+            "After adding: epoch={}, committee={}, next={}",
             epoch.id.as_u64(),
-            system.committee.size()
+            system.committee.size(),
+            system.committee_next.size()
         );
         Ok(())
     })
     .await
-    .expect("Failed to advance epoch");
+    .expect("Failed to advance epochs");
 
     // Run more epochs
 

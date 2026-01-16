@@ -34,7 +34,7 @@ pub mod rpc;
 pub mod validator;
 pub mod wait;
 
-pub use cli::{Tapedrive, ArchiveAccount, NodeStatus, CommitteeInfo, CommitteeMember};
+pub use cli::{Tapedrive, NodeStatus, StorageUploadResult};
 pub use consts::*;
 pub use context::{TestContext, TestContextBuilder, VARYING_STAKES};
 pub use fixtures::*;

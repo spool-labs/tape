@@ -11,7 +11,7 @@ use rpc_client::{RpcClient, RpcConfig};
 use rpc_solana::SolanaRpc;
 use solana_sdk::pubkey::Pubkey;
 
-use tape_api::prelude::{Epoch, Node, System};
+use tape_api::prelude::{Archive, Epoch, Node, System};
 use tape_core::types::EpochNumber;
 
 /// Create an RPC client connected to the specified URL.
@@ -66,6 +66,14 @@ impl TestRpcClient {
             .context("Failed to get Epoch account")
     }
 
+    /// Get the Archive account state.
+    pub async fn get_archive(&self) -> Result<Archive> {
+        self.inner
+            .get_archive()
+            .await
+            .context("Failed to get Archive account")
+    }
+
     /// Get a Node account by authority pubkey.
     pub async fn get_node(&self, authority: &Pubkey) -> Result<Node> {
         self.inner
@@ -117,6 +125,13 @@ impl TestRpcClient {
     pub async fn would_block_advance(&self) -> Result<bool> {
         let system = self.get_system().await?;
         Ok(system.will_be_low_quorum())
+    }
+
+    /// Check if system is in low-quorum mode (current committee < MIN_COMMITTEE_SIZE).
+    /// In low-quorum mode, stake activates immediately instead of E+2 delay.
+    pub async fn is_low_quorum(&self) -> Result<bool> {
+        let system = self.get_system().await?;
+        Ok(system.is_low_quorum())
     }
 }
 

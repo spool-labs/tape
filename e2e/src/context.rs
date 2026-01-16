@@ -36,7 +36,7 @@ use crate::rpc::TestRpcClient;
 use crate::validator::{Validator, ValidatorOptions};
 use crate::wait::{wait_for_rpc, LONG_TIMEOUT};
 use crate::Tapedrive;
-use tape_api::prelude::{Epoch, System};
+use tape_api::prelude::{Archive, Epoch, System};
 use tape_api::program::EPOCH_DURATION;
 use tape_core::types::EpochNumber;
 
@@ -80,6 +80,11 @@ impl TestContext {
     /// Get the current system state from the chain via RPC.
     pub async fn system(&self) -> Result<System> {
         self.rpc.get_system().await
+    }
+
+    /// Get the archive account from the chain via RPC.
+    pub async fn archive(&self) -> Result<Archive> {
+        self.rpc.get_archive().await
     }
 
     /// Get the current committee size via RPC.
@@ -259,11 +264,16 @@ impl TestContext {
 
     /// Add more nodes to the context.
     ///
-    /// Registers, stakes, joins, funds, and starts the new nodes.
-    /// Does NOT bootstrap them - they'll be activated on the next epoch advance.
+    /// Registers, stakes, funds, and starts new nodes.
+    /// In low-quorum mode, also joins immediately (stake activates instantly).
+    /// In normal mode, skips join - stake takes E+2 epochs to activate.
+    /// Nodes will join via their FSM once stake activates.
     pub async fn add_nodes(&mut self, count: usize, stake: u64) -> Result<()> {
         let base_port = self.nodes.last().map(|n| n.port + 1).unwrap_or(10000);
         let start_index = self.nodes.len();
+
+        // Check if we're in low-quorum mode (stake activates immediately)
+        let is_low_quorum = self.rpc.is_low_quorum().await.unwrap_or(false);
 
         for i in 0..count {
             let mut node = TestNode::new(start_index + i, base_port)
@@ -273,8 +283,13 @@ impl TestContext {
                 .with_context(|| format!("Failed to register node {}", start_index + i))?;
             node.stake(&self.cli, stake)
                 .with_context(|| format!("Failed to stake node {}", start_index + i))?;
-            node.join(&self.cli)
-                .with_context(|| format!("Failed to join node {}", start_index + i))?;
+
+            // In low-quorum mode, stake activates immediately so we can join
+            // In normal mode, stake takes E+2 epochs - nodes will join via FSM later
+            if is_low_quorum {
+                node.join(&self.cli)
+                    .with_context(|| format!("Failed to join node {}", start_index + i))?;
+            }
 
             if let Err(e) = node.fund(&self.cli, 1.0) {
                 eprintln!("Warning: Failed to fund node {}: {}", start_index + i, e);
@@ -454,6 +469,7 @@ impl TestContextBuilder {
     /// After this, nodes are in the committee and will advance epochs autonomously.
     pub async fn build_and_bootstrap(self) -> Result<TestContext> {
         let fund_amount = self.fund_amount;
+        let timeout = self.timeout;
         let mut ctx = self.build().await?;
 
         if ctx.nodes.is_empty() {
@@ -495,12 +511,13 @@ impl TestContextBuilder {
             tokio::time::sleep(wait).await;
         }
         // Wait for nodes to advance the epoch (don't call manually - nodes handle it)
-        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), Duration::from_secs(30))
+        // Use configured timeout for scale tests with many nodes
+        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), timeout)
             .await
             .context("Nodes did not advance epoch during bootstrap")?;
 
         // Wait for epoch to reach Active phase (goes through Syncing -> Settling -> Active)
-        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
+        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", timeout)
             .await
             .context("Epoch did not reach Active phase after bootstrap")?;
 
@@ -539,18 +556,30 @@ impl TestContextBuilder {
             .await
             .with_context(|| format!("Failed to reach epoch {}", target_epoch.as_u64()))?;
 
+        // Brief stabilization delay for nodes to finish AdvancePool calls
+        // This helps prevent NodeStale errors in tests with many nodes
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
         Ok(ctx)
     }
 }
 
 /// Varying stake amounts for testing stake weight effects.
-pub const VARYING_STAKES: [u64; 5] = [100, 500, 1000, 2000, 5000];
+/// 25 entries to ensure normal quorum mode (MIN_COMMITTEE_SIZE = 25).
+/// Stakes range from 100 to 5000 with varying distributions.
+pub const VARYING_STAKES: [u64; 25] = [
+    100, 200, 300, 400, 500,      // Low stake tier (5)
+    600, 700, 800, 900, 1000,     // Medium-low tier (5)
+    1100, 1200, 1300, 1400, 1500, // Medium tier (5)
+    1750, 2000, 2250, 2500, 2750, // Medium-high tier (5)
+    3000, 3500, 4000, 4500, 5000, // High stake tier (5)
+];
 
 /// Builder extension for creating nodes with varying stakes.
 impl TestContextBuilder {
     /// Build with varying stake amounts per node.
     ///
-    /// Uses predefined stake amounts: [100, 500, 1000, 2000, 5000].
+    /// Uses predefined stake amounts from VARYING_STAKES (25 nodes with varying stakes).
     /// Number of nodes is determined by the length of VARYING_STAKES.
     pub async fn build_with_varying_stakes(mut self) -> Result<TestContext> {
         self.num_nodes = 0; // We'll create nodes manually
@@ -603,6 +632,7 @@ impl TestContextBuilder {
     /// Build with varying stakes and bootstrap.
     pub async fn build_with_varying_stakes_and_bootstrap(self) -> Result<TestContext> {
         let fund_amount = self.fund_amount;
+        let timeout = self.timeout;
         let mut ctx = self.build_with_varying_stakes().await?;
 
         // Fund nodes
@@ -627,12 +657,13 @@ impl TestContextBuilder {
             tokio::time::sleep(wait).await;
         }
         // Wait for nodes to advance the epoch (don't call manually - nodes handle it)
-        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), Duration::from_secs(30))
+        // Use configured timeout for scale tests with many nodes
+        crate::rpc::wait_for_epoch_id_rpc(&ctx.rpc, EpochNumber(1), timeout)
             .await
             .context("Nodes did not advance epoch during bootstrap")?;
 
         // Wait for epoch to reach Active phase
-        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", Duration::from_secs(120))
+        crate::rpc::wait_for_epoch_phase_rpc(&ctx.rpc, "Active", timeout)
             .await
             .context("Epoch did not reach Active phase after bootstrap")?;
 
