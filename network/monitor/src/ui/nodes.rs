@@ -113,7 +113,7 @@ impl<'a> NodeListView<'a> {
                     Cell::from(status_sym).style(status_style),
                     Cell::from(format!("{}", node.id.0)),
                     Cell::from(truncate_name(&node.name, 18)),
-                    Cell::from(format!("{} TAPE", node.stake_display())),
+                    Cell::from(format!("{} TAPE", node.stake.as_string())),
                     Cell::from(format!("{}", node.spool_count)),
                     Cell::from(latency_str),
                     Cell::from(node.commission_display()),
@@ -130,7 +130,7 @@ impl<'a> NodeListView<'a> {
                 Constraint::Length(3),  // ST
                 Constraint::Length(5),  // ID
                 Constraint::Length(18), // NAME
-                Constraint::Length(12), // STAKE
+                Constraint::Length(18), // STAKE
                 Constraint::Length(8),  // SPOOLS
                 Constraint::Length(9),  // LATENCY
                 Constraint::Length(7),  // COMM
