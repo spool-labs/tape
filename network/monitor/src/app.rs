@@ -441,6 +441,12 @@ pub struct App {
     // Event list view state
     /// Current filter for event list.
     pub event_filter: EventFilter,
+
+    // Color slot assignment (for stable node colors across epochs)
+    /// Maps NodeId to its assigned color slot (0-255).
+    pub color_slots: std::collections::HashMap<NodeId, u8>,
+    /// Stack of free color slots (available for assignment).
+    pub free_color_slots: Vec<u8>,
 }
 
 /// Sort order for the node list.
@@ -554,6 +560,10 @@ impl App {
             node_filter: NodeFilter::default(),
 
             event_filter: EventFilter::default(),
+
+            // Initialize color slots: all 256 slots available (reversed so we pop 0,1,2...)
+            color_slots: std::collections::HashMap::new(),
+            free_color_slots: (0u8..=255).rev().collect(),
         }
     }
 
@@ -698,6 +708,60 @@ impl App {
     /// Calculate total stake in current committee.
     pub fn total_committee_stake(&self) -> Coin<TAPE> {
         self.nodes.iter().fold(TAPE::zero(), |acc, n| TAPE(acc.0 + n.stake.0))
+    }
+
+    // ========================================================================
+    // Color Slot Management
+    // ========================================================================
+
+    /// Get the color slot for a NodeId (if assigned).
+    pub fn get_color_slot(&self, node_id: NodeId) -> Option<u8> {
+        self.color_slots.get(&node_id).copied()
+    }
+
+    /// Assign a color slot to a NodeId if not already assigned.
+    /// Returns the assigned slot.
+    pub fn assign_color_slot(&mut self, node_id: NodeId) -> u8 {
+        if let Some(&slot) = self.color_slots.get(&node_id) {
+            return slot;
+        }
+        // Get next available slot (or wrap around if all 256 used)
+        let slot = self.free_color_slots.pop().unwrap_or_else(|| {
+            // All slots taken, reuse based on hash
+            (node_id.0 & 0xFF) as u8
+        });
+        self.color_slots.insert(node_id, slot);
+        slot
+    }
+
+    /// Update color slots based on current nodes.
+    /// Assigns slots to new nodes, releases slots for removed nodes.
+    pub fn update_color_slots(&mut self) {
+        use std::collections::HashSet;
+
+        // Collect all current NodeIds from all committees
+        let current_ids: HashSet<NodeId> = self.committee_prev_nodes.iter()
+            .chain(self.nodes.iter())
+            .chain(self.committee_next_nodes.iter())
+            .map(|n| n.id)
+            .collect();
+
+        // Release slots for nodes no longer present
+        let to_remove: Vec<NodeId> = self.color_slots.keys()
+            .filter(|id| !current_ids.contains(id))
+            .copied()
+            .collect();
+
+        for node_id in to_remove {
+            if let Some(slot) = self.color_slots.remove(&node_id) {
+                self.free_color_slots.push(slot);
+            }
+        }
+
+        // Assign slots to new nodes
+        for node_id in current_ids {
+            self.assign_color_slot(node_id);
+        }
     }
 }
 

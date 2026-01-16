@@ -23,6 +23,8 @@ pub enum SpoolHighlight<'a> {
     Normal {
         /// Raw spool assignment array (index -> member index).
         spools: &'a [u8; 1024],
+        /// Color slot for each committee member (member_index -> color slot).
+        member_slots: &'a [u8],
     },
     /// Show changes between prev and current spool assignments.
     /// Highlights spools that changed owner, dims unchanged spools.
@@ -31,6 +33,8 @@ pub enum SpoolHighlight<'a> {
         spools_prev: &'a [u8; 1024],
         /// Current epoch spool assignments.
         spools_current: &'a [u8; 1024],
+        /// Color slot for each committee member (member_index -> color slot).
+        member_slots: &'a [u8],
     },
     /// All spools grayed out (no spool data available).
     Unavailable,
@@ -63,8 +67,8 @@ impl<'a> SpoolBar<'a> {
 impl Widget for SpoolBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate change count for title
-        let (title, change_count) = match &self.highlight {
-            SpoolHighlight::ShowChanges { spools_prev, spools_current } => {
+        let (title, _change_count) = match &self.highlight {
+            SpoolHighlight::ShowChanges { spools_prev, spools_current, .. } => {
                 let changes = spools_prev.iter()
                     .zip(spools_current.iter())
                     .filter(|(prev, curr)| prev != curr)
@@ -96,11 +100,11 @@ impl Widget for SpoolBar<'_> {
 
         // Render based on highlight mode
         match &self.highlight {
-            SpoolHighlight::Normal { spools } => {
-                self.render_normal(inner, buf, spools, spools_per_row, rows_to_show);
+            SpoolHighlight::Normal { spools, member_slots } => {
+                self.render_normal(inner, buf, spools, member_slots, spools_per_row, rows_to_show);
             }
-            SpoolHighlight::ShowChanges { spools_prev, spools_current } => {
-                self.render_changes(inner, buf, spools_prev, spools_current, spools_per_row, rows_to_show);
+            SpoolHighlight::ShowChanges { spools_prev, spools_current, member_slots } => {
+                self.render_changes(inner, buf, spools_prev, spools_current, member_slots, spools_per_row, rows_to_show);
             }
             SpoolHighlight::Unavailable => {
                 self.render_unavailable(inner, buf, spools_per_row, rows_to_show);
@@ -119,12 +123,13 @@ impl Widget for SpoolBar<'_> {
 }
 
 impl<'a> SpoolBar<'a> {
-    /// Render spools with normal coloring (each spool colored by owner).
+    /// Render spools with normal coloring (each spool colored by owner's color slot).
     fn render_normal(
         &self,
         inner: Rect,
         buf: &mut Buffer,
         spools: &[u8; 1024],
+        member_slots: &[u8],
         spools_per_row: usize,
         rows_to_show: usize,
     ) {
@@ -141,8 +146,10 @@ impl<'a> SpoolBar<'a> {
 
                 let member_idx = spools[spool_idx] as usize;
                 // member_idx of 255 or very high means unassigned
-                let (symbol, style) = if member_idx < 128 {
-                    let color = Theme::member_color(member_idx);
+                let (symbol, style) = if member_idx < member_slots.len() {
+                    // Use color slot for golden-ratio distributed colors
+                    let slot = member_slots[member_idx];
+                    let color = Theme::member_color(slot as usize);
                     ("▌", Style::default().fg(color))
                 } else {
                     ("▏", self.theme.dim_style())
@@ -154,7 +161,7 @@ impl<'a> SpoolBar<'a> {
     }
 
     /// Render spools showing changes between prev and current.
-    /// Changed spools are highlighted in their new owner's color.
+    /// Changed spools are highlighted in their new owner's color (by slot).
     /// Unchanged spools are dimmed.
     fn render_changes(
         &self,
@@ -162,6 +169,7 @@ impl<'a> SpoolBar<'a> {
         buf: &mut Buffer,
         spools_prev: &[u8; 1024],
         spools_current: &[u8; 1024],
+        member_slots: &[u8],
         spools_per_row: usize,
         rows_to_show: usize,
     ) {
@@ -183,8 +191,9 @@ impl<'a> SpoolBar<'a> {
                 let (symbol, style) = if changed {
                     // Highlight changed spools with their new owner's color
                     let member_idx = curr_owner as usize;
-                    if member_idx < 128 {
-                        let color = Theme::member_color(member_idx);
+                    if member_idx < member_slots.len() {
+                        let slot = member_slots[member_idx];
+                        let color = Theme::member_color(slot as usize);
                         ("▌", Style::default().fg(color))
                     } else {
                         ("▌", self.theme.warning_style())

@@ -361,6 +361,7 @@ async fn run_app(
                 }
 
                 update_app_from_data(app, &system, &epoch, &archive, &nodes, &tape_stats);
+                app.update_color_slots();
             }
             Ok(FetchResult::Partial { system, epoch, archive, nodes, tape_stats, slot, errors }) => {
                 // Handle partial data - update what we can
@@ -392,6 +393,7 @@ async fn run_app(
                 }
 
                 update_app_from_partial_data(app, system.as_ref(), epoch.as_ref(), archive.as_ref(), &nodes, &tape_stats);
+                app.update_color_slots();
             }
             Ok(FetchResult::Error(err)) => {
                 app.rpc_connected = false;

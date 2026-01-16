@@ -98,6 +98,8 @@ async fn test_storage_load() {
 
     let mut total_uploaded = 0usize;
     let mut upload_count = 0u64;
+    let mut consecutive_failures = 0u32;
+    const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 
     while total_uploaded < (TARGET_MB as usize) * sizes::MB {
         upload_count += 1;
@@ -108,6 +110,7 @@ async fn test_storage_load() {
         match ctx.cli.storage_upload(upload_file.path(), Some(&tape), Some(&upload_nodes)) {
             Ok(result) => {
                 total_uploaded += blob.len();
+                consecutive_failures = 0;
                 let mb = total_uploaded / sizes::MB;
                 println!(
                     "  Upload {}: {} ({} MB total)",
@@ -117,8 +120,12 @@ async fn test_storage_load() {
                 );
             }
             Err(e) => {
+                consecutive_failures += 1;
                 println!("  Upload {} failed: {}", upload_count, e);
-                // Continue trying
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    println!("  Too many consecutive failures, skipping upload phase");
+                    break;
+                }
             }
         }
 

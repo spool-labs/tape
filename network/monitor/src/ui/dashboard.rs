@@ -239,15 +239,20 @@ impl Widget for Dashboard<'_> {
 
         // Render spool distribution (only if we have committee members)
         let has_committee = !self.app.nodes.is_empty();
+        // Collect color slots for current committee members (for golden-ratio distributed colors)
+        let member_slots: Vec<u8> = self.app.nodes.iter()
+            .map(|n| self.app.get_color_slot(n.id).unwrap_or(0))
+            .collect();
         let highlight = match (&self.app.spools_prev, &self.app.spools_current) {
             (Some(prev), Some(curr)) if self.app.phase == EpochPhase::Syncing && has_committee => {
                 SpoolHighlight::ShowChanges {
                     spools_prev: prev,
                     spools_current: curr,
+                    member_slots: &member_slots,
                 }
             }
             (_, Some(curr)) if has_committee => {
-                SpoolHighlight::Normal { spools: curr }
+                SpoolHighlight::Normal { spools: curr, member_slots: &member_slots }
             }
             _ => SpoolHighlight::Unavailable,
         };

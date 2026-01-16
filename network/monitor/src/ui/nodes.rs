@@ -90,7 +90,7 @@ impl<'a> NodeListView<'a> {
         let rows: Vec<Row> = nodes
             .iter()
             .enumerate()
-            .map(|(display_idx, (orig_idx, node))| {
+            .map(|(display_idx, (_orig_idx, node))| {
                 let (status_sym, status_style) = self.status_symbol(node.health);
                 let is_selected = self.app.selected_node_index == Some(display_idx);
 
@@ -105,8 +105,9 @@ impl<'a> NodeListView<'a> {
                     None => "TIMEOUT".to_string(),
                 };
 
-                // Color block matching the spool distribution
-                let color = Theme::member_color(*orig_idx);
+                // Color block matching the spool distribution (using color slot for golden-ratio distribution)
+                let slot = self.app.get_color_slot(node.id).unwrap_or(0);
+                let color = Theme::member_color(slot as usize);
 
                 let cells = vec![
                     Cell::from("█").style(Style::default().fg(color)),
