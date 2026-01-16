@@ -50,11 +50,14 @@ impl<'a> EventLog<'a> {
         let icon = event.event_type.icon();
         let style = self.event_style(event.event_type);
 
+        // Account for horizontal padding (2 chars)
+        let content_width = max_width.saturating_sub(2);
+
         // Calculate available width for description
-        // Layout: "HH:MM:SS  X description                    actors"
+        // Layout: " HH:MM:SS  X description                    actors "
         let prefix_width = 11; // "HH:MM:SS  X " = 8 + 2 + 1
         let actors_width = if event.actors.is_empty() { 0 } else { event.actors.len() + 2 };
-        let available_for_desc = max_width.saturating_sub(prefix_width + actors_width);
+        let available_for_desc = content_width.saturating_sub(prefix_width + actors_width);
 
         // Truncate description only if needed
         let description = if event.description.len() > available_for_desc && available_for_desc > 3 {
@@ -65,6 +68,7 @@ impl<'a> EventLog<'a> {
 
         // Build spans
         let mut spans = vec![
+            Span::raw(" "),  // Left padding
             Span::styled(timestamp, self.theme.dim_style()),
             Span::raw("  "),
             Span::styled(icon, style),
@@ -74,10 +78,10 @@ impl<'a> EventLog<'a> {
 
         // Add actors on the right if present
         if !event.actors.is_empty() {
-            let padding = max_width.saturating_sub(prefix_width + description.len() + event.actors.len());
+            let padding = content_width.saturating_sub(prefix_width + description.len() + event.actors.len() + 1);
             let padding_str: String = std::iter::repeat(' ').take(padding).collect();
             spans.push(Span::raw(padding_str));
-            spans.push(Span::styled(event.actors.clone(), self.theme.dim_style()));
+            spans.push(Span::styled(format!("{} ", event.actors), self.theme.dim_style()));
         }
 
         Line::from(spans)
@@ -92,7 +96,7 @@ impl Widget for EventLog<'_> {
             "[Manual]"
         };
 
-        let title = format!(" RECENT EVENTS {} ", auto_scroll_indicator);
+        let title = format!(" LOG {} ", auto_scroll_indicator);
 
         let block = Block::default()
             .title(Span::styled(title, self.theme.header_style()))

@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::app::{App, HealthStatus};
+use crate::app::{HealthStatus, NodeState};
 use crate::theme::Theme;
 
 /// Width of each node cell (symbol + space + number + spacing).
@@ -23,59 +23,56 @@ const SYMBOL_ONLINE: &str = "●";   // Filled circle
 const SYMBOL_OFFLINE: &str = "○";  // Empty circle
 const SYMBOL_SYNCING: &str = "◐";  // Half-filled circle
 const SYMBOL_UNKNOWN: &str = "◌";  // Dotted circle
-const SYMBOL_SELECTED: &str = "◉"; // Selected node
 
 /// Widget for rendering the committee node status grid.
 pub struct NodeGrid<'a> {
-    /// Application state reference.
-    app: &'a App,
+    /// Nodes to display in this grid.
+    nodes: &'a [NodeState],
     /// Theme reference.
     theme: &'a Theme,
-    /// Whether the grid is focused (for border highlighting).
-    focused: bool,
+    /// Title for the panel.
+    title: String,
 }
 
 impl<'a> NodeGrid<'a> {
     /// Create a new node grid widget.
-    pub fn new(app: &'a App, theme: &'a Theme) -> Self {
+    pub fn new(theme: &'a Theme) -> Self {
         Self {
-            app,
+            nodes: &[],
             theme,
-            focused: false,
+            title: "COMMITTEE".to_string(),
         }
     }
 
-    /// Set whether the widget is focused.
-    pub fn focused(mut self, focused: bool) -> Self {
-        self.focused = focused;
+    /// Set the nodes to display.
+    pub fn nodes(mut self, nodes: &'a [NodeState]) -> Self {
+        self.nodes = nodes;
+        self
+    }
+
+    /// Set the panel title.
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
         self
     }
 
     /// Get the symbol for a health status.
-    fn status_symbol(status: HealthStatus, selected: bool) -> &'static str {
-        if selected {
-            SYMBOL_SELECTED
-        } else {
-            match status {
-                HealthStatus::Online => SYMBOL_ONLINE,
-                HealthStatus::Offline => SYMBOL_OFFLINE,
-                HealthStatus::Syncing => SYMBOL_SYNCING,
-                HealthStatus::Unknown => SYMBOL_UNKNOWN,
-            }
+    fn status_symbol(status: HealthStatus) -> &'static str {
+        match status {
+            HealthStatus::Online => SYMBOL_ONLINE,
+            HealthStatus::Offline => SYMBOL_OFFLINE,
+            HealthStatus::Syncing => SYMBOL_SYNCING,
+            HealthStatus::Unknown => SYMBOL_UNKNOWN,
         }
     }
 
-    /// Get the style for a health status.
-    fn status_style(&self, status: HealthStatus, selected: bool) -> Style {
-        if selected {
-            self.theme.highlight_style()
-        } else {
-            match status {
-                HealthStatus::Online => self.theme.online_style(),
-                HealthStatus::Offline => self.theme.offline_style(),
-                HealthStatus::Syncing => self.theme.syncing_style(),
-                HealthStatus::Unknown => self.theme.unknown_style(),
-            }
+    /// Get the style for a node based on its status.
+    fn node_style(&self, node: &NodeState) -> Style {
+        match node.health {
+            HealthStatus::Online => self.theme.online_style(),
+            HealthStatus::Offline => self.theme.offline_style(),
+            HealthStatus::Syncing => self.theme.syncing_style(),
+            HealthStatus::Unknown => self.theme.unknown_style(),
         }
     }
 
@@ -84,13 +81,20 @@ impl<'a> NodeGrid<'a> {
         let mut lines = Vec::new();
         let mut current_row: Vec<Span> = Vec::new();
 
-        // Calculate nodes per row based on available width
-        let nodes_per_row = (width as usize / NODE_CELL_WIDTH).max(1);
+        // Account for horizontal padding (2 chars)
+        let content_width = (width as usize).saturating_sub(2);
 
-        for (idx, node) in self.app.nodes.iter().enumerate() {
-            let selected = self.app.selected_node == Some(idx);
-            let symbol = Self::status_symbol(node.health, selected);
-            let style = self.status_style(node.health, selected);
+        // Calculate nodes per row based on available width
+        let nodes_per_row = (content_width / NODE_CELL_WIDTH).max(1);
+
+        for (idx, node) in self.nodes.iter().enumerate() {
+            // Add left padding at start of each row
+            if current_row.is_empty() {
+                current_row.push(Span::raw(" "));
+            }
+
+            let symbol = Self::status_symbol(node.health);
+            let style = self.node_style(node);
 
             // Format node ID (truncate to 4 chars max)
             let node_id = node.id.0;
@@ -125,63 +129,36 @@ impl<'a> NodeGrid<'a> {
         lines
     }
 
-    /// Build the legend line.
-    fn build_legend(&self) -> Line<'a> {
-        let online_count = self.app.online_count();
-        let offline_count = self.app.offline_count();
-        let syncing_count = self.app.syncing_count();
-        let unknown_count = self.app.unknown_count();
-
-        Line::from(vec![
-            Span::styled(SYMBOL_ONLINE, self.theme.online_style()),
-            Span::styled(format!(" Online ({})  ", online_count), self.theme.text_style()),
-            Span::styled(SYMBOL_OFFLINE, self.theme.offline_style()),
-            Span::styled(format!(" Offline ({})  ", offline_count), self.theme.text_style()),
-            Span::styled(SYMBOL_SYNCING, self.theme.syncing_style()),
-            Span::styled(format!(" Syncing ({})  ", syncing_count), self.theme.text_style()),
-            Span::styled(SYMBOL_UNKNOWN, self.theme.unknown_style()),
-            Span::styled(format!(" Unknown ({})", unknown_count), self.theme.text_style()),
-        ])
+    /// Count nodes by health status.
+    fn online_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.health == HealthStatus::Online).count()
     }
 }
 
 impl Widget for NodeGrid<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Build the block
+        // Build the title with node count
         let title = format!(
-            " COMMITTEE ({}/{}) ",
-            self.app.online_count(),
-            self.app.committee_size()
+            " {} ({}/{}) ",
+            self.title,
+            self.online_count(),
+            self.nodes.len()
         );
-
-        let border_style = if self.focused {
-            self.theme.border_focus_style()
-        } else {
-            self.theme.border_style()
-        };
 
         let block = Block::default()
             .title(Span::styled(title, self.theme.header_style()))
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(self.theme.border_style());
 
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner.height < 2 {
+        if inner.height < 1 {
             return;
         }
 
         // Build content with dynamic width
-        let mut lines = self.build_grid_lines(inner.width);
-
-        // Add empty line before legend if space
-        if inner.height > lines.len() as u16 + 2 {
-            lines.push(Line::default());
-        }
-
-        // Add legend
-        lines.push(self.build_legend());
+        let lines = self.build_grid_lines(inner.width);
 
         let paragraph = Paragraph::new(lines);
         paragraph.render(inner, buf);
@@ -189,12 +166,12 @@ impl Widget for NodeGrid<'_> {
 }
 
 /// Calculate the required height for the node grid.
-/// Assumes typical terminal width of ~65 chars for the grid area.
+/// Assumes typical terminal width of ~35 chars for the grid area (third of screen).
 pub fn required_height(node_count: usize) -> u16 {
-    // Estimate nodes per row based on typical width
-    let typical_width = 65usize;
-    let nodes_per_row = typical_width / NODE_CELL_WIDTH;
+    // Estimate nodes per row based on typical width for a 3-column layout
+    let typical_width = 35usize;
+    let nodes_per_row = (typical_width / NODE_CELL_WIDTH).max(1);
     let rows = (node_count + nodes_per_row - 1) / nodes_per_row;
-    // rows + 2 for legend + 2 for border
-    (rows + 4) as u16
+    // rows + 2 for border
+    (rows + 2) as u16
 }

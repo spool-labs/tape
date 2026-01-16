@@ -240,6 +240,32 @@ impl Tapedrive {
         Ok(())
     }
 
+    /// Set commission rate for a node.
+    ///
+    /// Equivalent to: `tape node set-commission <bps> [--config <path>]`
+    pub fn node_set_commission(&self, bps: u64, config: Option<&Path>) -> Result<()> {
+        let mut cmd = self.cmd();
+        cmd.args(["node", "set-commission", &bps.to_string()]);
+        if let Some(config) = config {
+            cmd.args(["--config", config.to_str().unwrap_or("")]);
+        }
+        self.exec(cmd)?;
+        Ok(())
+    }
+
+    /// Claim accumulated commission for a node.
+    ///
+    /// Equivalent to: `tape node claim-commission [--config <path>]`
+    pub fn node_claim_commission(&self, config: Option<&Path>) -> Result<()> {
+        let mut cmd = self.cmd();
+        cmd.args(["node", "claim-commission"]);
+        if let Some(config) = config {
+            cmd.args(["--config", config.to_str().unwrap_or("")]);
+        }
+        self.exec(cmd)?;
+        Ok(())
+    }
+
     /// Get node status.
     ///
     /// Equivalent to: `tape node status [--config <path>] [--node <pubkey>]`
@@ -262,9 +288,10 @@ impl Tapedrive {
     /// Deposit stake to a node pool.
     ///
     /// Equivalent to: `tape stake deposit <pool> <amount>`
-    pub fn stake_deposit(&self, pool: &Pubkey, amount: u64) -> Result<Pubkey> {
+    /// Amount is in TAPE tokens (e.g., 1000 = 1000 TAPE).
+    pub fn stake_deposit(&self, pool: &Pubkey, amount_tape: u64) -> Result<Pubkey> {
         let mut cmd = self.cmd();
-        cmd.args(["stake", "deposit", &pool.to_string(), &amount.to_string()]);
+        cmd.args(["stake", "deposit", &pool.to_string(), &amount_tape.to_string()]);
         let output = self.exec_stdout(cmd)?;
         parse_pubkey_from_output(&output)
     }

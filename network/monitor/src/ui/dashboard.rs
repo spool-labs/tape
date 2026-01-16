@@ -10,9 +10,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::app::App;
+use crate::app::{App, EpochPhase};
 use crate::theme::Theme;
-use crate::ui::widgets::{EpochProgress, EventLog, NodeGrid, SpoolBar};
+use crate::ui::widgets::{EpochProgress, EventLog, NodeGrid, SpoolBar, SpoolHighlight};
 
 /// Widget for rendering the complete dashboard.
 pub struct Dashboard<'a> {
@@ -28,49 +28,45 @@ impl<'a> Dashboard<'a> {
         Self { app, theme }
     }
 
-    /// Build the header bar.
+    /// Build the header bar with keybindings on the right.
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
-        let title = "TAPEDRIVE NETWORK MONITOR";
-        let help_hint = "Press ? for help";
+        use ratatui::style::Modifier;
+
+        let logo = "⊙⊙";
+        let title = "TAPEDRIVE";
 
         // Determine status text and style
         let (status_text, status_style) = if !self.app.rpc_connected {
             ("[Disconnected]", self.theme.error_style())
         } else if !self.app.fetch_errors.is_empty() {
-            // Show partial/warning state when we have errors but are connected
             (
-                "[Partial Data]",
+                "[Partial]",
                 Style::default().fg(self.theme.warning),
             )
         } else {
-            ("[Connected]", self.theme.success_style())
+            ("[OK]", self.theme.success_style())
         };
 
-        // Add error count if we have errors
-        let error_indicator = if !self.app.fetch_errors.is_empty() && self.app.rpc_connected {
-            format!(" ({} missing)", self.app.fetch_errors.len())
-        } else {
-            String::new()
-        };
+        // Build keybindings string
+        let keybindings = "q:Quit n:Nodes l:Log e:Epoch ?:Help";
 
-        // Calculate spacing
-        let left_len = title.len() + status_text.len() + error_indicator.len() + 2;
-        let right_len = help_hint.len();
+        // Calculate spacing (padding + logo + space + title + space + status + padding)
+        let left_len = 1 + logo.chars().count() + 1 + title.len() + 1 + status_text.len();
+        let right_len = keybindings.len() + 1;
         let padding = (area.width as usize).saturating_sub(left_len + right_len + 4);
         let padding_str: String = std::iter::repeat(' ').take(padding).collect();
 
-        let mut spans = vec![
+        let spans = vec![
+            Span::raw(" "),  // Left padding
+            Span::styled(logo, Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
             Span::styled(title, self.theme.title_style()),
             Span::raw(" "),
             Span::styled(status_text, status_style),
+            Span::raw(padding_str),
+            Span::styled(keybindings, self.theme.dim_style()),
+            Span::raw(" "),  // Right padding
         ];
-
-        if !error_indicator.is_empty() {
-            spans.push(Span::styled(error_indicator, self.theme.dim_style()));
-        }
-
-        spans.push(Span::raw(padding_str));
-        spans.push(Span::styled(help_hint, self.theme.dim_style()));
 
         let line = Line::from(spans);
 
@@ -84,230 +80,182 @@ impl<'a> Dashboard<'a> {
         Paragraph::new(line).render(inner, buf);
     }
 
-    /// Build the network stats panel.
+    /// Build the network stats panel with compact horizontal layout.
     fn render_network_stats(&self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
-            .title(Span::styled(" NETWORK STATS ", self.theme.header_style()))
+            .title(Span::styled(" NETWORK ", self.theme.header_style()))
             .borders(Borders::ALL)
             .border_style(self.theme.border_style());
 
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner.height < 1 || inner.width < 15 {
+        if inner.height < 1 || inner.width < 40 {
             return;
         }
 
-        // Build storage display
-        let storage_pct = self.app.stats.storage_percentage();
-        let storage_display = self.app.stats.storage_display();
-        let pct_str = format!("{}%", storage_pct);
-
-        // Progress bar - use available width minus percentage suffix
-        let suffix_len = pct_str.len() + 1;
-        let bar_width = (inner.width as usize).saturating_sub(suffix_len).max(5);
-        let filled = (bar_width * storage_pct as usize) / 100;
-        let empty = bar_width.saturating_sub(filled);
-        let filled_str: String = std::iter::repeat('█').take(filled).collect();
-        let empty_str: String = std::iter::repeat('░').take(empty).collect();
-
-        // Build lines dynamically - only add what fits
         let mut lines = Vec::new();
         let max_lines = inner.height as usize;
 
-        // Storage label + value
+        // Effective width accounting for horizontal padding
+        let content_width = (inner.width as usize).saturating_sub(2);
+
+        // Line 1: Storage label + progress bar + percentage (all on one line)
         if lines.len() < max_lines {
+            let storage_pct = self.app.stats.storage_percentage();
+            let storage_display = self.app.stats.storage_display();
+            let label = format!("Storage: {} ", storage_display);
+            let pct_str = format!(" {}% ", storage_pct);
+
+            // Calculate bar width
+            let bar_width = content_width.saturating_sub(label.len() + pct_str.len()).max(5);
+            let filled = (bar_width * storage_pct as usize) / 100;
+            let empty = bar_width.saturating_sub(filled);
+            let filled_str: String = std::iter::repeat('█').take(filled).collect();
+            let empty_str: String = std::iter::repeat('░').take(empty).collect();
+
             lines.push(Line::from(vec![
-                Span::styled("Storage: ", self.theme.text_style()),
-                Span::styled(storage_display, self.theme.text_style()),
-            ]));
-        }
-        // Progress bar
-        if lines.len() < max_lines {
-            lines.push(Line::from(vec![
+                Span::raw(" "),  // Left padding
+                Span::styled(label, self.theme.text_style()),
                 Span::styled(filled_str, Style::default().fg(self.theme.progress_fg)),
                 Span::styled(empty_str, Style::default().fg(self.theme.progress_bg)),
-                Span::raw(" "),
                 Span::styled(pct_str, self.theme.text_style()),
             ]));
         }
-        // Tracks
+
+        // Line 2: Tracks/Tapes on left, Rewards/Stake on right
         if lines.len() < max_lines {
+            let tracks = format!("{}", format_number(self.app.stats.tracks_certified));
+            let tapes = format!("{}", format_number(self.app.stats.tapes_active));
+            let rewards = format_tape(self.app.stats.rewards_pool);
+            let total_stake = format_tape(self.app.total_committee_stake().0);
+
+            let left_stats = format!("Tracks: {}  Tapes: {}", tracks, tapes);
+            let right_stats = format!("Rewards: {}  Stake: {}", rewards, total_stake);
+
+            let total_len = left_stats.len() + right_stats.len();
+            let padding = content_width.saturating_sub(total_len);
+            let padding_str: String = std::iter::repeat(' ').take(padding).collect();
+
             lines.push(Line::from(vec![
-                Span::styled("Tracks:  ", self.theme.text_style()),
-                Span::styled(
-                    format!("{}", format_number(self.app.stats.tracks_certified)),
-                    self.theme.text_style(),
-                ),
+                Span::raw(" "),  // Left padding
+                Span::styled(left_stats, self.theme.text_style()),
+                Span::raw(padding_str),
+                Span::styled(right_stats, Style::default().fg(self.theme.primary)),
+                Span::raw(" "),  // Right padding
             ]));
         }
-        // Tapes
+
+        // Line 3: Traffic and requests
         if lines.len() < max_lines {
-            lines.push(Line::from(vec![
-                Span::styled("Tapes:   ", self.theme.text_style()),
-                Span::styled(
-                    format!("{}", format_number(self.app.stats.tapes_active)),
-                    self.theme.text_style(),
-                ),
-            ]));
-        }
-        // Rewards
-        if lines.len() < max_lines {
-            lines.push(Line::from(vec![
-                Span::styled("Rewards: ", self.theme.text_style()),
-                Span::styled(
-                    format!("{} TAPE", format_tape(self.app.stats.rewards_pool)),
-                    Style::default().fg(self.theme.primary),
-                ),
-            ]));
-        }
-        // Paid Out
-        if lines.len() < max_lines {
-            lines.push(Line::from(vec![
-                Span::styled("Paid:    ", self.theme.text_style()),
-                Span::styled(
-                    format!("{} TAPE", format_tape(self.app.stats.rewards_paid)),
-                    self.theme.text_style(),
-                ),
-            ]));
-        }
-        // Throughput
-        if lines.len() < max_lines {
+            let mut spans = Vec::new();
+
             if self.app.stats.upload_throughput > 0 || self.app.stats.download_throughput > 0 {
-                lines.push(Line::from(vec![
-                    Span::styled("Traffic: ", self.theme.text_style()),
-                    Span::styled(
-                        format!("↑{} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
-                        Style::default().fg(ratatui::style::Color::Blue),
-                    ),
-                    Span::styled(
-                        format!("↓{}", format_bytes_per_sec(self.app.stats.download_throughput)),
-                        Style::default().fg(ratatui::style::Color::Magenta),
-                    ),
-                ]));
+                spans.push(Span::styled("Traffic: ", self.theme.text_style()));
+                spans.push(Span::styled(
+                    format!("↑{} ", format_bytes_per_sec(self.app.stats.upload_throughput)),
+                    Style::default().fg(ratatui::style::Color::Blue),
+                ));
+                spans.push(Span::styled(
+                    format!("↓{}", format_bytes_per_sec(self.app.stats.download_throughput)),
+                    Style::default().fg(ratatui::style::Color::Magenta),
+                ));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled("Traffic: ", self.theme.text_style()),
-                    Span::styled("--", self.theme.dim_style()),
-                ]));
+                spans.push(Span::styled("Traffic: --", self.theme.dim_style()));
             }
-        }
-        // Requests per second
-        if lines.len() < max_lines {
+
+            spans.push(Span::raw("  "));
+
             if self.app.stats.requests_per_sec > 0 {
-                lines.push(Line::from(vec![
-                    Span::styled("Reqs:    ", self.theme.text_style()),
-                    Span::styled(
-                        format!("{}/s", format_number(self.app.stats.requests_per_sec as u64)),
-                        self.theme.text_style(),
-                    ),
-                ]));
+                spans.push(Span::styled(
+                    format!("Reqs: {}/s", format_number(self.app.stats.requests_per_sec as u64)),
+                    self.theme.text_style(),
+                ));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled("Reqs:    ", self.theme.text_style()),
-                    Span::styled("--", self.theme.dim_style()),
-                ]));
+                spans.push(Span::styled("Reqs: --", self.theme.dim_style()));
             }
+
+            // Insert left padding at beginning
+            spans.insert(0, Span::raw(" "));
+
+            lines.push(Line::from(spans));
         }
 
         Paragraph::new(lines).render(inner, buf);
-    }
-
-    /// Build the status bar.
-    fn render_status_bar(&self, area: Rect, buf: &mut Buffer) {
-        let keybindings = vec![
-            ("q", "Quit"),
-            ("n", "Nodes"),
-            ("v", "Events"),
-            ("e", "Epoch"),
-            ("?", "Help"),
-        ];
-
-        let mut spans = Vec::new();
-        for (i, (key, desc)) in keybindings.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw("  "));
-            }
-            spans.push(Span::styled(*key, self.theme.keybind_style()));
-            spans.push(Span::styled(format!(":{}", desc), self.theme.keybind_desc_style()));
-        }
-
-        // Add connection status and refresh timing on the right
-        let status_text = if !self.app.rpc_connected {
-            "Reconnecting...".to_string()
-        } else {
-            format!("@ {}", self.app.last_refresh_display())
-        };
-        let status_style = if !self.app.rpc_connected {
-            self.theme.warning_style()
-        } else {
-            self.theme.dim_style()
-        };
-
-        let left_width: usize = spans.iter().map(|s| s.content.len()).sum();
-        let padding = (area.width as usize).saturating_sub(left_width + status_text.len() + 4);
-        let padding_str: String = std::iter::repeat(' ').take(padding).collect();
-
-        spans.push(Span::raw(padding_str));
-        spans.push(Span::styled(status_text, status_style));
-
-        let line = Line::from(spans);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(self.theme.border_style());
-
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        Paragraph::new(line).render(inner, buf);
     }
 }
 
 impl Widget for Dashboard<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Main vertical layout
+        // Main vertical layout (no status bar)
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),   // Header
                 Constraint::Length(4),   // Epoch progress
-                Constraint::Length(12),  // Committee + Stats
-                Constraint::Length(10),  // Spool distribution (1024 spools ≈ 8 rows + border)
-                Constraint::Min(6),      // Event log
-                Constraint::Length(3),   // Status bar
+                Constraint::Length(5),   // NETWORK stats (more compact)
+                Constraint::Length(14),  // Three committees
+                Constraint::Length(11), // Spool distribution (+1)
+                Constraint::Min(7),      // Log (-1)
             ])
             .split(area);
 
-        // Render header
+        // Render header with keybindings
         self.render_header(main_chunks[0], buf);
 
         // Render epoch progress
         EpochProgress::new(self.app, self.theme).render(main_chunks[1], buf);
 
-        // Split middle section into committee (left) and stats (right)
-        let middle_chunks = Layout::default()
+        // Render full-width network stats
+        self.render_network_stats(main_chunks[2], buf);
+
+        // Split committees into three columns
+        let committee_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
             ])
-            .split(main_chunks[2]);
+            .split(main_chunks[3]);
 
-        // Render committee grid
-        NodeGrid::new(self.app, self.theme).render(middle_chunks[0], buf);
+        // Render PREV committee
+        NodeGrid::new(self.theme)
+            .nodes(&self.app.committee_prev_nodes)
+            .title("PREV")
+            .render(committee_chunks[0], buf);
 
-        // Render network stats
-        self.render_network_stats(middle_chunks[1], buf);
+        // Render CURRENT committee
+        NodeGrid::new(self.theme)
+            .nodes(&self.app.nodes)
+            .title("CURRENT")
+            .render(committee_chunks[1], buf);
 
-        // Render spool distribution
-        SpoolBar::new(self.app, self.theme).render(main_chunks[3], buf);
+        // Render NEXT committee
+        NodeGrid::new(self.theme)
+            .nodes(&self.app.committee_next_nodes)
+            .title("NEXT")
+            .render(committee_chunks[2], buf);
 
-        // Render event log
-        EventLog::new(self.app, self.theme).render(main_chunks[4], buf);
+        // Render spool distribution (only if we have committee members)
+        let has_committee = !self.app.nodes.is_empty();
+        let highlight = match (&self.app.spools_prev, &self.app.spools_current) {
+            (Some(prev), Some(curr)) if self.app.phase == EpochPhase::Syncing && has_committee => {
+                SpoolHighlight::ShowChanges {
+                    spools_prev: prev,
+                    spools_current: curr,
+                }
+            }
+            (_, Some(curr)) if has_committee => {
+                SpoolHighlight::Normal { spools: curr }
+            }
+            _ => SpoolHighlight::Unavailable,
+        };
 
-        // Render status bar
-        self.render_status_bar(main_chunks[5], buf);
+        SpoolBar::new(self.theme).highlight(highlight).render(main_chunks[4], buf);
+
+        // Render log (renamed from events)
+        EventLog::new(self.app, self.theme).render(main_chunks[5], buf);
     }
 }
 
@@ -325,9 +273,18 @@ fn format_number(n: u64) -> String {
 }
 
 /// Format TAPE amount (flux units to display).
+/// Returns formatted string with unit (e.g., "123 TAPE" or "456 μTAPE").
 fn format_tape(flux: u64) -> String {
-    let tape = flux / 1_000_000; // Convert from flux (6 decimals)
-    format_number(tape)
+    if flux >= 1_000_000 {
+        // 1 TAPE or more - show in TAPE
+        let tape = flux / 1_000_000;
+        format!("{} TAPE", format_number(tape))
+    } else if flux > 0 {
+        // Less than 1 TAPE - show in μTAPE (micro TAPE)
+        format!("{} μTAPE", format_number(flux))
+    } else {
+        "0 TAPE".to_string()
+    }
 }
 
 /// Format bytes per second.

@@ -117,8 +117,12 @@ pub struct NodeState {
     pub pool_stake: Coin<TAPE>,
     /// Stake schedule by epoch (incoming/cancels per epoch).
     pub stake_schedule: BTreeMap<EpochNumber, StakeScheduleEntry>,
-    /// Commission in basis points.
+    /// Commission rate in basis points.
     pub commission: BasisPoints,
+    /// Accumulated commission earned (claimable by operator).
+    pub commission_earned: Coin<TAPE>,
+    /// Accumulated rewards pool (distributable to stakers).
+    pub rewards_pool: Coin<TAPE>,
     /// Number of spools assigned.
     pub spool_count: u16,
     /// List of assigned spool indices.
@@ -141,6 +145,8 @@ impl Default for NodeState {
             pool_stake: TAPE::zero(),
             stake_schedule: BTreeMap::new(),
             commission: BasisPoints(0),
+            commission_earned: TAPE::zero(),
+            rewards_pool: TAPE::zero(),
             spool_count: 0,
             assigned_spools: Vec::new(),
             stats: None,
@@ -353,8 +359,8 @@ pub struct SpoolAssignment {
 pub struct App {
     /// Current view being displayed.
     pub current_view: View,
-    /// Selected node index in the committee (for navigation).
-    pub selected_node: Option<usize>,
+    /// Selected node index (for NodeList view only).
+    pub selected_node_index: Option<usize>,
     /// Scroll offset for lists.
     pub scroll_offset: usize,
     /// Event log scroll offset.
@@ -380,11 +386,19 @@ pub struct App {
     /// Size of next committee (committee_next).
     pub committee_next_size: usize,
 
-    // Committee data
+    // Committee data (three committees)
+    /// Previous committee nodes.
+    pub committee_prev_nodes: Vec<NodeState>,
     /// Current committee nodes.
     pub nodes: Vec<NodeState>,
+    /// Next committee nodes.
+    pub committee_next_nodes: Vec<NodeState>,
     /// Spool assignments by node.
     pub spool_assignments: Vec<SpoolAssignment>,
+    /// Spool assignment array for previous committee (for highlighting).
+    pub spools_prev: Option<[u8; 1024]>,
+    /// Spool assignment array for current committee (for highlighting).
+    pub spools_current: Option<[u8; 1024]>,
 
     // Network stats
     /// Aggregated network statistics.
@@ -499,7 +513,7 @@ impl App {
         let now = Instant::now();
         Self {
             current_view: View::Dashboard,
-            selected_node: None,
+            selected_node_index: None,
             scroll_offset: 0,
             event_scroll: 0,
             event_auto_scroll: true,
@@ -513,8 +527,12 @@ impl App {
             is_low_quorum: false,
             committee_next_size: 0,
 
+            committee_prev_nodes: Vec::new(),
             nodes: Vec::new(),
+            committee_next_nodes: Vec::new(),
             spool_assignments: Vec::new(),
+            spools_prev: None,
+            spools_current: None,
 
             stats: NetworkStats::default(),
 
@@ -650,36 +668,36 @@ impl App {
         }
     }
 
-    /// Get the selected node (if any).
-    pub fn selected_node_state(&self) -> Option<&NodeState> {
-        self.selected_node.and_then(|idx| self.nodes.get(idx))
-    }
-
-    /// Move selection up.
+    /// Select previous node in list (for NodeList view).
     pub fn select_prev(&mut self) {
-        if let Some(idx) = self.selected_node {
-            if idx > 0 {
-                self.selected_node = Some(idx - 1);
+        if let Some(ref mut idx) = self.selected_node_index {
+            if *idx > 0 {
+                *idx -= 1;
             }
         } else if !self.nodes.is_empty() {
-            self.selected_node = Some(self.nodes.len() - 1);
+            self.selected_node_index = Some(self.nodes.len() - 1);
         }
     }
 
-    /// Move selection down.
+    /// Select next node in list (for NodeList view).
     pub fn select_next(&mut self) {
-        if let Some(idx) = self.selected_node {
-            if idx + 1 < self.nodes.len() {
-                self.selected_node = Some(idx + 1);
+        if let Some(ref mut idx) = self.selected_node_index {
+            if *idx + 1 < self.nodes.len() {
+                *idx += 1;
             }
         } else if !self.nodes.is_empty() {
-            self.selected_node = Some(0);
+            self.selected_node_index = Some(0);
         }
     }
 
     /// Clear selection.
     pub fn clear_selection(&mut self) {
-        self.selected_node = None;
+        self.selected_node_index = None;
+    }
+
+    /// Calculate total stake in current committee.
+    pub fn total_committee_stake(&self) -> Coin<TAPE> {
+        self.nodes.iter().fold(TAPE::zero(), |acc, n| TAPE(acc.0 + n.stake.0))
     }
 }
 
@@ -733,6 +751,8 @@ impl App {
                 pool_stake: TAPE(*stake * 1_000_000),
                 stake_schedule: BTreeMap::new(),
                 commission: BasisPoints(200),
+                commission_earned: TAPE::zero(),
+                rewards_pool: TAPE::zero(),
                 spool_count: *spools,
                 assigned_spools: (0..*spools).collect(),
                 stats: None,
@@ -754,6 +774,8 @@ impl App {
                 pool_stake: TAPE((200_000 - i as u64 * 1000) * 1_000_000),
                 stake_schedule: BTreeMap::new(),
                 commission: BasisPoints(200 + i as u64 * 10),
+                commission_earned: TAPE::zero(),
+                rewards_pool: TAPE::zero(),
                 spool_count: (50 - i as u16 / 2).max(5),
                 assigned_spools: Vec::new(),
                 stats: None,

@@ -10,4 +10,4 @@ pub mod spool_bar;
 pub use event_log::EventLog;
 pub use node_grid::NodeGrid;
 pub use progress_bar::EpochProgress;
-pub use spool_bar::SpoolBar;
+pub use spool_bar::{SpoolBar, SpoolHighlight};

@@ -92,7 +92,7 @@ impl<'a> NodeListView<'a> {
             .enumerate()
             .map(|(display_idx, (orig_idx, node))| {
                 let (status_sym, status_style) = self.status_symbol(node.health);
-                let is_selected = self.app.selected_node == Some(display_idx);
+                let is_selected = self.app.selected_node_index == Some(display_idx);
 
                 let row_style = if is_selected {
                     self.theme.highlight_style()

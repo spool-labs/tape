@@ -49,6 +49,7 @@ impl<'a> EpochProgress<'a> {
     /// Build the phase info line.
     fn build_phase_info(&self) -> Line<'a> {
         let mut spans = vec![
+            Span::raw(" "),  // Left padding
             Span::styled("Phase: ", self.theme.text_style()),
             Span::styled(self.app.phase.as_str(), self.phase_style()),
         ];
@@ -93,6 +94,13 @@ impl<'a> EpochProgress<'a> {
             ));
         }
 
+        // Show rewards paid this epoch
+        spans.push(Span::styled(" | Paid: ", self.theme.dim_style()));
+        spans.push(Span::styled(
+            format_tape(self.app.stats.rewards_paid),
+            self.theme.dim_style(),
+        ));
+
         Line::from(spans)
     }
 
@@ -100,8 +108,10 @@ impl<'a> EpochProgress<'a> {
     fn build_progress_bar(&self, width: u16) -> Line<'a> {
         let progress = self.app.epoch_progress();
         let label = self.app.epoch_progress_label();
-        let label_text = format!(" {}% {}", progress, label);
-        let bar_width = width.saturating_sub(label_text.len() as u16) as usize;
+        let label_text = format!(" {}% {} ", progress, label);
+        // Account for left and right padding (2 chars total)
+        let content_width = width.saturating_sub(2) as usize;
+        let bar_width = content_width.saturating_sub(label_text.len());
 
         let filled = (bar_width * progress as usize) / 100;
         let empty = bar_width.saturating_sub(filled);
@@ -118,6 +128,7 @@ impl<'a> EpochProgress<'a> {
         };
 
         Line::from(vec![
+            Span::raw(" "),  // Left padding
             Span::styled(filled_str, Style::default().fg(bar_color)),
             Span::styled(empty_str, Style::default().fg(self.theme.progress_bg)),
             Span::styled(label_text, self.theme.text_style()),
@@ -179,6 +190,18 @@ fn format_number(n: u64) -> String {
         result.push(c);
     }
     result
+}
+
+/// Format TAPE amount (flux units to display).
+fn format_tape(flux: u64) -> String {
+    if flux >= 1_000_000 {
+        let tape = flux / 1_000_000;
+        format!("{} TAPE", format_number(tape))
+    } else if flux > 0 {
+        format!("{} μTAPE", format_number(flux))
+    } else {
+        "0 TAPE".to_string()
+    }
 }
 
 /// Calculate required height for the epoch progress widget.

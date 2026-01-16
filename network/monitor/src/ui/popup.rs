@@ -175,6 +175,49 @@ impl<'a> NodeDetailPopup<'a> {
         lines
     }
 
+    /// Build rewards section showing commission and staker rewards.
+    fn build_rewards_section(&self) -> Vec<Line<'a>> {
+        let mut lines = vec![
+            Line::default(),
+            Line::styled("REWARDS", self.theme.header_style()),
+            Line::styled("-".repeat(40), self.theme.dim_style()),
+        ];
+
+        // Commission earned (claimable by operator)
+        let commission_str = if self.node.commission_earned.0 > 0 {
+            format_tape_amount(self.node.commission_earned.0)
+        } else {
+            "0 TAPE".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Commission:   ", self.theme.text_style()),
+            Span::styled(
+                commission_str,
+                Style::default().fg(self.theme.primary),
+            ),
+            Span::styled(
+                format!(" ({})", self.node.commission_display()),
+                self.theme.dim_style(),
+            ),
+        ]));
+
+        // Rewards pool (distributable to stakers)
+        let rewards_str = if self.node.rewards_pool.0 > 0 {
+            format_tape_amount(self.node.rewards_pool.0)
+        } else {
+            "0 TAPE".to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Staker Pool:  ", self.theme.text_style()),
+            Span::styled(
+                rewards_str,
+                self.theme.text_style(),
+            ),
+        ]));
+
+        lines
+    }
+
     /// Build metrics section.
     fn build_metrics_section(&self) -> Vec<Line<'a>> {
         // Calculate estimated storage responsibility based on spool allocation
@@ -322,6 +365,7 @@ impl Widget for NodeDetailPopup<'_> {
         // Build content
         let mut lines = self.build_info_lines();
         lines.extend(self.build_stake_section());
+        lines.extend(self.build_rewards_section());
         lines.extend(self.build_metrics_section());
         lines.extend(self.build_stats_section());
         lines.extend(self.build_spools_section());
@@ -363,6 +407,20 @@ fn format_bytes(bytes: u64) -> String {
 fn format_tape(flux: u64) -> String {
     let tape = flux / 1_000_000; // Convert from flux (6 decimals)
     format_number(tape)
+}
+
+/// Format TAPE amount with unit (handles μTAPE for small amounts).
+fn format_tape_amount(flux: u64) -> String {
+    if flux >= 1_000_000 {
+        // 1 TAPE or more - show in TAPE
+        let tape = flux / 1_000_000;
+        format!("{} TAPE", format_number(tape))
+    } else if flux > 0 {
+        // Less than 1 TAPE - show in μTAPE (micro TAPE)
+        format!("{} μTAPE", format_number(flux))
+    } else {
+        "0 TAPE".to_string()
+    }
 }
 
 /// Render the help popup.

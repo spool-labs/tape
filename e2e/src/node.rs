@@ -169,6 +169,16 @@ impl TestNode {
         cli.node_sync(Some(&self.config_path))
     }
 
+    /// Set commission rate (in basis points, 0-10000).
+    pub fn set_commission(&self, cli: &Tapedrive, bps: u64) -> Result<()> {
+        cli.node_set_commission(bps, Some(&self.config_path))
+    }
+
+    /// Claim accumulated commission.
+    pub fn claim_commission(&self, cli: &Tapedrive) -> Result<()> {
+        cli.node_claim_commission(Some(&self.config_path))
+    }
+
     /// Fund this node's authority keypair with SOL for transaction fees.
     ///
     /// This is needed for the node to submit transactions (like SyncEpoch).

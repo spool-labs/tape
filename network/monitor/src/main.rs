@@ -44,15 +44,16 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use rpc_client::RpcConfig;
 use tokio::sync::mpsc;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use app::{App, EpochPhase, NodeState as AppNodeState, StakeScheduleEntry};
 use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats, TapedriveEvent, ToNetworkEvent};
 use tape_api::program::tapedrive::EPOCH_DURATION;
+use tape_api::prelude::Committee;
 use tape_api::state::{Archive, Epoch, Node, System};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::coin::TAPE;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, NodeId};
 
 /// Solana cluster/network selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,55 +463,35 @@ fn update_app_from_data(
     app.is_low_quorum = system.is_low_quorum();
     app.committee_next_size = system.committee_next.size();
 
-    // Convert data layer NodeState to app layer NodeState
-    app.nodes = nodes
+    // Copy spool assignment arrays
+    app.spools_prev = Some(system.spools_prev.0);
+    app.spools_current = Some(system.spools.0);
+
+    // Build node lookup: NodeId -> DataNodeState
+    let node_lookup: HashMap<NodeId, &DataNodeState> = nodes
         .iter()
-        .map(|data_node| {
-            let node = &data_node.node;
-            // Find this node's position in the committee and get stake from CommitteeMember
-            let active_members = system.committee.active_members();
-            let member_pos = active_members.iter().position(|&id| id == node.id);
-
-            // Get stake from CommitteeMember (the stake used for committee membership)
-            let stake = system.committee.get_stake(&node.id)
-                .unwrap_or(TAPE::zero());
-
-            let spools: Vec<SpoolIndex> = if let Some(pos) = member_pos {
-                system
-                    .spools
-                    .0
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(spool_idx, &member_idx)| {
-                        if member_idx as usize == pos {
-                            Some(spool_idx as SpoolIndex)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            AppNodeState {
-                id: node.id,
-                name: data_node.display_name(),
-                authority: data_node.address.to_string(),
-                address: data_node.network_address().unwrap_or_default(),
-                health: convert_health_status(data_node.health),
-                latency_ms: data_node.latency_ms,
-                last_check: data_node.last_check,
-                stake,
-                pool_stake: node.pool.stake,
-                stake_schedule: extract_stake_schedule(node),
-                commission: node.pool.commission_rate,
-                spool_count: spools.len() as u16,
-                assigned_spools: spools,
-                stats: data_node.stats.clone(),
-            }
-        })
+        .map(|n| (n.node.id, n))
         .collect();
+
+    // Build PREV committee nodes
+    app.committee_prev_nodes = build_committee_nodes(
+        &system.committee_prev,
+        &system.spools_prev.0,
+        &node_lookup,
+    );
+
+    // Build CURRENT committee nodes (into app.nodes for compatibility)
+    app.nodes = build_committee_nodes(
+        &system.committee,
+        &system.spools.0,
+        &node_lookup,
+    );
+
+    // Build NEXT committee nodes (no spool data)
+    app.committee_next_nodes = build_committee_nodes_no_spools(
+        &system.committee_next,
+        &node_lookup,
+    );
 
     // Update network stats from archive and tape stats
     app.stats.storage_capacity = archive.storage_capacity;
@@ -614,6 +595,138 @@ fn extract_stake_schedule(node: &Node) -> BTreeMap<EpochNumber, StakeScheduleEnt
     schedule
 }
 
+/// Build NodeState list for a committee with spool assignments.
+fn build_committee_nodes(
+    committee: &Committee<{ tape_api::program::tapedrive::MEMBER_COUNT }>,
+    spools: &[u8; 1024],
+    node_lookup: &HashMap<NodeId, &DataNodeState>,
+) -> Vec<AppNodeState> {
+    use std::time::Instant;
+    committee.active_members()
+        .iter()
+        .enumerate()
+        .map(|(member_idx, &node_id)| {
+            let data_node = node_lookup.get(&node_id);
+
+            // Calculate assigned spools for this member
+            let assigned_spools: Vec<SpoolIndex> = spools
+                .iter()
+                .enumerate()
+                .filter_map(|(spool_idx, &owner)| {
+                    if owner as usize == member_idx {
+                        Some(spool_idx as SpoolIndex)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Get stake from committee
+            let stake = committee.get_stake(&node_id).unwrap_or(TAPE::zero());
+
+            if let Some(data_node) = data_node {
+                let node = &data_node.node;
+                AppNodeState {
+                    id: node.id,
+                    name: data_node.display_name(),
+                    authority: data_node.address.to_string(),
+                    address: data_node.network_address().unwrap_or_default(),
+                    health: convert_health_status(data_node.health),
+                    latency_ms: data_node.latency_ms,
+                    last_check: data_node.last_check,
+                    stake,
+                    pool_stake: node.pool.stake,
+                    stake_schedule: extract_stake_schedule(node),
+                    commission: node.pool.commission_rate,
+                    commission_earned: node.pool.commission,
+                    rewards_pool: node.pool.rewards,
+                    spool_count: assigned_spools.len() as u16,
+                    assigned_spools,
+                    stats: data_node.stats.clone(),
+                }
+            } else {
+                // Node in committee but not in our node list (shouldn't happen often)
+                AppNodeState {
+                    id: node_id,
+                    name: format!("Node {}", node_id.0),
+                    authority: String::new(),
+                    address: String::new(),
+                    health: app::HealthStatus::Unknown,
+                    latency_ms: None,
+                    last_check: Instant::now(),
+                    stake,
+                    pool_stake: TAPE::zero(),
+                    stake_schedule: BTreeMap::new(),
+                    commission: tape_core::types::BasisPoints(0),
+                    commission_earned: TAPE::zero(),
+                    rewards_pool: TAPE::zero(),
+                    spool_count: assigned_spools.len() as u16,
+                    assigned_spools,
+                    stats: None,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Build NodeState list for a committee without spool assignments (committee_next).
+fn build_committee_nodes_no_spools(
+    committee: &Committee<{ tape_api::program::tapedrive::MEMBER_COUNT }>,
+    node_lookup: &HashMap<NodeId, &DataNodeState>,
+) -> Vec<AppNodeState> {
+    use std::time::Instant;
+    committee.active_members()
+        .iter()
+        .map(|&node_id| {
+            let data_node = node_lookup.get(&node_id);
+
+            // Get stake from committee
+            let stake = committee.get_stake(&node_id).unwrap_or(TAPE::zero());
+
+            if let Some(data_node) = data_node {
+                let node = &data_node.node;
+                AppNodeState {
+                    id: node.id,
+                    name: data_node.display_name(),
+                    authority: data_node.address.to_string(),
+                    address: data_node.network_address().unwrap_or_default(),
+                    health: convert_health_status(data_node.health),
+                    latency_ms: data_node.latency_ms,
+                    last_check: data_node.last_check,
+                    stake,
+                    pool_stake: node.pool.stake,
+                    stake_schedule: extract_stake_schedule(node),
+                    commission: node.pool.commission_rate,
+                    commission_earned: node.pool.commission,
+                    rewards_pool: node.pool.rewards,
+                    spool_count: 0,  // NEXT committee has no spool assignments yet
+                    assigned_spools: Vec::new(),
+                    stats: data_node.stats.clone(),
+                }
+            } else {
+                AppNodeState {
+                    id: node_id,
+                    name: format!("Node {}", node_id.0),
+                    authority: String::new(),
+                    address: String::new(),
+                    health: app::HealthStatus::Unknown,
+                    latency_ms: None,
+                    last_check: Instant::now(),
+                    stake,
+                    pool_stake: TAPE::zero(),
+                    stake_schedule: BTreeMap::new(),
+                    commission: tape_core::types::BasisPoints(0),
+                    commission_earned: TAPE::zero(),
+                    rewards_pool: TAPE::zero(),
+                    spool_count: 0,
+                    assigned_spools: Vec::new(),
+                    stats: None,
+                }
+            }
+        })
+        .collect()
+}
+
 /// Convert data layer NetworkEvent to app layer NetworkEvent.
 fn convert_network_event(event: &data::NetworkEvent) -> app::NetworkEvent {
     let event_type = match event.event_type {
@@ -648,21 +761,51 @@ fn update_app_from_partial_data(
     nodes: &[DataNodeState],
     tape_stats: &TapeStats,
 ) {
+    // Detect reset: epoch went backwards or all committees are empty
+    let is_reset = if let (Some(epoch_data), Some(system_data)) = (epoch, system) {
+        let epoch_went_back = epoch_data.id < app.epoch && app.epoch.0 > 0;
+        let all_empty = system_data.committee.size() == 0
+            && system_data.committee_prev.size() == 0
+            && system_data.committee_next.size() == 0;
+        epoch_went_back || (all_empty && !app.nodes.is_empty())
+    } else {
+        false
+    };
+
+    if is_reset {
+        // Clear all state
+        app.committee_prev_nodes.clear();
+        app.nodes.clear();
+        app.committee_next_nodes.clear();
+        app.spools_prev = None;
+        app.spools_current = None;
+        app.events.clear();
+        app.selected_node_index = None;
+        app.stats = app::NetworkStats::default();
+
+        // Log reset event
+        app.add_event(app::NetworkEvent::new(
+            app::EventType::EpochTransition,
+            "System reset detected - cleared state",
+            "",
+        ));
+    }
+
     // Update epoch information if available
-    if let Some(epoch) = epoch {
-        app.epoch = epoch.id;
-        app.phase = if epoch.state.is_syncing() {
+    if let Some(epoch_data) = epoch {
+        app.epoch = epoch_data.id;
+        app.phase = if epoch_data.state.is_syncing() {
             EpochPhase::Syncing
-        } else if epoch.state.is_settling() {
+        } else if epoch_data.state.is_settling() {
             EpochPhase::Settling
-        } else if epoch.state.is_active() {
+        } else if epoch_data.state.is_active() {
             EpochPhase::Active
         } else {
             EpochPhase::Unknown
         };
-        app.epoch_start = epoch.last_epoch;
+        app.epoch_start = epoch_data.last_epoch;
         app.epoch_duration = EPOCH_DURATION as u64;
-        app.epoch_weight = epoch.state.weight;
+        app.epoch_weight = epoch_data.state.weight;
     }
 
     // Update archive stats if available
@@ -682,54 +825,35 @@ fn update_app_from_partial_data(
         app.is_low_quorum = system.is_low_quorum();
         app.committee_next_size = system.committee_next.size();
 
-        app.nodes = nodes
+        // Copy spool assignment arrays
+        app.spools_prev = Some(system.spools_prev.0);
+        app.spools_current = Some(system.spools.0);
+
+        // Build node lookup: NodeId -> DataNodeState
+        let node_lookup: HashMap<NodeId, &DataNodeState> = nodes
             .iter()
-            .map(|data_node| {
-                let node = &data_node.node;
-                // Find this node's position in the committee and get stake from CommitteeMember
-                let active_members = system.committee.active_members();
-                let member_pos = active_members.iter().position(|&id| id == node.id);
-
-                // Get stake from CommitteeMember (the stake used for committee membership)
-                let stake = system.committee.get_stake(&node.id)
-                    .unwrap_or(TAPE::zero());
-
-                let spools: Vec<SpoolIndex> = if let Some(pos) = member_pos {
-                    system
-                        .spools
-                        .0
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(spool_idx, &member_idx)| {
-                            if member_idx as usize == pos {
-                                Some(spool_idx as SpoolIndex)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-                AppNodeState {
-                    id: node.id,
-                    name: data_node.display_name(),
-                    authority: data_node.address.to_string(),
-                    address: data_node.network_address().unwrap_or_default(),
-                    health: convert_health_status(data_node.health),
-                    latency_ms: data_node.latency_ms,
-                    last_check: data_node.last_check,
-                    stake,
-                    pool_stake: node.pool.stake,
-                    stake_schedule: extract_stake_schedule(node),
-                    commission: node.pool.commission_rate,
-                    spool_count: spools.len() as u16,
-                    assigned_spools: spools,
-                    stats: data_node.stats.clone(),
-                }
-            })
+            .map(|n| (n.node.id, n))
             .collect();
+
+        // Build PREV committee nodes
+        app.committee_prev_nodes = build_committee_nodes(
+            &system.committee_prev,
+            &system.spools_prev.0,
+            &node_lookup,
+        );
+
+        // Build CURRENT committee nodes (into app.nodes for compatibility)
+        app.nodes = build_committee_nodes(
+            &system.committee,
+            &system.spools.0,
+            &node_lookup,
+        );
+
+        // Build NEXT committee nodes (no spool data)
+        app.committee_next_nodes = build_committee_nodes_no_spools(
+            &system.committee_next,
+            &node_lookup,
+        );
 
         // Update spool assignments summary
         app.spool_assignments = app
@@ -761,12 +885,19 @@ fn update_app_from_partial_data(
                     pool_stake: node.pool.stake,
                     stake_schedule: extract_stake_schedule(node),
                     commission: node.pool.commission_rate,
+                    commission_earned: node.pool.commission,
+                    rewards_pool: node.pool.rewards,
                     spool_count: 0,
                     assigned_spools: Vec::new(),
                     stats: data_node.stats.clone(),
                 }
             })
             .collect();
+        // Clear prev and next committees when no system data
+        app.committee_prev_nodes.clear();
+        app.committee_next_nodes.clear();
+        app.spools_prev = None;
+        app.spools_current = None;
     }
 
     // Compute throughput and request rates from node stats

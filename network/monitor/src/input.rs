@@ -63,7 +63,7 @@ pub fn handle_key_event(key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => Action::Up,
         KeyCode::Down | KeyCode::Char('j') => Action::Down,
         KeyCode::Left | KeyCode::Char('h') => Action::Left,
-        KeyCode::Right | KeyCode::Char('l') => Action::Right,
+        KeyCode::Right => Action::Right,
 
         // Selection
         KeyCode::Enter => Action::Select,
@@ -73,7 +73,7 @@ pub fn handle_key_event(key: KeyEvent) -> Action {
         KeyCode::Char('d') | KeyCode::Char('D') => Action::Dashboard,
         KeyCode::Char('n') | KeyCode::Char('N') => Action::NodeList,
         KeyCode::Char('e') | KeyCode::Char('E') => Action::EpochHistory,
-        KeyCode::Char('v') | KeyCode::Char('V') => Action::EventList,
+        KeyCode::Char('l') | KeyCode::Char('L') => Action::EventList,
 
         // Help
         KeyCode::Char('?') => Action::Help,
@@ -215,11 +215,11 @@ pub fn handle_input(app: &mut crate::app::App, key: KeyEvent) {
             app.select_next();
         }
         Action::Left | Action::Right => {
-            // Panel navigation - not yet implemented
+            // No panel navigation on dashboard anymore
         }
         Action::Select => {
             // Open node detail if a node is selected
-            if let Some(idx) = app.selected_node {
+            if let Some(idx) = app.selected_node_index {
                 app.current_view = View::NodeDetail(idx);
             }
         }
