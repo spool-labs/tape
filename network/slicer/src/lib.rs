@@ -10,6 +10,9 @@ pub mod merkle_helpers;
 pub mod reed_solomon;
 pub mod slice_index;
 
+#[cfg(test)]
+mod bench;
+
 pub use consts::{MERKLE_HEIGHT, SLICE_COUNT, F, CODING_SLICES, DATA_SLICES};
 pub use errors::{EncodeError, DecodeError};
 pub use types::{Slice, Blob};
