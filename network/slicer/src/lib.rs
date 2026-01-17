@@ -21,4 +21,4 @@ pub use basic::BasicSlicer;
 pub use striped::StripedSlicer;
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
-pub use reed_solomon::DEFAULT_MAX_SLICE_BYTES;
+pub use reed_solomon::MAX_SLICE_BYTES;

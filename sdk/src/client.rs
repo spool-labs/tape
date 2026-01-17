@@ -18,8 +18,10 @@ use crate::error::{ClientError, DownloadError, UploadError};
 use crate::routing::SliceRouter;
 use crate::uploader::{DistributedUploader, SliceWithProof};
 
-/// Default max slice size (1 MiB) - matches production settings.
-pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20;
+/// Default max slice size for 512 KB stripes (optimal based on benchmarks).
+/// 512 KB stripes provide 2.5-3.5x faster encoding than larger stripes due to L2 cache locality.
+/// See docs/striped-slicer.md for benchmark details.
+pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 10; // 1 KiB (512 KB stripe / 683 data slices ≈ 768 bytes + padding)
 
 /// High-level client for tapedrive blob operations.
 ///

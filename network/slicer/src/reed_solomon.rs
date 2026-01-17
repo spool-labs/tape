@@ -3,15 +3,10 @@ use super::Slice;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
 
-/// This is the maximum slice size we allow the encoder/decoder to handle.
-/// We set it to 1 MiB here, which allows encoding up to about DATA_SLICES MiB of data per stripe
-/// (with CODING_SLICES MiB of coding, and SLICE_COUNT MiB total).
-pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 20; // 1 MiB
-
-/// Smaller max slice size for testing to reduce memory usage.
+/// Maximum slice size for BasicSlicer (used for testing/debugging only).
 /// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
-#[cfg(test)]
-pub const TEST_MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
+/// For production workloads, use StripedSlicer which handles large blobs efficiently.
+pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
 
 /// Errors that may be returned by ReedSolomonCoder::encode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -50,16 +45,17 @@ pub struct ReedSolomonCoder {
 }
 
 impl ReedSolomonCoder {
-    /// Create a new Reed-Solomon coder with default max slice size (1 MiB).
+    /// Create a new Reed-Solomon coder with default max slice size (4 KiB).
+    /// This is suitable for testing/debugging. For larger blobs, use `with_max_slice_bytes`.
     pub fn new(k_data: usize, r_coding: usize) -> Self {
-        Self::with_max_slice_bytes(k_data, r_coding, DEFAULT_MAX_SLICE_BYTES)
+        Self::with_max_slice_bytes(k_data, r_coding, MAX_SLICE_BYTES)
     }
 
     /// Create a new Reed-Solomon coder with a custom max slice size.
     ///
-    /// Use smaller values for testing to reduce memory usage.
     /// The max_slice_bytes determines the maximum size of each slice,
     /// which affects memory allocation in the encoder/decoder.
+    /// Use larger values for benchmarks or when encoding large blobs.
     pub fn with_max_slice_bytes(k_data: usize, r_coding: usize, max_slice_bytes: usize) -> Self {
         assert!(u16::MAX as usize >= 65535);
         assert!(k_data > 0, "k_data must be > 0");
@@ -244,9 +240,9 @@ mod tests {
     use super::{Slice, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::SliceIndex;
 
-    /// Create a test coder with reduced memory footprint.
+    /// Create a test coder with the default configuration.
     fn test_coder() -> ReedSolomonCoder {
-        ReedSolomonCoder::with_max_slice_bytes(DATA_SLICES, CODING_SLICES, TEST_MAX_SLICE_BYTES)
+        ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES)
     }
 
     fn make_payload(len: usize) -> Vec<u8> {
@@ -437,7 +433,7 @@ mod tests {
         // Keep this short so it's readable on the terminal.
 
         let mut coder = test_coder();
-        // Max test payload with TEST_MAX_SLICE_BYTES (4 KiB * 2f+1 data slices = ~2.7 MB)
+        // Max payload with default 4 KiB slices: 4 KiB * 683 data slices = ~2.7 MB
         // Keep sizes modest for test speed
         let sizes = [
             0usize,

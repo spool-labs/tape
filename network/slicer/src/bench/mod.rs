@@ -2,3 +2,4 @@
 
 pub mod striping_comparison;
 pub mod stripe_size_sweep;
+pub mod rotation_comparison;
