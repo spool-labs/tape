@@ -14,25 +14,33 @@ use crate::types::{Blob, Slice};
 /// Each stripe is RS-encoded into SLICE_COUNT shards. Shards are appended
 /// to output slices using identity mapping (shard N -> slice N).
 ///
+/// Automatically selects optimal stripe size based on blob size:
+/// - ≤ 16 KB: 16 KB stripe
+/// - 16-64 KB: 64 KB stripe
+/// - 64-256 KB: 256 KB stripe
+/// - > 256 KB: 512 KB stripe
+///
 /// For fair load distribution across nodes, use `RotatedSlicer` instead.
 pub struct StripedSlicer {
     codec: StripedCodec,
 }
 
 impl StripedSlicer {
-    /// Create a new StripedSlicer with the default stripe size (512 KB).
+    /// Create a new StripedSlicer.
     pub fn new() -> Self {
-        Self::with_stripe_size(DEFAULT_STRIPE_SIZE)
+        Self {
+            codec: StripedCodec::new(DEFAULT_STRIPE_SIZE, MappingStrategy::Identity),
+        }
     }
 
-    /// Create a new StripedSlicer with a custom stripe size.
+    /// Create with a specific initial stripe size (for testing).
     pub fn with_stripe_size(stripe_size: usize) -> Self {
         Self {
             codec: StripedCodec::new(stripe_size, MappingStrategy::Identity),
         }
     }
 
-    /// Get the stripe size used by this slicer.
+    /// Get the current stripe size.
     pub fn stripe_size(&self) -> usize {
         self.codec.stripe_size
     }
@@ -50,7 +58,7 @@ impl Slicer for StripedSlicer {
     const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
-        self.codec.encode(blob)
+        self.codec.encode_adaptive(blob)
     }
 
     fn decode(&mut self, slices: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DecodeError> {

@@ -5,17 +5,110 @@
 //! - StripedSlicer: identity mapping (shard N -> slice N)
 //! - RotatedSlicer: rotated mapping for fair load distribution
 
+use bytemuck::{Pod, Zeroable};
+
 use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
 use crate::slice_index::SliceIndex;
 use crate::types::{Blob, Slice};
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 
-/// Optimal stripe size (512 KB) based on benchmarks.
+/// Default stripe size (512 KB).
 pub const DEFAULT_STRIPE_SIZE: usize = 512 * 1024;
 
 /// Rotation step per stripe (coprime with SLICE_COUNT for full coverage).
 pub const ROTATION_STEP: usize = CODING_SLICES;
+
+/// Available stripe sizes for adaptive encoding.
+pub const STRIPE_SIZES: [usize; 4] = [
+    16 * 1024,   // 16 KB
+    64 * 1024,   // 64 KB
+    256 * 1024,  // 256 KB
+    512 * 1024,  // 512 KB
+];
+
+/// Select optimal stripe size based on blob size.
+///
+/// Returns the smallest stripe size that keeps overhead reasonable:
+/// - ≤ 16 KB: use 16 KB stripe
+/// - 16-64 KB: use 64 KB stripe
+/// - 64-256 KB: use 256 KB stripe
+/// - > 256 KB: use 512 KB stripe
+#[inline]
+pub fn pick_stripe_size(blob_len: usize) -> usize {
+    if blob_len <= 16 * 1024 {
+        16 * 1024
+    } else if blob_len <= 64 * 1024 {
+        64 * 1024
+    } else if blob_len <= 256 * 1024 {
+        256 * 1024
+    } else {
+        512 * 1024
+    }
+}
+
+/// Metadata suffix appended to each slice.
+///
+/// Contains information needed to decode the blob:
+/// - `version`: Format version for future extensibility
+/// - `blob_len`: Original unencoded blob size in bytes
+/// - `stripe_size`: Stripe size used during encoding
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+pub struct SliceMetadata {
+    /// Format version (currently 0).
+    pub version: u64,
+    /// Original blob length in bytes.
+    pub blob_len: u64,
+    /// Stripe size used for encoding (one of STRIPE_SIZES).
+    pub stripe_size: u64,
+}
+
+impl SliceMetadata {
+    pub const VERSION: u64 = 0;
+    pub const SIZE: usize = std::mem::size_of::<Self>(); // 24 bytes
+
+    /// Create metadata for encoding.
+    pub fn new(blob_len: usize, stripe_size: usize) -> Self {
+        Self {
+            version: Self::VERSION,
+            blob_len: blob_len as u64,
+            stripe_size: stripe_size as u64,
+        }
+    }
+
+    /// Serialize to bytes for appending to slice.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        bytemuck::bytes_of(self).try_into().unwrap()
+    }
+
+    /// Parse from slice suffix bytes.
+    pub fn from_slice(slice_data: &[u8]) -> Result<Self, DecodeError> {
+        if slice_data.len() < Self::SIZE {
+            return Err(DecodeError::InvalidLayout);
+        }
+        let suffix = &slice_data[slice_data.len() - Self::SIZE..];
+        let meta: Self = *bytemuck::from_bytes(suffix);
+
+        if !STRIPE_SIZES.contains(&(meta.stripe_size as usize)) {
+            return Err(DecodeError::InvalidLayout);
+        }
+
+        Ok(meta)
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn blob_len(&self) -> usize {
+        self.blob_len as usize
+    }
+
+    pub fn stripe_size(&self) -> usize {
+        self.stripe_size as usize
+    }
+}
 
 /// Mapping strategy for shard-to-slice assignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +178,29 @@ impl StripedCodec {
         }
     }
 
+    /// Reconfigure the codec for a different stripe size.
+    fn reconfigure(&mut self, stripe_size: usize) {
+        self.stripe_size = stripe_size;
+        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
+        let chunk_size = padded_stripe / DATA_SLICES;
+
+        self.encoder = ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
+            .expect("RS encoder init");
+        self.decoder = ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
+            .expect("RS decoder init");
+    }
+
+    /// Encode with automatically selected stripe size based on blob length.
+    pub fn encode_adaptive(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+        let optimal_stripe = pick_stripe_size(blob.len());
+
+        if self.stripe_size != optimal_stripe {
+            self.reconfigure(optimal_stripe);
+        }
+
+        self.encode(blob)
+    }
+
     /// Encode a blob into SLICE_COUNT slices.
     pub fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
         let data = blob.as_slice();
@@ -100,7 +216,7 @@ impl StripedCodec {
 
         // Initialize output slices
         let mut slices: Vec<Vec<u8>> = (0..SLICE_COUNT)
-            .map(|_| Vec::with_capacity(num_stripes * chunk_size + 8))
+            .map(|_| Vec::with_capacity(num_stripes * chunk_size + SliceMetadata::SIZE))
             .collect();
 
         for s in 0..num_stripes {
@@ -138,10 +254,10 @@ impl StripedCodec {
             }
         }
 
-        // Append blob length metadata
-        let len_bytes = (blob_len as u64).to_le_bytes();
+        // Append metadata
+        let metadata = SliceMetadata::new(blob_len, self.stripe_size);
         for slice in &mut slices {
-            slice.extend_from_slice(&len_bytes);
+            slice.extend_from_slice(&metadata.to_bytes());
         }
 
         let output: Vec<Slice> = slices
@@ -166,16 +282,14 @@ impl StripedCodec {
             .next()
             .ok_or(DecodeError::NotEnoughSlices)?;
 
-        const METADATA_LEN: usize = 8;
-        if sample.data.len() < METADATA_LEN {
-            return Err(DecodeError::InvalidLayout);
+        let metadata = SliceMetadata::from_slice(&sample.data)?;
+
+        // Reconfigure codec if stripe size differs
+        if self.stripe_size != metadata.stripe_size() {
+            self.reconfigure(metadata.stripe_size());
         }
 
-        let blob_len = u64::from_le_bytes(
-            sample.data[sample.data.len() - METADATA_LEN..]
-                .try_into()
-                .map_err(|_| DecodeError::InvalidLayout)?,
-        ) as usize;
+        let blob_len = metadata.blob_len();
 
         if blob_len == 0 {
             return Ok(Blob::from(Vec::new()));
@@ -185,7 +299,7 @@ impl StripedCodec {
         let padded_stripe = round_up_to(self.stripe_size, DATA_SLICES);
         let chunk_size = padded_stripe / DATA_SLICES;
 
-        let expected_slice_len = num_stripes * chunk_size + METADATA_LEN;
+        let expected_slice_len = num_stripes * chunk_size + SliceMetadata::SIZE;
         for slice in slices.iter().flatten() {
             if slice.data.len() != expected_slice_len {
                 return Err(DecodeError::InvalidLayout);
@@ -277,9 +391,10 @@ impl StripedCodec {
             slices[slice_idx] = shard.to_vec();
         }
 
-        // Append metadata
+        // Append metadata (blob_len = 0 for empty blob)
+        let metadata = SliceMetadata::new(0, self.stripe_size);
         for slice in &mut slices {
-            slice.extend_from_slice(&0u64.to_le_bytes());
+            slice.extend_from_slice(&metadata.to_bytes());
         }
 
         let output: Vec<Slice> = slices

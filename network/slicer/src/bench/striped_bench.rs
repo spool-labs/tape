@@ -374,4 +374,5 @@ mod tests {
         let results = run_bench_with_stripe_size(&input_sizes, STRIPE_512KB, 3);
         print_markdown_table(&results, STRIPE_512KB);
     }
+
 }

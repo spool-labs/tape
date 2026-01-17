@@ -17,24 +17,32 @@ use crate::types::{Blob, Slice};
 ///
 /// The rotation uses a step of CODING_SLICES (341), which is coprime with
 /// SLICE_COUNT (1024), ensuring full coverage of all slices.
+///
+/// Automatically selects optimal stripe size based on blob size:
+/// - ≤ 16 KB: 16 KB stripe
+/// - 16-64 KB: 64 KB stripe
+/// - 64-256 KB: 256 KB stripe
+/// - > 256 KB: 512 KB stripe
 pub struct RotatedSlicer {
     codec: StripedCodec,
 }
 
 impl RotatedSlicer {
-    /// Create a new RotatedSlicer with the default stripe size (512 KB).
+    /// Create a new RotatedSlicer.
     pub fn new() -> Self {
-        Self::with_stripe_size(DEFAULT_STRIPE_SIZE)
+        Self {
+            codec: StripedCodec::new(DEFAULT_STRIPE_SIZE, MappingStrategy::Rotated),
+        }
     }
 
-    /// Create a new RotatedSlicer with a custom stripe size.
+    /// Create with a specific initial stripe size (for testing).
     pub fn with_stripe_size(stripe_size: usize) -> Self {
         Self {
             codec: StripedCodec::new(stripe_size, MappingStrategy::Rotated),
         }
     }
 
-    /// Get the stripe size used by this slicer.
+    /// Get the current stripe size.
     pub fn stripe_size(&self) -> usize {
         self.codec.stripe_size
     }
@@ -52,7 +60,7 @@ impl Slicer for RotatedSlicer {
     const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
-        self.codec.encode(blob)
+        self.codec.encode_adaptive(blob)
     }
 
     fn decode(&mut self, slices: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DecodeError> {

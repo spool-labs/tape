@@ -20,7 +20,7 @@ pub use errors::{EncodeError, DecodeError};
 pub use types::{Slice, Blob};
 pub use api::Slicer;
 pub use basic::BasicSlicer;
-pub use codec::{DEFAULT_STRIPE_SIZE, ROTATION_STEP};
+pub use codec::{DEFAULT_STRIPE_SIZE, ROTATION_STEP, STRIPE_SIZES, pick_stripe_size, SliceMetadata};
 pub use striped::StripedSlicer;
 pub use rotated::RotatedSlicer;
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
