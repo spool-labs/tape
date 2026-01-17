@@ -1,12 +1,13 @@
 //! Blob encoding for network distribution.
 //!
-//! This module provides `BlobEncoder` which wraps `BasicSlicer` to encode
+//! This module provides `BlobEncoder` which wraps slicers to encode
 //! raw blobs into network-ready slices with merkle commitments.
 
+use tape_core::prelude::EncodingType;
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
-    BasicSlicer, Blob, Slicer, MERKLE_HEIGHT,
+    BasicSlicer, StripedSlicer, RotatedSlicer, Blob, Slicer, Slice, MERKLE_HEIGHT, SLICE_COUNT,
     build_blob_merkle_tree, BlobMerkleRoot,
 };
 
@@ -21,10 +22,15 @@ pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
 
 /// Encodes blobs into slices for network distribution.
 ///
-/// Uses Reed-Solomon erasure coding via `BasicSlicer` to produce
-/// SLICE_COUNT slices (DATA_SLICES data + CODING_SLICES parity).
+/// Supports multiple encoding types:
+/// - `Basic`: Single RS pass, for testing/debugging only
+/// - `Striped`: Multiple stripes with fixed slice assignment, production-ready
+/// - `Rotated`: Striped with per-stripe rotation for fair load distribution (default)
 pub struct BlobEncoder {
-    slicer: BasicSlicer,
+    encoding_type: EncodingType,
+    basic: Option<BasicSlicer>,
+    striped: Option<StripedSlicer>,
+    rotated: Option<RotatedSlicer>,
 }
 
 impl Default for BlobEncoder {
@@ -34,20 +40,77 @@ impl Default for BlobEncoder {
 }
 
 impl BlobEncoder {
-    /// Create a new encoder with default max slice size (1 MiB).
+    /// Create a new encoder with default encoding type (Rotated).
+    ///
+    /// Rotated encoding provides fair load distribution across all nodes
+    /// and is the recommended default for production use.
     pub fn new() -> Self {
+        Self::with_encoding(EncodingType::Rotated)
+    }
+
+    /// Create an encoder with a specific encoding type.
+    ///
+    /// # Arguments
+    /// * `encoding_type` - The encoding algorithm to use
+    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+        let mut encoder = Self {
+            encoding_type,
+            basic: None,
+            striped: None,
+            rotated: None,
+        };
+
+        match encoding_type {
+            EncodingType::Basic => {
+                encoder.basic = Some(BasicSlicer::default());
+            }
+            EncodingType::Striped => {
+                encoder.striped = Some(StripedSlicer::default());
+            }
+            EncodingType::Rotated | EncodingType::Unknown => {
+                encoder.rotated = Some(RotatedSlicer::default());
+            }
+        }
+
+        encoder
+    }
+
+    /// Create an encoder with a custom max slice size (for BasicSlicer only).
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// For production, use `new()` or `with_encoding()`.
+    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
         Self {
-            slicer: BasicSlicer::default(),
+            encoding_type: EncodingType::Basic,
+            basic: Some(BasicSlicer::with_max_slice_bytes(max_slice_bytes)),
+            striped: None,
+            rotated: None,
         }
     }
 
-    /// Create an encoder with a custom max slice size.
-    ///
-    /// Use smaller values for testing to reduce memory usage.
-    /// For production, use `new()` or `Default::default()`.
-    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
-        Self {
-            slicer: BasicSlicer::with_max_slice_bytes(max_slice_bytes),
+    /// Get the encoding type used by this encoder.
+    pub fn encoding_type(&self) -> EncodingType {
+        self.encoding_type
+    }
+
+    /// Internal encoding dispatch that returns the raw Slice array.
+    fn encode_internal(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], UploadError> {
+        match self.encoding_type {
+            EncodingType::Basic => {
+                self.basic.as_mut().unwrap()
+                    .encode(blob)
+                    .map_err(|e| UploadError::Encoding(e.to_string()))
+            }
+            EncodingType::Striped => {
+                self.striped.as_mut().unwrap()
+                    .encode(blob)
+                    .map_err(|e| UploadError::Encoding(e.to_string()))
+            }
+            EncodingType::Rotated | EncodingType::Unknown => {
+                self.rotated.as_mut().unwrap()
+                    .encode(blob)
+                    .map_err(|e| UploadError::Encoding(e.to_string()))
+            }
         }
     }
 
@@ -63,9 +126,7 @@ impl BlobEncoder {
     /// Vector of (index, data) tuples for all SLICE_COUNT slices.
     pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(u16, Vec<u8>)>, UploadError> {
         let blob = Blob::from(data);
-        let slices = self.slicer
-            .encode(blob)
-            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+        let slices = self.encode_internal(blob)?;
 
         let output: Vec<(u16, Vec<u8>)> = slices
             .into_iter()
@@ -87,9 +148,7 @@ impl BlobEncoder {
     /// Vector of slice data in index order.
     pub fn encode_to_vec(&mut self, data: Vec<u8>) -> Result<Vec<Vec<u8>>, UploadError> {
         let blob = Blob::from(data);
-        let slices = self.slicer
-            .encode(blob)
-            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+        let slices = self.encode_internal(blob)?;
 
         Ok(slices.into_iter().map(|s| s.data).collect())
     }
@@ -109,9 +168,7 @@ impl BlobEncoder {
         data: Vec<u8>,
     ) -> Result<(Vec<(u16, Vec<u8>)>, BlobMerkleRoot), UploadError> {
         let blob = Blob::from(data);
-        let slices = self.slicer
-            .encode(blob)
-            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+        let slices = self.encode_internal(blob)?;
 
         // Build Merkle tree from slices to compute root
         let tree = build_blob_merkle_tree(&slices);
@@ -139,9 +196,7 @@ impl BlobEncoder {
         data: Vec<u8>,
     ) -> Result<(Vec<Vec<u8>>, BlobMerkleRoot), UploadError> {
         let blob = Blob::from(data);
-        let slices = self.slicer
-            .encode(blob)
-            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+        let slices = self.encode_internal(blob)?;
 
         // Build Merkle tree from slices
         let tree = build_blob_merkle_tree(&slices);
@@ -181,9 +236,7 @@ impl BlobEncoder {
         data: Vec<u8>,
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
         let blob = Blob::from(data);
-        let slices = self.slicer
-            .encode(blob)
-            .map_err(|e| UploadError::Encoding(e.to_string()))?;
+        let slices = self.encode_internal(blob)?;
 
         // Build Merkle tree from slices
         let tree = build_blob_merkle_tree(&slices);
@@ -362,5 +415,57 @@ mod tests {
             let expected_leaf = hash_leaf(&slice.data);
             assert_eq!(slice.leaf_hash, expected_leaf);
         }
+    }
+
+    #[test]
+    fn test_encoding_type_default() {
+        let encoder = BlobEncoder::new();
+        assert_eq!(encoder.encoding_type(), EncodingType::Rotated);
+    }
+
+    #[test]
+    fn test_encoding_type_basic() {
+        let encoder = BlobEncoder::with_encoding(EncodingType::Basic);
+        assert_eq!(encoder.encoding_type(), EncodingType::Basic);
+    }
+
+    #[test]
+    fn test_encoding_type_striped() {
+        let encoder = BlobEncoder::with_encoding(EncodingType::Striped);
+        assert_eq!(encoder.encoding_type(), EncodingType::Striped);
+    }
+
+    #[test]
+    fn test_encoding_type_rotated() {
+        let encoder = BlobEncoder::with_encoding(EncodingType::Rotated);
+        assert_eq!(encoder.encoding_type(), EncodingType::Rotated);
+    }
+
+    #[test]
+    fn test_striped_roundtrip_with_decoder() {
+        use crate::decoder::BlobDecoder;
+
+        let original = vec![0xAB; 10_000];
+        let mut encoder = BlobEncoder::with_encoding(EncodingType::Striped);
+        let mut decoder = BlobDecoder::with_encoding(EncodingType::Striped);
+
+        let slices = encoder.encode(original.clone()).unwrap();
+        let recovered = decoder.decode(slices).unwrap();
+
+        assert_eq!(original, recovered);
+    }
+
+    #[test]
+    fn test_rotated_roundtrip_with_decoder() {
+        use crate::decoder::BlobDecoder;
+
+        let original = vec![0xCD; 10_000];
+        let mut encoder = BlobEncoder::with_encoding(EncodingType::Rotated);
+        let mut decoder = BlobDecoder::with_encoding(EncodingType::Rotated);
+
+        let slices = encoder.encode(original.clone()).unwrap();
+        let recovered = decoder.decode(slices).unwrap();
+
+        assert_eq!(original, recovered);
     }
 }

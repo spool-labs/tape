@@ -3,6 +3,23 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tape_crypto::hash::Hash;
 use crate::types::EpochNumber;
 
+/// Encoding type for erasure-coded track data.
+///
+/// Determines how blob data is split into stripes and mapped to slices.
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+pub enum EncodingType {
+    /// Unknown encoding (default for uninitialized tracks).
+    #[default]
+    Unknown = 0,
+    /// Basic encoding - single RS pass, testing only.
+    Basic = 1,
+    /// Striped encoding - multiple stripes, fixed slice assignment.
+    Striped = 2,
+    /// Rotated encoding - striped with per-stripe rotation for fair load distribution.
+    Rotated = 3,
+}
+
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum TrackPhase {
@@ -95,6 +112,9 @@ pub struct TrackData {
 
     /// Merkle root of the erasure coded data
     pub commitment_hash: Hash,
+
+    /// Encoding type used for erasure coding (stored as u64 for Pod compatibility)
+    pub encoding: u64,
 }
 
 impl TrackData {
@@ -106,6 +126,7 @@ impl TrackData {
             state: TrackState::new(),
             registered_epoch,
             commitment_hash,
+            encoding: EncodingType::Unknown as u64,
         }
     }
 
@@ -123,6 +144,17 @@ impl TrackData {
 
     pub fn certified_epoch(&self) -> Option<EpochNumber> {
         self.state.certified_epoch()
+    }
+
+    /// Get the encoding type for this track.
+    pub fn encoding_type(&self) -> Option<EncodingType> {
+        EncodingType::try_from(self.encoding).ok()
+    }
+
+    /// Set the encoding type for this track.
+    pub fn set_encoding(&mut self, enc: EncodingType) -> &mut Self {
+        self.encoding = enc.into();
+        self
     }
 
     pub fn set_registered(&mut self, epoch: EpochNumber) -> &mut Self {

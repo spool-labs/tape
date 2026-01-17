@@ -17,13 +17,17 @@ use std::time::Duration;
 
 use solana_sdk::pubkey::Pubkey;
 use tape_core::spooler::SpoolIndex;
+use tape_core::prelude::EncodingType;
 use tape_core::types::NodeId;
 use tape_crypto::merkle::hash_leaf;
 use tape_crypto::Hash;
 use tape_sdk::communication::NodeCommunicationFactory;
 use tape_sdk::downloader::ParallelDownloader;
 use tape_sdk::error::DownloadError;
-use tape_slicer::{build_blob_merkle_tree, BasicSlicer, Slicer, SliceIndex, SLICE_COUNT, MERKLE_HEIGHT};
+use tape_slicer::{
+    build_blob_merkle_tree, BasicSlicer, StripedSlicer, RotatedSlicer,
+    Slicer, SliceIndex, Slice, Blob, SLICE_COUNT, MERKLE_HEIGHT,
+};
 use tape_store::ops::{is_ready_for_retry, Compression, RecoveryOps, SliceMeta};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -197,6 +201,45 @@ async fn process_recovery_queue(
     Ok(())
 }
 
+/// Decode and re-encode slices using the appropriate slicer for the encoding type.
+fn decode_and_encode(
+    encoding_type: EncodingType,
+    slice_array: &[Option<Slice>; SLICE_COUNT],
+) -> Result<(Blob, [Slice; SLICE_COUNT]), RecoveryError> {
+    match encoding_type {
+        EncodingType::Basic => {
+            let mut slicer = BasicSlicer::default();
+            let blob = slicer
+                .decode(slice_array)
+                .map_err(|e| RecoveryError::Decode(e.to_string()))?;
+            let all_slices = slicer
+                .encode(blob.clone())
+                .map_err(|e| RecoveryError::Encode(e.to_string()))?;
+            Ok((blob, all_slices))
+        }
+        EncodingType::Striped => {
+            let mut slicer = StripedSlicer::default();
+            let blob = slicer
+                .decode(slice_array)
+                .map_err(|e| RecoveryError::Decode(e.to_string()))?;
+            let all_slices = slicer
+                .encode(blob.clone())
+                .map_err(|e| RecoveryError::Encode(e.to_string()))?;
+            Ok((blob, all_slices))
+        }
+        EncodingType::Rotated | EncodingType::Unknown => {
+            let mut slicer = RotatedSlicer::default();
+            let blob = slicer
+                .decode(slice_array)
+                .map_err(|e| RecoveryError::Decode(e.to_string()))?;
+            let all_slices = slicer
+                .encode(blob.clone())
+                .map_err(|e| RecoveryError::Encode(e.to_string()))?;
+            Ok((blob, all_slices))
+        }
+    }
+}
+
 /// Recover a single slice via erasure decoding.
 async fn recover_slice(
     ctx: &NodeContext,
@@ -211,6 +254,13 @@ async fn recover_slice(
         "Attempting slice recovery"
     );
 
+    // TODO: Fetch encoding type from on-chain track data.
+    // For now, default to Basic for backwards compatibility with existing tracks.
+    // When track data includes encoding type, we should fetch it like:
+    //   let track = ctx.rpc.get_track_by_address(&track_address).await?;
+    //   let encoding_type = track.data.encoding_type().unwrap_or(EncodingType::Basic);
+    let encoding_type = EncodingType::Basic;
+
     // Use ParallelDownloader from SDK with client pooling via factory
     let downloader = ParallelDownloader::new(
         track_address.to_string(),
@@ -222,25 +272,17 @@ async fn recover_slice(
     // Fetch enough slices from the committee (excludes the target we're recovering)
     let slices = downloader.download_enough_slices().await?;
 
-    // Decode the blob
-    let mut slicer = BasicSlicer::default();
-    let mut slice_array: [Option<tape_slicer::Slice>; SLICE_COUNT] =
-        std::array::from_fn(|_| None);
+    // Build slice array from downloaded slices
+    let mut slice_array: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
 
     for (idx, data) in &slices {
         let slice_idx = SliceIndex::new(*idx as usize)
             .ok_or(RecoveryError::InvalidSliceIndex(*idx))?;
-        slice_array[*idx as usize] = Some(tape_slicer::Slice::new(slice_idx, data.clone()));
+        slice_array[*idx as usize] = Some(Slice::new(slice_idx, data.clone()));
     }
 
-    let blob = slicer
-        .decode(&slice_array)
-        .map_err(|e| RecoveryError::Decode(e.to_string()))?;
-
-    // Re-encode to get all slices
-    let all_slices = slicer
-        .encode(blob)
-        .map_err(|e| RecoveryError::Encode(e.to_string()))?;
+    // Decode and re-encode using the appropriate slicer
+    let (_blob, all_slices) = decode_and_encode(encoding_type, &slice_array)?;
 
     // Build merkle tree from all slices for proof generation
     let merkle_tree = build_blob_merkle_tree(&all_slices);

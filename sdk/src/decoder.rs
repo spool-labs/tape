@@ -3,16 +3,25 @@
 //! This module provides `BlobDecoder` which reconstructs original blobs
 //! from downloaded slices using Reed-Solomon decoding.
 
-use tape_slicer::{BasicSlicer, Blob, Slice, SliceIndex, Slicer, SLICE_COUNT, DATA_SLICES};
+use tape_core::prelude::EncodingType;
+use tape_slicer::{BasicSlicer, StripedSlicer, RotatedSlicer, Blob, Slice, SliceIndex, Slicer, SLICE_COUNT, DATA_SLICES};
 
 use crate::error::DownloadError;
 
 /// Decodes slices back into the original blob.
 ///
+/// Supports multiple encoding types:
+/// - `Basic`: Single RS pass, for testing/debugging only
+/// - `Striped`: Multiple stripes with fixed slice assignment, production-ready
+/// - `Rotated`: Striped with per-stripe rotation for fair load distribution (default)
+///
 /// Uses Reed-Solomon erasure coding to reconstruct the original data
 /// from any DATA_SLICES (or more) valid slices.
 pub struct BlobDecoder {
-    slicer: BasicSlicer,
+    encoding_type: EncodingType,
+    basic: Option<BasicSlicer>,
+    striped: Option<StripedSlicer>,
+    rotated: Option<RotatedSlicer>,
 }
 
 impl Default for BlobDecoder {
@@ -22,20 +31,77 @@ impl Default for BlobDecoder {
 }
 
 impl BlobDecoder {
-    /// Create a new decoder with default max slice size (1 MiB).
+    /// Create a new decoder with default encoding type (Rotated).
+    ///
+    /// Rotated encoding provides fair load distribution across all nodes
+    /// and is the recommended default for production use.
     pub fn new() -> Self {
+        Self::with_encoding(EncodingType::Rotated)
+    }
+
+    /// Create a decoder with a specific encoding type.
+    ///
+    /// # Arguments
+    /// * `encoding_type` - The encoding algorithm used for the slices
+    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+        let mut decoder = Self {
+            encoding_type,
+            basic: None,
+            striped: None,
+            rotated: None,
+        };
+
+        match encoding_type {
+            EncodingType::Basic => {
+                decoder.basic = Some(BasicSlicer::default());
+            }
+            EncodingType::Striped => {
+                decoder.striped = Some(StripedSlicer::default());
+            }
+            EncodingType::Rotated | EncodingType::Unknown => {
+                decoder.rotated = Some(RotatedSlicer::default());
+            }
+        }
+
+        decoder
+    }
+
+    /// Create a decoder with a custom max slice size (for BasicSlicer only).
+    ///
+    /// Use smaller values for testing to reduce memory usage.
+    /// For production, use `new()` or `with_encoding()`.
+    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
         Self {
-            slicer: BasicSlicer::default(),
+            encoding_type: EncodingType::Basic,
+            basic: Some(BasicSlicer::with_max_slice_bytes(max_slice_bytes)),
+            striped: None,
+            rotated: None,
         }
     }
 
-    /// Create a decoder with a custom max slice size.
-    ///
-    /// Use smaller values for testing to reduce memory usage.
-    /// For production, use `new()` or `Default::default()`.
-    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
-        Self {
-            slicer: BasicSlicer::with_max_slice_bytes(max_slice_bytes),
+    /// Get the encoding type used by this decoder.
+    pub fn encoding_type(&self) -> EncodingType {
+        self.encoding_type
+    }
+
+    /// Internal decoding dispatch.
+    fn decode_internal(&mut self, slice_array: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DownloadError> {
+        match self.encoding_type {
+            EncodingType::Basic => {
+                self.basic.as_mut().unwrap()
+                    .decode(slice_array)
+                    .map_err(|e| DownloadError::Decoding(e.to_string()))
+            }
+            EncodingType::Striped => {
+                self.striped.as_mut().unwrap()
+                    .decode(slice_array)
+                    .map_err(|e| DownloadError::Decoding(e.to_string()))
+            }
+            EncodingType::Rotated | EncodingType::Unknown => {
+                self.rotated.as_mut().unwrap()
+                    .decode(slice_array)
+                    .map_err(|e| DownloadError::Decoding(e.to_string()))
+            }
         }
     }
 
@@ -75,9 +141,7 @@ impl BlobDecoder {
             slice_array[idx as usize] = Some(Slice::new(slice_idx, data));
         }
 
-        let blob = self.slicer
-            .decode(&slice_array)
-            .map_err(|e| DownloadError::Decoding(e.to_string()))?;
+        let blob = self.decode_internal(&slice_array)?;
 
         Ok(blob.data)
     }
@@ -104,9 +168,7 @@ impl BlobDecoder {
             slice_array[idx as usize] = Some(Slice::new(slice_idx, data));
         }
 
-        self.slicer
-            .decode(&slice_array)
-            .map_err(|e| DownloadError::Decoding(e.to_string()))
+        self.decode_internal(&slice_array)
     }
 }
 
@@ -260,5 +322,29 @@ mod tests {
 
         assert_eq!(original.len(), blob.len());
         assert_eq!(original.as_slice(), blob.as_slice());
+    }
+
+    #[test]
+    fn test_encoding_type_default() {
+        let decoder = BlobDecoder::new();
+        assert_eq!(decoder.encoding_type(), EncodingType::Rotated);
+    }
+
+    #[test]
+    fn test_encoding_type_basic() {
+        let decoder = BlobDecoder::with_encoding(EncodingType::Basic);
+        assert_eq!(decoder.encoding_type(), EncodingType::Basic);
+    }
+
+    #[test]
+    fn test_encoding_type_striped() {
+        let decoder = BlobDecoder::with_encoding(EncodingType::Striped);
+        assert_eq!(decoder.encoding_type(), EncodingType::Striped);
+    }
+
+    #[test]
+    fn test_encoding_type_rotated() {
+        let decoder = BlobDecoder::with_encoding(EncodingType::Rotated);
+        assert_eq!(decoder.encoding_type(), EncodingType::Rotated);
     }
 }
