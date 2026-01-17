@@ -6,7 +6,7 @@
 use crate::api::Slicer;
 use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
-use crate::stripe::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
+use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
 
 /// A rotated slicer that extends striped encoding with per-stripe rotation.
@@ -63,7 +63,7 @@ impl Slicer for RotatedSlicer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stripe::{shard_to_slice, slice_to_shard, ROTATION_STEP};
+    use crate::codec::{shard_to_slice, slice_to_shard, ROTATION_STEP};
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()

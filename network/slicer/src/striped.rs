@@ -6,7 +6,7 @@
 use crate::api::Slicer;
 use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
-use crate::stripe::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
+use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
 
 /// A striped slicer that splits blobs into multiple stripes.
