@@ -254,12 +254,10 @@ async fn recover_slice(
         "Attempting slice recovery"
     );
 
-    // TODO: Fetch encoding type from on-chain track data.
-    // For now, default to Basic for backwards compatibility with existing tracks.
-    // When track data includes encoding type, we should fetch it like:
+    // TODO: Fetch encoding type from on-chain track data:
     //   let track = ctx.rpc.get_track_by_address(&track_address).await?;
-    //   let encoding_type = track.data.encoding_type().unwrap_or(EncodingType::Basic);
-    let encoding_type = EncodingType::Basic;
+    //   let encoding_type = track.data.encoding_type().unwrap_or(EncodingType::Rotated);
+    let encoding_type = EncodingType::Rotated;
 
     // Use ParallelDownloader from SDK with client pooling via factory
     let downloader = ParallelDownloader::new(

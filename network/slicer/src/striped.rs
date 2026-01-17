@@ -1,25 +1,22 @@
-use super::api::Slicer;
-use super::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
-use super::errors::{DecodeError, EncodeError};
-use super::slice_index::SliceIndex;
-use super::types::{Blob, Slice};
-use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
+//! Striped slicer for large blob encoding.
+//!
+//! Splits blobs into multiple stripes, encoding each stripe separately.
+//! This bounds memory usage while handling arbitrarily large blobs.
 
-/// Optimal stripe size (512 KB) based on benchmarks.
-/// This balances memory usage with encoding throughput.
-pub const DEFAULT_STRIPE_SIZE: usize = 512 * 1024;
+use crate::api::Slicer;
+use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use crate::errors::{DecodeError, EncodeError};
+use crate::stripe::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
+use crate::types::{Blob, Slice};
 
-/// A striped slicer that splits the blob into multiple stripes.
-/// Each stripe is encoded into SLICE_COUNT shards and appended to the corresponding output slices.
-/// This keeps per-stripe memory bounded at the cost of multiple RS passes.
+/// A striped slicer that splits blobs into multiple stripes.
 ///
-/// Encoding format:
-/// - Each slice contains concatenated chunks from all stripes
-/// - The last 8 bytes of each slice contain the original blob length (for decoding)
+/// Each stripe is RS-encoded into SLICE_COUNT shards. Shards are appended
+/// to output slices using identity mapping (shard N -> slice N).
+///
+/// For fair load distribution across nodes, use `RotatedSlicer` instead.
 pub struct StripedSlicer {
-    stripe_size: usize,
-    encoder: ReedSolomonEncoder,
-    decoder: ReedSolomonDecoder,
+    codec: StripedCodec,
 }
 
 impl StripedSlicer {
@@ -30,27 +27,14 @@ impl StripedSlicer {
 
     /// Create a new StripedSlicer with a custom stripe size.
     pub fn with_stripe_size(stripe_size: usize) -> Self {
-        assert!(stripe_size > 0, "stripe_size must be > 0");
-
-        // Calculate the max chunk size per stripe
-        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        let encoder = ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS decoder init");
-
         Self {
-            stripe_size,
-            encoder,
-            decoder,
+            codec: StripedCodec::new(stripe_size, MappingStrategy::Identity),
         }
     }
 
     /// Get the stripe size used by this slicer.
     pub fn stripe_size(&self) -> usize {
-        self.stripe_size
+        self.codec.stripe_size
     }
 }
 
@@ -60,243 +44,17 @@ impl Default for StripedSlicer {
     }
 }
 
-/// Round up `n` to be divisible by `divisor`.
-#[inline]
-fn round_up_to(n: usize, divisor: usize) -> usize {
-    ((n + divisor - 1) / divisor) * divisor
-}
-
 impl Slicer for StripedSlicer {
     const MAX_DATA_SIZE: usize = usize::MAX;
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
     const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
-        let data = blob.as_slice();
-        let blob_len = data.len();
-        let stripe_size = self.stripe_size;
-
-        // Handle empty blob
-        if blob_len == 0 {
-            // Encode a minimal stripe with just padding
-            return self.encode_empty_blob();
-        }
-
-        let num_stripes = (blob_len + stripe_size - 1) / stripe_size;
-
-        // Pre-calculate chunk size per stripe
-        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        // Initialize output slices with capacity for all stripes plus metadata
-        let mut slices: Vec<Vec<u8>> = (0..SLICE_COUNT)
-            .map(|_| Vec::with_capacity(num_stripes * chunk_size + 8))
-            .collect();
-
-        for s in 0..num_stripes {
-            let start = s * stripe_size;
-            let end = (start + stripe_size).min(blob_len);
-            let stripe_data = &data[start..end];
-
-            // Pad stripe to required size for RS encoding
-            let mut padded = stripe_data.to_vec();
-            padded.resize(padded_stripe, 0);
-
-            // Reset encoder for this stripe size
-            self.encoder
-                .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-                .map_err(|_| EncodeError::TooMuchData)?;
-
-            // Feed data shards to encoder
-            for chunk in padded.chunks(chunk_size) {
-                self.encoder
-                    .add_original_shard(chunk)
-                    .map_err(|_| EncodeError::TooMuchData)?;
-            }
-
-            // Encode to get parity shards
-            let result = self.encoder.encode().map_err(|_| EncodeError::TooMuchData)?;
-
-            // Append data shards to slices 0..DATA_SLICES
-            for (shard_idx, chunk) in padded.chunks(chunk_size).enumerate() {
-                slices[shard_idx].extend_from_slice(chunk);
-            }
-
-            // Append parity shards to slices DATA_SLICES..SLICE_COUNT
-            for (parity_idx, shard) in result.recovery_iter().enumerate() {
-                slices[DATA_SLICES + parity_idx].extend_from_slice(shard);
-            }
-        }
-
-        // Append blob length as metadata suffix (8 bytes) to all slices
-        let len_bytes = (blob_len as u64).to_le_bytes();
-        for slice in &mut slices {
-            slice.extend_from_slice(&len_bytes);
-        }
-
-        // Convert to Slice array
-        let output: Vec<Slice> = slices
-            .into_iter()
-            .enumerate()
-            .map(|(i, data)| {
-                let idx = SliceIndex::new(i).expect("index in range");
-                Slice::new(idx, data)
-            })
-            .collect();
-
-        Ok(output.try_into().expect("exactly SLICE_COUNT slices"))
+        self.codec.encode(blob)
     }
 
     fn decode(&mut self, slices: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DecodeError> {
-        // Count present slices
-        let present_count = slices.iter().filter(|s| s.is_some()).count();
-        if present_count < DATA_SLICES {
-            return Err(DecodeError::NotEnoughSlices);
-        }
-
-        // Find a present slice to extract metadata
-        let sample = slices
-            .iter()
-            .flatten()
-            .next()
-            .ok_or(DecodeError::NotEnoughSlices)?;
-
-        // Extract blob length from last 8 bytes
-        let metadata_len = 8;
-        if sample.data.len() < metadata_len {
-            return Err(DecodeError::InvalidLayout);
-        }
-
-        let blob_len = u64::from_le_bytes(
-            sample.data[sample.data.len() - metadata_len..]
-                .try_into()
-                .map_err(|_| DecodeError::InvalidLayout)?,
-        ) as usize;
-
-        // Handle empty blob
-        if blob_len == 0 {
-            return Ok(Blob::from(Vec::new()));
-        }
-
-        // Calculate stripe parameters
-        let stripe_size = self.stripe_size;
-        let num_stripes = (blob_len + stripe_size - 1) / stripe_size;
-        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        // Verify all present slices have consistent size
-        let expected_slice_len = num_stripes * chunk_size + metadata_len;
-        for slice in slices.iter().flatten() {
-            if slice.data.len() != expected_slice_len {
-                return Err(DecodeError::InvalidLayout);
-            }
-        }
-
-        let mut output = Vec::with_capacity(blob_len);
-
-        for s in 0..num_stripes {
-            let chunk_offset = s * chunk_size;
-
-            // Reset decoder for this stripe
-            self.decoder
-                .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-                .map_err(|_| DecodeError::TooMuchData)?;
-
-            // Feed available shards to decoder
-            for (slice_idx, slice_opt) in slices.iter().enumerate() {
-                if let Some(slice) = slice_opt {
-                    let chunk = &slice.data[chunk_offset..chunk_offset + chunk_size];
-                    if slice_idx < DATA_SLICES {
-                        self.decoder
-                            .add_original_shard(slice_idx, chunk)
-                            .map_err(|_| DecodeError::InvalidLayout)?;
-                    } else {
-                        self.decoder
-                            .add_recovery_shard(slice_idx - DATA_SLICES, chunk)
-                            .map_err(|_| DecodeError::InvalidLayout)?;
-                    }
-                }
-            }
-
-            // Decode to recover missing data shards
-            let result = self.decoder.decode().map_err(|_| DecodeError::BadEncoding)?;
-
-            // Reassemble the stripe data from data shards in order
-            let mut stripe_data = Vec::with_capacity(padded_stripe);
-            for data_idx in 0..DATA_SLICES {
-                let chunk = match &slices[data_idx] {
-                    Some(slice) => &slice.data[chunk_offset..chunk_offset + chunk_size],
-                    None => result
-                        .restored_original(data_idx)
-                        .ok_or(DecodeError::InvalidLayout)?,
-                };
-                stripe_data.extend_from_slice(chunk);
-            }
-
-            // Append to output (trim to actual size for last stripe)
-            let take = if s == num_stripes - 1 {
-                blob_len - output.len()
-            } else {
-                stripe_size
-            };
-            output.extend_from_slice(&stripe_data[..take]);
-        }
-
-        Ok(Blob::from(output))
-    }
-}
-
-impl StripedSlicer {
-    /// Encode an empty blob (special case).
-    fn encode_empty_blob(&mut self) -> Result<[Slice; SLICE_COUNT], EncodeError> {
-        let padded_stripe = round_up_to(self.stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        // Create a single stripe of zeros
-        let padded = vec![0u8; padded_stripe];
-
-        // Reset encoder
-        self.encoder
-            .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-            .map_err(|_| EncodeError::TooMuchData)?;
-
-        // Feed data shards
-        for chunk in padded.chunks(chunk_size) {
-            self.encoder
-                .add_original_shard(chunk)
-                .map_err(|_| EncodeError::TooMuchData)?;
-        }
-
-        // Encode
-        let result = self.encoder.encode().map_err(|_| EncodeError::TooMuchData)?;
-
-        // Build slices with just one stripe plus metadata
-        let mut slices: Vec<Vec<u8>> = Vec::with_capacity(SLICE_COUNT);
-
-        // Data slices
-        for chunk in padded.chunks(chunk_size) {
-            let mut slice_data = chunk.to_vec();
-            slice_data.extend_from_slice(&0u64.to_le_bytes()); // blob_len = 0
-            slices.push(slice_data);
-        }
-
-        // Parity slices
-        for shard in result.recovery_iter() {
-            let mut slice_data = shard.to_vec();
-            slice_data.extend_from_slice(&0u64.to_le_bytes()); // blob_len = 0
-            slices.push(slice_data);
-        }
-
-        let output: Vec<Slice> = slices
-            .into_iter()
-            .enumerate()
-            .map(|(i, data)| {
-                let idx = SliceIndex::new(i).expect("index in range");
-                Slice::new(idx, data)
-            })
-            .collect();
-
-        Ok(output.try_into().expect("exactly SLICE_COUNT slices"))
+        self.codec.decode(slices)
     }
 }
 
@@ -331,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_small() {
-        let mut slicer = StripedSlicer::with_stripe_size(1024); // 1 KB stripes for testing
+        let mut slicer = StripedSlicer::with_stripe_size(1024);
         let payload = mk(500);
         let slices = slicer.encode(Blob::from(payload.clone())).unwrap();
         let opt = to_opt(&slices);
@@ -341,8 +99,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_multiple_stripes() {
-        let mut slicer = StripedSlicer::with_stripe_size(1024); // 1 KB stripes
-        let payload = mk(5000); // ~5 stripes
+        let mut slicer = StripedSlicer::with_stripe_size(1024);
+        let payload = mk(5000);
         let slices = slicer.encode(Blob::from(payload.clone())).unwrap();
         let opt = to_opt(&slices);
         let restored = slicer.decode(&opt).unwrap();
@@ -382,7 +140,6 @@ mod tests {
         keep_indices.extend(DATA_SLICES..SLICE_COUNT);
         keep_only(&mut opt, &keep_indices);
 
-        // Make sure we still have at least DATA_SLICES
         let count = opt.iter().filter(|s| s.is_some()).count();
         assert!(count >= DATA_SLICES);
 
