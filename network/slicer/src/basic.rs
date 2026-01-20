@@ -8,15 +8,16 @@ use core::convert::TryInto;
 
 /// A basic slicer that uses a single Reed-Solomon encoding pass (no striping).
 ///
-/// **For testing/debugging only.** The default configuration supports blobs up to ~2.7 MB.
-/// For production workloads with large blobs, use `StripedSlicer` instead.
+/// **For testing/debugging only.** Supports blobs up to ~2.7 MB (4 KiB × 683 data slices).
+/// For production workloads, use `StripedSlicer` or `RotatedSlicer` instead.
 pub struct BasicSlicer(ReedSolomonCoder);
 
 impl BasicSlicer {
-    /// Create a new BasicSlicer with a custom max slice size.
+    /// Create a BasicSlicer with a custom max slice size (for benchmarking only).
     ///
-    /// Use larger values for benchmarks or when encoding blobs larger than ~2.7 MB.
-    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
+    /// This is internal to the crate for benchmark use. Production code should
+    /// use `Default::default()` which has a 4 KiB limit (~2.7 MB max blob).
+    pub(crate) fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
         Self(ReedSolomonCoder::with_max_slice_bytes(
             DATA_SLICES,
             CODING_SLICES,

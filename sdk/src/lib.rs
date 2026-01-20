@@ -47,7 +47,7 @@ pub mod routing;
 pub mod uploader;
 
 // Primary client interface for blob operations
-pub use client::{TapeClient, TapeClientBuilder, DEFAULT_MAX_SLICE_BYTES};
+pub use client::{TapeClient, TapeClientBuilder};
 
 // Encoder/Decoder for direct use
 pub use decoder::BlobDecoder;

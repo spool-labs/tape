@@ -44,10 +44,7 @@ const STAKE_AMOUNT: u64 = 100;
 #[ignore]
 #[serial]
 async fn test_storage_load() {
-    println!("=== Storage Load Test ===");
-    println!("Nodes: {}", NODE_COUNT);
-    println!("Target: {} MB over {} epochs", TARGET_MB, TAPE_EPOCHS);
-    println!();
+    println!("Storage load test: {} nodes, {} MB over {} epochs", NODE_COUNT, TARGET_MB, TAPE_EPOCHS);
 
     // Bootstrap to epoch 4 (past bootstrap period)
     println!("Setting up {} nodes...", NODE_COUNT);
@@ -93,15 +90,20 @@ async fn test_storage_load() {
         .collect();
     println!("Node addresses available for staking: {}", node_addresses.len());
 
-    println!("Uploading {} MB in 1 MB increments...", TARGET_MB);
-    println!();
+    // Track stake accounts we've created for potential unlocks
+    let mut stake_accounts: Vec<Pubkey> = Vec::new();
+    let mut rng = rand::thread_rng();
 
     let mut total_uploaded = 0usize;
     let mut upload_count = 0u64;
-    let mut consecutive_failures = 0u32;
-    const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+    let mut successful_uploads = 0u64;
 
-    while total_uploaded < (TARGET_MB as usize) * sizes::MB {
+    println!("Starting upload + stake loop (target: {} MB, {} iterations)", TARGET_MB, TAPE_EPOCHS);
+    println!();
+
+    // Interleave uploads with stake operations - one upload attempt, then stake change, repeat
+    for iteration in 1..=TAPE_EPOCHS {
+        // 1. Try one upload
         upload_count += 1;
         let seed = upload_count;
         let blob = deterministic_blob(UPLOAD_SIZE, seed);
@@ -110,61 +112,21 @@ async fn test_storage_load() {
         match ctx.cli.storage_upload(upload_file.path(), Some(&tape), Some(&upload_nodes)) {
             Ok(result) => {
                 total_uploaded += blob.len();
-                consecutive_failures = 0;
+                successful_uploads += 1;
                 let mb = total_uploaded / sizes::MB;
                 println!(
-                    "  Upload {}: {} ({} MB total)",
+                    "  [UPLOAD] #{}: {} ({} MB total)",
                     upload_count,
                     &result.track_id[..16],
                     mb
                 );
             }
             Err(e) => {
-                consecutive_failures += 1;
-                println!("  Upload {} failed: {}", upload_count, e);
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    println!("  Too many consecutive failures, skipping upload phase");
-                    break;
-                }
+                println!("  [UPLOAD] #{} failed: {}", upload_count, e);
             }
         }
 
-        // Brief pause between uploads
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    println!();
-    println!("Upload phase complete:");
-    println!("  Uploads: {}", upload_count);
-    println!("  Total: {} MB", total_uploaded / sizes::MB);
-
-    // Fetch final state
-    let archive = ctx.archive().await.expect("Failed to get archive");
-    let epoch = ctx.epoch().await.expect("Failed to get epoch");
-
-    println!();
-    println!("Current state:");
-    println!("  Epoch: {}", epoch.id.as_u64());
-    println!("  Storage capacity: {} MB", archive.storage_capacity.as_u64());
-    println!("  Recent usage: {} MB", archive.recent_usage.as_u64());
-    println!("  Rewards pool: {} flux", archive.rewards_pool.as_u64());
-    println!("  Rewards paid: {} flux", archive.rewards_paid.as_u64());
-
-    // Keep running for observation (advance epochs to see reward distribution)
-    println!();
-    println!("Advancing epochs with random stake operations...");
-    println!("(Press Ctrl+C to stop, or wait for 20 epochs)");
-    println!();
-
-    // Track stake accounts we've created for potential unlocks
-    let mut stake_accounts: Vec<Pubkey> = Vec::new();
-    let mut rng = rand::thread_rng();
-
-    for _ in 1..=20 {
-        // Wait for epoch to advance
-        tokio::time::sleep(Duration::from_secs(6)).await;
-
-        // Random stake operation
+        // 2. Random stake operation
         let do_stake = stake_accounts.is_empty() || rng.gen_bool(0.6); // 60% chance to stake
 
         if do_stake && !node_addresses.is_empty() {
@@ -174,13 +136,12 @@ async fn test_storage_load() {
 
             match ctx.cli.stake_deposit(&node, STAKE_AMOUNT) {
                 Ok(stake_account) => {
-                    println!("    [STAKE] +{} TAPE to node {} (addr: {}) -> stake account: {}",
-                        STAKE_AMOUNT, node_idx, &node.to_string()[..8], &stake_account.to_string()[..8]);
+                    println!("    [STAKE] +{} TAPE to node {} -> {}",
+                        STAKE_AMOUNT, node_idx, &stake_account.to_string()[..8]);
                     stake_accounts.push(stake_account);
                 }
                 Err(e) => {
-                    println!("    [STAKE] Failed to stake {} TAPE to node {} ({}): {}",
-                        STAKE_AMOUNT, node_idx, &node.to_string()[..8], e);
+                    println!("    [STAKE] Failed: {}", e);
                 }
             }
         } else if !stake_accounts.is_empty() {
@@ -190,35 +151,49 @@ async fn test_storage_load() {
 
             match ctx.cli.stake_unlock(&stake) {
                 Ok(()) => {
-                    println!("    [UNLOCK] Requested unlock for {}", &stake.to_string()[..8]);
-                    // Remove from list (can't unlock again)
+                    println!("    [UNLOCK] {}", &stake.to_string()[..8]);
                     stake_accounts.remove(stake_idx);
                 }
                 Err(e) => {
-                    println!("    [UNLOCK] Failed to unlock {}: {}", &stake.to_string()[..8], e);
+                    println!("    [UNLOCK] Failed {}: {}", &stake.to_string()[..8], e);
                 }
             }
         }
 
-        // Print epoch state
-        if let Ok(new_epoch) = ctx.epoch().await {
-            if let Ok(new_archive) = ctx.archive().await {
-                println!(
-                    "  Epoch {:>3}: pool={:>10} flux, paid={:>10} flux, usage={:>3} MB",
-                    new_epoch.id.as_u64(),
-                    new_archive.rewards_pool.as_u64(),
-                    new_archive.rewards_paid.as_u64(),
-                    new_archive.recent_usage.as_u64(),
-                );
+        // 3. Print epoch state periodically
+        if iteration % 5 == 0 {
+            if let Ok(new_epoch) = ctx.epoch().await {
+                if let Ok(new_archive) = ctx.archive().await {
+                    println!(
+                        "  --- Iter {:>3} | Epoch {:>3} | pool={:>10} flux | usage={:>3} MB | uploads={}/{} ---",
+                        iteration,
+                        new_epoch.id.as_u64(),
+                        new_archive.rewards_pool.as_u64(),
+                        new_archive.recent_usage.as_u64(),
+                        successful_uploads,
+                        upload_count,
+                    );
+                }
             }
         }
+
+        // Brief pause between iterations
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    // Fetch final state
+    let archive = ctx.archive().await.expect("Failed to get archive");
+    let epoch = ctx.epoch().await.expect("Failed to get epoch");
+
     println!();
-    println!("=== Test Complete ===");
-    println!();
-    println!("The tape will continue generating {} flux/epoch for {} more epochs.",
-        price_per_mb_per_epoch * TARGET_MB,
-        TAPE_EPOCHS - 20);
-    println!("Monitor the network with: tape-monitor -u l");
+    println!("Test complete:");
+    println!("  Iterations: {}", TAPE_EPOCHS);
+    println!("  Uploads attempted: {}", upload_count);
+    println!("  Uploads succeeded: {}", successful_uploads);
+    println!("  Total uploaded: {} MB", total_uploaded / sizes::MB);
+    println!("  Final epoch: {}", epoch.id.as_u64());
+    println!("  Storage capacity: {} MB", archive.storage_capacity.as_u64());
+    println!("  Recent usage: {} MB", archive.recent_usage.as_u64());
+    println!("  Rewards pool: {} flux", archive.rewards_pool.as_u64());
+    println!("  Rewards paid: {} flux", archive.rewards_paid.as_u64());
 }

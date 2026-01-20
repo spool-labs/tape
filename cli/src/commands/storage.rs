@@ -27,12 +27,6 @@ use rpc_client::Rpc;
 use crate::utils::{get_keypair, resolve_authority, AuthorityType, CERTIFY_TRACK_COMPUTE_UNITS};
 use crate::Context;
 
-/// Minimum slice size to avoid excessive overhead.
-const MIN_SLICE_BYTES: usize = 1024;
-
-/// Maximum slice size for upload.
-const MAX_SLICE_BYTES: usize = 256 * 1024;
-
 #[derive(Subcommand, Debug)]
 pub enum StorageCommand {
     /// Upload a file to storage nodes with full track registration and certification.
@@ -54,10 +48,6 @@ pub enum StorageCommand {
         /// If not provided, auto-discovers from on-chain committee.
         #[arg(long, value_delimiter = ',')]
         nodes: Option<Vec<String>>,
-
-        /// Maximum slice size in bytes.
-        #[arg(long)]
-        max_slice_bytes: Option<usize>,
 
         /// Skip certification step (just register and upload).
         #[arg(long)]
@@ -104,9 +94,8 @@ pub async fn execute(ctx: &Context, cmd: StorageCommand) -> Result<()> {
             tape,
             key,
             nodes,
-            max_slice_bytes,
             skip_certify,
-        } => upload_with_certification(ctx, file, tape.as_deref(), key, nodes, max_slice_bytes, skip_certify).await,
+        } => upload_with_certification(ctx, file, tape.as_deref(), key, nodes, skip_certify).await,
         StorageCommand::Download {
             track_id,
             outfile,
@@ -119,18 +108,6 @@ pub async fn execute(ctx: &Context, cmd: StorageCommand) -> Result<()> {
             nodes,
         } => verify(ctx, &track_id, &root, nodes).await,
     }
-}
-
-/// Calculate optimal slice size for a given data size.
-fn calculate_slice_size(data_len: usize) -> usize {
-    use tape_sdk::DATA_SLICES;
-
-    if data_len == 0 {
-        return MIN_SLICE_BYTES;
-    }
-
-    let min_needed = (data_len + DATA_SLICES - 1) / DATA_SLICES;
-    min_needed.clamp(MIN_SLICE_BYTES, MAX_SLICE_BYTES)
 }
 
 /// Discover on-chain state (committee, spool assignment) and resolve node addresses.
@@ -261,7 +238,6 @@ async fn upload_with_certification(
     tape_arg: Option<&str>,
     key_arg: Option<String>,
     nodes: Option<Vec<String>>,
-    max_slice_bytes: Option<usize>,
     skip_certify: bool,
 ) -> Result<()> {
     use solana_sdk::signature::Keypair;
@@ -285,10 +261,7 @@ async fn upload_with_certification(
     let authority = authority_keypair.pubkey();
     ctx.debug(&format!("Tape authority: {}", authority));
 
-    // 4. Calculate slice size
-    let slice_size = max_slice_bytes.unwrap_or_else(|| calculate_slice_size(file_size));
-
-    // 3. Compute key hash (from argument or file content)
+    // Compute key hash (from argument or file content)
     let key_hash: Hash = match key_arg {
         Some(ref key_hex) => parse_hash(key_hex, "key").map_err(|e| anyhow::anyhow!("{}", e))?,
         None => {
@@ -297,8 +270,8 @@ async fn upload_with_certification(
         }
     };
 
-    // 4. Encode blob to get slices with merkle proofs
-    let mut encoder = BlobEncoder::with_max_slice_bytes(slice_size);
+    // Encode blob to get slices with merkle proofs using RotatedSlicer
+    let mut encoder = BlobEncoder::new();
     let (slices_with_proofs, merkle_root) = encoder
         .encode_with_proofs(data.clone())
         .context("Failed to encode blob")?;
@@ -308,7 +281,7 @@ async fn upload_with_certification(
     let root_hash: Hash = merkle_root.into();
     let storage_units = StorageUnits::from_bytes(file_size as u64);
 
-    // 5. Verify tape exists with capacity
+    // Verify tape exists with capacity
     let tape = client
         .get_tape(&authority)
         .await
@@ -329,7 +302,6 @@ async fn upload_with_certification(
         eprintln!("Uploading file:");
         eprintln!("  File: {}", file.display());
         eprintln!("  Size: {} bytes ({} MB)", file_size, storage_units);
-        eprintln!("  Slice size: {} bytes", slice_size);
         eprintln!("  Key: {}", hex::encode(key_hash));
         eprintln!("  Merkle root: {}", hex::encode(merkle_root));
         eprintln!("  Tape authority: {}", authority);
@@ -394,7 +366,6 @@ async fn upload_with_certification(
         .committee(discovery.committee.clone())
         .spool_assignment(discovery.spool_assignment.clone())
         .node_addresses(discovery.node_addresses.clone())
-        .max_slice_bytes(slice_size)
         .build();
 
     tape_client

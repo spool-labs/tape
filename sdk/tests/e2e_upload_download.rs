@@ -597,8 +597,8 @@ async fn bench_upload_download_throughput() {
     let _ = client.upload_blob(&track_id, original.clone()).await;
     let _ = client.download_blob(&track_id).await;
 
-    // Benchmark encoding separately
-    let mut encoder = BlobEncoder::with_max_slice_bytes(4 * 1024);
+    // Benchmark encoding separately using BasicSlicer
+    let mut encoder = BlobEncoder::with_encoding(tape_core::prelude::EncodingType::Basic);
     let start = Instant::now();
     let (slices, _) = encoder.encode_with_proofs(original.clone()).unwrap();
     let encode_time = start.elapsed();
@@ -626,7 +626,7 @@ async fn bench_upload_download_throughput() {
         .take(DATA_SLICES)
         .map(|s| (s.index, s.data.clone()))
         .collect();
-    let mut decoder = BlobDecoder::with_max_slice_bytes(4 * 1024);
+    let mut decoder = BlobDecoder::with_encoding(tape_core::prelude::EncodingType::Basic);
     let start = Instant::now();
     let _ = decoder.decode(slices_for_decode).unwrap();
     let decode_time = start.elapsed();

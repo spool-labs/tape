@@ -18,15 +18,10 @@ use crate::error::{ClientError, DownloadError, UploadError};
 use crate::routing::SliceRouter;
 use crate::uploader::{DistributedUploader, SliceWithProof};
 
-/// Default max slice size for 512 KB stripes (optimal based on benchmarks).
-/// 512 KB stripes provide 2.5-3.5x faster encoding than larger stripes due to L2 cache locality.
-/// See docs/striped-slicer.md for benchmark details.
-pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 10; // 1 KiB (512 KB stripe / 683 data slices ≈ 768 bytes + padding)
-
 /// High-level client for tapedrive blob operations.
 ///
 /// Provides simple upload/download methods that handle:
-/// - Erasure coding (slicing)
+/// - Erasure coding (slicing) using RotatedSlicer for fair load distribution
 /// - Distributed upload to storage nodes using proper spool-based routing
 /// - Parallel download with recovery
 /// - Merkle verification
@@ -48,7 +43,6 @@ pub const DEFAULT_MAX_SLICE_BYTES: usize = 1 << 10; // 1 KiB (512 KB stripe / 68
 ///     .committee(system.committee)
 ///     .spool_assignment(system.spools)
 ///     .node_addresses(node_addresses)
-///     .max_slice_bytes(4 * 1024)  // For testing
 ///     .build();
 /// ```
 pub struct TapeClient {
@@ -57,10 +51,6 @@ pub struct TapeClient {
 
     /// Router for slice → node mapping based on spool assignments.
     router: SliceRouter<MEMBER_COUNT>,
-
-    /// Maximum slice size in bytes for encoding.
-    /// Smaller values use less memory but limit max blob size.
-    max_slice_bytes: usize,
 }
 
 impl TapeClient {
@@ -81,7 +71,6 @@ impl TapeClient {
         Self {
             node_factory: NodeCommunicationFactory::new(),
             router,
-            max_slice_bytes: DEFAULT_MAX_SLICE_BYTES,
         }
     }
 
@@ -188,11 +177,6 @@ impl TapeClient {
     // High-level blob operations (encode + upload, download + decode)
     // =========================================================================
 
-    /// Get the configured max slice size.
-    pub fn max_slice_bytes(&self) -> usize {
-        self.max_slice_bytes
-    }
-
     /// Upload a blob to the network.
     ///
     /// This is the primary method for storing data. It:
@@ -218,8 +202,8 @@ impl TapeClient {
         track_id: &str,
         data: Vec<u8>,
     ) -> Result<BlobMerkleRoot, ClientError> {
-        // Encode blob into slices with merkle proofs
-        let mut encoder = BlobEncoder::with_max_slice_bytes(self.max_slice_bytes);
+        // Encode blob into slices with merkle proofs using RotatedSlicer
+        let mut encoder = BlobEncoder::new();
         let (slices_with_proofs, commitment) = encoder
             .encode_with_proofs(data)
             .map_err(ClientError::Upload)?;
@@ -316,17 +300,8 @@ impl TapeClient {
             .await
             .map_err(ClientError::Download)?;
 
-        // Infer slice size from the first collected slice
-        let slice_size = slices
-            .first()
-            .map(|(_, data)| data.len())
-            .ok_or(ClientError::Download(DownloadError::InsufficientSlices {
-                got: 0,
-                need: tape_core::erasure::DATA_SLICES,
-            }))?;
-
-        // Decode slices using inferred slice size
-        let mut decoder = BlobDecoder::with_max_slice_bytes(slice_size);
+        // Decode slices using RotatedSlicer (default)
+        let mut decoder = BlobDecoder::new();
         let data = decoder
             .decode(slices)
             .map_err(ClientError::Download)?;
@@ -356,8 +331,8 @@ impl TapeClient {
         // Download and decode
         let data = self.download_blob(track_id).await?;
 
-        // Re-encode to verify commitment
-        let mut encoder = BlobEncoder::with_max_slice_bytes(self.max_slice_bytes);
+        // Re-encode to verify commitment using RotatedSlicer
+        let mut encoder = BlobEncoder::new();
         let (_, actual_commitment) = encoder
             .encode_to_vec_with_root(data.clone())
             .map_err(|e| ClientError::Encoding(e.to_string()))?;
@@ -383,7 +358,6 @@ impl TapeClient {
 ///     .committee(system.committee)
 ///     .spool_assignment(system.spools)
 ///     .node_addresses(addresses)
-///     .max_slice_bytes(4 * 1024)  // 4 KB slices for testing
 ///     .build();
 /// ```
 #[derive(Default)]
@@ -392,7 +366,6 @@ pub struct TapeClientBuilder {
     spool_assignment: Option<SpoolAssignment<SLICE_COUNT>>,
     node_addresses: Vec<(usize, NetworkAddress)>,
     node_factory: Option<NodeCommunicationFactory>,
-    max_slice_bytes: Option<usize>,
 }
 
 impl TapeClientBuilder {
@@ -429,17 +402,6 @@ impl TapeClientBuilder {
         self
     }
 
-    /// Set the maximum slice size in bytes.
-    ///
-    /// - Production default: 1 MiB (1 << 20) - supports blobs up to ~DATA_SLICES MiB
-    /// - Testing: 4 KiB (4 * 1024) - supports blobs up to ~2.7 MiB, uses ~6 MB RAM
-    ///
-    /// Smaller values use less memory but limit the maximum blob size.
-    pub fn max_slice_bytes(mut self, size: usize) -> Self {
-        self.max_slice_bytes = Some(size);
-        self
-    }
-
     /// Build the `TapeClient`.
     ///
     /// # Panics
@@ -454,7 +416,6 @@ impl TapeClientBuilder {
         TapeClient {
             router,
             node_factory: self.node_factory.unwrap_or_default(),
-            max_slice_bytes: self.max_slice_bytes.unwrap_or(DEFAULT_MAX_SLICE_BYTES),
         }
     }
 }
@@ -497,7 +458,6 @@ mod tests {
         let client = TapeClient::from_system(committee, assignment, addresses);
 
         assert_eq!(client.committee_size(), 2);
-        assert_eq!(client.max_slice_bytes(), DEFAULT_MAX_SLICE_BYTES);
     }
 
     #[test]
@@ -516,21 +476,6 @@ mod tests {
             .build();
 
         assert_eq!(client.committee_size(), 2);
-        assert_eq!(client.max_slice_bytes(), DEFAULT_MAX_SLICE_BYTES);
-    }
-
-    #[test]
-    fn test_builder_custom_slice_size() {
-        let committee = make_test_committee(1);
-        let assignment = make_uniform_assignment(1);
-
-        let client = TapeClient::builder()
-            .committee(committee)
-            .spool_assignment(assignment)
-            .max_slice_bytes(4 * 1024)
-            .build();
-
-        assert_eq!(client.max_slice_bytes(), 4 * 1024);
     }
 
     #[test]

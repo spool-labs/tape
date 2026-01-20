@@ -66,19 +66,6 @@ impl BlobDecoder {
         decoder
     }
 
-    /// Create a decoder with a custom max slice size (for BasicSlicer only).
-    ///
-    /// Use smaller values for testing to reduce memory usage.
-    /// For production, use `new()` or `with_encoding()`.
-    pub fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
-        Self {
-            encoding_type: EncodingType::Basic,
-            basic: Some(BasicSlicer::with_max_slice_bytes(max_slice_bytes)),
-            striped: None,
-            rotated: None,
-        }
-    }
-
     /// Get the encoding type used by this decoder.
     pub fn encoding_type(&self) -> EncodingType {
         self.encoding_type
@@ -178,17 +165,14 @@ mod tests {
     use crate::encoder::BlobEncoder;
     use tape_core::erasure::DATA_SLICES;
 
-    /// Smaller max slice size for testing to reduce memory usage.
-    /// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
-    const TEST_MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
-
-    /// Create test encoder/decoder pair with reduced memory footprint.
+    /// Create test encoder using BasicSlicer (supports blobs up to ~2.7 MB).
     fn test_encoder() -> BlobEncoder {
-        BlobEncoder::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+        BlobEncoder::with_encoding(EncodingType::Basic)
     }
 
+    /// Create test decoder using BasicSlicer.
     fn test_decoder() -> BlobDecoder {
-        BlobDecoder::with_max_slice_bytes(TEST_MAX_SLICE_BYTES)
+        BlobDecoder::with_encoding(EncodingType::Basic)
     }
 
     #[test]
