@@ -30,6 +30,10 @@ pub enum TapeStoreError {
     #[error("Recovery entry not found: spool={0}, track={1:?}")]
     RecoveryNotFound(u16, Pubkey),
 
+    /// Handoff entry not found
+    #[error("Handoff entry not found: spool={0}, track={1:?}")]
+    HandoffNotFound(u16, Pubkey),
+
     /// Invalid slice count
     #[error("Invalid slice count: expected 1024, got {0}")]
     InvalidSliceCount(usize),

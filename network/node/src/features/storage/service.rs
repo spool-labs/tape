@@ -11,7 +11,7 @@ use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
 // Re-export types from tape_store for use by routes
-pub use tape_store::ops::{Compression, SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
+pub use tape_store::ops::{SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
 
 use crate::metrics::NodeMetrics;
 
@@ -205,7 +205,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::None,
             received_at: 123456789,
         }
     }

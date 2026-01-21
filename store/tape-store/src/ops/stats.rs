@@ -57,7 +57,7 @@ impl<S: Store> StatsOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{Compression, SliceMeta, SliceOps, SpoolOps, SpoolState, SpoolStatus, TrackInfo, TrackOps, MERKLE_HEIGHT};
+    use crate::ops::{SliceMeta, SliceOps, SpoolOps, SpoolState, SpoolStatus, TrackInfo, TrackOps, MERKLE_HEIGHT};
     use crate::types::*;
     use store_memory::MemoryStore;
 
@@ -85,7 +85,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 123456789,
         };
         store.put_slice(0, track_address, vec![0u8; 1024], slice_meta).unwrap();

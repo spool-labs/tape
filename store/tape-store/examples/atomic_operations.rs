@@ -45,7 +45,6 @@ fn main() -> Result<()> {
             len: 32 * 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 1000000,
         };
         store.put_slice(spool_idx, track_address, vec![spool_idx as u8; 1024], meta)?;

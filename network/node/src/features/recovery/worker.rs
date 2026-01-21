@@ -28,7 +28,7 @@ use tape_slicer::{
     build_blob_merkle_tree, BasicSlicer, StripedSlicer, RotatedSlicer,
     Slicer, SliceIndex, Slice, Blob, SLICE_COUNT, MERKLE_HEIGHT,
 };
-use tape_store::ops::{is_ready_for_retry, Compression, RecoveryOps, SliceMeta};
+use tape_store::ops::{is_ready_for_retry, RecoveryOps, SliceMeta};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -309,7 +309,6 @@ async fn recover_slice(
         len: target_slice.data.len() as u32,
         leaf_hash,
         merkle_proof,
-        compression: Compression::None,
         received_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

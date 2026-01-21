@@ -17,6 +17,6 @@ pub use keys::{GcKey, SliceKey, SpoolKey};
 
 // Re-export types from ops module
 pub use crate::ops::{
-    CommitteeCache, CommitteeMemberInfo, Compression, HandoffInfo, RecoveryInfo,
-    SliceMeta, SpoolState, SpoolStatus, TrackInfo, MERKLE_HEIGHT,
+    CommitteeCache, CommitteeMemberInfo, HandoffInfo, RecoveryInfo, SliceMeta, SpoolState,
+    SpoolStatus, TrackInfo, MERKLE_HEIGHT,
 };

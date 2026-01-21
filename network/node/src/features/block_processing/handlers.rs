@@ -227,7 +227,7 @@ pub fn set_cluster_hash<S: Store>(store: &TapeStore<S>, hash: Hash) -> Result<()
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_store::ops::{Compression, SliceMeta, SliceOps, MERKLE_HEIGHT};
+    use tape_store::ops::{SliceMeta, SliceOps, MERKLE_HEIGHT};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -238,7 +238,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 123456789,
         }
     }

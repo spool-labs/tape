@@ -229,7 +229,7 @@ fn timestamp_to_epoch(timestamp: i64) -> EpochNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{Compression, SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
+    use crate::ops::{SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
     use store_memory::MemoryStore;
     use tape_crypto::Hash;
 
@@ -242,7 +242,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 123456789,
         }
     }

@@ -5,10 +5,22 @@
 
 use crate::columns::PendingRecover;
 use crate::error::{Result, TapeStoreError};
-use crate::ops::spool::RecoveryInfo;
 use crate::types::{Pubkey, SliceKey};
 use crate::TapeStore;
+use serde::{Deserialize, Serialize};
 use store::{Column, Store};
+use wincode_derive::{SchemaRead, SchemaWrite};
+
+/// Recovery info for slices that need to be fetched
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct RecoveryInfo {
+    /// Node to fetch the slice from
+    pub source_node: Pubkey,
+    /// Number of retry attempts
+    pub attempts: u8,
+    /// Timestamp of last attempt (for backoff)
+    pub last_attempt: i64,
+}
 
 /// High-level operations for recovery queue management
 pub trait RecoveryOps {

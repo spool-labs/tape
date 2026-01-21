@@ -11,7 +11,7 @@ use tape_metrics::OperationTimer;
 use tape_node_api::SlicePayload;
 
 use crate::features::api::ApiError;
-use crate::features::storage::{Compression, SliceMeta, MERKLE_HEIGHT};
+use crate::features::storage::{SliceMeta, MERKLE_HEIGHT};
 use tape_crypto::merkle::verify_proof;
 
 use super::{parse_track_id, ApiState, MAX_SLICE_SIZE, SLICE_COUNT};
@@ -129,7 +129,6 @@ pub async fn put_slice<S: Store>(
         len: payload.data.len() as u32,
         leaf_hash: payload.leaf_hash,
         merkle_proof: payload.merkle_proof,
-        compression: Compression::None,
         received_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

@@ -42,7 +42,6 @@
 //!     len: 1024,
 //!     leaf_hash: Hash::default(),
 //!     merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-//!     compression: Compression::Lz4,
 //!     received_at: 0,
 //! };
 //! store.put_slice(spool_idx, track_address, vec![0u8; 1024], slice_meta).unwrap();
@@ -264,7 +263,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::new_unique(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 123456789,
         };
 
@@ -358,7 +356,6 @@ mod tests {
                 len: 1024,
                 leaf_hash: Hash::default(),
                 merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-                compression: Compression::Lz4,
                 received_at: 0,
             };
             store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
@@ -385,7 +382,6 @@ mod tests {
                 len: 1024,
                 leaf_hash: Hash::default(),
                 merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-                compression: Compression::Lz4,
                 received_at: 0,
             };
             store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
@@ -398,7 +394,6 @@ mod tests {
                 len: 1024,
                 leaf_hash: Hash::default(),
                 merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-                compression: Compression::Lz4,
                 received_at: 0,
             };
             store.put_slice(other_spool, track, vec![0u8; 10], meta).unwrap();

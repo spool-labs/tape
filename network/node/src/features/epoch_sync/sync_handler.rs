@@ -27,7 +27,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
 use crate::features::spool_sync::{track_id_to_pubkey, SpoolSyncHandler, SyncError, SyncSlice};
-use crate::features::storage::{Compression, SliceMeta};
+use crate::features::storage::SliceMeta;
 
 /// Outcome of executing an FSM action.
 ///
@@ -571,7 +571,6 @@ async fn sync_spool_from_owner(
                 len: slice.data.len() as u32,
                 leaf_hash: slice.leaf_hash,
                 merkle_proof: slice.merkle_proof,
-                compression: Compression::None,
                 received_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()

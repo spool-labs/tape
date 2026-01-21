@@ -86,7 +86,6 @@ fn all_column_families() {
         len: 1024,
         leaf_hash: Hash::default(),
         merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-        compression: Compression::Lz4,
         received_at: 123456789,
     };
     store.put::<SlicesMeta>(&slice_key, &meta).unwrap();
@@ -194,7 +193,6 @@ fn spool_prefix_iteration() {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 0,
         };
         store
@@ -207,7 +205,6 @@ fn spool_prefix_iteration() {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 0,
         };
         store
@@ -242,7 +239,6 @@ fn slice_key_ordering() {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 0,
         };
         store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
@@ -359,7 +355,6 @@ fn storage_stats() {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 0,
         };
         store.put_slice(spool_idx, track, vec![0u8; 100], meta).unwrap();

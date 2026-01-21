@@ -17,25 +17,14 @@ pub const MERKLE_HEIGHT: usize = 10;
 /// Metadata for a slice (simplified + adds merkle proof)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct SliceMeta {
-    /// Original uncompressed size
+    /// Original size
     pub len: u32,
     /// Merkle leaf hash of this slice
     pub leaf_hash: Hash,
     /// Merkle proof for serving downloads
     pub merkle_proof: [Hash; MERKLE_HEIGHT],
-    /// Compression algorithm
-    pub compression: Compression,
     /// When we received this slice (Unix timestamp)
     pub received_at: i64,
-}
-
-/// Compression algorithm used for slice data
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum Compression {
-    None = 0,
-    Lz4 = 1,
-    Zstd = 2,
 }
 
 /// High-level operations for slice management
@@ -195,7 +184,6 @@ mod tests {
             len: 1024,
             leaf_hash: Hash::default(),
             merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            compression: Compression::Lz4,
             received_at: 123456789,
         }
     }

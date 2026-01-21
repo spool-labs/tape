@@ -43,28 +43,6 @@ pub enum SpoolStatus {
     Handoff = 2,
 }
 
-/// Recovery info for slices that need to be fetched
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct RecoveryInfo {
-    /// Node to fetch the slice from
-    pub source_node: Pubkey,
-    /// Number of retry attempts
-    pub attempts: u8,
-    /// Timestamp of last attempt (for backoff)
-    pub last_attempt: i64,
-}
-
-/// Handoff info for slices that need to be sent
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct HandoffInfo {
-    /// Node to send the slice to
-    pub target_node: Pubkey,
-    /// Number of retry attempts
-    pub attempts: u8,
-    /// Timestamp of last attempt (for backoff)
-    pub last_attempt: i64,
-}
-
 /// High-level operations for spool management
 pub trait SpoolOps {
     /// Store spool state
