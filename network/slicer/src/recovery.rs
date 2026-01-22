@@ -70,66 +70,40 @@ impl RecoveryLayout {
 
 /// Stream-first recovery encoder/decoder.
 ///
-/// Note: reed_solomon_simd allocates internal buffers based on the "max shard size"
-/// passed to `new()`. We (re)create the encoder/decoder when the shard size changes.
 /// Encoder/decoder are lazily initialized on first use.
 pub struct RecoveryCodec {
     encoder: Option<ReedSolomonEncoder>,
     decoder: Option<ReedSolomonDecoder>,
-    layout: RecoveryLayout,
+}
+
+impl Default for RecoveryCodec {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RecoveryCodec {
-    /// Create a new RecoveryCodec. Encoder/decoder are lazily initialized.
-    pub fn new(primary_size: usize) -> Self {
-        let layout = RecoveryLayout::new(primary_size);
+    pub fn new() -> Self {
         Self {
             encoder: None,
             decoder: None,
-            layout,
         }
     }
 
-    /// Current layout.
-    pub fn layout(&self) -> RecoveryLayout {
-        self.layout
-    }
-
-    /// Shard size (bytes).
-    pub fn shard_len(&self) -> usize {
-        self.layout.shard_len
-    }
-
-    /// Reconfigure for a different primary size.
-    pub fn reconfigure(&mut self, primary_size: usize) {
-        let layout = RecoveryLayout::new(primary_size);
-        if layout.shard_len == self.layout.shard_len {
-            self.layout = layout;
-            return;
-        }
-
-        self.layout = layout;
-        // Invalidate cached encoder/decoder when shard size changes
-        self.encoder = None;
-        self.decoder = None;
-    }
-
-    /// Get or create the encoder for the current layout.
-    fn get_encoder(&mut self) -> Result<&mut ReedSolomonEncoder, RecoveryError> {
+    fn encoder(&mut self, shard_len: usize) -> Result<&mut ReedSolomonEncoder, RecoveryError> {
         if self.encoder.is_none() {
             self.encoder = Some(
-                ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, self.layout.shard_len)
+                ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, shard_len)
                     .map_err(|_| RecoveryError::EncodeFailed)?,
             );
         }
         Ok(self.encoder.as_mut().unwrap())
     }
 
-    /// Get or create the decoder for the current layout.
-    fn get_decoder(&mut self) -> Result<&mut ReedSolomonDecoder, RecoveryError> {
+    fn decoder(&mut self, shard_len: usize) -> Result<&mut ReedSolomonDecoder, RecoveryError> {
         if self.decoder.is_none() {
             self.decoder = Some(
-                ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, self.layout.shard_len)
+                ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, shard_len)
                     .map_err(|_| RecoveryError::DecodeFailed)?,
             );
         }
@@ -150,15 +124,14 @@ impl RecoveryCodec {
         primary: &[u8],
         mut on_shard: impl FnMut(usize, &[u8]) -> Result<(), E>,
     ) -> Result<(), RowEncodeError<E>> {
-        self.reconfigure(primary.len());
-        let layout = self.layout;
+        let layout = RecoveryLayout::new(primary.len());
 
         // Prepare padded primary
         let mut padded = Vec::with_capacity(layout.padded_len);
         padded.extend_from_slice(primary);
         padded.resize(layout.padded_len, 0);
 
-        let encoder = self.get_encoder()?;
+        let encoder = self.encoder(layout.shard_len)?;
         encoder
             .reset(DATA_SLICES, CODING_SLICES, layout.shard_len)
             .map_err(|_| RecoveryError::EncodeFailed)?;
@@ -202,8 +175,7 @@ impl RecoveryCodec {
             });
         }
 
-        self.reconfigure(primary.len());
-        let layout = self.layout;
+        let layout = RecoveryLayout::new(primary.len());
 
         let mut padded = Vec::with_capacity(layout.padded_len);
         padded.extend_from_slice(primary);
@@ -217,7 +189,7 @@ impl RecoveryCodec {
         }
 
         // Parity path: must run RS encode
-        let encoder = self.get_encoder()?;
+        let encoder = self.encoder(layout.shard_len)?;
         encoder
             .reset(DATA_SLICES, CODING_SLICES, layout.shard_len)
             .map_err(|_| RecoveryError::EncodeFailed)?;
@@ -249,8 +221,7 @@ impl RecoveryCodec {
         recovery: &[Option<&[u8]>; SLICE_COUNT],
         original_size: usize,
     ) -> Result<Vec<u8>, RecoveryError> {
-        self.reconfigure(original_size);
-        let layout = self.layout;
+        let layout = RecoveryLayout::new(original_size);
 
         let present = recovery.iter().filter(|s| s.is_some()).count();
         if present < DATA_SLICES {
@@ -267,7 +238,7 @@ impl RecoveryCodec {
             }
         }
 
-        let decoder = self.get_decoder()?;
+        let decoder = self.decoder(layout.shard_len)?;
         decoder
             .reset(DATA_SLICES, CODING_SLICES, layout.shard_len)
             .map_err(|_| RecoveryError::DecodeFailed)?;
@@ -338,7 +309,7 @@ mod tests {
     fn test_encode_row_into_matches_encode_shard() {
         let primary = mk_payload(10_000);
 
-        let mut codec = RecoveryCodec::new(primary.len());
+        let mut codec = RecoveryCodec::new();
 
         let mut shards: Vec<Vec<u8>> = vec![Vec::new(); SLICE_COUNT];
         codec
@@ -348,8 +319,8 @@ mod tests {
             })
             .unwrap();
 
-        // Ensure all shards are the same size and match codec shard_len
-        let shard_len = codec.shard_len();
+        // Ensure all shards are the same size
+        let shard_len = RecoveryLayout::new(primary.len()).shard_len;
         for j in 0..SLICE_COUNT {
             assert_eq!(shards[j].len(), shard_len);
         }
@@ -365,7 +336,7 @@ mod tests {
     fn test_decode_roundtrip_with_minimum_slices() {
         let primary = mk_payload(50_000);
 
-        let mut codec = RecoveryCodec::new(primary.len());
+        let mut codec = RecoveryCodec::new();
 
         // Collect shards
         let mut shards: Vec<Vec<u8>> = vec![Vec::new(); SLICE_COUNT];
@@ -406,9 +377,9 @@ mod tests {
     #[test]
     fn test_decode_not_enough_slices() {
         let primary = mk_payload(10_000);
-        let mut codec = RecoveryCodec::new(primary.len());
+        let mut codec = RecoveryCodec::new();
 
-        let shard_len = codec.shard_len();
+        let shard_len = RecoveryLayout::new(primary.len()).shard_len;
         let dummy = vec![0u8; shard_len];
 
         // Only provide DATA_SLICES-1 shards
@@ -427,10 +398,10 @@ mod tests {
     #[test]
     fn test_decode_size_mismatch() {
         let primary = mk_payload(10_000);
-        let mut codec = RecoveryCodec::new(primary.len());
+        let mut codec = RecoveryCodec::new();
 
         // Build one bad shard with the wrong size
-        let good_len = codec.shard_len();
+        let good_len = RecoveryLayout::new(primary.len()).shard_len;
         let good = vec![0u8; good_len];
         let bad = vec![0u8; good_len + 1];
 

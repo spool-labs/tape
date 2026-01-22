@@ -13,7 +13,7 @@
 use crate::api::Slicer;
 use crate::consts::{DATA_SLICES, MERKLE_HEIGHT, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
-use crate::recovery::{RecoveryCodec, RecoveryError, RowEncodeError};
+use crate::recovery::{RecoveryCodec, RecoveryError, RecoveryLayout, RowEncodeError};
 use crate::rotated::RotatedSlicer;
 use crate::types::{Blob, Slice};
 
@@ -82,10 +82,9 @@ impl Default for NestedSlicer {
 
 impl NestedSlicer {
     pub fn new() -> Self {
-        // placeholder; reconfigured on first use
         Self {
             primary: RotatedSlicer::new(),
-            recovery: RecoveryCodec::new(0),
+            recovery: RecoveryCodec::new(),
         }
     }
 
@@ -125,8 +124,7 @@ impl NestedSlicer {
         }
 
         let primary_size = primaries[0].data.len();
-        self.recovery.reconfigure(primary_size);
-        let shard_len = self.recovery.shard_len();
+        let shard_len = RecoveryLayout::new(primary_size).shard_len;
 
         // One merkle tree per column
         let mut trees: Vec<ColumnMerkleTree> =
@@ -195,7 +193,7 @@ impl NestedSlicer {
         recovery_row: &[Option<&[u8]>; SLICE_COUNT],
         primary_size: usize,
     ) -> Result<Vec<u8>, NestedDecodeError> {
-        self.recovery.reconfigure(primary_size);
+        // decode() calls reconfigure internally
         Ok(self.recovery.decode(recovery_row, primary_size)?)
     }
 
