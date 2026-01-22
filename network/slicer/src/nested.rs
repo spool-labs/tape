@@ -338,4 +338,5 @@ mod tests {
 
         assert_ne!(tree.root(), result.column_roots[j]);
     }
+
 }
