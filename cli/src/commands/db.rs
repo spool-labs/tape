@@ -8,12 +8,15 @@ use anyhow::Result;
 use clap::Subcommand;
 use comfy_table::{presets::UTF8_FULL, Table};
 
-use crate::output::{format_hash, format_number, OutputFormat};
+use crate::output::{format_number, OutputFormat};
 use crate::utils::spinner;
 use crate::Context;
 
-use tape_store::columns::{Tracks, SlicesMeta, SpoolsAssigned};
-use tape_store::ops::{SpoolOps, StatsOps, TrackOps};
+use tape_store::columns::{
+    PrimarySlices, RecoverySlices, SliceInfoCol, TapeInfoCol, TrackInfoCol, ALL_COLUMN_FAMILIES,
+};
+use tape_store::ops::{MetaOps, SpoolOps, TrackInfoOps};
+use tape_store::types::{EpochNumber, SpoolStatus};
 use tape_store::{RocksStore, TapeStore};
 
 /// Default database path if not specified.
@@ -53,11 +56,15 @@ pub enum DbCommand {
         path: Option<PathBuf>,
     },
 
-    /// List assigned spools.
+    /// List assigned spools for an epoch.
     LsSpools {
         /// Database path.
         #[arg(long)]
         path: Option<PathBuf>,
+
+        /// Epoch to list spools for (defaults to current epoch from meta).
+        #[arg(long)]
+        epoch: Option<u64>,
     },
 
     /// List stored tracks.
@@ -140,7 +147,7 @@ pub enum SnapshotCommand {
 pub async fn execute(ctx: &Context, cmd: DbCommand) -> Result<()> {
     match cmd {
         DbCommand::Stats { path } => show_stats(ctx, path).await,
-        DbCommand::LsSpools { path } => list_spools(ctx, path).await,
+        DbCommand::LsSpools { path, epoch } => list_spools(ctx, path, epoch).await,
         DbCommand::LsTracks { path, limit } => list_tracks(ctx, path, limit).await,
         DbCommand::VerifyIntegrity { path, fix } => verify_integrity(ctx, path, fix).await,
         DbCommand::Compact { path, cf } => compact_db(ctx, path, cf).await,
@@ -156,19 +163,49 @@ pub async fn execute(ctx: &Context, cmd: DbCommand) -> Result<()> {
 async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
     let pb = spinner("Loading database statistics...");
     let store = open_store(path)?;
-    let stats = store.get_storage_stats()
-        .map_err(|e| anyhow::anyhow!("Failed to get stats: {}", e))?;
+
+    // Count items in each column family
+    let track_count = store
+        .iter::<TrackInfoCol>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let slice_info_count = store
+        .iter::<SliceInfoCol>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let tape_count = store.iter::<TapeInfoCol>().map(|v| v.len()).unwrap_or(0);
+    let primary_slice_count = store
+        .iter::<PrimarySlices>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let recovery_slice_count = store
+        .iter::<RecoverySlices>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    // Get current epoch and count spools
+    let current_epoch = store.get_current_epoch().ok().flatten();
+    let spool_count = if let Some(epoch) = current_epoch {
+        store
+            .iter_assigned_spools(epoch)
+            .map(|iter| iter.count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     pb.finish_and_clear();
 
     match ctx.output {
         OutputFormat::Json => {
             let json = serde_json::json!({
-                "track_count": stats.track_count,
-                "slice_meta_count": stats.slice_meta_count,
-                "slice_data_count": stats.slice_data_count,
-                "spool_count": stats.spool_count,
-                "pending_recover_count": stats.pending_recover_count,
-                "pending_handoff_count": stats.pending_handoff_count,
+                "track_count": track_count,
+                "slice_info_count": slice_info_count,
+                "tape_count": tape_count,
+                "primary_slice_count": primary_slice_count,
+                "recovery_slice_count": recovery_slice_count,
+                "spool_count": spool_count,
+                "current_epoch": current_epoch.map(|e| e.as_u64()),
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
@@ -176,12 +213,24 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL);
             table.set_header(vec!["Metric", "Value"]);
-            table.add_row(vec!["Tracks", &format_number(stats.track_count as u64)]);
-            table.add_row(vec!["Slice Metadata", &format_number(stats.slice_meta_count as u64)]);
-            table.add_row(vec!["Slice Data", &format_number(stats.slice_data_count as u64)]);
-            table.add_row(vec!["Assigned Spools", &format_number(stats.spool_count as u64)]);
-            table.add_row(vec!["Pending Recovery", &format_number(stats.pending_recover_count as u64)]);
-            table.add_row(vec!["Pending Handoff", &format_number(stats.pending_handoff_count as u64)]);
+            table.add_row(vec!["Tracks", &format_number(track_count as u64)]);
+            table.add_row(vec!["Slice Info", &format_number(slice_info_count as u64)]);
+            table.add_row(vec!["Tapes", &format_number(tape_count as u64)]);
+            table.add_row(vec![
+                "Primary Slices",
+                &format_number(primary_slice_count as u64),
+            ]);
+            table.add_row(vec![
+                "Recovery Slices",
+                &format_number(recovery_slice_count as u64),
+            ]);
+            table.add_row(vec![
+                "Assigned Spools",
+                &format_number(spool_count as u64),
+            ]);
+            if let Some(epoch) = current_epoch {
+                table.add_row(vec!["Current Epoch", &epoch.as_u64().to_string()]);
+            }
             println!("{}", table);
         }
     }
@@ -189,54 +238,62 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn list_spools(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
+async fn list_spools(ctx: &Context, path: Option<PathBuf>, epoch_arg: Option<u64>) -> Result<()> {
     let pb = spinner("Loading spools...");
     let store = open_store(path)?;
-    let spools = store.get_my_spools()
-        .map_err(|e| anyhow::anyhow!("Failed to get spools: {}", e))?;
+
+    // Use provided epoch or get current epoch from meta
+    let epoch = match epoch_arg {
+        Some(e) => EpochNumber(e),
+        None => store
+            .get_current_epoch()
+            .map_err(|e| anyhow::anyhow!("Failed to get current epoch: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("No current epoch set in database"))?,
+    };
+
+    let spools: Vec<(u16, SpoolStatus)> = store
+        .iter_assigned_spools(epoch)
+        .map_err(|e| anyhow::anyhow!("Failed to iterate spools: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+
     pb.finish_and_clear();
 
     if spools.is_empty() {
-        ctx.print("No spools assigned to this node.");
+        ctx.print(&format!(
+            "No spools assigned for epoch {}.",
+            epoch.as_u64()
+        ));
         return Ok(());
     }
 
     match ctx.output {
         OutputFormat::Json => {
-            let mut spool_list = Vec::new();
-            for spool_idx in &spools {
-                let state = store.get_spool_state(*spool_idx)
-                    .map_err(|e| anyhow::anyhow!("Failed to get spool state: {}", e))?;
-                if let Some(s) = state {
-                    spool_list.push(serde_json::json!({
-                        "index": spool_idx,
-                        "status": format!("{:?}", s.status),
-                        "assigned_epoch": s.assigned_epoch.as_u64(),
-                        "has_sync_cursor": s.sync_cursor.is_some(),
-                    }));
-                }
-            }
+            let spool_list: Vec<_> = spools
+                .iter()
+                .map(|(idx, status)| {
+                    serde_json::json!({
+                        "index": idx,
+                        "status": format!("{:?}", status),
+                    })
+                })
+                .collect();
             println!("{}", serde_json::to_string_pretty(&spool_list)?);
         }
         _ => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL);
-            table.set_header(vec!["Index", "Status", "Assigned Epoch", "Sync Cursor"]);
+            table.set_header(vec!["Index", "Status"]);
 
-            for spool_idx in &spools {
-                if let Some(state) = store.get_spool_state(*spool_idx)
-                    .map_err(|e| anyhow::anyhow!("Failed to get spool state: {}", e))?
-                {
-                    table.add_row(vec![
-                        &spool_idx.to_string(),
-                        &format!("{:?}", state.status),
-                        &state.assigned_epoch.as_u64().to_string(),
-                        &if state.sync_cursor.is_some() { "Yes" } else { "No" }.to_string(),
-                    ]);
-                }
+            for (idx, status) in &spools {
+                table.add_row(vec![&idx.to_string(), &format!("{:?}", status)]);
             }
             println!("{}", table);
-            println!("\nTotal: {} spools", spools.len());
+            println!(
+                "\nTotal: {} spools for epoch {}",
+                spools.len(),
+                epoch.as_u64()
+            );
         }
     }
 
@@ -246,7 +303,8 @@ async fn list_spools(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
 async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Result<()> {
     let pb = spinner("Loading tracks...");
     let store = open_store(path)?;
-    let all_tracks = store.iter::<Tracks>()
+    let all_tracks = store
+        .iter::<TrackInfoCol>()
         .map_err(|e| anyhow::anyhow!("Failed to iterate tracks: {}", e))?;
     let total_count = all_tracks.len();
     let tracks: Vec<_> = all_tracks.into_iter().take(limit).collect();
@@ -259,35 +317,55 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
 
     match ctx.output {
         OutputFormat::Json => {
-            let track_list: Vec<_> = tracks.iter().map(|(pubkey, info)| {
-                let pubkey_str = bs58::encode(pubkey.as_ref()).into_string();
-                serde_json::json!({
-                    "address": pubkey_str,
-                    "commitment_hash": format_hash(info.commitment_hash.as_ref()),
-                    "certified_epoch": info.certified_epoch.as_u64(),
-                    "slice_count": info.slice_count,
+            let track_list: Vec<_> = tracks
+                .iter()
+                .map(|(pubkey, info)| {
+                    let pubkey_str = bs58::encode(pubkey.as_ref()).into_string();
+                    let tape_str = bs58::encode(info.tape_address.as_ref()).into_string();
+                    serde_json::json!({
+                        "address": pubkey_str,
+                        "tape": tape_str,
+                        "registered_epoch": info.registered_epoch.as_u64(),
+                        "certified_epoch": info.certified_epoch.map(|e| e.as_u64()),
+                        "has_slice_info": info.has_slice_info,
+                    })
                 })
-            }).collect();
+                .collect();
             println!("{}", serde_json::to_string_pretty(&track_list)?);
         }
         _ => {
             let mut table = Table::new();
             table.load_preset(UTF8_FULL);
-            table.set_header(vec!["Address", "Commitment", "Certified Epoch", "Slices"]);
+            table.set_header(vec![
+                "Address",
+                "Tape",
+                "Registered",
+                "Certified",
+                "Has Info",
+            ]);
 
             for (pubkey, info) in &tracks {
                 let pubkey_str = bs58::encode(pubkey.as_ref()).into_string();
+                let tape_str = bs58::encode(info.tape_address.as_ref()).into_string();
                 table.add_row(vec![
                     &crate::output::format_pubkey(&pubkey_str),
-                    &format_hash(info.commitment_hash.as_ref()),
-                    &info.certified_epoch.as_u64().to_string(),
-                    &info.slice_count.to_string(),
+                    &crate::output::format_pubkey(&tape_str),
+                    &info.registered_epoch.as_u64().to_string(),
+                    &info
+                        .certified_epoch
+                        .map(|e| e.as_u64().to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    &if info.has_slice_info { "Yes" } else { "No" }.to_string(),
                 ]);
             }
             println!("{}", table);
 
             if total_count > tracks.len() {
-                println!("\nShowing {} of {} tracks (use --limit to see more)", tracks.len(), total_count);
+                println!(
+                    "\nShowing {} of {} tracks (use --limit to see more)",
+                    tracks.len(),
+                    total_count
+                );
             } else {
                 println!("\nTotal: {} tracks", tracks.len());
             }
@@ -300,7 +378,6 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
 async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Result<()> {
     let pb = spinner("Verifying database integrity...");
 
-    // Open store (writable if fix is requested)
     let store = if fix {
         open_store_writable(path)?
     } else {
@@ -310,44 +387,69 @@ async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Re
     let mut issues = Vec::new();
     let mut checked = 0usize;
 
-    // Check 1: Verify slice metadata has corresponding data
-    ctx.debug("Checking slice metadata/data consistency...");
-    let slice_metas = store.iter::<SlicesMeta>()
-        .map_err(|e| anyhow::anyhow!("Failed to iterate slice metadata: {}", e))?;
+    // Check 1: Verify tracks have valid tape addresses
+    ctx.debug("Checking track info validity...");
+    let tracks = store
+        .iter::<TrackInfoCol>()
+        .map_err(|e| anyhow::anyhow!("Failed to iterate tracks: {}", e))?;
 
-    for (key, _meta) in slice_metas {
+    for (track_addr, info) in tracks {
         checked += 1;
-        // Check if the track exists for this slice
-        let track = store.get_track_info(key.track_address)
-            .map_err(|e| anyhow::anyhow!("Failed to get track info: {}", e))?;
-        if track.is_none() {
-            let pubkey_str = bs58::encode(key.track_address.as_ref()).into_string();
+        if info.registered_epoch.as_u64() == 0 && info.tape_address.as_ref() == &[0u8; 32] {
+            let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
             issues.push(format!(
-                "Orphaned slice metadata: spool={}, track={}",
-                key.spool_idx,
+                "Track {} has zero epoch and null tape address",
                 crate::output::format_pubkey(&pubkey_str)
             ));
         }
     }
 
-    // Check 2: Verify spool state references valid epochs
-    ctx.debug("Checking spool state validity...");
-    let spools = store.iter::<SpoolsAssigned>()
-        .map_err(|e| anyhow::anyhow!("Failed to iterate spools: {}", e))?;
+    // Check 2: Verify slice info entries
+    ctx.debug("Checking slice info entries...");
+    let slice_infos = store
+        .iter::<SliceInfoCol>()
+        .map_err(|e| anyhow::anyhow!("Failed to iterate slice info: {}", e))?;
 
-    for (key, state) in spools {
+    for (track_addr, info) in slice_infos {
         checked += 1;
-        if state.assigned_epoch.as_u64() == 0 {
+        // Check that track exists
+        let track =
+            store
+                .get_track_info(track_addr)
+                .map_err(|e| anyhow::anyhow!("Failed to get track info: {}", e))?;
+        if track.is_none() {
+            let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
             issues.push(format!(
-                "Spool {} has zero assigned epoch",
-                key.0
+                "Orphaned slice info for track {}",
+                crate::output::format_pubkey(&pubkey_str)
             ));
+        }
+        // Check that primary/recovery arrays have reasonable sizes
+        if info.primary.len() > 1024 {
+            let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
+            issues.push(format!(
+                "Slice info for {} has {} primary hashes (max 1024)",
+                crate::output::format_pubkey(&pubkey_str),
+                info.primary.len()
+            ));
+        }
+    }
+
+    // Check 3: Count spools for current epoch if set
+    ctx.debug("Checking spool assignments...");
+    if let Ok(Some(epoch)) = store.get_current_epoch() {
+        if let Ok(iter) = store.iter_assigned_spools(epoch) {
+            for result in iter {
+                checked += 1;
+                if let Err(e) = result {
+                    issues.push(format!("Corrupted spool entry: {}", e));
+                }
+            }
         }
     }
 
     pb.finish_and_clear();
 
-    // Report results
     match ctx.output {
         OutputFormat::Json => {
             let json = serde_json::json!({
@@ -360,7 +462,6 @@ async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Re
         }
         _ => {
             println!("Integrity Check Results");
-            println!("=======================");
             println!("Items checked: {}", format_number(checked as u64));
             println!("Issues found:  {}", issues.len());
 
@@ -374,7 +475,9 @@ async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Re
                 }
 
                 if fix {
-                    println!("\nNote: Fix mode is enabled but automatic fixes are not yet implemented.");
+                    println!(
+                        "\nNote: Fix mode is enabled but automatic fixes are not yet implemented."
+                    );
                     println!("Manual intervention may be required.");
                 }
             } else {
@@ -387,8 +490,6 @@ async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Re
 }
 
 async fn compact_db(ctx: &Context, path: Option<PathBuf>, cf: Option<String>) -> Result<()> {
-    use tape_store::columns::ALL_COLUMN_FAMILIES;
-
     let pb = spinner("Opening database for compaction...");
     let store = open_store_writable(path)?;
     pb.finish_and_clear();
@@ -407,37 +508,43 @@ async fn compact_db(ctx: &Context, path: Option<PathBuf>, cf: Option<String>) ->
         None => ALL_COLUMN_FAMILIES.to_vec(),
     };
 
-    ctx.print(&format!("Compacting {} column families...", cfs_to_compact.len()));
+    ctx.print(&format!(
+        "Compacting {} column families...",
+        cfs_to_compact.len()
+    ));
 
-    // Note: RocksDB compaction is triggered automatically based on internal heuristics.
-    // The flush operation will ensure data is written to SST files, which may trigger
-    // compaction in background threads.
     for cf_name in &cfs_to_compact {
         let pb = spinner(&format!("Processing {}...", cf_name));
-        // We just iterate to touch the CF and let RocksDB handle compaction internally
-        let _ = store.iter::<Tracks>();
+        // Touch the CF to trigger background compaction
+        let _ = store.iter::<TrackInfoCol>();
         pb.finish_with_message(format!("Processed {}", cf_name));
     }
 
     // Flush to ensure all data is persisted
-    store.inner().inner().flush()
+    store
+        .inner()
+        .inner()
+        .flush()
         .map_err(|e| anyhow::anyhow!("Failed to flush database: {}", e))?;
 
     ctx.print("Compaction triggered. RocksDB will compact in background.");
     Ok(())
 }
 
-async fn create_snapshot(ctx: &Context, path: Option<PathBuf>, name: Option<String>) -> Result<()> {
+async fn create_snapshot(
+    ctx: &Context,
+    path: Option<PathBuf>,
+    name: Option<String>,
+) -> Result<()> {
     let db_path = path.unwrap_or_else(default_db_path);
     if !db_path.exists() {
         anyhow::bail!("Database not found at: {}", db_path.display());
     }
 
-    let snapshot_name = name.unwrap_or_else(|| {
-        chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string()
-    });
+    let snapshot_name = name.unwrap_or_else(|| chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string());
 
-    let snapshot_dir = db_path.parent()
+    let snapshot_dir = db_path
+        .parent()
         .unwrap_or(&db_path)
         .join("snapshots")
         .join(&snapshot_name);
@@ -448,9 +555,6 @@ async fn create_snapshot(ctx: &Context, path: Option<PathBuf>, name: Option<Stri
 
     let pb = spinner(&format!("Creating snapshot '{}'...", snapshot_name));
 
-    // Create snapshot by copying the database directory
-    // Note: For a truly consistent snapshot, the node should be stopped first
-    // or use a read-only secondary instance
     copy_dir_recursive(&db_path, &snapshot_dir)?;
 
     pb.finish_and_clear();
@@ -477,7 +581,8 @@ async fn create_snapshot(ctx: &Context, path: Option<PathBuf>, name: Option<Stri
 
 async fn restore_snapshot(ctx: &Context, name: String, target: PathBuf) -> Result<()> {
     let db_path = default_db_path();
-    let snapshot_dir = db_path.parent()
+    let snapshot_dir = db_path
+        .parent()
         .unwrap_or(&db_path)
         .join("snapshots")
         .join(&name);
@@ -490,9 +595,12 @@ async fn restore_snapshot(ctx: &Context, name: String, target: PathBuf) -> Resul
         anyhow::bail!("Target path already exists: {}", target.display());
     }
 
-    let pb = spinner(&format!("Restoring snapshot '{}' to {}...", name, target.display()));
+    let pb = spinner(&format!(
+        "Restoring snapshot '{}' to {}...",
+        name,
+        target.display()
+    ));
 
-    // Copy snapshot to target
     copy_dir_recursive(&snapshot_dir, &target)?;
 
     pb.finish_and_clear();
@@ -517,9 +625,7 @@ async fn restore_snapshot(ctx: &Context, name: String, target: PathBuf) -> Resul
 
 async fn list_snapshots(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
     let db_path = path.unwrap_or_else(default_db_path);
-    let snapshots_dir = db_path.parent()
-        .unwrap_or(&db_path)
-        .join("snapshots");
+    let snapshots_dir = db_path.parent().unwrap_or(&db_path).join("snapshots");
 
     if !snapshots_dir.exists() {
         ctx.print("No snapshots directory found.");
@@ -533,7 +639,8 @@ async fn list_snapshots(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             let name = entry.file_name().to_string_lossy().to_string();
             let metadata = entry.metadata()?;
             let size = dir_size(&entry.path()).unwrap_or(0);
-            let modified = metadata.modified()
+            let modified = metadata
+                .modified()
                 .map(|t| {
                     let datetime: chrono::DateTime<chrono::Utc> = t.into();
                     datetime.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -551,13 +658,16 @@ async fn list_snapshots(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
 
     match ctx.output {
         OutputFormat::Json => {
-            let list: Vec<_> = snapshots.iter().map(|(name, size, modified)| {
-                serde_json::json!({
-                    "name": name,
-                    "size_bytes": size,
-                    "modified": modified,
+            let list: Vec<_> = snapshots
+                .iter()
+                .map(|(name, size, modified)| {
+                    serde_json::json!({
+                        "name": name,
+                        "size_bytes": size,
+                        "modified": modified,
+                    })
                 })
-            }).collect();
+                .collect();
             println!("{}", serde_json::to_string_pretty(&list)?);
         }
         _ => {
@@ -566,11 +676,7 @@ async fn list_snapshots(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             table.set_header(vec!["Name", "Size", "Modified"]);
 
             for (name, size, modified) in &snapshots {
-                table.add_row(vec![
-                    name,
-                    &crate::output::format_bytes(*size),
-                    modified,
-                ]);
+                table.add_row(vec![name, &crate::output::format_bytes(*size), modified]);
             }
             println!("{}", table);
             println!("\nTotal: {} snapshots", snapshots.len());
@@ -585,8 +691,26 @@ async fn show_info(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
 
     let pb = spinner("Loading database info...");
     let store = open_store(path)?;
-    let stats = store.get_storage_stats()
-        .map_err(|e| anyhow::anyhow!("Failed to get stats: {}", e))?;
+
+    // Get counts
+    let track_count = store
+        .iter::<TrackInfoCol>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let primary_slice_count = store
+        .iter::<PrimarySlices>()
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    let current_epoch = store.get_current_epoch().ok().flatten();
+    let spool_count = if let Some(epoch) = current_epoch {
+        store
+            .iter_assigned_spools(epoch)
+            .map(|iter| iter.count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     // Get database size on disk
     let db_size = dir_size(&db_path).unwrap_or(0);
@@ -598,22 +722,25 @@ async fn show_info(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             let json = serde_json::json!({
                 "path": db_path.display().to_string(),
                 "size_bytes": db_size,
-                "track_count": stats.track_count,
-                "slice_count": stats.slice_data_count,
-                "spool_count": stats.spool_count,
+                "track_count": track_count,
+                "slice_count": primary_slice_count,
+                "spool_count": spool_count,
+                "current_epoch": current_epoch.map(|e| e.as_u64()),
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
         _ => {
             println!("Database Information");
-            println!("====================");
             println!("Path:         {}", db_path.display());
             println!("Size on disk: {}", crate::output::format_bytes(db_size));
             println!();
             println!("Contents:");
-            println!("  Tracks:  {}", format_number(stats.track_count as u64));
-            println!("  Slices:  {}", format_number(stats.slice_data_count as u64));
-            println!("  Spools:  {}", format_number(stats.spool_count as u64));
+            println!("  Tracks:  {}", format_number(track_count as u64));
+            println!("  Slices:  {}", format_number(primary_slice_count as u64));
+            println!("  Spools:  {}", format_number(spool_count as u64));
+            if let Some(epoch) = current_epoch {
+                println!("  Epoch:   {}", epoch.as_u64());
+            }
         }
     }
 
