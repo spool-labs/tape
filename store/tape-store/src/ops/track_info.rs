@@ -82,7 +82,7 @@ mod tests {
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
 
-        let info = TrackInfo::new(tape, EpochNumber(100), [0xAB; 64]);
+        let info = TrackInfo::new(tape, EpochNumber(100));
 
         assert!(store.get_track_info(track).unwrap().is_none());
 
@@ -98,7 +98,7 @@ mod tests {
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
 
-        let info = TrackInfo::new(tape, EpochNumber(50), [0xCD; 64]);
+        let info = TrackInfo::new(tape, EpochNumber(50));
 
         store.put_track_info(track, info).unwrap();
         assert!(store.get_track_info(track).unwrap().is_some());
@@ -113,7 +113,7 @@ mod tests {
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
 
-        let info = TrackInfo::new(tape, EpochNumber(100), [0; 64]);
+        let info = TrackInfo::new(tape, EpochNumber(100));
 
         store.put_track_info(track, info).unwrap();
 
@@ -142,15 +142,15 @@ mod tests {
 
         // Two tracks for tape1
         store
-            .put_track_info(track1, TrackInfo::new(tape1, EpochNumber(0), [0; 64]))
+            .put_track_info(track1, TrackInfo::new(tape1, EpochNumber(0)))
             .unwrap();
         store
-            .put_track_info(track2, TrackInfo::new(tape1, EpochNumber(0), [0; 64]))
+            .put_track_info(track2, TrackInfo::new(tape1, EpochNumber(0)))
             .unwrap();
 
         // One track for tape2
         store
-            .put_track_info(track3, TrackInfo::new(tape2, EpochNumber(0), [0; 64]))
+            .put_track_info(track3, TrackInfo::new(tape2, EpochNumber(0)))
             .unwrap();
 
         // Get tracks for tape1

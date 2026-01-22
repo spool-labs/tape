@@ -59,18 +59,15 @@ pub struct TrackInfo {
     pub registered_epoch: EpochNumber,
     /// Epoch when the track was certified (None if not yet certified)
     pub certified_epoch: Option<EpochNumber>,
-    /// Track signature (stored as Vec for serde compatibility)
-    pub signature: Vec<u8>,
 }
 
 impl TrackInfo {
-    pub fn new(tape_address: Pubkey, registered_epoch: EpochNumber, signature: [u8; 64]) -> Self {
+    pub fn new(tape_address: Pubkey, registered_epoch: EpochNumber) -> Self {
         Self {
             has_slice_info: false,
             tape_address,
             registered_epoch,
             certified_epoch: None,
-            signature: signature.to_vec(),
         }
     }
 }
@@ -176,14 +173,12 @@ mod tests {
     fn test_track_info_new() {
         let tape = Pubkey([1u8; 32]);
         let epoch = EpochNumber(50);
-        let sig = [0xCD; 64];
 
-        let info = TrackInfo::new(tape, epoch, sig);
+        let info = TrackInfo::new(tape, epoch);
         assert!(!info.has_slice_info);
         assert_eq!(info.tape_address, tape);
         assert_eq!(info.registered_epoch, epoch);
         assert!(info.certified_epoch.is_none());
-        assert_eq!(info.signature, sig.to_vec());
     }
 
     #[test]
@@ -193,7 +188,6 @@ mod tests {
             tape_address: Pubkey([1u8; 32]),
             registered_epoch: EpochNumber(100),
             certified_epoch: Some(EpochNumber(101)),
-            signature: vec![0xAB; 64],
         };
 
         let bytes = wincode::serialize(&info).unwrap();

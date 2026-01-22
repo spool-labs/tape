@@ -44,7 +44,6 @@
 //! let track_info = TrackInfo::new(
 //!     Pubkey::new([2u8; 32]),
 //!     EpochNumber(100),
-//!     [0u8; 64],
 //! );
 //! store.put_track_info(track_address, track_info).unwrap();
 //!
@@ -197,7 +196,7 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
         let address = Pubkey::new_unique();
 
-        let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(100), [0xAB; 64]);
+        let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(100));
 
         store.put_track_info(address, info.clone()).unwrap();
         let retrieved = store.get_track_info(address).unwrap();
@@ -365,7 +364,7 @@ mod tests {
         {
             let store = TapeStore::open_primary(&path).unwrap();
             let track = Pubkey::new_unique();
-            let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(0), [0; 64]);
+            let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(0));
             store.put_track_info(track, info).unwrap();
             store.inner().inner().flush().unwrap();
         }
@@ -395,7 +394,7 @@ mod tests {
         {
             let store = TapeStore::open_primary(&primary_path).unwrap();
             let track = Pubkey::new_unique();
-            let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(0), [0; 64]);
+            let info = TrackInfo::new(Pubkey::new_unique(), EpochNumber(0));
             store.put_track_info(track, info).unwrap();
             store.inner().inner().flush().unwrap();
         }

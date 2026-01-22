@@ -44,9 +44,9 @@ pub use parser::{parse_block, ParsedBlock, ParsedInstruction, ParseError, Tapedr
 
 // Re-export handlers for direct use (e.g., in tests or CLI tools)
 pub use handlers::{
-    get_cluster_hash, get_cursor, handle_certify_track, handle_delete_track,
-    handle_destroy_tape, handle_invalidate_track, handle_register_track,
-    run_epoch_gc, set_cluster_hash, set_cursor,
+    get_cluster_hash, get_sync_cursor, handle_advance_epoch, handle_certify_track,
+    handle_delete_track, handle_destroy_tape, handle_invalidate_track,
+    handle_register_track, handle_reserve_tape, set_cluster_hash, set_sync_cursor,
 };
 
 // Re-export events

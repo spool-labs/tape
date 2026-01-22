@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tape_address = Pubkey::new([0xAA; 32]);
     for i in 1..=5 {
         let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
+        let info = TrackInfo::new(tape_address, EpochNumber(0));
         store.put_track_info(track_address, info)?;
         println!("Created track {}", i);
     }

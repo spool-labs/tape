@@ -1,4 +1,6 @@
 //! API routes and handlers.
+//!
+//! NOTE: Most handlers are currently stubs pending API redesign.
 
 mod info;
 mod metadata;
@@ -97,59 +99,25 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::state::{Epoch, Node, System};
     use tape_core::spooler::SpoolAssignment;
-    use tape_core::system::{Committee, CommitteeMember};
-    use tape_core::types::{Coin, NodeId, TAPE};
-    use tape_crypto::Hash;
+    use tape_core::system::Committee;
+    use tape_core::types::NodeId;
     use tape_metrics::MetricsRegistry;
-    use tape_node_api::SlicePayload;
     use tape_store::TapeStore;
     use tower::ServiceExt;
     use axum::http::StatusCode;
 
-    /// Create test state with zeroed system (no spool ownership).
     fn create_test_state() -> ApiState<MemoryStore> {
-        create_test_state_with_spools(false)
-    }
-
-    /// Create test state where our node owns all spools.
-    fn create_test_state_with_ownership() -> ApiState<MemoryStore> {
-        create_test_state_with_spools(true)
-    }
-
-    fn create_test_state_with_spools(owns_spools: bool) -> ApiState<MemoryStore> {
-        // Initialize metrics for API state (routes need metrics for recording)
         let _registry = match MetricsRegistry::get() {
             Some(r) => r,
             None => MetricsRegistry::init(),
         };
         let metrics = Arc::new(NodeMetrics::new());
         let service = Arc::new(StorageService::new(TapeStore::new(MemoryStore::new())));
-
-        // Create a mock BLS keypair
         let bls_keypair = Arc::new(BlsPrivateKey::from_random());
 
-        // Create a mock control plane
-        let (system, node) = if owns_spools {
-            // Set up a committee with our node owning all spools
-            let mut system = System::zeroed();
-            let mut node = Node::zeroed();
-            node.id = NodeId::new(1);
-
-            // Create committee with our node
-            let mut committee: Committee<128> = Committee::new();
-            let member = CommitteeMember::new(NodeId::new(1), Coin::<TAPE>::new(1000));
-            let _ = committee.try_join(&member);
-            system.committee = committee;
-
-            // Assign all spools to member 0 (our node)
-            system.spools = SpoolAssignment::new([0u8; SLICE_COUNT]);
-
-            (system, node)
-        } else {
-            (System::zeroed(), Node::zeroed())
-        };
-
+        let system = System::zeroed();
         let epoch = Epoch::zeroed();
+        let node = Node::zeroed();
         let control_plane = Arc::new(ControlPlane::new(system, epoch, node));
 
         ApiState { metrics, service, bls_keypair, control_plane }
@@ -214,7 +182,6 @@ mod tests {
         let state = create_test_state();
         let app = create_router(state);
 
-        // Use a valid base58 pubkey
         let track_id = Pubkey::new_unique().to_string();
 
         let response = app
@@ -227,108 +194,8 @@ mod tests {
             .await
             .unwrap();
 
+        // Stub returns NOT_FOUND
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_put_and_get_slice() {
-        // Use state where our node owns all spools
-        let state = create_test_state_with_ownership();
-        let track_id = Pubkey::new_unique().to_string();
-
-        // Create a valid SlicePayload (no track metadata yet, so no merkle verification)
-        let payload = SlicePayload::new(
-            vec![0xAB; 1024],
-            Hash::default(),
-            [Hash::default(); tape_node_api::MERKLE_HEIGHT],
-        );
-        let body = payload.to_bytes();
-
-        // PUT the slice - should succeed since we own spool 0 and no metadata exists yet
-        let app = create_router(state.clone());
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/v1/tracks/{}/slices/0", track_id))
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        // GET the slice
-        let app = create_router(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/v1/tracks/{}/slices/0", track_id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify body content
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(body.as_ref(), &[0xAB; 1024]);
-    }
-
-    #[tokio::test]
-    async fn test_put_slice_not_responsible() {
-        // Use state where our node owns NO spools
-        let state = create_test_state();
-        let track_id = Pubkey::new_unique().to_string();
-
-        let payload = SlicePayload::new(
-            vec![0xAB; 1024],
-            Hash::default(),
-            [Hash::default(); tape_node_api::MERKLE_HEIGHT],
-        );
-        let body = payload.to_bytes();
-
-        // PUT should fail with 421 MISDIRECTED_REQUEST
-        let app = create_router(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/v1/tracks/{}/slices/0", track_id))
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::MISDIRECTED_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn test_put_slice_invalid_payload() {
-        // Use state where our node owns spools, so we test payload validation
-        let state = create_test_state_with_ownership();
-        let app = create_router(state);
-        let track_id = Pubkey::new_unique().to_string();
-
-        // Send invalid wincode data
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/v1/tracks/{}/slices/0", track_id))
-                    .body(Body::from(vec![0u8; 100])) // Invalid payload
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -336,7 +203,6 @@ mod tests {
         let state = create_test_state();
         let app = create_router(state);
 
-        // Use an invalid base58 string
         let response = app
             .oneshot(
                 Request::builder()

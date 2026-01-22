@@ -14,7 +14,7 @@ fn open_primary() {
     // Test basic operations
     let track_address = Pubkey::new_unique();
     let tape_address = Pubkey::new_unique();
-    let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
+    let info = TrackInfo::new(tape_address, EpochNumber(0));
 
     store.put_track_info(track_address, info.clone()).unwrap();
     let retrieved = store.get_track_info(track_address).unwrap();
@@ -32,7 +32,7 @@ fn open_primary_persistence() {
     // Write data
     {
         let store = TapeStore::open_primary(&db_path).unwrap();
-        let info = TrackInfo::new(tape_address, EpochNumber(50), [0xAB; 64]);
+        let info = TrackInfo::new(tape_address, EpochNumber(50));
         store.put_track_info(track_address, info).unwrap();
     }
 
@@ -63,7 +63,7 @@ fn all_column_families() {
     // Tracks
     let track_address = Pubkey::new_unique();
     let tape_address = Pubkey::new_unique();
-    let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
+    let info = TrackInfo::new(tape_address, EpochNumber(0));
     store.put_track_info(track_address, info).unwrap();
 
     // Slice info
@@ -213,7 +213,7 @@ fn track_info_operations() {
     let tape = Pubkey::new_unique();
 
     // Create track
-    let info = TrackInfo::new(tape, EpochNumber(0), [0; 64]);
+    let info = TrackInfo::new(tape, EpochNumber(0));
     store.put_track_info(track, info).unwrap();
 
     // Verify not certified initially

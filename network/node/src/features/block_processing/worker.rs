@@ -192,23 +192,13 @@ async fn process_instruction(
             ctx.control_plane.set_current_epoch(new_epoch);
             ctx.control_plane.start_epoch_sync(new_epoch);
 
-            // Run GC for the epoch that just ended
-            let our_spools = ctx.control_plane.get_our_spools();
-            match handlers::run_epoch_gc(&ctx.storage.store, old_epoch, &our_spools) {
-                Ok(stats) => {
-                    if stats.tracks_deleted > 0 || stats.slices_deleted > 0 {
-                        info!(
-                            epoch = old_epoch.as_u64(),
-                            tracks = stats.tracks_deleted,
-                            slices = stats.slices_deleted,
-                            "Epoch GC completed"
-                        );
-                    }
-                    ctx.metrics.gc_runs_total.inc();
-                }
-                Err(e) => {
-                    warn!(epoch = old_epoch.as_u64(), error = %e, "Epoch GC failed");
-                }
+            // Call the no-op handler (GC will be redesigned later)
+            if let Err(e) = handlers::handle_advance_epoch(
+                &ctx.storage.store,
+                old_epoch,
+                new_epoch,
+            ) {
+                warn!(error = %e, "AdvanceEpoch handler failed");
             }
 
             ctx.metrics.epoch_transitions_total.inc();
@@ -242,15 +232,27 @@ async fn process_instruction(
 
         ParsedInstruction::RegisterTrack {
             track,
-            commitment,
             size,
+            event,
             ..
         } => {
             debug!(track = %track, size = size.as_u64(), "Detected RegisterTrack");
+
+            // Extract tape and epoch from event, or use defaults
+            let (tape, registered_epoch) = match event {
+                Some(e) => (e.tape, e.epoch),
+                None => {
+                    // Fallback: use track as tape (shouldn't happen in practice)
+                    warn!(track = %track, "RegisterTrack without event, using fallback");
+                    (track, ctx.control_plane.current_epoch())
+                }
+            };
+
             if let Err(e) = handlers::handle_register_track(
                 &ctx.storage.store,
                 track.to_bytes(),
-                commitment,
+                tape.to_bytes(),
+                registered_epoch,
             ) {
                 warn!(track = %track, error = %e, "Failed to store track info");
             }
@@ -298,8 +300,27 @@ async fn process_instruction(
             Ok(false)
         }
 
-        ParsedInstruction::ReserveTape { owner, tape, .. } => {
+        ParsedInstruction::ReserveTape { owner, tape, event } => {
             debug!(tape = %tape, owner = %owner, "Detected ReserveTape");
+
+            // Extract epochs from event, or use current epoch as fallback
+            let (active_epoch, expiry_epoch) = match event {
+                Some(e) => (e.active_epoch, e.expiry_epoch),
+                None => {
+                    let current = ctx.control_plane.current_epoch();
+                    (current, current)
+                }
+            };
+
+            if let Err(e) = handlers::handle_reserve_tape(
+                &ctx.storage.store,
+                tape.to_bytes(),
+                owner.to_bytes(),
+                active_epoch,
+                expiry_epoch,
+            ) {
+                warn!(tape = %tape, error = %e, "ReserveTape handler failed");
+            }
             Ok(false)
         }
 

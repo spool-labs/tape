@@ -4,4 +4,6 @@
 
 pub mod service;
 
-pub use service::{SliceMeta, StorageError, StorageService, TrackInfo, MERKLE_HEIGHT};
+pub use service::{
+    PrimarySliceData, RecoverySliceData, StorageError, StorageService, TrackInfo,
+};

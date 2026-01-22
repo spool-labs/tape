@@ -7,11 +7,11 @@ use tape_core::spooler::SpoolIndex;
 use tape_crypto::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
+use tape_store::ops::{SliceDataOps, TrackInfoOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
-// Re-export types from tape_store for use by routes
-pub use tape_store::ops::{SliceMeta, SliceOps, TrackInfo, TrackOps, MERKLE_HEIGHT};
+pub use tape_store::types::{PrimarySliceData, RecoverySliceData, TrackInfo};
 
 use crate::metrics::NodeMetrics;
 
@@ -34,7 +34,7 @@ pub enum StorageError {
 /// Storage service for managing slice data.
 ///
 /// Wraps a `TapeStore` and provides methods for storing and retrieving
-/// slices with optional metrics tracking.
+/// primary and recovery slices with optional metrics tracking.
 pub struct StorageService<S: Store = RocksStore> {
     /// The underlying tape store (public for direct access to ops traits).
     pub store: TapeStore<S>,
@@ -79,26 +79,17 @@ impl<S: Store> StorageService<S> {
         self
     }
 
-    /// Store a slice with its metadata.
-    ///
-    /// # Arguments
-    /// * `spool_idx` - The spool index (same as slice index)
-    /// * `track_address` - The track's on-chain address
-    /// * `data` - The slice data
-    /// * `meta` - The slice metadata including merkle proof
-    pub fn put_slice(
+    /// Store a primary slice.
+    pub fn put_primary_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
-        data: Vec<u8>,
-        meta: SliceMeta,
+        data: PrimarySliceData,
     ) -> Result<(), StorageError> {
-        let data_len = data.len();
-
-        // Convert solana_pubkey::Pubkey to tape_store::types::Pubkey
+        let data_len = data.symbols.len();
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
-        self.store.put_slice(spool_idx, track_pubkey, data, meta)?;
+        self.store.put_primary_slice(spool_idx.into(), track_pubkey, data)?;
 
         if let Some(metrics) = &self.metrics {
             metrics.slices_stored_total.inc();
@@ -108,54 +99,121 @@ impl<S: Store> StorageService<S> {
         Ok(())
     }
 
-    /// Retrieve a slice and its metadata.
-    ///
-    /// # Arguments
-    /// * `spool_idx` - The spool index (same as slice index)
-    /// * `track_address` - The track's on-chain address
-    ///
-    /// # Returns
-    /// Tuple of (data, metadata) if found, None otherwise.
-    pub fn get_slice(
+    /// Retrieve a primary slice.
+    pub fn get_primary_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
-    ) -> Result<Option<(Vec<u8>, SliceMeta)>, StorageError> {
-        // Convert solana_pubkey::Pubkey to tape_store::types::Pubkey
+    ) -> Result<Option<PrimarySliceData>, StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
-        let result = self.store.get_slice(spool_idx, track_pubkey)?;
+        let result = self.store.get_primary_slice(spool_idx.into(), track_pubkey)?;
 
-        if let Some((ref data, _)) = result {
+        if let Some(ref data) = result {
             if let Some(metrics) = &self.metrics {
                 metrics.slices_retrieved_total.inc();
-                metrics.bytes_retrieved_total.add(data.len() as i64);
+                metrics.bytes_retrieved_total.add(data.symbols.len() as i64);
             }
         }
 
         Ok(result)
     }
 
-    /// Delete a slice.
-    ///
-    /// # Arguments
-    /// * `spool_idx` - The spool index
-    /// * `track_address` - The track's on-chain address
-    pub fn delete_slice(
+    /// Delete a primary slice.
+    pub fn delete_primary_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
     ) -> Result<(), StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.delete_slice(spool_idx, track_pubkey)?;
+        self.store.delete_primary_slice(spool_idx.into(), track_pubkey)?;
+        Ok(())
+    }
+
+    /// Store a recovery slice.
+    pub fn put_recovery_slice(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+        data: RecoverySliceData,
+    ) -> Result<(), StorageError> {
+        let data_len = data.symbols.len();
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+
+        self.store.put_recovery_slice(spool_idx.into(), track_pubkey, data)?;
+
+        if let Some(metrics) = &self.metrics {
+            metrics.slices_stored_total.inc();
+            metrics.bytes_stored_total.add(data_len as i64);
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve a recovery slice.
+    pub fn get_recovery_slice(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+    ) -> Result<Option<RecoverySliceData>, StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+
+        let result = self.store.get_recovery_slice(spool_idx.into(), track_pubkey)?;
+
+        if let Some(ref data) = result {
+            if let Some(metrics) = &self.metrics {
+                metrics.slices_retrieved_total.inc();
+                metrics.bytes_retrieved_total.add(data.symbols.len() as i64);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Delete a recovery slice.
+    pub fn delete_recovery_slice(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+    ) -> Result<(), StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        self.store.delete_recovery_slice(spool_idx.into(), track_pubkey)?;
+        Ok(())
+    }
+
+    /// Store primary and recovery slices atomically.
+    pub fn put_slices(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+        primary: PrimarySliceData,
+        recovery: RecoverySliceData,
+    ) -> Result<(), StorageError> {
+        let total_len = primary.symbols.len() + recovery.symbols.len();
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+
+        self.store.put_both_slices(spool_idx.into(), track_pubkey, primary, recovery)?;
+
+        if let Some(metrics) = &self.metrics {
+            metrics.slices_stored_total.add(2);
+            metrics.bytes_stored_total.add(total_len as i64);
+        }
+
+        Ok(())
+    }
+
+    /// Delete primary and recovery slices atomically.
+    pub fn delete_slices(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+    ) -> Result<(), StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        self.store.delete_both_slices(spool_idx.into(), track_pubkey)?;
         Ok(())
     }
 
     /// Store track metadata.
-    ///
-    /// # Arguments
-    /// * `track_address` - The track's on-chain address
-    /// * `info` - The track metadata to store
     pub fn put_track_info(
         &self,
         track_address: Pubkey,
@@ -167,12 +225,6 @@ impl<S: Store> StorageService<S> {
     }
 
     /// Get track metadata.
-    ///
-    /// # Arguments
-    /// * `track_address` - The track's on-chain address
-    ///
-    /// # Returns
-    /// Track info if found, None otherwise.
     pub fn get_track_info(
         &self,
         track_address: Pubkey,
@@ -181,76 +233,108 @@ impl<S: Store> StorageService<S> {
         Ok(self.store.get_track_info(track_pubkey)?)
     }
 
+    /// Delete track metadata.
+    pub fn delete_track_info(
+        &self,
+        track_address: Pubkey,
+    ) -> Result<(), StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        self.store.delete_track_info(track_pubkey)?;
+        Ok(())
+    }
+
     /// Shutdown storage gracefully.
     pub async fn shutdown(&self) -> Result<(), StorageError> {
         tracing::info!("Storage service shutting down");
-        // RocksDB handles cleanup on drop
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_crypto::Hash;
 
     fn create_test_service() -> StorageService<MemoryStore> {
         StorageService::new(TapeStore::new(MemoryStore::new()))
     }
 
-    fn create_test_meta() -> SliceMeta {
-        SliceMeta {
-            len: 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 123456789,
-        }
-    }
-
     #[test]
-    fn test_put_get_slice() {
+    fn test_primary_slice_roundtrip() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx: SpoolIndex = 42;
-        let data = vec![0xAB; 1024];
-        let meta = create_test_meta();
+        let data = PrimarySliceData::new(vec![0xAB; 1024], 0);
 
-        service
-            .put_slice(spool_idx, track, data.clone(), meta.clone())
-            .unwrap();
+        service.put_primary_slice(spool_idx, track, data.clone()).unwrap();
 
-        let (retrieved_data, retrieved_meta) = service
-            .get_slice(spool_idx, track)
+        let retrieved = service
+            .get_primary_slice(spool_idx, track)
             .unwrap()
             .expect("slice should exist");
 
-        assert_eq!(retrieved_data, data);
-        assert_eq!(retrieved_meta.len, meta.len);
+        assert_eq!(retrieved.symbols, data.symbols);
+        assert_eq!(retrieved.padding_len, 0);
+    }
+
+    #[test]
+    fn test_recovery_slice_roundtrip() {
+        let service = create_test_service();
+        let track = Pubkey::new_unique();
+        let spool_idx: SpoolIndex = 42;
+        let data = RecoverySliceData::new(vec![0xCD; 1024], 0);
+
+        service.put_recovery_slice(spool_idx, track, data.clone()).unwrap();
+
+        let retrieved = service
+            .get_recovery_slice(spool_idx, track)
+            .unwrap()
+            .expect("slice should exist");
+
+        assert_eq!(retrieved.symbols, data.symbols);
     }
 
     #[test]
     fn test_get_nonexistent_slice() {
         let service = create_test_service();
-        let result = service.get_slice(0, Pubkey::new_unique()).unwrap();
+        let result = service.get_primary_slice(0, Pubkey::new_unique()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_delete_slice() {
+    fn test_delete_primary_slice() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx: SpoolIndex = 42;
 
         service
-            .put_slice(spool_idx, track, vec![0xAB; 100], create_test_meta())
+            .put_primary_slice(spool_idx, track, PrimarySliceData::new(vec![0xAB; 100], 0))
             .unwrap();
 
-        assert!(service.get_slice(spool_idx, track).unwrap().is_some());
+        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_some());
 
-        service.delete_slice(spool_idx, track).unwrap();
+        service.delete_primary_slice(spool_idx, track).unwrap();
 
-        assert!(service.get_slice(spool_idx, track).unwrap().is_none());
+        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_put_delete_slices_atomic() {
+        let service = create_test_service();
+        let track = Pubkey::new_unique();
+        let spool_idx: SpoolIndex = 42;
+
+        let primary = PrimarySliceData::new(vec![0xAB; 100], 0);
+        let recovery = RecoverySliceData::new(vec![0xCD; 100], 0);
+
+        service.put_slices(spool_idx, track, primary, recovery).unwrap();
+
+        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_some());
+        assert!(service.get_recovery_slice(spool_idx, track).unwrap().is_some());
+
+        service.delete_slices(spool_idx, track).unwrap();
+
+        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_none());
+        assert!(service.get_recovery_slice(spool_idx, track).unwrap().is_none());
     }
 }

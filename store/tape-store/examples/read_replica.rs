@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tape_address = Pubkey::new([0xAA; 32]);
     for i in 1..=3 {
         let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
+        let info = TrackInfo::new(tape_address, EpochNumber(0));
         primary.put_track_info(track_address, info)?;
     }
 
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write to primary, secondary doesn't see it yet
     let new_track = Pubkey::new([10; 32]);
-    primary.put_track_info(new_track, TrackInfo::new(tape_address, EpochNumber(0), [0; 64]))?;
+    primary.put_track_info(new_track, TrackInfo::new(tape_address, EpochNumber(0)))?;
 
     let before = secondary.get_track_info(new_track)?;
     println!("Before sync: {}", before.is_some());
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 11..=13u8 {
         thread::sleep(Duration::from_millis(500));
         let track_address = Pubkey::new([i; 32]);
-        primary.put_track_info(track_address, TrackInfo::new(tape_address, EpochNumber(0), [0; 64]))?;
+        primary.put_track_info(track_address, TrackInfo::new(tape_address, EpochNumber(0)))?;
     }
 
     thread::sleep(Duration::from_millis(1500));

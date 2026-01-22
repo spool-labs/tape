@@ -5,6 +5,9 @@
 //! - Syncs data from previous spool owners
 //! - Falls back to erasure recovery if sync fails
 //! - Submits SyncEpoch transaction when ready
+//!
+//! NOTE: Spool sync and recovery operations are currently stubs pending
+//! storage layer redesign.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,36 +20,23 @@ use tape_api::instruction::{
     build_advance_epoch_ix, build_advance_pool_ix, build_epoch_sync_ix, build_join_network_ix,
 };
 use tape_api::program::tapedrive::node_pda;
-use tape_core::prelude::*;
-use tape_core::spooler::SpoolIndex;
-use tape_store::ops::{RecoveryInfo, RecoveryOps, SliceOps};
-use tape_store::types::Pubkey as StorePubkey;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::spool_sync::{track_id_to_pubkey, SpoolSyncHandler, SyncError, SyncSlice};
-use crate::features::storage::SliceMeta;
+use crate::features::spool_sync::SpoolSyncHandler;
 
 /// Outcome of executing an FSM action.
-///
-/// This enum replaces the scattered boolean/unit returns from submit functions,
-/// providing a consistent way to communicate results back to the FSM loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandlerOutcome {
     /// Action completed successfully (or already done by another node).
-    /// The FSM loop should move on to the next action.
     Completed,
     /// Action not ready yet (timing, threshold, etc.).
-    /// The FSM loop will retry on the next iteration.
     RetryLater,
 }
 
 /// Signals from block processor to wake FSM loop.
-///
-/// These signals allow the FSM loop to react immediately to on-chain state
-/// changes rather than waiting for the next polling interval.
 #[derive(Debug, Clone)]
 pub enum FsmSignal {
     /// On-chain state changed, re-evaluate FSM immediately.
@@ -57,13 +47,9 @@ pub enum FsmSignal {
 pub const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Compute units required for AdvanceEpoch instruction.
-/// AdvanceEpoch performs committee rotation and spool reallocation which
-/// requires significant computation, especially with many nodes.
 pub const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
 
 /// Compute units required for AdvancePool instruction.
-/// AdvancePool calculates rewards based on committee size and spool assignment,
-/// which can exceed the default 200k CU limit with larger committees.
 pub const ADVANCE_POOL_COMPUTE_UNITS: u32 = 400_000;
 
 /// Error type for network sync operations.
@@ -73,50 +59,32 @@ pub enum NetworkSyncError {
     Rpc(String),
 
     #[error("sync error: {0}")]
-    Sync(#[from] SyncError),
+    Sync(String),
 
     #[error("storage error: {0}")]
     Storage(String),
 }
 
 /// Categorize RPC/program errors into handler outcomes.
-///
-/// This centralizes error handling logic that was previously scattered across
-/// all submit functions. Each error code maps to either:
-/// - `Completed`: The action is done (by us or another node), stop trying
-/// - `RetryLater`: The action isn't ready yet, try again next loop
-/// - `Err`: Fatal error, report and stop
-///
-/// Uses the typed TapeError system from tape_api::errors for clean error handling.
 fn categorize_tx_error(err: &str, action_name: &str) -> Result<HandlerOutcome, NetworkSyncError> {
-    // Try to parse as a typed TapeError
     if let Some(tape_err) = TapeError::from_error_string(err) {
         return match tape_err {
-            // Already completed (by us or another node) or not applicable
             e if e.is_already_done() => {
                 info!("{} already complete: {}", action_name, e);
                 Ok(HandlerOutcome::Completed)
             }
-
-            // Not staked - can't join without stake
             TapeError::NotStaked => {
                 info!("{} not applicable: not staked", action_name);
                 Ok(HandlerOutcome::Completed)
             }
-
-            // Timing/threshold issues - retry later
             e if e.is_retriable() => {
                 debug!("{} not ready yet ({}), will retry", action_name, e);
                 Ok(HandlerOutcome::RetryLater)
             }
-
-            // Node state is stale - requires AdvancePool first
             TapeError::NodeStale => Err(NetworkSyncError::Rpc(format!(
                 "{} failed: AdvancePool required first (NodeStale)",
                 action_name
             ))),
-
-            // Other known errors - treat as fatal
             _ => Err(NetworkSyncError::Rpc(format!(
                 "{} failed: {} ({})",
                 action_name,
@@ -126,7 +94,6 @@ fn categorize_tx_error(err: &str, action_name: &str) -> Result<HandlerOutcome, N
         };
     }
 
-    // Unknown error - treat as fatal to avoid silent failures
     Err(NetworkSyncError::Rpc(format!(
         "{} failed: {}",
         action_name, err
@@ -142,9 +109,6 @@ fn current_timestamp() -> i64 {
 }
 
 /// Try to advance the epoch.
-///
-/// Submits AdvanceEpoch transaction if conditions are met.
-/// Uses centralized error categorization for consistent handling.
 async fn try_advance_epoch(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSyncError> {
     let authority = ctx.keypair.pubkey();
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_EPOCH_COMPUTE_UNITS);
@@ -165,9 +129,6 @@ async fn try_advance_epoch(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkS
 }
 
 /// Try to advance the staking pool.
-///
-/// Submits AdvancePool transaction to claim rewards and contribute
-/// to settle quorum. Must be done before JoinNetwork.
 async fn try_advance_pool(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSyncError> {
     if !ctx.is_in_committee() {
         debug!("Not in committee, skipping AdvancePool");
@@ -191,7 +152,6 @@ async fn try_advance_pool(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSy
         Err(e) => categorize_tx_error(&e.to_string(), "AdvancePool"),
     };
 
-    // Always refresh node state after AdvancePool attempt so FSM sees latest_advance_epoch
     if let Ok(node) = ctx.rpc.get_node(&authority).await {
         ctx.control_plane.update_node(node);
     }
@@ -200,9 +160,6 @@ async fn try_advance_pool(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSy
 }
 
 /// Try to join the network (re-join committee_next).
-///
-/// After each epoch rotation, nodes must call JoinNetwork to
-/// re-establish membership for the next epoch.
 async fn try_join_network(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSyncError> {
     if !ctx.is_in_committee() {
         debug!("Not in committee, skipping JoinNetwork");
@@ -216,7 +173,6 @@ async fn try_join_network(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSy
     match ctx.rpc.send_instructions(&ctx.keypair, vec![ix]).await {
         Ok(_) => {
             info!("JoinNetwork submitted successfully");
-            // Refresh node state so FSM sees updated committee membership
             if let Ok(node) = ctx.rpc.get_node(&authority).await {
                 ctx.control_plane.update_node(node);
             }
@@ -227,22 +183,15 @@ async fn try_join_network(ctx: &NodeContext) -> Result<HandlerOutcome, NetworkSy
 }
 
 /// Try to sync the epoch.
-///
-/// Ensures spool data is synced from previous owners, then submits
-/// SyncEpoch transaction to contribute to sync quorum.
 async fn try_sync_epoch(
     ctx: &NodeContext,
-    sync_handler: &SpoolSyncHandler,
+    _sync_handler: &SpoolSyncHandler,
 ) -> Result<HandlerOutcome, NetworkSyncError> {
     let epoch = ctx.control_plane.current_epoch();
 
-    // Step 1: Ensure spool data is synced (only once per epoch)
+    // Step 1: Ensure spool data is synced (stub - just mark complete)
     if !ctx.control_plane.is_local_sync_complete(epoch) {
-        // Sync new spools from previous owners
-        if let Err(e) = sync_new_spools(ctx, sync_handler).await {
-            warn!(epoch = epoch.as_u64(), error = %e, "Spool sync had errors, continuing anyway");
-            // Don't fail - we can still attest and recover later
-        }
+        debug!(epoch = epoch.as_u64(), "Spool sync (stub) - marking complete");
         ctx.control_plane.mark_local_sync_complete(epoch);
     }
 
@@ -267,80 +216,7 @@ async fn try_sync_epoch(
     }
 }
 
-/// Sync newly assigned spools from previous owners.
-async fn sync_new_spools(
-    ctx: &NodeContext,
-    sync_handler: &SpoolSyncHandler,
-) -> Result<(), NetworkSyncError> {
-    let system = ctx.control_plane.get_system();
-    let our_node_id = ctx.control_plane.our_node_id();
-
-    // Find our member index in current committee
-    let curr_index = match system.committee.index_of(&our_node_id) {
-        Some(idx) => idx,
-        None => {
-            warn!("Not found in current committee");
-            return Ok(());
-        }
-    };
-
-    // Get our previous committee position (if any)
-    let prev_index = system.committee_prev.index_of(&our_node_id);
-
-    // Compute spools we now own
-    let curr_spools = system.spools.spools_for_member(curr_index);
-
-    // Compute spools we previously owned
-    let prev_spools: Vec<SpoolIndex> = prev_index
-        .map(|idx| system.spools_prev.spools_for_member(idx))
-        .unwrap_or_default();
-
-    // New spools we need to sync
-    let gained_spools: Vec<SpoolIndex> = curr_spools
-        .iter()
-        .filter(|s| !prev_spools.contains(s))
-        .copied()
-        .collect();
-
-    info!(
-        gained = gained_spools.len(),
-        total = curr_spools.len(),
-        "Syncing new spool assignments"
-    );
-
-    // Sync gained spools from previous owners
-    for spool_idx in &gained_spools {
-        let prev_owner_member_idx = system.spools_prev.0[*spool_idx as usize] as usize;
-
-        if let Some(prev_member) = system.committee_prev.member_at(prev_owner_member_idx) {
-            match sync_spool_from_owner(ctx, sync_handler, *spool_idx, prev_member.id).await {
-                Ok(count) => {
-                    info!(spool = spool_idx, slices = count, "Synced spool");
-                    ctx.metrics.spools_synced_total.inc();
-                }
-                Err(e) => {
-                    warn!(spool = spool_idx, error = %e, "Failed to sync spool, queuing for recovery");
-                    if let Err(qe) = queue_spool_for_recovery(ctx, *spool_idx).await {
-                        error!(spool = spool_idx, error = %qe, "Failed to queue spool for recovery");
-                    }
-                }
-            }
-        } else {
-            debug!(spool = spool_idx, "No previous owner, spool is new");
-        }
-    }
-
-    Ok(())
-}
-
 /// Run the FSM-driven network sync loop.
-///
-/// This is the main entry point for network synchronization. It:
-/// 1. Waits for catch-up to complete (historical block replay)
-/// 2. Runs the FSM loop to execute actions based on on-chain state
-///
-/// The loop polls every 1 second OR immediately when signaled by the
-/// block processor that state has changed.
 pub async fn run(
     ctx: Arc<NodeContext>,
     mut signal_rx: mpsc::Receiver<FsmSignal>,
@@ -382,15 +258,11 @@ pub async fn run(
                 break;
             }
 
-            // Block processor signals state change (only sent when caught up)
             Some(FsmSignal::StateChanged) = signal_rx.recv() => {
                 debug!("Received StateChanged signal, re-evaluating FSM");
-                // Fall through to execute
             }
 
-            // Regular polling interval
             _ = interval.tick() => {
-                // Fall through to execute
             }
         }
 
@@ -404,13 +276,11 @@ pub async fn run(
         let now = current_timestamp();
         let (action, catching_up) = ctx.control_plane.determine_action(now);
 
-        // Safety check - shouldn't happen but belt-and-suspenders
         if catching_up {
             warn!("Unexpectedly catching up in main loop, skipping action");
             continue;
         }
 
-        // Log non-trivial actions for debugging
         if action.requires_transaction() {
             let node_id = ctx.control_plane.our_node_id();
             let in_committee = ctx.control_plane.is_in_committee();
@@ -422,7 +292,6 @@ pub async fn run(
             );
         }
 
-        // Execute action
         execute_action(&ctx, &sync_handler, &action).await;
     }
 
@@ -481,7 +350,6 @@ pub async fn execute_action(
             try_join_network(ctx).await
         }
 
-        // Wait states - nothing to execute, just log
         NodeAction::WaitForEpochDuration { seconds_remaining } => {
             debug!(seconds = seconds_remaining, "Waiting for epoch duration");
             return;
@@ -522,7 +390,6 @@ pub async fn execute_action(
         }
     };
 
-    // Log outcome
     match result {
         Ok(HandlerOutcome::Completed) => {
             info!(action = ?action, "Action completed");
@@ -534,99 +401,6 @@ pub async fn execute_action(
             error!(action = ?action, error = %e, "Action failed");
         }
     }
-}
-
-/// Sync a spool from its previous owner.
-async fn sync_spool_from_owner(
-    ctx: &NodeContext,
-    sync_handler: &SpoolSyncHandler,
-    spool_idx: SpoolIndex,
-    prev_owner_id: NodeId,
-) -> Result<usize, NetworkSyncError> {
-    // Look up the previous owner's node to get their network address
-    let (_pubkey, prev_node) = ctx
-        .rpc
-        .get_node_by_id(prev_owner_id)
-        .await
-        .map_err(|e| NetworkSyncError::Rpc(e.to_string()))?;
-
-    let addr = prev_node
-        .metadata
-        .network_address
-        .to_socket_addr()
-        .map_err(|e| NetworkSyncError::Rpc(format!("Invalid network address: {}", e)))?;
-
-    let from_epoch = ctx.control_plane.current_epoch();
-
-    // Sync the spool
-    let storage = Arc::clone(&ctx.storage);
-    let count = sync_handler
-        .sync_spool(spool_idx, from_epoch, &addr.to_string(), |slice: SyncSlice| {
-            // Parse track ID and store the slice
-            let track = track_id_to_pubkey(&slice.track_id)
-                .map_err(|e| SyncError::Storage(format!("Invalid track ID: {}", e)))?;
-
-            // Use merkle proofs from sync response
-            let meta = SliceMeta {
-                len: slice.data.len() as u32,
-                leaf_hash: slice.leaf_hash,
-                merkle_proof: slice.merkle_proof,
-                received_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            };
-
-            storage
-                .put_slice(slice.slice_index, track, slice.data, meta)
-                .map_err(|e| SyncError::Storage(e.to_string()))
-        })
-        .await?;
-
-    Ok(count)
-}
-
-/// Queue all slices in a spool for erasure recovery.
-///
-/// This enumerates all tracks that have slices in the given spool
-/// and queues each for recovery.
-async fn queue_spool_for_recovery(
-    ctx: &NodeContext,
-    spool_idx: SpoolIndex,
-) -> Result<(), NetworkSyncError> {
-    // Get all slices currently stored for this spool
-    let slices = ctx
-        .storage
-        .store
-        .get_spool_slices(spool_idx)
-        .map_err(|e| NetworkSyncError::Storage(e.to_string()))?;
-
-    if slices.is_empty() {
-        debug!(spool = spool_idx, "No slices to recover for spool");
-        return Ok(());
-    }
-
-    info!(
-        spool = spool_idx,
-        slice_count = slices.len(),
-        "Queuing spool slices for recovery"
-    );
-
-    let info = RecoveryInfo {
-        source_node: StorePubkey::default(), // Will fetch from committee
-        attempts: 0,
-        last_attempt: 0,
-    };
-
-    // Queue each slice for recovery
-    for (track_address, _meta) in slices {
-        ctx.storage
-            .store
-            .queue_recovery(spool_idx, track_address, info.clone())
-            .map_err(|e| NetworkSyncError::Storage(e.to_string()))?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
