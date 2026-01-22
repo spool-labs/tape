@@ -21,13 +21,13 @@
 //! - `gc`: GC progress tracking
 //!
 //! ## Epoch-Namespaced Spool Columns
-//! - `spool/assigned`: Spool status per epoch
-//! - `spool/sync_progress`: Sync cursor per spool per epoch
-//! - `spool/pending_recovery`: Recovery queue per epoch
+//! - `spool_status`: Spool status per epoch
+//! - `sync_cursors`: Sync cursor per spool per epoch
+//! - `recovery_queue`: Recovery queue per epoch
 //!
 //! ## Slice Data Columns (BlobDB)
-//! - `spool/primary_slices`: Primary erasure-coded slices
-//! - `spool/recovery_slices`: Recovery/parity slices
+//! - `primary_slices`: Primary erasure-coded slices
+//! - `recovery_slices`: Recovery/parity slices
 //!
 //! ## Committee Column
 //! - `committee`: Committee cache by epoch

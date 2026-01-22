@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo run --example basic_usage
 
-use tape_store::{columns::*, ops::*, types::*, TapeStore};
+use tape_store::{ops::*, types::*, TapeStore};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -23,10 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Store primary and recovery slices with the new structure
     let track_address = Pubkey::new([1; 32]);
-    for spool_idx in 0..5u16 {
-        let primary = PrimarySliceData::new(vec![spool_idx as u8; 1024], 0);
-        let recovery = RecoverySliceData::new(vec![spool_idx as u8 + 100; 1024], 0);
-        store.put_both_slices(spool_idx, track_address, primary, recovery)?;
+    for spool_id in 0..5u16 {
+        let primary = PrimarySliceData::new(vec![spool_id as u8; 1024], 0);
+        let recovery = RecoverySliceData::new(vec![spool_id as u8 + 100; 1024], 0);
+        store.put_both_slices(spool_id, track_address, primary, recovery)?;
     }
     println!("Stored 5 primary+recovery slice pairs for track 1");
 
@@ -39,8 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Store epoch-namespaced spool state
     let epoch = EpochNumber(100);
-    for spool_idx in 0..3u16 {
-        store.set_spool_status(epoch, spool_idx, SpoolStatus::Active)?;
+    for spool_id in 0..3u16 {
+        store.set_spool_status(epoch, spool_id, SpoolStatus::Active)?;
     }
 
     // Get assigned spools for this epoch

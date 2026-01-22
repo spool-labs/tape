@@ -33,10 +33,10 @@ fn main() -> Result<()> {
 
     // SliceDataOps - store primary and recovery slices
     let track_address = Pubkey::new([1; 32]);
-    for spool_idx in 0..10 {
-        let primary = PrimarySliceData::new(vec![spool_idx as u8; 1024], 0);
-        let recovery = RecoverySliceData::new(vec![spool_idx as u8 + 100; 1024], 0);
-        store.put_both_slices(spool_idx, track_address, primary, recovery)?;
+    for spool_id in 0..10 {
+        let primary = PrimarySliceData::new(vec![spool_id as u8; 1024], 0);
+        let recovery = RecoverySliceData::new(vec![spool_id as u8 + 100; 1024], 0);
+        store.put_both_slices(spool_id, track_address, primary, recovery)?;
     }
     println!("Stored 10 primary+recovery slice pairs for track 1");
 
@@ -57,8 +57,8 @@ fn main() -> Result<()> {
 
     // SpoolOps - epoch-namespaced spool management
     let epoch = EpochNumber(100);
-    for spool_idx in [0u16, 5, 10] {
-        store.set_spool_status(epoch, spool_idx, SpoolStatus::Active)?;
+    for spool_id in [0u16, 5, 10] {
+        store.set_spool_status(epoch, spool_id, SpoolStatus::Active)?;
     }
     println!("Set 3 spools as Active for epoch 100");
 

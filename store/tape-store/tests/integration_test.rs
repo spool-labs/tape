@@ -1,6 +1,6 @@
 //! Integration tests for TapeStore with RocksDB backend
 
-use tape_store::{columns::*, ops::*, types::*, TapeStore};
+use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
 
 #[test]

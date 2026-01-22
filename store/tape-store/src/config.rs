@@ -31,9 +31,9 @@ use rocksdb;
 /// - `gc` - String keys ("started", "completed") (BlockBased)
 ///
 /// ## Epoch-Namespaced Spool Columns (BlockBased + Prefix)
-/// - `spool/assigned` - 10-byte SpoolEpochKey (8-byte epoch prefix)
-/// - `spool/sync_progress` - 10-byte SpoolEpochKey (8-byte epoch prefix)
-/// - `spool/pending_recovery` - 43-byte PendingRecoveryKey (8-byte epoch prefix)
+/// - `spool_status` - 10-byte SpoolEpochKey (8-byte epoch prefix for iteration)
+/// - `sync_cursors` - 10-byte SpoolEpochKey (8-byte epoch prefix for cleanup)
+/// - `recovery_queue` - 43-byte PendingRecoveryKey (10-byte epoch+spool prefix)
 ///
 /// ## Slice Data Columns (BlobDB)
 /// - `spool/primary_slices` - 34-byte SliceKey (2-byte spool prefix)
@@ -74,24 +74,24 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .build(),
 
         // Spool status - 10-byte SpoolEpochKey (epoch BE + spool_id BE)
-        // 8-byte epoch prefix for range cleanup
+        // BlockBased with 8-byte epoch prefix for iter_assigned_spools and cleanup
         ColumnFamilyConfig::new("spool_status")
             .with_block_based()
             .with_prefix_extractor(8)
             .build(),
 
         // Sync cursors - 10-byte SpoolEpochKey
-        // 8-byte epoch prefix for range cleanup
+        // BlockBased with 8-byte epoch prefix for cleanup_epoch_state
         ColumnFamilyConfig::new("sync_cursors")
             .with_block_based()
             .with_prefix_extractor(8)
             .build(),
 
         // Recovery queue - 43-byte PendingRecoveryKey
-        // 8-byte epoch prefix for range cleanup
+        // 10-byte prefix (epoch+spool) to match iter_pending_recoveries access pattern
         ColumnFamilyConfig::new("recovery_queue")
             .with_block_based()
-            .with_prefix_extractor(8)
+            .with_prefix_extractor(10)
             .build(),
 
         // Primary slices - 34-byte SliceKey, large (~1MB) values
