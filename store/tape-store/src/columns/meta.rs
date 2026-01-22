@@ -1,10 +1,16 @@
-//! Meta column family for schema version, cursors, and epoch pointers
+//! Meta column family for node metadata
+//!
+//! Stores key-value pairs for node configuration and state:
+//! - node_status: NodeStatus
+//! - cluster_hash: Hash (32 bytes)
+//! - current_epoch: EpochNumber
 
 use store::Column;
 
-/// Meta column for storing miscellaneous metadata
-/// Key: String (e.g., "schema_version", "chain_cursor", "current_epoch")
-/// Value: Vec<u8> (arbitrary data)
+/// Column family for node metadata
+///
+/// Key: String (e.g., "node_status", "cluster_hash", "current_epoch")
+/// Value: Vec<u8> (serialized data, format depends on key)
 pub struct Meta;
 
 impl Column for Meta {

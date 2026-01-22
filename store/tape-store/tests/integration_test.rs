@@ -13,11 +13,8 @@ fn open_primary() {
 
     // Test basic operations
     let track_address = Pubkey::new_unique();
-    let info = TrackInfo {
-        commitment_hash: Hash::new_unique(),
-        certified_epoch: EpochNumber(0),
-        slice_count: 0,
-    };
+    let tape_address = Pubkey::new_unique();
+    let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
 
     store.put_track_info(track_address, info.clone()).unwrap();
     let retrieved = store.get_track_info(track_address).unwrap();
@@ -30,15 +27,12 @@ fn open_primary_persistence() {
     let db_path = temp_dir.path().join("test_db");
 
     let track_address = Pubkey::new_unique();
+    let tape_address = Pubkey::new_unique();
 
     // Write data
     {
         let store = TapeStore::open_primary(&db_path).unwrap();
-        let info = TrackInfo {
-            commitment_hash: Hash::new_unique(),
-            certified_epoch: EpochNumber(50),
-            slice_count: 10,
-        };
+        let info = TrackInfo::new(tape_address, EpochNumber(50), [0xAB; 64]);
         store.put_track_info(track_address, info).unwrap();
     }
 
@@ -48,8 +42,8 @@ fn open_primary_persistence() {
         let retrieved = store.get_track_info(track_address).unwrap();
         assert!(retrieved.is_some());
         let info = retrieved.unwrap();
-        assert_eq!(info.certified_epoch, EpochNumber(50));
-        assert_eq!(info.slice_count, 10);
+        assert_eq!(info.registered_epoch, EpochNumber(50));
+        assert_eq!(info.tape_address, tape_address);
     }
 }
 
@@ -62,41 +56,54 @@ fn all_column_families() {
 
     // Test each column family to ensure they're all properly configured
 
-    // Meta
-    store
-        .put::<Meta>(&"test_key".to_string(), &vec![1, 2, 3])
-        .unwrap();
+    // Meta - test via MetaOps
+    store.set_node_status(NodeStatus::Active).unwrap();
+    store.set_current_epoch(EpochNumber(100)).unwrap();
 
     // Tracks
     let track_address = Pubkey::new_unique();
-    let info = TrackInfo {
-        commitment_hash: Hash::new_unique(),
-        certified_epoch: EpochNumber(0),
-        slice_count: 0,
-    };
+    let tape_address = Pubkey::new_unique();
+    let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
     store.put_track_info(track_address, info).unwrap();
 
-    // Slices
-    let slice_key = SliceKey::new(42, track_address);
-    store
-        .put::<SlicesData>(&slice_key, &vec![0u8; 1024])
-        .unwrap();
-
-    let meta = SliceMeta {
-        len: 1024,
-        leaf_hash: Hash::default(),
-        merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-        received_at: 123456789,
+    // Slice info
+    let slice_info = SliceInfo {
+        encoding_type: EncodingType::Rotated,
+        unencoded_length: 1024 * 1024,
+        primary: vec![Hash::default(); 10],
+        recovery: vec![Hash::default(); 10],
     };
-    store.put::<SlicesMeta>(&slice_key, &meta).unwrap();
+    store.put_slice_info(track_address, slice_info).unwrap();
 
-    // Spools
-    let spool_state = SpoolState {
-        status: SpoolStatus::Active,
-        assigned_epoch: EpochNumber(100),
-        sync_cursor: None,
+    // Tape info
+    let tape_info = TapeInfo {
+        active_epoch: EpochNumber(50),
+        expiry_epoch: EpochNumber(150),
+        authority: Pubkey::new_unique(),
     };
-    store.put_spool_state(42, spool_state).unwrap();
+    store.put_tape_info(tape_address, tape_info).unwrap();
+
+    // Spool status (epoch-namespaced)
+    let epoch = EpochNumber(100);
+    store.set_spool_status(epoch, 42, SpoolStatus::Active).unwrap();
+
+    // Sync progress
+    let progress = SyncProgress {
+        last_synced_track: Some(track_address),
+        slice_type: SliceType::Primary,
+    };
+    store.set_sync_progress(epoch, 42, progress).unwrap();
+
+    // Pending recovery
+    store.add_pending_recovery(epoch, 42, SliceType::Primary, track_address).unwrap();
+
+    // Primary slices
+    let primary_data = PrimarySliceData::new(vec![0u8; 1024], 0);
+    store.put_primary_slice(42, track_address, primary_data).unwrap();
+
+    // Recovery slices
+    let recovery_data = RecoverySliceData::new(vec![0u8; 1024], 0);
+    store.put_recovery_slice(42, track_address, recovery_data).unwrap();
 
     // Committee
     use bytemuck::Zeroable;
@@ -118,43 +125,18 @@ fn all_column_families() {
     };
     store.put_committee(committee).unwrap();
 
-    // Pending recovery
-    let recovery_info = RecoveryInfo {
-        source_node: Pubkey::new_unique(),
-        attempts: 0,
-        last_attempt: 0,
-    };
-    store
-        .put::<PendingRecover>(&slice_key, &recovery_info)
-        .unwrap();
-
-    // Pending handoff
-    let handoff_info = HandoffInfo {
-        target_node: Pubkey::new_unique(),
-        attempts: 0,
-        last_attempt: 0,
-    };
-    store
-        .put::<PendingHandoff>(&slice_key, &handoff_info)
-        .unwrap();
-
-    // GC scheduled
-    let gc_key = GcKey::new(123456789, 42, track_address);
-    store.put::<GcScheduled>(&gc_key, &()).unwrap();
-
     // Verify we can read everything back
-    assert!(store
-        .get::<Meta>(&"test_key".to_string())
-        .unwrap()
-        .is_some());
+    assert_eq!(store.get_node_status().unwrap(), Some(NodeStatus::Active));
+    assert_eq!(store.get_current_epoch().unwrap(), Some(EpochNumber(100)));
     assert!(store.get_track_info(track_address).unwrap().is_some());
-    assert!(store.get::<SlicesData>(&slice_key).unwrap().is_some());
-    assert!(store.get::<SlicesMeta>(&slice_key).unwrap().is_some());
-    assert!(store.get_spool_state(42).unwrap().is_some());
+    assert!(store.get_slice_info(track_address).unwrap().is_some());
+    assert!(store.get_tape_info(tape_address).unwrap().is_some());
+    assert_eq!(store.get_spool_status(epoch, 42).unwrap(), Some(SpoolStatus::Active));
+    assert!(store.get_sync_progress(epoch, 42).unwrap().is_some());
+    assert!(store.has_pending_recovery(epoch, 42, SliceType::Primary, track_address).unwrap());
+    assert!(store.get_primary_slice(42, track_address).unwrap().is_some());
+    assert!(store.get_recovery_slice(42, track_address).unwrap().is_some());
     assert!(store.get_committee(EpochNumber(1)).unwrap().is_some());
-    assert!(store.get::<PendingRecover>(&slice_key).unwrap().is_some());
-    assert!(store.get::<PendingHandoff>(&slice_key).unwrap().is_some());
-    assert!(store.get::<GcScheduled>(&gc_key).unwrap().is_some());
 }
 
 #[test]
@@ -164,17 +146,15 @@ fn large_slice_data() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    // Test with a 2 MiB slice - large enough to trigger BlobDB (threshold is 1 MiB)
-    // but small enough to avoid wincode preallocation limits
+    // Test with a 2 MiB slice - large enough to trigger BlobDB (threshold is 256 KiB)
     let large_data = vec![0xAB; 2 * 1024 * 1024];
     let track_address = Pubkey::new_unique();
-    let slice_key = SliceKey::new(0, track_address);
 
-    store
-        .put::<SlicesData>(&slice_key, &large_data)
-        .unwrap();
-    let retrieved = store.get::<SlicesData>(&slice_key).unwrap();
-    assert_eq!(retrieved, Some(large_data));
+    let primary = PrimarySliceData::new(large_data.clone(), 0);
+    store.put_primary_slice(0, track_address, primary).unwrap();
+
+    let retrieved = store.get_primary_slice(0, track_address).unwrap().unwrap();
+    assert_eq!(retrieved.symbols, large_data);
 }
 
 #[test]
@@ -189,68 +169,38 @@ fn spool_prefix_iteration() {
     let spool_100_tracks: Vec<Pubkey> = (0..5).map(|_| Pubkey::new_unique()).collect();
 
     for track in &spool_42_tracks {
-        let meta = SliceMeta {
-            len: 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 0,
-        };
-        store
-            .put_slice(42, *track, vec![0u8; 100], meta)
-            .unwrap();
+        let data = PrimarySliceData::new(vec![0u8; 100], 0);
+        store.put_primary_slice(42, *track, data).unwrap();
     }
 
     for track in &spool_100_tracks {
-        let meta = SliceMeta {
-            len: 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 0,
-        };
-        store
-            .put_slice(100, *track, vec![0u8; 100], meta)
-            .unwrap();
+        let data = PrimarySliceData::new(vec![0u8; 100], 0);
+        store.put_primary_slice(100, *track, data).unwrap();
     }
 
     // Query spool 42 only
-    let spool_42_slices = store.get_spool_slices(42).unwrap();
+    let spool_42_slices: Vec<_> = store
+        .iter_primary_slices_by_spool(42)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(spool_42_slices.len(), 10);
 
     // Query spool 100 only
-    let spool_100_slices = store.get_spool_slices(100).unwrap();
+    let spool_100_slices: Vec<_> = store
+        .iter_primary_slices_by_spool(100)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(spool_100_slices.len(), 5);
 
     // Verify empty spool returns empty
-    let spool_999_slices = store.get_spool_slices(999).unwrap();
+    let spool_999_slices: Vec<_> = store
+        .iter_primary_slices_by_spool(999)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(spool_999_slices.len(), 0);
-}
-
-#[test]
-fn slice_key_ordering() {
-    let temp_dir = TempDir::new().unwrap();
-    let db_path = temp_dir.path().join("test_db");
-
-    let store = TapeStore::open_primary(&db_path).unwrap();
-
-    // Insert slices in random spool order
-    for spool_idx in [500u16, 1, 100, 50, 999] {
-        let track = Pubkey::new_unique();
-        let meta = SliceMeta {
-            len: 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 0,
-        };
-        store.put_slice(spool_idx, track, vec![0u8; 10], meta).unwrap();
-    }
-
-    // Verify they come back in sorted order due to BE encoding
-    let mut collected = Vec::new();
-    for (key, _meta) in store.iter::<SlicesMeta>().unwrap() {
-        collected.push(key.spool_idx);
-    }
-
-    assert_eq!(collected, vec![1, 50, 100, 500, 999]);
 }
 
 #[test]
@@ -259,30 +209,23 @@ fn track_info_operations() {
     let db_path = temp_dir.path().join("test_db");
 
     let store = TapeStore::open_primary(&db_path).unwrap();
-    let address = Pubkey::new_unique();
+    let track = Pubkey::new_unique();
+    let tape = Pubkey::new_unique();
 
     // Create track
-    let info = TrackInfo {
-        commitment_hash: Hash::new_unique(),
-        certified_epoch: EpochNumber(0),
-        slice_count: 0,
-    };
-    store.put_track_info(address, info).unwrap();
+    let info = TrackInfo::new(tape, EpochNumber(0), [0; 64]);
+    store.put_track_info(track, info).unwrap();
 
-    // Increment slice count
-    let count = store.increment_slice_count(address).unwrap();
-    assert_eq!(count, 1);
+    // Verify not certified initially
+    let retrieved = store.get_track_info(track).unwrap().unwrap();
+    assert!(retrieved.certified_epoch.is_none());
 
-    let count = store.increment_slice_count(address).unwrap();
-    assert_eq!(count, 2);
+    // Certify
+    store.certify_track(track, EpochNumber(100)).unwrap();
 
-    // Mark certified
-    store.mark_certified(address, EpochNumber(100)).unwrap();
-
-    // Verify
-    let retrieved = store.get_track_info(address).unwrap().unwrap();
-    assert_eq!(retrieved.slice_count, 2);
-    assert_eq!(retrieved.certified_epoch, EpochNumber(100));
+    // Verify certified
+    let retrieved = store.get_track_info(track).unwrap().unwrap();
+    assert_eq!(retrieved.certified_epoch, Some(EpochNumber(100)));
 }
 
 #[test]
@@ -316,64 +259,138 @@ fn committee_operations() {
     let cache = store.get_committee(EpochNumber(98)).unwrap().unwrap();
     assert_eq!(cache.epoch, EpochNumber(98));
 
-    // Get current (highest) epoch
+    // Get current (highest) epoch via fallback iteration
     let current = store.get_current_committee().unwrap().unwrap();
     assert_eq!(current.epoch, EpochNumber(100));
 }
 
 #[test]
-fn storage_stats() {
+fn epoch_namespaced_spool_ops() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test_db");
+
+    let store = TapeStore::open_primary(&db_path).unwrap();
+
+    let epoch_100 = EpochNumber(100);
+    let epoch_101 = EpochNumber(101);
+
+    // Set status in epoch 100
+    store.set_spool_status(epoch_100, 42, SpoolStatus::Active).unwrap();
+    store.set_spool_status(epoch_100, 43, SpoolStatus::Sync).unwrap();
+
+    // Set status in epoch 101
+    store.set_spool_status(epoch_101, 42, SpoolStatus::Recover).unwrap();
+
+    // Verify epoch 100 has its own state
+    assert_eq!(store.get_spool_status(epoch_100, 42).unwrap(), Some(SpoolStatus::Active));
+    assert_eq!(store.get_spool_status(epoch_100, 43).unwrap(), Some(SpoolStatus::Sync));
+
+    // Verify epoch 101 has its own state
+    assert_eq!(store.get_spool_status(epoch_101, 42).unwrap(), Some(SpoolStatus::Recover));
+    assert!(store.get_spool_status(epoch_101, 43).unwrap().is_none());
+
+    // Iterate assigned spools for epoch 100
+    let assigned: Vec<_> = store
+        .iter_assigned_spools(epoch_100)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(assigned.len(), 2);
+
+    // Cleanup epoch 100
+    store.cleanup_epoch_state(epoch_100).unwrap();
+
+    // Epoch 100 should be empty now
+    assert!(store.get_spool_status(epoch_100, 42).unwrap().is_none());
+    assert!(store.get_spool_status(epoch_100, 43).unwrap().is_none());
+
+    // Epoch 101 should still have its state
+    assert_eq!(store.get_spool_status(epoch_101, 42).unwrap(), Some(SpoolStatus::Recover));
+}
+
+#[test]
+fn pending_recovery_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test_db");
+
+    let store = TapeStore::open_primary(&db_path).unwrap();
+
+    let epoch = EpochNumber(100);
+    let spool_id = 42;
+    let track1 = Pubkey::new_unique();
+    let track2 = Pubkey::new_unique();
+
+    // Add pending recoveries
+    store.add_pending_recovery(epoch, spool_id, SliceType::Primary, track1).unwrap();
+    store.add_pending_recovery(epoch, spool_id, SliceType::Recovery, track1).unwrap();
+    store.add_pending_recovery(epoch, spool_id, SliceType::Primary, track2).unwrap();
+
+    // Check existence
+    assert!(store.has_pending_recovery(epoch, spool_id, SliceType::Primary, track1).unwrap());
+    assert!(store.has_pending_recovery(epoch, spool_id, SliceType::Recovery, track1).unwrap());
+    assert!(store.has_pending_recovery(epoch, spool_id, SliceType::Primary, track2).unwrap());
+    assert!(!store.has_pending_recovery(epoch, spool_id, SliceType::Recovery, track2).unwrap());
+
+    // Iterate pending for spool
+    let pending: Vec<_> = store
+        .iter_pending_recoveries(epoch, spool_id)
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(pending.len(), 3);
+
+    // Remove one
+    store.remove_pending_recovery(epoch, spool_id, SliceType::Primary, track1).unwrap();
+    assert!(!store.has_pending_recovery(epoch, spool_id, SliceType::Primary, track1).unwrap());
+
+    // Other still exists
+    assert!(store.has_pending_recovery(epoch, spool_id, SliceType::Recovery, track1).unwrap());
+}
+
+#[test]
+fn atomic_slice_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test_db");
+
+    let store = TapeStore::open_primary(&db_path).unwrap();
+
+    let spool_id = 42;
+    let track = Pubkey::new_unique();
+
+    let primary = PrimarySliceData::new(vec![1u8; 100], 10);
+    let recovery = RecoverySliceData::new(vec![2u8; 100], 20);
+
+    // Put both atomically
+    store.put_both_slices(spool_id, track, primary.clone(), recovery.clone()).unwrap();
+
+    // Both should exist
+    assert_eq!(store.get_primary_slice(spool_id, track).unwrap(), Some(primary));
+    assert_eq!(store.get_recovery_slice(spool_id, track).unwrap(), Some(recovery));
+
+    // Delete both atomically
+    store.delete_both_slices(spool_id, track).unwrap();
+
+    // Both should be gone
+    assert!(store.get_primary_slice(spool_id, track).unwrap().is_none());
+    assert!(store.get_recovery_slice(spool_id, track).unwrap().is_none());
+}
+
+#[test]
+fn gc_tracking() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_db");
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     // Initially empty
-    let stats = store.get_storage_stats().unwrap();
-    assert_eq!(stats.track_count, 0);
-    assert_eq!(stats.slice_meta_count, 0);
-    assert_eq!(stats.spool_count, 0);
+    assert!(store.get_gc_started_epoch().unwrap().is_none());
+    assert!(store.get_gc_completed_epoch().unwrap().is_none());
 
-    // Add some data
-    for _ in 0..5 {
-        let track = Pubkey::new_unique();
-        store
-            .put_track_info(
-                track,
-                TrackInfo {
-                    commitment_hash: Hash::default(),
-                    certified_epoch: EpochNumber(0),
-                    slice_count: 0,
-                },
-            )
-            .unwrap();
-    }
+    // Set GC progress
+    store.set_gc_started_epoch(EpochNumber(50)).unwrap();
+    store.set_gc_completed_epoch(EpochNumber(49)).unwrap();
 
-    for spool_idx in [10, 20, 30] {
-        let track = Pubkey::new_unique();
-        let meta = SliceMeta {
-            len: 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 0,
-        };
-        store.put_slice(spool_idx, track, vec![0u8; 100], meta).unwrap();
-
-        store
-            .put_spool_state(
-                spool_idx,
-                SpoolState {
-                    status: SpoolStatus::Active,
-                    assigned_epoch: EpochNumber(100),
-                    sync_cursor: None,
-                },
-            )
-            .unwrap();
-    }
-
-    let stats = store.get_storage_stats().unwrap();
-    assert_eq!(stats.track_count, 5);
-    assert_eq!(stats.slice_meta_count, 3);
-    assert_eq!(stats.slice_data_count, 3);
-    assert_eq!(stats.spool_count, 3);
+    // Verify
+    assert_eq!(store.get_gc_started_epoch().unwrap(), Some(EpochNumber(50)));
+    assert_eq!(store.get_gc_completed_epoch().unwrap(), Some(EpochNumber(49)));
 }

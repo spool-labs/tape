@@ -8,23 +8,19 @@
 //! Run with: cargo run --example in_memory
 
 use tape_store::{
-    ops::{SliceOps, SpoolOps, StatsOps, TrackOps},
+    ops::*,
     types::*,
     MemoryStore, TapeStore,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     let store = TapeStore::new(MemoryStore::new());
 
-    // Create tracks with minimal TrackInfo
+    // Create tracks with new TrackInfo structure
+    let tape_address = Pubkey::new([0xAA; 32]);
     for i in 1..=3 {
         let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo {
-            commitment_hash: Hash::from([i as u8; 32]),
-            certified_epoch: EpochNumber(0),
-            slice_count: 0,
-        };
+        let info = TrackInfo::new(tape_address, EpochNumber(0), [0; 64]);
         store.put_track_info(track_address, info)?;
         println!("Created track {}", i);
     }
@@ -34,44 +30,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let retrieved = store.get_track_info(track1)?;
     println!("Retrieved track 1: {:?}", retrieved.is_some());
 
-    // Store slices for track 1 with new key structure
+    // Store primary and recovery slices for track 1
     let track_address = Pubkey::new([1; 32]);
-    for spool_idx in 0..5 {
-        let meta = SliceMeta {
-            len: 32 * 1024,
-            leaf_hash: Hash::default(),
-            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
-            received_at: 1000000,
-        };
-        store.put_slice(spool_idx, track_address, vec![spool_idx as u8; 1024], meta)?;
+    for spool_idx in 0..5u16 {
+        let primary = PrimarySliceData::new(vec![spool_idx as u8; 1024], 0);
+        let recovery = RecoverySliceData::new(vec![spool_idx as u8 + 100; 1024], 0);
+        store.put_both_slices(spool_idx, track_address, primary, recovery)?;
     }
 
     // Query slices by spool
-    for spool_idx in 0..5 {
-        let slices = store.get_spool_slices(spool_idx)?;
-        println!("Spool {} has {} slices", spool_idx, slices.len());
+    for spool_idx in 0..5u16 {
+        let slices: Vec<_> = store
+            .iter_primary_slices_by_spool(spool_idx)?
+            .map(|r| r.unwrap())
+            .collect();
+        println!("Spool {} has {} primary slices", spool_idx, slices.len());
     }
 
-    // Register spools as owned
-    for spool_idx in 0..3 {
-        let state = SpoolState {
-            status: SpoolStatus::Active,
-            assigned_epoch: EpochNumber(100),
-            sync_cursor: None,
-        };
-        store.put_spool_state(spool_idx, state)?;
+    // Register epoch-namespaced spool status
+    let epoch = EpochNumber(100);
+    for spool_idx in 0..3u16 {
+        store.set_spool_status(epoch, spool_idx, SpoolStatus::Active)?;
     }
 
-    let my_spools = store.get_my_spools()?;
-    println!("My spools: {:?}", my_spools);
+    let assigned: Vec<_> = store
+        .iter_assigned_spools(epoch)?
+        .map(|r| r.unwrap())
+        .collect();
+    println!("Assigned spools in epoch 100: {:?}", assigned);
 
-    // Stats
-    let stats = store.get_storage_stats()?;
-    println!("\nStorage stats:");
-    println!("  Tracks:      {}", stats.track_count);
-    println!("  Slice Meta:  {}", stats.slice_meta_count);
-    println!("  Slice Data:  {}", stats.slice_data_count);
-    println!("  Spools:      {}", stats.spool_count);
+    // Metadata
+    store.set_node_status(NodeStatus::Active)?;
+    store.set_current_epoch(epoch)?;
+    store.set_sync_cursor(SlotNumber(12345))?;
+
+    println!("\nFinal state:");
+    println!("  Node status: {:?}", store.get_node_status()?);
+    println!("  Current epoch: {:?}", store.get_current_epoch()?);
+    println!("  Sync cursor: {:?}", store.get_sync_cursor()?);
 
     Ok(())
 }

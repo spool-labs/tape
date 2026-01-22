@@ -1,22 +1,30 @@
 //! Type definitions for tape-store
+//!
+//! This module provides all the types used throughout the tape-store crate:
+//! - Enums: NodeStatus, SpoolStatus, SliceType, EncodingType
+//! - Keys: SpoolEpochKey, SliceKey, PendingRecoveryKey, EpochKey, UnitKey
+//! - Values: SliceInfo, TapeInfo, TrackInfo, SyncProgress, PrimarySliceData, RecoverySliceData
+//! - Wrappers: Pubkey, CommitteeCache, CommitteeMemberInfo
 
+mod enums;
 mod impls;
 pub mod keys;
+mod values;
 
-// Re-export core types
-pub use tape_core::types::{EpochNumber, NodeId};
+// Re-export core types used throughout the crate
+pub use tape_core::types::{EpochNumber, NodeId, SlotNumber};
 pub use tape_crypto::Hash;
 
-// Re-export storage wrapper types
-// Pubkey is a wincode-serializable wrapper around solana_program::pubkey::Pubkey.
-// Convert from Solana's Pubkey using `.into()`.
-pub use impls::Pubkey;
+// Re-export enum types
+pub use enums::{EncodingType, NodeStatus, SliceType, SpoolStatus};
 
-// Re-export keys
-pub use keys::{GcKey, SliceKey, SpoolKey};
+// Re-export key types
+pub use keys::{EpochKey, PendingRecoveryKey, SliceKey, SpoolEpochKey, UnitKey};
 
-// Re-export types from ops module
-pub use crate::ops::{
-    CommitteeCache, CommitteeMemberInfo, HandoffInfo, RecoveryInfo, SliceMeta, SpoolState,
-    SpoolStatus, TrackInfo, MERKLE_HEIGHT,
+// Re-export value types
+pub use values::{
+    PrimarySliceData, RecoverySliceData, SliceInfo, SyncProgress, TapeInfo, TrackInfo,
 };
+
+// Re-export wrapper types
+pub use impls::{CommitteeCache, CommitteeMemberInfo, Pubkey};

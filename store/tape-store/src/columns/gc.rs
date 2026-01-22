@@ -1,15 +1,18 @@
-//! Garbage collection index column family
+//! Garbage collection tracking column family
 
-use crate::types::GcKey;
+use crate::types::EpochNumber;
 use store::Column;
 
-/// GC scheduled index for time-based deletion
-/// Key: GcKey { timestamp: i64, spool_idx: u16, track_address: Pubkey }
-/// Value: unit (presence in GC queue)
-pub struct GcScheduled;
+/// GC progress tracking
+///
+/// Key: String ("started" or "completed")
+/// Value: EpochNumber (last epoch where GC was started/completed)
+///
+/// Used to track GC progress across restarts.
+pub struct Gc;
 
-impl Column for GcScheduled {
-    const CF_NAME: &'static str = "gc/scheduled";
-    type Key = GcKey;
-    type Value = ();
+impl Column for Gc {
+    const CF_NAME: &'static str = "gc";
+    type Key = String;
+    type Value = EpochNumber;
 }

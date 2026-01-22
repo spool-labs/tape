@@ -2,23 +2,30 @@
 //!
 //! This module provides domain-specific operations that guarantee consistency
 //! across multiple column families through atomic batch operations.
+//!
+//! ## Operation Traits
+//!
+//! - `MetaOps`: Node status, cluster hash, current epoch, sync cursor, GC tracking
+//! - `SliceInfoOps`: Blob erasure coding metadata (hashes for verification)
+//! - `TapeInfoOps`: Tape (storage allocation) metadata
+//! - `TrackInfoOps`: Track (blob) metadata and certification
+//! - `SpoolOps`: Epoch-namespaced spool status, sync progress, pending recovery
+//! - `SliceDataOps`: Primary and recovery slice data storage
+//! - `CommitteeOps`: Committee cache by epoch
 
 mod committee;
-mod gc;
-mod handoff;
 mod meta;
-mod recovery;
-mod slice;
+mod slice_data;
+mod slice_info;
 mod spool;
-mod stats;
-mod track;
+mod tape_info;
+mod track_info;
 
-pub use committee::{CommitteeCache, CommitteeMemberInfo, CommitteeOps};
-pub use gc::{delete_track_data, run_epoch_gc, GcEntry, GcOps, GcReason, GcStats};
-pub use handoff::{HandoffInfo, HandoffOps};
+// Re-export operation traits
+pub use committee::CommitteeOps;
 pub use meta::MetaOps;
-pub use recovery::{backoff_delay_secs, is_ready_for_retry, RecoveryInfo, RecoveryOps};
-pub use slice::{SliceMeta, SliceOps, MERKLE_HEIGHT};
-pub use spool::{SpoolOps, SpoolState, SpoolStatus};
-pub use stats::{StatsOps, StorageStats};
-pub use track::{TrackInfo, TrackOps};
+pub use slice_data::SliceDataOps;
+pub use slice_info::SliceInfoOps;
+pub use spool::SpoolOps;
+pub use tape_info::TapeInfoOps;
+pub use track_info::TrackInfoOps;

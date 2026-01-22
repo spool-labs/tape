@@ -1,29 +1,33 @@
-//! Slice column families for data and metadata
+//! Slice data column families for primary and recovery slices
 //!
-//! Key structure: (spool_idx, track_address) - enables efficient iteration by spool
+//! Key structure: (spool_id, track_address) - enables efficient iteration by spool
 
-use crate::ops::SliceMeta;
-use crate::types::SliceKey;
+use crate::types::{PrimarySliceData, RecoverySliceData, SliceKey};
 use store::Column;
 
-/// Slice data storage (large values, uses BlobDB)
-/// Key: SliceKey { spool_idx: u16, track_address: Pubkey }
-/// Value: Vec<u8> (compressed slice data, up to MAX_SLICE_SIZE)
-pub struct SlicesData;
+/// Primary slice data storage (large values, uses BlobDB)
+///
+/// Key: SliceKey (34 bytes: spool_id BE + track_address)
+/// Value: PrimarySliceData (symbols + padding info, typically ~1MB)
+pub struct PrimarySlices;
 
-impl Column for SlicesData {
-    const CF_NAME: &'static str = "slices/data";
+impl Column for PrimarySlices {
+    const CF_NAME: &'static str = "primary_slices";
     type Key = SliceKey;
-    type Value = Vec<u8>;
+    type Value = PrimarySliceData;
 }
 
-/// Slice metadata
-/// Key: SliceKey { spool_idx: u16, track_address: Pubkey }
-/// Value: SliceMeta
-pub struct SlicesMeta;
+/// Recovery slice data storage (large values, uses BlobDB)
+///
+/// Key: SliceKey (34 bytes: spool_id BE + track_address)
+/// Value: RecoverySliceData (packed column symbols, typically ~1MB)
+///
+/// Each recovery column contains parts from all 1024 primary slices,
+/// enabling reconstruction of any missing primary slice.
+pub struct RecoverySlices;
 
-impl Column for SlicesMeta {
-    const CF_NAME: &'static str = "slices/meta";
+impl Column for RecoverySlices {
+    const CF_NAME: &'static str = "recovery_slices";
     type Key = SliceKey;
-    type Value = SliceMeta;
+    type Value = RecoverySliceData;
 }

@@ -1,56 +1,88 @@
-//! Metadata operations for cursor and cluster tracking
+//! Metadata operations for node state tracking
 //!
 //! Provides storage for:
+//! - Node status (Standby/Active/Recovering)
 //! - Cluster genesis hash (for validation on node restart)
-//! - Last processed slot cursor (for resumable block processing)
+//! - Current epoch number
+//! - Sync cursor (last processed slot)
+//! - GC progress (started/completed epochs)
 
-use crate::columns::Meta;
+use crate::columns::{Gc, Meta, SyncCursor};
 use crate::error::{Result, TapeStoreError};
+use crate::types::{EpochNumber, Hash, NodeStatus, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
-use tape_core::types::SlotNumber;
-use tape_crypto::Hash;
 
-/// Key for storing the cluster genesis hash
+// Meta keys
+const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
+const CURRENT_EPOCH_KEY: &str = "current_epoch";
 
-/// Key for storing the last processed slot cursor
-const CURSOR_KEY: &str = "last_processed_slot";
+// GC keys
+const GC_STARTED_KEY: &str = "started";
+const GC_COMPLETED_KEY: &str = "completed";
 
-/// Operations for node metadata (cursor, cluster validation)
+/// Operations for node metadata
 pub trait MetaOps {
-    /// Get the stored cluster genesis hash.
-    ///
-    /// Returns `None` if no hash has been set (fresh node).
-    fn get_cluster_hash(&self) -> Result<Option<Hash>>;
+    // Node status
+    fn get_node_status(&self) -> Result<Option<NodeStatus>>;
+    fn set_node_status(&self, status: NodeStatus) -> Result<()>;
 
-    /// Set the cluster genesis hash.
-    ///
-    /// This should only be set once when the node first starts.
-    /// Returns an error if a hash is already set (use `get_cluster_hash` to check first).
+    // Cluster hash
+    fn get_cluster_hash(&self) -> Result<Option<Hash>>;
     fn set_cluster_hash(&self, hash: Hash) -> Result<()>;
 
-    /// Get the last processed slot cursor.
-    ///
-    /// Returns `None` if no cursor has been set (fresh node).
-    fn get_cursor(&self) -> Result<Option<SlotNumber>>;
+    // Current epoch
+    fn get_current_epoch(&self) -> Result<Option<EpochNumber>>;
+    fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
-    /// Set the last processed slot cursor.
-    ///
-    /// Called after successfully processing a batch of slots.
-    fn set_cursor(&self, slot: SlotNumber) -> Result<()>;
+    // Sync cursor
+    fn get_sync_cursor(&self) -> Result<Option<SlotNumber>>;
+    fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()>;
+
+    // GC epochs
+    fn get_gc_started_epoch(&self) -> Result<Option<EpochNumber>>;
+    fn set_gc_started_epoch(&self, epoch: EpochNumber) -> Result<()>;
+    fn get_gc_completed_epoch(&self) -> Result<Option<EpochNumber>>;
+    fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()>;
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
+    fn get_node_status(&self) -> Result<Option<NodeStatus>> {
+        let key = NODE_STATUS_KEY.to_string();
+        match self.get::<Meta>(&key)? {
+            Some(bytes) => {
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+                let status = match bytes[0] {
+                    0 => NodeStatus::Standby,
+                    1 => NodeStatus::Active,
+                    2 => NodeStatus::Recovering,
+                    _ => NodeStatus::Standby,
+                };
+                Ok(Some(status))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_node_status(&self, status: NodeStatus) -> Result<()> {
+        let key = NODE_STATUS_KEY.to_string();
+        let bytes = vec![status as u8];
+        self.put::<Meta>(&key, &bytes)?;
+        Ok(())
+    }
+
     fn get_cluster_hash(&self) -> Result<Option<Hash>> {
         let key = CLUSTER_HASH_KEY.to_string();
         match self.get::<Meta>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 32 {
-                    return Err(TapeStoreError::Serialization(format!(
-                        "cluster hash: expected 32 bytes, got {}",
-                        bytes.len()
-                    )));
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 32,
+                        actual: bytes.len(),
+                    });
                 }
                 let mut hash_bytes = [0u8; 32];
                 hash_bytes.copy_from_slice(&bytes);
@@ -61,42 +93,66 @@ impl<S: Store> MetaOps for TapeStore<S> {
     }
 
     fn set_cluster_hash(&self, hash: Hash) -> Result<()> {
-        // Check if already set
-        if self.get_cluster_hash()?.is_some() {
-            return Err(TapeStoreError::Serialization(
-                "cluster hash already set".to_string(),
-            ));
-        }
-
         let key = CLUSTER_HASH_KEY.to_string();
         let bytes = hash.as_ref().to_vec();
         self.put::<Meta>(&key, &bytes)?;
         Ok(())
     }
 
-    fn get_cursor(&self) -> Result<Option<SlotNumber>> {
-        let key = CURSOR_KEY.to_string();
+    fn get_current_epoch(&self) -> Result<Option<EpochNumber>> {
+        let key = CURRENT_EPOCH_KEY.to_string();
         match self.get::<Meta>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 8 {
-                    return Err(TapeStoreError::Serialization(format!(
-                        "cursor: expected 8 bytes, got {}",
-                        bytes.len()
-                    )));
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
                 }
-                let mut slot_bytes = [0u8; 8];
-                slot_bytes.copy_from_slice(&bytes);
-                let slot = u64::from_le_bytes(slot_bytes);
-                Ok(Some(SlotNumber(slot)))
+                let mut epoch_bytes = [0u8; 8];
+                epoch_bytes.copy_from_slice(&bytes);
+                let epoch = u64::from_le_bytes(epoch_bytes);
+                Ok(Some(EpochNumber(epoch)))
             }
             None => Ok(None),
         }
     }
 
-    fn set_cursor(&self, slot: SlotNumber) -> Result<()> {
-        let key = CURSOR_KEY.to_string();
-        let bytes = slot.as_u64().to_le_bytes().to_vec();
+    fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let key = CURRENT_EPOCH_KEY.to_string();
+        let bytes = epoch.as_u64().to_le_bytes().to_vec();
         self.put::<Meta>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn get_sync_cursor(&self) -> Result<Option<SlotNumber>> {
+        Ok(self.get::<SyncCursor>(&UnitKey)?)
+    }
+
+    fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()> {
+        self.put::<SyncCursor>(&UnitKey, &slot)?;
+        Ok(())
+    }
+
+    fn get_gc_started_epoch(&self) -> Result<Option<EpochNumber>> {
+        let key = GC_STARTED_KEY.to_string();
+        Ok(self.get::<Gc>(&key)?)
+    }
+
+    fn set_gc_started_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let key = GC_STARTED_KEY.to_string();
+        self.put::<Gc>(&key, &epoch)?;
+        Ok(())
+    }
+
+    fn get_gc_completed_epoch(&self) -> Result<Option<EpochNumber>> {
+        let key = GC_COMPLETED_KEY.to_string();
+        Ok(self.get::<Gc>(&key)?)
+    }
+
+    fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let key = GC_COMPLETED_KEY.to_string();
+        self.put::<Gc>(&key, &epoch)?;
         Ok(())
     }
 }
@@ -111,80 +167,67 @@ mod tests {
     }
 
     #[test]
+    fn test_node_status_roundtrip() {
+        let store = test_store();
+
+        assert!(store.get_node_status().unwrap().is_none());
+
+        store.set_node_status(NodeStatus::Active).unwrap();
+        assert_eq!(store.get_node_status().unwrap(), Some(NodeStatus::Active));
+
+        store.set_node_status(NodeStatus::Recovering).unwrap();
+        assert_eq!(
+            store.get_node_status().unwrap(),
+            Some(NodeStatus::Recovering)
+        );
+    }
+
+    #[test]
     fn test_cluster_hash_roundtrip() {
         let store = test_store();
         let hash = Hash::new_unique();
 
-        // Initially none
         assert!(store.get_cluster_hash().unwrap().is_none());
 
-        // Set and retrieve
         store.set_cluster_hash(hash).unwrap();
-        let retrieved = store.get_cluster_hash().unwrap();
-        assert_eq!(retrieved, Some(hash));
-    }
-
-    #[test]
-    fn test_cluster_hash_set_once() {
-        let store = test_store();
-        let hash1 = Hash::new_unique();
-        let hash2 = Hash::new_unique();
-
-        // First set succeeds
-        store.set_cluster_hash(hash1).unwrap();
-
-        // Second set fails
-        let result = store.set_cluster_hash(hash2);
-        assert!(result.is_err());
-
-        // Original hash unchanged
-        let retrieved = store.get_cluster_hash().unwrap();
-        assert_eq!(retrieved, Some(hash1));
-    }
-
-    #[test]
-    fn test_cursor_roundtrip() {
-        let store = test_store();
-        let slot = SlotNumber(123456789);
-
-        // Initially none
-        assert!(store.get_cursor().unwrap().is_none());
-
-        // Set and retrieve
-        store.set_cursor(slot).unwrap();
-        let retrieved = store.get_cursor().unwrap();
-        assert_eq!(retrieved, Some(slot));
-    }
-
-    #[test]
-    fn test_cursor_update() {
-        let store = test_store();
-
-        // Set initial cursor
-        store.set_cursor(SlotNumber(100)).unwrap();
-        assert_eq!(store.get_cursor().unwrap(), Some(SlotNumber(100)));
-
-        // Update cursor (should overwrite)
-        store.set_cursor(SlotNumber(200)).unwrap();
-        assert_eq!(store.get_cursor().unwrap(), Some(SlotNumber(200)));
-
-        // Update again
-        store.set_cursor(SlotNumber(300)).unwrap();
-        assert_eq!(store.get_cursor().unwrap(), Some(SlotNumber(300)));
-    }
-
-    #[test]
-    fn test_cursor_and_hash_independent() {
-        let store = test_store();
-        let hash = Hash::new_unique();
-        let slot = SlotNumber(999);
-
-        // Set both
-        store.set_cluster_hash(hash).unwrap();
-        store.set_cursor(slot).unwrap();
-
-        // Both retrievable independently
         assert_eq!(store.get_cluster_hash().unwrap(), Some(hash));
-        assert_eq!(store.get_cursor().unwrap(), Some(slot));
+    }
+
+    #[test]
+    fn test_current_epoch_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(12345);
+
+        assert!(store.get_current_epoch().unwrap().is_none());
+
+        store.set_current_epoch(epoch).unwrap();
+        assert_eq!(store.get_current_epoch().unwrap(), Some(epoch));
+    }
+
+    #[test]
+    fn test_sync_cursor_roundtrip() {
+        let store = test_store();
+        let slot = SlotNumber(999999);
+
+        assert!(store.get_sync_cursor().unwrap().is_none());
+
+        store.set_sync_cursor(slot).unwrap();
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(slot));
+    }
+
+    #[test]
+    fn test_gc_epochs_roundtrip() {
+        let store = test_store();
+        let started = EpochNumber(100);
+        let completed = EpochNumber(99);
+
+        assert!(store.get_gc_started_epoch().unwrap().is_none());
+        assert!(store.get_gc_completed_epoch().unwrap().is_none());
+
+        store.set_gc_started_epoch(started).unwrap();
+        store.set_gc_completed_epoch(completed).unwrap();
+
+        assert_eq!(store.get_gc_started_epoch().unwrap(), Some(started));
+        assert_eq!(store.get_gc_completed_epoch().unwrap(), Some(completed));
     }
 }

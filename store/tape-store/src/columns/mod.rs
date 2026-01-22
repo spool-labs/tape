@@ -1,42 +1,62 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 9 column families (down from 16):
-//! - meta: Node configuration and metadata
-//! - tracks: Minimal track info indexed by address
-//! - slices/data: Slice blob data (BlobDB)
-//! - slices/meta: Slice metadata with merkle proofs
-//! - spools/assigned: Spool assignment tracking
-//! - committee: Committee cache by epoch
-//! - pending/recover: Recovery queue
-//! - pending/handoff: Handoff queue
-//! - gc/scheduled: Garbage collection index
+//! This module defines 12 column families:
+//!
+//! ## Metadata Columns
+//! - `meta`: Node configuration and metadata (String -> Vec<u8>)
+//! - `slice_info`: Blob erasure coding metadata (Pubkey -> SliceInfo)
+//! - `tape_info`: Tape (storage allocation) metadata (Pubkey -> TapeInfo)
+//! - `track_info`: Track (blob) metadata (Pubkey -> TrackInfo)
+//!
+//! ## Sync Columns
+//! - `sync_cursor`: Last processed slot (UnitKey -> SlotNumber)
+//! - `gc`: GC progress tracking (String -> EpochNumber)
+//!
+//! ## Epoch-Namespaced Spool Columns
+//! - `spool_status`: Spool status per epoch (SpoolEpochKey -> SpoolStatus)
+//! - `sync_cursors`: Sync cursors per epoch (SpoolEpochKey -> SyncProgress)
+//! - `recovery_queue`: Pending recovery queue (PendingRecoveryKey -> ())
+//!
+//! ## Slice Data Columns (BlobDB)
+//! - `primary_slices`: Primary slice data (SliceKey -> PrimarySliceData)
+//! - `recovery_slices`: Recovery slice data (SliceKey -> RecoverySliceData)
+//!
+//! ## Committee Column
+//! - `committee`: Committee cache by epoch (EpochKey -> CommitteeCache)
 
 pub mod committee;
+pub mod cursor;
 pub mod gc;
 pub mod meta;
-pub mod pending;
+pub mod slice_info;
 pub mod slices;
-pub mod spools;
-pub mod tracks;
+pub mod spool;
+pub mod tape_info;
+pub mod track_info;
 
 // Re-export all column types
 pub use committee::Committee;
-pub use gc::GcScheduled;
+pub use cursor::SyncCursor;
+pub use gc::Gc;
 pub use meta::Meta;
-pub use pending::{PendingHandoff, PendingRecover};
-pub use slices::{SlicesData, SlicesMeta};
-pub use spools::SpoolsAssigned;
-pub use tracks::Tracks;
+pub use slice_info::SliceInfoCol;
+pub use slices::{PrimarySlices, RecoverySlices};
+pub use spool::{SpoolAssigned, SpoolPendingRecovery, SpoolSyncProgress};
+pub use tape_info::TapeInfoCol;
+pub use track_info::TrackInfoCol;
 
-/// List of all column family names in the store (9 total)
+/// List of all column family names in the store (12 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
-    "tracks",
-    "slices/data",
-    "slices/meta",
-    "spools/assigned",
+    "slice_info",
+    "tape_info",
+    "track_info",
+    "sync_cursor",
+    "gc",
+    "spool_status",
+    "sync_cursors",
+    "recovery_queue",
+    "primary_slices",
+    "recovery_slices",
     "committee",
-    "pending/recover",
-    "pending/handoff",
-    "gc/scheduled",
 ];

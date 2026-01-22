@@ -1,6 +1,7 @@
 //! Error types for tape-store operations
 
 use crate::types::Pubkey;
+use tape_core::types::EpochNumber;
 use thiserror::Error;
 
 /// Errors that can occur during tape-store operations
@@ -10,33 +11,37 @@ pub enum TapeStoreError {
     #[error("Store error: {0}")]
     Store(#[from] store::Error),
 
-    /// Track not found
-    #[error("Track not found: {0:?}")]
-    TrackNotFound(Pubkey),
+    /// Slice info not found
+    #[error("Slice info not found: {0:?}")]
+    SliceInfoNotFound(Pubkey),
 
-    /// Slice not found
-    #[error("Slice not found: spool={0}, track={1:?}")]
-    SliceNotFound(u16, Pubkey),
+    /// Tape info not found
+    #[error("Tape info not found: {0:?}")]
+    TapeInfoNotFound(Pubkey),
+
+    /// Track info not found
+    #[error("Track info not found: {0:?}")]
+    TrackInfoNotFound(Pubkey),
+
+    /// Primary slice not found
+    #[error("Primary slice not found: spool={0}, track={1:?}")]
+    PrimarySliceNotFound(u16, Pubkey),
+
+    /// Recovery slice not found
+    #[error("Recovery slice not found: spool={0}, track={1:?}")]
+    RecoverySliceNotFound(u16, Pubkey),
 
     /// Spool not found
-    #[error("Spool not found: {0}")]
-    SpoolNotFound(u16),
+    #[error("Spool not found: epoch={0}, spool={1}")]
+    SpoolNotFound(EpochNumber, u16),
 
     /// Committee not found for epoch
     #[error("Committee not found for epoch {0}")]
-    CommitteeNotFound(u64),
+    CommitteeNotFound(EpochNumber),
 
-    /// Recovery entry not found
-    #[error("Recovery entry not found: spool={0}, track={1:?}")]
-    RecoveryNotFound(u16, Pubkey),
-
-    /// Handoff entry not found
-    #[error("Handoff entry not found: spool={0}, track={1:?}")]
-    HandoffNotFound(u16, Pubkey),
-
-    /// Invalid slice count
-    #[error("Invalid slice count: expected 1024, got {0}")]
-    InvalidSliceCount(usize),
+    /// Invalid data length
+    #[error("Invalid data length: expected {expected}, got {actual}")]
+    InvalidDataLength { expected: usize, actual: usize },
 
     /// Serialization error
     #[error("Serialization error: {0}")]

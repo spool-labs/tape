@@ -1,88 +1,258 @@
-//! Spool management operations
+//! Spool operations (epoch-namespaced)
 //!
-//! Tracks spools assigned to this node and their state.
+//! Provides epoch-namespaced spool tracking for crash-safe epoch transitions.
+//! All spool state is keyed by (epoch, spool_id) to prevent stale state after crash.
 
-use crate::columns::*;
-use crate::error::Result;
-use crate::types::{EpochNumber, Pubkey, SpoolKey};
+use crate::columns::{SpoolAssigned, SpoolPendingRecovery, SpoolSyncProgress};
+use crate::error::{Result, TapeStoreError};
+use crate::types::{
+    EpochNumber, PendingRecoveryKey, Pubkey, SliceType, SpoolEpochKey, SpoolStatus, SyncProgress,
+};
 use crate::TapeStore;
-use serde::{Deserialize, Serialize};
-use store::Store;
-use wincode_derive::{SchemaRead, SchemaWrite};
+use store::{Column, Store};
 
-/// State of an assigned spool
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SpoolState {
-    /// Current status of this spool
-    pub status: SpoolStatus,
-    /// Epoch when this spool was assigned to us
-    pub assigned_epoch: EpochNumber,
-    /// Last track synced (for resumption during epoch transitions)
-    pub sync_cursor: Option<Pubkey>,
-}
-
-impl Default for SpoolState {
-    fn default() -> Self {
-        Self {
-            status: SpoolStatus::Active,
-            assigned_epoch: EpochNumber(0),
-            sync_cursor: None,
-        }
-    }
-}
-
-/// Status of a spool in its lifecycle
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum SpoolStatus {
-    /// Normal operation - accepting and serving slices
-    Active = 0,
-    /// Receiving slices from previous owner
-    Syncing = 1,
-    /// Sending slices to next owner
-    Handoff = 2,
-}
-
-/// High-level operations for spool management
+/// Operations for epoch-namespaced spool management
 pub trait SpoolOps {
-    /// Store spool state
-    ///
-    /// # Arguments
-    /// * `spool_idx` - The spool index
-    /// * `state` - The spool state to store
-    fn put_spool_state(&self, spool_idx: u16, state: SpoolState) -> Result<()>;
+    // Spool status
+    fn get_spool_status(&self, epoch: EpochNumber, spool_id: u16) -> Result<Option<SpoolStatus>>;
+    fn set_spool_status(&self, epoch: EpochNumber, spool_id: u16, status: SpoolStatus)
+        -> Result<()>;
+    fn remove_spool_assignment(&self, epoch: EpochNumber, spool_id: u16) -> Result<()>;
 
-    /// Get spool state
-    ///
-    /// # Arguments
-    /// * `spool_idx` - The spool index
-    ///
-    /// # Returns
-    /// The spool state if found
-    fn get_spool_state(&self, spool_idx: u16) -> Result<Option<SpoolState>>;
+    // Iterate assigned spools for an epoch
+    fn iter_assigned_spools(
+        &self,
+        epoch: EpochNumber,
+    ) -> Result<impl Iterator<Item = Result<(u16, SpoolStatus)>>>;
 
-    /// Get all spools assigned to this node
-    ///
-    /// # Returns
-    /// Vector of spool indices we own
-    fn get_my_spools(&self) -> Result<Vec<u16>>;
+    // Sync progress
+    fn get_sync_progress(&self, epoch: EpochNumber, spool_id: u16)
+        -> Result<Option<SyncProgress>>;
+    fn set_sync_progress(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        progress: SyncProgress,
+    ) -> Result<()>;
+    fn clear_sync_progress(&self, epoch: EpochNumber, spool_id: u16) -> Result<()>;
+
+    // Pending recovery
+    fn add_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<()>;
+    fn remove_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<()>;
+    fn has_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<bool>;
+
+    // Iterate pending recoveries for a spool
+    fn iter_pending_recoveries(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+    ) -> Result<impl Iterator<Item = Result<(SliceType, Pubkey)>>>;
+
+    // Cleanup old epoch state
+    fn cleanup_epoch_state(&self, epoch: EpochNumber) -> Result<()>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
-    fn put_spool_state(&self, spool_idx: u16, state: SpoolState) -> Result<()> {
-        self.put::<SpoolsAssigned>(&SpoolKey(spool_idx), &state)?;
+    fn get_spool_status(&self, epoch: EpochNumber, spool_id: u16) -> Result<Option<SpoolStatus>> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        Ok(self.get::<SpoolAssigned>(&key)?)
+    }
+
+    fn set_spool_status(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        status: SpoolStatus,
+    ) -> Result<()> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        self.put::<SpoolAssigned>(&key, &status)?;
         Ok(())
     }
 
-    fn get_spool_state(&self, spool_idx: u16) -> Result<Option<SpoolState>> {
-        let state = self.get::<SpoolsAssigned>(&SpoolKey(spool_idx))?;
-        Ok(state)
+    fn remove_spool_assignment(&self, epoch: EpochNumber, spool_id: u16) -> Result<()> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        self.delete::<SpoolAssigned>(&key)?;
+        Ok(())
     }
 
-    fn get_my_spools(&self) -> Result<Vec<u16>> {
-        let entries = self.iter::<SpoolsAssigned>()?;
-        let spools: Vec<u16> = entries.into_iter().map(|(key, _state)| key.0).collect();
-        Ok(spools)
+    fn iter_assigned_spools(
+        &self,
+        epoch: EpochNumber,
+    ) -> Result<impl Iterator<Item = Result<(u16, SpoolStatus)>>> {
+        let prefix = SpoolEpochKey::epoch_prefix(epoch.as_u64());
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SpoolAssigned::CF_NAME, &prefix)?;
+
+        Ok(iter.filter_map(|(key_bytes, value_bytes)| {
+            let key: SpoolEpochKey = match wincode::deserialize(&key_bytes) {
+                Ok(k) => k,
+                Err(e) => {
+                    return Some(Err(TapeStoreError::Serialization(format!(
+                        "spool key: {}",
+                        e
+                    ))))
+                }
+            };
+            let status: SpoolStatus = match wincode::deserialize(&value_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Some(Err(TapeStoreError::Serialization(format!(
+                        "spool status: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(Ok((key.spool_id, status)))
+        }))
+    }
+
+    fn get_sync_progress(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+    ) -> Result<Option<SyncProgress>> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        Ok(self.get::<SpoolSyncProgress>(&key)?)
+    }
+
+    fn set_sync_progress(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        progress: SyncProgress,
+    ) -> Result<()> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        self.put::<SpoolSyncProgress>(&key, &progress)?;
+        Ok(())
+    }
+
+    fn clear_sync_progress(&self, epoch: EpochNumber, spool_id: u16) -> Result<()> {
+        let key = SpoolEpochKey::new(epoch.as_u64(), spool_id);
+        self.delete::<SpoolSyncProgress>(&key)?;
+        Ok(())
+    }
+
+    fn add_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<()> {
+        let key = PendingRecoveryKey::new(epoch.as_u64(), spool_id, slice_type, track_address);
+        self.put::<SpoolPendingRecovery>(&key, &())?;
+        Ok(())
+    }
+
+    fn remove_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<()> {
+        let key = PendingRecoveryKey::new(epoch.as_u64(), spool_id, slice_type, track_address);
+        self.delete::<SpoolPendingRecovery>(&key)?;
+        Ok(())
+    }
+
+    fn has_pending_recovery(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+        slice_type: SliceType,
+        track_address: Pubkey,
+    ) -> Result<bool> {
+        let key = PendingRecoveryKey::new(epoch.as_u64(), spool_id, slice_type, track_address);
+        Ok(self.contains::<SpoolPendingRecovery>(&key)?)
+    }
+
+    fn iter_pending_recoveries(
+        &self,
+        epoch: EpochNumber,
+        spool_id: u16,
+    ) -> Result<impl Iterator<Item = Result<(SliceType, Pubkey)>>> {
+        let prefix = PendingRecoveryKey::epoch_spool_prefix(epoch.as_u64(), spool_id);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SpoolPendingRecovery::CF_NAME, &prefix)?;
+
+        Ok(iter.filter_map(|(key_bytes, _value_bytes)| {
+            let key: PendingRecoveryKey = match wincode::deserialize(&key_bytes) {
+                Ok(k) => k,
+                Err(e) => {
+                    return Some(Err(TapeStoreError::Serialization(format!(
+                        "pending recovery key: {}",
+                        e
+                    ))))
+                }
+            };
+            Some(Ok((key.slice_type, key.track_address)))
+        }))
+    }
+
+    fn cleanup_epoch_state(&self, epoch: EpochNumber) -> Result<()> {
+        // Delete all spool assignments for the epoch
+        let prefix = SpoolEpochKey::epoch_prefix(epoch.as_u64());
+
+        // Collect keys to delete (can't delete while iterating)
+        let assigned_keys: Vec<SpoolEpochKey> = self
+            .inner()
+            .inner()
+            .iter_prefix(SpoolAssigned::CF_NAME, &prefix)?
+            .filter_map(|(key_bytes, _)| wincode::deserialize(&key_bytes).ok())
+            .collect();
+
+        for key in assigned_keys {
+            self.delete::<SpoolAssigned>(&key)?;
+        }
+
+        // Delete all sync progress for the epoch
+        let progress_keys: Vec<SpoolEpochKey> = self
+            .inner()
+            .inner()
+            .iter_prefix(SpoolSyncProgress::CF_NAME, &prefix)?
+            .filter_map(|(key_bytes, _)| wincode::deserialize(&key_bytes).ok())
+            .collect();
+
+        for key in progress_keys {
+            self.delete::<SpoolSyncProgress>(&key)?;
+        }
+
+        // Delete all pending recovery for the epoch
+        let pending_keys: Vec<PendingRecoveryKey> = self
+            .inner()
+            .inner()
+            .iter_prefix(SpoolPendingRecovery::CF_NAME, &epoch.as_u64().to_be_bytes())?
+            .filter_map(|(key_bytes, _)| wincode::deserialize(&key_bytes).ok())
+            .collect();
+
+        for key in pending_keys {
+            self.delete::<SpoolPendingRecovery>(&key)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -91,82 +261,206 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
 
-    #[test]
-    fn put_and_get_spool_state() {
-        let store = TapeStore::new(MemoryStore::new());
-        let state = SpoolState {
-            status: SpoolStatus::Active,
-            assigned_epoch: EpochNumber(100),
-            sync_cursor: None,
-        };
-
-        store.put_spool_state(42, state.clone()).unwrap();
-        let retrieved = store.get_spool_state(42).unwrap();
-        assert_eq!(retrieved, Some(state));
+    fn test_store() -> TapeStore<MemoryStore> {
+        TapeStore::new(MemoryStore::new())
     }
 
     #[test]
-    fn get_my_spools() {
-        let store = TapeStore::new(MemoryStore::new());
+    fn test_spool_status_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
+        let spool_id = 42;
 
-        // Add some spools
-        for spool_idx in [10, 42, 100, 500] {
-            let state = SpoolState {
-                status: SpoolStatus::Active,
-                assigned_epoch: EpochNumber(100),
-                sync_cursor: None,
-            };
-            store.put_spool_state(spool_idx, state).unwrap();
-        }
+        assert!(store.get_spool_status(epoch, spool_id).unwrap().is_none());
 
-        let spools = store.get_my_spools().unwrap();
-        assert_eq!(spools.len(), 4);
+        store
+            .set_spool_status(epoch, spool_id, SpoolStatus::Active)
+            .unwrap();
 
-        // Spools should be returned in sorted order (due to BE encoding)
-        assert_eq!(spools, vec![10, 42, 100, 500]);
+        assert_eq!(
+            store.get_spool_status(epoch, spool_id).unwrap(),
+            Some(SpoolStatus::Active)
+        );
     }
 
     #[test]
-    fn spool_status_transitions() {
-        let store = TapeStore::new(MemoryStore::new());
+    fn test_spool_status_epoch_isolation() {
+        let store = test_store();
+        let epoch1 = EpochNumber(100);
+        let epoch2 = EpochNumber(101);
+        let spool_id = 42;
 
-        // Start as syncing
-        let mut state = SpoolState {
-            status: SpoolStatus::Syncing,
-            assigned_epoch: EpochNumber(100),
-            sync_cursor: None,
-        };
-        store.put_spool_state(42, state.clone()).unwrap();
+        store
+            .set_spool_status(epoch1, spool_id, SpoolStatus::Active)
+            .unwrap();
+        store
+            .set_spool_status(epoch2, spool_id, SpoolStatus::Sync)
+            .unwrap();
 
-        // Transition to active
-        state.status = SpoolStatus::Active;
-        store.put_spool_state(42, state.clone()).unwrap();
-
-        let retrieved = store.get_spool_state(42).unwrap().unwrap();
-        assert_eq!(retrieved.status, SpoolStatus::Active);
-
-        // Transition to handoff
-        state.status = SpoolStatus::Handoff;
-        store.put_spool_state(42, state).unwrap();
-
-        let retrieved = store.get_spool_state(42).unwrap().unwrap();
-        assert_eq!(retrieved.status, SpoolStatus::Handoff);
+        assert_eq!(
+            store.get_spool_status(epoch1, spool_id).unwrap(),
+            Some(SpoolStatus::Active)
+        );
+        assert_eq!(
+            store.get_spool_status(epoch2, spool_id).unwrap(),
+            Some(SpoolStatus::Sync)
+        );
     }
 
     #[test]
-    fn sync_cursor_tracking() {
-        let store = TapeStore::new(MemoryStore::new());
-        let last_track = Pubkey::new_unique();
+    fn test_iter_assigned_spools() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
 
-        let state = SpoolState {
-            status: SpoolStatus::Syncing,
-            assigned_epoch: EpochNumber(100),
-            sync_cursor: Some(last_track),
+        store
+            .set_spool_status(epoch, 10, SpoolStatus::Active)
+            .unwrap();
+        store
+            .set_spool_status(epoch, 20, SpoolStatus::Sync)
+            .unwrap();
+        store
+            .set_spool_status(epoch, 30, SpoolStatus::Recover)
+            .unwrap();
+
+        // Different epoch should not appear
+        store
+            .set_spool_status(EpochNumber(99), 40, SpoolStatus::Active)
+            .unwrap();
+
+        let spools: Vec<(u16, SpoolStatus)> = store
+            .iter_assigned_spools(epoch)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(spools.len(), 3);
+    }
+
+    #[test]
+    fn test_sync_progress_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
+        let spool_id = 42;
+
+        let progress = SyncProgress {
+            last_synced_track: Some(Pubkey::new_unique()),
+            slice_type: SliceType::Recovery,
         };
 
-        store.put_spool_state(42, state).unwrap();
+        assert!(store.get_sync_progress(epoch, spool_id).unwrap().is_none());
 
-        let retrieved = store.get_spool_state(42).unwrap().unwrap();
-        assert_eq!(retrieved.sync_cursor, Some(last_track));
+        store
+            .set_sync_progress(epoch, spool_id, progress.clone())
+            .unwrap();
+
+        assert_eq!(
+            store.get_sync_progress(epoch, spool_id).unwrap(),
+            Some(progress)
+        );
+
+        store.clear_sync_progress(epoch, spool_id).unwrap();
+        assert!(store.get_sync_progress(epoch, spool_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_pending_recovery() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
+        let spool_id = 42;
+        let track = Pubkey::new_unique();
+
+        assert!(!store
+            .has_pending_recovery(epoch, spool_id, SliceType::Primary, track)
+            .unwrap());
+
+        store
+            .add_pending_recovery(epoch, spool_id, SliceType::Primary, track)
+            .unwrap();
+
+        assert!(store
+            .has_pending_recovery(epoch, spool_id, SliceType::Primary, track)
+            .unwrap());
+
+        store
+            .remove_pending_recovery(epoch, spool_id, SliceType::Primary, track)
+            .unwrap();
+
+        assert!(!store
+            .has_pending_recovery(epoch, spool_id, SliceType::Primary, track)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_iter_pending_recoveries() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
+        let spool_id = 42;
+
+        let track1 = Pubkey::new_unique();
+        let track2 = Pubkey::new_unique();
+        let track3 = Pubkey::new_unique();
+
+        store
+            .add_pending_recovery(epoch, spool_id, SliceType::Primary, track1)
+            .unwrap();
+        store
+            .add_pending_recovery(epoch, spool_id, SliceType::Recovery, track2)
+            .unwrap();
+        store
+            .add_pending_recovery(epoch, spool_id, SliceType::Primary, track3)
+            .unwrap();
+
+        // Different spool should not appear
+        store
+            .add_pending_recovery(epoch, 99, SliceType::Primary, Pubkey::new_unique())
+            .unwrap();
+
+        let pending: Vec<(SliceType, Pubkey)> = store
+            .iter_pending_recoveries(epoch, spool_id)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn test_cleanup_epoch_state() {
+        let store = test_store();
+        let epoch = EpochNumber(100);
+
+        // Add some state
+        store
+            .set_spool_status(epoch, 10, SpoolStatus::Active)
+            .unwrap();
+        store
+            .set_spool_status(epoch, 20, SpoolStatus::Sync)
+            .unwrap();
+        store
+            .set_sync_progress(epoch, 10, SyncProgress::default())
+            .unwrap();
+        store
+            .add_pending_recovery(epoch, 10, SliceType::Primary, Pubkey::new_unique())
+            .unwrap();
+
+        // State exists
+        assert!(store.get_spool_status(epoch, 10).unwrap().is_some());
+        assert!(store.get_spool_status(epoch, 20).unwrap().is_some());
+        assert!(store.get_sync_progress(epoch, 10).unwrap().is_some());
+
+        // Cleanup
+        store.cleanup_epoch_state(epoch).unwrap();
+
+        // State is gone
+        assert!(store.get_spool_status(epoch, 10).unwrap().is_none());
+        assert!(store.get_spool_status(epoch, 20).unwrap().is_none());
+        assert!(store.get_sync_progress(epoch, 10).unwrap().is_none());
+
+        let pending: Vec<_> = store
+            .iter_pending_recoveries(epoch, 10)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(pending.is_empty());
     }
 }
