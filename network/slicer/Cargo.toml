@@ -22,6 +22,7 @@ wincode = { version = "0.2", features = ["derive"] }
 reed-solomon-simd = "3"
 thiserror = "1.0"
 lazy_static = "1.4"
+rayon = "1.10"
 
 
 [dev-dependencies]

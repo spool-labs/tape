@@ -11550,6 +11550,7 @@ dependencies = [
  "lazy_static",
  "num_enum",
  "rand 0.8.5",
+ "rayon",
  "reed-solomon-simd",
  "serde",
  "serde_json",
