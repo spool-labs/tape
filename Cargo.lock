@@ -11547,6 +11547,7 @@ name = "tape-slicer"
 version = "0.3.0"
 dependencies = [
  "bytemuck",
+ "lazy_static",
  "num_enum",
  "rand 0.8.5",
  "reed-solomon-simd",

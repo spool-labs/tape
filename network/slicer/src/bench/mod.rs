@@ -6,3 +6,4 @@ pub mod rotation_comparison;
 pub mod striped_bench;
 pub mod nested_bench;
 pub mod lrc_comparison;
+pub mod all_comparison;
