@@ -26,7 +26,7 @@ pub use codec::{DEFAULT_STRIPE_SIZE, ROTATION_STEP, STRIPE_SIZES, pick_stripe_si
 pub use striped::StripedSlicer;
 pub use rotated::RotatedSlicer;
 pub use recovery::{RecoveryCodec, RecoveryError, RecoveryLayout, RowEncodeError};
-pub use nested::{NestedSlicer, NestedEncodeError, NestedDecodeError, StreamRecoveryResult, MIN_SEGMENT_SIZE};
+pub use nested::{NestedSlicer, NestedEncodeError, NestedDecodeError, EncodeResult, MIN_SEGMENT_SIZE};
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
 pub use reed_solomon::MAX_SLICE_BYTES;

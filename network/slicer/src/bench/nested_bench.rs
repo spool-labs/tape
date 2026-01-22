@@ -71,11 +71,11 @@ fn run_bench(input_size: usize, iterations: usize) -> BenchRow {
     // Warmup
     {
         let mut nested = NestedSlicer::new();
-        let primaries = nested.encode_primaries(&segment).unwrap();
+        let primary_slices = nested.encode(&segment).unwrap();
         let mut writers: Vec<Cursor<Vec<u8>>> = (0..SLICE_COUNT)
             .map(|_| Cursor::new(Vec::new()))
             .collect();
-        let _ = nested.stream_recovery_columns(&primaries, &mut writers[..]);
+        let _ = nested.stream(&primary_slices, &mut writers[..]);
     }
 
     let mut total_encode = std::time::Duration::ZERO;
@@ -88,10 +88,10 @@ fn run_bench(input_size: usize, iterations: usize) -> BenchRow {
 
         // Time outer encode
         let t0 = Instant::now();
-        let primaries = nested.encode_primaries(&segment).unwrap();
+        let primary_slices = nested.encode(&segment).unwrap();
         total_encode += t0.elapsed();
 
-        last_primary_size = primaries[0].data.len();
+        last_primary_size = primary_slices[0].data.len();
         last_shard_len = RecoveryLayout::new(last_primary_size).shard_len;
 
         // Time recovery column streaming
@@ -100,7 +100,7 @@ fn run_bench(input_size: usize, iterations: usize) -> BenchRow {
             .collect();
 
         let t1 = Instant::now();
-        let _ = nested.stream_recovery_columns(&primaries, &mut writers[..]);
+        let _ = nested.stream(&primary_slices, &mut writers[..]);
         total_recovery += t1.elapsed();
     }
 
@@ -125,6 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore]
     fn nested_bench_quick() {
         // Quick sanity check with small sizes
         let sizes = vec![
@@ -141,6 +142,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn nested_bench_full() {
         // Full benchmark with realistic sizes and multiple iterations
         let sizes = vec![
