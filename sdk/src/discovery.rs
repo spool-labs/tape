@@ -33,7 +33,7 @@
 //! ```
 
 use rpc_client::{RpcConfig, RpcClient};
-use tape_core::erasure::SLICE_COUNT;
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::SpoolAssignment;
 use tape_core::system::Committee;
 use tape_core::types::network::NetworkAddress;
@@ -181,7 +181,7 @@ pub struct NetworkState {
     pub committee: Committee<MEMBER_COUNT>,
 
     /// The current spool assignment from on-chain System state.
-    pub spool_assignment: SpoolAssignment<SLICE_COUNT>,
+    pub spool_assignment: SpoolAssignment<SPOOL_COUNT>,
 
     /// Successfully resolved node addresses as (member_index, NetworkAddress) pairs.
     pub node_addresses: Vec<(usize, NetworkAddress)>,

@@ -365,7 +365,7 @@ mod tests {
     use tape_core::spooler::SpoolAssignment;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{NodeId, VersionId};
-    use tape_core::erasure::SLICE_COUNT;
+    use tape_core::erasure::SPOOL_COUNT;
     use crate::program::MEMBER_COUNT;
 
     fn make_member(id: u64, stake: u64) -> CommitteeMember {
@@ -405,8 +405,8 @@ mod tests {
             committee_prev,
             committee,
             committee_next,
-            spools_prev: SpoolAssignment::<SLICE_COUNT>::zeroed(),
-            spools: SpoolAssignment::<SLICE_COUNT>::zeroed(),
+            spools_prev: SpoolAssignment::<SPOOL_COUNT>::zeroed(),
+            spools: SpoolAssignment::<SPOOL_COUNT>::zeroed(),
         }
     }
 

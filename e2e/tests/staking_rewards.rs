@@ -18,6 +18,7 @@
 use std::time::Duration;
 
 use serial_test::serial;
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::types::EpochNumber;
 use tape_e2e::{
     TestContext,
@@ -352,7 +353,7 @@ async fn test_stake_proportional_spool_allocation() {
         println!("  Lowest stake: {} with {} spools", lowest_stake, lowest_weight);
 
         // Higher stake should generally mean more or equal weight
-        // (capped at MAX_SPOOL_ALLOCATION per node = 51 spools max = 1024/20)
+        // (capped at MAX_SPOOL_ALLOCATION per node = 50 spools max = 1000/20)
         if highest_stake > lowest_stake * 2 {
             println!("  Stake ratio: {:.2}x", highest_stake as f64 / lowest_stake as f64);
             println!("  Weight ratio: {:.2}x", highest_weight as f64 / lowest_weight.max(1) as f64);
@@ -369,11 +370,11 @@ async fn test_stake_proportional_spool_allocation() {
 
     // Verify total allocation
     let total_committee_weight: u64 = members.iter().map(|m| m.weight as u64).sum();
-    println!("\nTotal spool allocation: {} / 1024", total_committee_weight);
+    println!("\nTotal spool allocation: {} / {}", total_committee_weight, SPOOL_COUNT);
 
     assert!(
-        total_committee_weight <= 1024,
-        "Total weight should not exceed SLICE_COUNT (1024)"
+        total_committee_weight <= SPOOL_COUNT as u64,
+        "Total weight should not exceed SPOOL_COUNT ({})", SPOOL_COUNT
     );
 
     println!("\nTest passed: Stake-proportional spool allocation verified");

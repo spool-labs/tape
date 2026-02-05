@@ -18,7 +18,7 @@ use crate::error::UploadError;
 use crate::routing::SliceRouter;
 
 // Re-export erasure coding constants from tape-core
-pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
+pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SPOOL_COUNT};
 // Re-export spool types for convenience
 pub use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 
@@ -246,7 +246,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
 /// Builder for constructing a SliceRouter from system state.
 pub fn build_router<const MEMBERS: usize>(
     committee: Committee<MEMBERS>,
-    spool_assignment: SpoolAssignment<SLICE_COUNT>,
+    spool_assignment: SpoolAssignment<SPOOL_COUNT>,
 ) -> SliceRouter<MEMBERS> {
     SliceRouter::new(spool_assignment, committee)
 }
@@ -280,8 +280,8 @@ mod tests {
         }
 
         // Create uniform spool assignment
-        let mut spools = [0u8; SLICE_COUNT];
-        for i in 0..SLICE_COUNT {
+        let mut spools = [0u8; SPOOL_COUNT];
+        for i in 0..SPOOL_COUNT {
             spools[i] = (i % member_count) as u8;
         }
         let assignment = SpoolAssignment::new(spools);
@@ -291,9 +291,9 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(DATA_SLICES, 683);
-        assert_eq!(PARITY_SLICES, 341);
-        assert_eq!(DATA_SLICES + PARITY_SLICES, SLICE_COUNT);
+        assert_eq!(DATA_SLICES, 10);
+        assert_eq!(PARITY_SLICES, 10);
+        assert_eq!(DATA_SLICES + PARITY_SLICES, 20);
     }
 
     #[test]
@@ -334,7 +334,7 @@ mod tests {
         let member = CommitteeMember::new(NodeId::new(1), Coin::<TAPE>::new(1000));
         let _ = committee.try_join(&member);
 
-        let spools = [0u8; SLICE_COUNT];
+        let spools = [0u8; SPOOL_COUNT];
         let assignment = SpoolAssignment::new(spools);
 
         let router = build_router(committee, assignment);

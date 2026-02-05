@@ -1343,6 +1343,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
+name = "clay-codes"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6b344b632f8ebc6b452329c409cb6e0a071b34407c8e4f988b2359cc6104c53"
+dependencies = [
+ "reed-solomon-erasure",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11474,7 +11483,6 @@ dependencies = [
  "tape-node-api",
  "tape-node-client",
  "tape-sdk",
- "tape-slicer",
  "tape-store",
  "thiserror 2.0.17",
  "tokio",
@@ -11547,10 +11555,9 @@ name = "tape-slicer"
 version = "0.3.0"
 dependencies = [
  "bytemuck",
- "lazy_static",
+ "clay-codes",
  "num_enum",
  "rand 0.8.5",
- "rayon",
  "reed-solomon-simd",
  "serde",
  "serde_json",

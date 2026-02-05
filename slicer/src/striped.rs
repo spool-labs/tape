@@ -4,21 +4,15 @@
 //! This bounds memory usage while handling arbitrarily large blobs.
 
 use crate::api::Slicer;
-use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use crate::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
 use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
 
 /// A striped slicer that splits blobs into multiple stripes.
 ///
-/// Each stripe is RS-encoded into SLICE_COUNT shards. Shards are appended
+/// Each stripe is Clay-encoded into SLICE_COUNT shards. Shards are appended
 /// to output slices using identity mapping (shard N -> slice N).
-///
-/// Automatically selects optimal stripe size based on blob size:
-/// - ≤ 16 KB: 16 KB stripe
-/// - 16-64 KB: 64 KB stripe
-/// - 64-256 KB: 256 KB stripe
-/// - > 256 KB: 512 KB stripe
 ///
 /// For fair load distribution across nodes, use `RotatedSlicer` instead.
 pub struct StripedSlicer {
@@ -55,7 +49,7 @@ impl Default for StripedSlicer {
 impl Slicer for StripedSlicer {
     const MAX_DATA_SIZE: usize = usize::MAX;
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
-    const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
+    const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
         self.codec.encode_adaptive(blob)
@@ -92,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_stripe_size_constant() {
-        assert_eq!(DEFAULT_STRIPE_SIZE, 512 * 1024);
+        assert_eq!(DEFAULT_STRIPE_SIZE, 10_000_000);
     }
 
     #[test]
@@ -143,8 +137,8 @@ mod tests {
         let slices = slicer.encode(Blob::from(payload.clone())).unwrap();
         let mut opt = to_opt(&slices);
 
-        // Keep enough slices: some data (first 400) + all parity (341)
-        let mut keep_indices: Vec<usize> = (0..400).collect();
+        // Keep some data slices (first 5) + all parity slices
+        let mut keep_indices: Vec<usize> = (0..5).collect();
         keep_indices.extend(DATA_SLICES..SLICE_COUNT);
         keep_only(&mut opt, &keep_indices);
 

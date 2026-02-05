@@ -29,7 +29,7 @@
 
 use std::net::SocketAddr;
 
-use tape_core::erasure::SLICE_COUNT;
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{NetworkAddress, NodeId};
@@ -37,7 +37,7 @@ use tape_core::types::{NetworkAddress, NodeId};
 /// Error types for routing operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingError {
-    /// The slice index is out of range (must be < SLICE_COUNT).
+    /// The slice index is out of range (must be < SPOOL_COUNT).
     InvalidSliceIndex(SpoolIndex),
     /// The member index from spool assignment points to an invalid committee slot.
     InvalidMemberIndex(u8),
@@ -52,7 +52,7 @@ pub enum RoutingError {
 impl std::fmt::Display for RoutingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidSliceIndex(idx) => write!(f, "invalid slice index: {} (max {})", idx, SLICE_COUNT - 1),
+            Self::InvalidSliceIndex(idx) => write!(f, "invalid slice index: {} (max {})", idx, SPOOL_COUNT - 1),
             Self::InvalidMemberIndex(idx) => write!(f, "invalid member index: {}", idx),
             Self::MemberNotFound(idx) => write!(f, "committee member not found at index {}", idx),
             Self::AddressResolutionFailed(id) => write!(f, "failed to resolve address for node {:?}", id),
@@ -72,7 +72,7 @@ impl std::error::Error for RoutingError {}
 #[derive(Clone)]
 pub struct SliceRouter<const MEMBERS: usize> {
     /// Maps spool_index → member_index
-    spool_assignment: SpoolAssignment<SLICE_COUNT>,
+    spool_assignment: SpoolAssignment<SPOOL_COUNT>,
     /// Committee with member NodeIds
     committee: Committee<MEMBERS>,
     /// Cached network addresses indexed by member_index.
@@ -90,7 +90,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     /// The router is created without cached addresses. Use `set_address()` or
     /// `set_addresses()` to populate the cache for efficient routing.
     pub fn new(
-        spool_assignment: SpoolAssignment<SLICE_COUNT>,
+        spool_assignment: SpoolAssignment<SPOOL_COUNT>,
         committee: Committee<MEMBERS>,
     ) -> Self {
         Self {
@@ -103,12 +103,12 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     /// Get the member index that owns a given slice.
     ///
     /// # Arguments
-    /// * `slice_index` - The slice index (0 to SLICE_COUNT-1)
+    /// * `slice_index` - The slice index (0 to SPOOL_COUNT-1)
     ///
     /// # Returns
     /// The committee member index that owns this slice's spool.
     pub fn member_for_slice(&self, slice_index: SpoolIndex) -> Result<usize, RoutingError> {
-        if slice_index as usize >= SLICE_COUNT {
+        if slice_index as usize >= SPOOL_COUNT {
             return Err(RoutingError::InvalidSliceIndex(slice_index));
         }
         let member_idx = self.spool_assignment.0[slice_index as usize];
@@ -118,7 +118,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     /// Get the CommitteeMember that owns a given slice.
     ///
     /// # Arguments
-    /// * `slice_index` - The slice index (0 to SLICE_COUNT-1)
+    /// * `slice_index` - The slice index (0 to SPOOL_COUNT-1)
     ///
     /// # Returns
     /// The CommitteeMember that owns this slice's spool.
@@ -132,7 +132,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     /// Get the NodeId that should store a given slice.
     ///
     /// # Arguments
-    /// * `slice_index` - The slice index (0 to SLICE_COUNT-1)
+    /// * `slice_index` - The slice index (0 to SPOOL_COUNT-1)
     ///
     /// # Returns
     /// The NodeId of the storage node responsible for this slice.
@@ -197,7 +197,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     /// Get the socket address for a given slice (if cached).
     ///
     /// # Arguments
-    /// * `slice_index` - The slice index (0 to SLICE_COUNT-1)
+    /// * `slice_index` - The slice index (0 to SPOOL_COUNT-1)
     ///
     /// # Returns
     /// The SocketAddr of the storage node, or an error if not cached or invalid.
@@ -251,7 +251,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     pub fn group_slices_by_member(&self) -> Vec<(usize, Vec<SpoolIndex>)> {
         let mut groups: Vec<Vec<SpoolIndex>> = vec![Vec::new(); MEMBERS];
 
-        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
             if let Ok(member_idx) = self.member_for_slice(slice_idx) {
                 if member_idx < groups.len() {
                     groups[member_idx].push(slice_idx);
@@ -272,7 +272,7 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     pub fn member_slice_counts(&self) -> Vec<(usize, NodeId, usize)> {
         let mut counts = vec![0usize; MEMBERS];
 
-        for slice_idx in 0..SLICE_COUNT {
+        for slice_idx in 0..SPOOL_COUNT {
             let member_idx = self.spool_assignment.0[slice_idx] as usize;
             if member_idx < counts.len() {
                 counts[member_idx] += 1;
@@ -293,7 +293,6 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::PARITY_SLICES;
     use tape_core::types::{Coin, TAPE};
 
     fn make_committee<const N: usize>(count: usize) -> Committee<N> {
@@ -308,9 +307,9 @@ mod tests {
         committee
     }
 
-    fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
-        let mut spools = [0u8; SLICE_COUNT];
-        for i in 0..SLICE_COUNT {
+    fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SPOOL_COUNT> {
+        let mut spools = [0u8; SPOOL_COUNT];
+        for i in 0..SPOOL_COUNT {
             spools[i] = (i % member_count) as u8;
         }
         SpoolAssignment::new(spools)
@@ -327,7 +326,7 @@ mod tests {
         assert_eq!(router.member_for_slice(1).unwrap(), 1);
         assert_eq!(router.member_for_slice(2).unwrap(), 2);
         assert_eq!(router.member_for_slice(3).unwrap(), 0);
-        assert_eq!(router.member_for_slice(1023).unwrap(), 1023 % 3);
+        assert_eq!(router.member_for_slice(999).unwrap(), 999 % 3);
     }
 
     #[test]
@@ -336,8 +335,8 @@ mod tests {
         let assignment = make_uniform_assignment(3);
         let router = SliceRouter::new(assignment, committee);
 
-        let result = router.member_for_slice(1024);
-        assert!(matches!(result, Err(RoutingError::InvalidSliceIndex(1024))));
+        let result = router.member_for_slice(SPOOL_COUNT as u16);
+        assert!(matches!(result, Err(RoutingError::InvalidSliceIndex(_))));
     }
 
     #[test]
@@ -361,9 +360,9 @@ mod tests {
         let member_0_slices = router.slices_for_member(0);
         let member_1_slices = router.slices_for_member(1);
 
-        // Each of 3 members should have ~f slices (SLICE_COUNT / num_members)
-        assert!(member_0_slices.len() >= PARITY_SLICES);
-        assert!(member_1_slices.len() >= PARITY_SLICES);
+        // Each of 3 members should have ~SPOOL_COUNT/3 spools
+        assert!(member_0_slices.len() >= 333);
+        assert!(member_1_slices.len() >= 333);
 
         // First few slices should be correct
         assert!(member_0_slices.contains(&0));
@@ -408,9 +407,9 @@ mod tests {
         // Should have 3 groups (one per member)
         assert_eq!(groups.len(), 3);
 
-        // Total slices across all groups should equal SLICE_COUNT
+        // Total slices across all groups should equal SPOOL_COUNT
         let total: usize = groups.iter().map(|(_, slices)| slices.len()).sum();
-        assert_eq!(total, SLICE_COUNT);
+        assert_eq!(total, SPOOL_COUNT);
     }
 
     #[test]
@@ -426,12 +425,12 @@ mod tests {
 
         // Each member should have roughly equal slices
         for (_, _, count) in &counts {
-            assert!(*count >= 340 && *count <= 342);
+            assert!(*count >= 333 && *count <= 334);
         }
 
-        // Total should be SLICE_COUNT
+        // Total should be SPOOL_COUNT
         let total: usize = counts.iter().map(|(_, _, c)| *c).sum();
-        assert_eq!(total, SLICE_COUNT);
+        assert_eq!(total, SPOOL_COUNT);
     }
 
     #[test]

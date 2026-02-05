@@ -5,9 +5,9 @@ use super::consts::SLICE_COUNT;
 pub trait Slicer: Default {
     const MAX_DATA_SIZE: usize;
     const DATA_OUTPUT_SLICES: usize;
-    const CODING_OUTPUT_SLICES: usize;
+    const PARITY_OUTPUT_SLICES: usize;
 
-    /// Encode a blob into SLICE_COUNT slices (DATA_SLICES data + CODING_SLICES parity).
+    /// Encode a blob into SLICE_COUNT slices (DATA_SLICES data + PARITY_SLICES parity).
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError>;
 
     /// Decode slices back into the original blob.

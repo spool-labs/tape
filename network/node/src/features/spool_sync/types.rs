@@ -61,7 +61,7 @@ impl SyncSpoolRequest {
 pub struct SyncSlice {
     /// Track identifier (base58 pubkey).
     pub track_id: TrackId,
-    /// Slice/spool index (0 to SLICE_COUNT-1).
+    /// Slice/spool index (0 to SPOOL_COUNT-1).
     pub slice_index: SpoolIndex,
     /// Raw slice data.
     pub data: Vec<u8>,

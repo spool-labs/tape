@@ -4,25 +4,19 @@
 //! receive approximately equal amounts of data and parity chunks over time.
 
 use crate::api::Slicer;
-use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use crate::consts::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
 use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
 
 /// A rotated slicer that extends striped encoding with per-stripe rotation.
 ///
-/// This provides fair load distribution across all 1024 nodes by rotating
+/// This provides fair load distribution across all nodes by rotating
 /// the shard-to-slice mapping for each stripe. Over many stripes, each node
 /// receives approximately equal amounts of data and parity chunks.
 ///
-/// The rotation uses a step of CODING_SLICES (341), which is coprime with
-/// SLICE_COUNT (1024), ensuring full coverage of all slices.
-///
-/// Automatically selects optimal stripe size based on blob size:
-/// - ≤ 16 KB: 16 KB stripe
-/// - 16-64 KB: 64 KB stripe
-/// - 64-256 KB: 256 KB stripe
-/// - > 256 KB: 512 KB stripe
+/// The rotation step is coprime with SLICE_COUNT, ensuring full coverage
+/// of all slices.
 pub struct RotatedSlicer {
     codec: StripedCodec,
 }
@@ -57,7 +51,7 @@ impl Default for RotatedSlicer {
 impl Slicer for RotatedSlicer {
     const MAX_DATA_SIZE: usize = usize::MAX;
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
-    const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
+    const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
         self.codec.encode_adaptive(blob)
@@ -95,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_rotation_step() {
-        assert_eq!(ROTATION_STEP, CODING_SLICES);
+        assert_eq!(ROTATION_STEP, 7);
         fn gcd(a: usize, b: usize) -> usize {
             if b == 0 { a } else { gcd(b, a % b) }
         }
@@ -150,7 +144,7 @@ mod tests {
         let slices = slicer.encode(Blob::from(payload.clone())).unwrap();
         let mut opt = to_opt(&slices);
 
-        // Keep exactly DATA_SLICES slices (first 683)
+        // Keep exactly DATA_SLICES slices (first 10)
         let keep_indices: Vec<usize> = (0..DATA_SLICES).collect();
         keep_only(&mut opt, &keep_indices);
 

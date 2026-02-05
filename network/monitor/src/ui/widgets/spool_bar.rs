@@ -1,6 +1,6 @@
 //! Spool distribution visualization widget.
 //!
-//! Displays 1024 spools as colored dots, where each dot's color represents
+//! Displays spools as colored dots, where each dot's color represents
 //! the committee member that owns that spool.
 //!
 //! During syncing phase, highlights spools that changed ownership between
@@ -14,15 +14,16 @@ use ratatui::{
     widgets::{Block, Borders, Widget},
 };
 
+use tape_core::erasure::SPOOL_COUNT;
 use crate::app::TOTAL_SPOOLS;
 use crate::theme::Theme;
 
 /// How to render spools in the distribution view.
 pub enum SpoolHighlight<'a> {
-    /// Normal coloring - color all 1024 spools by their owning node.
+    /// Normal coloring - color all spools by their owning node.
     Normal {
         /// Raw spool assignment array (index -> member index).
-        spools: &'a [u8; 1024],
+        spools: &'a [u8; SPOOL_COUNT],
         /// Color slot for each committee member (member_index -> color slot).
         member_slots: &'a [u8],
     },
@@ -30,9 +31,9 @@ pub enum SpoolHighlight<'a> {
     /// Highlights spools that changed owner, dims unchanged spools.
     ShowChanges {
         /// Previous epoch spool assignments.
-        spools_prev: &'a [u8; 1024],
+        spools_prev: &'a [u8; SPOOL_COUNT],
         /// Current epoch spool assignments.
-        spools_current: &'a [u8; 1024],
+        spools_current: &'a [u8; SPOOL_COUNT],
         /// Color slot for each committee member (member_index -> color slot).
         member_slots: &'a [u8],
     },
@@ -128,7 +129,7 @@ impl<'a> SpoolBar<'a> {
         &self,
         inner: Rect,
         buf: &mut Buffer,
-        spools: &[u8; 1024],
+        spools: &[u8; SPOOL_COUNT],
         member_slots: &[u8],
         spools_per_row: usize,
         rows_to_show: usize,
@@ -167,8 +168,8 @@ impl<'a> SpoolBar<'a> {
         &self,
         inner: Rect,
         buf: &mut Buffer,
-        spools_prev: &[u8; 1024],
-        spools_current: &[u8; 1024],
+        spools_prev: &[u8; SPOOL_COUNT],
+        spools_current: &[u8; SPOOL_COUNT],
         member_slots: &[u8],
         spools_per_row: usize,
         rows_to_show: usize,

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
-use tape_core::erasure::DATA_SLICES;
+use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{BasisPoints, EpochNumber, NodeId, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
@@ -17,7 +17,7 @@ use tape_node_api::NodeStats;
 pub const MAX_EVENTS: usize = 1000;
 
 /// Total number of spools in the network.
-pub const TOTAL_SPOOLS: u16 = 1024;
+pub const TOTAL_SPOOLS: u16 = SPOOL_COUNT as u16;
 
 // ============================================================================
 // Core Types
@@ -396,9 +396,9 @@ pub struct App {
     /// Spool assignments by node.
     pub spool_assignments: Vec<SpoolAssignment>,
     /// Spool assignment array for previous committee (for highlighting).
-    pub spools_prev: Option<[u8; 1024]>,
+    pub spools_prev: Option<[u8; SPOOL_COUNT]>,
     /// Spool assignment array for current committee (for highlighting).
-    pub spools_current: Option<[u8; 1024]>,
+    pub spools_current: Option<[u8; SPOOL_COUNT]>,
 
     // Network stats
     /// Aggregated network statistics.

@@ -1,10 +1,10 @@
-use super::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use super::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
 use super::Slice;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
 
 /// Maximum slice size for BasicSlicer (used for testing/debugging only).
-/// 4 KiB allows encoding blobs up to ~2.7 MB (DATA_SLICES * 4 KiB).
+/// 4 KiB allows encoding blobs up to ~40 KB (DATA_SLICES * 4 KiB).
 /// For production workloads, use StripedSlicer which handles large blobs efficiently.
 pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
 
@@ -35,7 +35,7 @@ pub struct RawSlices {
     pub coding: Vec<Vec<u8>>,
 }
 
-/// Reed-Solomon coder for 3f+1 layout (k = data, r = coding).
+/// Reed-Solomon coder (k = data, r = parity).
 /// This is a thin wrapper around reed_solomon_simd. It reuses working buffers across calls.
 pub struct ReedSolomonCoder {
     k_data: usize,
@@ -65,7 +65,7 @@ impl ReedSolomonCoder {
         let n_total = k_data + r_coding;
         assert!(n_total <= 65536, "too many total slices for RS field");
         assert!(k_data == DATA_SLICES, "k_data must match DATA_SLICES");
-        assert!(r_coding == CODING_SLICES, "r_coding must match CODING_SLICES");
+        assert!(r_coding == PARITY_SLICES, "r_coding must match PARITY_SLICES");
 
         // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
         let encoder = ReedSolomonEncoder::new(k_data, r_coding, max_slice_bytes)
@@ -237,12 +237,12 @@ impl ReedSolomonCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Slice, CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+    use super::{Slice, PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::SliceIndex;
 
     /// Create a test coder with the default configuration.
     fn test_coder() -> ReedSolomonCoder {
-        ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES)
+        ReedSolomonCoder::new(DATA_SLICES, PARITY_SLICES)
     }
 
     fn make_payload(len: usize) -> Vec<u8> {
@@ -295,11 +295,11 @@ mod tests {
     #[test]
     fn encode_counts() {
         let mut coder = test_coder();
-        let payload = make_payload(42_000);
+        let payload = make_payload(20_000);
         let raw = coder.encode(&payload).expect("encode ok");
 
         assert_eq!(raw.data.len(), DATA_SLICES);
-        assert_eq!(raw.coding.len(), CODING_SLICES);
+        assert_eq!(raw.coding.len(), PARITY_SLICES);
 
         let slice_len = raw.data[0].len();
         assert!(raw.data.iter().all(|d| d.len() == slice_len));
@@ -319,7 +319,7 @@ mod tests {
             2 * DATA_SLICES - 1,
             2 * DATA_SLICES,
             5 * DATA_SLICES + 123,
-            100_000,
+            30_000,
         ];
 
         for &sz in &sizes {
@@ -337,25 +337,16 @@ mod tests {
             let restored = coder.decode(&only_data).expect("decode ok with k data slices");
             assert_eq!(restored, payload, "round-trip data-only mismatch for size {}", sz);
 
-            // mixed: ~k/2 data + all coding, then fill to k
+            // mixed: ~k/2 data + parity to fill, total = k
             let half_data = DATA_SLICES / 2;
             let mut keep = Vec::with_capacity(DATA_SLICES);
             for i in (0..DATA_SLICES).step_by(2).take(half_data) {
                 keep.push(i);
             }
-            for j in 0..CODING_SLICES {
+            // Fill remaining slots with parity slices
+            let remaining = DATA_SLICES - keep.len();
+            for j in 0..remaining {
                 keep.push(DATA_SLICES + j);
-            }
-            while keep.len() < DATA_SLICES {
-                let mut added = false;
-                for i in 0..DATA_SLICES {
-                    if !keep.contains(&i) {
-                        keep.push(i);
-                        added = true;
-                        break;
-                    }
-                }
-                assert!(added);
             }
 
             let mut mixed = full.clone();
@@ -382,7 +373,7 @@ mod tests {
     #[test]
     fn not_enough() {
         let mut coder = test_coder();
-        let payload = make_payload(10_000);
+        let payload = make_payload(5_000);
         let raw = coder.encode(&payload).expect("encode ok");
         let mut slices = to_full(&raw);
 
@@ -397,7 +388,7 @@ mod tests {
     #[test]
     fn bad_size() {
         let mut coder = test_coder();
-        let payload = make_payload(50_000);
+        let payload = make_payload(20_000);
         let raw = coder.encode(&payload).expect("encode ok");
         let mut slices = to_full(&raw);
 
@@ -433,8 +424,7 @@ mod tests {
         // Keep this short so it's readable on the terminal.
 
         let mut coder = test_coder();
-        // Max payload with default 4 KiB slices: 4 KiB * 683 data slices = ~2.7 MB
-        // Keep sizes modest for test speed
+        // Max payload with default 4 KiB slices: 4 KiB * 10 data slices = 40 KB
         let sizes = [
             0usize,
             1,
@@ -442,9 +432,9 @@ mod tests {
             DATA_SLICES - 1,
             DATA_SLICES,
             DATA_SLICES + 1,
-            10_000,
-            50_000,
-            100_000,
+            5_000,
+            20_000,
+            30_000,
         ];
 
         println!(
@@ -462,7 +452,7 @@ mod tests {
 
             // All slices have equal length (by construction)
             let slice_len = raw.data[0].len();
-            let n = DATA_SLICES + CODING_SLICES;
+            let n = DATA_SLICES + PARITY_SLICES;
             let total_bytes = n * slice_len;
             let ratio_str = if sz > 0 {
                 format!("{:.3}", total_bytes as f64 / sz as f64)
@@ -494,7 +484,7 @@ mod tests {
                 sz,
                 slice_len,
                 DATA_SLICES,
-                CODING_SLICES,
+                PARITY_SLICES,
                 n,
                 total_bytes,
                 ratio_str,

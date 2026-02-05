@@ -13,7 +13,7 @@ use tracing::debug;
 
 use crate::features::api::ApiError;
 
-use super::{parse_track_id, ApiState, SLICE_COUNT};
+use super::{parse_track_id, ApiState, SPOOL_COUNT};
 
 /// GET /v1/tracks/:track_id/slices/:slice_index
 pub async fn get_slice<S: Store>(
@@ -21,7 +21,7 @@ pub async fn get_slice<S: Store>(
     Path((track_id, slice_index)): Path<(String, u16)>,
 ) -> Result<Response, ApiError> {
     // Validate slice index
-    if slice_index >= SLICE_COUNT as u16 {
+    if slice_index >= SPOOL_COUNT as u16 {
         return Err(ApiError::InvalidSliceIndex);
     }
 
@@ -45,7 +45,7 @@ pub async fn put_slice<S: Store>(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     // Validate slice index
-    if slice_index >= SLICE_COUNT as u16 {
+    if slice_index >= SPOOL_COUNT as u16 {
         return Err(ApiError::InvalidSliceIndex);
     }
 

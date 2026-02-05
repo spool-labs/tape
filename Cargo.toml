@@ -12,7 +12,7 @@ members = [
   "programs/staking",
   "programs/tapedrive",
   "programs/token",
-  "network/slicer",
+  "slicer",
   "network/node",
   "network/api",
   "network/client",
@@ -40,7 +40,7 @@ default-members = [
   "solana",
   "network/blocks",
   "metrics",
-  "network/slicer",
+  "slicer",
   "network/node",
   "network/api",
   "network/client",
@@ -85,7 +85,7 @@ tape-store = { version = "0.3.0", path = "./store/tape-store" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
-tape-slicer = { version = "0.3.0", path = "./network/slicer" }
+tape-slicer = { version = "0.3.0", path = "./slicer" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }

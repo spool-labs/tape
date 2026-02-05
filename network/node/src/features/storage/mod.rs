@@ -4,6 +4,4 @@
 
 pub mod service;
 
-pub use service::{
-    PrimarySliceData, RecoverySliceData, StorageError, StorageService, TrackInfo,
-};
+pub use service::{StorageError, StorageService, TrackInfo};

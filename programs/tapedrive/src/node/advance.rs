@@ -124,7 +124,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
             epoch.state.set_active();
         } else if let Some(member_index) = system.committee_prev.index_of(&node.id) {
             let weight = system.spools_prev.spools_for_member(member_index).len() as u64;
-            epoch.state.add_advanced_weight(weight, SLICE_COUNT as u64);
+            epoch.state.add_advanced_weight(weight, SPOOL_COUNT as u64);
         }
     }
 
@@ -521,7 +521,7 @@ mod tests {
         system.committee_prev = Committee::from_members(&[
             member(2, 1_000, 0),
         ]);
-        system.spools_prev = SpoolAssignment::try_from_counts(&[SLICE_COUNT as u16]).unwrap();
+        system.spools_prev = SpoolAssignment::try_from_counts(&[SPOOL_COUNT as u16]).unwrap();
 
         let node = Node {
             id: NodeId(2),

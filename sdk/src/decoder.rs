@@ -1,10 +1,10 @@
 //! Blob decoding from network slices.
 //!
 //! This module provides `BlobDecoder` which reconstructs original blobs
-//! from downloaded slices using Reed-Solomon decoding.
+//! from downloaded slices using erasure code decoding.
 
 use tape_core::prelude::EncodingType;
-use tape_slicer::{BasicSlicer, StripedSlicer, RotatedSlicer, Blob, Slice, SliceIndex, Slicer, SLICE_COUNT, DATA_SLICES};
+use tape_slicer::{BasicSlicer, RotatedSlicer, Blob, Slice, SliceIndex, Slicer, SLICE_COUNT, DATA_SLICES};
 
 use crate::error::DownloadError;
 
@@ -12,16 +12,13 @@ use crate::error::DownloadError;
 ///
 /// Supports multiple encoding types:
 /// - `Basic`: Single RS pass, for testing/debugging only
-/// - `Striped`: Multiple stripes with fixed slice assignment, production-ready
-/// - `Rotated`: Striped with per-stripe rotation for fair load distribution (default)
+/// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
 ///
-/// Uses Reed-Solomon erasure coding to reconstruct the original data
-/// from any DATA_SLICES (or more) valid slices.
+/// Reconstructs the original data from any DATA_SLICES (or more) valid slices.
 pub struct BlobDecoder {
     encoding_type: EncodingType,
     basic: Option<BasicSlicer>,
-    striped: Option<StripedSlicer>,
-    rotated: Option<RotatedSlicer>,
+    clay: Option<RotatedSlicer>,
 }
 
 impl Default for BlobDecoder {
@@ -31,12 +28,9 @@ impl Default for BlobDecoder {
 }
 
 impl BlobDecoder {
-    /// Create a new decoder with default encoding type (Rotated).
-    ///
-    /// Rotated encoding provides fair load distribution across all nodes
-    /// and is the recommended default for production use.
+    /// Create a new decoder with default encoding type (Clay).
     pub fn new() -> Self {
-        Self::with_encoding(EncodingType::Rotated)
+        Self::with_encoding(EncodingType::Clay)
     }
 
     /// Create a decoder with a specific encoding type.
@@ -47,19 +41,15 @@ impl BlobDecoder {
         let mut decoder = Self {
             encoding_type,
             basic: None,
-            striped: None,
-            rotated: None,
+            clay: None,
         };
 
         match encoding_type {
             EncodingType::Basic => {
                 decoder.basic = Some(BasicSlicer::default());
             }
-            EncodingType::Striped => {
-                decoder.striped = Some(StripedSlicer::default());
-            }
-            EncodingType::Rotated | EncodingType::Unknown => {
-                decoder.rotated = Some(RotatedSlicer::default());
+            EncodingType::Clay | EncodingType::Unknown => {
+                decoder.clay = Some(RotatedSlicer::default());
             }
         }
 
@@ -79,13 +69,8 @@ impl BlobDecoder {
                     .decode(slice_array)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))
             }
-            EncodingType::Striped => {
-                self.striped.as_mut().unwrap()
-                    .decode(slice_array)
-                    .map_err(|e| DownloadError::Decoding(e.to_string()))
-            }
-            EncodingType::Rotated | EncodingType::Unknown => {
-                self.rotated.as_mut().unwrap()
+            EncodingType::Clay | EncodingType::Unknown => {
+                self.clay.as_mut().unwrap()
                     .decode(slice_array)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))
             }
@@ -109,7 +94,7 @@ impl BlobDecoder {
     /// # Errors
     /// - `InvalidSliceIndex` if any slice index >= SLICE_COUNT
     /// - `InsufficientSlices` if fewer than DATA_SLICES provided
-    /// - `Decoding` if Reed-Solomon reconstruction fails
+    /// - `Decoding` if erasure code reconstruction fails
     pub fn decode(&mut self, slices: Vec<(u16, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
         // Check we have enough slices
         if slices.len() < DATA_SLICES {
@@ -165,7 +150,7 @@ mod tests {
     use crate::encoder::BlobEncoder;
     use tape_core::erasure::DATA_SLICES;
 
-    /// Create test encoder using BasicSlicer (supports blobs up to ~2.7 MB).
+    /// Create test encoder using BasicSlicer (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
         BlobEncoder::with_encoding(EncodingType::Basic)
     }
@@ -177,7 +162,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let original = vec![0xAB; 50_000];
+        let original = vec![0xAB; 20_000];
 
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
@@ -190,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_only_data_slices() {
-        let original = vec![0xCD; 30_000];
+        let original = vec![0xCD; 15_000];
 
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
@@ -206,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_missing_parity() {
-        let original = vec![0xEF; 25_000];
+        let original = vec![0xEF; 20_000];
 
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
@@ -222,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_decode_with_scattered_slices() {
-        let original = vec![0x12; 20_000];
+        let original = vec![0x12; 10_000];
 
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
@@ -231,9 +216,8 @@ mod tests {
         let scattered: Vec<_> = slices
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| i % 2 == 0 || *i < DATA_SLICES * 2)
+            .filter(|(i, _)| i % 2 == 0)
             .map(|(_, s)| s)
-            .take(DATA_SLICES + 10)
             .collect();
 
         // Make sure we have enough
@@ -252,27 +236,25 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original).unwrap();
 
-        // Only keep 100 slices (not enough - need at least DATA_SLICES)
-        let too_few: Vec<_> = slices.into_iter().take(100).collect();
+        // Only keep DATA_SLICES - 1 slices (not enough)
+        let too_few: Vec<_> = slices.into_iter().take(DATA_SLICES - 1).collect();
 
         let mut decoder = test_decoder();
         let result = decoder.decode(too_few);
 
         assert!(matches!(
             result,
-            Err(DownloadError::InsufficientSlices { got: 100, need: _ })
+            Err(DownloadError::InsufficientSlices { .. })
         ));
     }
 
     #[test]
     fn test_decode_invalid_slice_index() {
-        // Create slices with enough count but one has an invalid index (>= SLICE_COUNT)
-        // First encode a real blob to get valid slices
         let original = vec![0x99; 10_000];
         let mut encoder = test_encoder();
         let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
-        // Replace one slice's index with an invalid one (>= SLICE_COUNT = 1024)
+        // Replace one slice's index with an invalid one (>= SLICE_COUNT)
         slices[0].0 = 9999;
 
         let mut decoder = test_decoder();
@@ -311,7 +293,7 @@ mod tests {
     #[test]
     fn test_encoding_type_default() {
         let decoder = BlobDecoder::new();
-        assert_eq!(decoder.encoding_type(), EncodingType::Rotated);
+        assert_eq!(decoder.encoding_type(), EncodingType::Clay);
     }
 
     #[test]
@@ -321,14 +303,8 @@ mod tests {
     }
 
     #[test]
-    fn test_encoding_type_striped() {
-        let decoder = BlobDecoder::with_encoding(EncodingType::Striped);
-        assert_eq!(decoder.encoding_type(), EncodingType::Striped);
-    }
-
-    #[test]
-    fn test_encoding_type_rotated() {
-        let decoder = BlobDecoder::with_encoding(EncodingType::Rotated);
-        assert_eq!(decoder.encoding_type(), EncodingType::Rotated);
+    fn test_encoding_type_clay() {
+        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        assert_eq!(decoder.encoding_type(), EncodingType::Clay);
     }
 }

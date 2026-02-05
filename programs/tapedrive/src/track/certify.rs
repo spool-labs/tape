@@ -66,7 +66,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         }
     }
 
-    if !is_supermajority(weight, SLICE_COUNT as u64) {
+    if !is_supermajority(weight, SPOOL_COUNT as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
@@ -165,7 +165,7 @@ mod tests {
         let stakes = system.committee.active_stakes();
         let seat_counts = dhondt_allocate(
             &stakes, 
-            SLICE_COUNT as u16
+            SPOOL_COUNT as u16
         );
         system.spools = SpoolAssignment::try_from_counts(&seat_counts)
             .expect("spools from counts");

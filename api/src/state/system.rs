@@ -22,10 +22,10 @@ pub struct System {
     pub committee_next: Committee<MEMBER_COUNT>,
 
     /// The previous spool assignment.
-    pub spools_prev: SpoolAssignment<SLICE_COUNT>,
+    pub spools_prev: SpoolAssignment<SPOOL_COUNT>,
 
     /// The current spool assignment.
-    pub spools: SpoolAssignment<SLICE_COUNT>,
+    pub spools: SpoolAssignment<SPOOL_COUNT>,
 }
 
 impl System {

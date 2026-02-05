@@ -9,7 +9,7 @@ use std::sync::RwLock;
 use tape_api::fsm::{NodeAction, NodeStateMachine};
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bft::is_supermajority;
-use tape_core::erasure::SLICE_COUNT;
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
 
@@ -35,7 +35,7 @@ pub struct EpochSyncTracker {
     synced_nodes: HashSet<NodeId>,
     /// Cumulative spool weight from synced nodes.
     cumulative_weight: u64,
-    /// Total weight (SLICE_COUNT).
+    /// Total weight (SPOOL_COUNT).
     total_weight: u64,
 }
 
@@ -46,7 +46,7 @@ impl EpochSyncTracker {
             epoch,
             synced_nodes: HashSet::new(),
             cumulative_weight: 0,
-            total_weight: SLICE_COUNT as u64,
+            total_weight: SPOOL_COUNT as u64,
         }
     }
 

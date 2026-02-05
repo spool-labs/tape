@@ -74,7 +74,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     }
 
     let weight = spools.len() as u64;
-    let total = SLICE_COUNT as u64;
+    let total = SPOOL_COUNT as u64;
 
     // Attest our weight for this epoch sync
     let transitioned_to_settling = epoch.state

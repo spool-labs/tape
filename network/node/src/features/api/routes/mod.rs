@@ -31,7 +31,7 @@ pub use status::{get_status, health_check};
 pub use sync::sync_spool;
 
 // Re-export shared constants from tape-core and tape-node-api
-pub use tape_core::erasure::{MAX_SLICE_SIZE, SLICE_COUNT};
+pub use tape_core::erasure::{MAX_SLICE_SIZE, SPOOL_COUNT};
 pub use tape_node_api::{
     HEALTH_PATH as HEALTH_ENDPOINT, INFO_PATH as INFO_ENDPOINT,
     METADATA_PATH as METADATA_ENDPOINT, SLICE_PATH as SLICE_ENDPOINT,

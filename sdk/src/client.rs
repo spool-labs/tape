@@ -4,7 +4,7 @@
 //! each slice to the correct storage node.
 
 pub use tape_api::program::MEMBER_COUNT;
-use tape_core::erasure::SLICE_COUNT;
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::Committee;
 use tape_core::types::NetworkAddress;
@@ -62,7 +62,7 @@ impl TapeClient {
     /// * `node_addresses` - List of (member_index, NetworkAddress) pairs
     pub fn from_system(
         committee: Committee<MEMBER_COUNT>,
-        spool_assignment: SpoolAssignment<SLICE_COUNT>,
+        spool_assignment: SpoolAssignment<SPOOL_COUNT>,
         node_addresses: impl IntoIterator<Item = (usize, NetworkAddress)>,
     ) -> Self {
         let mut router = SliceRouter::new(spool_assignment, committee);
@@ -86,7 +86,7 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - Pre-encoded slices with merkle proofs (should be SLICE_COUNT)
+    /// * `slices` - Pre-encoded slices with merkle proofs (should be SPOOL_COUNT)
     pub async fn upload_slices(
         &self,
         track_id: &str,
@@ -119,7 +119,7 @@ impl TapeClient {
         // Build slice_index → address mapping using proper spool-based routing
         let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
 
-        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
             if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
                 slice_to_address.insert(slice_idx, format!("http://{}", sock));
             }
@@ -160,7 +160,7 @@ impl TapeClient {
     pub fn update_router(
         &mut self,
         committee: Committee<MEMBER_COUNT>,
-        spool_assignment: SpoolAssignment<SLICE_COUNT>,
+        spool_assignment: SpoolAssignment<SPOOL_COUNT>,
         node_addresses: impl IntoIterator<Item = (usize, NetworkAddress)>,
     ) {
         let mut router = SliceRouter::new(spool_assignment, committee);
@@ -180,7 +180,7 @@ impl TapeClient {
     /// Upload a blob to the network.
     ///
     /// This is the primary method for storing data. It:
-    /// 1. Encodes the blob into SLICE_COUNT slices using Reed-Solomon
+    /// 1. Encodes the blob into SPOOL_COUNT slices using Reed-Solomon
     /// 2. Computes the Merkle root commitment and proofs for each slice
     /// 3. Uploads all slices with their proofs to the correct storage nodes
     ///
@@ -242,7 +242,7 @@ impl TapeClient {
         // Build slice_index → address mapping using proper spool-based routing
         let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
 
-        for slice_idx in 0..SLICE_COUNT as SpoolIndex {
+        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
             if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
                 slice_to_address.insert(slice_idx, format!("http://{}", sock));
             }
@@ -255,11 +255,11 @@ impl TapeClient {
         );
 
         // Generate random slice indices to spread load across nodes
-        let mut indices: Vec<SpoolIndex> = (0..SLICE_COUNT as SpoolIndex).collect();
+        let mut indices: Vec<SpoolIndex> = (0..SPOOL_COUNT as SpoolIndex).collect();
         indices.shuffle(&mut rand::thread_rng());
 
         // Try slices in random order until one responds
-        // With 1024 slices across N nodes, this will try every node
+        // With SPOOL_COUNT spools across N nodes, this will try every node
         for &slice_idx in &indices {
             if let Ok(slice_data) = downloader.download_slice(slice_idx).await {
                 return Ok(slice_data.len());
@@ -363,7 +363,7 @@ impl TapeClient {
 #[derive(Default)]
 pub struct TapeClientBuilder {
     committee: Option<Committee<MEMBER_COUNT>>,
-    spool_assignment: Option<SpoolAssignment<SLICE_COUNT>>,
+    spool_assignment: Option<SpoolAssignment<SPOOL_COUNT>>,
     node_addresses: Vec<(usize, NetworkAddress)>,
     node_factory: Option<NodeCommunicationFactory>,
 }
@@ -376,7 +376,7 @@ impl TapeClientBuilder {
     }
 
     /// Set the spool assignment from on-chain System state.
-    pub fn spool_assignment(mut self, assignment: SpoolAssignment<SLICE_COUNT>) -> Self {
+    pub fn spool_assignment(mut self, assignment: SpoolAssignment<SPOOL_COUNT>) -> Self {
         self.spool_assignment = Some(assignment);
         self
     }
@@ -438,9 +438,9 @@ mod tests {
         committee
     }
 
-    fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
-        let mut spools = [0u8; SLICE_COUNT];
-        for i in 0..SLICE_COUNT {
+    fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SPOOL_COUNT> {
+        let mut spools = [0u8; SPOOL_COUNT];
+        for i in 0..SPOOL_COUNT {
             spools[i] = (i % member_count) as u8;
         }
         SpoolAssignment::new(spools)

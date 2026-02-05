@@ -7,11 +7,11 @@ use tape_core::spooler::SpoolIndex;
 use tape_crypto::Pubkey;
 use store::Store;
 use store_rocks::RocksStore;
-use tape_store::ops::{SliceDataOps, TrackInfoOps};
+use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::TapeStore;
 
-pub use tape_store::types::{PrimarySliceData, RecoverySliceData, TrackInfo};
+pub use tape_store::types::TrackInfo;
 
 use crate::metrics::NodeMetrics;
 
@@ -34,7 +34,7 @@ pub enum StorageError {
 /// Storage service for managing slice data.
 ///
 /// Wraps a `TapeStore` and provides methods for storing and retrieving
-/// primary and recovery slices with optional metrics tracking.
+/// slices with optional metrics tracking.
 pub struct StorageService<S: Store = RocksStore> {
     /// The underlying tape store (public for direct access to ops traits).
     pub store: TapeStore<S>,
@@ -79,17 +79,17 @@ impl<S: Store> StorageService<S> {
         self
     }
 
-    /// Store a primary slice.
-    pub fn put_primary_slice(
+    /// Store a slice.
+    pub fn put_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
-        data: PrimarySliceData,
+        data: Vec<u8>,
     ) -> Result<(), StorageError> {
-        let data_len = data.symbols.len();
+        let data_len = data.len();
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
-        self.store.put_primary_slice(spool_idx.into(), track_pubkey, data)?;
+        self.store.put_slice(spool_idx.into(), track_pubkey, data)?;
 
         if let Some(metrics) = &self.metrics {
             metrics.slices_stored_total.inc();
@@ -99,147 +99,64 @@ impl<S: Store> StorageService<S> {
         Ok(())
     }
 
-    /// Retrieve a primary slice.
-    pub fn get_primary_slice(
+    /// Retrieve a slice.
+    pub fn get_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
-    ) -> Result<Option<PrimarySliceData>, StorageError> {
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
 
-        let result = self.store.get_primary_slice(spool_idx.into(), track_pubkey)?;
+        let result = self.store.get_slice(spool_idx.into(), track_pubkey)?;
 
         if let Some(ref data) = result {
             if let Some(metrics) = &self.metrics {
                 metrics.slices_retrieved_total.inc();
-                metrics.bytes_retrieved_total.add(data.symbols.len() as i64);
+                metrics.bytes_retrieved_total.add(data.len() as i64);
             }
         }
 
         Ok(result)
     }
 
-    /// Delete a primary slice.
-    pub fn delete_primary_slice(
+    /// Delete a slice.
+    pub fn delete_slice(
         &self,
         spool_idx: SpoolIndex,
         track_address: Pubkey,
     ) -> Result<(), StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.delete_primary_slice(spool_idx.into(), track_pubkey)?;
-        Ok(())
-    }
-
-    /// Store a recovery slice.
-    pub fn put_recovery_slice(
-        &self,
-        spool_idx: SpoolIndex,
-        track_address: Pubkey,
-        data: RecoverySliceData,
-    ) -> Result<(), StorageError> {
-        let data_len = data.symbols.len();
-        let track_pubkey = StorePubkey::new(track_address.to_bytes());
-
-        self.store.put_recovery_slice(spool_idx.into(), track_pubkey, data)?;
-
-        if let Some(metrics) = &self.metrics {
-            metrics.slices_stored_total.inc();
-            metrics.bytes_stored_total.add(data_len as i64);
-        }
-
-        Ok(())
-    }
-
-    /// Retrieve a recovery slice.
-    pub fn get_recovery_slice(
-        &self,
-        spool_idx: SpoolIndex,
-        track_address: Pubkey,
-    ) -> Result<Option<RecoverySliceData>, StorageError> {
-        let track_pubkey = StorePubkey::new(track_address.to_bytes());
-
-        let result = self.store.get_recovery_slice(spool_idx.into(), track_pubkey)?;
-
-        if let Some(ref data) = result {
-            if let Some(metrics) = &self.metrics {
-                metrics.slices_retrieved_total.inc();
-                metrics.bytes_retrieved_total.add(data.symbols.len() as i64);
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Delete a recovery slice.
-    pub fn delete_recovery_slice(
-        &self,
-        spool_idx: SpoolIndex,
-        track_address: Pubkey,
-    ) -> Result<(), StorageError> {
-        let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.delete_recovery_slice(spool_idx.into(), track_pubkey)?;
-        Ok(())
-    }
-
-    /// Store primary and recovery slices atomically.
-    pub fn put_slices(
-        &self,
-        spool_idx: SpoolIndex,
-        track_address: Pubkey,
-        primary: PrimarySliceData,
-        recovery: RecoverySliceData,
-    ) -> Result<(), StorageError> {
-        let total_len = primary.symbols.len() + recovery.symbols.len();
-        let track_pubkey = StorePubkey::new(track_address.to_bytes());
-
-        self.store.put_both_slices(spool_idx.into(), track_pubkey, primary, recovery)?;
-
-        if let Some(metrics) = &self.metrics {
-            metrics.slices_stored_total.add(2);
-            metrics.bytes_stored_total.add(total_len as i64);
-        }
-
-        Ok(())
-    }
-
-    /// Delete primary and recovery slices atomically.
-    pub fn delete_slices(
-        &self,
-        spool_idx: SpoolIndex,
-        track_address: Pubkey,
-    ) -> Result<(), StorageError> {
-        let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.delete_both_slices(spool_idx.into(), track_pubkey)?;
+        self.store.delete_slice(spool_idx.into(), track_pubkey)?;
         Ok(())
     }
 
     /// Store track metadata.
-    pub fn put_track_info(
+    pub fn put_track(
         &self,
         track_address: Pubkey,
         info: TrackInfo,
     ) -> Result<(), StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.put_track_info(track_pubkey, info)?;
+        self.store.put_track(track_pubkey, info)?;
         Ok(())
     }
 
     /// Get track metadata.
-    pub fn get_track_info(
+    pub fn get_track(
         &self,
         track_address: Pubkey,
     ) -> Result<Option<TrackInfo>, StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        Ok(self.store.get_track_info(track_pubkey)?)
+        Ok(self.store.get_track(track_pubkey)?)
     }
 
     /// Delete track metadata.
-    pub fn delete_track_info(
+    pub fn delete_track(
         &self,
         track_address: Pubkey,
     ) -> Result<(), StorageError> {
         let track_pubkey = StorePubkey::new(track_address.to_bytes());
-        self.store.delete_track_info(track_pubkey)?;
+        self.store.delete_track(track_pubkey)?;
         Ok(())
     }
 
@@ -260,81 +177,39 @@ mod tests {
     }
 
     #[test]
-    fn test_primary_slice_roundtrip() {
+    fn test_slice_roundtrip() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx: SpoolIndex = 42;
-        let data = PrimarySliceData::new(vec![0xAB; 1024], 0);
+        let data = vec![0xAB; 1024];
 
-        service.put_primary_slice(spool_idx, track, data.clone()).unwrap();
+        service.put_slice(spool_idx, track, data.clone()).unwrap();
 
         let retrieved = service
-            .get_primary_slice(spool_idx, track)
+            .get_slice(spool_idx, track)
             .unwrap()
             .expect("slice should exist");
 
-        assert_eq!(retrieved.symbols, data.symbols);
-        assert_eq!(retrieved.padding_len, 0);
-    }
-
-    #[test]
-    fn test_recovery_slice_roundtrip() {
-        let service = create_test_service();
-        let track = Pubkey::new_unique();
-        let spool_idx: SpoolIndex = 42;
-        let data = RecoverySliceData::new(vec![0xCD; 1024], 0);
-
-        service.put_recovery_slice(spool_idx, track, data.clone()).unwrap();
-
-        let retrieved = service
-            .get_recovery_slice(spool_idx, track)
-            .unwrap()
-            .expect("slice should exist");
-
-        assert_eq!(retrieved.symbols, data.symbols);
+        assert_eq!(retrieved, data);
     }
 
     #[test]
     fn test_get_nonexistent_slice() {
         let service = create_test_service();
-        let result = service.get_primary_slice(0, Pubkey::new_unique()).unwrap();
+        let result = service.get_slice(0, Pubkey::new_unique()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_delete_primary_slice() {
+    fn test_delete_slice() {
         let service = create_test_service();
         let track = Pubkey::new_unique();
         let spool_idx: SpoolIndex = 42;
 
-        service
-            .put_primary_slice(spool_idx, track, PrimarySliceData::new(vec![0xAB; 100], 0))
-            .unwrap();
+        service.put_slice(spool_idx, track, vec![0xAB; 100]).unwrap();
+        assert!(service.get_slice(spool_idx, track).unwrap().is_some());
 
-        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_some());
-
-        service.delete_primary_slice(spool_idx, track).unwrap();
-
-        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_put_delete_slices_atomic() {
-        let service = create_test_service();
-        let track = Pubkey::new_unique();
-        let spool_idx: SpoolIndex = 42;
-
-        let primary = PrimarySliceData::new(vec![0xAB; 100], 0);
-        let recovery = RecoverySliceData::new(vec![0xCD; 100], 0);
-
-        service.put_slices(spool_idx, track, primary, recovery).unwrap();
-
-        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_some());
-        assert!(service.get_recovery_slice(spool_idx, track).unwrap().is_some());
-
-        service.delete_slices(spool_idx, track).unwrap();
-
-        assert!(service.get_primary_slice(spool_idx, track).unwrap().is_none());
-        assert!(service.get_recovery_slice(spool_idx, track).unwrap().is_none());
+        service.delete_slice(spool_idx, track).unwrap();
+        assert!(service.get_slice(spool_idx, track).unwrap().is_none());
     }
 }

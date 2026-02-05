@@ -18,7 +18,7 @@ use serial_test::serial;
 use store_memory::MemoryStore;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::erasure::{DATA_SLICES, SLICE_COUNT};
+use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT};
 use tape_core::spooler::SpoolAssignment;
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{Coin, NetworkAddress, NodeId, TAPE};
@@ -65,8 +65,8 @@ async fn start_test_node_with_config(
     system.committee = committee;
 
     // Create uniform spool assignment (round-robin across nodes)
-    let mut spools = [0u8; SLICE_COUNT];
-    for i in 0..SLICE_COUNT {
+    let mut spools = [0u8; SPOOL_COUNT];
+    for i in 0..SPOOL_COUNT {
         spools[i] = (i % total_nodes) as u8;
     }
     system.spools = SpoolAssignment::new(spools);
@@ -120,8 +120,8 @@ fn make_test_committee(count: usize) -> Committee<MEMBER_COUNT> {
 
 /// Create a uniform spool assignment (round-robin across members).
 fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
-    let mut spools = [0u8; SLICE_COUNT];
-    for i in 0..SLICE_COUNT {
+    let mut spools = [0u8; SPOOL_COUNT];
+    for i in 0..SPOOL_COUNT {
         spools[i] = (i % member_count) as u8;
     }
     SpoolAssignment::new(spools)

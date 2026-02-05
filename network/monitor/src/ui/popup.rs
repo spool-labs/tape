@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::app::{HealthStatus, NodeState};
+use crate::app::{HealthStatus, NodeState, TOTAL_SPOOLS};
 use crate::theme::Theme;
 
 /// Width of the popup as percentage of terminal width.
@@ -89,9 +89,10 @@ impl<'a> NodeDetailPopup<'a> {
             Line::from(vec![
                 Span::styled("Spools:     ", self.theme.text_style()),
                 Span::styled(
-                    format!("{} / 1024 ({:.1}%)",
+                    format!("{} / {} ({:.1}%)",
                         self.node.spool_count,
-                        self.node.spool_count as f64 / 1024.0 * 100.0
+                        TOTAL_SPOOLS,
+                        self.node.spool_count as f64 / TOTAL_SPOOLS as f64 * 100.0
                     ),
                     self.theme.text_style(),
                 ),
@@ -221,8 +222,7 @@ impl<'a> NodeDetailPopup<'a> {
     /// Build metrics section.
     fn build_metrics_section(&self) -> Vec<Line<'a>> {
         // Calculate estimated storage responsibility based on spool allocation
-        // Each spool is 1/1024 of total network storage
-        let storage_share = self.node.spool_count as f64 / 1024.0 * 100.0;
+        let storage_share = self.node.spool_count as f64 / TOTAL_SPOOLS as f64 * 100.0;
 
         vec![
             Line::default(),

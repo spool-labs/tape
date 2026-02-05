@@ -1,49 +1,48 @@
 //! Shared striping logic for StripedSlicer and RotatedSlicer.
 //!
-//! Both slicers split blobs into stripes and encode each stripe separately.
-//! The difference is how shards map to output slices:
+//! Both slicers split blobs into stripes and encode each stripe separately
+//! using Clay codes (MSR erasure codes). The difference is how shards map
+//! to output slices:
 //! - StripedSlicer: identity mapping (shard N -> slice N)
 //! - RotatedSlicer: rotated mapping for fair load distribution
 
-use bytemuck::{Pod, Zeroable};
+use std::collections::HashMap;
 
-use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use bytemuck::{Pod, Zeroable};
+use clay_codes::ClayCode;
+
+use crate::consts::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
 use crate::errors::{DecodeError, EncodeError};
 use crate::slice_index::SliceIndex;
 use crate::types::{Blob, Slice};
-use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 
-/// Default stripe size (512 KB).
-pub const DEFAULT_STRIPE_SIZE: usize = 512 * 1024;
+/// Clay helper count: d = n - 1 = SLICE_COUNT - 1.
+const CLAY_D: usize = SLICE_COUNT - 1;
 
-/// Rotation step per stripe (coprime with SLICE_COUNT for full coverage).
-pub const ROTATION_STEP: usize = CODING_SLICES;
+/// Default stripe size (10 MB).
+pub const DEFAULT_STRIPE_SIZE: usize = 10_000_000;
+
+/// Rotation step per stripe (coprime with SLICE_COUNT=20 for full coverage).
+/// gcd(7, 20) = 1 ensures all positions are visited in 20 stripes.
+pub const ROTATION_STEP: usize = 7;
 
 /// Available stripe sizes for adaptive encoding.
-pub const STRIPE_SIZES: [usize; 4] = [
-    16 * 1024,   // 16 KB
-    64 * 1024,   // 64 KB
-    256 * 1024,  // 256 KB
-    512 * 1024,  // 512 KB
+/// Multiples of 2000 for Clay alignment (k × α × 2 = 10 × 100 × 2 = 2000).
+pub const STRIPE_SIZES: [usize; 3] = [
+    100_000,     // 100 KB
+    1_000_000,   //   1 MB
+    10_000_000,  //  10 MB
 ];
 
 /// Select optimal stripe size based on blob size.
-///
-/// Returns the smallest stripe size that keeps overhead reasonable:
-/// - ≤ 16 KB: use 16 KB stripe
-/// - 16-64 KB: use 64 KB stripe
-/// - 64-256 KB: use 256 KB stripe
-/// - > 256 KB: use 512 KB stripe
 #[inline]
 pub fn pick_stripe_size(blob_len: usize) -> usize {
-    if blob_len <= 16 * 1024 {
-        16 * 1024
-    } else if blob_len <= 64 * 1024 {
-        64 * 1024
-    } else if blob_len <= 256 * 1024 {
-        256 * 1024
+    if blob_len <= 1_000_000 {
+        STRIPE_SIZES[0] // 100 KB
+    } else if blob_len <= 100_000_000 {
+        STRIPE_SIZES[1] // 1 MB
     } else {
-        512 * 1024
+        STRIPE_SIZES[2] // 10 MB
     }
 }
 
@@ -150,11 +149,11 @@ pub fn round_up_to(n: usize, divisor: usize) -> usize {
 }
 
 /// Core striped encoder/decoder with configurable mapping strategy.
+/// Uses Clay codes (MSR erasure codes) for encoding/decoding.
 pub struct StripedCodec {
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
-    encoder: ReedSolomonEncoder,
-    decoder: ReedSolomonDecoder,
+    clay: ClayCode,
 }
 
 impl StripedCodec {
@@ -162,32 +161,20 @@ impl StripedCodec {
     pub fn new(stripe_size: usize, strategy: MappingStrategy) -> Self {
         assert!(stripe_size > 0, "stripe_size must be > 0");
 
-        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        let encoder = ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS decoder init");
+        let clay = ClayCode::new(DATA_SLICES, PARITY_SLICES, CLAY_D)
+            .expect("Clay code init");
 
         Self {
             stripe_size,
             strategy,
-            encoder,
-            decoder,
+            clay,
         }
     }
 
     /// Reconfigure the codec for a different stripe size.
     fn reconfigure(&mut self, stripe_size: usize) {
         self.stripe_size = stripe_size;
-        let padded_stripe = round_up_to(stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-
-        self.encoder = ReedSolomonEncoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS encoder init");
-        self.decoder = ReedSolomonDecoder::new(DATA_SLICES, CODING_SLICES, chunk_size)
-            .expect("RS decoder init");
+        // Clay code is stateless w.r.t. stripe size; no need to recreate
     }
 
     /// Encode with automatically selected stripe size based on blob length.
@@ -211,46 +198,45 @@ impl StripedCodec {
         }
 
         let num_stripes = (blob_len + self.stripe_size - 1) / self.stripe_size;
-        let padded_stripe = round_up_to(self.stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
+
+        // Encode first stripe to determine chunk size (Clay handles padding internally)
+        let first_stripe_data = &data[..self.stripe_size.min(blob_len)];
+        let first_chunks = self.clay.encode(first_stripe_data);
+        let chunk_size = first_chunks[0].len();
 
         // Initialize output slices
         let mut slices: Vec<Vec<u8>> = (0..SLICE_COUNT)
             .map(|_| Vec::with_capacity(num_stripes * chunk_size + SliceMetadata::SIZE))
             .collect();
 
-        for s in 0..num_stripes {
+        // Distribute first stripe chunks
+        for (shard_idx, chunk) in first_chunks.iter().enumerate() {
+            let slice_idx = shard_to_slice(self.strategy, 0, shard_idx);
+            slices[slice_idx].extend_from_slice(chunk);
+        }
+
+        // Encode remaining stripes
+        for s in 1..num_stripes {
             let start = s * self.stripe_size;
             let end = (start + self.stripe_size).min(blob_len);
             let stripe_data = &data[start..end];
 
-            // Pad stripe for RS encoding
-            let mut padded = stripe_data.to_vec();
-            padded.resize(padded_stripe, 0);
+            let chunks = self.clay.encode(stripe_data);
 
-            self.encoder
-                .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-                .map_err(|_| EncodeError::TooMuchData)?;
+            // All chunks must be the same size as first stripe's chunks
+            // (Clay pads internally; for the last shorter stripe, chunk_size may differ)
+            // We pad the stripe to self.stripe_size to ensure consistent chunk sizes.
+            let chunks = if chunks[0].len() != chunk_size {
+                let mut padded = stripe_data.to_vec();
+                padded.resize(self.stripe_size, 0);
+                self.clay.encode(&padded)
+            } else {
+                chunks
+            };
 
-            for chunk in padded.chunks(chunk_size) {
-                self.encoder
-                    .add_original_shard(chunk)
-                    .map_err(|_| EncodeError::TooMuchData)?;
-            }
-
-            let result = self.encoder.encode().map_err(|_| EncodeError::TooMuchData)?;
-
-            // Append data shards with mapping
-            for (shard_idx, chunk) in padded.chunks(chunk_size).enumerate() {
+            for (shard_idx, chunk) in chunks.iter().enumerate() {
                 let slice_idx = shard_to_slice(self.strategy, s, shard_idx);
                 slices[slice_idx].extend_from_slice(chunk);
-            }
-
-            // Append parity shards with mapping
-            for (parity_idx, shard) in result.recovery_iter().enumerate() {
-                let shard_idx = DATA_SLICES + parity_idx;
-                let slice_idx = shard_to_slice(self.strategy, s, shard_idx);
-                slices[slice_idx].extend_from_slice(shard);
             }
         }
 
@@ -296,8 +282,13 @@ impl StripedCodec {
         }
 
         let num_stripes = (blob_len + self.stripe_size - 1) / self.stripe_size;
-        let padded_stripe = round_up_to(self.stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
+
+        // Determine chunk_size from a sample slice: (total_len - metadata) / num_stripes
+        let total_data_len = sample.data.len() - SliceMetadata::SIZE;
+        if total_data_len == 0 || total_data_len % num_stripes != 0 {
+            return Err(DecodeError::InvalidLayout);
+        }
+        let chunk_size = total_data_len / num_stripes;
 
         let expected_slice_len = num_stripes * chunk_size + SliceMetadata::SIZE;
         for slice in slices.iter().flatten() {
@@ -311,48 +302,39 @@ impl StripedCodec {
         for s in 0..num_stripes {
             let chunk_offset = s * chunk_size;
 
-            self.decoder
-                .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-                .map_err(|_| DecodeError::TooMuchData)?;
+            // Build available map and erasures list for Clay decode
+            let mut available: HashMap<usize, Vec<u8>> = HashMap::new();
+            let mut erasures: Vec<usize> = Vec::new();
 
-            // Feed available shards with inverse mapping
-            for (slice_idx, slice_opt) in slices.iter().enumerate() {
-                if let Some(slice) = slice_opt {
-                    let shard_idx = slice_to_shard(self.strategy, s, slice_idx);
-                    let chunk = &slice.data[chunk_offset..chunk_offset + chunk_size];
-
-                    if shard_idx < DATA_SLICES {
-                        self.decoder
-                            .add_original_shard(shard_idx, chunk)
-                            .map_err(|_| DecodeError::InvalidLayout)?;
-                    } else {
-                        self.decoder
-                            .add_recovery_shard(shard_idx - DATA_SLICES, chunk)
-                            .map_err(|_| DecodeError::InvalidLayout)?;
+            for shard_idx in 0..SLICE_COUNT {
+                let slice_idx = shard_to_slice(self.strategy, s, shard_idx);
+                match &slices[slice_idx] {
+                    Some(slice) => {
+                        let chunk = slice.data[chunk_offset..chunk_offset + chunk_size].to_vec();
+                        available.insert(shard_idx, chunk);
+                    }
+                    None => {
+                        erasures.push(shard_idx);
                     }
                 }
             }
 
-            let result = self.decoder.decode().map_err(|_| DecodeError::BadEncoding)?;
+            let stripe_data = self
+                .clay
+                .decode(&available, &erasures)
+                .map_err(|_| DecodeError::BadEncoding)?;
 
-            // Reassemble stripe data
-            let mut stripe_data = Vec::with_capacity(padded_stripe);
-            for data_shard_idx in 0..DATA_SLICES {
-                let slice_idx = shard_to_slice(self.strategy, s, data_shard_idx);
-                let chunk = match &slices[slice_idx] {
-                    Some(slice) => &slice.data[chunk_offset..chunk_offset + chunk_size],
-                    None => result
-                        .restored_original(data_shard_idx)
-                        .ok_or(DecodeError::InvalidLayout)?,
-                };
-                stripe_data.extend_from_slice(chunk);
-            }
-
+            // Clay decode returns the full padded data (k * chunk_size).
+            // Take only what we need for this stripe.
             let take = if s == num_stripes - 1 {
                 blob_len - output.len()
             } else {
                 self.stripe_size
             };
+
+            if take > stripe_data.len() {
+                return Err(DecodeError::InvalidLayout);
+            }
             output.extend_from_slice(&stripe_data[..take]);
         }
 
@@ -360,35 +342,15 @@ impl StripedCodec {
     }
 
     fn encode_empty_blob(&mut self) -> Result<[Slice; SLICE_COUNT], EncodeError> {
-        let padded_stripe = round_up_to(self.stripe_size, DATA_SLICES);
-        let chunk_size = padded_stripe / DATA_SLICES;
-        let padded = vec![0u8; padded_stripe];
+        let empty = vec![0u8; self.stripe_size];
+        let chunks = self.clay.encode(&empty);
+        let chunk_size = chunks[0].len();
 
-        self.encoder
-            .reset(DATA_SLICES, CODING_SLICES, chunk_size)
-            .map_err(|_| EncodeError::TooMuchData)?;
+        let mut slices: Vec<Vec<u8>> = vec![Vec::with_capacity(chunk_size + SliceMetadata::SIZE); SLICE_COUNT];
 
-        for chunk in padded.chunks(chunk_size) {
-            self.encoder
-                .add_original_shard(chunk)
-                .map_err(|_| EncodeError::TooMuchData)?;
-        }
-
-        let result = self.encoder.encode().map_err(|_| EncodeError::TooMuchData)?;
-
-        let mut slices: Vec<Vec<u8>> = vec![Vec::new(); SLICE_COUNT];
-
-        // Data shards with mapping (stripe 0)
-        for (shard_idx, chunk) in padded.chunks(chunk_size).enumerate() {
+        for (shard_idx, chunk) in chunks.iter().enumerate() {
             let slice_idx = shard_to_slice(self.strategy, 0, shard_idx);
-            slices[slice_idx] = chunk.to_vec();
-        }
-
-        // Parity shards with mapping (stripe 0)
-        for (parity_idx, shard) in result.recovery_iter().enumerate() {
-            let shard_idx = DATA_SLICES + parity_idx;
-            let slice_idx = shard_to_slice(self.strategy, 0, shard_idx);
-            slices[slice_idx] = shard.to_vec();
+            slices[slice_idx] = chunk.clone();
         }
 
         // Append metadata (blob_len = 0 for empty blob)
@@ -435,8 +397,16 @@ mod tests {
     }
 
     #[test]
+    fn test_rotation_step_coprime() {
+        fn gcd(a: usize, b: usize) -> usize {
+            if b == 0 { a } else { gcd(b, a % b) }
+        }
+        assert_eq!(gcd(ROTATION_STEP, SLICE_COUNT), 1);
+    }
+
+    #[test]
     fn test_rotation_distribution() {
-        let num_stripes = 1024;
+        let num_stripes = 100;
         let mut slice_hits = vec![0usize; SLICE_COUNT];
 
         for stripe in 0..num_stripes {
@@ -450,5 +420,14 @@ mod tests {
         for (i, &hits) in slice_hits.iter().enumerate() {
             assert_eq!(hits, num_stripes, "slice {} hit count mismatch", i);
         }
+    }
+
+    #[test]
+    fn test_pick_stripe_size() {
+        assert_eq!(pick_stripe_size(100), STRIPE_SIZES[0]);
+        assert_eq!(pick_stripe_size(1_000_000), STRIPE_SIZES[0]);
+        assert_eq!(pick_stripe_size(1_000_001), STRIPE_SIZES[1]);
+        assert_eq!(pick_stripe_size(100_000_000), STRIPE_SIZES[1]);
+        assert_eq!(pick_stripe_size(100_000_001), STRIPE_SIZES[2]);
     }
 }

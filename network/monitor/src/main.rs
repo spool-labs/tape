@@ -51,6 +51,7 @@ use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as Da
 use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_api::prelude::Committee;
 use tape_api::state::{Archive, Epoch, Node, System};
+use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{EpochNumber, NodeId};
@@ -600,7 +601,7 @@ fn extract_stake_schedule(node: &Node) -> BTreeMap<EpochNumber, StakeScheduleEnt
 /// Build NodeState list for a committee with spool assignments.
 fn build_committee_nodes(
     committee: &Committee<{ tape_api::program::tapedrive::MEMBER_COUNT }>,
-    spools: &[u8; 1024],
+    spools: &[u8; SPOOL_COUNT],
     node_lookup: &HashMap<NodeId, &DataNodeState>,
 ) -> Vec<AppNodeState> {
     use std::time::Instant;

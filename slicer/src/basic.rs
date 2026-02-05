@@ -1,5 +1,5 @@
 use super::api::Slicer;
-use super::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+use super::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
 use super::errors::{DecodeError, EncodeError};
 use super::reed_solomon::{ReedSolomonCoder, ReedSolomonDecodeError, ReedSolomonEncodeError};
 use super::slice_index::SliceIndex;
@@ -8,7 +8,7 @@ use core::convert::TryInto;
 
 /// A basic slicer that uses a single Reed-Solomon encoding pass (no striping).
 ///
-/// **For testing/debugging only.** Supports blobs up to ~2.7 MB (4 KiB × 683 data slices).
+/// **For testing/debugging only.** Supports blobs up to ~40 KB (4 KiB × 10 data slices).
 /// For production workloads, use `StripedSlicer` or `RotatedSlicer` instead.
 pub struct BasicSlicer(ReedSolomonCoder);
 
@@ -20,7 +20,7 @@ impl BasicSlicer {
     pub(crate) fn with_max_slice_bytes(max_slice_bytes: usize) -> Self {
         Self(ReedSolomonCoder::with_max_slice_bytes(
             DATA_SLICES,
-            CODING_SLICES,
+            PARITY_SLICES,
             max_slice_bytes,
         ))
     }
@@ -28,14 +28,14 @@ impl BasicSlicer {
 
 impl Default for BasicSlicer {
     fn default() -> Self {
-        Self(ReedSolomonCoder::new(DATA_SLICES, CODING_SLICES))
+        Self(ReedSolomonCoder::new(DATA_SLICES, PARITY_SLICES))
     }
 }
 
 impl Slicer for BasicSlicer {
     const MAX_DATA_SIZE: usize = usize::MAX;
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
-    const CODING_OUTPUT_SLICES: usize = CODING_SLICES;
+    const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
         let raw = self.0.encode(blob.as_slice()).map_err(|e| match e {
@@ -73,7 +73,7 @@ impl Slicer for BasicSlicer {
 mod tests {
     use super::*;
     use crate::errors::DecodeError;
-    use crate::consts::{CODING_SLICES, DATA_SLICES, SLICE_COUNT};
+    use crate::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
     use crate::merkle_helpers::build_blob_merkle_tree;
 
     fn mk(len: usize) -> Vec<u8> {
@@ -112,14 +112,14 @@ mod tests {
         size
     }
 
-    // Max payload with default 4 KiB slices: 4 KiB * 683 data slices = ~2.7 MB
+    // Max payload with default 4 KiB slices: 4 KiB * 10 data slices = 40 KB
     // Use smaller payloads to stay well within limits
-    const MAX_TEST_PAYLOAD: usize = 100_000; // 100 KB
+    const MAX_TEST_PAYLOAD: usize = 30_000; // 30 KB
 
     #[test]
     fn encode_counts() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(50_000);
+        let payload = mk(20_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         assert_eq!(slices.len(), SLICE_COUNT);
         for (i, s) in slices.iter().enumerate() {
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn roundtrip_all() {
-        let sizes = [0usize, 1, 17, 10_000, MAX_TEST_PAYLOAD];
+        let sizes = [0usize, 1, 17, 5_000, MAX_TEST_PAYLOAD];
         let mut slicer = BasicSlicer::default();
         for &sz in &sizes {
             let payload = mk(sz);
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn data_only() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(42_000);
+        let payload = mk(20_000);
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let mut opt = to_opt(&slices);
         keep(&mut opt, &(0..DATA_SLICES).collect::<Vec<_>>());
@@ -156,12 +156,12 @@ mod tests {
     #[test]
     fn mixed_k() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(77_777);
+        let payload = mk(25_000);
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let mut opt = to_opt(&slices);
 
         let mut keep_idxs = Vec::with_capacity(DATA_SLICES);
-        for j in 0..CODING_SLICES {
+        for j in 0..PARITY_SLICES {
             keep_idxs.push(DATA_SLICES + j);
         }
         let mut need = DATA_SLICES - keep_idxs.len();
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn bad_size() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(50_000);
+        let payload = mk(20_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         let mut opt = to_opt(&slices);
         if let Some(s) = opt[0].as_mut() {
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn dup_index() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(33_333);
+        let payload = mk(15_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
         let mut opt = to_opt(&slices);
         let dup = opt[0].clone().unwrap();
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn merkle_root() {
         let mut slicer = BasicSlicer::default();
-        let payload = mk(80_000);
+        let payload = mk(25_000);
         let slices1 = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let slices2 = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let t1 = build_blob_merkle_tree(&slices1);
@@ -244,6 +244,6 @@ mod tests {
         let slices = slicer.encode(Blob::from(payload.clone())).expect("encode ok");
         let total: usize = slices.iter().map(|s| s.data.len()).sum();
         let r = total as f64 / n as f64;
-        assert!(r > 1.45 && r < 1.55, "ratio {}", r);
+        assert!(r > 1.95 && r < 2.10, "ratio {}", r);
     }
 }

@@ -14,10 +14,8 @@ pub enum EncodingType {
     Unknown = 0,
     /// Basic encoding - single RS pass, testing only.
     Basic = 1,
-    /// Striped encoding - multiple stripes, fixed slice assignment.
-    Striped = 2,
-    /// Rotated encoding - striped with per-stripe rotation for fair load distribution.
-    Rotated = 3,
+    /// Clay encoding - Clay codes with striping and rotation.
+    Clay = 2,
 }
 
 #[repr(u64)]
