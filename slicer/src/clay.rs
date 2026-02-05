@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use clay_codes::ClayCode;
 use tape_core::encoding::ClayParams;
 
-use crate::{Slicer, EncodeError, DecodeError};
+use crate::{ErasureCoder, EncodeError, DecodeError};
 
 /// Clay erasure code wrapper (k = data, m = parity, d = helper count).
 pub struct ClayCoder {
@@ -42,7 +42,7 @@ impl ClayCoder {
     }
 }
 
-impl Slicer for ClayCoder {
+impl ErasureCoder for ClayCoder {
     #[inline]
     fn k(&self) -> usize {
         self.k
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_chunk_count() {
+    fn test_chunk_count() {
         let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_uniform_chunk_size() {
+    fn test_uniform_chunks() {
         let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_all_chunks() {
+    fn test_roundtrip_all() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_data_only() {
+    fn test_data_only() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_parity_only() {
+    fn test_parity_only() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_mixed() {
+    fn test_mixed_chunks() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn test_not_enough_chunks() {
+    fn test_insufficient() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_empty_fails() {
+    fn test_empty_fails() {
         let mut coder = test_coder();
         let result = coder.encode(&[]);
         assert!(matches!(result, Err(EncodeError::EmptyInput)));

@@ -7,7 +7,7 @@ use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
-    ClayCoder, ReedSolomonCoder, StripedCoder, Slicer, MERKLE_HEIGHT,
+    ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, MERKLE_HEIGHT,
     build_blob_merkle_tree, BlobMerkleRoot, STRIPE_SIZES,
 };
 
@@ -28,7 +28,7 @@ pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
 pub struct BlobEncoder {
     profile: EncodingProfile,
     basic: Option<ReedSolomonCoder>,
-    clay: Option<StripedCoder<ClayCoder>>,
+    clay: Option<Slicer<ClayCoder>>,
 }
 
 impl Default for BlobEncoder {
@@ -65,7 +65,7 @@ impl BlobEncoder {
                 encoder.basic = Some(ReedSolomonCoder::new(params.k() as usize, params.m() as usize));
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                encoder.clay = Some(StripedCoder::with_profile(
+                encoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
                     STRIPE_SIZES[2],
                     true, // rotated

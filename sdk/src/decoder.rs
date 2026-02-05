@@ -5,7 +5,7 @@
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_slicer::{
-    ClayCoder, ReedSolomonCoder, StripedCoder, SliceMetadata, Slicer,
+    ClayCoder, ReedSolomonCoder, Slicer, SliceMetadata, ErasureCoder,
     SPOOL_GROUP_SIZE, STRIPE_SIZES,
 };
 
@@ -22,7 +22,7 @@ use crate::error::DownloadError;
 pub struct BlobDecoder {
     profile: EncodingProfile,
     basic: Option<ReedSolomonCoder>,
-    clay: Option<StripedCoder<ClayCoder>>,
+    clay: Option<Slicer<ClayCoder>>,
 }
 
 impl Default for BlobDecoder {
@@ -56,7 +56,7 @@ impl BlobDecoder {
                 decoder.basic = Some(ReedSolomonCoder::new(params.k() as usize, params.m() as usize));
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                decoder.clay = Some(StripedCoder::with_profile(
+                decoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
                     STRIPE_SIZES[2],
                     true, // rotated
@@ -126,7 +126,7 @@ impl BlobDecoder {
                 Ok(result)
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                // StripedCoder::decode auto-reconfigures based on slice metadata
+                // Slicer::decode auto-reconfigures based on slice metadata
                 self.clay.as_mut().unwrap()
                     .decode(chunks)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))

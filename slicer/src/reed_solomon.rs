@@ -5,11 +5,11 @@
 
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 
-use crate::{Slicer, EncodeError, DecodeError};
+use crate::{ErasureCoder, EncodeError, DecodeError};
 
 /// Maximum slice size for ReedSolomonCoder (used for testing/debugging only).
 /// 4 KiB allows encoding blobs up to ~40 KB (k * 4 KiB with k=10).
-/// For production workloads, use StripedCoder which handles large blobs efficiently.
+/// For production workloads, use Slicer which handles large blobs efficiently.
 pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
 
 /// Reed-Solomon coder (k = data, m = parity).
@@ -58,7 +58,7 @@ impl ReedSolomonCoder {
     }
 }
 
-impl Slicer for ReedSolomonCoder {
+impl ErasureCoder for ReedSolomonCoder {
     #[inline]
     fn k(&self) -> usize {
         self.k
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_chunk_count() {
+    fn test_chunk_count() {
         let mut coder = test_coder();
         let data = make_data(20_000);
         let chunks = coder.encode(&data).unwrap();
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_all_chunks() {
+    fn test_roundtrip_all() {
         let mut coder = test_coder();
         let original = make_data(20_000);
         let chunks = coder.encode(&original).unwrap();
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_data_only() {
+    fn test_data_only() {
         let mut coder = test_coder();
         let original = make_data(20_000);
         let chunks = coder.encode(&original).unwrap();
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_mixed() {
+    fn test_mixed_chunks() {
         let mut coder = test_coder();
         let original = make_data(20_000);
         let chunks = coder.encode(&original).unwrap();
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_not_enough_chunks() {
+    fn test_insufficient() {
         let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_empty() {
+    fn test_empty() {
         let mut coder = test_coder();
         let chunks = coder.encode(&[]).unwrap();
         assert_eq!(chunks.len(), K + M);
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mismatched_chunk_size() {
+    fn test_size_mismatch() {
         let mut coder = test_coder();
         let original = make_data(20_000);
         let mut chunks = coder.encode(&original).unwrap();
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_various_sizes() {
+    fn test_many_sizes() {
         let mut coder = test_coder();
         let sizes = [1, K - 1, K, K + 1, 2 * K, 5_000, 20_000, 30_000];
 
