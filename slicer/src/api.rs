@@ -1,6 +1,6 @@
 use super::errors::{EncodeError, DecodeError};
 use super::types::{Blob, Slice};
-use super::consts::SPOOL_GROUP_SIZE;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 
 pub trait Slicer {
     /// Maximum data size this slicer can handle.

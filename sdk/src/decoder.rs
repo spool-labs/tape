@@ -96,7 +96,7 @@ impl BlobDecoder {
             EncodingType::Clay => {
                 slices.first()
                     .and_then(|(_, data)| SliceMetadata::from_slice(data).ok())
-                    .map(|meta| meta.clay_params().k() as usize)
+                    .map(|meta| meta.profile().clay_params().k() as usize)
                     .ok_or_else(|| DownloadError::Decoding(
                         "Cannot determine k: no valid slice metadata".to_string()
                     ))

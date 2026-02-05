@@ -9,10 +9,11 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use clay_codes::ClayCode;
-use tape_core::encoding::{ClayParams, EncodingProfile};
+use tape_core::encoding::EncodingProfile;
 
-use crate::consts::SPOOL_GROUP_SIZE;
+use crate::clay::ClayCoder;
+
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use crate::errors::{DecodeError, EncodeError};
 use crate::slice_index::SliceIndex;
 use crate::types::{Blob, Slice};
@@ -118,11 +119,6 @@ impl SliceMetadata {
     pub fn profile(&self) -> EncodingProfile {
         self.profile
     }
-
-    /// Get Clay params from profile (panics if not Clay encoding).
-    pub fn clay_params(&self) -> ClayParams {
-        self.profile.clay_params()
-    }
 }
 
 /// Mapping strategy for shard-to-slice assignment.
@@ -158,28 +154,14 @@ pub fn slice_to_shard(strategy: MappingStrategy, stripe_idx: usize, slice_idx: u
     }
 }
 
-/// Round up `n` to be divisible by `divisor`.
-#[inline]
-pub fn round_up_to(n: usize, divisor: usize) -> usize {
-    ((n + divisor - 1) / divisor) * divisor
-}
-
 /// Core striped encoder/decoder with configurable mapping strategy.
 /// Uses Clay codes (MSR erasure codes) for encoding/decoding.
 pub struct StripedCodec {
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
-    clay: ClayCode,
+    clay: ClayCoder,
     /// Encoding profile (type + params).
     profile: EncodingProfile,
-    /// Number of total slices (n = k + m).
-    n: u8,
-    /// Number of data slices.
-    k: u8,
-    /// Number of parity slices.
-    m: u8,
-    /// Clay helper count (d).
-    d: u8,
 }
 
 impl StripedCodec {
@@ -193,24 +175,13 @@ impl StripedCodec {
     pub fn with_profile(stripe_size: usize, strategy: MappingStrategy, profile: EncodingProfile) -> Self {
         assert!(stripe_size > 0, "stripe_size must be > 0");
 
-        let cp = profile.clay_params();
-        let n = cp.n();
-        let k = cp.k();
-        let m = cp.m();
-        let d = cp.d();
-
-        let clay = ClayCode::new(k as usize, m as usize, d as usize)
-            .expect("Clay code init");
+        let clay = ClayCoder::from_params(profile.clay_params());
 
         Self {
             stripe_size,
             strategy,
             clay,
             profile,
-            n,
-            k,
-            m,
-            d,
         }
     }
 
@@ -223,17 +194,10 @@ impl StripedCodec {
     fn reconfigure(&mut self, stripe_size: usize, profile: EncodingProfile) {
         self.stripe_size = stripe_size;
 
-        // Only recreate Clay code if profile changed
+        // Only recreate Clay coder if profile changed
         if self.profile != profile {
-            let cp = profile.clay_params();
-            self.n = cp.n();
-            self.k = cp.k();
-            self.m = cp.m();
-            self.d = cp.d();
             self.profile = profile;
-
-            self.clay = ClayCode::new(self.k as usize, self.m as usize, self.d as usize)
-                .expect("Clay code init");
+            self.clay = ClayCoder::from_params(profile.clay_params());
         }
     }
 
@@ -261,7 +225,8 @@ impl StripedCodec {
 
         // Encode first stripe to determine chunk size (Clay handles padding internally)
         let first_stripe_data = &data[..self.stripe_size.min(blob_len)];
-        let first_chunks = self.clay.encode(first_stripe_data);
+        let first_chunks = self.clay.encode(first_stripe_data)
+            .map_err(|_| EncodeError::EmptyInput)?;
         let chunk_size = first_chunks[0].len();
 
         // Initialize output slices
@@ -281,7 +246,8 @@ impl StripedCodec {
             let end = (start + self.stripe_size).min(blob_len);
             let stripe_data = &data[start..end];
 
-            let chunks = self.clay.encode(stripe_data);
+            let chunks = self.clay.encode(stripe_data)
+                .map_err(|_| EncodeError::EmptyInput)?;
 
             // All chunks must be the same size as first stripe's chunks
             // (Clay pads internally; for the last shorter stripe, chunk_size may differ)
@@ -290,6 +256,7 @@ impl StripedCodec {
                 let mut padded = stripe_data.to_vec();
                 padded.resize(self.stripe_size, 0);
                 self.clay.encode(&padded)
+                    .map_err(|_| EncodeError::EmptyInput)?
             } else {
                 chunks
             };
@@ -326,7 +293,7 @@ impl StripedCodec {
         let metadata = SliceMetadata::from_slice(&sample.data)?;
 
         // Check minimum slices using profile's k value
-        let min_slices = metadata.clay_params().k() as usize;
+        let min_slices = metadata.profile().clay_params().k() as usize;
         let present_count = slices.iter().filter(|s| s.is_some()).count();
         if present_count < min_slices {
             return Err(DecodeError::NotEnoughSlices);
@@ -405,7 +372,8 @@ impl StripedCodec {
 
     fn encode_empty_blob(&mut self) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         let empty = vec![0u8; self.stripe_size];
-        let chunks = self.clay.encode(&empty);
+        let chunks = self.clay.encode(&empty)
+            .map_err(|_| EncodeError::EmptyInput)?;
         let chunk_size = chunks[0].len();
 
         let mut slices: Vec<Vec<u8>> = vec![Vec::with_capacity(chunk_size + SliceMetadata::SIZE); SPOOL_GROUP_SIZE];

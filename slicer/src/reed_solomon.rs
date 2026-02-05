@@ -4,7 +4,7 @@ use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
 
 /// Maximum slice size for BasicSlicer (used for testing/debugging only).
-/// 4 KiB allows encoding blobs up to ~40 KB (DATA_SLICES * 4 KiB).
+/// 4 KiB allows encoding blobs up to ~40 KB (k * 4 KiB with k=10).
 /// For production workloads, use StripedSlicer which handles large blobs efficiently.
 pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
 
@@ -35,40 +35,40 @@ pub struct RawSlices {
     pub coding: Vec<Vec<u8>>,
 }
 
-/// Reed-Solomon coder (k = data, r = parity).
+/// Reed-Solomon coder (k = data, m = parity).
 /// This is a thin wrapper around reed_solomon_simd. It reuses working buffers across calls.
 pub struct ReedSolomonCoder {
-    k_data: usize,
-    r_coding: usize,
+    k: usize,
+    m: usize,
     encoder: ReedSolomonEncoder,
     decoder: ReedSolomonDecoder,
 }
 
 impl ReedSolomonCoder {
-    /// Data slices (k) for reconstruction.
+    /// Data slices (k) needed for reconstruction.
     #[inline]
     pub fn k(&self) -> usize {
-        self.k_data
+        self.k
     }
 
-    /// Parity slices (r/m).
+    /// Parity slices (m).
     #[inline]
     pub fn m(&self) -> usize {
-        self.r_coding
+        self.m
     }
 
     /// Total slices (n = k + m).
     #[inline]
     pub fn n(&self) -> usize {
-        self.k_data + self.r_coding
+        self.k + self.m
     }
 }
 
 impl ReedSolomonCoder {
     /// Create a new Reed-Solomon coder with default max slice size (4 KiB).
     /// This is suitable for testing/debugging. For larger blobs, use `with_max_slice_bytes`.
-    pub fn new(k_data: usize, r_coding: usize) -> Self {
-        Self::with_max_slice_bytes(k_data, r_coding, MAX_SLICE_BYTES)
+    pub fn new(k: usize, m: usize) -> Self {
+        Self::with_max_slice_bytes(k, m, MAX_SLICE_BYTES)
     }
 
     /// Create a new Reed-Solomon coder with a custom max slice size.
@@ -76,24 +76,23 @@ impl ReedSolomonCoder {
     /// The max_slice_bytes determines the maximum size of each slice,
     /// which affects memory allocation in the encoder/decoder.
     /// Use larger values for benchmarks or when encoding large blobs.
-    pub fn with_max_slice_bytes(k_data: usize, r_coding: usize, max_slice_bytes: usize) -> Self {
-        assert!(u16::MAX as usize >= 65535);
-        assert!(k_data > 0, "k_data must be > 0");
-        assert!(r_coding > 0, "r_coding must be > 0");
+    pub fn with_max_slice_bytes(k: usize, m: usize, max_slice_bytes: usize) -> Self {
+        assert!(k > 0, "k must be > 0");
+        assert!(m > 0, "m must be > 0");
         assert!(max_slice_bytes > 0, "max_slice_bytes must be > 0");
 
-        let n_total = k_data + r_coding;
-        assert!(n_total <= 65536, "too many total slices for RS field");
+        let n = k + m;
+        assert!(n <= 65536, "too many total slices for RS field");
 
         // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
-        let encoder = ReedSolomonEncoder::new(k_data, r_coding, max_slice_bytes)
+        let encoder = ReedSolomonEncoder::new(k, m, max_slice_bytes)
             .expect("RS encoder init");
-        let decoder = ReedSolomonDecoder::new(k_data, r_coding, max_slice_bytes)
+        let decoder = ReedSolomonDecoder::new(k, m, max_slice_bytes)
             .expect("RS decoder init");
 
         Self {
-            k_data,
-            r_coding,
+            k,
+            m,
             encoder,
             decoder,
         }
@@ -103,7 +102,7 @@ impl ReedSolomonCoder {
     /// Returns TooMuchData if payload cannot be encoded under the current encoder limits.
     pub fn encode(&mut self, payload: &[u8]) -> Result<RawSlices, ReedSolomonEncodeError> {
         // Compute padding: make total a multiple of 2 * k.
-        let k = self.k_data;
+        let k = self.k;
         let two_k = 2 * k;
 
         // Avoid division by zero; guaranteed by constructor.
@@ -122,7 +121,7 @@ impl ReedSolomonCoder {
 
         // Ensure the encoder can handle this slice size.
         self.encoder
-            .reset(self.k_data, self.r_coding, slice_bytes)
+            .reset(self.k, self.m, slice_bytes)
             .map_err(|_| ReedSolomonEncodeError::TooMuchData)?;
 
         // Place 0x80 and zeros at end of payload (bit padding).
@@ -136,7 +135,7 @@ impl ReedSolomonCoder {
         tail.resize(last_group_bytes, 0x00);
 
         // Feed k original slices into the encoder.
-        let mut data = Vec::with_capacity(self.k_data);
+        let mut data = Vec::with_capacity(self.k);
         payload[..boundary]
             .chunks(slice_bytes)
             .chain(tail.chunks(slice_bytes))
@@ -165,7 +164,7 @@ impl ReedSolomonCoder {
         slices: &[Option<Slice>; SPOOL_GROUP_SIZE],
     ) -> Result<Vec<u8>, ReedSolomonDecodeError> {
         let present = slices.iter().flatten().count();
-        if present < self.k_data {
+        if present < self.k {
             return Err(ReedSolomonDecodeError::NotEnoughSlices);
         }
 
@@ -187,21 +186,21 @@ impl ReedSolomonCoder {
         }
 
         self.decoder
-            .reset(self.k_data, self.r_coding, slice_bytes)
+            .reset(self.k, self.m, slice_bytes)
             .map_err(|_| ReedSolomonDecodeError::TooMuchData)?;
 
         // Split into data and coding by index ranges.
         // Feed data slices (original) and coding slices (recovery) into decoder.
         for s in slices.iter().flatten() {
             let idx = *s.index;
-            if idx < self.k_data {
+            if idx < self.k {
                 // data slice at index idx
                 self.decoder
                     .add_original_shard(idx, &s.data)
                     .map_err(|_| ReedSolomonDecodeError::InvalidLayout)?;
-            } else if idx < self.k_data + self.r_coding {
+            } else if idx < self.k + self.m {
                 // coding slice at offset
-                let offset = idx - self.k_data;
+                let offset = idx - self.k;
                 self.decoder
                     .add_recovery_shard(offset, &s.data)
                     .map_err(|_| ReedSolomonDecodeError::InvalidLayout)?;
@@ -217,8 +216,8 @@ impl ReedSolomonCoder {
 
         // Reassemble the payload from data slices in order [0..k).
         // If a data slice was missing, pull the restored version.
-        let mut payload = Vec::with_capacity(self.k_data * slice_bytes);
-        for data_idx in 0..self.k_data {
+        let mut payload = Vec::with_capacity(self.k * slice_bytes);
+        for data_idx in 0..self.k {
             let slice_ref = match slices[data_idx].as_ref() {
                 Some(s) => &s.data,
                 None => restored

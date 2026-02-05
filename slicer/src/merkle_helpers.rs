@@ -1,7 +1,9 @@
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_crypto::Hash;
 use tape_crypto::merkle::MerkleTree;
-use super::consts::{SPOOL_GROUP_SIZE, MERKLE_HEIGHT};
 use super::types::Slice;
+
+pub const MERKLE_HEIGHT: usize = 5;
 
 pub type BlobMerkleTree = MerkleTree<{ MERKLE_HEIGHT }>;
 pub type BlobMerkleRoot = Hash;

@@ -1,5 +1,5 @@
 use super::api::Slicer;
-use super::consts::SPOOL_GROUP_SIZE;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use super::errors::{DecodeError, EncodeError};
 use super::reed_solomon::{ReedSolomonCoder, ReedSolomonDecodeError, ReedSolomonEncodeError};
 use super::slice_index::SliceIndex;
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::api::Slicer;
     use crate::errors::DecodeError;
-    use crate::consts::SPOOL_GROUP_SIZE;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use crate::merkle_helpers::build_blob_merkle_tree;
 
     // Test constants (k=10, m=10)

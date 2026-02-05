@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum EncodeError {
     #[error("too much data to encode in a single stripe/coder configuration")]
     TooMuchData,
+    #[error("empty input data")]
+    EmptyInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]

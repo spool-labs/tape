@@ -6,7 +6,7 @@
 use tape_core::encoding::EncodingProfile;
 
 use crate::api::Slicer;
-use crate::consts::SPOOL_GROUP_SIZE;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use crate::errors::{DecodeError, EncodeError};
 use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
