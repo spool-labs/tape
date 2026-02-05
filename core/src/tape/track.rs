@@ -1,22 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tape_crypto::hash::Hash;
-use crate::types::EpochNumber;
+use crate::encoding::EncodingProfile;
 
-/// Encoding type for erasure-coded track data.
-///
-/// Determines how blob data is split into stripes and mapped to slices.
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum EncodingType {
-    /// Unknown encoding (default for uninitialized tracks).
-    #[default]
-    Unknown = 0,
-    /// Basic encoding - single RS pass, testing only.
-    Basic = 1,
-    /// Clay encoding - Clay codes with striping and rotation.
-    Clay = 2,
-}
+// Re-export for backwards compatibility (used by callers expecting track::EncodingType)
+pub use crate::encoding::EncodingType;
+use crate::types::EpochNumber;
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -111,8 +100,8 @@ pub struct TrackData {
     /// Merkle root of the erasure coded data
     pub commitment_hash: Hash,
 
-    /// Encoding type used for erasure coding (stored as u64 for Pod compatibility)
-    pub encoding: u64,
+    /// Encoding profile (type + parameters)
+    pub profile: EncodingProfile,
 }
 
 impl TrackData {
@@ -124,7 +113,7 @@ impl TrackData {
             state: TrackState::new(),
             registered_epoch,
             commitment_hash,
-            encoding: EncodingType::Unknown as u64,
+            profile: EncodingProfile::unknown(),
         }
     }
 
@@ -144,14 +133,14 @@ impl TrackData {
         self.state.certified_epoch()
     }
 
-    /// Get the encoding type for this track.
+    /// Get the encoding type for this track (delegates to profile).
     pub fn encoding_type(&self) -> Option<EncodingType> {
-        EncodingType::try_from(self.encoding).ok()
+        self.profile.encoding_type()
     }
 
-    /// Set the encoding type for this track.
-    pub fn set_encoding(&mut self, enc: EncodingType) -> &mut Self {
-        self.encoding = enc.into();
+    /// Set the encoding profile for this track.
+    pub fn set_profile(&mut self, profile: EncodingProfile) -> &mut Self {
+        self.profile = profile;
         self
     }
 

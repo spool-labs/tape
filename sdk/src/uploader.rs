@@ -68,7 +68,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - The encoded slices with merkle proofs (should be SLICE_COUNT)
+    /// * `slices` - The encoded slices with merkle proofs (should be SPOOL_GROUP_SIZE)
     /// * `router` - SliceRouter with committee and spool assignments
     /// * `factory` - Factory for creating node clients
     pub fn new(

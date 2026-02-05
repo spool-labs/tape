@@ -7,7 +7,7 @@
 //!
 //! The authority message is 34 bytes:
 //! - track_address: 32 bytes (Solana pubkey of the Track account)
-//! - slice_index: 2 bytes (little-endian u16, 0..SLICE_COUNT)
+//! - slice_index: 2 bytes (little-endian u16, 0..SPOOL_GROUP_SIZE)
 //!
 //! # Usage
 //!
@@ -43,7 +43,7 @@ pub struct AuthorityMessage {
     /// The Solana address of the Track account being uploaded to.
     pub track_address: [u8; 32],
 
-    /// The index of the slice (0..SLICE_COUNT).
+    /// The index of the slice (0..SPOOL_GROUP_SIZE).
     pub slice_index: u16,
 }
 
@@ -87,7 +87,7 @@ impl AuthorityMessage {
 /// # Arguments
 /// * `authority_pubkey` - The Ed25519 public key of the tape authority (32 bytes)
 /// * `track_address` - The Solana address of the Track account (32 bytes)
-/// * `slice_index` - The index of the slice being uploaded (0..SLICE_COUNT)
+/// * `slice_index` - The index of the slice being uploaded (0..SPOOL_GROUP_SIZE)
 /// * `signature` - The Ed25519 signature to verify (64 bytes)
 ///
 /// # Returns
@@ -112,7 +112,7 @@ pub fn verify_authority_signature(
 /// # Arguments
 /// * `signing_fn` - Function that signs bytes and returns a 64-byte signature
 /// * `track_address` - The Solana address of the Track account (32 bytes)
-/// * `slice_index` - The index of the slice being uploaded (0..SLICE_COUNT)
+/// * `slice_index` - The index of the slice being uploaded (0..SPOOL_GROUP_SIZE)
 ///
 /// # Returns
 /// The 64-byte Ed25519 signature.

@@ -2,7 +2,7 @@ use super::slice_index::SliceIndex;
 
 /// A single slice of an erasure-coded blob.
 ///
-/// Each blob is encoded into SLICE_COUNT slices (DATA_SLICES data + PARITY_SLICES parity).
+/// Each blob is encoded into SPOOL_GROUP_SIZE slices (DATA_SLICES data + PARITY_SLICES parity).
 /// The slice at index N for this blob will be stored in spool N on the network.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Slice {

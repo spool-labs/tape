@@ -3,12 +3,12 @@
 //! This module provides `BlobEncoder` which wraps slicers to encode
 //! raw blobs into network-ready slices with merkle commitments.
 
-use tape_core::prelude::EncodingType;
+use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
-    BasicSlicer, RotatedSlicer, Blob, Slicer, Slice, MERKLE_HEIGHT, SLICE_COUNT,
-    build_blob_merkle_tree, BlobMerkleRoot,
+    BasicSlicer, RotatedSlicer, Blob, Slicer, Slice, MERKLE_HEIGHT, SPOOL_GROUP_SIZE,
+    build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
 };
 
 use crate::error::UploadError;
@@ -26,7 +26,7 @@ pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
 /// - `Basic`: Single RS pass, for testing/debugging only
 /// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
 pub struct BlobEncoder {
-    encoding_type: EncodingType,
+    profile: EncodingProfile,
     basic: Option<BasicSlicer>,
     clay: Option<RotatedSlicer>,
 }
@@ -38,21 +38,23 @@ impl Default for BlobEncoder {
 }
 
 impl BlobEncoder {
-    /// Create a new encoder with default encoding type (Clay).
+    /// Create a new encoder with default encoding profile (Clay with default params).
     ///
     /// Clay encoding uses MSR erasure codes with per-stripe rotation
     /// for fair load distribution across all nodes.
     pub fn new() -> Self {
-        Self::with_encoding(EncodingType::Clay)
+        Self::with_profile(EncodingProfile::clay_default())
     }
 
-    /// Create an encoder with a specific encoding type.
+    /// Create an encoder with a specific encoding profile.
     ///
     /// # Arguments
-    /// * `encoding_type` - The encoding algorithm to use
-    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+    /// * `profile` - The encoding profile (type + params)
+    pub fn with_profile(profile: EncodingProfile) -> Self {
+        let encoding_type = profile.encoding_type().unwrap_or(EncodingType::Unknown);
+
         let mut encoder = Self {
-            encoding_type,
+            profile,
             basic: None,
             clay: None,
         };
@@ -62,21 +64,38 @@ impl BlobEncoder {
                 encoder.basic = Some(BasicSlicer::default());
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                encoder.clay = Some(RotatedSlicer::default());
+                encoder.clay = Some(RotatedSlicer::with_profile(DEFAULT_STRIPE_SIZE, profile));
             }
         }
 
         encoder
     }
 
+    /// Create an encoder with a specific encoding type (uses default params for that type).
+    ///
+    /// # Arguments
+    /// * `encoding_type` - The encoding algorithm to use
+    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+        let profile = match encoding_type {
+            EncodingType::Basic => EncodingProfile::basic(),
+            EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
+        };
+        Self::with_profile(profile)
+    }
+
     /// Get the encoding type used by this encoder.
     pub fn encoding_type(&self) -> EncodingType {
-        self.encoding_type
+        self.profile.encoding_type().unwrap_or(EncodingType::Unknown)
+    }
+
+    /// Get the encoding profile used by this encoder.
+    pub fn profile(&self) -> EncodingProfile {
+        self.profile
     }
 
     /// Internal encoding dispatch that returns the raw Slice array.
-    fn encode_internal(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], UploadError> {
-        match self.encoding_type {
+    fn encode_internal(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], UploadError> {
+        match self.encoding_type() {
             EncodingType::Basic => {
                 self.basic.as_mut().unwrap()
                     .encode(blob)
@@ -99,7 +118,7 @@ impl BlobEncoder {
     /// * `data` - Raw blob data to encode
     ///
     /// # Returns
-    /// Vector of (index, data) tuples for all SLICE_COUNT slices.
+    /// Vector of (index, data) tuples for all SPOOL_GROUP_SIZE slices.
     pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(u16, Vec<u8>)>, UploadError> {
         let blob = Blob::from(data);
         let slices = self.encode_internal(blob)?;
@@ -114,7 +133,7 @@ impl BlobEncoder {
 
     /// Encode and return raw slice data vectors (for uploader compatibility).
     ///
-    /// This method returns slices in order (0 to SLICE_COUNT-1), suitable
+    /// This method returns slices in order (0 to SPOOL_GROUP_SIZE-1), suitable
     /// for passing directly to `DistributedUploader`.
     ///
     /// # Arguments
@@ -240,7 +259,7 @@ impl BlobEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::SLICE_COUNT;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
 
     /// Create a test encoder using BasicSlicer (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
@@ -253,7 +272,7 @@ mod tests {
         let data = vec![0u8; 10_000];
         let slices = encoder.encode(data).unwrap();
 
-        assert_eq!(slices.len(), SLICE_COUNT);
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
 
         // Verify indices are sequential
         for (idx, (slice_idx, _)) in slices.iter().enumerate() {
@@ -267,7 +286,7 @@ mod tests {
         let data = vec![42u8; 5_000];
         let slices = encoder.encode_to_vec(data).unwrap();
 
-        assert_eq!(slices.len(), SLICE_COUNT);
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
     }
 
     #[test]
@@ -276,7 +295,7 @@ mod tests {
         let data = vec![0xAB; 20_000];
         let (slices, root) = encoder.encode_with_root(data).unwrap();
 
-        assert_eq!(slices.len(), SLICE_COUNT);
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
 
         // Root should be non-zero
         assert_ne!(root.as_ref(), &[0u8; 32]);
@@ -312,8 +331,8 @@ mod tests {
         let data = vec![];
         let slices = encoder.encode(data).unwrap();
 
-        // Even empty data produces SLICE_COUNT slices
-        assert_eq!(slices.len(), SLICE_COUNT);
+        // Even empty data produces SPOOL_GROUP_SIZE slices
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
     }
 
     #[test]
@@ -324,7 +343,7 @@ mod tests {
         let data = vec![0x42; 20_000];
         let (slices_with_proofs, root) = encoder.encode_with_proofs(data).unwrap();
 
-        assert_eq!(slices_with_proofs.len(), SLICE_COUNT);
+        assert_eq!(slices_with_proofs.len(), SPOOL_GROUP_SIZE);
 
         // Verify each proof
         for slice in &slices_with_proofs {

@@ -22,6 +22,8 @@ pub struct ParallelDownloader {
     slice_to_address: HashMap<SpoolIndex, String>,
     factory: NodeCommunicationFactory,
     concurrency: usize,
+    /// Minimum slices needed for reconstruction (k from profile, default DATA_SLICES).
+    min_slices: usize,
     /// Slice indices to exclude from downloads (e.g., for recovery).
     exclude_slices: HashSet<SpoolIndex>,
 }
@@ -43,6 +45,7 @@ impl ParallelDownloader {
             slice_to_address,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
+            min_slices: DATA_SLICES,
             exclude_slices: HashSet::new(),
         }
     }
@@ -59,8 +62,18 @@ impl ParallelDownloader {
             slice_to_address,
             factory,
             concurrency,
+            min_slices: DATA_SLICES,
             exclude_slices: HashSet::new(),
         }
+    }
+
+    /// Set minimum slices needed for reconstruction.
+    ///
+    /// This allows custom k values for different encoding profiles.
+    /// Default is DATA_SLICES (10).
+    pub fn with_min_slices(mut self, min_slices: usize) -> Self {
+        self.min_slices = min_slices;
+        self
     }
 
     /// Set slices to exclude from downloads.
@@ -79,7 +92,7 @@ impl ParallelDownloader {
         self
     }
 
-    /// Download at least DATA_SLICES (2f+1) valid slices.
+    /// Download at least min_slices (k) valid slices.
     ///
     /// Requests slices in parallel (up to concurrency limit) and returns
     /// as soon as enough are collected. Respects any excluded slices set
@@ -89,7 +102,7 @@ impl ParallelDownloader {
             return Err(DownloadError::NoNodesAvailable);
         }
 
-        let mut collected_slices = Vec::with_capacity(DATA_SLICES);
+        let mut collected_slices = Vec::with_capacity(self.min_slices);
         let mut futures = FuturesUnordered::new();
 
         // Semaphore to limit concurrency
@@ -125,7 +138,7 @@ impl ParallelDownloader {
                 Ok((slice_idx, Ok(data))) => {
                     collected_slices.push((slice_idx, data));
 
-                    if collected_slices.len() >= DATA_SLICES {
+                    if collected_slices.len() >= self.min_slices {
                         break;
                     }
                 }
@@ -138,10 +151,10 @@ impl ParallelDownloader {
             }
         }
 
-        if collected_slices.len() < DATA_SLICES {
+        if collected_slices.len() < self.min_slices {
             return Err(DownloadError::InsufficientSlices {
                 got: collected_slices.len(),
-                need: DATA_SLICES,
+                need: self.min_slices,
             });
         }
 

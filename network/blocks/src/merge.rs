@@ -256,6 +256,7 @@ mod tests {
             size: StorageUnits(100),
             commitment: Hash::default(),
             epoch: EpochNumber(2),
+            profile: tape_core::encoding::EncodingProfile::clay_default(),
         };
 
         let certify_event = TrackCertified {

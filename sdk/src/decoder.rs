@@ -3,8 +3,11 @@
 //! This module provides `BlobDecoder` which reconstructs original blobs
 //! from downloaded slices using erasure code decoding.
 
-use tape_core::prelude::EncodingType;
-use tape_slicer::{BasicSlicer, RotatedSlicer, Blob, Slice, SliceIndex, Slicer, SLICE_COUNT, DATA_SLICES};
+use tape_core::encoding::{EncodingProfile, EncodingType};
+use tape_slicer::{
+    BasicSlicer, RotatedSlicer, Blob, Slice, SliceIndex, SliceMetadata, Slicer,
+    SPOOL_GROUP_SIZE, DATA_SLICES, DEFAULT_STRIPE_SIZE,
+};
 
 use crate::error::DownloadError;
 
@@ -14,9 +17,10 @@ use crate::error::DownloadError;
 /// - `Basic`: Single RS pass, for testing/debugging only
 /// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
 ///
-/// Reconstructs the original data from any DATA_SLICES (or more) valid slices.
+/// Reconstructs the original data from any k (or more) valid slices,
+/// where k is determined from the slice metadata profile.
 pub struct BlobDecoder {
-    encoding_type: EncodingType,
+    profile: EncodingProfile,
     basic: Option<BasicSlicer>,
     clay: Option<RotatedSlicer>,
 }
@@ -28,18 +32,20 @@ impl Default for BlobDecoder {
 }
 
 impl BlobDecoder {
-    /// Create a new decoder with default encoding type (Clay).
+    /// Create a new decoder with default encoding profile (Clay).
     pub fn new() -> Self {
-        Self::with_encoding(EncodingType::Clay)
+        Self::with_profile(EncodingProfile::clay_default())
     }
 
-    /// Create a decoder with a specific encoding type.
+    /// Create a decoder with a specific encoding profile.
     ///
     /// # Arguments
-    /// * `encoding_type` - The encoding algorithm used for the slices
-    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+    /// * `profile` - The encoding profile (type + params)
+    pub fn with_profile(profile: EncodingProfile) -> Self {
+        let encoding_type = profile.encoding_type().unwrap_or(EncodingType::Unknown);
+
         let mut decoder = Self {
-            encoding_type,
+            profile,
             basic: None,
             clay: None,
         };
@@ -49,27 +55,62 @@ impl BlobDecoder {
                 decoder.basic = Some(BasicSlicer::default());
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                decoder.clay = Some(RotatedSlicer::default());
+                decoder.clay = Some(RotatedSlicer::with_profile(DEFAULT_STRIPE_SIZE, profile));
             }
         }
 
         decoder
     }
 
+    /// Create a decoder with a specific encoding type (uses default params for that type).
+    ///
+    /// # Arguments
+    /// * `encoding_type` - The encoding algorithm used for the slices
+    pub fn with_encoding(encoding_type: EncodingType) -> Self {
+        let profile = match encoding_type {
+            EncodingType::Basic => EncodingProfile::basic(),
+            EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
+        };
+        Self::with_profile(profile)
+    }
+
     /// Get the encoding type used by this decoder.
     pub fn encoding_type(&self) -> EncodingType {
-        self.encoding_type
+        self.profile.encoding_type().unwrap_or(EncodingType::Unknown)
+    }
+
+    /// Get the encoding profile used by this decoder.
+    pub fn profile(&self) -> EncodingProfile {
+        self.profile
+    }
+
+    /// Get minimum slices needed for decoding from slice metadata.
+    ///
+    /// For Clay encoding, peeks at the first available slice to read its profile
+    /// and determine k. For Basic encoding, returns DATA_SLICES.
+    fn min_slices_from_metadata(&self, slices: &[(u16, Vec<u8>)]) -> usize {
+        match self.encoding_type() {
+            EncodingType::Clay => {
+                slices.first()
+                    .and_then(|(_, data)| SliceMetadata::from_slice(data).ok())
+                    .map(|meta| meta.clay_params().k() as usize)
+                    .unwrap_or(DATA_SLICES)
+            }
+            // Basic encoding doesn't embed metadata, use default k
+            EncodingType::Basic | EncodingType::Unknown => DATA_SLICES,
+        }
     }
 
     /// Internal decoding dispatch.
-    fn decode_internal(&mut self, slice_array: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DownloadError> {
-        match self.encoding_type {
+    fn decode_internal(&mut self, slice_array: &[Option<Slice>; SPOOL_GROUP_SIZE]) -> Result<Blob, DownloadError> {
+        match self.encoding_type() {
             EncodingType::Basic => {
                 self.basic.as_mut().unwrap()
                     .decode(slice_array)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))
             }
             EncodingType::Clay | EncodingType::Unknown => {
+                // StripedCodec::decode auto-reconfigures based on slice metadata
                 self.clay.as_mut().unwrap()
                     .decode(slice_array)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))
@@ -92,20 +133,23 @@ impl BlobDecoder {
     /// The reconstructed original blob data.
     ///
     /// # Errors
-    /// - `InvalidSliceIndex` if any slice index >= SLICE_COUNT
-    /// - `InsufficientSlices` if fewer than DATA_SLICES provided
+    /// - `InvalidSliceIndex` if any slice index >= SPOOL_GROUP_SIZE
+    /// - `InsufficientSlices` if fewer than k slices provided (k from metadata)
     /// - `Decoding` if erasure code reconstruction fails
     pub fn decode(&mut self, slices: Vec<(u16, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
+        // Peek at metadata to get k (minimum slices needed)
+        let min_slices = self.min_slices_from_metadata(&slices);
+
         // Check we have enough slices
-        if slices.len() < DATA_SLICES {
+        if slices.len() < min_slices {
             return Err(DownloadError::InsufficientSlices {
                 got: slices.len(),
-                need: DATA_SLICES,
+                need: min_slices,
             });
         }
 
         // Convert to the format expected by slicer
-        let mut slice_array: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
+        let mut slice_array: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
 
         for (idx, data) in slices {
             let slice_idx = SliceIndex::new(idx as usize)
@@ -123,16 +167,19 @@ impl BlobDecoder {
     /// Same as `decode()` but returns the slicer's `Blob` type instead
     /// of raw bytes. Useful when you need access to Blob methods.
     pub fn decode_to_blob(&mut self, slices: Vec<(u16, Vec<u8>)>) -> Result<Blob, DownloadError> {
+        // Peek at metadata to get k (minimum slices needed)
+        let min_slices = self.min_slices_from_metadata(&slices);
+
         // Check we have enough slices
-        if slices.len() < DATA_SLICES {
+        if slices.len() < min_slices {
             return Err(DownloadError::InsufficientSlices {
                 got: slices.len(),
-                need: DATA_SLICES,
+                need: min_slices,
             });
         }
 
         // Convert to the format expected by slicer
-        let mut slice_array: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
+        let mut slice_array: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
 
         for (idx, data) in slices {
             let slice_idx = SliceIndex::new(idx as usize)
@@ -254,7 +301,7 @@ mod tests {
         let mut encoder = test_encoder();
         let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
-        // Replace one slice's index with an invalid one (>= SLICE_COUNT)
+        // Replace one slice's index with an invalid one (>= SPOOL_GROUP_SIZE)
         slices[0].0 = 9999;
 
         let mut decoder = test_decoder();

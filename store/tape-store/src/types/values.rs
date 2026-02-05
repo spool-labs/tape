@@ -3,6 +3,7 @@
 use crate::types::{Pubkey, SpoolAllocation};
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsPubkey;
+use tape_core::encoding::EncodingProfile;
 use tape_core::types::EpochNumber;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::Hash;
@@ -28,10 +29,28 @@ pub struct TrackInfo {
     pub stripe_size: u64,
     /// Number of stripes
     pub stripe_count: u32,
-    /// Encoding type as u64 for Pod compat
+    /// Encoding type discriminant (EncodingType as u64)
     pub encoding_type: u64,
+    /// Encoding params (e.g., ClayParams packed as u64)
+    pub encoding_params: u64,
     /// Commitment hashes (empty = no commitments, non-empty = all hashes)
     pub commitment: Vec<Hash>,
+}
+
+impl TrackInfo {
+    /// Get the encoding profile (type + params).
+    pub fn profile(&self) -> EncodingProfile {
+        EncodingProfile {
+            encoding: self.encoding_type,
+            params: self.encoding_params,
+        }
+    }
+
+    /// Set the encoding profile (type + params).
+    pub fn set_profile(&mut self, profile: EncodingProfile) {
+        self.encoding_type = profile.encoding;
+        self.encoding_params = profile.params;
+    }
 }
 
 /// Serde helper for NetworkAddress (Pod type without native serde support)
@@ -89,7 +108,8 @@ mod tests {
             original_size: 1024 * 1024,
             stripe_size: 1024,
             stripe_count: 1024,
-            encoding_type: 3,
+            encoding_type: 2, // Clay
+            encoding_params: 0x130A14, // n=20, k=10, d=19 packed
             commitment: vec![Hash::default(); 10],
         };
 
@@ -106,13 +126,41 @@ mod tests {
             original_size: 512,
             stripe_size: 256,
             stripe_count: 2,
-            encoding_type: 1,
+            encoding_type: 1, // Basic
+            encoding_params: 0,
             commitment: vec![],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
         let decoded: TrackInfo = wincode::deserialize(&bytes).unwrap();
         assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn test_track_info_profile_helpers() {
+        use tape_core::encoding::{EncodingProfile, EncodingType, ClayParams};
+
+        let mut info = TrackInfo {
+            tape_address: Pubkey([3u8; 32]),
+            spool_allocation: SpoolAllocation::SpoolGroup(1),
+            original_size: 1024,
+            stripe_size: 512,
+            stripe_count: 2,
+            encoding_type: 0,
+            encoding_params: 0,
+            commitment: vec![],
+        };
+
+        // Set profile
+        let profile = EncodingProfile::clay(ClayParams::new(20, 10, 19));
+        info.set_profile(profile);
+
+        // Get profile and verify
+        let retrieved = info.profile();
+        assert_eq!(retrieved.encoding_type(), Some(EncodingType::Clay));
+        assert_eq!(retrieved.clay_params().n(), 20);
+        assert_eq!(retrieved.clay_params().k(), 10);
+        assert_eq!(retrieved.clay_params().d(), 19);
     }
 
     #[test]

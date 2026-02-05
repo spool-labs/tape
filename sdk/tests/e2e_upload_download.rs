@@ -18,7 +18,7 @@ use serial_test::serial;
 use store_memory::MemoryStore;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT};
+use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolAssignment;
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{Coin, NetworkAddress, NodeId, TAPE};
@@ -119,7 +119,7 @@ fn make_test_committee(count: usize) -> Committee<MEMBER_COUNT> {
 }
 
 /// Create a uniform spool assignment (round-robin across members).
-fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SLICE_COUNT> {
+fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SPOOL_COUNT> {
     let mut spools = [0u8; SPOOL_COUNT];
     for i in 0..SPOOL_COUNT {
         spools[i] = (i % member_count) as u8;
@@ -533,8 +533,8 @@ async fn test_multi_node_with_failures() {
         let (_, handle) = nodes.remove(0);
         handle.abort();
     }
-    let slices_lost = (SLICE_COUNT / NUM_NODES + 1) * NODES_TO_KILL;
-    let slices_remaining = SLICE_COUNT - slices_lost;
+    let slices_lost = (SPOOL_GROUP_SIZE / NUM_NODES + 1) * NODES_TO_KILL;
+    let slices_remaining = SPOOL_GROUP_SIZE - slices_lost;
     println!(
         "Killed {} nodes (~{} slices lost, ~{} remaining, need {})",
         NODES_TO_KILL, slices_lost, slices_remaining, DATA_SLICES

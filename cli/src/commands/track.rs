@@ -104,6 +104,7 @@ async fn register(
     size: u64,
 ) -> Result<()> {
     use tape_api::instruction::build_register_track_ix;
+    use tape_core::encoding::EncodingProfile;
     use tape_core::types::StorageUnits;
 
     let fee_payer = get_keypair(ctx)?;
@@ -149,6 +150,7 @@ async fn register(
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;

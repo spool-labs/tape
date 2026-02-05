@@ -167,6 +167,7 @@ mod tests {
 
     #[test]
     fn test_parse_track_registered_event() {
+        use tape_core::encoding::EncodingProfile;
         let track = solana_sdk::pubkey::Pubkey::new_unique();
         let tape = solana_sdk::pubkey::Pubkey::new_unique();
         let event = TrackRegistered {
@@ -176,6 +177,7 @@ mod tests {
             size: StorageUnits(500),
             commitment: Hash::default(),
             epoch: EpochNumber(3),
+            profile: EncodingProfile::clay_default(),
         };
 
         let log = encode_event(EventType::TrackRegistered, &event);

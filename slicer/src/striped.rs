@@ -3,15 +3,17 @@
 //! Splits blobs into multiple stripes, encoding each stripe separately.
 //! This bounds memory usage while handling arbitrarily large blobs.
 
+use tape_core::encoding::EncodingProfile;
+
 use crate::api::Slicer;
-use crate::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
+use crate::consts::{PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
 use crate::errors::{DecodeError, EncodeError};
 use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
 
 /// A striped slicer that splits blobs into multiple stripes.
 ///
-/// Each stripe is Clay-encoded into SLICE_COUNT shards. Shards are appended
+/// Each stripe is Clay-encoded into SPOOL_GROUP_SIZE shards. Shards are appended
 /// to output slices using identity mapping (shard N -> slice N).
 ///
 /// For fair load distribution across nodes, use `RotatedSlicer` instead.
@@ -20,10 +22,17 @@ pub struct StripedSlicer {
 }
 
 impl StripedSlicer {
-    /// Create a new StripedSlicer.
+    /// Create a new StripedSlicer with default Clay profile.
     pub fn new() -> Self {
         Self {
             codec: StripedCodec::new(DEFAULT_STRIPE_SIZE, MappingStrategy::Identity),
+        }
+    }
+
+    /// Create with a specific encoding profile.
+    pub fn with_profile(stripe_size: usize, profile: EncodingProfile) -> Self {
+        Self {
+            codec: StripedCodec::with_profile(stripe_size, MappingStrategy::Identity, profile),
         }
     }
 
@@ -38,6 +47,11 @@ impl StripedSlicer {
     pub fn stripe_size(&self) -> usize {
         self.codec.stripe_size
     }
+
+    /// Get the current encoding profile.
+    pub fn profile(&self) -> EncodingProfile {
+        self.codec.profile()
+    }
 }
 
 impl Default for StripedSlicer {
@@ -51,11 +65,11 @@ impl Slicer for StripedSlicer {
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
     const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
 
-    fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+    fn encode(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         self.codec.encode_adaptive(blob)
     }
 
-    fn decode(&mut self, slices: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DecodeError> {
+    fn decode(&mut self, slices: &[Option<Slice>; SPOOL_GROUP_SIZE]) -> Result<Blob, DecodeError> {
         self.codec.decode(slices)
     }
 }
@@ -68,12 +82,12 @@ mod tests {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_opt(slices: &[Slice; SLICE_COUNT]) -> [Option<Slice>; SLICE_COUNT] {
+    fn to_opt(slices: &[Slice; SPOOL_GROUP_SIZE]) -> [Option<Slice>; SPOOL_GROUP_SIZE] {
         std::array::from_fn(|i| Some(slices[i].clone()))
     }
 
-    fn keep_only(arr: &mut [Option<Slice>; SLICE_COUNT], keep: &[usize]) {
-        let mut keep_set = vec![false; SLICE_COUNT];
+    fn keep_only(arr: &mut [Option<Slice>; SPOOL_GROUP_SIZE], keep: &[usize]) {
+        let mut keep_set = vec![false; SPOOL_GROUP_SIZE];
         for &k in keep {
             keep_set[k] = true;
         }
@@ -139,7 +153,7 @@ mod tests {
 
         // Keep some data slices (first 5) + all parity slices
         let mut keep_indices: Vec<usize> = (0..5).collect();
-        keep_indices.extend(DATA_SLICES..SLICE_COUNT);
+        keep_indices.extend(DATA_SLICES..SPOOL_GROUP_SIZE);
         keep_only(&mut opt, &keep_indices);
 
         let count = opt.iter().filter(|s| s.is_some()).count();
@@ -165,7 +179,7 @@ mod tests {
         let mut slicer = StripedSlicer::with_stripe_size(1024);
         let payload = mk(10_000);
         let slices = slicer.encode(Blob::from(payload)).unwrap();
-        assert_eq!(slices.len(), SLICE_COUNT);
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
     }
 
     #[test]

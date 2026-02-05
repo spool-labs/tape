@@ -19,6 +19,7 @@ use solana_sdk::signature::{Keypair, Signer};
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{build_register_track_ix, build_reserve_tape_ix};
 use tape_api::program::tapedrive::tape_pda;
+use tape_core::encoding::EncodingProfile;
 use tape_core::prelude::*;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, StorageUnits};
@@ -114,6 +115,7 @@ async fn test_write_track() {
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     client
@@ -173,6 +175,7 @@ async fn test_track_requires_tape() {
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     // This should fail because no tape exists
@@ -221,6 +224,7 @@ async fn test_track_metadata_storage() {
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     client
@@ -293,6 +297,7 @@ async fn test_track_commitment() {
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     client
@@ -367,6 +372,7 @@ async fn test_multiple_tracks_on_tape() {
             root_hash,
             commitment_hash,
             key_hash,
+            EncodingProfile::clay_default(),
         );
 
         client

@@ -51,7 +51,8 @@ mod tests {
             original_size: 1024 * 1024,
             stripe_size: 1024,
             stripe_count: 1024,
-            encoding_type: 3,
+            encoding_type: 2, // Clay
+            encoding_params: 0,
             commitment: vec![],
         }
     }

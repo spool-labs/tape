@@ -6,9 +6,10 @@ use tape_solana::*;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RegisterTrack {
     pub key: Hash,
-    pub root: Hash,       // Merkle root of original data
-    pub commitment: Hash, // Erasure coding commitment
-    pub size: [u8; 8],    // Size in bytes (including parity data)
+    pub root: Hash,            // Merkle root of original data
+    pub commitment: Hash,      // Erasure coding commitment
+    pub size: [u8; 8],         // Size in bytes (including parity data)
+    pub profile: EncodingProfile, // Encoding profile (type + params)
 }
 
 #[repr(C)]
@@ -34,6 +35,7 @@ pub fn build_register_track_ix(
     root: Hash,         // Data merkle root
     commitment: Hash,   // Erasure coding root
     key: Hash,          // Track identifier (e.g., file path hash)
+    profile: EncodingProfile, // Encoding profile (type + params)
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
@@ -60,6 +62,7 @@ pub fn build_register_track_ix(
             root,
             commitment,
             size,
+            profile,
         }.to_bytes(),
     }
 }

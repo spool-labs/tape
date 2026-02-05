@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use solana_program::pubkey::Pubkey;
+use tape_core::encoding::EncodingProfile;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_core::prelude::Hash;
 
@@ -54,6 +55,8 @@ pub struct TrackRegistered {
     pub commitment: Hash,
     /// Registration epoch
     pub epoch: EpochNumber,
+    /// Encoding profile (type + params)
+    pub profile: EncodingProfile,
 }
 
 tape_solana::event!(EventType, TrackRegistered);

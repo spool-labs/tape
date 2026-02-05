@@ -18,6 +18,7 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Keypair, Signer};
 use tape_api::errors::TapeError;
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix, build_reserve_tape_ix};
+use tape_core::encoding::EncodingProfile;
 use tape_api::program::tapedrive::{track_pda, CommitteeBitmap};
 use tape_core::bls::{BlsPrivateKey, BlsSignature};
 use tape_core::cert::track::CertifyMessage;
@@ -60,6 +61,7 @@ async fn create_tape_and_track(
         root,
         commitment,
         key,
+        EncodingProfile::clay_default(),
     );
 
     ctx.client

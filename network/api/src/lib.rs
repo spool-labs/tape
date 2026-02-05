@@ -30,7 +30,7 @@ pub struct SignResponse {
 pub const API_V1: &str = "/v1";
 
 /// Merkle tree height for blob encoding.
-/// 2^5 = 32 leaves (20 used = SLICE_COUNT).
+/// 2^5 = 32 leaves (20 used = SPOOL_GROUP_SIZE).
 pub const MERKLE_HEIGHT: usize = 5;
 
 // =============================================================================
@@ -83,7 +83,7 @@ impl SlicePayload {
 ///
 /// Path parameters:
 /// - `track_id`: The track identifier
-/// - `slice_index`: The slice index (0 to SLICE_COUNT-1)
+/// - `slice_index`: The slice index (0 to SPOOL_GROUP_SIZE-1)
 pub const SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{slice_index}";
 
 // =============================================================================

@@ -18,6 +18,7 @@ fn open_primary() {
         stripe_size: 1024,
         stripe_count: 1,
         encoding_type: 1,
+        encoding_params: 0,
         commitment: vec![],
     };
 
@@ -44,6 +45,7 @@ fn open_primary_persistence() {
             stripe_size: 512,
             stripe_count: 1,
             encoding_type: 1,
+            encoding_params: 0,
             commitment: vec![],
         };
         store.put_track(track_address, info).unwrap();
@@ -79,7 +81,8 @@ fn all_column_families() {
         original_size: 1024 * 1024,
         stripe_size: 1024,
         stripe_count: 1024,
-        encoding_type: 3,
+        encoding_type: 2, // Clay
+        encoding_params: 0,
         commitment: vec![],
     };
     store.put_track(track_address, track_info).unwrap();
@@ -230,6 +233,7 @@ fn track_operations() {
         stripe_size: 1024,
         stripe_count: 1,
         encoding_type: 1,
+        encoding_params: 0,
         commitment: vec![],
     };
     store.put_track(track, info.clone()).unwrap();

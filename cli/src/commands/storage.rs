@@ -15,6 +15,7 @@ use clap::Subcommand;
 use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
+use tape_core::encoding::EncodingProfile;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::Hash;
@@ -326,6 +327,7 @@ async fn upload_with_certification(
         root_hash,
         commitment_hash,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     let register_sig = if fee_payer.pubkey() != authority {

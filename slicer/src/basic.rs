@@ -1,5 +1,5 @@
 use super::api::Slicer;
-use super::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
+use super::consts::{PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
 use super::errors::{DecodeError, EncodeError};
 use super::reed_solomon::{ReedSolomonCoder, ReedSolomonDecodeError, ReedSolomonEncodeError};
 use super::slice_index::SliceIndex;
@@ -37,12 +37,12 @@ impl Slicer for BasicSlicer {
     const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
     const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
 
-    fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+    fn encode(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         let raw = self.0.encode(blob.as_slice()).map_err(|e| match e {
             ReedSolomonEncodeError::TooMuchData => EncodeError::TooMuchData,
         })?;
 
-        let mut output = Vec::with_capacity(SLICE_COUNT);
+        let mut output = Vec::with_capacity(SPOOL_GROUP_SIZE);
         for (i, data) in raw.data.into_iter().enumerate() {
             let idx = SliceIndex::new(i).expect("index in range");
             output.push(Slice::new(idx, data));
@@ -52,12 +52,12 @@ impl Slicer for BasicSlicer {
             output.push(Slice::new(idx, coding));
         }
 
-        Ok(output.try_into().expect("exactly SLICE_COUNT slices"))
+        Ok(output.try_into().expect("exactly SPOOL_GROUP_SIZE slices"))
     }
 
     fn decode(
         &mut self,
-        slices: &[Option<Slice>; SLICE_COUNT],
+        slices: &[Option<Slice>; SPOOL_GROUP_SIZE],
     ) -> Result<Blob, DecodeError> {
         let reconstructed = self.0.decode(slices).map_err(|e| match e {
             ReedSolomonDecodeError::NotEnoughSlices => DecodeError::NotEnoughSlices,
@@ -73,23 +73,23 @@ impl Slicer for BasicSlicer {
 mod tests {
     use super::*;
     use crate::errors::DecodeError;
-    use crate::consts::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
+    use crate::consts::{PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
     use crate::merkle_helpers::build_blob_merkle_tree;
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_opt(slices: &[Slice; SLICE_COUNT]) -> [Option<Slice>; SLICE_COUNT] {
-        let mut arr: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
+    fn to_opt(slices: &[Slice; SPOOL_GROUP_SIZE]) -> [Option<Slice>; SPOOL_GROUP_SIZE] {
+        let mut arr: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
         for (i, s) in slices.iter().enumerate() {
             arr[i] = Some(s.clone());
         }
         arr
     }
 
-    fn keep(arr: &mut [Option<Slice>; SLICE_COUNT], idxs: &[usize]) {
-        let mut mask = vec![false; SLICE_COUNT];
+    fn keep(arr: &mut [Option<Slice>; SPOOL_GROUP_SIZE], idxs: &[usize]) {
+        let mut mask = vec![false; SPOOL_GROUP_SIZE];
         for &i in idxs {
             mask[i] = true;
         }
@@ -100,7 +100,7 @@ mod tests {
         }
     }
 
-    fn equal_size(slices: &[Slice; SLICE_COUNT]) -> Option<usize> {
+    fn equal_size(slices: &[Slice; SPOOL_GROUP_SIZE]) -> Option<usize> {
         let mut size: Option<usize> = None;
         for s in slices.iter() {
             match size {
@@ -121,7 +121,7 @@ mod tests {
         let mut slicer = BasicSlicer::default();
         let payload = mk(20_000);
         let slices = slicer.encode(Blob::from(payload)).expect("encode ok");
-        assert_eq!(slices.len(), SLICE_COUNT);
+        assert_eq!(slices.len(), SPOOL_GROUP_SIZE);
         for (i, s) in slices.iter().enumerate() {
             assert_eq!(*s.index, i);
         }

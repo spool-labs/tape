@@ -134,7 +134,8 @@ mod tests {
             original_size: 1024 * 1024,
             stripe_size: 1024,
             stripe_count: 1024,
-            encoding_type: 3,
+            encoding_type: 2, // Clay
+            encoding_params: 0,
             commitment: vec![],
         };
 
@@ -315,7 +316,8 @@ mod tests {
                 original_size: 1024,
                 stripe_size: 1024,
                 stripe_count: 1,
-                encoding_type: 1,
+                encoding_type: 1, // Basic
+                encoding_params: 0,
                 commitment: vec![],
             };
             store.put_track(track, info).unwrap();
@@ -353,7 +355,8 @@ mod tests {
                 original_size: 512,
                 stripe_size: 512,
                 stripe_count: 1,
-                encoding_type: 1,
+                encoding_type: 1, // Basic
+                encoding_params: 0,
                 commitment: vec![],
             };
             store.put_track(track, info).unwrap();

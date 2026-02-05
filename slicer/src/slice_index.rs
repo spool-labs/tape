@@ -1,4 +1,4 @@
-use super::SLICE_COUNT;
+use super::SPOOL_GROUP_SIZE;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::mem::MaybeUninit;
@@ -6,9 +6,9 @@ use std::ops::Deref;
 use wincode::{SchemaRead, SchemaWrite};
 
 /// Index of a slice within a blob's erasure-coded output.
-/// Valid range: 0 to SLICE_COUNT-1.
+/// Valid range: 0 to SPOOL_GROUP_SIZE-1.
 ///
-/// Each blob is encoded into SLICE_COUNT slices. The slice at index N
+/// Each blob is encoded into SPOOL_GROUP_SIZE slices. The slice at index N
 /// for any blob is stored in spool N on the network.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
@@ -16,7 +16,7 @@ pub struct SliceIndex(usize);
 
 impl SliceIndex {
     pub fn new(index: usize) -> Option<Self> {
-        if index < SLICE_COUNT {
+        if index < SPOOL_GROUP_SIZE {
             Some(Self(index))
         } else {
             None
@@ -24,7 +24,7 @@ impl SliceIndex {
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
-        (0..SLICE_COUNT).map(Self)
+        (0..SPOOL_GROUP_SIZE).map(Self)
     }
 }
 
@@ -51,7 +51,7 @@ impl<'de> Deserialize<'de> for SliceIndex {
         impl<'de> serde::de::Visitor<'de> for VisitorImpl {
             type Value = SliceIndex;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "a usize in [0, SLICE_COUNT)")
+                write!(f, "a usize in [0, SPOOL_GROUP_SIZE)")
             }
             fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
             where
@@ -74,7 +74,7 @@ impl<'de> SchemaRead<'de> for SliceIndex {
     ) -> wincode::ReadResult<()> {
         unsafe {
             reader.copy_into_t(dst)?;
-            if dst.assume_init_ref().0 >= SLICE_COUNT {
+            if dst.assume_init_ref().0 >= SPOOL_GROUP_SIZE {
                 Err(wincode::ReadError::Custom("slice index out of bounds"))
             } else {
                 Ok(())
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_ok() {
-        let vals = [0, 1, SLICE_COUNT - 1];
+        let vals = [0, 1, SPOOL_GROUP_SIZE - 1];
         for v in vals {
             let s = serde_json::to_string(&SliceIndex(v)).unwrap();
             let _idx: SliceIndex = serde_json::from_str(&s).unwrap();
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn serde_fail() {
-        let vals = [SLICE_COUNT, SLICE_COUNT + 1];
+        let vals = [SPOOL_GROUP_SIZE, SPOOL_GROUP_SIZE + 1];
         for v in vals {
             let s = serde_json::to_string(&v).unwrap();
             let res: Result<SliceIndex, _> = serde_json::from_str(&s);
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn wincode_roundtrip_ok() {
-        let vals = [0, SLICE_COUNT - 1];
+        let vals = [0, SPOOL_GROUP_SIZE - 1];
         for v in vals {
             let b = wincode::serialize(&SliceIndex(v)).unwrap();
             let _idx: SliceIndex = wincode::deserialize(&b).unwrap();
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn wincode_fail() {
-        let vals = [SLICE_COUNT, SLICE_COUNT + 1, usize::MAX];
+        let vals = [SPOOL_GROUP_SIZE, SPOOL_GROUP_SIZE + 1, usize::MAX];
         for v in vals {
             let b = wincode::serialize(&SliceIndex(v)).unwrap();
             let res: Result<SliceIndex, _> = wincode::deserialize(&b);

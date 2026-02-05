@@ -77,6 +77,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         current_epoch(epoch),
         args.commitment,
     );
+    track.data.profile = args.profile;
 
     let new_used = tape.used
          .checked_add(total_units)
@@ -95,6 +96,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         size: total_units,
         commitment: args.commitment,
         epoch: current_epoch(epoch),
+        profile: args.profile,
     }.log();
 
     Ok(())
@@ -107,6 +109,8 @@ mod tests {
 
     #[test]
     fn test_register_track() {
+        use tape_core::encoding::EncodingProfile;
+
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let storage_units = StorageUnits(100);
@@ -114,6 +118,7 @@ mod tests {
         let data_root = Hash::new_unique();
         let erasure_root = Hash::new_unique();
         let bucket_hash = Hash::new_unique();
+        let profile = EncodingProfile::clay_default();
 
         let instruction = build_register_track_ix(
             fee_payer,
@@ -122,6 +127,7 @@ mod tests {
             data_root,
             erasure_root,
             bucket_hash,
+            profile,
         );
 
         let (epoch_address, _) = epoch_pda();
@@ -152,6 +158,10 @@ mod tests {
             rent_sysvar(),
         ];
 
+        // Build expected track data with profile
+        let mut expected_data = TrackData::new(EpochNumber(0), erasure_root);
+        expected_data.profile = profile;
+
         let env = test_env();
         env.process_instruction(
             &instruction,
@@ -164,10 +174,7 @@ mod tests {
                         tape: tape_address,
                         key: bucket_hash,
                         size: storage_units,
-                        data: TrackData::new(
-                            EpochNumber(0),
-                            erasure_root,
-                        ),
+                        data: expected_data,
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&tape_address).data(

@@ -1,4 +1,4 @@
-use super::{PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
+use super::{PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
 use super::Slice;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
@@ -144,7 +144,7 @@ impl ReedSolomonCoder {
     /// At least k total slices (data+coding) are required.
     pub fn decode(
         &mut self,
-        slices: &[Option<Slice>; SLICE_COUNT],
+        slices: &[Option<Slice>; SPOOL_GROUP_SIZE],
     ) -> Result<Vec<u8>, ReedSolomonDecodeError> {
         let present = slices.iter().flatten().count();
         if present < self.k_data {
@@ -237,7 +237,7 @@ impl ReedSolomonCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Slice, PARITY_SLICES, DATA_SLICES, SLICE_COUNT};
+    use super::{Slice, PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
     use crate::SliceIndex;
 
     /// Create a test coder with the default configuration.
@@ -250,8 +250,8 @@ mod tests {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_full(raw: &RawSlices) -> [Option<Slice>; SLICE_COUNT] {
-        let mut arr: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
+    fn to_full(raw: &RawSlices) -> [Option<Slice>; SPOOL_GROUP_SIZE] {
+        let mut arr: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
         for (i, d) in raw.data.iter().enumerate() {
             arr[i] = Some(Slice {
                 index: SliceIndex::new(i).unwrap(),
@@ -268,8 +268,8 @@ mod tests {
         arr
     }
 
-    fn keep_only(arr: &mut [Option<Slice>; SLICE_COUNT], keep: &[usize]) {
-        let mut keep_set = vec![false; SLICE_COUNT];
+    fn keep_only(arr: &mut [Option<Slice>; SPOOL_GROUP_SIZE], keep: &[usize]) {
+        let mut keep_set = vec![false; SPOOL_GROUP_SIZE];
         for &k in keep {
             keep_set[k] = true;
         }
@@ -280,7 +280,7 @@ mod tests {
         }
     }
 
-    fn equal_sizes(arr: &[Option<Slice>; SLICE_COUNT]) -> Option<usize> {
+    fn equal_sizes(arr: &[Option<Slice>; SPOOL_GROUP_SIZE]) -> Option<usize> {
         let mut size = None;
         for s in arr.iter().flatten() {
             match size {
@@ -461,7 +461,7 @@ mod tests {
             };
 
             // Build full slice set and round trip
-            let mut slices: [Option<Slice>; SLICE_COUNT] = std::array::from_fn(|_| None);
+            let mut slices: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
             for (i, d) in raw.data.iter().enumerate() {
                 slices[i] = Some(Slice {
                     index: SliceIndex::new(i).unwrap(),

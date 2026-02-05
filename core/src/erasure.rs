@@ -1,23 +1,25 @@
 //! Erasure coding constants and parameters.
 //!
 //! These constants define the Clay erasure coding scheme used by tapedrive.
-//! SLICE_COUNT is the number of slices per blob (one spool group).
+//! SPOOL_GROUP_SIZE is the number of slices per spool group (fixed network constant).
+//! A blob's n may be ≤ SPOOL_GROUP_SIZE depending on its encoding profile.
 //! SPOOL_COUNT is the total number of spools in the network.
 
-/// Slices per blob (one spool group).
-pub const SLICE_COUNT: usize = 20;
+/// Number of slices per spool group (fixed network constant).
+/// Individual encoding profiles may use n ≤ SPOOL_GROUP_SIZE.
+pub const SPOOL_GROUP_SIZE: usize = 20;
 
-/// Data slices needed for reconstruction.
+/// Default data slices for the default Clay profile (k=10).
 pub const DATA_SLICES: usize = 10;
 
-/// Parity slices per blob.
+/// Default parity slices for the default Clay profile (m=10).
 pub const PARITY_SLICES: usize = 10;
 
 /// Number of spool groups in the network.
 pub const SPOOL_GROUP_COUNT: usize = 50;
 
 /// Total spools in the network.
-pub const SPOOL_COUNT: usize = SPOOL_GROUP_COUNT * SLICE_COUNT;
+pub const SPOOL_COUNT: usize = SPOOL_GROUP_COUNT * SPOOL_GROUP_SIZE;
 
 /// Maximum blob size (1 GiB).
 pub const MAX_BLOB_SIZE: usize = 1 << 30;
@@ -31,12 +33,12 @@ mod tests {
 
     #[test]
     fn test_slice_counts_add_up() {
-        assert_eq!(DATA_SLICES + PARITY_SLICES, SLICE_COUNT);
+        assert_eq!(DATA_SLICES + PARITY_SLICES, SPOOL_GROUP_SIZE);
     }
 
     #[test]
     fn test_expected_values() {
-        assert_eq!(SLICE_COUNT, 20);
+        assert_eq!(SPOOL_GROUP_SIZE, 20);
         assert_eq!(DATA_SLICES, 10);
         assert_eq!(PARITY_SLICES, 10);
     }

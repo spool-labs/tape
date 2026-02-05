@@ -20,6 +20,7 @@ use common::{create_client, initialize_system, setup_validator, transfer_tape, V
 use solana_sdk::signature::{Keypair, Signer};
 use tape_api::errors::TapeError;
 use tape_api::instruction::{build_register_track_ix, build_reserve_tape_ix};
+use tape_core::encoding::EncodingProfile;
 use tape_core::prelude::*;
 use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
 
@@ -209,6 +210,7 @@ async fn test_tape_lifecycle() {
         data_root,
         erasure_root,
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     client
@@ -398,6 +400,7 @@ async fn test_tape_capacity_limits() {
         Hash::new_unique(),
         Hash::new_unique(),
         key_hash,
+        EncodingProfile::clay_default(),
     );
 
     client
@@ -417,6 +420,7 @@ async fn test_tape_capacity_limits() {
         Hash::new_unique(),
         Hash::new_unique(),
         key_hash2,
+        EncodingProfile::clay_default(),
     );
 
     let result = client.send_instructions(&user, vec![oversized_ix]).await;

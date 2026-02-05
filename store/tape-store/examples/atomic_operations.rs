@@ -19,6 +19,7 @@ fn main() -> Result<()> {
             stripe_size: 1024,
             stripe_count: 1,
             encoding_type: 1,
+            encoding_params: 0,
             commitment: vec![],
         };
         store.put_track(track_address, info)?;

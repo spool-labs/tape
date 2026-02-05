@@ -12,12 +12,15 @@ pub mod merkle_helpers;
 pub mod reed_solomon;
 pub mod slice_index;
 
-pub use consts::{MERKLE_HEIGHT, SLICE_COUNT, DATA_SLICES, PARITY_SLICES};
+pub use consts::{MERKLE_HEIGHT, SPOOL_GROUP_SIZE, DATA_SLICES, PARITY_SLICES};
 pub use errors::{EncodeError, DecodeError};
 pub use types::{Slice, Blob};
 pub use api::Slicer;
 pub use basic::BasicSlicer;
-pub use codec::{DEFAULT_STRIPE_SIZE, ROTATION_STEP, STRIPE_SIZES, pick_stripe_size, SliceMetadata};
+pub use codec::{DEFAULT_STRIPE_SIZE, ROTATION_STEP, STRIPE_SIZES, pick_stripe_size, SliceMetadata, StripedCodec};
+
+// Re-export encoding types from core for convenience
+pub use tape_core::encoding::{EncodingProfile, EncodingType, ClayParams};
 pub use striped::StripedSlicer;
 pub use rotated::RotatedSlicer;
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};

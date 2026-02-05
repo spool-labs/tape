@@ -10,19 +10,17 @@ use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 use clay_codes::ClayCode;
+use tape_core::encoding::{ClayParams, EncodingProfile};
 
-use crate::consts::{DATA_SLICES, PARITY_SLICES, SLICE_COUNT};
+use crate::consts::SPOOL_GROUP_SIZE;
 use crate::errors::{DecodeError, EncodeError};
 use crate::slice_index::SliceIndex;
 use crate::types::{Blob, Slice};
 
-/// Clay helper count: d = n - 1 = SLICE_COUNT - 1.
-const CLAY_D: usize = SLICE_COUNT - 1;
-
 /// Default stripe size (10 MB).
 pub const DEFAULT_STRIPE_SIZE: usize = 10_000_000;
 
-/// Rotation step per stripe (coprime with SLICE_COUNT=20 for full coverage).
+/// Rotation step per stripe (coprime with SPOOL_GROUP_SIZE=20 for full coverage).
 /// gcd(7, 20) = 1 ensures all positions are visited in 20 stripes.
 pub const ROTATION_STEP: usize = 7;
 
@@ -52,6 +50,7 @@ pub fn pick_stripe_size(blob_len: usize) -> usize {
 /// - `version`: Format version for future extensibility
 /// - `blob_len`: Original unencoded blob size in bytes
 /// - `stripe_size`: Stripe size used during encoding
+/// - `profile`: Encoding profile (type + params, 16 bytes)
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct SliceMetadata {
@@ -61,18 +60,26 @@ pub struct SliceMetadata {
     pub blob_len: u64,
     /// Stripe size used for encoding (one of STRIPE_SIZES).
     pub stripe_size: u64,
+    /// Encoding profile (type + params).
+    pub profile: EncodingProfile,
 }
 
 impl SliceMetadata {
     pub const VERSION: u64 = 0;
-    pub const SIZE: usize = std::mem::size_of::<Self>(); // 24 bytes
+    pub const SIZE: usize = std::mem::size_of::<Self>(); // 40 bytes
 
-    /// Create metadata for encoding.
+    /// Create metadata for encoding with default Clay profile.
     pub fn new(blob_len: usize, stripe_size: usize) -> Self {
+        Self::with_profile(blob_len, stripe_size, EncodingProfile::clay_default())
+    }
+
+    /// Create metadata with a specific encoding profile.
+    pub fn with_profile(blob_len: usize, stripe_size: usize, profile: EncodingProfile) -> Self {
         Self {
             version: Self::VERSION,
             blob_len: blob_len as u64,
             stripe_size: stripe_size as u64,
+            profile,
         }
     }
 
@@ -107,6 +114,15 @@ impl SliceMetadata {
     pub fn stripe_size(&self) -> usize {
         self.stripe_size as usize
     }
+
+    pub fn profile(&self) -> EncodingProfile {
+        self.profile
+    }
+
+    /// Get Clay params from profile (panics if not Clay encoding).
+    pub fn clay_params(&self) -> ClayParams {
+        self.profile.clay_params()
+    }
 }
 
 /// Mapping strategy for shard-to-slice assignment.
@@ -114,7 +130,7 @@ impl SliceMetadata {
 pub enum MappingStrategy {
     /// Identity mapping: shard N -> slice N (no rotation)
     Identity,
-    /// Rotated mapping: shard N -> slice (N + stripe * ROTATION_STEP) % SLICE_COUNT
+    /// Rotated mapping: shard N -> slice (N + stripe * ROTATION_STEP) % SPOOL_GROUP_SIZE
     Rotated,
 }
 
@@ -124,8 +140,8 @@ pub fn shard_to_slice(strategy: MappingStrategy, stripe_idx: usize, shard_idx: u
     match strategy {
         MappingStrategy::Identity => shard_idx,
         MappingStrategy::Rotated => {
-            let offset = (stripe_idx * ROTATION_STEP) % SLICE_COUNT;
-            (shard_idx + offset) % SLICE_COUNT
+            let offset = (stripe_idx * ROTATION_STEP) % SPOOL_GROUP_SIZE;
+            (shard_idx + offset) % SPOOL_GROUP_SIZE
         }
     }
 }
@@ -136,8 +152,8 @@ pub fn slice_to_shard(strategy: MappingStrategy, stripe_idx: usize, slice_idx: u
     match strategy {
         MappingStrategy::Identity => slice_idx,
         MappingStrategy::Rotated => {
-            let offset = (stripe_idx * ROTATION_STEP) % SLICE_COUNT;
-            (slice_idx + SLICE_COUNT - offset) % SLICE_COUNT
+            let offset = (stripe_idx * ROTATION_STEP) % SPOOL_GROUP_SIZE;
+            (slice_idx + SPOOL_GROUP_SIZE - offset) % SPOOL_GROUP_SIZE
         }
     }
 }
@@ -154,42 +170,86 @@ pub struct StripedCodec {
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
     clay: ClayCode,
+    /// Encoding profile (type + params).
+    profile: EncodingProfile,
+    /// Number of total slices (n = k + m).
+    n: u8,
+    /// Number of data slices.
+    k: u8,
+    /// Number of parity slices.
+    m: u8,
+    /// Clay helper count (d).
+    d: u8,
 }
 
 impl StripedCodec {
     /// Create a new codec with the given stripe size and mapping strategy.
+    /// Uses the default Clay profile (k=10, m=10, d=19).
     pub fn new(stripe_size: usize, strategy: MappingStrategy) -> Self {
+        Self::with_profile(stripe_size, strategy, EncodingProfile::clay_default())
+    }
+
+    /// Create a new codec with a specific encoding profile.
+    pub fn with_profile(stripe_size: usize, strategy: MappingStrategy, profile: EncodingProfile) -> Self {
         assert!(stripe_size > 0, "stripe_size must be > 0");
 
-        let clay = ClayCode::new(DATA_SLICES, PARITY_SLICES, CLAY_D)
+        let cp = profile.clay_params();
+        let n = cp.n();
+        let k = cp.k();
+        let m = cp.m();
+        let d = cp.d();
+
+        let clay = ClayCode::new(k as usize, m as usize, d as usize)
             .expect("Clay code init");
 
         Self {
             stripe_size,
             strategy,
             clay,
+            profile,
+            n,
+            k,
+            m,
+            d,
         }
     }
 
-    /// Reconfigure the codec for a different stripe size.
-    fn reconfigure(&mut self, stripe_size: usize) {
+    /// Get the current encoding profile.
+    pub fn profile(&self) -> EncodingProfile {
+        self.profile
+    }
+
+    /// Reconfigure the codec for a different stripe size and/or profile.
+    fn reconfigure(&mut self, stripe_size: usize, profile: EncodingProfile) {
         self.stripe_size = stripe_size;
-        // Clay code is stateless w.r.t. stripe size; no need to recreate
+
+        // Only recreate Clay code if profile changed
+        if self.profile != profile {
+            let cp = profile.clay_params();
+            self.n = cp.n();
+            self.k = cp.k();
+            self.m = cp.m();
+            self.d = cp.d();
+            self.profile = profile;
+
+            self.clay = ClayCode::new(self.k as usize, self.m as usize, self.d as usize)
+                .expect("Clay code init");
+        }
     }
 
     /// Encode with automatically selected stripe size based on blob length.
-    pub fn encode_adaptive(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+    pub fn encode_adaptive(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         let optimal_stripe = pick_stripe_size(blob.len());
 
         if self.stripe_size != optimal_stripe {
-            self.reconfigure(optimal_stripe);
+            self.reconfigure(optimal_stripe, self.profile);
         }
 
         self.encode(blob)
     }
 
-    /// Encode a blob into SLICE_COUNT slices.
-    pub fn encode(&mut self, blob: Blob) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+    /// Encode a blob into SPOOL_GROUP_SIZE slices.
+    pub fn encode(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         let data = blob.as_slice();
         let blob_len = data.len();
 
@@ -205,7 +265,7 @@ impl StripedCodec {
         let chunk_size = first_chunks[0].len();
 
         // Initialize output slices
-        let mut slices: Vec<Vec<u8>> = (0..SLICE_COUNT)
+        let mut slices: Vec<Vec<u8>> = (0..SPOOL_GROUP_SIZE)
             .map(|_| Vec::with_capacity(num_stripes * chunk_size + SliceMetadata::SIZE))
             .collect();
 
@@ -240,8 +300,8 @@ impl StripedCodec {
             }
         }
 
-        // Append metadata
-        let metadata = SliceMetadata::new(blob_len, self.stripe_size);
+        // Append metadata with current profile
+        let metadata = SliceMetadata::with_profile(blob_len, self.stripe_size, self.profile);
         for slice in &mut slices {
             slice.extend_from_slice(&metadata.to_bytes());
         }
@@ -252,16 +312,11 @@ impl StripedCodec {
             .map(|(i, data)| Slice::new(SliceIndex::new(i).unwrap(), data))
             .collect();
 
-        Ok(output.try_into().expect("exactly SLICE_COUNT slices"))
+        Ok(output.try_into().expect("exactly SPOOL_GROUP_SIZE slices"))
     }
 
     /// Decode slices back into the original blob.
-    pub fn decode(&mut self, slices: &[Option<Slice>; SLICE_COUNT]) -> Result<Blob, DecodeError> {
-        let present_count = slices.iter().filter(|s| s.is_some()).count();
-        if present_count < DATA_SLICES {
-            return Err(DecodeError::NotEnoughSlices);
-        }
-
+    pub fn decode(&mut self, slices: &[Option<Slice>; SPOOL_GROUP_SIZE]) -> Result<Blob, DecodeError> {
         let sample = slices
             .iter()
             .flatten()
@@ -270,9 +325,16 @@ impl StripedCodec {
 
         let metadata = SliceMetadata::from_slice(&sample.data)?;
 
-        // Reconfigure codec if stripe size differs
-        if self.stripe_size != metadata.stripe_size() {
-            self.reconfigure(metadata.stripe_size());
+        // Check minimum slices using profile's k value
+        let min_slices = metadata.clay_params().k() as usize;
+        let present_count = slices.iter().filter(|s| s.is_some()).count();
+        if present_count < min_slices {
+            return Err(DecodeError::NotEnoughSlices);
+        }
+
+        // Reconfigure codec if stripe size or profile differs
+        if self.stripe_size != metadata.stripe_size() || self.profile != metadata.profile() {
+            self.reconfigure(metadata.stripe_size(), metadata.profile());
         }
 
         let blob_len = metadata.blob_len();
@@ -306,7 +368,7 @@ impl StripedCodec {
             let mut available: HashMap<usize, Vec<u8>> = HashMap::new();
             let mut erasures: Vec<usize> = Vec::new();
 
-            for shard_idx in 0..SLICE_COUNT {
+            for shard_idx in 0..SPOOL_GROUP_SIZE {
                 let slice_idx = shard_to_slice(self.strategy, s, shard_idx);
                 match &slices[slice_idx] {
                     Some(slice) => {
@@ -341,20 +403,20 @@ impl StripedCodec {
         Ok(Blob::from(output))
     }
 
-    fn encode_empty_blob(&mut self) -> Result<[Slice; SLICE_COUNT], EncodeError> {
+    fn encode_empty_blob(&mut self) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         let empty = vec![0u8; self.stripe_size];
         let chunks = self.clay.encode(&empty);
         let chunk_size = chunks[0].len();
 
-        let mut slices: Vec<Vec<u8>> = vec![Vec::with_capacity(chunk_size + SliceMetadata::SIZE); SLICE_COUNT];
+        let mut slices: Vec<Vec<u8>> = vec![Vec::with_capacity(chunk_size + SliceMetadata::SIZE); SPOOL_GROUP_SIZE];
 
         for (shard_idx, chunk) in chunks.iter().enumerate() {
             let slice_idx = shard_to_slice(self.strategy, 0, shard_idx);
             slices[slice_idx] = chunk.clone();
         }
 
-        // Append metadata (blob_len = 0 for empty blob)
-        let metadata = SliceMetadata::new(0, self.stripe_size);
+        // Append metadata (blob_len = 0 for empty blob) with current profile
+        let metadata = SliceMetadata::with_profile(0, self.stripe_size, self.profile);
         for slice in &mut slices {
             slice.extend_from_slice(&metadata.to_bytes());
         }
@@ -365,7 +427,7 @@ impl StripedCodec {
             .map(|(i, data)| Slice::new(SliceIndex::new(i).unwrap(), data))
             .collect();
 
-        Ok(output.try_into().expect("exactly SLICE_COUNT slices"))
+        Ok(output.try_into().expect("exactly SPOOL_GROUP_SIZE slices"))
     }
 }
 
@@ -376,7 +438,7 @@ mod tests {
     #[test]
     fn test_identity_mapping() {
         for stripe in 0..10 {
-            for shard in 0..SLICE_COUNT {
+            for shard in 0..SPOOL_GROUP_SIZE {
                 let slice = shard_to_slice(MappingStrategy::Identity, stripe, shard);
                 assert_eq!(slice, shard);
                 let recovered = slice_to_shard(MappingStrategy::Identity, stripe, slice);
@@ -388,7 +450,7 @@ mod tests {
     #[test]
     fn test_rotated_mapping_inverse() {
         for stripe in 0..10 {
-            for shard in 0..SLICE_COUNT {
+            for shard in 0..SPOOL_GROUP_SIZE {
                 let slice = shard_to_slice(MappingStrategy::Rotated, stripe, shard);
                 let recovered = slice_to_shard(MappingStrategy::Rotated, stripe, slice);
                 assert_eq!(shard, recovered);
@@ -401,16 +463,16 @@ mod tests {
         fn gcd(a: usize, b: usize) -> usize {
             if b == 0 { a } else { gcd(b, a % b) }
         }
-        assert_eq!(gcd(ROTATION_STEP, SLICE_COUNT), 1);
+        assert_eq!(gcd(ROTATION_STEP, SPOOL_GROUP_SIZE), 1);
     }
 
     #[test]
     fn test_rotation_distribution() {
         let num_stripes = 100;
-        let mut slice_hits = vec![0usize; SLICE_COUNT];
+        let mut slice_hits = vec![0usize; SPOOL_GROUP_SIZE];
 
         for stripe in 0..num_stripes {
-            for shard in 0..SLICE_COUNT {
+            for shard in 0..SPOOL_GROUP_SIZE {
                 let slice = shard_to_slice(MappingStrategy::Rotated, stripe, shard);
                 slice_hits[slice] += 1;
             }
