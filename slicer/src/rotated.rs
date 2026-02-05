@@ -6,7 +6,7 @@
 use tape_core::encoding::EncodingProfile;
 
 use crate::api::Slicer;
-use crate::consts::{DATA_SLICES, PARITY_SLICES, SPOOL_GROUP_SIZE};
+use crate::consts::SPOOL_GROUP_SIZE;
 use crate::errors::{DecodeError, EncodeError};
 use crate::codec::{StripedCodec, MappingStrategy, DEFAULT_STRIPE_SIZE};
 use crate::types::{Blob, Slice};
@@ -64,8 +64,14 @@ impl Default for RotatedSlicer {
 
 impl Slicer for RotatedSlicer {
     const MAX_DATA_SIZE: usize = usize::MAX;
-    const DATA_OUTPUT_SLICES: usize = DATA_SLICES;
-    const PARITY_OUTPUT_SLICES: usize = PARITY_SLICES;
+
+    fn k(&self) -> usize {
+        self.profile().k() as usize
+    }
+
+    fn m(&self) -> usize {
+        self.profile().m() as usize
+    }
 
     fn encode(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], EncodeError> {
         self.codec.encode_adaptive(blob)
@@ -79,6 +85,7 @@ impl Slicer for RotatedSlicer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Slicer;
     use crate::codec::{shard_to_slice, slice_to_shard, ROTATION_STEP};
 
     fn mk(len: usize) -> Vec<u8> {
@@ -91,8 +98,8 @@ mod tests {
 
     fn keep_only(arr: &mut [Option<Slice>; SPOOL_GROUP_SIZE], keep: &[usize]) {
         let mut keep_set = vec![false; SPOOL_GROUP_SIZE];
-        for &k in keep {
-            keep_set[k] = true;
+        for &idx in keep {
+            keep_set[idx] = true;
         }
         for (i, slot) in arr.iter_mut().enumerate() {
             if !keep_set[i] {
@@ -154,16 +161,17 @@ mod tests {
     #[test]
     fn test_decode_with_missing_slices() {
         let mut slicer = RotatedSlicer::with_stripe_size(1024);
+        let k = slicer.k();
         let payload = mk(3000);
         let slices = slicer.encode(Blob::from(payload.clone())).unwrap();
         let mut opt = to_opt(&slices);
 
-        // Keep exactly DATA_SLICES slices (first 10)
-        let keep_indices: Vec<usize> = (0..DATA_SLICES).collect();
+        // Keep exactly k slices (first k)
+        let keep_indices: Vec<usize> = (0..k).collect();
         keep_only(&mut opt, &keep_indices);
 
         let count = opt.iter().filter(|s| s.is_some()).count();
-        assert!(count >= DATA_SLICES);
+        assert!(count >= k);
 
         let restored = slicer.decode(&opt).unwrap();
         assert_eq!(restored.data, payload);
@@ -172,10 +180,11 @@ mod tests {
     #[test]
     fn test_not_enough_slices() {
         let mut slicer = RotatedSlicer::with_stripe_size(1024);
+        let k = slicer.k();
         let payload = mk(1000);
         let slices = slicer.encode(Blob::from(payload)).unwrap();
         let mut opt = to_opt(&slices);
-        keep_only(&mut opt, &(0..DATA_SLICES - 1).collect::<Vec<_>>());
+        keep_only(&mut opt, &(0..(k - 1)).collect::<Vec<_>>());
         let res = slicer.decode(&opt);
         assert!(matches!(res, Err(DecodeError::NotEnoughSlices)));
     }
@@ -221,5 +230,12 @@ mod tests {
         for (i, &hits) in slice_hits.iter().enumerate() {
             assert_eq!(hits, expected_hits_per_slice, "slice {} mismatch", i);
         }
+    }
+
+    #[test]
+    fn test_k_m_from_slicer() {
+        let slicer = RotatedSlicer::default();
+        assert_eq!(slicer.k(), 10);
+        assert_eq!(slicer.m(), 10);
     }
 }

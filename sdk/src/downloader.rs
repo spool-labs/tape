@@ -9,7 +9,10 @@ use tokio::sync::Semaphore;
 
 use crate::communication::NodeCommunicationFactory;
 use crate::error::DownloadError;
-use crate::uploader::{DATA_SLICES, SPOOL_COUNT};
+use crate::uploader::SPOOL_COUNT;
+
+/// Default minimum slices for reconstruction (matches default profile k=10).
+const DEFAULT_MIN_SLICES: usize = 10;
 
 /// Default concurrency limit for parallel downloads.
 /// This limits how many HTTP requests are in flight at once.
@@ -22,7 +25,7 @@ pub struct ParallelDownloader {
     slice_to_address: HashMap<SpoolIndex, String>,
     factory: NodeCommunicationFactory,
     concurrency: usize,
-    /// Minimum slices needed for reconstruction (k from profile, default DATA_SLICES).
+    /// Minimum slices needed for reconstruction (k from profile, default DEFAULT_MIN_SLICES).
     min_slices: usize,
     /// Slice indices to exclude from downloads (e.g., for recovery).
     exclude_slices: HashSet<SpoolIndex>,
@@ -45,7 +48,7 @@ impl ParallelDownloader {
             slice_to_address,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
-            min_slices: DATA_SLICES,
+            min_slices: DEFAULT_MIN_SLICES,
             exclude_slices: HashSet::new(),
         }
     }
@@ -62,7 +65,7 @@ impl ParallelDownloader {
             slice_to_address,
             factory,
             concurrency,
-            min_slices: DATA_SLICES,
+            min_slices: DEFAULT_MIN_SLICES,
             exclude_slices: HashSet::new(),
         }
     }
@@ -70,7 +73,7 @@ impl ParallelDownloader {
     /// Set minimum slices needed for reconstruction.
     ///
     /// This allows custom k values for different encoding profiles.
-    /// Default is DATA_SLICES (10).
+    /// Default is DEFAULT_MIN_SLICES (10).
     pub fn with_min_slices(mut self, min_slices: usize) -> Self {
         self.min_slices = min_slices;
         self

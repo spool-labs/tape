@@ -18,7 +18,7 @@ use crate::error::UploadError;
 use crate::routing::SliceRouter;
 
 // Re-export erasure coding constants from tape-core
-pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SPOOL_COUNT};
+pub use tape_core::erasure::SPOOL_COUNT;
 // Re-export spool types for convenience
 pub use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 
@@ -287,13 +287,6 @@ mod tests {
         let assignment = SpoolAssignment::new(spools);
 
         SliceRouter::new(assignment, committee)
-    }
-
-    #[test]
-    fn test_constants() {
-        assert_eq!(DATA_SLICES, 10);
-        assert_eq!(PARITY_SLICES, 10);
-        assert_eq!(DATA_SLICES + PARITY_SLICES, 20);
     }
 
     #[test]

@@ -3,13 +3,16 @@
 //! This module provides `BlobDecoder` which reconstructs original blobs
 //! from downloaded slices using erasure code decoding.
 
-use tape_core::encoding::{EncodingProfile, EncodingType};
+use tape_core::encoding::{EncodingProfile, EncodingType, RSParams};
 use tape_slicer::{
     BasicSlicer, RotatedSlicer, Blob, Slice, SliceIndex, SliceMetadata, Slicer,
-    SPOOL_GROUP_SIZE, DATA_SLICES, DEFAULT_STRIPE_SIZE,
+    SPOOL_GROUP_SIZE, DEFAULT_STRIPE_SIZE,
 };
 
 use crate::error::DownloadError;
+
+/// Default k value (matches default RSParams and ClayParams).
+const DEFAULT_K: usize = 10;
 
 /// Decodes slices back into the original blob.
 ///
@@ -68,7 +71,7 @@ impl BlobDecoder {
     /// * `encoding_type` - The encoding algorithm used for the slices
     pub fn with_encoding(encoding_type: EncodingType) -> Self {
         let profile = match encoding_type {
-            EncodingType::Basic => EncodingProfile::basic(),
+            EncodingType::Basic => EncodingProfile::basic_default(),
             EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
         };
         Self::with_profile(profile)
@@ -87,17 +90,18 @@ impl BlobDecoder {
     /// Get minimum slices needed for decoding from slice metadata.
     ///
     /// For Clay encoding, peeks at the first available slice to read its profile
-    /// and determine k. For Basic encoding, returns DATA_SLICES.
+    /// and determine k. For Basic encoding, uses profile.k() or default.
     fn min_slices_from_metadata(&self, slices: &[(u16, Vec<u8>)]) -> usize {
         match self.encoding_type() {
             EncodingType::Clay => {
                 slices.first()
                     .and_then(|(_, data)| SliceMetadata::from_slice(data).ok())
                     .map(|meta| meta.clay_params().k() as usize)
-                    .unwrap_or(DATA_SLICES)
+                    .unwrap_or(DEFAULT_K)
             }
-            // Basic encoding doesn't embed metadata, use default k
-            EncodingType::Basic | EncodingType::Unknown => DATA_SLICES,
+            // Basic encoding doesn't embed metadata, use profile k or default
+            EncodingType::Basic => self.profile.rs_params().k() as usize,
+            EncodingType::Unknown => DEFAULT_K,
         }
     }
 
@@ -123,8 +127,8 @@ impl BlobDecoder {
     /// Takes a vector of (slice_index, slice_data) tuples as returned
     /// by `ParallelDownloader::download_enough_slices()`.
     ///
-    /// Requires at least DATA_SLICES valid slices for reconstruction.
-    /// Extra slices beyond DATA_SLICES are used but not required.
+    /// Requires at least k valid slices for reconstruction (k from profile).
+    /// Extra slices beyond k are used but not required.
     ///
     /// # Arguments
     /// * `slices` - Vector of (index, data) tuples from downloaded slices
@@ -195,7 +199,10 @@ impl BlobDecoder {
 mod tests {
     use super::*;
     use crate::encoder::BlobEncoder;
-    use tape_core::erasure::DATA_SLICES;
+    use tape_slicer::Slicer;
+
+    // Default k=10 for BasicSlicer
+    const K: usize = 10;
 
     /// Create test encoder using BasicSlicer (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
@@ -227,8 +234,8 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        // Keep only exactly DATA_SLICES (minimum required)
-        let data_only: Vec<_> = slices.into_iter().take(DATA_SLICES).collect();
+        // Keep only exactly k (minimum required)
+        let data_only: Vec<_> = slices.into_iter().take(K).collect();
 
         let mut decoder = test_decoder();
         let recovered = decoder.decode(data_only).unwrap();
@@ -243,8 +250,8 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        // Keep only the first DATA_SLICES (all data, no parity)
-        let data_only: Vec<_> = slices.into_iter().take(DATA_SLICES).collect();
+        // Keep only the first k (all data, no parity)
+        let data_only: Vec<_> = slices.into_iter().take(K).collect();
 
         let mut decoder = test_decoder();
         let recovered = decoder.decode(data_only).unwrap();
@@ -267,8 +274,8 @@ mod tests {
             .map(|(_, s)| s)
             .collect();
 
-        // Make sure we have enough
-        assert!(scattered.len() >= DATA_SLICES);
+        // Make sure we have enough (k=10, so every other of 20 = 10)
+        assert!(scattered.len() >= K);
 
         let mut decoder = test_decoder();
         let recovered = decoder.decode(scattered).unwrap();
@@ -283,8 +290,8 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original).unwrap();
 
-        // Only keep DATA_SLICES - 1 slices (not enough)
-        let too_few: Vec<_> = slices.into_iter().take(DATA_SLICES - 1).collect();
+        // Only keep k - 1 slices (not enough)
+        let too_few: Vec<_> = slices.into_iter().take(K - 1).collect();
 
         let mut decoder = test_decoder();
         let result = decoder.decode(too_few);

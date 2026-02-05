@@ -13,10 +13,10 @@ use crate::utils::spinner;
 use crate::Context;
 
 use tape_store::columns::{
-    PrimarySlices, RecoverySlices, SliceInfoCol, TapeInfoCol, TrackInfoCol, ALL_COLUMN_FAMILIES,
+    SliceCol, TapeCol, TrackCol, ALL_COLUMN_FAMILIES,
 };
-use tape_store::ops::{MetaOps, SpoolOps, TrackInfoOps};
-use tape_store::types::{EpochNumber, SpoolStatus};
+use tape_store::ops::{MetaOps, SpoolOps};
+use tape_store::types::SpoolStatus;
 use tape_store::{RocksStore, TapeStore};
 
 /// Default database path if not specified.
@@ -166,33 +166,21 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
 
     // Count items in each column family
     let track_count = store
-        .iter::<TrackInfoCol>()
+        .iter::<TrackCol>()
         .map(|v| v.len())
         .unwrap_or(0);
-    let slice_info_count = store
-        .iter::<SliceInfoCol>()
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let tape_count = store.iter::<TapeInfoCol>().map(|v| v.len()).unwrap_or(0);
-    let primary_slice_count = store
-        .iter::<PrimarySlices>()
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let recovery_slice_count = store
-        .iter::<RecoverySlices>()
+    let tape_count = store.iter::<TapeCol>().map(|v| v.len()).unwrap_or(0);
+    let slice_count = store
+        .iter::<SliceCol>()
         .map(|v| v.len())
         .unwrap_or(0);
 
     // Get current epoch and count spools
     let current_epoch = store.get_current_epoch().ok().flatten();
-    let spool_count = if let Some(epoch) = current_epoch {
-        store
-            .iter_assigned_spools(epoch)
-            .map(|iter| iter.count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let spool_count = store
+        .iter_all_spools()
+        .map(|v| v.len())
+        .unwrap_or(0);
 
     pb.finish_and_clear();
 
@@ -200,10 +188,8 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
         OutputFormat::Json => {
             let json = serde_json::json!({
                 "track_count": track_count,
-                "slice_info_count": slice_info_count,
                 "tape_count": tape_count,
-                "primary_slice_count": primary_slice_count,
-                "recovery_slice_count": recovery_slice_count,
+                "slice_count": slice_count,
                 "spool_count": spool_count,
                 "current_epoch": current_epoch.map(|e| e.as_u64()),
             });
@@ -214,18 +200,10 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             table.load_preset(UTF8_FULL);
             table.set_header(vec!["Metric", "Value"]);
             table.add_row(vec!["Tracks", &format_number(track_count as u64)]);
-            table.add_row(vec!["Slice Info", &format_number(slice_info_count as u64)]);
             table.add_row(vec!["Tapes", &format_number(tape_count as u64)]);
+            table.add_row(vec!["Slices", &format_number(slice_count as u64)]);
             table.add_row(vec![
-                "Primary Slices",
-                &format_number(primary_slice_count as u64),
-            ]);
-            table.add_row(vec![
-                "Recovery Slices",
-                &format_number(recovery_slice_count as u64),
-            ]);
-            table.add_row(vec![
-                "Assigned Spools",
+                "Spools",
                 &format_number(spool_count as u64),
             ]);
             if let Some(epoch) = current_epoch {
@@ -238,32 +216,18 @@ async fn show_stats(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn list_spools(ctx: &Context, path: Option<PathBuf>, epoch_arg: Option<u64>) -> Result<()> {
+async fn list_spools(ctx: &Context, path: Option<PathBuf>, _epoch_arg: Option<u64>) -> Result<()> {
     let pb = spinner("Loading spools...");
     let store = open_store(path)?;
 
-    // Use provided epoch or get current epoch from meta
-    let epoch = match epoch_arg {
-        Some(e) => EpochNumber(e),
-        None => store
-            .get_current_epoch()
-            .map_err(|e| anyhow::anyhow!("Failed to get current epoch: {}", e))?
-            .ok_or_else(|| anyhow::anyhow!("No current epoch set in database"))?,
-    };
-
     let spools: Vec<(u16, SpoolStatus)> = store
-        .iter_assigned_spools(epoch)
-        .map_err(|e| anyhow::anyhow!("Failed to iterate spools: {}", e))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .iter_all_spools()
+        .map_err(|e| anyhow::anyhow!("Failed to iterate spools: {}", e))?;
 
     pb.finish_and_clear();
 
     if spools.is_empty() {
-        ctx.print(&format!(
-            "No spools assigned for epoch {}.",
-            epoch.as_u64()
-        ));
+        ctx.print("No spools in database.");
         return Ok(());
     }
 
@@ -289,11 +253,7 @@ async fn list_spools(ctx: &Context, path: Option<PathBuf>, epoch_arg: Option<u64
                 table.add_row(vec![&idx.to_string(), &format!("{:?}", status)]);
             }
             println!("{}", table);
-            println!(
-                "\nTotal: {} spools for epoch {}",
-                spools.len(),
-                epoch.as_u64()
-            );
+            println!("\nTotal: {} spools", spools.len());
         }
     }
 
@@ -304,7 +264,7 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
     let pb = spinner("Loading tracks...");
     let store = open_store(path)?;
     let all_tracks = store
-        .iter::<TrackInfoCol>()
+        .iter::<TrackCol>()
         .map_err(|e| anyhow::anyhow!("Failed to iterate tracks: {}", e))?;
     let total_count = all_tracks.len();
     let tracks: Vec<_> = all_tracks.into_iter().take(limit).collect();
@@ -325,9 +285,9 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
                     serde_json::json!({
                         "address": pubkey_str,
                         "tape": tape_str,
-                        "registered_epoch": info.registered_epoch.as_u64(),
-                        "certified_epoch": info.certified_epoch.map(|e| e.as_u64()),
-                        "has_slice_info": info.has_slice_info,
+                        "original_size": info.original_size,
+                        "stripe_count": info.stripe_count,
+                        "encoding_type": info.encoding_type,
                     })
                 })
                 .collect();
@@ -339,23 +299,25 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
             table.set_header(vec![
                 "Address",
                 "Tape",
-                "Registered",
-                "Certified",
-                "Has Info",
+                "Size",
+                "Stripes",
+                "Encoding",
             ]);
 
             for (pubkey, info) in &tracks {
                 let pubkey_str = bs58::encode(pubkey.as_ref()).into_string();
                 let tape_str = bs58::encode(info.tape_address.as_ref()).into_string();
+                let encoding = match info.encoding_type {
+                    1 => "Basic",
+                    2 => "Clay",
+                    _ => "Unknown",
+                };
                 table.add_row(vec![
                     &crate::output::format_pubkey(&pubkey_str),
                     &crate::output::format_pubkey(&tape_str),
-                    &info.registered_epoch.as_u64().to_string(),
-                    &info
-                        .certified_epoch
-                        .map(|e| e.as_u64().to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    &if info.has_slice_info { "Yes" } else { "No" }.to_string(),
+                    &crate::output::format_bytes(info.original_size),
+                    &info.stripe_count.to_string(),
+                    encoding,
                 ]);
             }
             println!("{}", table);
@@ -390,61 +352,30 @@ async fn verify_integrity(ctx: &Context, path: Option<PathBuf>, fix: bool) -> Re
     // Check 1: Verify tracks have valid tape addresses
     ctx.debug("Checking track info validity...");
     let tracks = store
-        .iter::<TrackInfoCol>()
+        .iter::<TrackCol>()
         .map_err(|e| anyhow::anyhow!("Failed to iterate tracks: {}", e))?;
 
     for (track_addr, info) in tracks {
         checked += 1;
-        if info.registered_epoch.as_u64() == 0 && info.tape_address.as_ref() == &[0u8; 32] {
+        if info.tape_address.as_ref() == &[0u8; 32] {
             let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
             issues.push(format!(
-                "Track {} has zero epoch and null tape address",
+                "Track {} has null tape address",
                 crate::output::format_pubkey(&pubkey_str)
             ));
         }
     }
 
-    // Check 2: Verify slice info entries
-    ctx.debug("Checking slice info entries...");
-    let slice_infos = store
-        .iter::<SliceInfoCol>()
-        .map_err(|e| anyhow::anyhow!("Failed to iterate slice info: {}", e))?;
+    // Check 2: Verify spools
+    ctx.debug("Checking spool status...");
+    let spools = store
+        .iter_all_spools()
+        .map_err(|e| anyhow::anyhow!("Failed to iterate spools: {}", e))?;
 
-    for (track_addr, info) in slice_infos {
+    for (spool_id, _status) in spools {
         checked += 1;
-        // Check that track exists
-        let track =
-            store
-                .get_track_info(track_addr)
-                .map_err(|e| anyhow::anyhow!("Failed to get track info: {}", e))?;
-        if track.is_none() {
-            let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
-            issues.push(format!(
-                "Orphaned slice info for track {}",
-                crate::output::format_pubkey(&pubkey_str)
-            ));
-        }
-        // Check that primary/recovery arrays have reasonable sizes
-        if info.primary.len() > 1024 {
-            let pubkey_str = bs58::encode(track_addr.as_ref()).into_string();
-            issues.push(format!(
-                "Slice info for {} has {} primary hashes (max 1024)",
-                crate::output::format_pubkey(&pubkey_str),
-                info.primary.len()
-            ));
-        }
-    }
-
-    // Check 3: Count spools for current epoch if set
-    ctx.debug("Checking spool assignments...");
-    if let Ok(Some(epoch)) = store.get_current_epoch() {
-        if let Ok(iter) = store.iter_assigned_spools(epoch) {
-            for result in iter {
-                checked += 1;
-                if let Err(e) = result {
-                    issues.push(format!("Corrupted spool entry: {}", e));
-                }
-            }
+        if spool_id >= 1000 {
+            issues.push(format!("Spool {} has invalid index (max 999)", spool_id));
         }
     }
 
@@ -516,7 +447,7 @@ async fn compact_db(ctx: &Context, path: Option<PathBuf>, cf: Option<String>) ->
     for cf_name in &cfs_to_compact {
         let pb = spinner(&format!("Processing {}...", cf_name));
         // Touch the CF to trigger background compaction
-        let _ = store.iter::<TrackInfoCol>();
+        let _ = store.iter::<TrackCol>();
         pb.finish_with_message(format!("Processed {}", cf_name));
     }
 
@@ -694,23 +625,19 @@ async fn show_info(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
 
     // Get counts
     let track_count = store
-        .iter::<TrackInfoCol>()
+        .iter::<TrackCol>()
         .map(|v| v.len())
         .unwrap_or(0);
-    let primary_slice_count = store
-        .iter::<PrimarySlices>()
+    let slice_count = store
+        .iter::<SliceCol>()
         .map(|v| v.len())
         .unwrap_or(0);
 
     let current_epoch = store.get_current_epoch().ok().flatten();
-    let spool_count = if let Some(epoch) = current_epoch {
-        store
-            .iter_assigned_spools(epoch)
-            .map(|iter| iter.count())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let spool_count = store
+        .iter_all_spools()
+        .map(|v| v.len())
+        .unwrap_or(0);
 
     // Get database size on disk
     let db_size = dir_size(&db_path).unwrap_or(0);
@@ -723,7 +650,7 @@ async fn show_info(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
                 "path": db_path.display().to_string(),
                 "size_bytes": db_size,
                 "track_count": track_count,
-                "slice_count": primary_slice_count,
+                "slice_count": slice_count,
                 "spool_count": spool_count,
                 "current_epoch": current_epoch.map(|e| e.as_u64()),
             });
@@ -736,7 +663,7 @@ async fn show_info(ctx: &Context, path: Option<PathBuf>) -> Result<()> {
             println!();
             println!("Contents:");
             println!("  Tracks:  {}", format_number(track_count as u64));
-            println!("  Slices:  {}", format_number(primary_slice_count as u64));
+            println!("  Slices:  {}", format_number(slice_count as u64));
             println!("  Spools:  {}", format_number(spool_count as u64));
             if let Some(epoch) = current_epoch {
                 println!("  Epoch:   {}", epoch.as_u64());

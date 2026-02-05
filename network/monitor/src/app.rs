@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
-use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT};
+use tape_core::erasure::SPOOL_COUNT;
+
+/// Default k for threshold calculations (matches default profile).
+const DEFAULT_K: usize = 10;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{BasisPoints, EpochNumber, NodeId, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
@@ -599,7 +602,7 @@ impl App {
         match self.phase {
             EpochPhase::Syncing | EpochPhase::Settling => {
                 // Progress toward supermajority threshold
-                let threshold = DATA_SLICES as u64;
+                let threshold = DEFAULT_K as u64;
                 ((self.epoch_weight * 100) / threshold).min(100) as u8
             }
             EpochPhase::Active | EpochPhase::Unknown => {

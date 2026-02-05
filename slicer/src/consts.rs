@@ -4,4 +4,4 @@
 pub const MERKLE_HEIGHT: usize = 5;
 
 // Re-export erasure coding constants from tape-core.
-pub use tape_core::erasure::{DATA_SLICES, PARITY_SLICES, SPOOL_GROUP_SIZE};
+pub use tape_core::erasure::SPOOL_GROUP_SIZE;

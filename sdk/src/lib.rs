@@ -89,7 +89,7 @@ pub use rpc_client::RpcClient;
 pub use rpc_client::{RpcConfig, SolanaRpc};
 
 // Re-export key constants from tape-core for convenience
-pub use tape_core::erasure::{DATA_SLICES, MAX_BLOB_SIZE, MAX_SLICE_SIZE, SPOOL_GROUP_SIZE, SPOOL_COUNT};
+pub use tape_core::erasure::{MAX_BLOB_SIZE, MAX_SLICE_SIZE, SPOOL_GROUP_SIZE, SPOOL_COUNT};
 
 // Re-export merkle types from tape-slicer
 pub use tape_slicer::{BlobMerkleRoot, MERKLE_HEIGHT};

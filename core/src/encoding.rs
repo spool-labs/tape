@@ -6,7 +6,6 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::erasure::{DATA_SLICES, SPOOL_GROUP_SIZE};
 
 /// Encoding type for erasure-coded track data.
 ///
@@ -93,11 +92,72 @@ impl ClayParams {
 
 impl Default for ClayParams {
     fn default() -> Self {
-        Self::new(
-            SPOOL_GROUP_SIZE as u8,
-            DATA_SLICES as u8,
-            (SPOOL_GROUP_SIZE - 1) as u8,
-        )
+        // n=20, k=10, d=19 (matching SPOOL_GROUP_SIZE with standard k/m split)
+        Self::new(20, 10, 19)
+    }
+}
+
+/// Reed-Solomon erasure code parameters, packed into u64.
+///
+/// Basic RS encoding with parameters:
+/// - k: data slices (1-255)
+/// - m: parity slices (1-255), where n = k + m
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+pub struct RSParams {
+    /// Packed parameters: byte 0 = n, byte 1 = k
+    packed: u64,
+}
+
+impl RSParams {
+    /// Create new RS parameters.
+    ///
+    /// # Arguments
+    /// - `k`: data slices needed for reconstruction
+    /// - `m`: parity slices
+    #[inline]
+    pub const fn new(k: u8, m: u8) -> Self {
+        let n = k + m;
+        Self {
+            packed: (n as u64) | ((k as u64) << 8),
+        }
+    }
+
+    /// Total slices (n = k + m).
+    #[inline]
+    pub const fn n(&self) -> u8 {
+        (self.packed & 0xFF) as u8
+    }
+
+    /// Data slices needed for reconstruction.
+    #[inline]
+    pub const fn k(&self) -> u8 {
+        ((self.packed >> 8) & 0xFF) as u8
+    }
+
+    /// Parity slices (m = n - k).
+    #[inline]
+    pub const fn m(&self) -> u8 {
+        self.n().saturating_sub(self.k())
+    }
+
+    /// Convert to raw u64 for storage.
+    #[inline]
+    pub const fn as_u64(&self) -> u64 {
+        self.packed
+    }
+
+    /// Create from raw u64.
+    #[inline]
+    pub const fn from_u64(v: u64) -> Self {
+        Self { packed: v }
+    }
+}
+
+impl Default for RSParams {
+    fn default() -> Self {
+        // k=10, m=10 (standard default)
+        Self::new(10, 10)
     }
 }
 
@@ -153,13 +213,59 @@ impl EncodingProfile {
         ClayParams::from_u64(self.params)
     }
 
-    /// Create a Basic encoding profile.
+    /// Create a Basic (RS) encoding profile with given parameters.
     #[inline]
-    pub const fn basic() -> Self {
+    pub const fn basic(params: RSParams) -> Self {
         Self {
             encoding: EncodingType::Basic as u64,
-            params: 0,
+            params: params.as_u64(),
         }
+    }
+
+    /// Create a Basic encoding profile with default parameters (k=10, m=10).
+    pub fn basic_default() -> Self {
+        Self::basic(RSParams::default())
+    }
+
+    /// Get the RS parameters (only valid if is_basic()).
+    #[inline]
+    pub const fn rs_params(&self) -> RSParams {
+        RSParams::from_u64(self.params)
+    }
+
+    /// Get k (data slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn k(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().k(),
+            Some(EncodingType::Basic) => self.rs_params().k(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get k from Unknown encoding"),
+        }
+    }
+
+    /// Get m (parity slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn m(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().m(),
+            Some(EncodingType::Basic) => self.rs_params().m(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get m from Unknown encoding"),
+        }
+    }
+
+    /// Get n (total slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn n(&self) -> u8 {
+        self.k() + self.m()
     }
 
     /// Create an Unknown encoding profile (zeroed).
@@ -193,12 +299,11 @@ mod tests {
 
     #[test]
     fn test_clay_params_default() {
-        use crate::erasure::PARITY_SLICES;
         let params = ClayParams::default();
-        assert_eq!(params.n(), SPOOL_GROUP_SIZE as u8);
-        assert_eq!(params.k(), DATA_SLICES as u8);
-        assert_eq!(params.d(), (SPOOL_GROUP_SIZE - 1) as u8);
-        assert_eq!(params.m(), PARITY_SLICES as u8);
+        assert_eq!(params.n(), 20);
+        assert_eq!(params.k(), 10);
+        assert_eq!(params.d(), 19);
+        assert_eq!(params.m(), 10);
     }
 
     #[test]
@@ -229,12 +334,75 @@ mod tests {
 
     #[test]
     fn test_encoding_profile_basic() {
-        let profile = EncodingProfile::basic();
+        let params = RSParams::new(10, 10);
+        let profile = EncodingProfile::basic(params);
 
         assert!(profile.is_basic());
         assert!(!profile.is_clay());
         assert_eq!(profile.encoding_type(), Some(EncodingType::Basic));
-        assert_eq!(profile.params, 0);
+        assert_eq!(profile.rs_params(), params);
+    }
+
+    #[test]
+    fn test_encoding_profile_basic_default() {
+        let profile = EncodingProfile::basic_default();
+        assert!(profile.is_basic());
+        assert_eq!(profile.rs_params(), RSParams::default());
+        assert_eq!(profile.k(), 10);
+        assert_eq!(profile.m(), 10);
+        assert_eq!(profile.n(), 20);
+    }
+
+    #[test]
+    fn test_rs_params_new() {
+        let params = RSParams::new(10, 10);
+        assert_eq!(params.n(), 20);
+        assert_eq!(params.k(), 10);
+        assert_eq!(params.m(), 10);
+    }
+
+    #[test]
+    fn test_rs_params_default() {
+        let params = RSParams::default();
+        assert_eq!(params.n(), 20);
+        assert_eq!(params.k(), 10);
+        assert_eq!(params.m(), 10);
+    }
+
+    #[test]
+    fn test_rs_params_roundtrip() {
+        let params = RSParams::new(8, 4);
+        let packed = params.as_u64();
+        let recovered = RSParams::from_u64(packed);
+        assert_eq!(params, recovered);
+    }
+
+    #[test]
+    fn test_rs_params_size() {
+        assert_eq!(std::mem::size_of::<RSParams>(), 8);
+    }
+
+    #[test]
+    fn test_profile_k_m_n_clay() {
+        let profile = EncodingProfile::clay_default();
+        assert_eq!(profile.k(), 10);
+        assert_eq!(profile.m(), 10);
+        assert_eq!(profile.n(), 20);
+    }
+
+    #[test]
+    fn test_profile_k_m_n_basic() {
+        let profile = EncodingProfile::basic(RSParams::new(8, 4));
+        assert_eq!(profile.k(), 8);
+        assert_eq!(profile.m(), 4);
+        assert_eq!(profile.n(), 12);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot get k from Unknown encoding")]
+    fn test_profile_k_unknown_panics() {
+        let profile = EncodingProfile::unknown();
+        let _ = profile.k();
     }
 
     #[test]

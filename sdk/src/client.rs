@@ -272,7 +272,7 @@ impl TapeClient {
     /// Download and decode a blob from the network.
     ///
     /// This is the primary method for retrieving data. It:
-    /// 1. Downloads at least DATA_SLICES slices from storage nodes (fault-tolerant)
+    /// 1. Downloads at least k slices from storage nodes (fault-tolerant)
     /// 2. Infers slice size from the collected slices
     /// 3. Decodes the slices back into the original blob
     ///

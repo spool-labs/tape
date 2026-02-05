@@ -77,7 +77,7 @@ impl BlobEncoder {
     /// * `encoding_type` - The encoding algorithm to use
     pub fn with_encoding(encoding_type: EncodingType) -> Self {
         let profile = match encoding_type {
-            EncodingType::Basic => EncodingProfile::basic(),
+            EncodingType::Basic => EncodingProfile::basic_default(),
             EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
         };
         Self::with_profile(profile)

@@ -1,4 +1,4 @@
-use super::{PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
+use super::SPOOL_GROUP_SIZE;
 use super::Slice;
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
 use thiserror::Error;
@@ -45,6 +45,26 @@ pub struct ReedSolomonCoder {
 }
 
 impl ReedSolomonCoder {
+    /// Data slices (k) for reconstruction.
+    #[inline]
+    pub fn k(&self) -> usize {
+        self.k_data
+    }
+
+    /// Parity slices (r/m).
+    #[inline]
+    pub fn m(&self) -> usize {
+        self.r_coding
+    }
+
+    /// Total slices (n = k + m).
+    #[inline]
+    pub fn n(&self) -> usize {
+        self.k_data + self.r_coding
+    }
+}
+
+impl ReedSolomonCoder {
     /// Create a new Reed-Solomon coder with default max slice size (4 KiB).
     /// This is suitable for testing/debugging. For larger blobs, use `with_max_slice_bytes`.
     pub fn new(k_data: usize, r_coding: usize) -> Self {
@@ -64,8 +84,6 @@ impl ReedSolomonCoder {
 
         let n_total = k_data + r_coding;
         assert!(n_total <= 65536, "too many total slices for RS field");
-        assert!(k_data == DATA_SLICES, "k_data must match DATA_SLICES");
-        assert!(r_coding == PARITY_SLICES, "r_coding must match PARITY_SLICES");
 
         // Use a bounded max slice size the library accepts. Per-call reset() will set the actual slice size.
         let encoder = ReedSolomonEncoder::new(k_data, r_coding, max_slice_bytes)
@@ -237,12 +255,17 @@ impl ReedSolomonCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{Slice, PARITY_SLICES, DATA_SLICES, SPOOL_GROUP_SIZE};
+    use super::Slice;
     use crate::SliceIndex;
+
+    // Test constants (k=10, m=10, n=20)
+    const K: usize = 10;
+    const M: usize = 10;
+    const N: usize = K + M;
 
     /// Create a test coder with the default configuration.
     fn test_coder() -> ReedSolomonCoder {
-        ReedSolomonCoder::new(DATA_SLICES, PARITY_SLICES)
+        ReedSolomonCoder::new(K, M)
     }
 
     fn make_payload(len: usize) -> Vec<u8> {
@@ -250,8 +273,8 @@ mod tests {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_full(raw: &RawSlices) -> [Option<Slice>; SPOOL_GROUP_SIZE] {
-        let mut arr: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
+    fn to_full(raw: &RawSlices) -> [Option<Slice>; N] {
+        let mut arr: [Option<Slice>; N] = std::array::from_fn(|_| None);
         for (i, d) in raw.data.iter().enumerate() {
             arr[i] = Some(Slice {
                 index: SliceIndex::new(i).unwrap(),
@@ -259,7 +282,7 @@ mod tests {
             });
         }
         for (j, c) in raw.coding.iter().enumerate() {
-            let idx = DATA_SLICES + j;
+            let idx = K + j;
             arr[idx] = Some(Slice {
                 index: SliceIndex::new(idx).unwrap(),
                 data: c.clone(),
@@ -268,8 +291,8 @@ mod tests {
         arr
     }
 
-    fn keep_only(arr: &mut [Option<Slice>; SPOOL_GROUP_SIZE], keep: &[usize]) {
-        let mut keep_set = vec![false; SPOOL_GROUP_SIZE];
+    fn keep_only(arr: &mut [Option<Slice>; N], keep: &[usize]) {
+        let mut keep_set = vec![false; N];
         for &k in keep {
             keep_set[k] = true;
         }
@@ -280,7 +303,7 @@ mod tests {
         }
     }
 
-    fn equal_sizes(arr: &[Option<Slice>; SPOOL_GROUP_SIZE]) -> Option<usize> {
+    fn equal_sizes(arr: &[Option<Slice>; N]) -> Option<usize> {
         let mut size = None;
         for s in arr.iter().flatten() {
             match size {
@@ -298,8 +321,8 @@ mod tests {
         let payload = make_payload(20_000);
         let raw = coder.encode(&payload).expect("encode ok");
 
-        assert_eq!(raw.data.len(), DATA_SLICES);
-        assert_eq!(raw.coding.len(), PARITY_SLICES);
+        assert_eq!(raw.data.len(), K);
+        assert_eq!(raw.coding.len(), M);
 
         let slice_len = raw.data[0].len();
         assert!(raw.data.iter().all(|d| d.len() == slice_len));
@@ -313,12 +336,12 @@ mod tests {
         let sizes = [
             0usize,
             1,
-            DATA_SLICES - 1,
-            DATA_SLICES,
-            DATA_SLICES + 1,
-            2 * DATA_SLICES - 1,
-            2 * DATA_SLICES,
-            5 * DATA_SLICES + 123,
+            K - 1,
+            K,
+            K + 1,
+            2 * K - 1,
+            2 * K,
+            5 * K + 123,
             30_000,
         ];
 
@@ -333,25 +356,25 @@ mod tests {
 
             // only data slices (k)
             let mut only_data = full.clone();
-            keep_only(&mut only_data, &(0..DATA_SLICES).collect::<Vec<_>>());
+            keep_only(&mut only_data, &(0..K).collect::<Vec<_>>());
             let restored = coder.decode(&only_data).expect("decode ok with k data slices");
             assert_eq!(restored, payload, "round-trip data-only mismatch for size {}", sz);
 
             // mixed: ~k/2 data + parity to fill, total = k
-            let half_data = DATA_SLICES / 2;
-            let mut keep = Vec::with_capacity(DATA_SLICES);
-            for i in (0..DATA_SLICES).step_by(2).take(half_data) {
+            let half_data = K / 2;
+            let mut keep = Vec::with_capacity(K);
+            for i in (0..K).step_by(2).take(half_data) {
                 keep.push(i);
             }
             // Fill remaining slots with parity slices
-            let remaining = DATA_SLICES - keep.len();
+            let remaining = K - keep.len();
             for j in 0..remaining {
-                keep.push(DATA_SLICES + j);
+                keep.push(K + j);
             }
 
             let mut mixed = full.clone();
             keep_only(&mut mixed, &keep);
-            assert_eq!(mixed.iter().flatten().count(), DATA_SLICES);
+            assert_eq!(mixed.iter().flatten().count(), K);
             let restored = coder.decode(&mixed).expect("decode ok with mixed slices");
             assert_eq!(restored, payload, "round-trip mixed mismatch size {}", sz);
         }
@@ -378,7 +401,7 @@ mod tests {
         let mut slices = to_full(&raw);
 
         // keep only k-1 data slices
-        let keep: Vec<usize> = (0..(DATA_SLICES - 1)).collect();
+        let keep: Vec<usize> = (0..(K - 1)).collect();
         keep_only(&mut slices, &keep);
 
         let res = coder.decode(&slices);
@@ -421,17 +444,15 @@ mod tests {
 
     #[test]
     fn size_table() {
-        // Keep this short so it's readable on the terminal.
-
         let mut coder = test_coder();
         // Max payload with default 4 KiB slices: 4 KiB * 10 data slices = 40 KB
         let sizes = [
             0usize,
             1,
-            DATA_SLICES / 2,
-            DATA_SLICES - 1,
-            DATA_SLICES,
-            DATA_SLICES + 1,
+            K / 2,
+            K - 1,
+            K,
+            K + 1,
             5_000,
             20_000,
             30_000,
@@ -452,8 +473,7 @@ mod tests {
 
             // All slices have equal length (by construction)
             let slice_len = raw.data[0].len();
-            let n = DATA_SLICES + PARITY_SLICES;
-            let total_bytes = n * slice_len;
+            let total_bytes = N * slice_len;
             let ratio_str = if sz > 0 {
                 format!("{:.3}", total_bytes as f64 / sz as f64)
             } else {
@@ -461,7 +481,7 @@ mod tests {
             };
 
             // Build full slice set and round trip
-            let mut slices: [Option<Slice>; SPOOL_GROUP_SIZE] = std::array::from_fn(|_| None);
+            let mut slices: [Option<Slice>; N] = std::array::from_fn(|_| None);
             for (i, d) in raw.data.iter().enumerate() {
                 slices[i] = Some(Slice {
                     index: SliceIndex::new(i).unwrap(),
@@ -469,7 +489,7 @@ mod tests {
                 });
             }
             for (j, c) in raw.coding.iter().enumerate() {
-                let idx = DATA_SLICES + j;
+                let idx = K + j;
                 slices[idx] = Some(Slice {
                     index: SliceIndex::new(idx).unwrap(),
                     data: c.clone(),
@@ -483,9 +503,9 @@ mod tests {
                 "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
                 sz,
                 slice_len,
-                DATA_SLICES,
-                PARITY_SLICES,
-                n,
+                K,
+                M,
+                N,
                 total_bytes,
                 ratio_str,
                 if ok { "ok" } else { "FAIL" }
