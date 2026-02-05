@@ -7,8 +7,8 @@ use tape_core::encoding::{EncodingProfile, EncodingType};
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
-    BasicSlicer, RotatedSlicer, Blob, Slicer, Slice, MERKLE_HEIGHT, SPOOL_GROUP_SIZE,
-    build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
+    ClayCoder, ReedSolomonCoder, StripedCoder, Slicer, MERKLE_HEIGHT,
+    build_blob_merkle_tree, BlobMerkleRoot, STRIPE_SIZES,
 };
 
 use crate::error::UploadError;
@@ -23,12 +23,12 @@ pub type SliceMerkleProof = [Hash; MERKLE_HEIGHT];
 /// Encodes blobs into slices for network distribution.
 ///
 /// Supports multiple encoding types:
-/// - `Basic`: Single RS pass, for testing/debugging only
+/// - `Basic`: Single RS pass, for testing/debugging only (small blobs)
 /// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
 pub struct BlobEncoder {
     profile: EncodingProfile,
-    basic: Option<BasicSlicer>,
-    clay: Option<RotatedSlicer>,
+    basic: Option<ReedSolomonCoder>,
+    clay: Option<StripedCoder<ClayCoder>>,
 }
 
 impl Default for BlobEncoder {
@@ -61,10 +61,16 @@ impl BlobEncoder {
 
         match encoding_type {
             EncodingType::Basic => {
-                encoder.basic = Some(BasicSlicer::default());
+                let params = profile.rs_params();
+                encoder.basic = Some(ReedSolomonCoder::new(params.k() as usize, params.m() as usize));
             }
             EncodingType::Clay | EncodingType::Unknown => {
-                encoder.clay = Some(RotatedSlicer::with_profile(DEFAULT_STRIPE_SIZE, profile));
+                encoder.clay = Some(StripedCoder::with_profile(
+                    ClayCoder::from_params(profile.clay_params()),
+                    STRIPE_SIZES[2],
+                    true, // rotated
+                    profile,
+                ));
             }
         }
 
@@ -93,17 +99,17 @@ impl BlobEncoder {
         self.profile
     }
 
-    /// Internal encoding dispatch that returns the raw Slice array.
-    fn encode_internal(&mut self, blob: Blob) -> Result<[Slice; SPOOL_GROUP_SIZE], UploadError> {
+    /// Internal encoding dispatch that returns the raw chunks.
+    fn encode_internal(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, UploadError> {
         match self.encoding_type() {
             EncodingType::Basic => {
                 self.basic.as_mut().unwrap()
-                    .encode(blob)
+                    .encode(data)
                     .map_err(|e| UploadError::Encoding(e.to_string()))
             }
             EncodingType::Clay | EncodingType::Unknown => {
                 self.clay.as_mut().unwrap()
-                    .encode(blob)
+                    .encode(data)
                     .map_err(|e| UploadError::Encoding(e.to_string()))
             }
         }
@@ -120,12 +126,12 @@ impl BlobEncoder {
     /// # Returns
     /// Vector of (index, data) tuples for all SPOOL_GROUP_SIZE slices.
     pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(u16, Vec<u8>)>, UploadError> {
-        let blob = Blob::from(data);
-        let slices = self.encode_internal(blob)?;
+        let chunks = self.encode_internal(&data)?;
 
-        let output: Vec<(u16, Vec<u8>)> = slices
+        let output: Vec<(u16, Vec<u8>)> = chunks
             .into_iter()
-            .map(|slice| (*slice.index as u16, slice.data))
+            .enumerate()
+            .map(|(i, data)| (i as u16, data))
             .collect();
 
         Ok(output)
@@ -142,10 +148,7 @@ impl BlobEncoder {
     /// # Returns
     /// Vector of slice data in index order.
     pub fn encode_to_vec(&mut self, data: Vec<u8>) -> Result<Vec<Vec<u8>>, UploadError> {
-        let blob = Blob::from(data);
-        let slices = self.encode_internal(blob)?;
-
-        Ok(slices.into_iter().map(|s| s.data).collect())
+        self.encode_internal(&data)
     }
 
     /// Encode a blob and compute the Merkle root commitment.
@@ -162,16 +165,16 @@ impl BlobEncoder {
         &mut self,
         data: Vec<u8>,
     ) -> Result<(Vec<(u16, Vec<u8>)>, BlobMerkleRoot), UploadError> {
-        let blob = Blob::from(data);
-        let slices = self.encode_internal(blob)?;
+        let chunks = self.encode_internal(&data)?;
 
         // Build Merkle tree from slices to compute root
-        let tree = build_blob_merkle_tree(&slices);
+        let tree = build_blob_merkle_tree(&chunks);
         let root = tree.root();
 
-        let output: Vec<(u16, Vec<u8>)> = slices
+        let output: Vec<(u16, Vec<u8>)> = chunks
             .into_iter()
-            .map(|slice| (*slice.index as u16, slice.data))
+            .enumerate()
+            .map(|(i, data)| (i as u16, data))
             .collect();
 
         Ok((output, root))
@@ -190,16 +193,13 @@ impl BlobEncoder {
         &mut self,
         data: Vec<u8>,
     ) -> Result<(Vec<Vec<u8>>, BlobMerkleRoot), UploadError> {
-        let blob = Blob::from(data);
-        let slices = self.encode_internal(blob)?;
+        let chunks = self.encode_internal(&data)?;
 
         // Build Merkle tree from slices
-        let tree = build_blob_merkle_tree(&slices);
+        let tree = build_blob_merkle_tree(&chunks);
         let root = tree.root();
 
-        let output: Vec<Vec<u8>> = slices.into_iter().map(|s| s.data).collect();
-
-        Ok((output, root))
+        Ok((chunks, root))
     }
 
     /// Encode a blob and generate merkle proofs for each slice.
@@ -219,21 +219,23 @@ impl BlobEncoder {
         &mut self,
         data: Vec<u8>,
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
-        let blob = Blob::from(data);
-        let slices = self.encode_internal(blob)?;
+        let chunks = self.encode_internal(&data)?;
 
         // Build Merkle tree from slices
-        let tree = build_blob_merkle_tree(&slices);
+        let tree = build_blob_merkle_tree(&chunks);
         let root = tree.root();
 
-        // Collect slice data for proof generation (need owned copies for lifetime)
-        let slice_data_owned: Vec<Vec<u8>> = slices.iter().map(|s| s.data.clone()).collect();
-        let slice_data_refs: Vec<&[u8]> = slice_data_owned.iter().map(|s| s.as_slice()).collect();
+        // Collect slice data for proof generation (need owned copy for lifetime)
+        let slice_data_refs: Vec<&[u8]> = chunks.iter().map(|s| s.as_slice()).collect();
+
+        // Generate proofs first while we still have refs
+        let proofs: Vec<Vec<Hash>> = (0..chunks.len())
+            .map(|idx| create_merkle_proof(&slice_data_refs, idx, MERKLE_HEIGHT))
+            .collect();
 
         // Generate proof for each slice
-        let mut output = Vec::with_capacity(slices.len());
-        for (idx, slice) in slices.into_iter().enumerate() {
-            let proof_vec = create_merkle_proof(&slice_data_refs, idx, MERKLE_HEIGHT);
+        let mut output = Vec::with_capacity(chunks.len());
+        for (idx, (chunk, proof_vec)) in chunks.into_iter().zip(proofs).enumerate() {
 
             // Convert Vec<Hash> to fixed-size array
             let mut proof_arr = [Hash::default(); MERKLE_HEIGHT];
@@ -242,11 +244,11 @@ impl BlobEncoder {
             }
 
             // Compute leaf hash for this slice
-            let leaf_hash = hash_leaf(&slice.data);
+            let leaf_hash = hash_leaf(&chunk);
 
             output.push(SliceWithProof::new(
-                *slice.index as u16,
-                slice.data,
+                idx as u16,
+                chunk,
                 leaf_hash,
                 proof_arr,
             ));
@@ -261,7 +263,7 @@ mod tests {
     use super::*;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
 
-    /// Create a test encoder using BasicSlicer (supports blobs up to ~40 KB).
+    /// Create a test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
         BlobEncoder::with_encoding(EncodingType::Basic)
     }

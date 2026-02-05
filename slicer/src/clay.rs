@@ -1,26 +1,13 @@
 //! Clay erasure code wrapper.
 //!
 //! Provides a thin wrapper around `clay_codes::ClayCode` with consistent
-//! error handling and parameter management, similar to `reed_solomon.rs`.
+//! error handling and parameter management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use clay_codes::ClayCode;
 use tape_core::encoding::ClayParams;
-use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-pub enum ClayEncodeError {
-    #[error("input data is empty")]
-    EmptyInput,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-pub enum ClayDecodeError {
-    #[error("not enough chunks to reconstruct (need at least k)")]
-    NotEnoughChunks,
-    #[error("decoding failed")]
-    DecodeFailed,
-}
+use crate::{Slicer, EncodeError, DecodeError};
 
 /// Clay erasure code wrapper (k = data, m = parity, d = helper count).
 pub struct ClayCoder {
@@ -48,60 +35,47 @@ impl ClayCoder {
         Self::new(params.k() as usize, params.m() as usize, params.d() as usize)
     }
 
-    /// Data chunks (k) needed for reconstruction.
-    #[inline]
-    pub fn k(&self) -> usize {
-        self.k
-    }
-
-    /// Parity chunks (m).
-    #[inline]
-    pub fn m(&self) -> usize {
-        self.m
-    }
-
-    /// Total chunks (n = k + m).
-    #[inline]
-    pub fn n(&self) -> usize {
-        self.k + self.m
-    }
-
     /// Helper count (d).
     #[inline]
     pub fn d(&self) -> usize {
         self.d
     }
+}
 
-    /// Encode data into n chunks.
-    ///
-    /// Returns a vector of n chunks. The Clay code handles internal padding.
-    pub fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, ClayEncodeError> {
+impl Slicer for ClayCoder {
+    #[inline]
+    fn k(&self) -> usize {
+        self.k
+    }
+
+    #[inline]
+    fn m(&self) -> usize {
+        self.m
+    }
+
+    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         if data.is_empty() {
-            return Err(ClayEncodeError::EmptyInput);
+            return Err(EncodeError::EmptyInput);
         }
         Ok(self.clay.encode(data))
     }
 
-    /// Decode from available chunks.
-    ///
-    /// # Arguments
-    /// * `available` - Map of chunk_index -> chunk_data for available chunks
-    /// * `erasures` - List of missing chunk indices
-    ///
-    /// # Returns
-    /// The reconstructed original data.
-    pub fn decode(
-        &self,
-        available: &HashMap<usize, Vec<u8>>,
-        erasures: &[usize],
-    ) -> Result<Vec<u8>, ClayDecodeError> {
-        if available.len() < self.k {
-            return Err(ClayDecodeError::NotEnoughChunks);
+    fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
+        if chunks.len() < self.k {
+            return Err(DecodeError::NotEnoughSlices);
         }
 
+        // Build HashMap + erasures for clay-codes library
+        let available: HashMap<usize, Vec<u8>> = chunks
+            .iter()
+            .map(|(idx, data)| (*idx, data.to_vec()))
+            .collect();
+        let present: HashSet<usize> = chunks.iter().map(|(idx, _)| *idx).collect();
+        let erasures: Vec<usize> = (0..self.n()).filter(|i| !present.contains(i)).collect();
+
         self.clay
-            .decode(available, erasures)
-            .map_err(|_| ClayDecodeError::DecodeFailed)
+            .decode(&available, &erasures)
+            .map_err(|_| DecodeError::BadEncoding)
     }
 }
 
@@ -137,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_encode_chunk_count() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
         assert_eq!(chunks.len(), coder.n());
@@ -145,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_encode_uniform_chunk_size() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
         let size = chunks[0].len();
@@ -154,98 +128,97 @@ mod tests {
 
     #[test]
     fn test_roundtrip_all_chunks() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
-        let available: HashMap<usize, Vec<u8>> = chunks
-            .into_iter()
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
             .enumerate()
+            .map(|(i, c)| (i, c.as_slice()))
             .collect();
-        let erasures: Vec<usize> = vec![];
 
-        let recovered = coder.decode(&available, &erasures).unwrap();
+        let recovered = coder.decode(&available).unwrap();
         assert_eq!(recovered, original);
     }
 
     #[test]
     fn test_roundtrip_data_only() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
         // Keep only first k chunks (data chunks)
-        let available: HashMap<usize, Vec<u8>> = chunks
-            .into_iter()
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
             .enumerate()
             .take(coder.k())
+            .map(|(i, c)| (i, c.as_slice()))
             .collect();
-        let erasures: Vec<usize> = (coder.k()..coder.n()).collect();
 
-        let recovered = coder.decode(&available, &erasures).unwrap();
+        let recovered = coder.decode(&available).unwrap();
         assert_eq!(recovered, original);
     }
 
     #[test]
     fn test_roundtrip_parity_only() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
         // Keep only last k chunks (parity chunks, indices k..n)
-        let available: HashMap<usize, Vec<u8>> = chunks
-            .into_iter()
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
             .enumerate()
             .skip(coder.k())
             .take(coder.k())
+            .map(|(i, c)| (i, c.as_slice()))
             .collect();
-        let erasures: Vec<usize> = (0..coder.k()).collect();
 
-        let recovered = coder.decode(&available, &erasures).unwrap();
+        let recovered = coder.decode(&available).unwrap();
         assert_eq!(recovered, original);
     }
 
     #[test]
     fn test_roundtrip_mixed() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
         // Keep every other chunk
-        let available: HashMap<usize, Vec<u8>> = chunks
-            .into_iter()
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
             .enumerate()
             .filter(|(i, _)| i % 2 == 0)
+            .map(|(i, c)| (i, c.as_slice()))
             .collect();
-        let erasures: Vec<usize> = (0..coder.n()).filter(|i| i % 2 != 0).collect();
 
-        let recovered = coder.decode(&available, &erasures).unwrap();
+        let recovered = coder.decode(&available).unwrap();
         assert_eq!(recovered, original);
     }
 
     #[test]
     fn test_not_enough_chunks() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
         // Keep only k-1 chunks
-        let available: HashMap<usize, Vec<u8>> = chunks
-            .into_iter()
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
             .enumerate()
             .take(coder.k() - 1)
+            .map(|(i, c)| (i, c.as_slice()))
             .collect();
-        let erasures: Vec<usize> = (coder.k() - 1..coder.n()).collect();
 
-        let result = coder.decode(&available, &erasures);
-        assert!(matches!(result, Err(ClayDecodeError::NotEnoughChunks)));
+        let result = coder.decode(&available);
+        assert!(matches!(result, Err(DecodeError::NotEnoughSlices)));
     }
 
     #[test]
     fn test_encode_empty_fails() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let result = coder.encode(&[]);
-        assert!(matches!(result, Err(ClayEncodeError::EmptyInput)));
+        assert!(matches!(result, Err(EncodeError::EmptyInput)));
     }
-
 }

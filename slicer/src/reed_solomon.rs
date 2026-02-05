@@ -1,67 +1,25 @@
-use super::SPOOL_GROUP_SIZE;
-use super::Slice;
+//! Reed-Solomon erasure code wrapper.
+//!
+//! Provides a thin wrapper around `reed_solomon_simd` with consistent
+//! error handling and parameter management.
+
 use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
-use thiserror::Error;
 
-/// Maximum slice size for BasicSlicer (used for testing/debugging only).
+use crate::{Slicer, EncodeError, DecodeError};
+
+/// Maximum slice size for ReedSolomonCoder (used for testing/debugging only).
 /// 4 KiB allows encoding blobs up to ~40 KB (k * 4 KiB with k=10).
-/// For production workloads, use StripedSlicer which handles large blobs efficiently.
+/// For production workloads, use StripedCoder which handles large blobs efficiently.
 pub const MAX_SLICE_BYTES: usize = 1 << 12; // 4 KiB
-
-/// Errors that may be returned by ReedSolomonCoder::encode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-pub enum ReedSolomonEncodeError {
-    #[error("too much data to encode with current settings")]
-    TooMuchData,
-}
-
-/// Errors that may be returned by ReedSolomonCoder::decode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-pub enum ReedSolomonDecodeError {
-    #[error("not enough slices to reconstruct (need at least DATA_SLICES)")]
-    NotEnoughSlices,
-    #[error("too much data for configured limits")]
-    TooMuchData,
-    #[error("invalid padding detected")]
-    InvalidPadding,
-    #[error("invalid layout or inconsistent slice sizes/indices")]
-    InvalidLayout,
-}
-
-/// The data and coding slices output by encode().
-#[derive(Clone, Debug)]
-pub struct RawSlices {
-    pub data: Vec<Vec<u8>>,
-    pub coding: Vec<Vec<u8>>,
-}
 
 /// Reed-Solomon coder (k = data, m = parity).
 /// This is a thin wrapper around reed_solomon_simd. It reuses working buffers across calls.
 pub struct ReedSolomonCoder {
     k: usize,
     m: usize,
+    max_slice_bytes: usize,
     encoder: ReedSolomonEncoder,
     decoder: ReedSolomonDecoder,
-}
-
-impl ReedSolomonCoder {
-    /// Data slices (k) needed for reconstruction.
-    #[inline]
-    pub fn k(&self) -> usize {
-        self.k
-    }
-
-    /// Parity slices (m).
-    #[inline]
-    pub fn m(&self) -> usize {
-        self.m
-    }
-
-    /// Total slices (n = k + m).
-    #[inline]
-    pub fn n(&self) -> usize {
-        self.k + self.m
-    }
 }
 
 impl ReedSolomonCoder {
@@ -93,425 +51,301 @@ impl ReedSolomonCoder {
         Self {
             k,
             m,
+            max_slice_bytes,
             encoder,
             decoder,
         }
     }
+}
 
-    /// Reed-Solomon encodes the payload into k data and r coding slices, returning RawSlices.
-    /// Returns TooMuchData if payload cannot be encoded under the current encoder limits.
-    pub fn encode(&mut self, payload: &[u8]) -> Result<RawSlices, ReedSolomonEncodeError> {
-        // Compute padding: make total a multiple of 2 * k.
+impl Slicer for ReedSolomonCoder {
+    #[inline]
+    fn k(&self) -> usize {
+        self.k
+    }
+
+    #[inline]
+    fn m(&self) -> usize {
+        self.m
+    }
+
+    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let k = self.k;
-        let two_k = 2 * k;
 
-        // Avoid division by zero; guaranteed by constructor.
-        debug_assert!(k > 0);
+        // Calculate slice size: ceil(data.len() / k)
+        // Must be at least 1 byte, and we round up to 64-byte alignment for RS efficiency
+        let slice_bytes = if data.is_empty() {
+            64 // Minimal aligned slice for empty data
+        } else {
+            let raw = (data.len() + k - 1) / k;
+            // RS library works best with 64-byte aligned slices
+            ((raw + 63) / 64) * 64
+        };
 
-        // If payload is empty, we still add the 0x80 byte (minimum padding).
-        let remainder = payload.len() % two_k;
-        let padding_bytes = if remainder == 0 { two_k } else { two_k - remainder };
-        let total_len = payload
-            .len()
-            .checked_add(padding_bytes)
-            .ok_or(ReedSolomonEncodeError::TooMuchData)?;
+        // Ensure the encoder can handle this slice size
+        if slice_bytes > self.max_slice_bytes {
+            return Err(EncodeError::TooMuchData);
+        }
 
-        // slice_bytes = ceil(total_len / k)
-        let slice_bytes = (total_len + k - 1) / k;
-
-        // Ensure the encoder can handle this slice size.
         self.encoder
             .reset(self.k, self.m, slice_bytes)
-            .map_err(|_| ReedSolomonEncodeError::TooMuchData)?;
+            .map_err(|_| EncodeError::TooMuchData)?;
 
-        // Place 0x80 and zeros at end of payload (bit padding).
-        let last_group_bytes = (two_k + slice_bytes - 1) / slice_bytes * slice_bytes;
-        let boundary = total_len
-            .checked_sub(last_group_bytes)
-            .ok_or(ReedSolomonEncodeError::TooMuchData)?;
-        let mut tail = Vec::with_capacity(last_group_bytes);
-        tail.extend_from_slice(&payload[boundary..payload.len()]);
-        tail.push(0x80);
-        tail.resize(last_group_bytes, 0x00);
+        // Pad data to k * slice_bytes
+        let total_len = k * slice_bytes;
+        let mut padded = data.to_vec();
+        padded.resize(total_len, 0);
 
-        // Feed k original slices into the encoder.
-        let mut data = Vec::with_capacity(self.k);
-        payload[..boundary]
-            .chunks(slice_bytes)
-            .chain(tail.chunks(slice_bytes))
-            .for_each(|chunk| {
-                self.encoder
-                    .add_original_shard(chunk)
-                    .expect("adding slices of the configured size should succeed");
-                data.push(chunk.to_vec());
-            });
+        // Feed k original slices into the encoder
+        let mut data_chunks = Vec::with_capacity(k);
+        for chunk in padded.chunks(slice_bytes) {
+            self.encoder
+                .add_original_shard(chunk)
+                .expect("adding slices of the configured size should succeed");
+            data_chunks.push(chunk.to_vec());
+        }
 
-        // Create parity slices.
+        // Create parity slices
         let output = self
             .encoder
             .encode()
             .expect("should be able to encode after k data slices were added");
-        let coding = output.recovery_iter().map(<[u8]>::to_vec).collect();
+        let coding_chunks: Vec<Vec<u8>> = output.recovery_iter().map(<[u8]>::to_vec).collect();
 
-        Ok(RawSlices { data, coding })
+        // Return all chunks: data first, then parity
+        let mut result = data_chunks;
+        result.extend(coding_chunks);
+        Ok(result)
     }
 
-    /// Reconstructs the raw payload bytes from optional slices (data and coding).
-    /// Layout: data slices are indices [0..k), coding slices are indices [k..k+r).
-    /// At least k total slices (data+coding) are required.
-    pub fn decode(
-        &mut self,
-        slices: &[Option<Slice>; SPOOL_GROUP_SIZE],
-    ) -> Result<Vec<u8>, ReedSolomonDecodeError> {
-        let present = slices.iter().flatten().count();
-        if present < self.k {
-            return Err(ReedSolomonDecodeError::NotEnoughSlices);
+    fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
+        if chunks.len() < self.k {
+            return Err(DecodeError::NotEnoughSlices);
         }
 
-        // Infer slice_bytes from any present slice.
-        let slice_bytes = slices
-            .iter()
-            .flatten()
-            .map(|s| s.data.len())
-            .next()
-            .ok_or(ReedSolomonDecodeError::InvalidLayout)?;
+        // Infer slice_bytes from any present chunk
+        let slice_bytes = chunks
+            .first()
+            .map(|(_, data)| data.len())
+            .ok_or(DecodeError::InvalidLayout)?;
 
-        // Ensure all present slices have the same size.
-        if slices
-            .iter()
-            .flatten()
-            .any(|s| s.data.len() != slice_bytes)
-        {
-            return Err(ReedSolomonDecodeError::InvalidLayout);
+        // Ensure all chunks have the same size
+        if chunks.iter().any(|(_, data)| data.len() != slice_bytes) {
+            return Err(DecodeError::InvalidLayout);
         }
 
         self.decoder
             .reset(self.k, self.m, slice_bytes)
-            .map_err(|_| ReedSolomonDecodeError::TooMuchData)?;
+            .map_err(|_| DecodeError::TooMuchData)?;
 
-        // Split into data and coding by index ranges.
-        // Feed data slices (original) and coding slices (recovery) into decoder.
-        for s in slices.iter().flatten() {
-            let idx = *s.index;
+        // Feed chunks into decoder based on their indices
+        for &(idx, data) in chunks {
             if idx < self.k {
-                // data slice at index idx
+                // Data chunk (original)
                 self.decoder
-                    .add_original_shard(idx, &s.data)
-                    .map_err(|_| ReedSolomonDecodeError::InvalidLayout)?;
+                    .add_original_shard(idx, data)
+                    .map_err(|_| DecodeError::InvalidLayout)?;
             } else if idx < self.k + self.m {
-                // coding slice at offset
+                // Parity chunk (recovery)
                 let offset = idx - self.k;
                 self.decoder
-                    .add_recovery_shard(offset, &s.data)
-                    .map_err(|_| ReedSolomonDecodeError::InvalidLayout)?;
+                    .add_recovery_shard(offset, data)
+                    .map_err(|_| DecodeError::InvalidLayout)?;
             } else {
-                return Err(ReedSolomonDecodeError::InvalidLayout);
+                return Err(DecodeError::InvalidLayout);
             }
         }
 
-        let restored = self.decoder.decode().map_err(|_| {
-            // If the library returns an error here, it's likely because the slices were inconsistent.
-            ReedSolomonDecodeError::InvalidLayout
-        })?;
+        let restored = self.decoder.decode().map_err(|_| DecodeError::InvalidLayout)?;
 
-        // Reassemble the payload from data slices in order [0..k).
-        // If a data slice was missing, pull the restored version.
+        // Reassemble the payload from data slices in order [0..k)
+        // Build a set of provided indices for quick lookup
+        let provided: std::collections::HashSet<usize> = chunks.iter().map(|(i, _)| *i).collect();
+        let chunks_map: std::collections::HashMap<usize, &[u8]> =
+            chunks.iter().map(|&(i, d)| (i, d)).collect();
+
         let mut payload = Vec::with_capacity(self.k * slice_bytes);
         for data_idx in 0..self.k {
-            let slice_ref = match slices[data_idx].as_ref() {
-                Some(s) => &s.data,
-                None => restored
+            let slice_ref = if provided.contains(&data_idx) {
+                *chunks_map.get(&data_idx).unwrap()
+            } else {
+                restored
                     .restored_original(data_idx)
-                    .ok_or(ReedSolomonDecodeError::InvalidLayout)?,
+                    .ok_or(DecodeError::InvalidLayout)?
             };
-            // Avoid expanding to impossible sizes.
-            payload
-                .try_reserve(slice_ref.len())
-                .map_err(|_| ReedSolomonDecodeError::TooMuchData)?;
             payload.extend_from_slice(slice_ref);
         }
-
-        // Remove padding: scan backwards counting zeros, then require a single 0x80 preceding them.
-        if payload.is_empty() {
-            return Err(ReedSolomonDecodeError::InvalidPadding);
-        }
-        let zeros = payload.iter().rev().take_while(|b| **b == 0).count();
-        let padding_total = zeros + 1;
-        if padding_total > payload.len() {
-            return Err(ReedSolomonDecodeError::InvalidPadding);
-        }
-        let marker_pos = payload.len() - padding_total;
-        if payload[marker_pos] != 0x80 {
-            return Err(ReedSolomonDecodeError::InvalidPadding);
-        }
-        payload.truncate(marker_pos);
 
         Ok(payload)
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::Slice;
-    use crate::SliceIndex;
 
     // Test constants (k=10, m=10, n=20)
     const K: usize = 10;
     const M: usize = 10;
-    const N: usize = K + M;
 
-    /// Create a test coder with the default configuration.
     fn test_coder() -> ReedSolomonCoder {
         ReedSolomonCoder::new(K, M)
     }
 
-    fn make_payload(len: usize) -> Vec<u8> {
-        // Deterministic, non-trivial pattern
+    fn make_data(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
     }
 
-    fn to_full(raw: &RawSlices) -> [Option<Slice>; N] {
-        let mut arr: [Option<Slice>; N] = std::array::from_fn(|_| None);
-        for (i, d) in raw.data.iter().enumerate() {
-            arr[i] = Some(Slice {
-                index: SliceIndex::new(i).unwrap(),
-                data: d.clone(),
-            });
-        }
-        for (j, c) in raw.coding.iter().enumerate() {
-            let idx = K + j;
-            arr[idx] = Some(Slice {
-                index: SliceIndex::new(idx).unwrap(),
-                data: c.clone(),
-            });
-        }
-        arr
-    }
-
-    fn keep_only(arr: &mut [Option<Slice>; N], keep: &[usize]) {
-        let mut keep_set = vec![false; N];
-        for &k in keep {
-            keep_set[k] = true;
-        }
-        for (i, slot) in arr.iter_mut().enumerate() {
-            if !keep_set[i] {
-                *slot = None;
-            }
-        }
-    }
-
-    fn equal_sizes(arr: &[Option<Slice>; N]) -> Option<usize> {
-        let mut size = None;
-        for s in arr.iter().flatten() {
-            match size {
-                None => size = Some(s.data.len()),
-                Some(expected) if expected != s.data.len() => return None,
-                _ => {}
-            }
-        }
-        size
+    #[allow(dead_code)]
+    fn keep_indices(chunks: &[Vec<u8>], keep: &[usize]) -> Vec<(usize, Vec<u8>)> {
+        keep.iter()
+            .filter_map(|&i| chunks.get(i).map(|c| (i, c.clone())))
+            .collect()
     }
 
     #[test]
-    fn encode_counts() {
+    fn test_encode_chunk_count() {
         let mut coder = test_coder();
-        let payload = make_payload(20_000);
-        let raw = coder.encode(&payload).expect("encode ok");
+        let data = make_data(20_000);
+        let chunks = coder.encode(&data).unwrap();
 
-        assert_eq!(raw.data.len(), K);
-        assert_eq!(raw.coding.len(), M);
+        assert_eq!(chunks.len(), K + M);
 
-        let slice_len = raw.data[0].len();
-        assert!(raw.data.iter().all(|d| d.len() == slice_len));
-        assert!(raw.coding.iter().all(|c| c.len() == slice_len));
+        // All chunks should be the same size
+        let size = chunks[0].len();
+        assert!(chunks.iter().all(|c| c.len() == size));
     }
 
     #[test]
-    fn roundtrip_sizes() {
+    fn test_roundtrip_all_chunks() {
         let mut coder = test_coder();
+        let original = make_data(20_000);
+        let chunks = coder.encode(&original).unwrap();
 
-        let sizes = [
-            0usize,
-            1,
-            K - 1,
-            K,
-            K + 1,
-            2 * K - 1,
-            2 * K,
-            5 * K + 123,
-            30_000,
-        ];
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+
+        let recovered = coder.decode(&available).unwrap();
+        // Note: recovered may have padding at end
+        assert_eq!(&recovered[..original.len()], &original);
+    }
+
+    #[test]
+    fn test_roundtrip_data_only() {
+        let mut coder = test_coder();
+        let original = make_data(20_000);
+        let chunks = coder.encode(&original).unwrap();
+
+        // Keep only first k chunks (data chunks)
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .take(K)
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+
+        let recovered = coder.decode(&available).unwrap();
+        assert_eq!(&recovered[..original.len()], &original);
+    }
+
+    #[test]
+    fn test_roundtrip_mixed() {
+        let mut coder = test_coder();
+        let original = make_data(20_000);
+        let chunks = coder.encode(&original).unwrap();
+
+        // Keep every other chunk (0, 2, 4, 6, 8, 10, 12, 14, 16, 18) = 10 chunks
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+
+        let recovered = coder.decode(&available).unwrap();
+        assert_eq!(&recovered[..original.len()], &original);
+    }
+
+    #[test]
+    fn test_not_enough_chunks() {
+        let mut coder = test_coder();
+        let original = make_data(10_000);
+        let chunks = coder.encode(&original).unwrap();
+
+        // Keep only k-1 chunks
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .take(K - 1)
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+
+        let result = coder.decode(&available);
+        assert!(matches!(result, Err(DecodeError::NotEnoughSlices)));
+    }
+
+    #[test]
+    fn test_encode_empty() {
+        let mut coder = test_coder();
+        let chunks = coder.encode(&[]).unwrap();
+        assert_eq!(chunks.len(), K + M);
+
+        // Roundtrip
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+        let recovered = coder.decode(&available).unwrap();
+        // Empty data decodes to k 1-byte zero chunks
+        assert!(recovered.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_mismatched_chunk_size() {
+        let mut coder = test_coder();
+        let original = make_data(20_000);
+        let mut chunks = coder.encode(&original).unwrap();
+
+        // Corrupt one chunk by truncating it
+        chunks[0].pop();
+
+        let available: Vec<(usize, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.as_slice()))
+            .collect();
+
+        let result = coder.decode(&available);
+        assert!(matches!(result, Err(DecodeError::InvalidLayout)));
+    }
+
+    #[test]
+    fn test_various_sizes() {
+        let mut coder = test_coder();
+        let sizes = [1, K - 1, K, K + 1, 2 * K, 5_000, 20_000, 30_000];
 
         for &sz in &sizes {
-            let payload = make_payload(sz);
-            let raw = coder.encode(&payload).expect("encode ok");
-            let full = to_full(&raw);
+            let original = make_data(sz);
+            let chunks = coder.encode(&original).unwrap();
 
-            // all slices
-            let restored = coder.decode(&full).expect("decode ok");
-            assert_eq!(restored, payload, "round-trip mismatch for size {}", sz);
+            let available: Vec<(usize, &[u8])> = chunks
+                .iter()
+                .enumerate()
+                .take(K)
+                .map(|(i, c)| (i, c.as_slice()))
+                .collect();
 
-            // only data slices (k)
-            let mut only_data = full.clone();
-            keep_only(&mut only_data, &(0..K).collect::<Vec<_>>());
-            let restored = coder.decode(&only_data).expect("decode ok with k data slices");
-            assert_eq!(restored, payload, "round-trip data-only mismatch for size {}", sz);
-
-            // mixed: ~k/2 data + parity to fill, total = k
-            let half_data = K / 2;
-            let mut keep = Vec::with_capacity(K);
-            for i in (0..K).step_by(2).take(half_data) {
-                keep.push(i);
-            }
-            // Fill remaining slots with parity slices
-            let remaining = K - keep.len();
-            for j in 0..remaining {
-                keep.push(K + j);
-            }
-
-            let mut mixed = full.clone();
-            keep_only(&mut mixed, &keep);
-            assert_eq!(mixed.iter().flatten().count(), K);
-            let restored = coder.decode(&mixed).expect("decode ok with mixed slices");
-            assert_eq!(restored, payload, "round-trip mixed mismatch size {}", sz);
-        }
-    }
-
-    #[test]
-    fn tiny() {
-        let mut coder = test_coder();
-
-        for sz in 0..4usize {
-            let payload = make_payload(sz);
-            let raw = coder.encode(&payload).expect("encode ok");
-            let slices = to_full(&raw);
-            let out = coder.decode(&slices).expect("decode ok");
-            assert_eq!(out, payload, "tiny payload mismatch sz={}", sz);
-        }
-    }
-
-    #[test]
-    fn not_enough() {
-        let mut coder = test_coder();
-        let payload = make_payload(5_000);
-        let raw = coder.encode(&payload).expect("encode ok");
-        let mut slices = to_full(&raw);
-
-        // keep only k-1 data slices
-        let keep: Vec<usize> = (0..(K - 1)).collect();
-        keep_only(&mut slices, &keep);
-
-        let res = coder.decode(&slices);
-        assert!(matches!(res, Err(ReedSolomonDecodeError::NotEnoughSlices)));
-    }
-
-    #[test]
-    fn bad_size() {
-        let mut coder = test_coder();
-        let payload = make_payload(20_000);
-        let raw = coder.encode(&payload).expect("encode ok");
-        let mut slices = to_full(&raw);
-
-        // uniform to start
-        let base_len = equal_sizes(&slices).expect("uniform sizes");
-
-        // tamper: shrink one slice by 1 byte
-        if let Some(Some(sh)) = slices.get_mut(0) {
-            assert_eq!(sh.data.len(), base_len);
-            sh.data.pop();
-            assert_eq!(sh.data.len(), base_len - 1);
-        } else {
-            panic!("expected slice present");
-        }
-
-        let res = coder.decode(&slices);
-        assert!(matches!(res, Err(ReedSolomonDecodeError::InvalidLayout)));
-    }
-
-    #[test]
-    fn empty_rt() {
-        let mut coder = test_coder();
-        let payload = Vec::<u8>::new();
-        let raw = coder.encode(&payload).expect("encode ok for empty payload");
-        let slices = to_full(&raw);
-        let out = coder.decode(&slices).expect("decode ok");
-        assert!(out.is_empty(), "decoded payload should be empty");
-    }
-
-
-    #[test]
-    fn size_table() {
-        let mut coder = test_coder();
-        // Max payload with default 4 KiB slices: 4 KiB * 10 data slices = 40 KB
-        let sizes = [
-            0usize,
-            1,
-            K / 2,
-            K - 1,
-            K,
-            K + 1,
-            5_000,
-            20_000,
-            30_000,
-        ];
-
-        println!(
-            "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
-            "payload", "slice", "k", "r", "n", "total_bytes", "ratio", "ok"
-        );
-        println!(
-            "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
-            "(bytes)", "(bytes)", "", "", "", "(bytes)", "", ""
-        );
-
-        for &sz in &sizes {
-            let payload = make_payload(sz);
-            let raw = coder.encode(&payload).expect("encode ok");
-
-            // All slices have equal length (by construction)
-            let slice_len = raw.data[0].len();
-            let total_bytes = N * slice_len;
-            let ratio_str = if sz > 0 {
-                format!("{:.3}", total_bytes as f64 / sz as f64)
-            } else {
-                "-".to_string()
-            };
-
-            // Build full slice set and round trip
-            let mut slices: [Option<Slice>; N] = std::array::from_fn(|_| None);
-            for (i, d) in raw.data.iter().enumerate() {
-                slices[i] = Some(Slice {
-                    index: SliceIndex::new(i).unwrap(),
-                    data: d.clone(),
-                });
-            }
-            for (j, c) in raw.coding.iter().enumerate() {
-                let idx = K + j;
-                slices[idx] = Some(Slice {
-                    index: SliceIndex::new(idx).unwrap(),
-                    data: c.clone(),
-                });
-            }
-
-            let out = coder.decode(&slices).expect("decode ok");
-            let ok = out == payload;
-
-            println!(
-                "{:<10} {:<10} {:<5} {:<5} {:<5} {:<14} {:<8} {:<6}",
-                sz,
-                slice_len,
-                K,
-                M,
-                N,
-                total_bytes,
-                ratio_str,
-                if ok { "ok" } else { "FAIL" }
+            let recovered = coder.decode(&available).unwrap();
+            assert_eq!(
+                &recovered[..original.len()],
+                &original,
+                "roundtrip failed for size {}",
+                sz
             );
-
-            // Keep the test meaningful
-            assert!(ok, "round-trip failed for size {}", sz);
         }
     }
 }
