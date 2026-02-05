@@ -26,8 +26,8 @@
 //! let data = vec![0u8; 1_000_000]; // 1 MB of data
 //! let commitment = client.upload_blob("my-track-id", data).await?;
 //!
-//! // Download the blob
-//! let recovered = client.download_blob("my-track-id").await?;
+//! // Download the blob (k=10 from on-chain track profile)
+//! let recovered = client.download_blob("my-track-id", 10).await?;
 //!
 //! // Query on-chain state
 //! let rpc = RpcClient::new(RpcConfig::default())?;

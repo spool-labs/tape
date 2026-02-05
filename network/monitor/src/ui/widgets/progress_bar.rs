@@ -10,8 +10,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
-/// Default k for display (matches default profile).
-const DEFAULT_K: usize = 10;
 
 use crate::app::{App, EpochPhase};
 use crate::theme::Theme;
@@ -56,18 +54,19 @@ impl<'a> EpochProgress<'a> {
         ];
 
         // Show different secondary info based on phase
+        let threshold = self.app.supermajority_threshold();
         match self.app.phase {
             EpochPhase::Syncing => {
                 spans.push(Span::styled(" | Attestations: ", self.theme.text_style()));
                 spans.push(Span::styled(
-                    format!("{}/{}", self.app.epoch_weight, DEFAULT_K),
+                    format!("{}/{}", self.app.epoch_weight, threshold),
                     self.theme.text_style(),
                 ));
             }
             EpochPhase::Settling => {
                 spans.push(Span::styled(" | Pools Advanced: ", self.theme.text_style()));
                 spans.push(Span::styled(
-                    format!("{}/{}", self.app.epoch_weight, DEFAULT_K),
+                    format!("{}/{}", self.app.epoch_weight, threshold),
                     self.theme.text_style(),
                 ));
             }

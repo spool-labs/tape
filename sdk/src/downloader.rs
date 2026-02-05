@@ -11,9 +11,6 @@ use crate::communication::NodeCommunicationFactory;
 use crate::error::DownloadError;
 use crate::uploader::SPOOL_COUNT;
 
-/// Default minimum slices for reconstruction (matches default profile k=10).
-const DEFAULT_MIN_SLICES: usize = 10;
-
 /// Default concurrency limit for parallel downloads.
 /// This limits how many HTTP requests are in flight at once.
 const DEFAULT_CONCURRENCY: usize = 64;
@@ -25,7 +22,7 @@ pub struct ParallelDownloader {
     slice_to_address: HashMap<SpoolIndex, String>,
     factory: NodeCommunicationFactory,
     concurrency: usize,
-    /// Minimum slices needed for reconstruction (k from profile, default DEFAULT_MIN_SLICES).
+    /// Minimum slices needed for reconstruction (k from track's encoding profile).
     min_slices: usize,
     /// Slice indices to exclude from downloads (e.g., for recovery).
     exclude_slices: HashSet<SpoolIndex>,
@@ -38,17 +35,19 @@ impl ParallelDownloader {
     /// * `track_id` - The track identifier
     /// * `slice_to_address` - Map of slice_index → node address (from spool assignment)
     /// * `factory` - Factory for creating node clients
+    /// * `min_slices` - Minimum slices needed for reconstruction (k from track's encoding profile)
     pub fn new(
         track_id: String,
         slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
+        min_slices: usize,
     ) -> Self {
         Self {
             track_id,
             slice_to_address,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
-            min_slices: DEFAULT_MIN_SLICES,
+            min_slices,
             exclude_slices: HashSet::new(),
         }
     }
@@ -58,6 +57,7 @@ impl ParallelDownloader {
         track_id: String,
         slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
+        min_slices: usize,
         concurrency: usize,
     ) -> Self {
         Self {
@@ -65,18 +65,9 @@ impl ParallelDownloader {
             slice_to_address,
             factory,
             concurrency,
-            min_slices: DEFAULT_MIN_SLICES,
+            min_slices,
             exclude_slices: HashSet::new(),
         }
-    }
-
-    /// Set minimum slices needed for reconstruction.
-    ///
-    /// This allows custom k values for different encoding profiles.
-    /// Default is DEFAULT_MIN_SLICES (10).
-    pub fn with_min_slices(mut self, min_slices: usize) -> Self {
-        self.min_slices = min_slices;
-        self
     }
 
     /// Set slices to exclude from downloads.
@@ -190,20 +181,22 @@ mod tests {
     fn test_downloader_creation() {
         let factory = NodeCommunicationFactory::new();
         let slice_map = make_slice_map(&["localhost:8080", "localhost:8081"]);
+        let min_slices = 10;
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory);
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices);
 
-        // Just verify it creates without panic
         assert_eq!(downloader.track_id, "track_123");
         assert!(downloader.exclude_slices.is_empty());
+        assert_eq!(downloader.min_slices, min_slices);
     }
 
     #[test]
     fn test_downloader_with_exclusions() {
         let factory = NodeCommunicationFactory::new();
         let slice_map = make_slice_map(&["localhost:8080"]);
+        let min_slices = 6;
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory)
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices)
             .exclude_slice(42)
             .exclude_slice(100);
 
@@ -216,9 +209,10 @@ mod tests {
     fn test_downloader_with_excluded_slices_iter() {
         let factory = NodeCommunicationFactory::new();
         let slice_map = make_slice_map(&["localhost:8080"]);
+        let min_slices = 10;
         let excludes: Vec<SpoolIndex> = vec![10, 20, 30];
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory)
+        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices)
             .with_excluded_slices(excludes);
 
         assert_eq!(downloader.exclude_slices.len(), 3);

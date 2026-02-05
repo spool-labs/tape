@@ -110,9 +110,11 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
+    /// * `min_slices` - Minimum slices needed for reconstruction (k from track's encoding profile)
     pub async fn download_slices(
         &self,
         track_id: &str,
+        min_slices: usize,
     ) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
         use std::collections::HashMap;
 
@@ -129,6 +131,7 @@ impl TapeClient {
             track_id.to_string(),
             slice_to_address,
             self.node_factory.clone(),
+            min_slices,
         );
 
         downloader.download_enough_slices().await
@@ -248,10 +251,12 @@ impl TapeClient {
             }
         }
 
+        // min_slices=1 since we only need one slice for probing size
         let downloader = ParallelDownloader::new(
             track_id.to_string(),
             slice_to_address,
             self.node_factory.clone(),
+            1,
         );
 
         // Generate random slice indices to spread load across nodes
@@ -293,10 +298,14 @@ impl TapeClient {
     /// 1. Fetch the track's commitment_hash from Solana
     /// 2. Re-encode the downloaded data and compare merkle roots
     /// Or use `download_blob_verified()` which does this automatically.
-    pub async fn download_blob(&self, track_id: &str) -> Result<Vec<u8>, ClientError> {
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier
+    /// * `min_slices` - Minimum slices needed (k from on-chain track profile)
+    pub async fn download_blob(&self, track_id: &str, min_slices: usize) -> Result<Vec<u8>, ClientError> {
         // Download enough slices (fault-tolerant - continues on node failures)
         let slices = self
-            .download_slices(track_id)
+            .download_slices(track_id, min_slices)
             .await
             .map_err(ClientError::Download)?;
 
@@ -326,10 +335,11 @@ impl TapeClient {
     pub async fn download_blob_verified(
         &self,
         track_id: &str,
+        min_slices: usize,
         expected_commitment: &BlobMerkleRoot,
     ) -> Result<Vec<u8>, ClientError> {
         // Download and decode
-        let data = self.download_blob(track_id).await?;
+        let data = self.download_blob(track_id, min_slices).await?;
 
         // Re-encode to verify commitment using RotatedSlicer
         let mut encoder = BlobEncoder::new();

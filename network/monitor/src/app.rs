@@ -7,10 +7,8 @@ use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
+use tape_core::bft::min_correct;
 use tape_core::erasure::SPOOL_COUNT;
-
-/// Default k for threshold calculations (matches default profile).
-const DEFAULT_K: usize = 10;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{BasisPoints, EpochNumber, NodeId, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
@@ -601,8 +599,12 @@ impl App {
     pub fn epoch_progress(&self) -> u8 {
         match self.phase {
             EpochPhase::Syncing | EpochPhase::Settling => {
-                // Progress toward supermajority threshold
-                let threshold = DEFAULT_K as u64;
+                // Progress toward BFT supermajority threshold
+                let committee_size = self.nodes.len() as u64;
+                if committee_size == 0 {
+                    return 0;
+                }
+                let threshold = min_correct(committee_size);
                 ((self.epoch_weight * 100) / threshold).min(100) as u8
             }
             EpochPhase::Active | EpochPhase::Unknown => {
@@ -628,6 +630,15 @@ impl App {
             EpochPhase::Active => "elapsed",
             EpochPhase::Unknown => "elapsed",
         }
+    }
+
+    /// Get the BFT supermajority threshold for phase transitions.
+    pub fn supermajority_threshold(&self) -> u64 {
+        let committee_size = self.nodes.len() as u64;
+        if committee_size == 0 {
+            return 1;
+        }
+        min_correct(committee_size)
     }
 
     /// Calculate time remaining in epoch.
