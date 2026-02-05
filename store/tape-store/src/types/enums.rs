@@ -1,18 +1,27 @@
 //! Enum types for tape-store
 
 use serde::{Deserialize, Serialize};
+use tape_core::types::EpochNumber;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 /// Node status in the network
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum NodeStatus {
     /// Node is registered but not in committee
-    Standby = 0,
+    Standby,
     /// Node is active in the committee
-    Active = 1,
-    /// Node is recovering data from peers
-    Recovering = 2,
+    Active,
+    /// Node needs to recover metadata before joining
+    RecoverMetadata,
+    /// Node is catching up during recovery
+    RecoveryCatchUp,
+    /// Node is actively recovering data for a specific epoch
+    RecoveryInProgress { epoch: EpochNumber },
+    /// Node is catching up with incomplete history
+    RecoveryCatchUpWithIncompleteHistory {
+        first_complete_epoch: EpochNumber,
+        epoch_at_start: EpochNumber,
+    },
 }
 
 impl Default for NodeStatus {
@@ -30,11 +39,11 @@ pub enum SpoolStatus {
     /// Fully synced and serving requests
     Active = 1,
     /// Currently syncing data from peers
-    Sync = 2,
+    ActiveSync = 2,
     /// Recovering missing slices
-    Recover = 3,
+    ActiveRecover = 3,
     /// Locked for handoff to another node
-    Locked = 4,
+    LockedToMove = 4,
 }
 
 impl Default for SpoolStatus {
@@ -43,40 +52,33 @@ impl Default for SpoolStatus {
     }
 }
 
-/// Type of slice (primary or recovery)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum SliceType {
-    /// Primary data slice
-    Primary = 0,
-    /// Recovery/parity slice
-    Recovery = 1,
-}
-
-impl Default for SliceType {
-    fn default() -> Self {
-        Self::Primary
-    }
-}
-
-/// Encoding type for blobs
+/// How a track's slices are allocated across spools
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum EncodingType {
-    /// Unknown encoding
-    Unknown = 0,
-    /// Basic encoding (single layer)
-    Basic = 1,
-    /// Striped encoding (interleaved)
-    Striped = 2,
-    /// Rotated encoding (row-column)
-    Rotated = 3,
+pub enum SpoolAllocation {
+    /// All slices go to a single spool
+    SpoolSingle(u16),
+    /// Slices are distributed across a spool group
+    SpoolGroup(u8),
 }
 
-impl Default for EncodingType {
-    fn default() -> Self {
-        Self::Unknown
-    }
+/// Information about a tracked object
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub enum ObjectInfo {
+    /// Object has been blacklisted
+    Blacklisted,
+    /// Object is invalid
+    Invalid {
+        epoch: EpochNumber,
+        slot: tape_core::types::SlotNumber,
+    },
+    /// Object is valid
+    Valid {
+        is_stored: bool,
+        track_address: crate::types::Pubkey,
+        registered_epoch: EpochNumber,
+        certified_epoch: Option<EpochNumber>,
+        slot: tape_core::types::SlotNumber,
+    },
 }
 
 #[cfg(test)]
@@ -94,33 +96,79 @@ mod tests {
     }
 
     #[test]
-    fn test_slice_type_default() {
-        assert_eq!(SliceType::default(), SliceType::Primary);
-    }
-
-    #[test]
-    fn test_encoding_type_default() {
-        assert_eq!(EncodingType::default(), EncodingType::Unknown);
-    }
-
-    #[test]
     fn test_repr_values() {
-        assert_eq!(NodeStatus::Standby as u8, 0);
-        assert_eq!(NodeStatus::Active as u8, 1);
-        assert_eq!(NodeStatus::Recovering as u8, 2);
-
         assert_eq!(SpoolStatus::None as u8, 0);
         assert_eq!(SpoolStatus::Active as u8, 1);
-        assert_eq!(SpoolStatus::Sync as u8, 2);
-        assert_eq!(SpoolStatus::Recover as u8, 3);
-        assert_eq!(SpoolStatus::Locked as u8, 4);
+        assert_eq!(SpoolStatus::ActiveSync as u8, 2);
+        assert_eq!(SpoolStatus::ActiveRecover as u8, 3);
+        assert_eq!(SpoolStatus::LockedToMove as u8, 4);
+    }
 
-        assert_eq!(SliceType::Primary as u8, 0);
-        assert_eq!(SliceType::Recovery as u8, 1);
+    #[test]
+    fn test_node_status_roundtrip() {
+        let statuses = vec![
+            NodeStatus::Standby,
+            NodeStatus::Active,
+            NodeStatus::RecoverMetadata,
+            NodeStatus::RecoveryCatchUp,
+            NodeStatus::RecoveryInProgress {
+                epoch: EpochNumber(42),
+            },
+            NodeStatus::RecoveryCatchUpWithIncompleteHistory {
+                first_complete_epoch: EpochNumber(10),
+                epoch_at_start: EpochNumber(5),
+            },
+        ];
 
-        assert_eq!(EncodingType::Unknown as u8, 0);
-        assert_eq!(EncodingType::Basic as u8, 1);
-        assert_eq!(EncodingType::Striped as u8, 2);
-        assert_eq!(EncodingType::Rotated as u8, 3);
+        for status in statuses {
+            let bytes = wincode::serialize(&status).unwrap();
+            let decoded: NodeStatus = wincode::deserialize(&bytes).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn test_spool_allocation_roundtrip() {
+        let allocs = vec![SpoolAllocation::SpoolSingle(42), SpoolAllocation::SpoolGroup(3)];
+
+        for alloc in allocs {
+            let bytes = wincode::serialize(&alloc).unwrap();
+            let decoded: SpoolAllocation = wincode::deserialize(&bytes).unwrap();
+            assert_eq!(alloc, decoded);
+        }
+    }
+
+    #[test]
+    fn test_object_info_roundtrip() {
+        use crate::types::Pubkey;
+        use tape_core::types::SlotNumber;
+
+        let infos = vec![
+            ObjectInfo::Blacklisted,
+            ObjectInfo::Invalid {
+                epoch: EpochNumber(10),
+                slot: SlotNumber(100),
+            },
+            ObjectInfo::Valid {
+                is_stored: true,
+                track_address: Pubkey::new([1u8; 32]),
+                registered_epoch: EpochNumber(5),
+                certified_epoch: Some(EpochNumber(6)),
+                slot: SlotNumber(50),
+            },
+            ObjectInfo::Valid {
+                is_stored: false,
+                track_address: Pubkey::new([2u8; 32]),
+                registered_epoch: EpochNumber(7),
+                certified_epoch: None,
+                slot: SlotNumber(70),
+            },
+        ];
+
+        for info in infos {
+            let bytes = wincode::serialize(&info).unwrap();
+            let decoded: ObjectInfo = wincode::deserialize(&bytes).unwrap();
+            assert_eq!(info, decoded);
+        }
     }
 }

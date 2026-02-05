@@ -18,26 +18,25 @@ use rocksdb;
 /// Returns a vector of `ColumnFamilyDescriptor` instances, one for each column family
 /// in the tape-store. Each CF is configured based on its access patterns and data characteristics.
 ///
-/// # Column Family Configurations (12 total)
+/// # Column Family Configurations (11 total)
 ///
-/// ## Metadata Columns (PlainTable/BlockBased)
+/// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
-/// - `slice_info` - 32-byte Pubkey keys (PlainTable)
-/// - `tape_info` - 32-byte Pubkey keys (PlainTable)
-/// - `track_info` - 32-byte Pubkey keys (PlainTable)
+/// - `tape` - 32-byte Pubkey keys (PlainTable)
+/// - `track` - 32-byte Pubkey keys (PlainTable)
+/// - `object_info` - 32-byte Pubkey keys (PlainTable)
 ///
 /// ## Sync Columns
 /// - `sync_cursor` - Singleton (0-byte key) (BlockBased)
-/// - `gc` - String keys ("started", "completed") (BlockBased)
+/// - `gc` - String keys (BlockBased)
 ///
-/// ## Epoch-Namespaced Spool Columns (BlockBased + Prefix)
-/// - `spool_status` - 10-byte SpoolEpochKey (8-byte epoch prefix for iteration)
-/// - `sync_cursors` - 10-byte SpoolEpochKey (8-byte epoch prefix for cleanup)
-/// - `recovery_queue` - 43-byte PendingRecoveryKey (10-byte epoch+spool prefix)
+/// ## Spool Columns (NOT epoch-namespaced)
+/// - `spool_status` - 2-byte SpoolIndexKey (PlainTable)
+/// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
+/// - `spool_sync_progress` - 2-byte SpoolIndexKey (PlainTable)
 ///
-/// ## Slice Data Columns (BlobDB)
-/// - `spool/primary_slices` - 34-byte SliceKey (2-byte spool prefix)
-/// - `spool/recovery_slices` - 34-byte SliceKey (2-byte spool prefix)
+/// ## Slice Data Column (BlobDB)
+/// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
 ///
 /// ## Committee Column
 /// - `committee` - 8-byte EpochKey (PlainTable)
@@ -48,18 +47,23 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Slice info - 32-byte Pubkey keys, variable-size SliceInfo values
-        ColumnFamilyConfig::new("slice_info")
+        // Committee - 8-byte EpochKey, Vec<NodeInfo> values
+        ColumnFamilyConfig::new("committee")
+            .with_plain_table(8)
+            .build(),
+
+        // Tape - 32-byte Pubkey keys, small TapeInfo values
+        ColumnFamilyConfig::new("tape")
             .with_plain_table(32)
             .build(),
 
-        // Tape info - 32-byte Pubkey keys, small TapeInfo values
-        ColumnFamilyConfig::new("tape_info")
+        // Track - 32-byte Pubkey keys, TrackInfo values
+        ColumnFamilyConfig::new("track")
             .with_plain_table(32)
             .build(),
 
-        // Track info - 32-byte Pubkey keys, TrackInfo values
-        ColumnFamilyConfig::new("track_info")
+        // Object info - 32-byte Pubkey keys, ObjectInfo values
+        ColumnFamilyConfig::new("object_info")
             .with_plain_table(32)
             .build(),
 
@@ -73,44 +77,28 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .build(),
 
-        // Spool status - 10-byte SpoolEpochKey (epoch BE + spool_id BE)
-        // BlockBased with 8-byte epoch prefix for iter_assigned_spools and cleanup
+        // Spool status - 2-byte SpoolIndexKey (PlainTable)
         ColumnFamilyConfig::new("spool_status")
-            .with_block_based()
-            .with_prefix_extractor(8)
+            .with_plain_table(2)
             .build(),
 
-        // Sync cursors - 10-byte SpoolEpochKey
-        // BlockBased with 8-byte epoch prefix for cleanup_epoch_state
-        ColumnFamilyConfig::new("sync_cursors")
-            .with_block_based()
-            .with_prefix_extractor(8)
-            .build(),
-
-        // Recovery queue - 43-byte PendingRecoveryKey
-        // 10-byte prefix (epoch+spool) to match iter_pending_recoveries access pattern
-        ColumnFamilyConfig::new("recovery_queue")
-            .with_block_based()
-            .with_prefix_extractor(10)
-            .build(),
-
-        // Primary slices - 34-byte SliceKey, large (~1MB) values
+        // Spool pending recovery - 34-byte SliceKey
         // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("primary_slices")
+        ColumnFamilyConfig::new("spool_pending_recovery")
+            .with_block_based()
+            .with_prefix_extractor(2)
+            .build(),
+
+        // Slice - 34-byte SliceKey, large (~1MB) values
+        // 2-byte spool prefix for iteration by spool
+        ColumnFamilyConfig::new("slice")
             .with_blob_db(256 * 1024) // 256 KiB threshold
             .with_prefix_extractor(2)
             .build(),
 
-        // Recovery slices - 34-byte SliceKey, large (~1MB) values
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("recovery_slices")
-            .with_blob_db(256 * 1024) // 256 KiB threshold
-            .with_prefix_extractor(2)
-            .build(),
-
-        // Committee - 8-byte EpochKey, CommitteeCache values
-        ColumnFamilyConfig::new("committee")
-            .with_plain_table(8)
+        // Spool sync progress - 2-byte SpoolIndexKey (PlainTable)
+        ColumnFamilyConfig::new("spool_sync_progress")
+            .with_plain_table(2)
             .build(),
     ]
 }
@@ -162,8 +150,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        // Should have exactly 12 column families
-        assert_eq!(configs.len(), 12);
+        assert_eq!(configs.len(), 11);
     }
 
     #[test]
@@ -171,20 +158,18 @@ mod tests {
         let configs = create_tape_store_configs();
         let names: Vec<&str> = configs.iter().map(|cf| cf.name()).collect();
 
-        // Verify all expected column families are present
         let expected = vec![
             "meta",
-            "slice_info",
-            "tape_info",
-            "track_info",
+            "committee",
+            "tape",
+            "track",
+            "object_info",
             "sync_cursor",
             "gc",
             "spool_status",
-            "sync_cursors",
-            "recovery_queue",
-            "primary_slices",
-            "recovery_slices",
-            "committee",
+            "spool_pending_recovery",
+            "slice",
+            "spool_sync_progress",
         ];
 
         assert_eq!(names, expected);
@@ -193,7 +178,6 @@ mod tests {
     #[test]
     fn test_db_options() {
         let opts = create_db_options();
-        // Just verify it returns a valid Options instance
         drop(opts);
     }
 }

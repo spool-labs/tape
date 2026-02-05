@@ -7,11 +7,9 @@ use store::Column;
 ///
 /// Key: String ("started" or "completed")
 /// Value: EpochNumber (last epoch where GC was started/completed)
-///
-/// Used to track GC progress across restarts.
-pub struct Gc;
+pub struct GcCol;
 
-impl Column for Gc {
+impl Column for GcCol {
     const CF_NAME: &'static str = "gc";
     type Key = String;
     type Value = EpochNumber;

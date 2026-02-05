@@ -1,15 +1,16 @@
 //! Metadata operations for node state tracking
 //!
 //! Provides storage for:
-//! - Node status (Standby/Active/Recovering)
-//! - Cluster genesis hash (for validation on node restart)
+//! - Node status (wincode-serialized)
+//! - Cluster genesis hash
 //! - Current epoch number
+//! - Node address
 //! - Sync cursor (last processed slot)
 //! - GC progress (started/completed epochs)
 
-use crate::columns::{Gc, Meta, SyncCursor};
+use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{EpochNumber, Hash, NodeStatus, SlotNumber, UnitKey};
+use crate::types::{EpochNumber, Hash, NodeStatus, Pubkey, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
 
@@ -17,6 +18,7 @@ use store::Store;
 const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const CURRENT_EPOCH_KEY: &str = "current_epoch";
+const NODE_ADDRESS_KEY: &str = "node_address";
 
 // GC keys
 const GC_STARTED_KEY: &str = "started";
@@ -36,6 +38,10 @@ pub trait MetaOps {
     fn get_current_epoch(&self) -> Result<Option<EpochNumber>>;
     fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
+    // Node address
+    fn get_node_address(&self) -> Result<Option<Pubkey>>;
+    fn set_node_address(&self, address: Pubkey) -> Result<()>;
+
     // Sync cursor
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>>;
     fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()>;
@@ -50,17 +56,13 @@ pub trait MetaOps {
 impl<S: Store> MetaOps for TapeStore<S> {
     fn get_node_status(&self) -> Result<Option<NodeStatus>> {
         let key = NODE_STATUS_KEY.to_string();
-        match self.get::<Meta>(&key)? {
+        match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 if bytes.is_empty() {
                     return Ok(None);
                 }
-                let status = match bytes[0] {
-                    0 => NodeStatus::Standby,
-                    1 => NodeStatus::Active,
-                    2 => NodeStatus::Recovering,
-                    _ => NodeStatus::Standby,
-                };
+                let status: NodeStatus = wincode::deserialize(&bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("node status: {}", e)))?;
                 Ok(Some(status))
             }
             None => Ok(None),
@@ -69,14 +71,15 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_node_status(&self, status: NodeStatus) -> Result<()> {
         let key = NODE_STATUS_KEY.to_string();
-        let bytes = vec![status as u8];
-        self.put::<Meta>(&key, &bytes)?;
+        let bytes = wincode::serialize(&status)
+            .map_err(|e| TapeStoreError::Serialization(format!("node status: {}", e)))?;
+        self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
     fn get_cluster_hash(&self) -> Result<Option<Hash>> {
         let key = CLUSTER_HASH_KEY.to_string();
-        match self.get::<Meta>(&key)? {
+        match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 32 {
                     return Err(TapeStoreError::InvalidDataLength {
@@ -95,13 +98,13 @@ impl<S: Store> MetaOps for TapeStore<S> {
     fn set_cluster_hash(&self, hash: Hash) -> Result<()> {
         let key = CLUSTER_HASH_KEY.to_string();
         let bytes = hash.as_ref().to_vec();
-        self.put::<Meta>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
     fn get_current_epoch(&self) -> Result<Option<EpochNumber>> {
         let key = CURRENT_EPOCH_KEY.to_string();
-        match self.get::<Meta>(&key)? {
+        match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 8 {
                     return Err(TapeStoreError::InvalidDataLength {
@@ -121,38 +124,63 @@ impl<S: Store> MetaOps for TapeStore<S> {
     fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = CURRENT_EPOCH_KEY.to_string();
         let bytes = epoch.as_u64().to_le_bytes().to_vec();
-        self.put::<Meta>(&key, &bytes)?;
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn get_node_address(&self) -> Result<Option<Pubkey>> {
+        let key = NODE_ADDRESS_KEY.to_string();
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 32,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut addr_bytes = [0u8; 32];
+                addr_bytes.copy_from_slice(&bytes);
+                Ok(Some(Pubkey(addr_bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_node_address(&self, address: Pubkey) -> Result<()> {
+        let key = NODE_ADDRESS_KEY.to_string();
+        let bytes = address.0.to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>> {
-        Ok(self.get::<SyncCursor>(&UnitKey)?)
+        Ok(self.get::<SyncCursorCol>(&UnitKey)?)
     }
 
     fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()> {
-        self.put::<SyncCursor>(&UnitKey, &slot)?;
+        self.put::<SyncCursorCol>(&UnitKey, &slot)?;
         Ok(())
     }
 
     fn get_gc_started_epoch(&self) -> Result<Option<EpochNumber>> {
         let key = GC_STARTED_KEY.to_string();
-        Ok(self.get::<Gc>(&key)?)
+        Ok(self.get::<GcCol>(&key)?)
     }
 
     fn set_gc_started_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = GC_STARTED_KEY.to_string();
-        self.put::<Gc>(&key, &epoch)?;
+        self.put::<GcCol>(&key, &epoch)?;
         Ok(())
     }
 
     fn get_gc_completed_epoch(&self) -> Result<Option<EpochNumber>> {
         let key = GC_COMPLETED_KEY.to_string();
-        Ok(self.get::<Gc>(&key)?)
+        Ok(self.get::<GcCol>(&key)?)
     }
 
     fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = GC_COMPLETED_KEY.to_string();
-        self.put::<Gc>(&key, &epoch)?;
+        self.put::<GcCol>(&key, &epoch)?;
         Ok(())
     }
 }
@@ -175,10 +203,16 @@ mod tests {
         store.set_node_status(NodeStatus::Active).unwrap();
         assert_eq!(store.get_node_status().unwrap(), Some(NodeStatus::Active));
 
-        store.set_node_status(NodeStatus::Recovering).unwrap();
+        store
+            .set_node_status(NodeStatus::RecoveryInProgress {
+                epoch: EpochNumber(42),
+            })
+            .unwrap();
         assert_eq!(
             store.get_node_status().unwrap(),
-            Some(NodeStatus::Recovering)
+            Some(NodeStatus::RecoveryInProgress {
+                epoch: EpochNumber(42)
+            })
         );
     }
 
@@ -202,6 +236,17 @@ mod tests {
 
         store.set_current_epoch(epoch).unwrap();
         assert_eq!(store.get_current_epoch().unwrap(), Some(epoch));
+    }
+
+    #[test]
+    fn test_node_address_roundtrip() {
+        let store = test_store();
+        let address = Pubkey::new_unique();
+
+        assert!(store.get_node_address().unwrap().is_none());
+
+        store.set_node_address(address).unwrap();
+        assert_eq!(store.get_node_address().unwrap(), Some(address));
     }
 
     #[test]

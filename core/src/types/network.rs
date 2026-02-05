@@ -1,4 +1,6 @@
 use bytemuck::{Pod, Zeroable};
+#[cfg(feature = "wincode")]
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 #[cfg(not(feature = "solana"))]
 use core::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
@@ -11,6 +13,7 @@ pub enum NetworkAddressError {
 /// A network address in a zeroable/pod type.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct NetworkAddress {
     data: [u8; 24],
 }

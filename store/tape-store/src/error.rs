@@ -11,29 +11,21 @@ pub enum TapeStoreError {
     #[error("Store error: {0}")]
     Store(#[from] store::Error),
 
-    /// Slice info not found
-    #[error("Slice info not found: {0:?}")]
-    SliceInfoNotFound(Pubkey),
-
     /// Tape info not found
     #[error("Tape info not found: {0:?}")]
-    TapeInfoNotFound(Pubkey),
+    TapeNotFound(Pubkey),
 
     /// Track info not found
     #[error("Track info not found: {0:?}")]
-    TrackInfoNotFound(Pubkey),
+    TrackNotFound(Pubkey),
 
-    /// Primary slice not found
-    #[error("Primary slice not found: spool={0}, track={1:?}")]
-    PrimarySliceNotFound(u16, Pubkey),
-
-    /// Recovery slice not found
-    #[error("Recovery slice not found: spool={0}, track={1:?}")]
-    RecoverySliceNotFound(u16, Pubkey),
+    /// Slice not found
+    #[error("Slice not found: spool={0}, track={1:?}")]
+    SliceNotFound(u16, Pubkey),
 
     /// Spool not found
-    #[error("Spool not found: epoch={0}, spool={1}")]
-    SpoolNotFound(EpochNumber, u16),
+    #[error("Spool not found: spool={0}")]
+    SpoolNotFound(u16),
 
     /// Committee not found for epoch
     #[error("Committee not found for epoch {0}")]

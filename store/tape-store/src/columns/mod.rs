@@ -1,62 +1,60 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 12 column families:
+//! This module defines 11 column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
-//! - `slice_info`: Blob erasure coding metadata (Pubkey -> SliceInfo)
-//! - `tape_info`: Tape (storage allocation) metadata (Pubkey -> TapeInfo)
-//! - `track_info`: Track (blob) metadata (Pubkey -> TrackInfo)
+//! - `tape`: Tape metadata (Pubkey -> TapeInfo)
+//! - `track`: Track metadata (Pubkey -> TrackInfo)
+//! - `object_info`: Object metadata (Pubkey -> ObjectInfo)
 //!
 //! ## Sync Columns
 //! - `sync_cursor`: Last processed slot (UnitKey -> SlotNumber)
 //! - `gc`: GC progress tracking (String -> EpochNumber)
 //!
-//! ## Epoch-Namespaced Spool Columns
-//! - `spool_status`: Spool status per epoch (SpoolEpochKey -> SpoolStatus)
-//! - `sync_cursors`: Sync cursors per epoch (SpoolEpochKey -> SyncProgress)
-//! - `recovery_queue`: Pending recovery queue (PendingRecoveryKey -> ())
+//! ## Spool Columns (NOT epoch-namespaced)
+//! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
+//! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
+//! - `spool_sync_progress`: Sync progress (SpoolIndexKey -> Pubkey)
 //!
-//! ## Slice Data Columns (BlobDB)
-//! - `primary_slices`: Primary slice data (SliceKey -> PrimarySliceData)
-//! - `recovery_slices`: Recovery slice data (SliceKey -> RecoverySliceData)
+//! ## Slice Data Column (BlobDB)
+//! - `slice`: Slice data (SliceKey -> Vec<u8>)
 //!
 //! ## Committee Column
-//! - `committee`: Committee cache by epoch (EpochKey -> CommitteeCache)
+//! - `committee`: Committee by epoch (EpochKey -> Vec<NodeInfo>)
 
 pub mod committee;
-pub mod cursor;
 pub mod gc;
 pub mod meta;
-pub mod slice_info;
-pub mod slices;
+pub mod object_info;
+pub mod slice;
 pub mod spool;
-pub mod tape_info;
-pub mod track_info;
+pub mod sync_cursor;
+pub mod tape;
+pub mod track;
 
 // Re-export all column types
-pub use committee::Committee;
-pub use cursor::SyncCursor;
-pub use gc::Gc;
-pub use meta::Meta;
-pub use slice_info::SliceInfoCol;
-pub use slices::{PrimarySlices, RecoverySlices};
-pub use spool::{SpoolAssigned, SpoolPendingRecovery, SpoolSyncProgress};
-pub use tape_info::TapeInfoCol;
-pub use track_info::TrackInfoCol;
+pub use committee::CommitteeCol;
+pub use gc::GcCol;
+pub use meta::MetaCol;
+pub use object_info::ObjectInfoCol;
+pub use slice::SliceCol;
+pub use spool::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncProgressCol};
+pub use sync_cursor::SyncCursorCol;
+pub use tape::TapeCol;
+pub use track::TrackCol;
 
-/// List of all column family names in the store (12 total)
+/// List of all column family names in the store (11 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
-    "slice_info",
-    "tape_info",
-    "track_info",
+    "committee",
+    "tape",
+    "track",
+    "object_info",
     "sync_cursor",
     "gc",
     "spool_status",
-    "sync_cursors",
-    "recovery_queue",
-    "primary_slices",
-    "recovery_slices",
-    "committee",
+    "spool_pending_recovery",
+    "slice",
+    "spool_sync_progress",
 ];

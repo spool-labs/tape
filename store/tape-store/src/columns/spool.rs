@@ -1,50 +1,44 @@
-//! Spool column families for epoch-namespaced spool tracking
+//! Spool column families for spool tracking (NOT epoch-namespaced)
 //!
-//! These columns use epoch-first keys for crash-safe epoch transitions:
-//! - SpoolAssigned: (epoch, spool_id) -> SpoolStatus
-//! - SpoolSyncProgress: (epoch, spool_id) -> SyncProgress
-//! - SpoolPendingRecovery: (epoch, spool_id, slice_type, track) -> ()
+//! - SpoolStatusCol: spool_id -> SpoolStatus
+//! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
+//! - SpoolSyncProgressCol: spool_id -> Pubkey (last synced track)
 
-use crate::types::{PendingRecoveryKey, SpoolEpochKey, SpoolStatus, SyncProgress};
+use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolStatus};
 use store::Column;
 
-/// Epoch-namespaced spool assignment tracking
+/// Spool status tracking
 ///
-/// Key: SpoolEpochKey (10 bytes: epoch BE + spool_id BE)
+/// Key: SpoolIndexKey (2 bytes: spool_id BE)
 /// Value: SpoolStatus
-///
-/// Epoch-first ordering enables efficient cleanup of old epoch data.
-pub struct SpoolAssigned;
+pub struct SpoolStatusCol;
 
-impl Column for SpoolAssigned {
+impl Column for SpoolStatusCol {
     const CF_NAME: &'static str = "spool_status";
-    type Key = SpoolEpochKey;
+    type Key = SpoolIndexKey;
     type Value = SpoolStatus;
 }
 
-/// Epoch-namespaced sync progress tracking
+/// Pending recovery queue (presence-only)
 ///
-/// Key: SpoolEpochKey (10 bytes: epoch BE + spool_id BE)
-/// Value: SyncProgress (last synced track, slice type)
-pub struct SpoolSyncProgress;
+/// Key: SliceKey (34 bytes: spool_id BE + track_address)
+/// Value: () (presence indicates pending)
+pub struct SpoolPendingRecoveryCol;
 
-impl Column for SpoolSyncProgress {
-    const CF_NAME: &'static str = "sync_cursors";
-    type Key = SpoolEpochKey;
-    type Value = SyncProgress;
+impl Column for SpoolPendingRecoveryCol {
+    const CF_NAME: &'static str = "spool_pending_recovery";
+    type Key = SliceKey;
+    type Value = ();
 }
 
-/// Epoch-namespaced pending recovery queue
+/// Spool sync progress tracking
 ///
-/// Key: PendingRecoveryKey (43 bytes: epoch + spool_id + slice_type + track_address)
-/// Value: () (presence indicates pending)
-///
-/// Stores slices that need to be recovered. The value is empty since
-/// the key contains all necessary information.
-pub struct SpoolPendingRecovery;
+/// Key: SpoolIndexKey (2 bytes: spool_id BE)
+/// Value: Pubkey (last synced track address)
+pub struct SpoolSyncProgressCol;
 
-impl Column for SpoolPendingRecovery {
-    const CF_NAME: &'static str = "recovery_queue";
-    type Key = PendingRecoveryKey;
-    type Value = ();
+impl Column for SpoolSyncProgressCol {
+    const CF_NAME: &'static str = "spool_sync_progress";
+    type Key = SpoolIndexKey;
+    type Value = Pubkey;
 }

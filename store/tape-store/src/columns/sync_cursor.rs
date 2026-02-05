@@ -7,9 +7,9 @@ use store::Column;
 ///
 /// Key: UnitKey (0 bytes - singleton)
 /// Value: SlotNumber (last processed slot)
-pub struct SyncCursor;
+pub struct SyncCursorCol;
 
-impl Column for SyncCursor {
+impl Column for SyncCursorCol {
     const CF_NAME: &'static str = "sync_cursor";
     type Key = UnitKey;
     type Value = SlotNumber;

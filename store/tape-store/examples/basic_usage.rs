@@ -8,98 +8,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let store = TapeStore::open_primary(temp_dir.path())?;
 
-    // Store tracks with the new TrackInfo structure
+    // Store tracks
     let tape_address = Pubkey::new([0xAA; 32]);
     for i in 1..=5 {
         let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo::new(tape_address, EpochNumber(0));
-        store.put_track_info(track_address, info)?;
+        let info = TrackInfo {
+            tape_address,
+            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            original_size: 1024,
+            stripe_size: 1024,
+            stripe_count: 1,
+            encoding_type: 1,
+            commitment: vec![],
+        };
+        store.put_track(track_address, info)?;
         println!("Created track {}", i);
     }
 
     // Retrieve a track
-    let track1 = store.get_track_info(Pubkey::new([1; 32]))?;
-    println!("Track 1 tape address: {:?}", track1.map(|t| t.tape_address));
+    let track1 = store.get_track(Pubkey::new([1; 32]))?;
+    println!(
+        "Track 1 tape address: {:?}",
+        track1.map(|t| t.tape_address)
+    );
 
-    // Store primary and recovery slices with the new structure
+    // Store slices
     let track_address = Pubkey::new([1; 32]);
     for spool_id in 0..5u16 {
-        let primary = PrimarySliceData::new(vec![spool_id as u8; 1024], 0);
-        let recovery = RecoverySliceData::new(vec![spool_id as u8 + 100; 1024], 0);
-        store.put_both_slices(spool_id, track_address, primary, recovery)?;
+        store.put_slice(spool_id, track_address, vec![spool_id as u8; 1024])?;
     }
-    println!("Stored 5 primary+recovery slice pairs for track 1");
+    println!("Stored 5 slices for track 1");
 
     // Query slices by spool
-    let spool_slices: Vec<_> = store
-        .iter_primary_slices_by_spool(0)?
-        .map(|r| r.unwrap())
-        .collect();
-    println!("Spool 0 has {} primary slices", spool_slices.len());
+    let spool_slices = store.iter_slices_by_spool(0)?;
+    println!("Spool 0 has {} slices", spool_slices.len());
 
-    // Store epoch-namespaced spool state
-    let epoch = EpochNumber(100);
+    // Spool status (NOT epoch-namespaced)
     for spool_id in 0..3u16 {
-        store.set_spool_status(epoch, spool_id, SpoolStatus::Active)?;
+        store.set_spool_status(spool_id, SpoolStatus::Active)?;
     }
 
-    // Get assigned spools for this epoch
-    let assigned: Vec<_> = store
-        .iter_assigned_spools(epoch)?
-        .map(|r| r.unwrap())
-        .collect();
-    println!("Assigned spools in epoch 100: {:?}", assigned);
+    // Iterate all spools
+    let spools = store.iter_all_spools()?;
+    println!("Active spools: {:?}", spools);
 
-    // Store committee cache
+    // Store committee
     use bytemuck::Zeroable;
     use tape_core::bls::BlsPubkey;
+    use tape_core::types::network::NetworkAddress;
 
-    let member1 = CommitteeMemberInfo {
-        id: NodeId(1),
-        pubkey: Pubkey::new_unique(),
+    let member1 = NodeInfo {
+        node_address: Pubkey::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
-        network_address: "192.168.1.1:8080".to_string(),
+        tls_pubkey: Pubkey::new_unique(),
+        network_address: NetworkAddress::new_ipv4([192, 168, 1, 1], 8080),
+        spools: vec![0, 2],
     };
 
-    let member2 = CommitteeMemberInfo {
-        id: NodeId(2),
-        pubkey: Pubkey::new_unique(),
+    let member2 = NodeInfo {
+        node_address: Pubkey::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
-        network_address: "192.168.1.2:8080".to_string(),
+        tls_pubkey: Pubkey::new_unique(),
+        network_address: NetworkAddress::new_ipv4([192, 168, 1, 2], 8080),
+        spools: vec![1, 3],
     };
 
-    let committee = CommitteeCache {
-        epoch: EpochNumber(100),
-        members: vec![member1, member2],
-        spool_assignment: vec![0, 1, 0, 1],
-        my_member_index: Some(0),
-        my_spools: vec![0, 2],
-    };
-    store.put_committee(committee)?;
+    store.put_committee(EpochNumber(100), vec![member1, member2])?;
     println!("Stored committee for epoch 100");
 
     // Metadata via MetaOps
     store.set_node_status(NodeStatus::Active)?;
-    store.set_current_epoch(epoch)?;
+    store.set_current_epoch(EpochNumber(100))?;
     let status = store.get_node_status()?;
     println!("Node status: {:?}", status);
 
-    // Slice info (erasure coding metadata)
-    let slice_info = SliceInfo {
-        encoding_type: EncodingType::Rotated,
-        unencoded_length: 32 * 1024 * 1024,
-        primary: vec![Hash::default(); 1024],
-        recovery: vec![Hash::default(); 1024],
+    // Tape info
+    let tape_info = TapeInfo {
+        end_epoch: EpochNumber(200),
     };
-    store.put_slice_info(track_address, slice_info)?;
-    println!("Stored slice info with 1024+1024 hashes");
+    store.put_tape(tape_address, tape_info)?;
+    println!("Stored tape info");
+
+    // Object info
+    let obj_address = Pubkey::new_unique();
+    store.put_object_info(
+        obj_address,
+        ObjectInfo::Valid {
+            is_stored: true,
+            track_address,
+            registered_epoch: EpochNumber(5),
+            certified_epoch: Some(EpochNumber(6)),
+            slot: SlotNumber(50),
+        },
+    )?;
+    println!("Stored object info");
 
     // Verify storage
     println!("\nFinal state:");
     println!("  Node status: {:?}", store.get_node_status()?);
     println!("  Current epoch: {:?}", store.get_current_epoch()?);
-    println!("  Has slice info for track 1: {}", store.get_slice_info(track_address)?.is_some());
-    println!("  Committee for epoch 100: {}", store.get_committee(EpochNumber(100))?.is_some());
+    println!(
+        "  Has tape info: {}",
+        store.get_tape(tape_address)?.is_some()
+    );
+    println!(
+        "  Committee for epoch 100: {}",
+        store.get_committee(EpochNumber(100))?.is_some()
+    );
 
     Ok(())
 }

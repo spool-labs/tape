@@ -1,16 +1,16 @@
-//! Committee column family for epoch-based committee caching
+//! Committee column family for epoch-based committee storage
 
-use crate::types::{CommitteeCache, EpochKey};
+use crate::types::{EpochKey, NodeInfo};
 use store::Column;
 
-/// Committee cache indexed by epoch
+/// Committee indexed by epoch
 ///
 /// Key: EpochKey (8 bytes: epoch BE)
-/// Value: CommitteeCache (members, spool assignments, local node info)
-pub struct Committee;
+/// Value: Vec<NodeInfo> (committee members)
+pub struct CommitteeCol;
 
-impl Column for Committee {
+impl Column for CommitteeCol {
     const CF_NAME: &'static str = "committee";
     type Key = EpochKey;
-    type Value = CommitteeCache;
+    type Value = Vec<NodeInfo>;
 }

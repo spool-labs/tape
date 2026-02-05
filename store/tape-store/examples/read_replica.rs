@@ -5,11 +5,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tape_store::{
-    ops::*,
-    types::*,
-    TapeStore,
-};
+use tape_store::{ops::*, types::*, TapeStore};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
@@ -21,8 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tape_address = Pubkey::new([0xAA; 32]);
     for i in 1..=3 {
         let track_address = Pubkey::new([i as u8; 32]);
-        let info = TrackInfo::new(tape_address, EpochNumber(0));
-        primary.put_track_info(track_address, info)?;
+        let info = TrackInfo {
+            tape_address,
+            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            original_size: 1024,
+            stripe_size: 1024,
+            stripe_count: 1,
+            encoding_type: 1,
+            commitment: vec![],
+        };
+        primary.put_track(track_address, info)?;
     }
 
     // Set some metadata
@@ -33,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read-only replica (static snapshot)
     drop(primary);
     let read_only = TapeStore::open_read_only(&primary_path)?;
-    let track1 = read_only.get_track_info(Pubkey::new([1; 32]))?;
+    let track1 = read_only.get_track(Pubkey::new([1; 32]))?;
     println!("Read-only sees track 1: {}", track1.is_some());
     drop(read_only);
 
@@ -44,14 +48,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write to primary, secondary doesn't see it yet
     let new_track = Pubkey::new([10; 32]);
-    primary.put_track_info(new_track, TrackInfo::new(tape_address, EpochNumber(0)))?;
+    let new_info = TrackInfo {
+        tape_address,
+        spool_allocation: SpoolAllocation::SpoolGroup(3),
+        original_size: 1024,
+        stripe_size: 1024,
+        stripe_count: 1,
+        encoding_type: 1,
+        commitment: vec![],
+    };
+    primary.put_track(new_track, new_info)?;
 
-    let before = secondary.get_track_info(new_track)?;
+    let before = secondary.get_track(new_track)?;
     println!("Before sync: {}", before.is_some());
 
     secondary.catch_up_with_primary()?;
 
-    let after = secondary.get_track_info(new_track)?;
+    let after = secondary.get_track(new_track)?;
     println!("After sync: {}", after.is_some());
 
     // Background sync loop
@@ -71,19 +84,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 11..=13u8 {
         thread::sleep(Duration::from_millis(500));
         let track_address = Pubkey::new([i; 32]);
-        primary.put_track_info(track_address, TrackInfo::new(tape_address, EpochNumber(0)))?;
+        let info = TrackInfo {
+            tape_address,
+            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            original_size: 1024,
+            stripe_size: 1024,
+            stripe_count: 1,
+            encoding_type: 1,
+            commitment: vec![],
+        };
+        primary.put_track(track_address, info)?;
     }
 
     thread::sleep(Duration::from_millis(1500));
 
     // Verify sync
     for i in 11..=13u8 {
-        let track = secondary.get_track_info(Pubkey::new([i; 32]))?;
+        let track = secondary.get_track(Pubkey::new([i; 32]))?;
         println!("Track {}: {}", i, track.is_some());
     }
 
     // Operation traits work on secondary
-    let found = secondary.get_track_info(Pubkey::new([1; 32]))?;
+    let found = secondary.get_track(Pubkey::new([1; 32]))?;
     println!("Found track 1: {:?}", found.is_some());
 
     let status = secondary.get_node_status()?;
