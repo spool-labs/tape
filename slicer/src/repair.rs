@@ -75,12 +75,12 @@ impl ClayCoder {
     pub fn repair(
         &self,
         lost: SliceIndex,
-        helpers: &HashMap<SliceIndex, Vec<u8>>,
+        helpers: HashMap<SliceIndex, Vec<u8>>,
         chunk_size: usize,
     ) -> Result<Vec<u8>, RepairError> {
         let helper_data: HashMap<usize, Vec<u8>> = helpers
-            .iter()
-            .map(|(idx, data)| (**idx, data.clone()))
+            .into_iter()
+            .map(|(idx, data)| (*idx, data))
             .collect();
         self.clay
             .repair(*lost, &helper_data, chunk_size)
@@ -94,7 +94,11 @@ impl ClayCoder {
 /// extracts only the sub-chunks specified by the plan, and returns
 /// the concatenated bytes (stripe order, then sub-chunk order within
 /// each stripe). The result is what gets sent over the network.
-pub fn extract_repair_data(slice: &[u8], plan: &RepairPlan, helper: SliceIndex) -> Vec<u8> {
+pub fn extract_repair_data(
+    slice: &[u8],
+    plan: &RepairPlan,
+    helper: SliceIndex,
+) -> Result<Vec<u8>, RepairError> {
     let chunk_size = plan.chunk_size as usize;
     let sub_chunk_size = plan.sub_chunk_size as usize;
 
@@ -102,20 +106,27 @@ pub fn extract_repair_data(slice: &[u8], plan: &RepairPlan, helper: SliceIndex) 
 
     for stripe in &plan.stripes {
         let chunk_offset = stripe.stripe as usize * chunk_size;
+        let chunk_end = chunk_offset + chunk_size;
 
         for hp in &stripe.helpers {
             if hp.slice != helper {
                 continue;
             }
-            let chunk = &slice[chunk_offset..chunk_offset + chunk_size];
+            let chunk = slice.get(chunk_offset..chunk_end).ok_or_else(|| {
+                RepairError::InvalidLayout("slice too short for chunk".into())
+            })?;
             for &sc_idx in &hp.sub_chunks {
                 let start = sc_idx as usize * sub_chunk_size;
-                out.extend_from_slice(&chunk[start..start + sub_chunk_size]);
+                let end = start + sub_chunk_size;
+                let sc = chunk.get(start..end).ok_or_else(|| {
+                    RepairError::InvalidLayout("sub-chunk out of bounds".into())
+                })?;
+                out.extend_from_slice(sc);
             }
         }
     }
 
-    out
+    Ok(out)
 }
 
 impl Slicer<ClayCoder> {
@@ -150,7 +161,12 @@ impl Slicer<ClayCoder> {
 
         let n = self.n();
         let alpha = self.coder.alpha();
-        let sub_chunk_size = (chunk_size as u64) / (alpha as u64);
+        if chunk_size % alpha != 0 {
+            return Err(RepairError::InvalidLayout(
+                format!("chunk_size ({chunk_size}) not divisible by alpha ({alpha})"),
+            ));
+        }
+        let sub_chunk_size = (chunk_size / alpha) as u64;
 
         let mut stripes = Vec::with_capacity(num_stripes);
 
@@ -222,13 +238,16 @@ impl Slicer<ClayCoder> {
 
         let partial: HashMap<SliceIndex, Vec<u8>> = helpers
             .iter()
-            .map(|(idx, slice)| (*idx, extract_repair_data(slice, &plan, *idx)))
-            .collect();
+            .map(|(idx, slice)| {
+                extract_repair_data(slice, &plan, *idx).map(|data| (*idx, data))
+            })
+            .collect::<Result<_, RepairError>>()?;
 
+        let meta_start = reference.len().checked_sub(SliceMetadata::SIZE).ok_or_else(|| {
+            RepairError::InvalidLayout("slice too short for metadata".into())
+        })?;
         let metadata_bytes: &[u8; SliceMetadata::SIZE] =
-            reference[reference.len() - SliceMetadata::SIZE..]
-                .try_into()
-                .unwrap();
+            reference[meta_start..].try_into().unwrap();
 
         self.repair(&plan, &partial, metadata_bytes)
     }
@@ -262,11 +281,10 @@ impl Slicer<ClayCoder> {
                 let offset = helper_offsets.entry(hp.slice).or_insert(0);
                 let bytes_this_stripe = hp.sub_chunks.len() * sub_chunk_size;
 
-                if *offset + bytes_this_stripe > buf.len() {
-                    return Err(RepairError::MissingHelper(hp.slice));
-                }
-
-                let partial = buf[*offset..*offset + bytes_this_stripe].to_vec();
+                let partial = buf
+                    .get(*offset..*offset + bytes_this_stripe)
+                    .ok_or(RepairError::MissingHelper(hp.slice))?
+                    .to_vec();
                 *offset += bytes_this_stripe;
 
                 stripe_helpers.insert(hp.shard, partial);
@@ -274,7 +292,7 @@ impl Slicer<ClayCoder> {
 
             let recovered = self.coder.repair(
                 stripe_plan.lost_shard,
-                &stripe_helpers,
+                stripe_helpers,
                 chunk_size,
             )?;
             repaired_data.extend_from_slice(&recovered);
@@ -342,7 +360,7 @@ mod tests {
                 helpers.insert(*helper_si, partial);
             }
 
-            let recovered = coder.repair(lost, &helpers, chunk_size).unwrap();
+            let recovered = coder.repair(lost, helpers, chunk_size).unwrap();
             assert_eq!(recovered, chunks[lost_idx], "repair failed for shard {lost_idx}");
         }
     }
