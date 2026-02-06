@@ -11,7 +11,7 @@ use wincode::{SchemaRead, SchemaWrite};
 /// Each blob is encoded into SPOOL_GROUP_SIZE slices. The slice at index N
 /// for any blob is stored in spool N on the network.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, SchemaWrite)]
 pub struct SliceIndex(usize);
 
 impl SliceIndex {

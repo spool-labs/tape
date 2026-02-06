@@ -5,14 +5,16 @@
 //! - Metadata suffix (blob_len, stripe_size, profile for decoding)
 //! - Optional rotation mapping for fair load distribution
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use tape_core::encoding::EncodingProfile;
 
 use crate::adaptive::{pick_stripe_size, DEFAULT_STRIPE_SIZE};
 use crate::clay::ClayCoder;
-use crate::errors::{DecodeError, EncodeError};
+use crate::errors::{DecodeError, EncodeError, RepairError};
 use crate::metadata::SliceMetadata;
+use crate::repair::{HelperPlan, RepairPlan, StripeRepair};
+use crate::slice_index::SliceIndex;
 use crate::ErasureCoder;
 
 /// Rotation step per stripe (coprime with n=20 for full coverage).
@@ -42,7 +44,6 @@ fn shard_to_slice(strategy: MappingStrategy, n: usize, stripe_idx: usize, shard_
 
 /// Inverse mapping: (stripe, slice) -> shard
 #[inline]
-#[allow(dead_code)]
 fn slice_to_shard(strategy: MappingStrategy, n: usize, stripe_idx: usize, slice_idx: usize) -> usize {
     match strategy {
         MappingStrategy::Identity => slice_idx,
@@ -115,11 +116,11 @@ fn validate_layout(
 /// # Examples
 /// ```ignore
 /// // Production: striped + rotated Clay codes
-/// let mut slicer = Slicer::with_rotation(ClayCoder::new(10, 10, 19));
+/// let mut slicer = Slicer::with_rotation(ClayCoder::new(20, 10, 19));
 /// let chunks = slicer.encode(&data)?;
 ///
 /// // Striped only (no rotation)
-/// let mut slicer = Slicer::new(ClayCoder::new(10, 10, 19));
+/// let mut slicer = Slicer::new(ClayCoder::new(20, 10, 19));
 /// ```
 pub struct Slicer<C: ErasureCoder> {
     coder: C,
@@ -199,7 +200,7 @@ impl Slicer<ClayCoder> {
     ///
     /// Uses default Clay parameters (k=10, m=10, d=19).
     pub fn clay_default() -> Self {
-        Self::with_rotation(ClayCoder::new(10, 10, 19))
+        Self::with_rotation(ClayCoder::new(20, 10, 19))
     }
 
     /// Reconfigure the underlying Clay coder for a different profile.
@@ -208,6 +209,198 @@ impl Slicer<ClayCoder> {
             self.profile = profile;
             self.coder = ClayCoder::from_params(profile.clay_params());
         }
+    }
+
+    /// Compute a repair plan for a single lost slice.
+    ///
+    /// `reference` is any available helper slice (used to extract metadata and chunk size).
+    /// Returns a plan describing which sub-chunks to fetch from which helpers.
+    pub fn repair_plan(
+        &self,
+        lost: SliceIndex,
+        available: &[SliceIndex],
+        reference: &[u8],
+    ) -> Result<RepairPlan, RepairError> {
+        let metadata = SliceMetadata::from_slice(reference)
+            .map_err(|e| RepairError::InvalidLayout(e.to_string()))?;
+
+        let blob_len = metadata.blob_len();
+        let stripe_size = metadata.stripe_size();
+        let num_stripes = if blob_len == 0 {
+            1
+        } else {
+            (blob_len + stripe_size - 1) / stripe_size
+        };
+
+        let total_data_len = reference.len().saturating_sub(SliceMetadata::SIZE);
+        if total_data_len == 0 || total_data_len % num_stripes != 0 {
+            return Err(RepairError::InvalidLayout("inconsistent slice layout".into()));
+        }
+        let chunk_size = total_data_len / num_stripes;
+
+        let n = self.n();
+        let alpha = self.coder.alpha();
+        let sub_chunk_size = (chunk_size as u64) / (alpha as u64);
+
+        let mut stripes = Vec::with_capacity(num_stripes);
+
+        for s in 0..num_stripes {
+            let lost_shard_raw = slice_to_shard(self.strategy, n, s, *lost);
+            let lost_shard = SliceIndex::new(lost_shard_raw)
+                .ok_or(RepairError::InvalidSlice)?;
+
+            // Map available slices to their shard indices for this stripe
+            let available_shards: Vec<SliceIndex> = available
+                .iter()
+                .filter_map(|slice| {
+                    let shard = slice_to_shard(self.strategy, n, s, **slice);
+                    SliceIndex::new(shard)
+                })
+                .collect();
+
+            let helper_plan = self.coder.plan_repair(lost_shard, &available_shards)?;
+
+            let helpers: Vec<HelperPlan> = helper_plan
+                .into_iter()
+                .map(|(helper_shard, sub_chunks)| {
+                    let helper_slice_raw = shard_to_slice(self.strategy, n, s, *helper_shard);
+                    let helper_slice = SliceIndex::new(helper_slice_raw)
+                        .ok_or(RepairError::InvalidSlice)?;
+                    Ok(HelperPlan {
+                        slice: helper_slice,
+                        shard: helper_shard,
+                        sub_chunks,
+                    })
+                })
+                .collect::<Result<Vec<_>, RepairError>>()?;
+
+            stripes.push(StripeRepair {
+                stripe: s as u32,
+                lost_shard,
+                helpers,
+            });
+        }
+
+        Ok(RepairPlan {
+            lost,
+            num_stripes: num_stripes as u32,
+            chunk_size: chunk_size as u64,
+            sub_chunk_size,
+            stripes,
+        })
+    }
+
+    /// Repair a single lost slice from full helper slices.
+    ///
+    /// Self-contained convenience: computes repair plan, extracts sub-chunks
+    /// from full slices, and returns the complete repaired slice.
+    pub fn repair_full(
+        &self,
+        lost: SliceIndex,
+        helpers: &[(SliceIndex, &[u8])],
+    ) -> Result<Vec<u8>, RepairError> {
+        if helpers.is_empty() {
+            return Err(RepairError::NotEnoughHelpers { needed: 1, available: 0 });
+        }
+
+        let available: Vec<SliceIndex> = helpers.iter().map(|(idx, _)| *idx).collect();
+        let reference = helpers[0].1;
+        let plan = self.repair_plan(lost, &available, reference)?;
+
+        let helper_map: HashMap<SliceIndex, &[u8]> = helpers
+            .iter()
+            .map(|(idx, data)| (*idx, *data))
+            .collect();
+
+        let chunk_size = plan.chunk_size as usize;
+        let alpha = self.coder.alpha();
+        let sub_chunk_size = chunk_size / alpha;
+        let num_stripes = plan.num_stripes as usize;
+
+        let mut repaired_data = Vec::with_capacity(num_stripes * chunk_size);
+
+        for stripe_plan in &plan.stripes {
+            let s = stripe_plan.stripe as usize;
+            let chunk_offset = s * chunk_size;
+
+            // Build partial helper data for this stripe
+            let mut stripe_helpers: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
+
+            for hp in &stripe_plan.helpers {
+                let full_slice = helper_map.get(&hp.slice)
+                    .ok_or(RepairError::MissingHelper(hp.slice))?;
+                let chunk = &full_slice[chunk_offset..chunk_offset + chunk_size];
+
+                let mut partial = Vec::with_capacity(hp.sub_chunks.len() * sub_chunk_size);
+                for &sc_idx in &hp.sub_chunks {
+                    let start = sc_idx as usize * sub_chunk_size;
+                    let end = start + sub_chunk_size;
+                    partial.extend_from_slice(&chunk[start..end]);
+                }
+                stripe_helpers.insert(hp.shard, partial);
+            }
+
+            let recovered = self.coder.repair(stripe_plan.lost_shard, &stripe_helpers, chunk_size)?;
+            repaired_data.extend_from_slice(&recovered);
+        }
+
+        // Append metadata from any helper
+        let meta_bytes = &reference[reference.len() - SliceMetadata::SIZE..];
+        repaired_data.extend_from_slice(meta_bytes);
+
+        Ok(repaired_data)
+    }
+
+    /// Bandwidth-optimal repair from partial helper data.
+    ///
+    /// Takes a precomputed `RepairPlan` and partial data collected per the plan.
+    /// Each helper's `Vec<u8>` contains the concatenated sub-chunks for all stripes
+    /// (in stripe order, then sub-chunk-index order within each stripe).
+    pub fn repair(
+        &self,
+        plan: &RepairPlan,
+        helpers: &HashMap<SliceIndex, Vec<u8>>,
+        metadata_bytes: &[u8; SliceMetadata::SIZE],
+    ) -> Result<Vec<u8>, RepairError> {
+        let chunk_size = plan.chunk_size as usize;
+        let sub_chunk_size = plan.sub_chunk_size as usize;
+        let num_stripes = plan.num_stripes as usize;
+
+        // Precompute how many sub-chunk bytes each helper contributes per stripe
+        // so we can index into the concatenated buffer.
+        let mut repaired_data = Vec::with_capacity(num_stripes * chunk_size);
+
+        // Build per-slice cumulative offsets: for each stripe, how far into
+        // that helper's buffer the sub-chunks for this stripe start.
+        // We track offsets per helper slice across stripes.
+        let mut helper_offsets: HashMap<SliceIndex, usize> = HashMap::new();
+
+        for stripe_plan in &plan.stripes {
+            let mut stripe_helpers: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
+
+            for hp in &stripe_plan.helpers {
+                let buf = helpers.get(&hp.slice)
+                    .ok_or(RepairError::MissingHelper(hp.slice))?;
+
+                let offset = helper_offsets.entry(hp.slice).or_insert(0);
+                let bytes_this_stripe = hp.sub_chunks.len() * sub_chunk_size;
+
+                if *offset + bytes_this_stripe > buf.len() {
+                    return Err(RepairError::MissingHelper(hp.slice));
+                }
+
+                let partial = buf[*offset..*offset + bytes_this_stripe].to_vec();
+                *offset += bytes_this_stripe;
+
+                stripe_helpers.insert(hp.shard, partial);
+            }
+
+            let recovered = self.coder.repair(stripe_plan.lost_shard, &stripe_helpers, chunk_size)?;
+            repaired_data.extend_from_slice(&recovered);
+        }
+
+        repaired_data.extend_from_slice(metadata_bytes);
+        Ok(repaired_data)
     }
 }
 
@@ -455,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_small_identity() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = mk(500);
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -468,7 +661,7 @@ mod tests {
     #[test]
     fn test_small_rotated() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(10, 10, 19),
+            ClayCoder::new(20, 10, 19),
             1024,
             true,
             EncodingProfile::clay_default(),
@@ -484,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_multi_stripe() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -495,7 +688,7 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = Vec::new();
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -507,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_data_only() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let k = slicer.k();
         let payload = mk(3000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -520,7 +713,7 @@ mod tests {
     #[test]
     fn test_missing_slices() {
         let mut slicer = Slicer::with_profile(
-            ClayCoder::new(10, 10, 19),
+            ClayCoder::new(20, 10, 19),
             1024,
             true,
             EncodingProfile::clay_default(),
@@ -539,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_insufficient() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let k = slicer.k();
         let payload = mk(1000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -551,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_uniform_slices() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
         let first_len = chunks[0].len();
@@ -576,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_accessors() {
-        let slicer = Slicer::new(ClayCoder::new(10, 10, 19));
+        let slicer = Slicer::new(ClayCoder::new(20, 10, 19));
         assert_eq!(slicer.k(), 10);
         assert_eq!(slicer.m(), 10);
         assert_eq!(slicer.n(), 20);
@@ -584,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_metadata() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = mk(2000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -656,7 +849,7 @@ mod tests {
 
     #[test]
     fn test_layout_valid() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         // pick_stripe_size selects 100KB for small blobs, so use 250KB to get 3 stripes
         let payload = mk(250_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -671,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_layout_mismatch() {
-        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(10, 10, 19), 1024);
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 1024);
         let payload = mk(2000);
         let mut chunks = slicer.encode(&payload).unwrap();
 
@@ -683,5 +876,167 @@ mod tests {
 
         let result = validate_layout(&refs, &meta);
         assert!(matches!(result, Err(DecodeError::InvalidLayout)));
+    }
+
+    // -- Repair tests --
+
+    fn si(i: usize) -> SliceIndex {
+        SliceIndex::new(i).unwrap()
+    }
+
+    fn helper_refs(chunks: &[Vec<u8>], lost: usize) -> Vec<(SliceIndex, &[u8])> {
+        chunks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != lost)
+            .map(|(i, c)| (si(i), c.as_slice()))
+            .collect()
+    }
+
+    #[test]
+    fn repair_full_single() {
+        // 1-stripe blob, identity mapping, repair each of 20 slices
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let payload = mk(10_000);
+        let chunks = slicer.encode(&payload).unwrap();
+
+        for lost in 0..N {
+            let helpers = helper_refs(&chunks, lost);
+            let repaired = slicer.repair_full(si(lost), &helpers).unwrap();
+            assert_eq!(repaired, chunks[lost], "repair failed for slice {lost}");
+        }
+    }
+
+    #[test]
+    fn repair_full_rotated() {
+        // Multi-stripe blob with rotation, repair each of 20 slices
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::new(20, 10, 19),
+            2000,
+            true,
+            EncodingProfile::clay_default(),
+        );
+        let payload = mk(10_000); // 5 stripes of 2000
+        let chunks = slicer.encode(&payload).unwrap();
+
+        for lost in 0..N {
+            let helpers = helper_refs(&chunks, lost);
+            let repaired = slicer.repair_full(si(lost), &helpers).unwrap();
+            assert_eq!(repaired, chunks[lost], "repair failed for slice {lost}");
+        }
+    }
+
+    #[test]
+    fn repair_plan_helpers() {
+        // Verify d=19 helpers per stripe
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let payload = mk(10_000);
+        let chunks = slicer.encode(&payload).unwrap();
+
+        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
+
+        for stripe in &plan.stripes {
+            assert_eq!(stripe.helpers.len(), 19, "expected d=19 helpers per stripe");
+        }
+    }
+
+    #[test]
+    fn repair_plan_bandwidth() {
+        // Total plan bytes should be < 20% of full-decode cost
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let payload = mk(50_000);
+        let chunks = slicer.encode(&payload).unwrap();
+
+        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
+
+        // Bandwidth for repair: d helpers × β sub-chunks × sub_chunk_size × num_stripes
+        let repair_bytes: u64 = plan.stripes.iter().map(|s| {
+            s.helpers.iter().map(|h| {
+                h.sub_chunks.len() as u64 * plan.sub_chunk_size
+            }).sum::<u64>()
+        }).sum();
+
+        // Full decode cost: k full chunks (what you'd need to download for decode)
+        let k = slicer.k() as u64;
+        let full_decode_bytes = k * chunks[0].len() as u64;
+
+        assert!(
+            repair_bytes < full_decode_bytes / 5,
+            "repair bytes ({repair_bytes}) should be < 20% of full decode ({full_decode_bytes})"
+        );
+    }
+
+    #[test]
+    fn repair_plan_rotation() {
+        // lost_shard should differ across stripes with rotation
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::new(20, 10, 19),
+            100_000,
+            true,
+            EncodingProfile::clay_default(),
+        );
+        let payload = mk(300_000); // 3 stripes of 100KB
+        let chunks = slicer.encode(&payload).unwrap();
+
+        let available: Vec<SliceIndex> = (1..N).map(|i| si(i)).collect();
+        let plan = slicer.repair_plan(si(0), &available, &chunks[1]).unwrap();
+
+        assert!(plan.stripes.len() > 1, "need multiple stripes for this test");
+
+        let shards: Vec<usize> = plan.stripes.iter().map(|s| *s.lost_shard).collect();
+        // With rotation, the lost shard index should vary across stripes
+        let unique: HashSet<usize> = shards.iter().copied().collect();
+        assert!(
+            unique.len() > 1,
+            "lost_shard should differ across stripes with rotation, got {:?}",
+            shards,
+        );
+    }
+
+    #[test]
+    fn repair_exactly_d() {
+        // Provide only d=19 helpers (not all 19 others — same thing for n=20)
+        // but test the case where we exclude one non-lost slice
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let d = slicer.coder.d(); // 19
+        let payload = mk(10_000);
+        let chunks = slicer.encode(&payload).unwrap();
+
+        // Lost slice 0, provide exactly d=19 helpers (slices 1..20)
+        let helpers: Vec<(SliceIndex, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take(d)
+            .map(|(i, c)| (si(i), c.as_slice()))
+            .collect();
+        assert_eq!(helpers.len(), d);
+
+        let repaired = slicer.repair_full(si(0), &helpers).unwrap();
+        assert_eq!(repaired, chunks[0]);
+    }
+
+    #[test]
+    fn repair_insufficient() {
+        // Fewer than d helpers should fail
+        let mut slicer = Slicer::with_stripe_size(ClayCoder::new(20, 10, 19), 100_000);
+        let d = slicer.coder.d(); // 19
+        let payload = mk(10_000);
+        let chunks = slicer.encode(&payload).unwrap();
+
+        // Provide only d-1 helpers
+        let helpers: Vec<(SliceIndex, &[u8])> = chunks
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take(d - 1)
+            .map(|(i, c)| (si(i), c.as_slice()))
+            .collect();
+        assert_eq!(helpers.len(), d - 1);
+
+        let result = slicer.repair_full(si(0), &helpers);
+        assert!(result.is_err(), "should fail with fewer than d helpers");
     }
 }

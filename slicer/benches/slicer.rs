@@ -14,7 +14,7 @@ fn clay_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let mut coder = ClayCoder::new(10, 10, 19);
+            let mut coder = ClayCoder::new(20, 10, 19);
             b.iter(|| {
                 black_box(coder.encode(black_box(&data)).unwrap())
             })
@@ -29,7 +29,7 @@ fn clay_decode(c: &mut Criterion) {
 
     for size in [10_000, 100_000, 1_000_000] {
         let data = make_data(size);
-        let mut coder = ClayCoder::new(10, 10, 19);
+        let mut coder = ClayCoder::new(20, 10, 19);
         let chunks = coder.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()

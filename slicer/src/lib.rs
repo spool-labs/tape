@@ -7,12 +7,13 @@ pub mod merkle_helpers;
 pub mod metadata;
 pub mod reed_solomon;
 pub mod clay;
+pub mod repair;
 pub mod slice_index;
 pub mod slicer;
 
 pub use merkle_helpers::MERKLE_HEIGHT;
 pub use tape_core::erasure::SPOOL_GROUP_SIZE;
-pub use errors::{EncodeError, DecodeError};
+pub use errors::{EncodeError, DecodeError, RepairError};
 pub use coder::ErasureCoder;
 pub use clay::ClayCoder;
 pub use reed_solomon::ReedSolomonCoder;
@@ -24,4 +25,5 @@ pub use adaptive::{STRIPE_SIZES, DEFAULT_STRIPE_SIZE, pick_stripe_size, num_stri
 pub use tape_core::encoding::{EncodingProfile, EncodingType, ClayParams, RSParams};
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
+pub use repair::{RepairPlan, StripeRepair, HelperPlan};
 pub use reed_solomon::MAX_SLICE_BYTES;
