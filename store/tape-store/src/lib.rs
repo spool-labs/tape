@@ -137,6 +137,7 @@ mod tests {
             encoding_type: 2, // Clay
             encoding_params: 0,
             commitment: vec![],
+            commitment_hash: Hash::default(),
         };
 
         store.put_track(address, info.clone()).unwrap();
@@ -319,6 +320,7 @@ mod tests {
                 encoding_type: 1, // Basic
                 encoding_params: 0,
                 commitment: vec![],
+                commitment_hash: Hash::default(),
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();
@@ -358,6 +360,7 @@ mod tests {
                 encoding_type: 1, // Basic
                 encoding_params: 0,
                 commitment: vec![],
+                commitment_hash: Hash::default(),
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();

@@ -1,5 +1,6 @@
 //! Integration tests for TapeStore with RocksDB backend
 
+use tape_crypto::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
 
@@ -20,6 +21,7 @@ fn open_primary() {
         encoding_type: 1,
         encoding_params: 0,
         commitment: vec![],
+        commitment_hash: Hash::default(),
     };
 
     store.put_track(track_address, info.clone()).unwrap();
@@ -47,6 +49,7 @@ fn open_primary_persistence() {
             encoding_type: 1,
             encoding_params: 0,
             commitment: vec![],
+            commitment_hash: Hash::default(),
         };
         store.put_track(track_address, info).unwrap();
     }
@@ -84,6 +87,7 @@ fn all_column_families() {
         encoding_type: 2, // Clay
         encoding_params: 0,
         commitment: vec![],
+        commitment_hash: Hash::default(),
     };
     store.put_track(track_address, track_info).unwrap();
 
@@ -235,6 +239,7 @@ fn track_operations() {
         encoding_type: 1,
         encoding_params: 0,
         commitment: vec![],
+        commitment_hash: Hash::default(),
     };
     store.put_track(track, info.clone()).unwrap();
 

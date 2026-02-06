@@ -46,6 +46,7 @@ mod tests {
     use super::*;
     use crate::types::SpoolAllocation;
     use store_memory::MemoryStore;
+    use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -61,6 +62,7 @@ mod tests {
             encoding_type: 2, // Clay
             encoding_params: 0,
             commitment: vec![],
+            commitment_hash: Hash::default(),
         }
     }
 

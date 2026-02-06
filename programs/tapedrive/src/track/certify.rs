@@ -93,6 +93,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let certify_message = CertifyMessage::new(
         current_epoch(epoch),
         track_address.to_bytes(),
+        track.data.commitment_hash.0,
     );
     let message = certify_message.to_bytes();
 
@@ -198,7 +199,7 @@ mod tests {
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
         // Build certification message with domain separation and epoch binding
-        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
         let message = certify_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()

@@ -35,6 +35,8 @@ pub struct TrackInfo {
     pub encoding_params: u64,
     /// Commitment hashes (empty = no commitments, non-empty = all hashes)
     pub commitment: Vec<Hash>,
+    /// Commitment hash (merkle root) — same as on-chain TrackData.commitment_hash
+    pub commitment_hash: Hash,
 }
 
 impl TrackInfo {
@@ -111,6 +113,7 @@ mod tests {
             encoding_type: 2, // Clay
             encoding_params: 0x130A14, // n=20, k=10, d=19 packed
             commitment: vec![Hash::default(); 10],
+            commitment_hash: Hash::default(),
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -129,6 +132,7 @@ mod tests {
             encoding_type: 1, // Basic
             encoding_params: 0,
             commitment: vec![],
+            commitment_hash: Hash::default(),
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -149,6 +153,7 @@ mod tests {
             encoding_type: 0,
             encoding_params: 0,
             commitment: vec![],
+            commitment_hash: Hash::default(),
         };
 
         // Set profile

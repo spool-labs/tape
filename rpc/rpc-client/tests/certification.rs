@@ -137,7 +137,7 @@ async fn test_submit_certificate() {
 
     // Build signature using our mock keys - this will fail verification because
     // the on-chain committee has different BLS pubkeys than our generated keys
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -228,7 +228,7 @@ async fn test_certificate_requires_committee_member() {
         .collect();
 
     // Sign with non-committee keys
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = non_committee_keys
@@ -350,7 +350,7 @@ async fn test_certificate_signature_verification() {
     println!("Wrong message correctly rejected");
 
     // Test 2: Tamper with a valid signature
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -432,7 +432,7 @@ async fn test_certificate_epoch_binding() {
 
     // Sign with a WRONG epoch (epoch - 1, simulating an old signature)
     let wrong_epoch = EpochNumber(epoch.id.as_u64().saturating_sub(1));
-    let certify_message = CertifyMessage::new(wrong_epoch, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(wrong_epoch, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -474,7 +474,7 @@ async fn test_certificate_epoch_binding() {
 
     // Also test with a future epoch
     let future_epoch = EpochNumber(epoch.id.as_u64() + 100);
-    let certify_message = CertifyMessage::new(future_epoch, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(future_epoch, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -552,7 +552,7 @@ async fn test_aggregate_certificates() {
         .collect();
 
     // Create the correct message
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes());
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
     let message = certify_message.to_bytes();
 
     // Test 1: Insufficient signatures (less than 2f+1)
