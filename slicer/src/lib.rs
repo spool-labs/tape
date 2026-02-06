@@ -18,7 +18,7 @@ pub use coder::ErasureCoder;
 pub use clay::ClayCoder;
 pub use reed_solomon::ReedSolomonCoder;
 pub use metadata::SliceMetadata;
-pub use slicer::{Slicer, MappingStrategy, ROTATION_STEP};
+pub use slicer::{Slicer, MappingStrategy, ROTATION_STEP, shard_to_slice, slice_to_shard};
 pub use adaptive::{STRIPE_SIZES, DEFAULT_STRIPE_SIZE, pick_stripe_size, num_stripes};
 
 // Re-export encoding types from core for convenience
