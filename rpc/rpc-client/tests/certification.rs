@@ -27,10 +27,11 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, StorageUnits};
 
 /// Helper to create a tape and track for certification tests.
+/// Returns (track_key, track_address, commitment_hash).
 async fn create_tape_and_track(
     ctx: &TestContext,
     authority: &Keypair,
-) -> (Hash, solana_sdk::pubkey::Pubkey) {
+) -> (Hash, solana_sdk::pubkey::Pubkey, Hash) {
     // Reserve a tape first
     let epoch = ctx.client.get_epoch().await.expect("get epoch");
     let activation_epoch = epoch.id;
@@ -70,7 +71,7 @@ async fn create_tape_and_track(
         .expect("Failed to register track");
 
     let (track_address, _) = track_pda(authority.pubkey(), key);
-    (key, track_address)
+    (key, track_address, commitment)
 }
 
 /// Test basic certificate submission with valid BLS signatures.
@@ -105,7 +106,7 @@ async fn test_submit_certificate() {
     transfer_tape(&ctx.client, &ctx.payer, &tape_owner.pubkey(), tape_amount.as_u64()).await;
 
     // Create tape and track
-    let (track_key, track_address) = create_tape_and_track(&ctx, &tape_owner).await;
+    let (track_key, track_address, commitment_hash) = create_tape_and_track(&ctx, &tape_owner).await;
     println!("Track created: {}", track_address);
 
     // Get current system state and epoch
@@ -137,7 +138,7 @@ async fn test_submit_certificate() {
 
     // Build signature using our mock keys - this will fail verification because
     // the on-chain committee has different BLS pubkeys than our generated keys
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -212,7 +213,7 @@ async fn test_certificate_requires_committee_member() {
     let tape_amount = Coin::<TAPE>::new(100_000_000);
     transfer_tape(&ctx.client, &ctx.payer, &tape_owner.pubkey(), tape_amount.as_u64()).await;
 
-    let (track_key, track_address) = create_tape_and_track(&ctx, &tape_owner).await;
+    let (track_key, track_address, commitment_hash) = create_tape_and_track(&ctx, &tape_owner).await;
     println!("Track created: {}", track_address);
 
     let system = ctx.client.get_system().await.expect("get system");
@@ -228,7 +229,7 @@ async fn test_certificate_requires_committee_member() {
         .collect();
 
     // Sign with non-committee keys
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = non_committee_keys
@@ -303,7 +304,7 @@ async fn test_certificate_signature_verification() {
     let tape_amount = Coin::<TAPE>::new(100_000_000);
     transfer_tape(&ctx.client, &ctx.payer, &tape_owner.pubkey(), tape_amount.as_u64()).await;
 
-    let (track_key, track_address) = create_tape_and_track(&ctx, &tape_owner).await;
+    let (track_key, track_address, commitment_hash) = create_tape_and_track(&ctx, &tape_owner).await;
     println!("Track created: {}", track_address);
 
     let system = ctx.client.get_system().await.expect("get system");
@@ -350,7 +351,7 @@ async fn test_certificate_signature_verification() {
     println!("Wrong message correctly rejected");
 
     // Test 2: Tamper with a valid signature
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -414,7 +415,7 @@ async fn test_certificate_epoch_binding() {
     let tape_amount = Coin::<TAPE>::new(100_000_000);
     transfer_tape(&ctx.client, &ctx.payer, &tape_owner.pubkey(), tape_amount.as_u64()).await;
 
-    let (track_key, track_address) = create_tape_and_track(&ctx, &tape_owner).await;
+    let (track_key, track_address, commitment_hash) = create_tape_and_track(&ctx, &tape_owner).await;
     println!("Track created: {}", track_address);
 
     let system = ctx.client.get_system().await.expect("get system");
@@ -432,7 +433,7 @@ async fn test_certificate_epoch_binding() {
 
     // Sign with a WRONG epoch (epoch - 1, simulating an old signature)
     let wrong_epoch = EpochNumber(epoch.id.as_u64().saturating_sub(1));
-    let certify_message = CertifyMessage::new(wrong_epoch, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(wrong_epoch, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -474,7 +475,7 @@ async fn test_certificate_epoch_binding() {
 
     // Also test with a future epoch
     let future_epoch = EpochNumber(epoch.id.as_u64() + 100);
-    let certify_message = CertifyMessage::new(future_epoch, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(future_epoch, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     let partials: Vec<BlsSignature> = bls_keys
@@ -535,7 +536,7 @@ async fn test_aggregate_certificates() {
     let tape_amount = Coin::<TAPE>::new(100_000_000);
     transfer_tape(&ctx.client, &ctx.payer, &tape_owner.pubkey(), tape_amount.as_u64()).await;
 
-    let (track_key, track_address) = create_tape_and_track(&ctx, &tape_owner).await;
+    let (track_key, track_address, commitment_hash) = create_tape_and_track(&ctx, &tape_owner).await;
     println!("Track created: {}", track_address);
 
     let system = ctx.client.get_system().await.expect("get system");
@@ -552,7 +553,7 @@ async fn test_aggregate_certificates() {
         .collect();
 
     // Create the correct message
-    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
+    let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
     let message = certify_message.to_bytes();
 
     // Test 1: Insufficient signatures (less than 2f+1)

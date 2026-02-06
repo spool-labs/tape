@@ -1075,8 +1075,8 @@ mod tests {
         assert_eq!(p.stake, tape(1000), "pool.stake should be updated immediately");
         assert!(!p.shares.is_zero(), "pool.shares should be updated immediately");
 
-        // Schedule should also have the stake (for bookkeeping)
-        assert_eq!(p.schedule.stake_sum(epoch(5)), tape(1000));
+        // Immediate activation skips scheduling
+        assert_eq!(p.schedule.stake_sum(epoch(5)), tape(0));
     }
 
     #[test]

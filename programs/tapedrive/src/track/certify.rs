@@ -177,9 +177,14 @@ mod tests {
             ..Tape::zeroed()
         };
 
+        let commitment_hash = Hash::new_unique();
         let track = Track {
             tape: tape_address,
             key: bucket_hash,
+            data: TrackData {
+                commitment_hash,
+                ..TrackData::zeroed()
+            },
             ..Track::zeroed()
         };
 
@@ -199,7 +204,7 @@ mod tests {
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
         // Build certification message with domain separation and epoch binding
-        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), [0u8; 32]);
+        let certify_message = CertifyMessage::new(epoch.id, track_address.to_bytes(), commitment_hash.0);
         let message = certify_message.to_bytes();
         let partials: Vec<BlsSignature> = signed_indices
             .iter()
