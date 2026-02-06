@@ -25,5 +25,5 @@ pub use adaptive::{STRIPE_SIZES, DEFAULT_STRIPE_SIZE, pick_stripe_size, num_stri
 pub use tape_core::encoding::{EncodingProfile, EncodingType, ClayParams, RSParams};
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
-pub use repair::{RepairPlan, StripeRepair, HelperPlan};
+pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};
 pub use reed_solomon::MAX_SLICE_BYTES;

@@ -88,6 +88,36 @@ impl ClayCoder {
     }
 }
 
+/// Extract sub-chunks from a full slice for repair.
+///
+/// Called by a helper node: reads the full slice from local storage,
+/// extracts only the sub-chunks specified by the plan, and returns
+/// the concatenated bytes (stripe order, then sub-chunk order within
+/// each stripe). The result is what gets sent over the network.
+pub fn extract_repair_data(slice: &[u8], plan: &RepairPlan, helper: SliceIndex) -> Vec<u8> {
+    let chunk_size = plan.chunk_size as usize;
+    let sub_chunk_size = plan.sub_chunk_size as usize;
+
+    let mut out = Vec::new();
+
+    for stripe in &plan.stripes {
+        let chunk_offset = stripe.stripe as usize * chunk_size;
+
+        for hp in &stripe.helpers {
+            if hp.slice != helper {
+                continue;
+            }
+            let chunk = &slice[chunk_offset..chunk_offset + chunk_size];
+            for &sc_idx in &hp.sub_chunks {
+                let start = sc_idx as usize * sub_chunk_size;
+                out.extend_from_slice(&chunk[start..start + sub_chunk_size]);
+            }
+        }
+    }
+
+    out
+}
+
 impl Slicer<ClayCoder> {
     /// Compute a repair plan for a single lost slice.
     ///
@@ -173,7 +203,7 @@ impl Slicer<ClayCoder> {
     /// Repair a single lost slice from full helper slices.
     ///
     /// Self-contained convenience: computes repair plan, extracts sub-chunks
-    /// from full slices, and returns the complete repaired slice.
+    /// via `extract_repair_data`, and feeds them into `repair()`.
     pub fn repair_full(
         &self,
         lost: SliceIndex,
@@ -190,50 +220,17 @@ impl Slicer<ClayCoder> {
         let reference = helpers[0].1;
         let plan = self.repair_plan(lost, &available, reference)?;
 
-        let helper_map: HashMap<SliceIndex, &[u8]> =
-            helpers.iter().map(|(idx, data)| (*idx, *data)).collect();
+        let partial: HashMap<SliceIndex, Vec<u8>> = helpers
+            .iter()
+            .map(|(idx, slice)| (*idx, extract_repair_data(slice, &plan, *idx)))
+            .collect();
 
-        let chunk_size = plan.chunk_size as usize;
-        let alpha = self.coder.alpha();
-        let sub_chunk_size = chunk_size / alpha;
-        let num_stripes = plan.num_stripes as usize;
+        let metadata_bytes: &[u8; SliceMetadata::SIZE] =
+            reference[reference.len() - SliceMetadata::SIZE..]
+                .try_into()
+                .unwrap();
 
-        let mut repaired_data = Vec::with_capacity(num_stripes * chunk_size);
-
-        for stripe_plan in &plan.stripes {
-            let s = stripe_plan.stripe as usize;
-            let chunk_offset = s * chunk_size;
-
-            let mut stripe_helpers: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
-
-            for hp in &stripe_plan.helpers {
-                let full_slice = helper_map
-                    .get(&hp.slice)
-                    .ok_or(RepairError::MissingHelper(hp.slice))?;
-                let chunk = &full_slice[chunk_offset..chunk_offset + chunk_size];
-
-                let mut partial =
-                    Vec::with_capacity(hp.sub_chunks.len() * sub_chunk_size);
-                for &sc_idx in &hp.sub_chunks {
-                    let start = sc_idx as usize * sub_chunk_size;
-                    let end = start + sub_chunk_size;
-                    partial.extend_from_slice(&chunk[start..end]);
-                }
-                stripe_helpers.insert(hp.shard, partial);
-            }
-
-            let recovered = self.coder.repair(
-                stripe_plan.lost_shard,
-                &stripe_helpers,
-                chunk_size,
-            )?;
-            repaired_data.extend_from_slice(&recovered);
-        }
-
-        let meta_bytes = &reference[reference.len() - SliceMetadata::SIZE..];
-        repaired_data.extend_from_slice(meta_bytes);
-
-        Ok(repaired_data)
+        self.repair(&plan, &partial, metadata_bytes)
     }
 
     /// Bandwidth-optimal repair from partial helper data.
