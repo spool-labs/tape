@@ -17,6 +17,7 @@ members = [
   "network/api",
   "network/client",
   "network/monitor",
+  "network/gateway",
   "sdk",
   "cli",
   "store/store",
@@ -45,6 +46,7 @@ default-members = [
   "network/api",
   "network/client",
   "network/monitor",
+  "network/gateway",
   "sdk",
   "cli",
   "store/store",
@@ -85,6 +87,7 @@ tape-store = { version = "0.3.0", path = "./store/tape-store" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
+tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-slicer = { version = "0.3.0", path = "./slicer" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }

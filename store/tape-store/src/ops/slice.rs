@@ -17,11 +17,32 @@ pub trait SliceOps {
     /// Delete slice data
     fn delete_slice(&self, spool_id: u16, track_address: Pubkey) -> Result<()>;
 
+    /// Check if a slice exists without loading data
+    fn has_slice(&self, spool_id: u16, track_address: Pubkey) -> Result<bool>;
+
     /// Iterate slices by spool
     fn iter_slices_by_spool(
         &self,
         spool_id: u16,
     ) -> Result<Vec<(Pubkey, Vec<u8>)>>;
+
+    /// Paginated slice iteration by spool. Returns up to `limit` slices
+    /// starting after `after_track` (or from the beginning if None).
+    fn iter_slices_by_spool_from(
+        &self,
+        spool_id: u16,
+        after_track: Option<Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<(Pubkey, Vec<u8>)>>;
+
+    /// Iterate slice keys (track addresses) by spool without loading data.
+    fn iter_slice_keys_by_spool(
+        &self,
+        spool_id: u16,
+    ) -> Result<Vec<Pubkey>>;
+
+    /// Count slices in a spool without loading data.
+    fn count_slices_by_spool(&self, spool_id: u16) -> Result<usize>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
@@ -42,6 +63,11 @@ impl<S: Store> SliceOps for TapeStore<S> {
         Ok(())
     }
 
+    fn has_slice(&self, spool_id: u16, track_address: Pubkey) -> Result<bool> {
+        let key = SliceKey::new(spool_id, track_address);
+        Ok(self.contains::<SliceCol>(&key)?)
+    }
+
     fn iter_slices_by_spool(
         &self,
         spool_id: u16,
@@ -59,6 +85,77 @@ impl<S: Store> SliceOps for TapeStore<S> {
             results.push((key.track_address, value_bytes.to_vec()));
         }
         Ok(results)
+    }
+
+    fn iter_slices_by_spool_from(
+        &self,
+        spool_id: u16,
+        after_track: Option<Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<(Pubkey, Vec<u8>)>> {
+        let prefix = SliceKey::spool_prefix(spool_id);
+
+        let start_key = match after_track {
+            Some(track) => {
+                let key = SliceKey::new(spool_id, track);
+                wincode::serialize(&key)
+                    .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?
+            }
+            None => prefix.to_vec(),
+        };
+
+        let iter = self
+            .inner()
+            .inner()
+            .iter_from(SliceCol::CF_NAME, &start_key, store::Direction::Asc)?;
+
+        let mut results = Vec::new();
+        for (key_bytes, value_bytes) in iter {
+            // Stop when we leave the spool prefix
+            if key_bytes.len() < 2 || key_bytes[..2] != prefix {
+                break;
+            }
+            let key: SliceKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
+            // Skip the cursor key if resuming
+            if after_track.is_some() && Some(key.track_address) == after_track {
+                continue;
+            }
+            results.push((key.track_address, value_bytes.to_vec()));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
+    fn iter_slice_keys_by_spool(
+        &self,
+        spool_id: u16,
+    ) -> Result<Vec<Pubkey>> {
+        let prefix = SliceKey::spool_prefix(spool_id);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SliceCol::CF_NAME, &prefix)?;
+
+        let mut results = Vec::new();
+        for (key_bytes, _value_bytes) in iter {
+            let key: SliceKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
+            results.push(key.track_address);
+        }
+        Ok(results)
+    }
+
+    fn count_slices_by_spool(&self, spool_id: u16) -> Result<usize> {
+        let prefix = SliceKey::spool_prefix(spool_id);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(SliceCol::CF_NAME, &prefix)?;
+
+        Ok(iter.count())
     }
 }
 
@@ -130,5 +227,83 @@ mod tests {
 
         let slices = store.iter_slices_by_spool(spool_id).unwrap();
         assert_eq!(slices.len(), 3);
+    }
+
+    #[test]
+    fn test_has_slice() {
+        let store = test_store();
+        let spool_id = 42;
+        let track = Pubkey::new_unique();
+
+        assert!(!store.has_slice(spool_id, track).unwrap());
+
+        store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
+        assert!(store.has_slice(spool_id, track).unwrap());
+
+        store.delete_slice(spool_id, track).unwrap();
+        assert!(!store.has_slice(spool_id, track).unwrap());
+    }
+
+    #[test]
+    fn test_iter_slices_by_spool_from() {
+        let store = test_store();
+        let spool_id = 42;
+
+        let mut tracks = Vec::new();
+        for i in 0..5 {
+            let track = Pubkey::new_unique();
+            store.put_slice(spool_id, track, vec![i]).unwrap();
+            tracks.push(track);
+        }
+
+        // Get all with limit
+        let all = store.iter_slices_by_spool_from(spool_id, None, 10).unwrap();
+        assert_eq!(all.len(), 5);
+
+        // Get first 2
+        let first_two = store.iter_slices_by_spool_from(spool_id, None, 2).unwrap();
+        assert_eq!(first_two.len(), 2);
+
+        // Paginate: get next after the second
+        let cursor = first_two[1].0;
+        let next = store.iter_slices_by_spool_from(spool_id, Some(cursor), 10).unwrap();
+        assert_eq!(next.len(), 3);
+
+        // Different spool should be empty
+        let empty = store.iter_slices_by_spool_from(99, None, 10).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_iter_slice_keys_by_spool() {
+        let store = test_store();
+        let spool_id = 42;
+
+        let track1 = Pubkey::new_unique();
+        let track2 = Pubkey::new_unique();
+
+        store.put_slice(spool_id, track1, vec![1; 1024]).unwrap();
+        store.put_slice(spool_id, track2, vec![2; 1024]).unwrap();
+        store.put_slice(99, Pubkey::new_unique(), vec![3; 1024]).unwrap();
+
+        let keys = store.iter_slice_keys_by_spool(spool_id).unwrap();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn test_count_slices_by_spool() {
+        let store = test_store();
+        let spool_id = 42;
+
+        assert_eq!(store.count_slices_by_spool(spool_id).unwrap(), 0);
+
+        for i in 0..5 {
+            store.put_slice(spool_id, Pubkey::new_unique(), vec![i]).unwrap();
+        }
+        store.put_slice(99, Pubkey::new_unique(), vec![99]).unwrap();
+
+        assert_eq!(store.count_slices_by_spool(spool_id).unwrap(), 5);
+        assert_eq!(store.count_slices_by_spool(99).unwrap(), 1);
+        assert_eq!(store.count_slices_by_spool(0).unwrap(), 0);
     }
 }

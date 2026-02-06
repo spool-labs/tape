@@ -160,6 +160,48 @@ impl<S: Store> StorageService<S> {
         Ok(())
     }
 
+    /// Check if a slice exists.
+    pub fn has_slice(
+        &self,
+        spool_idx: SpoolIndex,
+        track_address: Pubkey,
+    ) -> Result<bool, StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        Ok(self.store.has_slice(spool_idx.into(), track_pubkey)?)
+    }
+
+    /// Check if track metadata exists.
+    pub fn has_track(
+        &self,
+        track_address: Pubkey,
+    ) -> Result<bool, StorageError> {
+        let track_pubkey = StorePubkey::new(track_address.to_bytes());
+        Ok(self.store.has_track(track_pubkey)?)
+    }
+
+    /// Paginated slice iteration by spool.
+    pub fn iter_slices_by_spool_from(
+        &self,
+        spool_idx: SpoolIndex,
+        after_track: Option<Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<(Pubkey, Vec<u8>)>, StorageError> {
+        let after = after_track.map(|pk| StorePubkey::new(pk.to_bytes()));
+        let results = self.store.iter_slices_by_spool_from(spool_idx.into(), after, limit)?;
+        Ok(results
+            .into_iter()
+            .map(|(pk, data)| (Pubkey::new_from_array(pk.0), data))
+            .collect())
+    }
+
+    /// Count slices in a spool.
+    pub fn count_slices_by_spool(
+        &self,
+        spool_idx: SpoolIndex,
+    ) -> Result<usize, StorageError> {
+        Ok(self.store.count_slices_by_spool(spool_idx.into())?)
+    }
+
     /// Shutdown storage gracefully.
     pub async fn shutdown(&self) -> Result<(), StorageError> {
         tracing::info!("Storage service shutting down");

@@ -11531,6 +11531,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-gateway"
+version = "0.3.0"
+dependencies = [
+ "axum 0.8.8",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "tape-metrics"
 version = "0.3.0"
 dependencies = [
@@ -11603,6 +11613,7 @@ dependencies = [
  "tape-node-api",
  "tape-node-client",
  "tape-sdk",
+ "tape-slicer",
  "tape-store",
  "thiserror 2.0.17",
  "tokio",

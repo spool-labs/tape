@@ -6,10 +6,11 @@
 //!
 //! - `server.rs` - Server setup and lifecycle management
 //! - `routes/` - Route handlers organized by resource type
-//!   - `slices.rs` - Slice upload/download operations
+//!   - `slices.rs` - Slice upload/download/status operations
 //!   - `metadata.rs` - Track metadata operations
-//!   - `status.rs` - Health and status endpoints
+//!   - `status.rs` - Health and track status endpoints
 //!   - `sign.rs` - BLS signature endpoints
+//!   - `repair.rs` - Bandwidth-optimal repair (sub-chunk extraction)
 //!   - `info.rs` - Node info and stats
 //!   - `sync.rs` - Spool synchronization
 

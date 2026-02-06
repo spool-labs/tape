@@ -1,0 +1,15 @@
+[package]
+name = "tape-gateway"
+description = "Tapedrive gateway - blob-level API for end users"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

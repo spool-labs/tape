@@ -286,6 +286,61 @@ impl NodeClient {
         Ok(bytes)
     }
 
+    /// Request repair sub-chunks from this node.
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier
+    /// * `request` - The repair request (wincode-serialized)
+    pub async fn request_repair(
+        &self,
+        track_id: &str,
+        request: &tape_node_api::RepairRequest,
+    ) -> Result<Vec<u8>, NodeError> {
+        #[cfg(feature = "metrics")]
+        let start = Instant::now();
+
+        let body = wincode::serialize(request)
+            .map_err(|e| NodeError::Serialization(e.to_string()))?;
+
+        let url = self.base_url
+            .join(&format!("/v1/tracks/{}/repair", track_id))?;
+
+        let response = self.inner
+            .post(url)
+            .header("Content-Type", CONTENT_TYPE_WINCODE)
+            .body(body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("request_repair", "not_found", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::NotFound);
+        }
+
+        if !status.is_success() {
+            let message = response.text().await.unwrap_or_default();
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("request_repair", "error", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::server_error(status.as_u16(), message));
+        }
+
+        let bytes = response.bytes().await?.to_vec();
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = &self.metrics {
+            metrics.record_request("request_repair", "success", start.elapsed().as_secs_f64());
+            metrics.record_bytes_received("request_repair", bytes.len() as u64);
+        }
+
+        Ok(bytes)
+    }
+
     /// Request a BLS signature for track certification.
     ///
     /// # Arguments

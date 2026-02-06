@@ -1,6 +1,4 @@
 //! Spool synchronization handlers.
-//!
-//! NOTE: This handler is currently a stub pending API redesign.
 
 use axum::{
     body::Bytes,
@@ -18,16 +16,19 @@ use super::ApiState;
 /// POST /v1/migrate/sync_spool
 ///
 /// Node-to-node spool synchronization endpoint.
+/// Accepts a wincode-encoded sync request and returns slice data for the requested spool.
+///
+/// TODO: Define SyncSpoolRequest/Response types and implement full protocol.
 pub async fn sync_spool<S: Store>(
     State(_state): State<ApiState<S>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     debug!(
         body_len = body.len(),
-        "sync_spool (stub)"
+        "sync_spool"
     );
 
-    // Stub: return empty response
+    // Stub: return empty response until sync protocol types are defined
     let response = serde_json::json!({
         "version": "v1",
         "slices": []

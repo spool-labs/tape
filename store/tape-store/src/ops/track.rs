@@ -16,6 +16,9 @@ pub trait TrackOps {
 
     /// Delete track info
     fn delete_track(&self, track_address: Pubkey) -> Result<()>;
+
+    /// Check if track metadata exists without loading data
+    fn has_track(&self, track_address: Pubkey) -> Result<bool>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
@@ -31,6 +34,10 @@ impl<S: Store> TrackOps for TapeStore<S> {
     fn delete_track(&self, track_address: Pubkey) -> Result<()> {
         self.delete::<TrackCol>(&track_address)?;
         Ok(())
+    }
+
+    fn has_track(&self, track_address: Pubkey) -> Result<bool> {
+        Ok(self.contains::<TrackCol>(&track_address)?)
     }
 }
 
@@ -82,5 +89,19 @@ mod tests {
 
         store.delete_track(track).unwrap();
         assert!(store.get_track(track).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_has_track() {
+        let store = test_store();
+        let track = Pubkey::new_unique();
+
+        assert!(!store.has_track(track).unwrap());
+
+        store.put_track(track, make_track_info()).unwrap();
+        assert!(store.has_track(track).unwrap());
+
+        store.delete_track(track).unwrap();
+        assert!(!store.has_track(track).unwrap());
     }
 }

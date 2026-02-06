@@ -344,10 +344,10 @@ pub fn create_merkle_proof<T: AsRef<[u8]>>(
 }
 
 pub fn verify_proof(
-    data: &[u8], 
-    root: &Hash, 
-    proof: &[Hash], 
-    index: u64, 
+    data: &[u8],
+    root: &Hash,
+    proof: &[Hash],
+    index: u64,
     height: usize
 ) -> bool {
     if proof.len() != height {

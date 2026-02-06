@@ -86,6 +86,9 @@ impl SlicePayload {
 /// - `slice_index`: The slice index (0 to SPOOL_GROUP_SIZE-1)
 pub const SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{slice_index}";
 
+/// GET endpoint for slice existence check.
+pub const SLICE_STATUS_PATH: &str = "/v1/tracks/{track_id}/slices/{slice_index}/status";
+
 // =============================================================================
 // Track Operations
 // =============================================================================
@@ -96,11 +99,20 @@ pub const SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{slice_index}";
 /// - `track_id`: The track identifier
 pub const METADATA_PATH: &str = "/v1/tracks/{track_id}/metadata";
 
-/// GET endpoint for track status information.
+/// GET endpoint for metadata existence check.
+pub const METADATA_STATUS_PATH: &str = "/v1/tracks/{track_id}/metadata/status";
+
+/// GET endpoint for track lifecycle status.
 ///
 /// Path parameters:
 /// - `track_id`: The track identifier
-pub const STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
+pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
+
+/// POST endpoint for bandwidth-optimal repair (sub-chunk extraction).
+pub const REPAIR_PATH: &str = "/v1/tracks/{track_id}/repair";
+
+/// POST endpoint for inconsistency attestation.
+pub const INCONSISTENCY_PATH: &str = "/v1/tracks/{track_id}/inconsistency";
 
 // =============================================================================
 // Node Operations
@@ -164,6 +176,32 @@ pub const SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const SYNC_SPOOL_PATH: &str = "/v1/migrate/sync_spool";
 
 // =============================================================================
+// Repair Types
+// =============================================================================
+
+/// Request for sub-chunk extraction (bandwidth-optimal repair).
+///
+/// Sent by the repairing node to each helper. Serialized with wincode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct RepairRequest {
+    /// The slice index being repaired (lost slice).
+    pub lost_slice: u16,
+    /// The spool index of this helper's slice (so the helper knows which slice to read).
+    pub helper_spool: u16,
+    /// Per-stripe sub-chunk extraction plan for this helper.
+    pub stripes: Vec<StripeSubChunkRequest>,
+}
+
+/// Per-stripe sub-chunk extraction instructions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct StripeSubChunkRequest {
+    /// Stripe index.
+    pub stripe: u32,
+    /// Sub-chunk indices to extract from this helper's chunk.
+    pub sub_chunks: Vec<u32>,
+}
+
+// =============================================================================
 // Content Types
 // =============================================================================
 
@@ -207,6 +245,25 @@ pub fn sign_url(track_id: &str) -> String {
     format!("/v1/tracks/{}/sign", track_id)
 }
 
+/// Build a slice status endpoint URL.
+pub fn slice_status_url(track_id: &str, slice_index: u16) -> String {
+    format!("/v1/tracks/{}/slices/{}/status", track_id, slice_index)
+}
+
+/// Build a metadata status endpoint URL.
+pub fn metadata_status_url(track_id: &str) -> String {
+    format!("/v1/tracks/{}/metadata/status", track_id)
+}
+
+/// Build a repair endpoint URL for a specific track.
+pub fn repair_url(track_id: &str) -> String {
+    format!("/v1/tracks/{}/repair", track_id)
+}
+
+/// Build an inconsistency endpoint URL for a specific track.
+pub fn inconsistency_url(track_id: &str) -> String {
+    format!("/v1/tracks/{}/inconsistency", track_id)
+}
 
 #[cfg(test)]
 mod tests {

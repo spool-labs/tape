@@ -1,9 +1,8 @@
 //! API routes and handlers.
-//!
-//! NOTE: Most handlers are currently stubs pending API redesign.
 
 mod info;
 mod metadata;
+mod repair;
 mod sign;
 mod slices;
 mod status;
@@ -24,10 +23,11 @@ use tape_core::bls::BlsPrivateKey;
 
 // Re-export handlers
 pub use info::{get_info, get_stats};
-pub use metadata::{get_metadata, put_metadata};
+pub use metadata::{get_metadata, put_metadata, get_metadata_status};
+pub use repair::{post_repair, post_inconsistency};
 pub use sign::get_sign;
-pub use slices::{get_slice, put_slice};
-pub use status::{get_status, health_check};
+pub use slices::{get_slice, put_slice, get_slice_status};
+pub use status::{get_track_status, health_check};
 pub use sync::sync_spool;
 
 // Re-export shared constants from tape-core and tape-node-api
@@ -35,7 +35,11 @@ pub use tape_core::erasure::{MAX_SLICE_SIZE, SPOOL_COUNT};
 pub use tape_node_api::{
     HEALTH_PATH as HEALTH_ENDPOINT, INFO_PATH as INFO_ENDPOINT,
     METADATA_PATH as METADATA_ENDPOINT, SLICE_PATH as SLICE_ENDPOINT,
-    STATS_PATH as STATS_ENDPOINT, STATUS_PATH as STATUS_ENDPOINT,
+    SLICE_STATUS_PATH as SLICE_STATUS_ENDPOINT,
+    METADATA_STATUS_PATH as METADATA_STATUS_ENDPOINT,
+    STATS_PATH as STATS_ENDPOINT, TRACK_STATUS_PATH as TRACK_STATUS_ENDPOINT,
+    REPAIR_PATH as REPAIR_ENDPOINT,
+    INCONSISTENCY_PATH as INCONSISTENCY_ENDPOINT,
     SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT, SIGN_PATH as SIGN_ENDPOINT,
 };
 
@@ -66,12 +70,17 @@ pub fn create_router<S: Store + Send + Sync + 'static>(state: ApiState<S>) -> Ro
     Router::new()
         // Slice operations
         .route(SLICE_ENDPOINT, get(get_slice::<S>).put(put_slice::<S>))
+        .route(SLICE_STATUS_ENDPOINT, get(get_slice_status::<S>))
         // Metadata
         .route(METADATA_ENDPOINT, get(get_metadata::<S>).put(put_metadata::<S>))
-        // Status
-        .route(STATUS_ENDPOINT, get(get_status::<S>))
+        .route(METADATA_STATUS_ENDPOINT, get(get_metadata_status::<S>))
+        // Track status
+        .route(TRACK_STATUS_ENDPOINT, get(get_track_status::<S>))
         // Certification signature
         .route(SIGN_ENDPOINT, get(get_sign::<S>))
+        // Repair
+        .route(REPAIR_ENDPOINT, post(post_repair::<S>))
+        .route(INCONSISTENCY_ENDPOINT, post(post_inconsistency::<S>))
         // Health check
         .route(HEALTH_ENDPOINT, get(health_check))
         // Node info
