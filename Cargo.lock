@@ -11714,6 +11714,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-spooler"
+version = "0.3.0"
+dependencies = [
+ "tape-core",
+]
+
+[[package]]
 name = "tape-store"
 version = "0.3.0"
 dependencies = [
@@ -11775,6 +11782,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-solana",
+ "tape-spooler",
  "tape-test",
  "thiserror 2.0.17",
  "tokio",

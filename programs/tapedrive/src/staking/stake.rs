@@ -186,8 +186,8 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
-        // Normal mode: committee_next has 25 nodes (>= MIN_COMMITTEE_SIZE)
-        let members: Vec<CommitteeMember> = (1..=25)
+        // Normal mode: committee_next has 20 nodes (>= MIN_COMMITTEE_SIZE)
+        let members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000))
             .collect();
         system.committee_next = Committee::from_members(&members);

@@ -120,6 +120,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 mod tests {
     use super::*;
     use tape_test::*;
+    use tape_spooler::dhondt_allocate;
 
     #[test]
     fn test_certify_track() {
@@ -160,11 +161,12 @@ mod tests {
         );
 
         // Allocate spools based on stake
-        let stakes = system.committee.active_stakes();
+        let stakes: Vec<u64> = system.committee.active_stakes()
+            .iter().map(|c| c.as_u64()).collect();
         let seat_counts = dhondt_allocate(
-            &stakes, 
+            &stakes,
             SPOOL_COUNT as u16
-        );
+        ).unwrap();
         system.spools = SpoolAssignment::try_from_counts(&seat_counts)
             .expect("spools from counts");
 

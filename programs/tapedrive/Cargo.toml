@@ -24,6 +24,7 @@ airdrop = []
 tape-core = { workspace = true, features = ["solana"] }
 tape-crypto = { workspace = true, features = ["solana"] }
 tape-api = { workspace = true, features = ["solana"] }
+tape-spooler.workspace = true
 
 mpl-token-metadata.workspace = true
 solana-program.workspace = true

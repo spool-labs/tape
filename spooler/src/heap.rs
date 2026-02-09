@@ -31,7 +31,7 @@ impl<T: Ord> MaxHeap<T> {
     }
 
     #[inline]
-    pub fn sift_up(&mut self, mut idx: usize) {
+    fn sift_up(&mut self, mut idx: usize) {
         while idx > 0 {
             let parent = (idx - 1) >> 1;
             if self.data[idx] > self.data[parent] {
@@ -44,7 +44,7 @@ impl<T: Ord> MaxHeap<T> {
     }
 
     #[inline]
-    pub fn sift_down(&mut self, mut idx: usize) {
+    fn sift_down(&mut self, mut idx: usize) {
         let len = self.data.len();
         loop {
             let left = (idx << 1) + 1;
@@ -147,7 +147,6 @@ mod tests {
 
     impl Ord for Pair {
         fn cmp(&self, other: &Self) -> Ordering {
-            // Order by primary, then by secondary
             self.primary.cmp(&other.primary).then(self.secondary.cmp(&other.secondary))
         }
     }
@@ -177,7 +176,6 @@ mod tests {
             popped.push(x);
         }
 
-        // Expect lexicographic by (primary desc, secondary desc) due to max-heap
         assert_eq!(
             popped,
             vec![
@@ -190,7 +188,6 @@ mod tests {
         );
     }
 
-    // Deterministic pseudo-random sequence (LCG)
     fn lcg_sequence(n: usize, mut x: u64) -> Vec<u64> {
         let a: u64 = 6364136223846793005;
         let c: u64 = 1;
@@ -217,7 +214,7 @@ mod tests {
         }
 
         let mut sorted = data.clone();
-        sorted.sort_unstable_by(|a, b| b.cmp(a)); // descending
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
 
         assert_eq!(popped, sorted);
     }

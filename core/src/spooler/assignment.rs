@@ -1,11 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use crate::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use crate::system::Committee;
 use crate::types::Bitmap;
-use super::{Spooler, SpoolerError};
-use super::dhondt::DhondtSpooler;
-use super::sainte_lague::SainteLagueSpooler;
-use super::migrate::to_spool_map;
+use super::SpoolerError;
 use super::{SpoolGroup, SpoolIndex, SpoolCount, SpoolMapping};
 use tape_crypto::hash::{hashv, Hash};
 
@@ -15,6 +11,19 @@ pub struct SpoolAssignment<const SPOOLS: usize>(pub [SpoolMapping; SPOOLS]);
 
 unsafe impl<const SPOOLS: usize> Zeroable for SpoolAssignment<SPOOLS> {}
 unsafe impl<const SPOOLS: usize> Pod for SpoolAssignment<SPOOLS> {}
+
+fn to_spool_map(spool_counts: &[SpoolCount]) -> Vec<SpoolMapping> {
+    let total: usize = spool_counts.iter().map(|&c| c as usize).sum();
+    let mut result = vec![0u8; total];
+    let mut pos = 0usize;
+    for (i, &c) in spool_counts.iter().enumerate() {
+        for _ in 0..c {
+            result[pos] = i as u8;
+            pos += 1;
+        }
+    }
+    result
+}
 
 impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     pub fn new(spools: [SpoolMapping; SPOOLS]) -> Self {
@@ -35,47 +44,6 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     pub fn try_from_counts(spool_counts: &[SpoolCount]) -> Result<Self, SpoolerError> {
         let spool_map = to_spool_map(spool_counts);
         Self::try_from(&spool_map)
-    }
-
-    /// Migrate spools from current committee to next committee using a policy `Spooler`,
-    /// with minimal disruption of existing placements.
-    pub fn migrate_with<S: Spooler, const N:usize>(
-        &mut self,
-        spooler: &mut S,
-        current: &Committee<N>,
-        next: &Committee<N>,
-    ) -> Result<(), SpoolerError> {
-        let members_current = current.active_members();
-        let members_next    = next.active_members();
-        let stakes_next     = next.active_stakes();
-
-        let spool_counts = spooler.allocate(&stakes_next, SPOOLS as u16)?;
-
-        let spools = super::migrate_spools(&self.0, &members_current, &members_next, &spool_counts)?;
-        for i in 0..SPOOLS {
-            self.0[i] = spools[i];
-        }
-        Ok(())
-    }
-
-    /// Convenience: use DhondtSpooler.
-    pub fn migrate_dhondt<const N:usize>(
-        &mut self,
-        current: &Committee<N>,
-        next: &Committee<N>,
-    ) -> Result<(), SpoolerError> {
-        let mut dh = DhondtSpooler::default();
-        self.migrate_with(&mut dh, current, next)
-    }
-
-    /// Convenience: use SainteLagueSpooler.
-    pub fn migrate_sainte_lague<const N:usize>(
-        &mut self,
-        current: &Committee<N>,
-        next: &Committee<N>,
-    ) -> Result<(), SpoolerError> {
-        let mut sl = SainteLagueSpooler::default();
-        self.migrate_with(&mut sl, current, next)
     }
 
     pub fn weight(&self, member_index: usize) -> u16 {
@@ -198,7 +166,7 @@ mod tests {
 
     #[test]
     fn members_in_group() {
-        // 40 spools, group size 20 → 2 groups
+        // 40 spools, group size 20 -> 2 groups
         let mut arr = [0u8; 40];
         for i in 0..20 { arr[i] = (i % 4) as u8; }       // group 0: members 0-3
         for i in 20..40 { arr[i] = ((i - 20) % 3) as u8; } // group 1: members 0-2
@@ -242,5 +210,17 @@ mod tests {
             0x79, 0xd4, 0x5d, 0x3e, 0xe4, 0x0f, 0xbe, 0xcf,
         ];
         assert_eq!(hash.to_bytes(), expected_bytes);
+    }
+
+    #[test]
+    fn test_spool_map() {
+        assert_eq!(to_spool_map(&[0]), &[]);
+        assert_eq!(to_spool_map(&[0, 0, 0]), &[]);
+        assert_eq!(to_spool_map(&[1, 2, 3]), &[0, 1, 1, 2, 2, 2]);
+        assert_eq!(to_spool_map(&[3, 0, 2]), &[0, 0, 0, 2, 2]);
+        assert_eq!(to_spool_map(&[1, 1, 1, 1]), &[0, 1, 2, 3]);
+        assert_eq!(to_spool_map(&[5]), &[0, 0, 0, 0, 0]);
+        assert_eq!(to_spool_map(&[1, 0, 0, 1]), &[0, 3]);
+        assert_eq!(to_spool_map(&[2, 0, 1, 0, 3]), &[0, 0, 2, 4, 4, 4]);
     }
 }

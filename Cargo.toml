@@ -13,6 +13,7 @@ members = [
   "programs/tapedrive",
   "programs/token",
   "slicer",
+  "spooler",
   "network/node",
   "network/api",
   "network/client",
@@ -42,6 +43,7 @@ default-members = [
   "network/blocks",
   "metrics",
   "slicer",
+  "spooler",
   "network/node",
   "network/api",
   "network/client",
@@ -89,6 +91,7 @@ tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
 tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-slicer = { version = "0.3.0", path = "./slicer" }
+tape-spooler = { version = "0.3.0", path = "./spooler" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }

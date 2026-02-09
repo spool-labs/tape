@@ -68,9 +68,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
-    system.spools.migrate_dhondt(
+    tape_spooler::migrate_dhondt(
+        &mut system.spools,
         &system.committee,
         &system.committee_next,
+        epoch.id,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
     // Rotate committees: prev <- current <- next <- empty
@@ -155,6 +157,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 mod tests {
     use super::*;
     use tape_test::*;
+    use tape_spooler::{dhondt_allocate, migrate_spools};
 
     fn member(id: u64, stake: u64, size: u64, price: u64) -> CommitteeMember {
         let mut m = CommitteeMember::new(NodeId(id), TAPE(stake));
@@ -192,18 +195,18 @@ mod tests {
         epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
-        // Need >= MIN_COMMITTEE_SIZE (24) members for normal mode
-        let prev_members: Vec<CommitteeMember> = (1..=24)
+        // Need >= MIN_COMMITTEE_SIZE (20) members for normal mode
+        let prev_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000 + i * 100, 8_000_000, 950))
             .collect();
         system.committee_prev = Committee::from_members(&prev_members);
 
-        let curr_members: Vec<CommitteeMember> = (1..=25)
+        let curr_members: Vec<CommitteeMember> = (1..=21)
             .map(|i| member(i, 1_000 + i * 100, 8_050_000, 1050))
             .collect();
         system.committee = Committee::from_members(&curr_members);
 
-        let next_members: Vec<CommitteeMember> = (1..=26)
+        let next_members: Vec<CommitteeMember> = (1..=22)
             .map(|i| member(i, 1_000 + i * 100, 1_500_000, 850))
             .collect();
         system.committee_next = Committee::from_members(&next_members);
@@ -223,16 +226,19 @@ mod tests {
 
         // Expected state after instruction
 
+        let stakes: Vec<u64> = system.committee_next.active_stakes()
+            .iter().map(|c| c.as_u64()).collect();
         let seat_count = dhondt_allocate(
-            &system.committee_next.active_stakes(),
+            &stakes,
             SPOOL_COUNT as u16,
-        );
+        ).unwrap();
 
         let spools = migrate_spools(
             &system.spools.0,
             &system.committee.active_members(),
             &system.committee_next.active_members(),
             &seat_count,
+            e0,
         ).expect("seat reassignment failed");
 
         let expected_seats = SpoolAssignment::try_from(spools.as_ref()).unwrap();
@@ -330,11 +336,11 @@ mod tests {
         epoch.last_epoch = last_epoch;
 
         // Need >= MIN_COMMITTEE_SIZE members in both committees to test timing check
-        let members: Vec<CommitteeMember> = (1..=25)
+        let members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&members);
-        // committee_next must have >= 25 to pass the low-quorum check and reach TooSoon
+        // committee_next must have >= 20 to pass the low-quorum check and reach TooSoon
         system.committee_next = Committee::from_members(&members);
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
@@ -380,8 +386,8 @@ mod tests {
         epoch.state = EpochState::syncing(); // Wrong state - should be Active
         epoch.last_epoch = last_epoch;
 
-        // Need >= MIN_COMMITTEE_SIZE (24) members in current committee for normal mode
-        let members: Vec<CommitteeMember> = (1..=25)
+        // Need >= MIN_COMMITTEE_SIZE (20) members in current committee for normal mode
+        let members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&members);
@@ -434,20 +440,20 @@ mod tests {
         epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
-        // Current committee has enough nodes (25)
-        let curr_members: Vec<CommitteeMember> = (1..=25)
+        // Current committee has enough nodes (20)
+        let curr_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&curr_members);
 
         // Previous committee exists (not bootstrap)
-        let prev_members: Vec<CommitteeMember> = (1..=25)
+        let prev_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_prev = Committee::from_members(&prev_members);
 
-        // Next committee has < MIN_COMMITTEE_SIZE (only 20 nodes)
-        let next_members: Vec<CommitteeMember> = (1..=20)
+        // Next committee has < MIN_COMMITTEE_SIZE (only 19 nodes)
+        let next_members: Vec<CommitteeMember> = (1..=19)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_next = Committee::from_members(&next_members);
@@ -462,7 +468,7 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // Should fail with InsufficientCommittee since committee_next < 25
+        // Should fail with InsufficientCommittee since committee_next < 20
         env.process_instruction(
             &instruction,
             &accounts,
@@ -501,19 +507,19 @@ mod tests {
         epoch.last_epoch = last_epoch;
 
         // Current committee has nodes
-        let curr_members: Vec<CommitteeMember> = (1..=25)
+        let curr_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&curr_members);
 
         // Previous committee exists
-        let prev_members: Vec<CommitteeMember> = (1..=25)
+        let prev_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_prev = Committee::from_members(&prev_members);
 
-        // Next committee has exactly MIN_COMMITTEE_SIZE (25) nodes
-        let next_members: Vec<CommitteeMember> = (1..=25)
+        // Next committee has exactly MIN_COMMITTEE_SIZE (20) nodes
+        let next_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_next = Committee::from_members(&next_members);
@@ -538,7 +544,7 @@ mod tests {
             last_epoch: env.now(),
         };
 
-        // Should succeed since committee_next == 25
+        // Should succeed since committee_next == 20
         env.process_instruction(
             &instruction,
             &accounts,
@@ -652,8 +658,8 @@ mod tests {
         epoch.state = EpochState::active();
         epoch.last_epoch = last_epoch;
 
-        // Current committee has 25 nodes (functioning committee)
-        let curr_members: Vec<CommitteeMember> = (1..=25)
+        // Current committee has 20 nodes (functioning committee)
+        let curr_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&curr_members);
@@ -714,13 +720,13 @@ mod tests {
         epoch.last_epoch = last_epoch;
 
         // Current committee has nodes
-        let curr_members: Vec<CommitteeMember> = (1..=25)
+        let curr_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee = Committee::from_members(&curr_members);
 
         // Previous committee exists
-        let prev_members: Vec<CommitteeMember> = (1..=25)
+        let prev_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_prev = Committee::from_members(&prev_members);
@@ -738,7 +744,7 @@ mod tests {
             pda(epoch_address, epoch.pack(), tapedrive::ID),
         ];
 
-        // Should fail with InsufficientCommittee (empty is < 25)
+        // Should fail with InsufficientCommittee (empty is < 20)
         env.process_instruction(
             &instruction,
             &accounts,
