@@ -5,7 +5,7 @@
 
 pub use tape_api::program::MEMBER_COUNT;
 use tape_core::erasure::SPOOL_COUNT;
-use tape_core::spooler::{SpoolAssignment, SpoolIndex};
+use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::Committee;
 use tape_core::types::NetworkAddress;
 use tape_slicer::BlobMerkleRoot;
@@ -86,14 +86,17 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
-    /// * `slices` - Pre-encoded slices with merkle proofs (should be SPOOL_COUNT)
+    /// * `spool_group` - The spool group for this track
+    /// * `slices` - Pre-encoded slices with merkle proofs (should be SPOOL_GROUP_SIZE)
     pub async fn upload_slices(
         &self,
         track_id: &str,
+        spool_group: SpoolGroup,
         slices: Vec<SliceWithProof>,
     ) -> Result<(), UploadError> {
         let uploader = DistributedUploader::new(
             track_id.to_string(),
+            spool_group,
             slices,
             self.router.clone(),
             self.node_factory.clone(),
@@ -203,6 +206,7 @@ impl TapeClient {
     pub async fn upload_blob(
         &self,
         track_id: &str,
+        spool_group: SpoolGroup,
         data: Vec<u8>,
     ) -> Result<BlobMerkleRoot, ClientError> {
         // Encode blob into slices with merkle proofs using RotatedSlicer
@@ -211,9 +215,10 @@ impl TapeClient {
             .encode_with_proofs(data)
             .map_err(ClientError::Upload)?;
 
-        // Upload all slices with their proofs using spool-based routing
+        // Upload all slices with their proofs using group-aware routing
         let uploader = DistributedUploader::new(
             track_id.to_string(),
+            spool_group,
             slices_with_proofs,
             self.router.clone(),
             self.node_factory.clone(),

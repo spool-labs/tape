@@ -73,6 +73,7 @@ mod tests {
             data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
+                0,
             )
         };
 

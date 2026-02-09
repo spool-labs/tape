@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use tape_core::encoding::EncodingProfile;
+use tape_core::encoding::{ClayParams, EncodingProfile};
 
 use crate::adaptive::{pick_stripe_size, DEFAULT_STRIPE_SIZE};
 use crate::clay::ClayCoder;
@@ -196,9 +196,9 @@ impl<C: ErasureCoder> Slicer<C> {
 impl Slicer<ClayCoder> {
     /// Create a new striped Clay coder with rotation (production default).
     ///
-    /// Uses default Clay parameters (k=10, m=10, d=19).
+    /// Uses default Clay parameters (k=7, m=13, d=16).
     pub fn clay_default() -> Self {
-        Self::with_rotation(ClayCoder::new(20, 10, 19))
+        Self::with_rotation(ClayCoder::from_params(ClayParams::default()))
     }
 
     /// Reconfigure the underlying Clay coder for a different profile.
@@ -376,7 +376,7 @@ mod tests {
     use super::*;
     use crate::{ClayCoder, STRIPE_SIZES};
 
-    const N: usize = 20; // k=10 + m=10
+    const N: usize = 20; // k=7 + m=13 (default Clay)
 
     fn mk(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i % 251) as u8).collect()
@@ -563,8 +563,8 @@ mod tests {
     #[test]
     fn test_clay_default() {
         let mut slicer = Slicer::clay_default();
-        assert_eq!(slicer.k(), 10);
-        assert_eq!(slicer.m(), 10);
+        assert_eq!(slicer.k(), 7);
+        assert_eq!(slicer.m(), 13);
         assert_eq!(slicer.strategy(), MappingStrategy::Rotated);
 
         let payload = mk(1000);

@@ -15,7 +15,8 @@ use clap::Subcommand;
 use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
-use tape_core::encoding::EncodingProfile;
+use tape_core::encoding::{ClayParams, EncodingProfile};
+use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::Hash;
@@ -349,6 +350,9 @@ async fn upload_with_certification(
     // Derive track address for later use
     let (track_address, _) = track_pda(authority, key_hash);
 
+    // Compute spool group (same formula as on-chain RegisterTrack)
+    let spool_group = tape.track_count % SPOOL_GROUP_COUNT as u64;
+
     // 7. Discover network state and upload slices
     if !ctx.quiet {
         eprintln!();
@@ -371,7 +375,7 @@ async fn upload_with_certification(
         .build();
 
     tape_client
-        .upload_slices(&track_id, slices_with_proofs)
+        .upload_slices(&track_id, spool_group, slices_with_proofs)
         .await
         .context("Failed to upload slices")?;
 
@@ -437,10 +441,10 @@ async fn upload_with_certification(
             anyhow::bail!("No committee members with valid network addresses found");
         }
 
-        // Collect signatures using CertificationCollector
+        // Collect signatures using CertificationCollector (group-aware)
         let collector = CertificationCollector::with_defaults();
         let collected = collector
-            .collect_signatures(&track_address, &system, &node_address_map)
+            .collect_signatures(&track_address, spool_group, &system, &node_address_map)
             .await
             .context("Failed to collect BLS signatures")?;
 
@@ -554,14 +558,18 @@ async fn download(
             eprintln!("Verifying against commitment: {}", commitment_hex);
         }
 
+        // TODO: fetch actual k from on-chain track profile
+        let min_slices = ClayParams::default().k() as usize;
         client
-            .download_blob_verified(track_id, &commitment)
+            .download_blob_verified(track_id, min_slices, &commitment)
             .await
             .context("Failed to download and verify blob")?
     } else {
         // Download without verification
+        // TODO: fetch actual k from on-chain track profile
+        let min_slices = ClayParams::default().k() as usize;
         client
-            .download_blob(track_id)
+            .download_blob(track_id, min_slices)
             .await
             .context("Failed to download blob")?
     };
@@ -624,8 +632,10 @@ async fn verify(
         .node_addresses(discovery.node_addresses)
         .build();
 
+    // TODO: fetch actual k from on-chain track profile
+    let min_slices = ClayParams::default().k() as usize;
     let data = client
-        .download_blob(track_id)
+        .download_blob(track_id, min_slices)
         .await
         .context("Failed to download blob")?;
 

@@ -5,6 +5,7 @@ use crate::encoding::EncodingProfile;
 
 // Re-export for backwards compatibility (used by callers expecting track::EncodingType)
 pub use crate::encoding::EncodingType;
+use crate::spooler::SpoolGroup;
 use crate::types::EpochNumber;
 
 #[repr(u64)]
@@ -102,19 +103,36 @@ pub struct TrackData {
 
     /// Encoding profile (type + parameters)
     pub profile: EncodingProfile,
+
+    /// Spool group index (0..SPOOL_GROUP_COUNT-1)
+    pub spool_group: SpoolGroup,
 }
 
 impl TrackData {
     pub const fn new(
         registered_epoch: EpochNumber,
         commitment_hash: Hash,
+        spool_group: SpoolGroup,
     ) -> Self {
         Self {
             state: TrackState::new(),
             registered_epoch,
             commitment_hash,
             profile: EncodingProfile::unknown(),
+            spool_group,
         }
+    }
+
+    /// Get the spool group index.
+    #[inline]
+    pub fn spool_group(&self) -> SpoolGroup {
+        self.spool_group
+    }
+
+    /// Set the spool group index.
+    #[inline]
+    pub fn set_spool_group(&mut self, group: SpoolGroup) {
+        self.spool_group = group;
     }
 
     pub fn is_registered(&self) -> bool {

@@ -44,13 +44,13 @@ impl ClayCoder {
         self.d
     }
 
-    /// Sub-chunks per chunk (α = q^t). For default params (k=10, m=10, d=19): 100.
+    /// Sub-chunks per chunk (α = q^t).
     #[inline]
     pub fn alpha(&self) -> usize {
         self.clay.sub_chunk_no
     }
 
-    /// Sub-chunks per helper during repair (β = α/q). For default params: 10.
+    /// Sub-chunks per helper during repair (β = α/q).
     #[inline]
     pub fn beta(&self) -> usize {
         self.clay.beta

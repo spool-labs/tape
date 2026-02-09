@@ -92,8 +92,8 @@ impl ClayParams {
 
 impl Default for ClayParams {
     fn default() -> Self {
-        // n=20, k=10, d=19 (matching SPOOL_GROUP_SIZE with standard k/m split)
-        Self::new(20, 10, 19)
+        // n=20, k=7, d=16 → m=13 parity, ~1/3 BFT recovery threshold
+        Self::new(20, 7, 16)
     }
 }
 
@@ -301,9 +301,9 @@ mod tests {
     fn test_clay_params_default() {
         let params = ClayParams::default();
         assert_eq!(params.n(), 20);
-        assert_eq!(params.k(), 10);
-        assert_eq!(params.d(), 19);
-        assert_eq!(params.m(), 10);
+        assert_eq!(params.k(), 7);
+        assert_eq!(params.d(), 16);
+        assert_eq!(params.m(), 13);
     }
 
     #[test]
@@ -385,8 +385,8 @@ mod tests {
     #[test]
     fn test_profile_k_m_n_clay() {
         let profile = EncodingProfile::clay_default();
-        assert_eq!(profile.k(), 10);
-        assert_eq!(profile.m(), 10);
+        assert_eq!(profile.k(), 7);
+        assert_eq!(profile.m(), 13);
         assert_eq!(profile.n(), 20);
     }
 

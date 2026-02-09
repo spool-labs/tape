@@ -57,6 +57,8 @@ pub struct TrackRegistered {
     pub epoch: EpochNumber,
     /// Encoding profile (type + params)
     pub profile: EncodingProfile,
+    /// Assigned spool group index (0..SPOOL_GROUP_COUNT-1)
+    pub spool_group: [u8; 8],
 }
 
 tape_solana::event!(EventType, TrackRegistered);

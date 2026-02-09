@@ -6,8 +6,10 @@ use axum::{
 };
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
+use tape_core::erasure::spool_in_group;
 use tape_crypto::merkle::hash_leaf;
 use tape_node_api::SignResponse;
+use tape_store::types::SpoolAllocation;
 use tracing::debug;
 
 use crate::features::api::ApiError;
@@ -39,16 +41,31 @@ pub async fn get_sign<S: Store>(
         return Err(ApiError::IncompleteSliceData);
     }
 
-    // Verify each slice we own matches its commitment leaf
-    for spool_idx in state.control_plane.get_our_spools() {
+    // Filter owned spools to the track's spool group
+    let group = match track_info.spool_allocation {
+        SpoolAllocation::SpoolGroup(g) => g as u64,
+        SpoolAllocation::SpoolSingle(_) => {
+            return Err(ApiError::Internal("single-spool tracks not supported for certification".into()));
+        }
+    };
+
+    let our_group_spools: Vec<u16> = state
+        .control_plane
+        .get_our_spools()
+        .into_iter()
+        .filter(|&s| spool_in_group(s, group))
+        .collect();
+
+    // Verify each slice we own in this group matches its commitment leaf
+    for spool_idx in &our_group_spools {
         let data = state
             .service
-            .get_slice(spool_idx, track_address)
+            .get_slice(*spool_idx, track_address)
             .map_err(|e| ApiError::Storage(e.to_string()))?
             .ok_or(ApiError::IncompleteSliceData)?;
 
         let computed_leaf = hash_leaf(&data);
-        if let Some(expected_leaf) = track_info.commitment.get(spool_idx as usize) {
+        if let Some(expected_leaf) = track_info.commitment.get(*spool_idx as usize) {
             if computed_leaf != *expected_leaf {
                 return Err(ApiError::MerkleVerificationFailed);
             }

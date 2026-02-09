@@ -1,10 +1,12 @@
 use bytemuck::{Pod, Zeroable};
+use crate::erasure::SPOOL_GROUP_SIZE;
 use crate::system::Committee;
+use crate::types::Bitmap;
 use super::{Spooler, SpoolerError};
 use super::dhondt::DhondtSpooler;
 use super::sainte_lague::SainteLagueSpooler;
 use super::migrate::to_spool_map;
-use super::{SpoolIndex, SpoolCount, SpoolMapping};
+use super::{SpoolGroup, SpoolIndex, SpoolCount, SpoolMapping};
 use tape_crypto::hash::{hashv, Hash};
 
 #[repr(C)]
@@ -101,6 +103,26 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     pub fn iter(&self) -> impl Iterator<Item = &SpoolMapping> {
         self.0.iter()
     }
+
+    /// Get the member mappings for a spool group (SPOOL_GROUP_SIZE entries).
+    pub fn members_in_group(&self, group: SpoolGroup) -> &[SpoolMapping] {
+        let start = group as usize * SPOOL_GROUP_SIZE;
+        let end = start + SPOOL_GROUP_SIZE;
+        &self.0[start..end]
+    }
+
+    /// Count how many spools in a group are owned by members in the bitmap.
+    pub fn group_weight<const BYTES: usize>(&self, group: SpoolGroup, bitmap: &Bitmap<BYTES>) -> u64 {
+        let start = group as usize * SPOOL_GROUP_SIZE;
+        let end = start + SPOOL_GROUP_SIZE;
+        let mut weight = 0u64;
+        for i in start..end {
+            if bitmap.is_set(self.0[i] as usize) {
+                weight += 1;
+            }
+        }
+        weight
+    }
 }
 
 pub fn get_spool_hash(spools: &[SpoolIndex]) -> Hash {
@@ -164,6 +186,41 @@ mod tests {
         let spools = SpoolAssignment::new([1, 0, 1, 2, 1, 0]);
         let member_spools = spools.spools_for_member(1);
         assert_eq!(member_spools, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn members_in_group() {
+        // 40 spools, group size 20 → 2 groups
+        let mut arr = [0u8; 40];
+        for i in 0..20 { arr[i] = (i % 4) as u8; }       // group 0: members 0-3
+        for i in 20..40 { arr[i] = ((i - 20) % 3) as u8; } // group 1: members 0-2
+        let sa = SpoolAssignment::new(arr);
+
+        let g0 = sa.members_in_group(0);
+        assert_eq!(g0.len(), 20);
+        assert_eq!(g0[0], 0);
+        assert_eq!(g0[1], 1);
+
+        let g1 = sa.members_in_group(1);
+        assert_eq!(g1.len(), 20);
+        assert_eq!(g1[0], 0);
+    }
+
+    #[test]
+    fn group_weight_with_bitmap() {
+        use crate::types::Bitmap;
+        // 40 spools, 2 groups
+        let mut arr = [0u8; 40];
+        // Group 0: all owned by member 0
+        for i in 0..20 { arr[i] = 0; }
+        // Group 1: split between members 1 and 2
+        for i in 20..40 { arr[i] = if i % 2 == 0 { 1 } else { 2 }; }
+        let sa = SpoolAssignment::new(arr);
+
+        // Bitmap with members 0 and 1 set
+        let bm = Bitmap::<1>::from_indices(&[0, 1], 8);
+        assert_eq!(sa.group_weight(0, &bm), 20); // all 20 owned by member 0
+        assert_eq!(sa.group_weight(1, &bm), 10); // 10 owned by member 1
     }
 
     #[test]

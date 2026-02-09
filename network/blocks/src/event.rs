@@ -178,6 +178,7 @@ mod tests {
             commitment: Hash::default(),
             epoch: EpochNumber(3),
             profile: EncodingProfile::clay_default(),
+            spool_group: 5u64.to_le_bytes(),
         };
 
         let log = encode_event(EventType::TrackRegistered, &event);

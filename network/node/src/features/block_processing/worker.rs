@@ -238,23 +238,19 @@ async fn process_instruction(
         } => {
             debug!(track = %track, size = size.as_u64(), "Detected RegisterTrack");
 
-            // Extract tape and epoch from event, or use defaults
-            let (tape, registered_epoch) = match event {
-                Some(e) => (e.tape, e.epoch),
-                None => {
-                    // Fallback: use track as tape (shouldn't happen in practice)
-                    warn!(track = %track, "RegisterTrack without event, using fallback");
-                    (track, ctx.control_plane.current_epoch())
+            match event {
+                Some(ref e) => {
+                    if let Err(e) = handlers::handle_register_track(
+                        &ctx.storage.store,
+                        track.to_bytes(),
+                        e,
+                    ) {
+                        warn!(track = %track, error = %e, "Failed to store track info");
+                    }
                 }
-            };
-
-            if let Err(e) = handlers::handle_register_track(
-                &ctx.storage.store,
-                track.to_bytes(),
-                tape.to_bytes(),
-                registered_epoch,
-            ) {
-                warn!(track = %track, error = %e, "Failed to store track info");
+                None => {
+                    warn!(track = %track, "RegisterTrack without event, skipping");
+                }
             }
             Ok(false)
         }

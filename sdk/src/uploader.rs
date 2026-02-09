@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
+use tape_core::erasure::spool_for_slice;
 use tape_core::system::Committee;
+use tape_core::spooler::SpoolGroup;
 use tape_crypto::Hash;
 use tape_node_api::SlicePayload;
 use tokio::sync::Semaphore;
@@ -20,7 +22,7 @@ use crate::routing::SliceRouter;
 // Re-export erasure coding constants from tape-core
 pub use tape_core::erasure::SPOOL_COUNT;
 // Re-export spool types for convenience
-pub use tape_core::spooler::{SpoolAssignment, SpoolIndex};
+pub use tape_core::spooler::{SpoolAssignment, SpoolIndex, SpoolMapping};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
@@ -56,6 +58,7 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader<const MEMBERS: usize> {
     track_id: String,
+    spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
     router: SliceRouter<MEMBERS>,
     factory: NodeCommunicationFactory,
@@ -64,21 +67,24 @@ pub struct DistributedUploader<const MEMBERS: usize> {
 }
 
 impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
-    /// Create a new uploader with proper spool-based routing.
+    /// Create a new uploader with group-aware spool-based routing.
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
+    /// * `spool_group` - The spool group for this track
     /// * `slices` - The encoded slices with merkle proofs (should be SPOOL_GROUP_SIZE)
     /// * `router` - SliceRouter with committee and spool assignments
     /// * `factory` - Factory for creating node clients
     pub fn new(
         track_id: String,
+        spool_group: SpoolGroup,
         slices: Vec<SliceWithProof>,
         router: SliceRouter<MEMBERS>,
         factory: NodeCommunicationFactory,
     ) -> Self {
         Self {
             track_id,
+            spool_group,
             slices,
             router,
             factory,
@@ -109,34 +115,38 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             return Err(UploadError::NoNodesAvailable);
         }
 
-        // Group slices by the member that owns them (proper spool-based routing)
-        let member_groups = self.router.group_slices_by_member();
+        // Group slices by the member that owns them within the spool group
+        let member_groups = self.router.group_slices_by_member_for_group(self.spool_group);
 
-        // Build a lookup from slice index to slice data
+        // Build a lookup: global spool index → slice data
+        // Each slice's index is its local position (0..SPOOL_GROUP_SIZE-1),
+        // map to global spool index for routing
         let slice_map: std::collections::HashMap<SpoolIndex, &SliceWithProof> = self
             .slices
             .iter()
-            .map(|s| (s.index, s))
+            .map(|s| {
+                let global_spool = spool_for_slice(self.spool_group, s.index as usize);
+                (global_spool, s)
+            })
             .collect();
 
         // Upload to each member in parallel
         let upload_futures: Vec<_> = member_groups
             .into_iter()
-            .map(|(member_idx, slice_indices)| {
+            .map(|(member_idx, slice_spool_pairs)| {
                 let factory = self.factory.clone();
                 let track_id = self.track_id.clone();
                 let permit = self.concurrency_limit.clone();
                 let retry_count = self.retry_count;
 
-                // Get the address for this member
-                let addr_result = self.router.socket_addr_for_slice(
-                    *slice_indices.first().unwrap_or(&0)
-                );
+                // Get the address for this member using the first spool index
+                let first_spool = slice_spool_pairs.first().map(|(_, s)| *s).unwrap_or(0);
+                let addr_result = self.router.socket_addr_for_slice(first_spool);
 
                 // Collect slices for this member
-                let slices: Vec<SliceWithProof> = slice_indices
+                let slices: Vec<SliceWithProof> = slice_spool_pairs
                     .iter()
-                    .filter_map(|idx| slice_map.get(idx).map(|s| (*s).clone()))
+                    .filter_map(|(_, spool)| slice_map.get(spool).map(|s| (*s).clone()))
                     .collect();
 
                 async move {
@@ -194,7 +204,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             .collect();
 
         // Wait for all uploads
-        let results: Vec<Result<(usize, Vec<SpoolIndex>), UploadError>> = stream::iter(upload_futures)
+        let results: Vec<Result<(SpoolMapping, Vec<SpoolIndex>), UploadError>> = stream::iter(upload_futures)
             .buffer_unordered(DEFAULT_CONCURRENCY)
             .collect()
             .await;
@@ -214,10 +224,10 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             }
         }
 
-        // Check quorum - need 2f+1 (min_correct) members to acknowledge
-        let num_members = self.router.committee_size();
-        let successful_members = num_members - member_failures;
-        let required = tape_core::bft::min_correct(num_members as u64) as usize;
+        // Check quorum - need 2f+1 of group members to acknowledge
+        let group_members = self.router.unique_members_in_group(self.spool_group).len();
+        let successful_members = group_members - member_failures;
+        let required = tape_core::bft::min_correct(group_members as u64) as usize;
 
         if successful_members < required {
             return Err(UploadError::InsufficientQuorum {
@@ -297,6 +307,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             "track_123".to_string(),
+            0, // spool group 0
             slices,
             router,
             factory,

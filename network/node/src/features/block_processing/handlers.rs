@@ -1,29 +1,47 @@
 //! Block processor event handlers
 //!
 //! Handlers for tapedrive instructions detected in Solana blocks.
-//!
-//! NOTE: Most handlers are currently no-ops pending redesign of the
-//! storage layer. They log the event but don't persist data.
 
 use store::Store;
+use tape_api::event::TrackRegistered;
 use tape_core::types::EpochNumber;
 use tape_store::error::Result;
+use tape_store::ops::TrackOps;
+use tape_store::types::{Pubkey, SpoolAllocation, TrackInfo};
 use tape_store::TapeStore;
 use tracing::debug;
 
 /// Handle RegisterTrack instruction.
+///
+/// Persists TrackInfo to local store so the sign endpoint can look up track metadata.
 pub fn handle_register_track<S: Store>(
-    _store: &TapeStore<S>,
+    store: &TapeStore<S>,
     track: [u8; 32],
-    tape: [u8; 32],
-    registered_epoch: EpochNumber,
+    event: &TrackRegistered,
 ) -> Result<()> {
+    let spool_group = u64::from_le_bytes(event.spool_group);
+
     debug!(
         track = %bs58::encode(&track).into_string(),
-        tape = %bs58::encode(&tape).into_string(),
-        epoch = registered_epoch.as_u64(),
-        "RegisterTrack (no-op)"
+        tape = %bs58::encode(event.tape.as_ref()).into_string(),
+        epoch = event.epoch.as_u64(),
+        spool_group = spool_group,
+        "RegisterTrack"
     );
+
+    let track_info = TrackInfo {
+        tape_address: Pubkey(event.tape.to_bytes()),
+        spool_allocation: SpoolAllocation::SpoolGroup(spool_group as u8),
+        original_size: event.size.as_u64(),
+        stripe_size: 0,
+        stripe_count: 0,
+        encoding_type: event.profile.encoding,
+        encoding_params: event.profile.params,
+        commitment: vec![],
+        commitment_hash: event.commitment,
+    };
+
+    store.put_track(Pubkey(track), track_info)?;
     Ok(())
 }
 
@@ -155,6 +173,8 @@ pub fn set_cluster_hash<S: Store>(
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::types::StorageUnits;
     use tape_store::TapeStore;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -162,11 +182,28 @@ mod tests {
     }
 
     #[test]
-    fn test_register_track_noop() {
+    fn test_register_track_persists() {
         let store = test_store();
         let track = [1u8; 32];
-        let tape = [2u8; 32];
-        handle_register_track(&store, track, tape, EpochNumber(100)).unwrap();
+        let tape_pubkey = solana_program::pubkey::Pubkey::new_unique();
+
+        let event = TrackRegistered {
+            track: solana_program::pubkey::Pubkey::new_from_array(track),
+            tape: tape_pubkey,
+            key: tape_crypto::Hash::default(),
+            size: StorageUnits(100),
+            commitment: tape_crypto::Hash::default(),
+            epoch: EpochNumber(42),
+            profile: EncodingProfile::clay_default(),
+            spool_group: 5u64.to_le_bytes(),
+        };
+
+        handle_register_track(&store, track, &event).unwrap();
+
+        let info = store.get_track(Pubkey(track)).unwrap().expect("track should exist");
+        assert_eq!(info.tape_address, Pubkey(tape_pubkey.to_bytes()));
+        assert_eq!(info.spool_allocation, SpoolAllocation::SpoolGroup(5));
+        assert_eq!(info.original_size, 100);
     }
 
     #[test]

@@ -39,6 +39,8 @@ use tape_api::program::tapedrive::{CommitteeBitmap, MEMBER_COUNT};
 use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::NodeId;
 use tape_crypto::Hash;
 use tape_node_client::{with_retry, NodeClient, NodeError, RetryConfig, SignResponse};
@@ -261,6 +263,7 @@ impl CertificationCollector {
     pub async fn collect_signatures(
         &self,
         track_address: &Pubkey,
+        spool_group: SpoolGroup,
         system: &System,
         node_addresses: &HashMap<NodeId, String>,
     ) -> Result<CollectedSignatures, CertificationError> {
@@ -271,20 +274,33 @@ impl CertificationCollector {
             return Err(CertificationError::NoCommitteeMembers);
         }
 
+        // Determine which members own spools in this group (deduplicated)
+        let group_members: std::collections::HashSet<u8> = {
+            let mut members = std::collections::HashSet::new();
+            for i in 0..SPOOL_GROUP_SIZE {
+                let spool = tape_core::erasure::spool_for_slice(spool_group, i);
+                let member = system.spools.0[spool as usize];
+                members.insert(member);
+            }
+            members
+        };
+
         // Track ID is the base58 string of the track address
         let track_id = track_address.to_string();
 
+        let target_count = group_members.len();
         // Channel for streaming results as they complete
-        let (tx, mut rx) = mpsc::channel::<NodeResult>(committee_size);
+        let (tx, mut rx) = mpsc::channel::<NodeResult>(target_count.max(1));
 
         // Semaphore for bounded concurrency
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent));
 
-        // Spawn tasks for each committee member
-        // Note: committee.iter() only returns active members (up to member_count),
-        // so we don't need to filter out empty slots - NodeId(0) is a valid ID.
+        // Spawn tasks only for members who own spools in this group
         let mut task_count = 0;
         for (member_idx, member) in committee.iter().enumerate() {
+            if !group_members.contains(&(member_idx as u8)) {
+                continue;
+            }
             // Look up network address
             let address = match node_addresses.get(&member.id) {
                 Some(addr) => addr.clone(),
@@ -380,15 +396,21 @@ impl CertificationCollector {
                     );
                     successful.push((node_result.member_idx, node_result.pubkey, response));
 
-                    // Check for early exit
+                    // Check for early exit using spool-group-weighted supermajority
+                    // Weight = number of spools in the group owned by signers
+                    let signer_weight = system.spools.group_weight(spool_group, &{
+                        let indices: Vec<usize> = successful.iter().map(|(idx, _, _)| *idx as usize).collect();
+                        tape_api::program::tapedrive::CommitteeBitmap::from_indices(&indices, committee_size)
+                    });
                     if self.config.early_exit
-                        && is_supermajority(successful.len() as u64, committee_size as u64)
+                        && is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64)
                     {
                         tracing::info!(
                             signatures = successful.len(),
-                            committee_size = committee_size,
+                            weight = signer_weight,
+                            group_size = SPOOL_GROUP_SIZE,
                             remaining = task_count - received,
-                            "Supermajority reached, exiting early"
+                            "Spool group supermajority reached, exiting early"
                         );
                         early_exit_triggered = true;
                         break;
@@ -415,18 +437,19 @@ impl CertificationCollector {
             }
         }
 
-        // Check if we have supermajority
+        // Check if we have spool-weighted supermajority within the group
         let got = successful.len();
-        if !is_supermajority(got as u64, committee_size as u64) {
+        let member_indices: Vec<usize> = successful.iter().map(|(idx, _, _)| *idx as usize).collect();
+        let check_bitmap = tape_api::program::tapedrive::CommitteeBitmap::from_indices(&member_indices, committee_size);
+        let final_weight = system.spools.group_weight(spool_group, &check_bitmap);
+        if !is_supermajority(final_weight, SPOOL_GROUP_SIZE as u64) {
             return Err(CertificationError::InsufficientSignatures {
                 got,
-                total: committee_size,
+                total: SPOOL_GROUP_SIZE,
             });
         }
 
-        // Build bitmap from member indices
-        let member_indices: Vec<usize> =
-            successful.iter().map(|(idx, _, _)| *idx as usize).collect();
+        // Build bitmap from member indices (reuse from supermajority check above)
         let bitmap = CommitteeBitmap::from_indices(&member_indices, MEMBER_COUNT);
 
         // Extract signatures and aggregate

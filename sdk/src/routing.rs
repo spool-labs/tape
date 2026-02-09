@@ -29,8 +29,8 @@
 
 use std::net::SocketAddr;
 
-use tape_core::erasure::SPOOL_COUNT;
-use tape_core::spooler::{SpoolAssignment, SpoolIndex};
+use tape_core::erasure::{spool_for_slice, SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex, SpoolMapping};
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{NetworkAddress, NodeId};
 
@@ -241,6 +241,52 @@ impl<const MEMBERS: usize> SliceRouter<MEMBERS> {
     }
 
     // =========================================================================
+    // Group-scoped routing
+    // =========================================================================
+
+    /// Get member assignments for a spool group.
+    ///
+    /// Returns Vec of (slice_in_group, global_spool_index, member_index).
+    pub fn members_for_group(&self, group: SpoolGroup) -> Vec<(usize, SpoolIndex, SpoolMapping)> {
+        (0..SPOOL_GROUP_SIZE)
+            .map(|i| {
+                let spool = spool_for_slice(group, i);
+                let member = self.spool_assignment.0[spool as usize];
+                (i, spool, member)
+            })
+            .collect()
+    }
+
+    /// Group slices by member for a specific spool group.
+    ///
+    /// Returns Vec of (member_index, Vec<(slice_in_group, global_spool_index)>).
+    pub fn group_slices_by_member_for_group(&self, group: SpoolGroup) -> Vec<(SpoolMapping, Vec<(usize, SpoolIndex)>)> {
+        let mut groups: std::collections::HashMap<SpoolMapping, Vec<(usize, SpoolIndex)>> =
+            std::collections::HashMap::new();
+
+        for i in 0..SPOOL_GROUP_SIZE {
+            let spool = spool_for_slice(group, i);
+            let member = self.spool_assignment.0[spool as usize];
+            groups.entry(member).or_default().push((i, spool));
+        }
+
+        groups.into_iter().collect()
+    }
+
+    /// Get unique members in a spool group and their spool counts.
+    ///
+    /// Returns Vec of (member_index, spool_count_in_group).
+    pub fn unique_members_in_group(&self, group: SpoolGroup) -> Vec<(SpoolMapping, usize)> {
+        let mut counts: std::collections::HashMap<SpoolMapping, usize> = std::collections::HashMap::new();
+        for i in 0..SPOOL_GROUP_SIZE {
+            let spool = spool_for_slice(group, i);
+            let member = self.spool_assignment.0[spool as usize];
+            *counts.entry(member).or_default() += 1;
+        }
+        counts.into_iter().collect()
+    }
+
+    // =========================================================================
     // Bulk routing for upload/download
     // =========================================================================
 
@@ -431,6 +477,33 @@ mod tests {
         // Total should be SPOOL_COUNT
         let total: usize = counts.iter().map(|(_, _, c)| *c).sum();
         assert_eq!(total, SPOOL_COUNT);
+    }
+
+    #[test]
+    fn test_members_for_group() {
+        let committee = make_committee::<10>(3);
+        let assignment = make_uniform_assignment(3);
+        let router = SliceRouter::new(assignment, committee);
+
+        let members = router.members_for_group(0);
+        assert_eq!(members.len(), 20); // SPOOL_GROUP_SIZE
+        // First spool in group 0 is spool 0
+        assert_eq!(members[0].1, 0); // global spool index
+        assert_eq!(members[19].1, 19); // last spool in group 0
+    }
+
+    #[test]
+    fn test_group_slices_by_member_for_group() {
+        let committee = make_committee::<10>(3);
+        let assignment = make_uniform_assignment(3);
+        let router = SliceRouter::new(assignment, committee);
+
+        let groups = router.group_slices_by_member_for_group(0);
+        // With 3 members and 20 spools, should have up to 3 groups
+        assert!(!groups.is_empty());
+
+        let total: usize = groups.iter().map(|(_, slices)| slices.len()).sum();
+        assert_eq!(total, 20); // SPOOL_GROUP_SIZE
     }
 
     #[test]

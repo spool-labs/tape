@@ -6,7 +6,7 @@
 //! 3. Download the blob back (fetch → decode)
 //! 4. Verify the data matches
 //!
-//! Uses 4 KB slice size for testing (vs 1 MiB in production) to reduce memory usage.
+//! Uses default Clay encoding (k=7, m=13) for erasure coding.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,18 +18,22 @@ use serial_test::serial;
 use store_memory::MemoryStore;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::erasure::{DATA_SLICES, SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolAssignment;
 use tape_core::system::{Committee, CommitteeMember};
 use tape_core::types::{Coin, NetworkAddress, NodeId, TAPE};
 use tape_crypto::Pubkey;
 use tape_node::control_plane::ControlPlane;
-use tape_node::server::routes::{create_router, ApiState};
-use tape_node::{NodeMetrics, StorageService};
+use tape_node::features::api::{create_router, ApiState};
+use tape_node::features::storage::StorageService;
+use tape_node::metrics::NodeMetrics;
 use tape_sdk::client::MEMBER_COUNT;
 use tape_sdk::TapeClient;
 use tape_store::TapeStore;
 use tokio::net::TcpListener;
+
+/// Default Clay encoding k=7 (minimum slices needed for reconstruction).
+const DEFAULT_K: usize = 7;
 
 /// Start a test node on a random port with in-memory storage.
 /// Uses default single-node setup where node owns all spools.
@@ -127,7 +131,7 @@ fn make_uniform_assignment(member_count: usize) -> SpoolAssignment<SPOOL_COUNT> 
     SpoolAssignment::new(spools)
 }
 
-/// Create a test client with small slice sizes (4 KB instead of 1 MB).
+/// Create a test client for a single node.
 fn test_client(node_url: String) -> TapeClient {
     let committee = make_test_committee(1);
     let assignment = make_uniform_assignment(1);
@@ -142,7 +146,6 @@ fn test_client(node_url: String) -> TapeClient {
         .committee(committee)
         .spool_assignment(assignment)
         .node_addresses(addresses)
-        .max_slice_bytes(4 * 1024) // 4 KB slices for testing
         .build()
 }
 
@@ -166,7 +169,6 @@ fn test_client_multi(node_urls: Vec<String>) -> TapeClient {
         .committee(committee)
         .spool_assignment(assignment)
         .node_addresses(addresses)
-        .max_slice_bytes(4 * 1024)
         .build()
 }
 
@@ -192,7 +194,7 @@ async fn test_upload_download_roundtrip() {
 
     // Upload
     let commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
 
@@ -200,7 +202,7 @@ async fn test_upload_download_roundtrip() {
 
     // Download
     let recovered = client
-        .download_blob(&track_id)
+        .download_blob(&track_id, DEFAULT_K)
         .await
         .expect("download should succeed");
 
@@ -220,13 +222,13 @@ async fn test_verified_download() {
 
     // Upload and get commitment
     let commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
 
     // Download with verification
     let recovered = client
-        .download_blob_verified(&track_id, &commitment)
+        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
         .await
         .expect("verified download should succeed");
 
@@ -246,13 +248,13 @@ async fn test_erasure_recovery() {
 
     // Upload all 1024 slices
     let commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
 
     // Download (will only fetch 2f+1 slices - the minimum needed)
     let recovered = client
-        .download_blob(&track_id)
+        .download_blob(&track_id, DEFAULT_K)
         .await
         .expect("download should succeed with 2f+1 slices");
 
@@ -260,7 +262,7 @@ async fn test_erasure_recovery() {
 
     // Verify commitment matches
     let verified = client
-        .download_blob_verified(&track_id, &commitment)
+        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -303,7 +305,7 @@ async fn test_slice_not_found() {
     assert!(result.is_err(), "Should get NotFound error");
 }
 
-/// Test that the builder correctly sets max_slice_bytes.
+/// Test that the builder correctly creates a client.
 #[tokio::test]
 async fn test_client_builder() {
     let committee = make_test_committee(1);
@@ -314,10 +316,8 @@ async fn test_client_builder() {
         .committee(committee)
         .spool_assignment(assignment)
         .add_node(0, addr)
-        .max_slice_bytes(4 * 1024)
         .build();
 
-    assert_eq!(client.max_slice_bytes(), 4 * 1024);
     assert_eq!(client.committee_size(), 1);
 }
 
@@ -474,7 +474,7 @@ async fn test_multi_node_roundtrip() {
 
     // Upload - slices distributed: slice_idx % NUM_NODES
     let commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
 
@@ -482,7 +482,7 @@ async fn test_multi_node_roundtrip() {
 
     // Download - fetches from correct node per slice
     let recovered = client
-        .download_blob(&track_id)
+        .download_blob(&track_id, DEFAULT_K)
         .await
         .expect("download should succeed");
 
@@ -490,7 +490,7 @@ async fn test_multi_node_roundtrip() {
 
     // Verify
     let verified = client
-        .download_blob_verified(&track_id, &commitment)
+        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -522,7 +522,7 @@ async fn test_multi_node_with_failures() {
 
     // Upload to all nodes
     let commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
 
@@ -537,7 +537,7 @@ async fn test_multi_node_with_failures() {
     let slices_remaining = SPOOL_GROUP_SIZE - slices_lost;
     println!(
         "Killed {} nodes (~{} slices lost, ~{} remaining, need {})",
-        NODES_TO_KILL, slices_lost, slices_remaining, DATA_SLICES
+        NODES_TO_KILL, slices_lost, slices_remaining, DEFAULT_K
     );
 
     // Give nodes time to shut down
@@ -545,7 +545,7 @@ async fn test_multi_node_with_failures() {
 
     // Download should still work
     let recovered = client
-        .download_blob(&track_id)
+        .download_blob(&track_id, DEFAULT_K)
         .await
         .expect("download should succeed despite node failures");
 
@@ -553,7 +553,7 @@ async fn test_multi_node_with_failures() {
 
     // Verify commitment
     let verified = client
-        .download_blob_verified(&track_id, &commitment)
+        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -594,8 +594,8 @@ async fn bench_upload_download_throughput() {
     let track_id = Pubkey::new_unique().to_string();
 
     // Warm up
-    let _ = client.upload_blob(&track_id, original.clone()).await;
-    let _ = client.download_blob(&track_id).await;
+    let _ = client.upload_blob(&track_id, 0, original.clone()).await;
+    let _ = client.download_blob(&track_id, DEFAULT_K).await;
 
     // Benchmark encoding separately using BasicSlicer
     let mut encoder = BlobEncoder::with_encoding(tape_core::prelude::EncodingType::Basic);
@@ -607,7 +607,7 @@ async fn bench_upload_download_throughput() {
     let track_id = Pubkey::new_unique().to_string();
     let start = Instant::now();
     let _commitment = client
-        .upload_blob(&track_id, original.clone())
+        .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload failed");
     let upload_total = start.elapsed();
@@ -615,15 +615,16 @@ async fn bench_upload_download_throughput() {
     // Benchmark download (includes decoding)
     let start = Instant::now();
     let _recovered = client
-        .download_blob(&track_id)
+        .download_blob(&track_id, DEFAULT_K)
         .await
         .expect("download failed");
     let download_total = start.elapsed();
 
-    // Benchmark decoding separately
+    // Benchmark decoding separately (Basic encoding uses k=10)
+    const BASIC_K: usize = 10;
     let slices_for_decode: Vec<(u16, Vec<u8>)> = slices
         .iter()
-        .take(DATA_SLICES)
+        .take(BASIC_K)
         .map(|s| (s.index, s.data.clone()))
         .collect();
     let mut decoder = BlobDecoder::with_encoding(tape_core::prelude::EncodingType::Basic);
@@ -679,18 +680,18 @@ async fn bench_node_scaling() {
 
         // Warm up
         let track_id = Pubkey::new_unique().to_string();
-        let _ = client.upload_blob(&track_id, original.clone()).await;
-        let _ = client.download_blob(&track_id).await;
+        let _ = client.upload_blob(&track_id, 0, original.clone()).await;
+        let _ = client.download_blob(&track_id, DEFAULT_K).await;
 
         // Benchmark
         let track_id = Pubkey::new_unique().to_string();
 
         let start = Instant::now();
-        client.upload_blob(&track_id, original.clone()).await.unwrap();
+        client.upload_blob(&track_id, 0, original.clone()).await.unwrap();
         let upload_time = start.elapsed();
 
         let start = Instant::now();
-        client.download_blob(&track_id).await.unwrap();
+        client.download_blob(&track_id, DEFAULT_K).await.unwrap();
         let download_time = start.elapsed();
 
         let up_slices = 1024.0 / upload_time.as_secs_f64();

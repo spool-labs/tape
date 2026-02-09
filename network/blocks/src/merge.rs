@@ -257,6 +257,7 @@ mod tests {
             commitment: Hash::default(),
             epoch: EpochNumber(2),
             profile: tape_core::encoding::EncodingProfile::clay_default(),
+            spool_group: 0u64.to_le_bytes(),
         };
 
         let certify_event = TrackCertified {

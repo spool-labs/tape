@@ -111,7 +111,7 @@ mod tests {
             stripe_size: 1024,
             stripe_count: 1024,
             encoding_type: 2, // Clay
-            encoding_params: 0x130A14, // n=20, k=10, d=19 packed
+            encoding_params: 0x100714, // n=20, k=7, d=16 packed
             commitment: vec![Hash::default(); 10],
             commitment_hash: Hash::default(),
         };
@@ -157,15 +157,15 @@ mod tests {
         };
 
         // Set profile
-        let profile = EncodingProfile::clay(ClayParams::new(20, 10, 19));
+        let profile = EncodingProfile::clay(ClayParams::new(20, 7, 16));
         info.set_profile(profile);
 
         // Get profile and verify
         let retrieved = info.profile();
         assert_eq!(retrieved.encoding_type(), Some(EncodingType::Clay));
         assert_eq!(retrieved.clay_params().n(), 20);
-        assert_eq!(retrieved.clay_params().k(), 10);
-        assert_eq!(retrieved.clay_params().d(), 19);
+        assert_eq!(retrieved.clay_params().k(), 7);
+        assert_eq!(retrieved.clay_params().d(), 16);
     }
 
     #[test]

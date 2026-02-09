@@ -21,9 +21,41 @@ pub const SPOOL_COUNT: usize = SPOOL_GROUP_COUNT * SPOOL_GROUP_SIZE;
 /// Maximum blob size (1 GiB).
 pub const MAX_BLOB_SIZE: usize = 1 << 30;
 
-/// Maximum slice size (~100 MiB).
-/// With k=10 data slices, each shard is approximately blob_size / 10.
-pub const MAX_SLICE_SIZE: usize = MAX_BLOB_SIZE / 10;
+/// Maximum slice size (~143 MiB).
+/// With k=7 data slices, each shard is approximately blob_size / 7.
+pub const MAX_SLICE_SIZE: usize = MAX_BLOB_SIZE / 7;
+
+use crate::spooler::{SpoolGroup, SpoolIndex};
+
+/// Get the spool group index (0..SPOOL_GROUP_COUNT-1) for a given spool.
+#[inline]
+pub fn group_for_spool(spool: SpoolIndex) -> SpoolGroup {
+    (spool as usize / SPOOL_GROUP_SIZE) as SpoolGroup
+}
+
+/// Get the first spool index in a group.
+#[inline]
+pub fn group_start(group: SpoolGroup) -> SpoolIndex {
+    (group as usize * SPOOL_GROUP_SIZE) as SpoolIndex
+}
+
+/// Get the global spool index for a slice within a group.
+#[inline]
+pub fn spool_for_slice(group: SpoolGroup, slice_in_group: usize) -> SpoolIndex {
+    (group as usize * SPOOL_GROUP_SIZE + slice_in_group) as SpoolIndex
+}
+
+/// Check if a spool belongs to a given group.
+#[inline]
+pub fn spool_in_group(spool: SpoolIndex, group: SpoolGroup) -> bool {
+    group_for_spool(spool) == group
+}
+
+/// Convert a raw u8 spool group to SpoolGroup.
+#[inline]
+pub fn spool_group_from_u8(group: u8) -> SpoolGroup {
+    group as SpoolGroup
+}
 
 #[cfg(test)]
 mod tests {
@@ -47,7 +79,39 @@ mod tests {
 
     #[test]
     fn test_max_slice_size() {
-        // With default k=10, max slice is ~100 MiB
-        assert_eq!(MAX_SLICE_SIZE, MAX_BLOB_SIZE / 10);
+        // With default k=7, max slice is ~143 MiB
+        assert_eq!(MAX_SLICE_SIZE, MAX_BLOB_SIZE / 7);
+    }
+
+    #[test]
+    fn test_group_for_spool() {
+        assert_eq!(group_for_spool(0), 0);
+        assert_eq!(group_for_spool(19), 0);
+        assert_eq!(group_for_spool(20), 1);
+        assert_eq!(group_for_spool(999), 49);
+    }
+
+    #[test]
+    fn test_group_start() {
+        assert_eq!(group_start(0), 0);
+        assert_eq!(group_start(1), 20);
+        assert_eq!(group_start(49), 980);
+    }
+
+    #[test]
+    fn test_spool_for_slice() {
+        assert_eq!(spool_for_slice(0, 0), 0);
+        assert_eq!(spool_for_slice(0, 19), 19);
+        assert_eq!(spool_for_slice(1, 0), 20);
+        assert_eq!(spool_for_slice(49, 19), 999);
+    }
+
+    #[test]
+    fn test_spool_in_group() {
+        assert!(spool_in_group(0, 0));
+        assert!(spool_in_group(19, 0));
+        assert!(!spool_in_group(20, 0));
+        assert!(spool_in_group(20, 1));
+        assert!(spool_in_group(999, 49));
     }
 }

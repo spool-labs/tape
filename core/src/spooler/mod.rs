@@ -39,6 +39,7 @@ const MIN_COMMITTEE_SIZE: u64 = 25;
 pub type SpoolIndex = u16;
 pub type SpoolCount = u16;
 pub type SpoolMapping = u8;
+pub type SpoolGroup = u64;
 
 /// Errors used across spool allocation and migration.
 #[derive(Debug, Clone, PartialEq, Eq)]

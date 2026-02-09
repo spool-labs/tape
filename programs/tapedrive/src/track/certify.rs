@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackCertified;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_crypto::bls12254::min_sig::*;
 use crate::error::*;
 
@@ -59,14 +60,10 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let mut weight : u64 = 0;
-    for &i in system.spools.iter() {
-        if args.bitmap.is_set(i as usize) {
-            weight += 1;
-        }
-    }
+    let group = track.data.spool_group();
+    let weight = system.spools.group_weight(group, &args.bitmap);
 
-    if !is_supermajority(weight, SPOOL_COUNT as u64) {
+    if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
@@ -183,6 +180,7 @@ mod tests {
             key: bucket_hash,
             data: TrackData {
                 commitment_hash,
+                spool_group: 0, // test uses group 0 (spools 0-19)
                 ..TrackData::zeroed()
             },
             ..Track::zeroed()

@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackRegistered;
+use tape_core::erasure::SPOOL_GROUP_COUNT;
 use crate::error::*;
 
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -63,6 +64,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     )?;
 
     let track_number = tape.track_count;
+    let spool_group = track_number % SPOOL_GROUP_COUNT as u64;
     tape.track_count = tape.track_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -76,6 +78,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     track.data = TrackData::new(
         current_epoch(epoch),
         args.commitment,
+        spool_group,
     );
     track.data.profile = args.profile;
 
@@ -97,6 +100,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         commitment: args.commitment,
         epoch: current_epoch(epoch),
         profile: args.profile,
+        spool_group: spool_group.to_le_bytes(),
     }.log();
 
     Ok(())
@@ -159,7 +163,8 @@ mod tests {
         ];
 
         // Build expected track data with profile
-        let mut expected_data = TrackData::new(EpochNumber(0), erasure_root);
+        // spool_group = tape.track_count % SPOOL_GROUP_COUNT = 100 % 50 = 0
+        let mut expected_data = TrackData::new(EpochNumber(0), erasure_root, 0);
         expected_data.profile = profile;
 
         let env = test_env();
