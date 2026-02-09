@@ -106,7 +106,7 @@ mod tests {
     fn test_track_info_roundtrip() {
         let info = TrackInfo {
             tape_address: Pubkey([1u8; 32]),
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_allocation: SpoolAllocation::SpoolGroup(3u64),
             original_size: 1024 * 1024,
             stripe_size: 1024,
             stripe_count: 1024,
@@ -146,7 +146,7 @@ mod tests {
 
         let mut info = TrackInfo {
             tape_address: Pubkey([3u8; 32]),
-            spool_allocation: SpoolAllocation::SpoolGroup(1),
+            spool_allocation: SpoolAllocation::SpoolGroup(1u64),
             original_size: 1024,
             stripe_size: 512,
             stripe_count: 2,

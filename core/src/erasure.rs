@@ -51,12 +51,6 @@ pub fn spool_in_group(spool: SpoolIndex, group: SpoolGroup) -> bool {
     group_for_spool(spool) == group
 }
 
-/// Convert a raw u8 spool group to SpoolGroup.
-#[inline]
-pub fn spool_group_from_u8(group: u8) -> SpoolGroup {
-    group as SpoolGroup
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

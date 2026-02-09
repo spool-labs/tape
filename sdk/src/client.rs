@@ -4,7 +4,7 @@
 //! each slice to the correct storage node.
 
 pub use tape_api::program::MEMBER_COUNT;
-use tape_core::erasure::SPOOL_COUNT;
+use tape_core::erasure::{group_start, spool_for_slice, SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::Committee;
 use tape_core::types::NetworkAddress;
@@ -105,28 +105,35 @@ impl TapeClient {
         uploader.upload_all().await
     }
 
-    /// Download slices from the network.
+    /// Download slices from the network for a specific spool group.
     ///
     /// This is a lower-level method that downloads raw slices.
-    /// For full blob download with decoding, use a higher-level method
-    /// that integrates with the slicer.
+    /// For full blob download with decoding, use `download_blob()` instead.
+    ///
+    /// Returns slices with local indices (0..SPOOL_GROUP_SIZE-1) suitable
+    /// for passing directly to the decoder.
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
+    /// * `spool_group` - The spool group for this track
     /// * `min_slices` - Minimum slices needed for reconstruction (k from track's encoding profile)
     pub async fn download_slices(
         &self,
         track_id: &str,
+        spool_group: SpoolGroup,
         min_slices: usize,
     ) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
         use std::collections::HashMap;
 
-        // Build slice_index → address mapping using proper spool-based routing
+        // Build slice_index → address mapping for only the group's spools
         let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
+        let base = group_start(spool_group);
 
-        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
-            if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
-                slice_to_address.insert(slice_idx, format!("http://{}", sock));
+        for local_idx in 0..SPOOL_GROUP_SIZE {
+            let global_spool = spool_for_slice(spool_group, local_idx);
+            if let Ok(sock) = self.router.socket_addr_for_slice(global_spool) {
+                // Use global spool index for routing (node expects global index)
+                slice_to_address.insert(global_spool, format!("http://{}", sock));
             }
         }
 
@@ -137,7 +144,13 @@ impl TapeClient {
             min_slices,
         );
 
-        downloader.download_enough_slices().await
+        let slices = downloader.download_enough_slices().await?;
+
+        // Convert global spool indices to local (0..SPOOL_GROUP_SIZE-1) for decoder
+        Ok(slices
+            .into_iter()
+            .map(|(global_idx, data)| ((global_idx - base) as SpoolIndex, data))
+            .collect())
     }
 
     /// Get the committee size.
@@ -236,6 +249,7 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
+    /// * `spool_group` - The spool group for this track
     ///
     /// # Returns
     /// The size in bytes of slices for this track.
@@ -243,16 +257,17 @@ impl TapeClient {
     /// # Fault Tolerance
     /// Tries random slices from different nodes until one responds.
     /// Randomized order ensures load is spread across nodes.
-    pub async fn probe_slice_size(&self, track_id: &str) -> Result<usize, DownloadError> {
+    pub async fn probe_slice_size(&self, track_id: &str, spool_group: SpoolGroup) -> Result<usize, DownloadError> {
         use rand::seq::SliceRandom;
         use std::collections::HashMap;
 
-        // Build slice_index → address mapping using proper spool-based routing
+        // Build slice_index → address mapping for only the group's spools
         let mut slice_to_address: HashMap<SpoolIndex, String> = HashMap::new();
 
-        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
-            if let Ok(sock) = self.router.socket_addr_for_slice(slice_idx) {
-                slice_to_address.insert(slice_idx, format!("http://{}", sock));
+        for local_idx in 0..SPOOL_GROUP_SIZE {
+            let global_spool = spool_for_slice(spool_group, local_idx);
+            if let Ok(sock) = self.router.socket_addr_for_slice(global_spool) {
+                slice_to_address.insert(global_spool, format!("http://{}", sock));
             }
         }
 
@@ -264,12 +279,13 @@ impl TapeClient {
             1,
         );
 
-        // Generate random slice indices to spread load across nodes
-        let mut indices: Vec<SpoolIndex> = (0..SPOOL_COUNT as SpoolIndex).collect();
+        // Generate random global spool indices within the group
+        let mut indices: Vec<SpoolIndex> = (0..SPOOL_GROUP_SIZE)
+            .map(|i| spool_for_slice(spool_group, i))
+            .collect();
         indices.shuffle(&mut rand::thread_rng());
 
         // Try slices in random order until one responds
-        // With SPOOL_COUNT spools across N nodes, this will try every node
         for &slice_idx in &indices {
             if let Ok(slice_data) = downloader.download_slice(slice_idx).await {
                 return Ok(slice_data.len());
@@ -306,11 +322,12 @@ impl TapeClient {
     ///
     /// # Arguments
     /// * `track_id` - The track identifier
+    /// * `spool_group` - The spool group for this track
     /// * `min_slices` - Minimum slices needed (k from on-chain track profile)
-    pub async fn download_blob(&self, track_id: &str, min_slices: usize) -> Result<Vec<u8>, ClientError> {
+    pub async fn download_blob(&self, track_id: &str, spool_group: SpoolGroup, min_slices: usize) -> Result<Vec<u8>, ClientError> {
         // Download enough slices (fault-tolerant - continues on node failures)
         let slices = self
-            .download_slices(track_id, min_slices)
+            .download_slices(track_id, spool_group, min_slices)
             .await
             .map_err(ClientError::Download)?;
 
@@ -340,11 +357,12 @@ impl TapeClient {
     pub async fn download_blob_verified(
         &self,
         track_id: &str,
+        spool_group: SpoolGroup,
         min_slices: usize,
         expected_commitment: &BlobMerkleRoot,
     ) -> Result<Vec<u8>, ClientError> {
         // Download and decode
-        let data = self.download_blob(track_id, min_slices).await?;
+        let data = self.download_blob(track_id, spool_group, min_slices).await?;
 
         // Re-encode to verify commitment using RotatedSlicer
         let mut encoder = BlobEncoder::new();

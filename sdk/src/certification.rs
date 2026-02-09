@@ -438,13 +438,13 @@ impl CertificationCollector {
         }
 
         // Check if we have spool-weighted supermajority within the group
-        let got = successful.len();
+        let signature_count = successful.len();
         let member_indices: Vec<usize> = successful.iter().map(|(idx, _, _)| *idx as usize).collect();
         let check_bitmap = tape_api::program::tapedrive::CommitteeBitmap::from_indices(&member_indices, committee_size);
         let final_weight = system.spools.group_weight(spool_group, &check_bitmap);
         if !is_supermajority(final_weight, SPOOL_GROUP_SIZE as u64) {
             return Err(CertificationError::InsufficientSignatures {
-                got,
+                got: final_weight as usize,
                 total: SPOOL_GROUP_SIZE,
             });
         }
@@ -475,7 +475,7 @@ impl CertificationCollector {
         Ok(CollectedSignatures {
             aggregated_signature,
             bitmap,
-            signature_count: got,
+            signature_count,
             committee_size,
             epoch,
             responses,

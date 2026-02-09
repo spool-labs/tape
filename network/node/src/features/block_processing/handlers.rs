@@ -31,8 +31,10 @@ pub fn handle_register_track<S: Store>(
 
     let track_info = TrackInfo {
         tape_address: Pubkey(event.tape.to_bytes()),
-        spool_allocation: SpoolAllocation::SpoolGroup(spool_group as u8),
+        spool_allocation: SpoolAllocation::SpoolGroup(spool_group),
         original_size: event.size.as_u64(),
+        // Stripe metadata is determined by the slicer during encoding, not stored on-chain.
+        // These fields are populated when slices arrive (from SliceMetadata headers).
         stripe_size: 0,
         stripe_count: 0,
         encoding_type: event.profile.encoding,
@@ -202,7 +204,7 @@ mod tests {
 
         let info = store.get_track(Pubkey(track)).unwrap().expect("track should exist");
         assert_eq!(info.tape_address, Pubkey(tape_pubkey.to_bytes()));
-        assert_eq!(info.spool_allocation, SpoolAllocation::SpoolGroup(5));
+        assert_eq!(info.spool_allocation, SpoolAllocation::SpoolGroup(5u64));
         assert_eq!(info.original_size, 100);
     }
 

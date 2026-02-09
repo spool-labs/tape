@@ -443,6 +443,20 @@ impl<R: Rpc> RpcClient<R> {
             .unwrap_or(Err(RpcError::Internal(format!("Tape not found with number {}", tape_number))))
     }
 
+    /// Fetch a Track account by its PDA address directly.
+    ///
+    /// This is useful when you already know the track address (e.g., from the CLI
+    /// track_id argument) and need to read the on-chain data (profile, spool_group).
+    ///
+    /// # Arguments
+    /// * `address` - The track PDA address
+    pub async fn get_track_by_address(&self, address: &Pubkey) -> Result<Track, RpcError> {
+        let account = self.rpc().get_account(address).await?;
+        Track::unpack_with_discriminator(&account.data)
+            .map(|t| *t)
+            .map_err(|e| RpcError::Deserialization(e.to_string()))
+    }
+
     /// Find a Track account by its TrackNumber.
     ///
     /// Uses getProgramAccounts with a memcmp filter on the id field.

@@ -15,8 +15,7 @@ use clap::Subcommand;
 use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
-use tape_core::encoding::{ClayParams, EncodingProfile};
-use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::encoding::EncodingProfile;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::Hash;
@@ -350,8 +349,12 @@ async fn upload_with_certification(
     // Derive track address for later use
     let (track_address, _) = track_pda(authority, key_hash);
 
-    // Compute spool group (same formula as on-chain RegisterTrack)
-    let spool_group = tape.track_count % SPOOL_GROUP_COUNT as u64;
+    // Read spool_group from on-chain TrackData (authoritative, avoids race condition)
+    let on_chain_track = client
+        .get_track_by_address(&track_address)
+        .await
+        .context("Failed to fetch on-chain track after registration")?;
+    let spool_group = on_chain_track.data.spool_group();
 
     // 7. Discover network state and upload slices
     if !ctx.quiet {
@@ -526,7 +529,20 @@ async fn download(
     nodes: Option<Vec<String>>,
     verify: Option<String>,
 ) -> Result<()> {
-    use tape_sdk::TapeClient;
+    use solana_sdk::pubkey::Pubkey as SolPubkey;
+    use tape_sdk::{create_rpc_client, TapeClient};
+
+    // Fetch on-chain track data to get spool_group and encoding profile
+    let rpc_client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let track_address: SolPubkey = track_id.parse()
+        .context("Invalid track ID (expected base58 pubkey)")?;
+    let on_chain_track = rpc_client
+        .get_track_by_address(&track_address)
+        .await
+        .context("Failed to fetch on-chain track data")?;
+
+    let spool_group = on_chain_track.data.spool_group();
+    let min_slices = on_chain_track.data.profile.k() as usize;
 
     // Discover network state (committee, spool assignment, node addresses)
     let discovery = discover_network_state(ctx, nodes).await?;
@@ -558,18 +574,13 @@ async fn download(
             eprintln!("Verifying against commitment: {}", commitment_hex);
         }
 
-        // TODO: fetch actual k from on-chain track profile
-        let min_slices = ClayParams::default().k() as usize;
         client
-            .download_blob_verified(track_id, min_slices, &commitment)
+            .download_blob_verified(track_id, spool_group, min_slices, &commitment)
             .await
             .context("Failed to download and verify blob")?
     } else {
-        // Download without verification
-        // TODO: fetch actual k from on-chain track profile
-        let min_slices = ClayParams::default().k() as usize;
         client
-            .download_blob(track_id, min_slices)
+            .download_blob(track_id, spool_group, min_slices)
             .await
             .context("Failed to download blob")?
     };
@@ -604,7 +615,20 @@ async fn verify(
     root: &str,
     nodes: Option<Vec<String>>,
 ) -> Result<()> {
-    use tape_sdk::{TapeClient, BlobEncoder, BlobMerkleRoot};
+    use solana_sdk::pubkey::Pubkey as SolPubkey;
+    use tape_sdk::{create_rpc_client, TapeClient, BlobEncoder, BlobMerkleRoot};
+
+    // Fetch on-chain track data to get spool_group and encoding profile
+    let rpc_client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let track_address: SolPubkey = track_id.parse()
+        .context("Invalid track ID (expected base58 pubkey)")?;
+    let on_chain_track = rpc_client
+        .get_track_by_address(&track_address)
+        .await
+        .context("Failed to fetch on-chain track data")?;
+
+    let spool_group = on_chain_track.data.spool_group();
+    let min_slices = on_chain_track.data.profile.k() as usize;
 
     // Discover network state (committee, spool assignment, node addresses)
     let discovery = discover_network_state(ctx, nodes).await?;
@@ -632,10 +656,8 @@ async fn verify(
         .node_addresses(discovery.node_addresses)
         .build();
 
-    // TODO: fetch actual k from on-chain track profile
-    let min_slices = ClayParams::default().k() as usize;
     let data = client
-        .download_blob(track_id, min_slices)
+        .download_blob(track_id, spool_group, min_slices)
         .await
         .context("Failed to download blob")?;
 

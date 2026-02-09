@@ -202,7 +202,7 @@ async fn test_upload_download_roundtrip() {
 
     // Download
     let recovered = client
-        .download_blob(&track_id, DEFAULT_K)
+        .download_blob(&track_id, 0, DEFAULT_K)
         .await
         .expect("download should succeed");
 
@@ -228,7 +228,7 @@ async fn test_verified_download() {
 
     // Download with verification
     let recovered = client
-        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
+        .download_blob_verified(&track_id, 0, DEFAULT_K, &commitment)
         .await
         .expect("verified download should succeed");
 
@@ -254,7 +254,7 @@ async fn test_erasure_recovery() {
 
     // Download (will only fetch 2f+1 slices - the minimum needed)
     let recovered = client
-        .download_blob(&track_id, DEFAULT_K)
+        .download_blob(&track_id, 0, DEFAULT_K)
         .await
         .expect("download should succeed with 2f+1 slices");
 
@@ -262,7 +262,7 @@ async fn test_erasure_recovery() {
 
     // Verify commitment matches
     let verified = client
-        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
+        .download_blob_verified(&track_id, 0, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -482,7 +482,7 @@ async fn test_multi_node_roundtrip() {
 
     // Download - fetches from correct node per slice
     let recovered = client
-        .download_blob(&track_id, DEFAULT_K)
+        .download_blob(&track_id, 0, DEFAULT_K)
         .await
         .expect("download should succeed");
 
@@ -490,7 +490,7 @@ async fn test_multi_node_roundtrip() {
 
     // Verify
     let verified = client
-        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
+        .download_blob_verified(&track_id, 0, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -533,8 +533,11 @@ async fn test_multi_node_with_failures() {
         let (_, handle) = nodes.remove(0);
         handle.abort();
     }
-    let slices_lost = (SPOOL_GROUP_SIZE / NUM_NODES + 1) * NODES_TO_KILL;
-    let slices_remaining = SPOOL_GROUP_SIZE - slices_lost;
+    // With round-robin assignment across NUM_NODES, each node owns
+    // ceil(SPOOL_GROUP_SIZE / NUM_NODES) spools in one group.
+    let slices_per_node = (SPOOL_GROUP_SIZE + NUM_NODES - 1) / NUM_NODES;
+    let slices_lost = slices_per_node * NODES_TO_KILL;
+    let slices_remaining = SPOOL_GROUP_SIZE.saturating_sub(slices_lost);
     println!(
         "Killed {} nodes (~{} slices lost, ~{} remaining, need {})",
         NODES_TO_KILL, slices_lost, slices_remaining, DEFAULT_K
@@ -545,7 +548,7 @@ async fn test_multi_node_with_failures() {
 
     // Download should still work
     let recovered = client
-        .download_blob(&track_id, DEFAULT_K)
+        .download_blob(&track_id, 0, DEFAULT_K)
         .await
         .expect("download should succeed despite node failures");
 
@@ -553,7 +556,7 @@ async fn test_multi_node_with_failures() {
 
     // Verify commitment
     let verified = client
-        .download_blob_verified(&track_id, DEFAULT_K, &commitment)
+        .download_blob_verified(&track_id, 0, DEFAULT_K, &commitment)
         .await
         .expect("verification should pass");
 
@@ -595,7 +598,7 @@ async fn bench_upload_download_throughput() {
 
     // Warm up
     let _ = client.upload_blob(&track_id, 0, original.clone()).await;
-    let _ = client.download_blob(&track_id, DEFAULT_K).await;
+    let _ = client.download_blob(&track_id, 0, DEFAULT_K).await;
 
     // Benchmark encoding separately using BasicSlicer
     let mut encoder = BlobEncoder::with_encoding(tape_core::prelude::EncodingType::Basic);
@@ -615,7 +618,7 @@ async fn bench_upload_download_throughput() {
     // Benchmark download (includes decoding)
     let start = Instant::now();
     let _recovered = client
-        .download_blob(&track_id, DEFAULT_K)
+        .download_blob(&track_id, 0, DEFAULT_K)
         .await
         .expect("download failed");
     let download_total = start.elapsed();
@@ -681,7 +684,7 @@ async fn bench_node_scaling() {
         // Warm up
         let track_id = Pubkey::new_unique().to_string();
         let _ = client.upload_blob(&track_id, 0, original.clone()).await;
-        let _ = client.download_blob(&track_id, DEFAULT_K).await;
+        let _ = client.download_blob(&track_id, 0, DEFAULT_K).await;
 
         // Benchmark
         let track_id = Pubkey::new_unique().to_string();
@@ -691,7 +694,7 @@ async fn bench_node_scaling() {
         let upload_time = start.elapsed();
 
         let start = Instant::now();
-        client.download_blob(&track_id, DEFAULT_K).await.unwrap();
+        client.download_blob(&track_id, 0, DEFAULT_K).await.unwrap();
         let download_time = start.elapsed();
 
         let up_slices = 1024.0 / upload_time.as_secs_f64();

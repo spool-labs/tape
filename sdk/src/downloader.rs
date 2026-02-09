@@ -9,7 +9,6 @@ use tokio::sync::Semaphore;
 
 use crate::communication::NodeCommunicationFactory;
 use crate::error::DownloadError;
-use crate::uploader::SPOOL_COUNT;
 
 /// Default concurrency limit for parallel downloads.
 /// This limits how many HTTP requests are in flight at once.
@@ -102,17 +101,13 @@ impl ParallelDownloader {
         // Semaphore to limit concurrency
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
 
-        // Request all slices in parallel (bounded by semaphore), skipping excluded
-        for slice_idx in 0..SPOOL_COUNT as SpoolIndex {
+        // Request all mapped slices in parallel (bounded by semaphore), skipping excluded
+        for (&slice_idx, address) in &self.slice_to_address {
             if self.exclude_slices.contains(&slice_idx) {
                 continue;
             }
 
-            // Use spool-based routing: look up the correct node for this slice
-            let address = match self.slice_to_address.get(&slice_idx) {
-                Some(addr) => addr.clone(),
-                None => continue, // Skip slices without a known node
-            };
+            let address = address.clone();
             let factory = self.factory.clone();
             let track_id = self.track_id.clone();
             let sem = semaphore.clone();

@@ -57,8 +57,8 @@ impl Default for SpoolStatus {
 pub enum SpoolAllocation {
     /// All slices go to a single spool
     SpoolSingle(u16),
-    /// Slices are distributed across a spool group
-    SpoolGroup(u8),
+    /// Slices are distributed across a spool group (0..SPOOL_GROUP_COUNT-1)
+    SpoolGroup(u64),
 }
 
 /// Information about a tracked object
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_spool_allocation_roundtrip() {
-        let allocs = vec![SpoolAllocation::SpoolSingle(42), SpoolAllocation::SpoolGroup(3)];
+        let allocs = vec![SpoolAllocation::SpoolSingle(42), SpoolAllocation::SpoolGroup(3u64)];
 
         for alloc in allocs {
             let bytes = wincode::serialize(&alloc).unwrap();
