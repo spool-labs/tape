@@ -3,7 +3,7 @@ use const_crypto::ed25519;
 use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
 use super::token::MINT_ADDRESS;
 
-pub const MEMBER_COUNT:           usize = 128;
+pub use tape_core::erasure::MEMBER_COUNT;
 pub const MIN_COMMITTEE_SIZE:     usize = 20;              // 20 for production (matches SPOOL_GROUP_SIZE)
 pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;

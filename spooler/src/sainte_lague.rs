@@ -1,7 +1,8 @@
 use crate::heap::MaxHeap;
-use crate::{cap_spools, Stake};
+use crate::cap_spools;
 use crate::priority::{NodePriority, SpoolPriority};
 use tape_core::spooler::{SpoolCount, SpoolerError};
+use tape_core::types::TAPE;
 
 /// Sainte-Lague-method spooler (highest averages with divisors 1, 3, 5, ...).
 #[derive(Default)]
@@ -9,8 +10,8 @@ pub struct SainteLagueSpooler;
 
 impl SainteLagueSpooler {
     pub fn allocate(
-        &mut self,
-        stake_weight: &[Stake],
+        &self,
+        stake_weight: &[TAPE],
         spool_count: SpoolCount,
     ) -> Result<Vec<SpoolCount>, SpoolerError> {
         sainte_lague_allocate(stake_weight, spool_count)
@@ -19,7 +20,7 @@ impl SainteLagueSpooler {
 
 /// Allocate spools using Sainte-Lague (divisors: 1, 3, 5, ...), with caps.
 pub fn sainte_lague_allocate(
-    stake_weight: &[Stake],
+    stake_weight: &[TAPE],
     spool_count: SpoolCount,
 ) -> Result<Vec<SpoolCount>, SpoolerError> {
     let n = stake_weight.len();
@@ -27,6 +28,7 @@ pub fn sainte_lague_allocate(
         return Ok(Vec::new());
     }
 
+    let stakes: Vec<u64> = stake_weight.iter().map(|s| s.as_u64()).collect();
     let total_spools = spool_count as u64;
     let cap = cap_spools(n as u64, total_spools);
 
@@ -37,7 +39,7 @@ pub fn sainte_lague_allocate(
     let mut seats = vec![0u64; n];
 
     let mut heap = MaxHeap::with_capacity(n);
-    for (i, &s) in stake_weight.iter().enumerate() {
+    for (i, &s) in stakes.iter().enumerate() {
         if s == 0 {
             continue;
         }
@@ -61,7 +63,7 @@ pub fn sainte_lague_allocate(
             if seats[index] < cap {
                 let next_div = 2 * seats[index] + 1;
                 heap.push(NodePriority {
-                    priority: SpoolPriority::new(stake_weight[index], next_div),
+                    priority: SpoolPriority::new(stakes[index], next_div),
                     tie_breaker,
                     index,
                 });
@@ -78,8 +80,8 @@ mod tests {
 
     #[test]
     fn uneven_stake() {
-        let mut s = SainteLagueSpooler::default();
-        let stake: Vec<Stake> = vec![50_000, 30_000, 15_000, 5_000];
+        let s = SainteLagueSpooler::default();
+        let stake = vec![TAPE(50_000), TAPE(30_000), TAPE(15_000), TAPE(5_000)];
 
         let res = s.allocate(&stake, 4).unwrap();
         assert_eq!(res.iter().sum::<SpoolCount>(), 4);
@@ -87,18 +89,18 @@ mod tests {
 
     #[test]
     fn zero_spools_or_zero_stake() {
-        let mut s = SainteLagueSpooler::default();
-        let stake: Vec<Stake> = vec![100, 90, 80];
+        let s = SainteLagueSpooler::default();
+        let stake = vec![TAPE(100), TAPE(90), TAPE(80)];
         assert_eq!(s.allocate(&stake, 0).unwrap(), vec![0, 0, 0]);
 
-        let stake: Vec<Stake> = vec![0, 0, 0];
+        let stake = vec![TAPE(0), TAPE(0), TAPE(0)];
         assert_eq!(s.allocate(&stake, 5).unwrap_err(), SpoolerError::Infeasible);
     }
 
     #[test]
     fn equal_stake_even_distribution() {
-        let stake: Vec<Stake> = vec![10_000, 10_000, 10_000, 10_000];
-        let mut s = SainteLagueSpooler::default();
+        let stake = vec![TAPE(10_000), TAPE(10_000), TAPE(10_000), TAPE(10_000)];
+        let s = SainteLagueSpooler::default();
 
         assert_eq!(s.allocate(&stake, 1).unwrap(), vec![1, 0, 0, 0]);
         assert_eq!(s.allocate(&stake, 2).unwrap(), vec![1, 1, 0, 0]);
@@ -112,8 +114,8 @@ mod tests {
 
     #[test]
     fn large_equal_distribution() {
-        let stake: Vec<Stake> = vec![1, 1, 1, 1, 1];
-        let mut s = SainteLagueSpooler::default();
+        let stake = vec![TAPE(1), TAPE(1), TAPE(1), TAPE(1), TAPE(1)];
+        let s = SainteLagueSpooler::default();
         let out = s.allocate(&stake, 1000).unwrap();
         assert_eq!(out, vec![200, 200, 200, 200, 200]);
     }
@@ -121,13 +123,13 @@ mod tests {
     #[test]
     fn cap_enforced_for_many_members() {
         let n = 40usize;
-        let mut stake: Vec<Stake> = Vec::with_capacity(n);
-        stake.push(1_000_000);
+        let mut stake: Vec<TAPE> = Vec::with_capacity(n);
+        stake.push(TAPE(1_000_000));
         for _ in 1..n {
-            stake.push(1);
+            stake.push(TAPE(1));
         }
 
-        let mut s = SainteLagueSpooler::default();
+        let s = SainteLagueSpooler::default();
         let out = s.allocate(&stake, 100).unwrap();
         assert_eq!(
             out.iter().copied().map(SpoolCount::from).map(|x| x as u32).sum::<u32>(),

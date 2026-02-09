@@ -226,8 +226,7 @@ mod tests {
 
         // Expected state after instruction
 
-        let stakes: Vec<u64> = system.committee_next.active_stakes()
-            .iter().map(|c| c.as_u64()).collect();
+        let stakes = system.committee_next.active_stakes();
         let seat_count = dhondt_allocate(
             &stakes,
             SPOOL_COUNT as u16,

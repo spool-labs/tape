@@ -161,8 +161,7 @@ mod tests {
         );
 
         // Allocate spools based on stake
-        let stakes: Vec<u64> = system.committee.active_stakes()
-            .iter().map(|c| c.as_u64()).collect();
+        let stakes = system.committee.active_stakes();
         let seat_counts = dhondt_allocate(
             &stakes,
             SPOOL_COUNT as u16

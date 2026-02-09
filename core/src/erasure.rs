@@ -18,6 +18,9 @@ pub const SPOOL_GROUP_COUNT: usize = 50;
 /// Total spools in the network.
 pub const SPOOL_COUNT: usize = SPOOL_GROUP_COUNT * SPOOL_GROUP_SIZE;
 
+/// Maximum committee members (storage nodes).
+pub const MEMBER_COUNT: usize = 128;
+
 /// Maximum blob size (1 GiB).
 pub const MAX_BLOB_SIZE: usize = 1 << 30;
 
