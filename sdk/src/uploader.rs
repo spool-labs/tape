@@ -81,16 +81,15 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
         slices: Vec<SliceWithProof>,
         router: SliceRouter<MEMBERS>,
         factory: NodeCommunicationFactory,
-    ) -> Self {
-        assert_eq!(
-            slices.len(),
-            tape_core::erasure::SPOOL_GROUP_SIZE,
-            "encoder must produce exactly SPOOL_GROUP_SIZE ({}) slices, got {}",
-            tape_core::erasure::SPOOL_GROUP_SIZE,
-            slices.len(),
-        );
+    ) -> Result<Self, UploadError> {
+        if slices.len() != tape_core::erasure::SPOOL_GROUP_SIZE {
+            return Err(UploadError::InvalidSliceCount {
+                expected: tape_core::erasure::SPOOL_GROUP_SIZE,
+                got: slices.len(),
+            });
+        }
 
-        Self {
+        Ok(Self {
             track_id,
             spool_group,
             slices,
@@ -98,7 +97,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             factory,
             concurrency_limit: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),
             retry_count: DEFAULT_RETRY_COUNT,
-        }
+        })
     }
 
     /// Set the concurrency limit.
@@ -320,7 +319,8 @@ mod tests {
             slices,
             router,
             factory,
-        );
+        )
+        .unwrap();
 
         assert_eq!(uploader.slice_count(), tape_core::erasure::SPOOL_GROUP_SIZE);
     }

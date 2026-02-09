@@ -7,6 +7,7 @@ use axum::{
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::spool_in_group;
+use tape_core::spooler::SpoolIndex;
 use tape_node_api::SignResponse;
 use tape_store::types::SpoolAllocation;
 use tracing::debug;
@@ -44,12 +45,16 @@ pub async fn get_sign<S: Store>(
         }
     };
 
-    let our_group_spools: Vec<u16> = state
+    let our_group_spools: Vec<SpoolIndex> = state
         .control_plane
         .get_our_spools()
         .into_iter()
         .filter(|&s| spool_in_group(s, group))
         .collect();
+
+    if our_group_spools.is_empty() {
+        return Err(ApiError::IncompleteSliceData);
+    }
 
     // Verify all our slices in this group exist in storage
     for spool_idx in &our_group_spools {

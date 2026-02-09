@@ -350,11 +350,13 @@ async fn upload_with_certification(
     let (track_address, _) = track_pda(authority, key_hash);
 
     // Read spool_group from on-chain TrackData (authoritative, avoids race condition).
-    // Retry because RPC may not have processed the transaction yet.
+    // Retry because RPC may not have propagated the transaction yet.
+    const RPC_PROPAGATION_RETRIES: usize = 5;
+    const RPC_PROPAGATION_DELAY_MS: u64 = 500;
     let on_chain_track = {
         let mut last_err = None;
         let mut result = None;
-        for attempt in 0..5 {
+        for attempt in 0..RPC_PROPAGATION_RETRIES {
             match client.get_track_by_address(&track_address).await {
                 Ok(track) => {
                     result = Some(track);
@@ -362,8 +364,8 @@ async fn upload_with_certification(
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < 4 {
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if attempt < RPC_PROPAGATION_RETRIES - 1 {
+                        tokio::time::sleep(std::time::Duration::from_millis(RPC_PROPAGATION_DELAY_MS)).await;
                     }
                 }
             }

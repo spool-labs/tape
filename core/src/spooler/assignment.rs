@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use crate::erasure::SPOOL_GROUP_SIZE;
+use crate::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use crate::system::Committee;
 use crate::types::Bitmap;
 use super::{Spooler, SpoolerError};
@@ -105,14 +105,22 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     }
 
     /// Get the member mappings for a spool group (SPOOL_GROUP_SIZE entries).
+    ///
+    /// # Panics
+    /// Panics if `group >= SPOOL_GROUP_COUNT`.
     pub fn members_in_group(&self, group: SpoolGroup) -> &[SpoolMapping] {
+        assert!((group as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
         let start = group as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
         &self.0[start..end]
     }
 
     /// Count how many spools in a group are owned by members in the bitmap.
+    ///
+    /// # Panics
+    /// Panics if `group >= SPOOL_GROUP_COUNT`.
     pub fn group_weight<const BYTES: usize>(&self, group: SpoolGroup, bitmap: &Bitmap<BYTES>) -> u64 {
+        assert!((group as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
         let start = group as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
         let mut weight = 0u64;

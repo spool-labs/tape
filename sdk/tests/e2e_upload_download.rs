@@ -33,8 +33,7 @@ use tape_store::TapeStore;
 use tokio::net::TcpListener;
 
 /// Minimum slices needed for reconstruction (k from default Clay encoding).
-/// Uses ClayParams::new(20, 7, 16) which matches ClayParams::default().
-const DEFAULT_K: usize = tape_core::encoding::ClayParams::new(20, 7, 16).k() as usize;
+const DEFAULT_K: usize = tape_core::encoding::ClayParams::DEFAULT.k() as usize;
 
 /// Start a test node on a random port with in-memory storage.
 /// Uses default single-node setup where node owns all spools.

@@ -90,10 +90,14 @@ impl ClayParams {
     }
 }
 
+/// Default Clay parameters: n=20, k=7, d=16 → m=13 parity (35% of slices needed for recovery).
+impl ClayParams {
+    pub const DEFAULT: Self = Self::new(20, 7, 16);
+}
+
 impl Default for ClayParams {
     fn default() -> Self {
-        // n=20, k=7, d=16 → m=13 parity, ~1/3 BFT recovery threshold
-        Self::new(20, 7, 16)
+        Self::DEFAULT
     }
 }
 

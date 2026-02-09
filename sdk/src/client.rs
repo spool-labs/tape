@@ -100,7 +100,7 @@ impl TapeClient {
             slices,
             self.router.clone(),
             self.node_factory.clone(),
-        );
+        )?;
 
         uploader.upload_all().await
     }
@@ -235,7 +235,8 @@ impl TapeClient {
             slices_with_proofs,
             self.router.clone(),
             self.node_factory.clone(),
-        );
+        )
+        .map_err(ClientError::Upload)?;
 
         uploader.upload_all().await.map_err(ClientError::Upload)?;
 

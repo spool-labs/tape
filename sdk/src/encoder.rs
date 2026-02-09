@@ -4,6 +4,7 @@
 //! raw blobs into network-ready slices with merkle commitments.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
+use tape_core::spooler::SpoolIndex;
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
@@ -125,13 +126,13 @@ impl BlobEncoder {
     ///
     /// # Returns
     /// Vector of (index, data) tuples for all SPOOL_GROUP_SIZE slices.
-    pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(u16, Vec<u8>)>, UploadError> {
+    pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(SpoolIndex, Vec<u8>)>, UploadError> {
         let chunks = self.encode_internal(&data)?;
 
-        let output: Vec<(u16, Vec<u8>)> = chunks
+        let output: Vec<(SpoolIndex, Vec<u8>)> = chunks
             .into_iter()
             .enumerate()
-            .map(|(i, data)| (i as u16, data))
+            .map(|(i, data)| (i as SpoolIndex, data))
             .collect();
 
         Ok(output)
@@ -164,17 +165,17 @@ impl BlobEncoder {
     pub fn encode_with_root(
         &mut self,
         data: Vec<u8>,
-    ) -> Result<(Vec<(u16, Vec<u8>)>, BlobMerkleRoot), UploadError> {
+    ) -> Result<(Vec<(SpoolIndex, Vec<u8>)>, BlobMerkleRoot), UploadError> {
         let chunks = self.encode_internal(&data)?;
 
         // Build Merkle tree from slices to compute root
         let tree = build_blob_merkle_tree(&chunks);
         let root = tree.root();
 
-        let output: Vec<(u16, Vec<u8>)> = chunks
+        let output: Vec<(SpoolIndex, Vec<u8>)> = chunks
             .into_iter()
             .enumerate()
-            .map(|(i, data)| (i as u16, data))
+            .map(|(i, data)| (i as SpoolIndex, data))
             .collect();
 
         Ok((output, root))
@@ -247,7 +248,7 @@ impl BlobEncoder {
             let leaf_hash = hash_leaf(&chunk);
 
             output.push(SliceWithProof::new(
-                idx as u16,
+                idx as SpoolIndex,
                 chunk,
                 leaf_hash,
                 proof_arr,

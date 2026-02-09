@@ -52,6 +52,9 @@ pub enum UploadError {
 
     #[error("network error: {0}")]
     Network(String),
+
+    #[error("invalid slice count: expected {expected}, got {got}")]
+    InvalidSliceCount { expected: usize, got: usize },
 }
 
 /// Errors that can occur during download.

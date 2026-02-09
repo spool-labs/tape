@@ -35,7 +35,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use tape_api::instruction::build_certify_track_ix;
-use tape_api::program::tapedrive::{CommitteeBitmap, MEMBER_COUNT};
+use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_api::state::System;
 use tape_core::bft::is_supermajority;
 use tape_core::bls::{BlsPubkey, BlsSignature};
@@ -450,7 +450,7 @@ impl CertificationCollector {
         }
 
         // Build bitmap from member indices (reuse from supermajority check above)
-        let bitmap = CommitteeBitmap::from_indices(&member_indices, MEMBER_COUNT);
+        let bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
 
         // Extract signatures and aggregate
         let signatures: Vec<BlsSignature> = successful
