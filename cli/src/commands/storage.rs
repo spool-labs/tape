@@ -349,11 +349,30 @@ async fn upload_with_certification(
     // Derive track address for later use
     let (track_address, _) = track_pda(authority, key_hash);
 
-    // Read spool_group from on-chain TrackData (authoritative, avoids race condition)
-    let on_chain_track = client
-        .get_track_by_address(&track_address)
-        .await
-        .context("Failed to fetch on-chain track after registration")?;
+    // Read spool_group from on-chain TrackData (authoritative, avoids race condition).
+    // Retry because RPC may not have processed the transaction yet.
+    let on_chain_track = {
+        let mut last_err = None;
+        let mut result = None;
+        for attempt in 0..5 {
+            match client.get_track_by_address(&track_address).await {
+                Ok(track) => {
+                    result = Some(track);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+        result.ok_or_else(|| anyhow::anyhow!(
+            "Failed to fetch on-chain track after registration: {}",
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        ))?
+    };
     let spool_group = on_chain_track.data.spool_group();
 
     // 7. Discover network state and upload slices

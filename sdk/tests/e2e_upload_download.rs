@@ -32,8 +32,9 @@ use tape_sdk::TapeClient;
 use tape_store::TapeStore;
 use tokio::net::TcpListener;
 
-/// Default Clay encoding k=7 (minimum slices needed for reconstruction).
-const DEFAULT_K: usize = 7;
+/// Minimum slices needed for reconstruction (k from default Clay encoding).
+/// Uses ClayParams::new(20, 7, 16) which matches ClayParams::default().
+const DEFAULT_K: usize = tape_core::encoding::ClayParams::new(20, 7, 16).k() as usize;
 
 /// Start a test node on a random port with in-memory storage.
 /// Uses default single-node setup where node owns all spools.
@@ -193,7 +194,7 @@ async fn test_upload_download_roundtrip() {
     println!("Uploading {} bytes...", original.len());
 
     // Upload
-    let commitment = client
+    let _commitment = client
         .upload_blob(&track_id, 0, original.clone())
         .await
         .expect("upload should succeed");
@@ -208,6 +209,47 @@ async fn test_upload_download_roundtrip() {
 
     assert_eq!(original, recovered);
     println!("SUCCESS: {} bytes round-trip verified!", original.len());
+}
+
+/// Test upload/download with non-zero spool group.
+///
+/// Uses spool_group=5 so global spool indices are 100-119, exercising
+/// the global→local index conversion in download_slices.
+#[tokio::test]
+#[serial]
+async fn test_nonzero_spool_group_roundtrip() {
+    let (addr, _handle) = start_test_node().await;
+    let client = test_client(format!("http://{}", addr));
+
+    let original: Vec<u8> = (0..40_000u32)
+        .map(|i| ((i * 31 + 7) % 256) as u8)
+        .collect();
+
+    let track_id = Pubkey::new_unique().to_string();
+    let spool_group: u64 = 5; // global spools 100-119
+
+    // Upload to spool group 5
+    let commitment = client
+        .upload_blob(&track_id, spool_group, original.clone())
+        .await
+        .expect("upload to group 5 should succeed");
+
+    // Download from spool group 5
+    let recovered = client
+        .download_blob(&track_id, spool_group, DEFAULT_K)
+        .await
+        .expect("download from group 5 should succeed");
+
+    assert_eq!(original, recovered);
+
+    // Also verify commitment
+    let verified = client
+        .download_blob_verified(&track_id, spool_group, DEFAULT_K, &commitment)
+        .await
+        .expect("verified download from group 5 should succeed");
+
+    assert_eq!(original, verified);
+    println!("SUCCESS: Non-zero spool group (group=5) round-trip verified!");
 }
 
 /// Test download with commitment verification.

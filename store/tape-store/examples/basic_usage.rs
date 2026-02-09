@@ -17,11 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tape_address,
             spool_allocation: SpoolAllocation::SpoolGroup(3),
             original_size: 1024,
-            stripe_size: 1024,
-            stripe_count: 1,
             encoding_type: 1,
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
         store.put_track(track_address, info)?;

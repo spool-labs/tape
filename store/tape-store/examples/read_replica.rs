@@ -22,11 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tape_address,
             spool_allocation: SpoolAllocation::SpoolGroup(3),
             original_size: 1024,
-            stripe_size: 1024,
-            stripe_count: 1,
             encoding_type: 1,
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
         primary.put_track(track_address, info)?;
@@ -55,11 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tape_address,
         spool_allocation: SpoolAllocation::SpoolGroup(3),
         original_size: 1024,
-        stripe_size: 1024,
-        stripe_count: 1,
         encoding_type: 1,
         encoding_params: 0,
-        commitment: vec![],
         commitment_hash: Hash::default(),
     };
     primary.put_track(new_track, new_info)?;
@@ -93,11 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tape_address,
             spool_allocation: SpoolAllocation::SpoolGroup(3),
             original_size: 1024,
-            stripe_size: 1024,
-            stripe_count: 1,
             encoding_type: 1,
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
         primary.put_track(track_address, info)?;

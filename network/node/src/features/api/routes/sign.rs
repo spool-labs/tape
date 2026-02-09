@@ -6,8 +6,7 @@ use axum::{
 };
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
-use tape_core::erasure::{group_start, spool_in_group};
-use tape_crypto::merkle::hash_leaf;
+use tape_core::erasure::spool_in_group;
 use tape_node_api::SignResponse;
 use tape_store::types::SpoolAllocation;
 use tracing::debug;
@@ -37,10 +36,6 @@ pub async fn get_sign<S: Store>(
         .map_err(|e| ApiError::Storage(e.to_string()))?
         .ok_or(ApiError::TrackNotFound)?;
 
-    if track_info.commitment.is_empty() {
-        return Err(ApiError::IncompleteSliceData);
-    }
-
     // Filter owned spools to the track's spool group
     let group = match track_info.spool_allocation {
         SpoolAllocation::SpoolGroup(g) => g,
@@ -56,22 +51,13 @@ pub async fn get_sign<S: Store>(
         .filter(|&s| spool_in_group(s, group))
         .collect();
 
-    // Verify each slice we own in this group matches its commitment leaf
-    let base = group_start(group);
+    // Verify all our slices in this group exist in storage
     for spool_idx in &our_group_spools {
-        let data = state
+        state
             .service
             .get_slice(*spool_idx, track_address)
             .map_err(|e| ApiError::Storage(e.to_string()))?
             .ok_or(ApiError::IncompleteSliceData)?;
-
-        let local_idx = (*spool_idx - base) as usize;
-        let computed_leaf = hash_leaf(&data);
-        if let Some(expected_leaf) = track_info.commitment.get(local_idx) {
-            if computed_leaf != *expected_leaf {
-                return Err(ApiError::MerkleVerificationFailed);
-            }
-        }
     }
 
     let epoch = state.control_plane.current_epoch();

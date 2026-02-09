@@ -82,6 +82,14 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
         router: SliceRouter<MEMBERS>,
         factory: NodeCommunicationFactory,
     ) -> Self {
+        assert_eq!(
+            slices.len(),
+            tape_core::erasure::SPOOL_GROUP_SIZE,
+            "encoder must produce exactly SPOOL_GROUP_SIZE ({}) slices, got {}",
+            tape_core::erasure::SPOOL_GROUP_SIZE,
+            slices.len(),
+        );
+
         Self {
             track_id,
             spool_group,
@@ -143,10 +151,10 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                 let first_spool = slice_spool_pairs.first().map(|(_, s)| *s).unwrap_or(0);
                 let addr_result = self.router.socket_addr_for_slice(first_spool);
 
-                // Collect slices for this member
-                let slices: Vec<SliceWithProof> = slice_spool_pairs
+                // Collect slices for this member, paired with global spool index
+                let slices: Vec<(SpoolIndex, SliceWithProof)> = slice_spool_pairs
                     .iter()
-                    .filter_map(|(_, spool)| slice_map.get(spool).map(|s| (*s).clone()))
+                    .filter_map(|(_, spool)| slice_map.get(spool).map(|s| (*spool, (*s).clone())))
                     .collect();
 
                 async move {
@@ -164,12 +172,13 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
 
                     let mut failed_slices = Vec::new();
 
-                    for slice in slices {
+                    for (global_spool, slice) in slices {
                         let mut last_error = None;
 
                         for attempt in 0..retry_count {
                             let payload = slice.to_payload();
-                            match client.put_slice(&track_id, slice.index, &payload).await {
+                            // Use global spool index so nodes store under the correct key
+                            match client.put_slice(&track_id, global_spool, &payload).await {
                                 Ok(_) => {
                                     last_error = None;
                                     break;
@@ -177,7 +186,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                                 Err(e) => {
                                     if attempt < retry_count - 1 {
                                         debug!(
-                                            slice = slice.index,
+                                            slice = global_spool,
                                             attempt = attempt + 1,
                                             "Retrying slice upload"
                                         );
@@ -189,12 +198,12 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
 
                         if let Some(e) = last_error {
                             warn!(
-                                slice = slice.index,
+                                slice = global_spool,
                                 member = member_idx,
                                 error = %e,
                                 "Slice upload failed after retries, left for recovery"
                             );
-                            failed_slices.push(slice.index);
+                            failed_slices.push(global_spool);
                         }
                     }
 
@@ -302,7 +311,7 @@ mod tests {
     #[test]
     fn test_uploader_creation() {
         let factory = NodeCommunicationFactory::new();
-        let slices = make_test_slices(10);
+        let slices = make_test_slices(tape_core::erasure::SPOOL_GROUP_SIZE);
         let router: SliceRouter<10> = make_test_router(2);
 
         let uploader = DistributedUploader::new(
@@ -313,7 +322,7 @@ mod tests {
             factory,
         );
 
-        assert_eq!(uploader.slice_count(), 10);
+        assert_eq!(uploader.slice_count(), tape_core::erasure::SPOOL_GROUP_SIZE);
     }
 
     #[test]

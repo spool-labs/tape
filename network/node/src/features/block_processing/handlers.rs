@@ -33,13 +33,8 @@ pub fn handle_register_track<S: Store>(
         tape_address: Pubkey(event.tape.to_bytes()),
         spool_allocation: SpoolAllocation::SpoolGroup(spool_group),
         original_size: event.size.as_u64(),
-        // Stripe metadata is determined by the slicer during encoding, not stored on-chain.
-        // These fields are populated when slices arrive (from SliceMetadata headers).
-        stripe_size: 0,
-        stripe_count: 0,
         encoding_type: event.profile.encoding,
         encoding_params: event.profile.params,
-        commitment: vec![],
         commitment_hash: event.commitment,
     };
 

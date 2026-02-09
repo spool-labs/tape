@@ -57,11 +57,8 @@ mod tests {
             tape_address: Pubkey::new_unique(),
             spool_allocation: SpoolAllocation::SpoolGroup(3),
             original_size: 1024 * 1024,
-            stripe_size: 1024,
-            stripe_count: 1024,
             encoding_type: 2, // Clay
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         }
     }

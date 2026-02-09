@@ -32,7 +32,6 @@ pub async fn put_metadata<S: Store>(
     debug!(
         track = %track_address,
         original_size = info.original_size,
-        stripe_count = info.stripe_count,
         "storing track metadata"
     );
 

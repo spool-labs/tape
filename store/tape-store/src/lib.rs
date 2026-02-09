@@ -132,11 +132,8 @@ mod tests {
             tape_address: Pubkey::new_unique(),
             spool_allocation: SpoolAllocation::SpoolGroup(3),
             original_size: 1024 * 1024,
-            stripe_size: 1024,
-            stripe_count: 1024,
             encoding_type: 2, // Clay
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
 
@@ -315,11 +312,8 @@ mod tests {
                 tape_address: Pubkey::new_unique(),
                 spool_allocation: SpoolAllocation::SpoolGroup(3),
                 original_size: 1024,
-                stripe_size: 1024,
-                stripe_count: 1,
                 encoding_type: 1, // Basic
                 encoding_params: 0,
-                commitment: vec![],
                 commitment_hash: Hash::default(),
             };
             store.put_track(track, info).unwrap();
@@ -355,11 +349,8 @@ mod tests {
                 tape_address: Pubkey::new_unique(),
                 spool_allocation: SpoolAllocation::SpoolSingle(42),
                 original_size: 512,
-                stripe_size: 512,
-                stripe_count: 1,
                 encoding_type: 1, // Basic
                 encoding_params: 0,
-                commitment: vec![],
                 commitment_hash: Hash::default(),
             };
             store.put_track(track, info).unwrap();

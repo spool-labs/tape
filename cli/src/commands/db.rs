@@ -286,7 +286,6 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
                         "address": pubkey_str,
                         "tape": tape_str,
                         "original_size": info.original_size,
-                        "stripe_count": info.stripe_count,
                         "encoding_type": info.encoding_type,
                     })
                 })
@@ -300,7 +299,6 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
                 "Address",
                 "Tape",
                 "Size",
-                "Stripes",
                 "Encoding",
             ]);
 
@@ -316,7 +314,6 @@ async fn list_tracks(ctx: &Context, path: Option<PathBuf>, limit: usize) -> Resu
                     &crate::output::format_pubkey(&pubkey_str),
                     &crate::output::format_pubkey(&tape_str),
                     &crate::output::format_bytes(info.original_size),
-                    &info.stripe_count.to_string(),
                     encoding,
                 ]);
             }

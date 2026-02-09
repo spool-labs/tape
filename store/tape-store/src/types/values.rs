@@ -25,16 +25,10 @@ pub struct TrackInfo {
     pub spool_allocation: SpoolAllocation,
     /// Original unencoded data size in bytes
     pub original_size: u64,
-    /// Size of each stripe after encoding
-    pub stripe_size: u64,
-    /// Number of stripes
-    pub stripe_count: u32,
     /// Encoding type discriminant (EncodingType as u64)
     pub encoding_type: u64,
     /// Encoding params (e.g., ClayParams packed as u64)
     pub encoding_params: u64,
-    /// Commitment hashes (empty = no commitments, non-empty = all hashes)
-    pub commitment: Vec<Hash>,
     /// Commitment hash (merkle root) — same as on-chain TrackData.commitment_hash
     pub commitment_hash: Hash,
 }
@@ -108,11 +102,8 @@ mod tests {
             tape_address: Pubkey([1u8; 32]),
             spool_allocation: SpoolAllocation::SpoolGroup(3u64),
             original_size: 1024 * 1024,
-            stripe_size: 1024,
-            stripe_count: 1024,
             encoding_type: 2, // Clay
             encoding_params: 0x100714, // n=20, k=7, d=16 packed
-            commitment: vec![Hash::default(); 10],
             commitment_hash: Hash::default(),
         };
 
@@ -122,16 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn test_track_info_empty_commitment() {
+    fn test_track_info_basic_encoding() {
         let info = TrackInfo {
             tape_address: Pubkey([2u8; 32]),
             spool_allocation: SpoolAllocation::SpoolSingle(42),
             original_size: 512,
-            stripe_size: 256,
-            stripe_count: 2,
             encoding_type: 1, // Basic
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
 
@@ -148,11 +136,8 @@ mod tests {
             tape_address: Pubkey([3u8; 32]),
             spool_allocation: SpoolAllocation::SpoolGroup(1u64),
             original_size: 1024,
-            stripe_size: 512,
-            stripe_count: 2,
             encoding_type: 0,
             encoding_params: 0,
-            commitment: vec![],
             commitment_hash: Hash::default(),
         };
 

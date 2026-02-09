@@ -4,9 +4,10 @@
 //! from downloaded slices using erasure code decoding.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
+use tape_core::spooler::SpoolIndex;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, SliceMetadata, ErasureCoder,
-    SPOOL_GROUP_SIZE, STRIPE_SIZES,
+    SPOOL_GROUP_SIZE, DEFAULT_STRIPE_SIZE,
 };
 
 use crate::error::DownloadError;
@@ -58,7 +59,7 @@ impl BlobDecoder {
             EncodingType::Clay | EncodingType::Unknown => {
                 decoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
-                    STRIPE_SIZES[2],
+                    DEFAULT_STRIPE_SIZE,
                     true, // rotated
                     profile,
                 ));
@@ -97,7 +98,7 @@ impl BlobDecoder {
     ///
     /// # Errors
     /// Returns error if k cannot be determined (Unknown encoding or missing metadata).
-    fn min_slices_from_metadata(&self, slices: &[(u16, Vec<u8>)]) -> Result<usize, DownloadError> {
+    fn min_slices_from_metadata(&self, slices: &[(SpoolIndex, Vec<u8>)]) -> Result<usize, DownloadError> {
         match self.encoding_type() {
             EncodingType::Clay => {
                 slices.first()
@@ -152,7 +153,7 @@ impl BlobDecoder {
     /// - `InvalidSliceIndex` if any slice index >= SPOOL_GROUP_SIZE
     /// - `InsufficientSlices` if fewer than k slices provided (k from metadata)
     /// - `Decoding` if erasure code reconstruction fails or encoding type is Unknown
-    pub fn decode(&mut self, slices: Vec<(u16, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
+    pub fn decode(&mut self, slices: Vec<(SpoolIndex, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
         // Peek at metadata to get k (minimum slices needed)
         let min_slices = self.min_slices_from_metadata(&slices)?;
 
@@ -183,7 +184,7 @@ impl BlobDecoder {
     /// Decode slices, returning the data as a Vec<u8>.
     ///
     /// Same as `decode()` - kept for API compatibility.
-    pub fn decode_to_blob(&mut self, slices: Vec<(u16, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
+    pub fn decode_to_blob(&mut self, slices: Vec<(SpoolIndex, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
         self.decode(slices)
     }
 }
@@ -377,8 +378,9 @@ mod tests {
 
         let slices = encoder.encode(original.clone()).unwrap();
 
-        // Keep only first 10 slices (k=10)
-        let partial: Vec<_> = slices.into_iter().take(10).collect();
+        // Keep only first k slices (k=7 for default Clay)
+        let k = encoder.profile().k() as usize;
+        let partial: Vec<_> = slices.into_iter().take(k).collect();
 
         let recovered = decoder.decode(partial).unwrap();
         assert_eq!(original, recovered);

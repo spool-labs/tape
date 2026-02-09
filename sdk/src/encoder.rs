@@ -8,7 +8,7 @@ use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
 use tape_slicer::{
     ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, MERKLE_HEIGHT,
-    build_blob_merkle_tree, BlobMerkleRoot, STRIPE_SIZES,
+    build_blob_merkle_tree, BlobMerkleRoot, DEFAULT_STRIPE_SIZE,
 };
 
 use crate::error::UploadError;
@@ -67,7 +67,7 @@ impl BlobEncoder {
             EncodingType::Clay | EncodingType::Unknown => {
                 encoder.clay = Some(Slicer::with_profile(
                     ClayCoder::from_params(profile.clay_params()),
-                    STRIPE_SIZES[2],
+                    DEFAULT_STRIPE_SIZE,
                     true, // rotated
                     profile,
                 ));

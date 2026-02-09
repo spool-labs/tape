@@ -8,10 +8,8 @@ use axum::{
     Json,
 };
 use store::Store;
-use tape_core::erasure::{group_start, SPOOL_GROUP_SIZE};
 use tape_crypto::merkle::hash_leaf;
 use tape_node_api::SlicePayload;
-use tape_store::types::SpoolAllocation;
 use tracing::debug;
 
 use crate::features::api::ApiError;
@@ -52,27 +50,6 @@ pub async fn put_slice<S: Store>(
         .service
         .put_slice(spool_idx, track_address, payload.data)
         .map_err(|e| ApiError::Storage(e.to_string()))?;
-
-    // Update TrackInfo commitment vec with this slice's leaf hash.
-    // The commitment vec uses local indices (0..SPOOL_GROUP_SIZE-1).
-    if let Ok(Some(mut track_info)) = state.service.get_track(track_address) {
-        let local_idx = match track_info.spool_allocation {
-            SpoolAllocation::SpoolGroup(g) => {
-                (spool_idx - group_start(g)) as usize
-            }
-            SpoolAllocation::SpoolSingle(_) => slice_index as usize,
-        };
-
-        // Initialize commitment vec if empty
-        if track_info.commitment.is_empty() {
-            track_info.commitment = vec![tape_crypto::Hash::default(); SPOOL_GROUP_SIZE];
-        }
-
-        if local_idx < track_info.commitment.len() {
-            track_info.commitment[local_idx] = payload.leaf_hash;
-            let _ = state.service.put_track(track_address, track_info);
-        }
-    }
 
     debug!(
         track = %track_address,
