@@ -13,13 +13,158 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum EncodingType {
+
     /// Unknown encoding (default for uninitialized tracks).
     #[default]
     Unknown = 0,
+
     /// Basic encoding - single RS pass, testing only.
     Basic = 1,
+
     /// Clay encoding - Clay codes with striping and rotation.
     Clay = 2,
+}
+
+/// Encoding configuration: type + params.
+///
+/// Follows the EpochState pattern (discriminant + payload as u64 pair).
+/// This is a 16-byte Pod struct suitable for on-chain storage.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+pub struct EncodingProfile {
+
+    /// Encoding type discriminant (EncodingType as u64).
+    pub encoding: u64,
+
+    /// Encoding-specific parameters (e.g., ClayParams packed).
+    pub params: u64,
+
+}
+
+impl EncodingProfile {
+    /// Get the encoding type.
+    #[inline]
+    pub fn encoding_type(&self) -> Option<EncodingType> {
+        EncodingType::try_from(self.encoding).ok()
+    }
+
+    /// Check if this is Clay encoding.
+    #[inline]
+    pub fn is_clay(&self) -> bool {
+        matches!(self.encoding_type(), Some(EncodingType::Clay))
+    }
+
+    /// Check if this is Basic encoding.
+    #[inline]
+    pub fn is_basic(&self) -> bool {
+        matches!(self.encoding_type(), Some(EncodingType::Basic))
+    }
+
+    /// Create a Clay encoding profile with the given parameters.
+    #[inline]
+    pub const fn clay(params: ClayParams) -> Self {
+        Self {
+            encoding: EncodingType::Clay as u64,
+            params: params.as_u64(),
+        }
+    }
+
+    /// Create a Clay encoding profile with default parameters.
+    pub fn clay_default() -> Self {
+        Self::clay(ClayParams::default())
+    }
+
+    /// Get the Clay parameters (only valid if is_clay()).
+    #[inline]
+    pub const fn clay_params(&self) -> ClayParams {
+        ClayParams::from_u64(self.params)
+    }
+
+    /// Create a Basic (RS) encoding profile with given parameters.
+    #[inline]
+    pub const fn basic(params: RSParams) -> Self {
+        Self {
+            encoding: EncodingType::Basic as u64,
+            params: params.as_u64(),
+        }
+    }
+
+    /// Create a Basic encoding profile with default parameters (k=10, m=10).
+    pub fn basic_default() -> Self {
+        Self::basic(RSParams::default())
+    }
+
+    /// Get the RS parameters (only valid if is_basic()).
+    #[inline]
+    pub const fn rs_params(&self) -> RSParams {
+        RSParams::from_u64(self.params)
+    }
+
+    /// Get k (data slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn k(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().k(),
+            Some(EncodingType::Basic) => self.rs_params().k(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get k from Unknown encoding"),
+        }
+    }
+
+    /// Get m (parity slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn m(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().m(),
+            Some(EncodingType::Basic) => self.rs_params().m(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get m from Unknown encoding"),
+        }
+    }
+
+    /// Get n (total slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn n(&self) -> u8 {
+        self.k() + self.m()
+    }
+
+    /// Pack into a byte array (for unaligned instruction data).
+    pub fn pack(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(&self.encoding.to_le_bytes());
+        out[8..16].copy_from_slice(&self.params.to_le_bytes());
+        out
+    }
+
+    /// Unpack from a byte array.
+    pub fn unpack(data: [u8; 16]) -> Self {
+        Self {
+            encoding: u64::from_le_bytes(data[..8].try_into().unwrap()),
+            params: u64::from_le_bytes(data[8..16].try_into().unwrap()),
+        }
+    }
+
+    /// Create an Unknown encoding profile (zeroed).
+    #[inline]
+    pub const fn unknown() -> Self {
+        Self {
+            encoding: EncodingType::Unknown as u64,
+            params: 0,
+        }
+    }
+}
+
+impl Default for EncodingProfile {
+    fn default() -> Self {
+        Self::clay_default()
+    }
 }
 
 /// Clay erasure code parameters, packed into u64.
@@ -162,145 +307,6 @@ impl Default for RSParams {
     fn default() -> Self {
         // k=10, m=10 (standard default)
         Self::new(10, 10)
-    }
-}
-
-/// Encoding configuration: type + params.
-///
-/// Follows the EpochState pattern (discriminant + payload as u64 pair).
-/// This is a 16-byte Pod struct suitable for on-chain storage.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-pub struct EncodingProfile {
-    /// Encoding type discriminant (EncodingType as u64).
-    pub encoding: u64,
-    /// Encoding-specific parameters (e.g., ClayParams packed).
-    pub params: u64,
-}
-
-impl EncodingProfile {
-    /// Get the encoding type.
-    #[inline]
-    pub fn encoding_type(&self) -> Option<EncodingType> {
-        EncodingType::try_from(self.encoding).ok()
-    }
-
-    /// Check if this is Clay encoding.
-    #[inline]
-    pub fn is_clay(&self) -> bool {
-        matches!(self.encoding_type(), Some(EncodingType::Clay))
-    }
-
-    /// Check if this is Basic encoding.
-    #[inline]
-    pub fn is_basic(&self) -> bool {
-        matches!(self.encoding_type(), Some(EncodingType::Basic))
-    }
-
-    /// Create a Clay encoding profile with the given parameters.
-    #[inline]
-    pub const fn clay(params: ClayParams) -> Self {
-        Self {
-            encoding: EncodingType::Clay as u64,
-            params: params.as_u64(),
-        }
-    }
-
-    /// Create a Clay encoding profile with default parameters.
-    pub fn clay_default() -> Self {
-        Self::clay(ClayParams::default())
-    }
-
-    /// Get the Clay parameters (only valid if is_clay()).
-    #[inline]
-    pub const fn clay_params(&self) -> ClayParams {
-        ClayParams::from_u64(self.params)
-    }
-
-    /// Create a Basic (RS) encoding profile with given parameters.
-    #[inline]
-    pub const fn basic(params: RSParams) -> Self {
-        Self {
-            encoding: EncodingType::Basic as u64,
-            params: params.as_u64(),
-        }
-    }
-
-    /// Create a Basic encoding profile with default parameters (k=10, m=10).
-    pub fn basic_default() -> Self {
-        Self::basic(RSParams::default())
-    }
-
-    /// Get the RS parameters (only valid if is_basic()).
-    #[inline]
-    pub const fn rs_params(&self) -> RSParams {
-        RSParams::from_u64(self.params)
-    }
-
-    /// Get k (data slices) for any encoding type.
-    ///
-    /// # Panics
-    /// Panics if encoding type is Unknown.
-    #[inline]
-    pub fn k(&self) -> u8 {
-        match self.encoding_type() {
-            Some(EncodingType::Clay) => self.clay_params().k(),
-            Some(EncodingType::Basic) => self.rs_params().k(),
-            Some(EncodingType::Unknown) | None => panic!("cannot get k from Unknown encoding"),
-        }
-    }
-
-    /// Get m (parity slices) for any encoding type.
-    ///
-    /// # Panics
-    /// Panics if encoding type is Unknown.
-    #[inline]
-    pub fn m(&self) -> u8 {
-        match self.encoding_type() {
-            Some(EncodingType::Clay) => self.clay_params().m(),
-            Some(EncodingType::Basic) => self.rs_params().m(),
-            Some(EncodingType::Unknown) | None => panic!("cannot get m from Unknown encoding"),
-        }
-    }
-
-    /// Get n (total slices) for any encoding type.
-    ///
-    /// # Panics
-    /// Panics if encoding type is Unknown.
-    #[inline]
-    pub fn n(&self) -> u8 {
-        self.k() + self.m()
-    }
-
-    /// Pack into a byte array (for unaligned instruction data).
-    pub fn pack(&self) -> [u8; 16] {
-        let mut out = [0u8; 16];
-        out[..8].copy_from_slice(&self.encoding.to_le_bytes());
-        out[8..16].copy_from_slice(&self.params.to_le_bytes());
-        out
-    }
-
-    /// Unpack from a byte array.
-    pub fn unpack(data: [u8; 16]) -> Self {
-        Self {
-            encoding: u64::from_le_bytes(data[..8].try_into().unwrap()),
-            params: u64::from_le_bytes(data[8..16].try_into().unwrap()),
-        }
-    }
-
-    /// Create an Unknown encoding profile (zeroed).
-    #[inline]
-    pub const fn unknown() -> Self {
-        Self {
-            encoding: EncodingType::Unknown as u64,
-            params: 0,
-        }
-    }
-}
-
-impl Default for EncodingProfile {
-    fn default() -> Self {
-        Self::clay_default()
     }
 }
 

@@ -9,7 +9,7 @@ pub struct RegisterTrack {
     pub root: Hash,            // Merkle root of original data
     pub commitment: Hash,      // Erasure coding commitment
     pub size: [u8; 8],         // Size in bytes (including parity data)
-    pub profile: [u8; 16],    // Packed EncodingProfile (avoids alignment issues after discriminator strip)
+    pub profile: [u8; 16],     // Packed EncodingProfile
 }
 
 #[repr(C)]
@@ -43,6 +43,7 @@ pub fn build_register_track_ix(
     let (track_address, _) = track_pda(authority, key);
 
     let size = storage_units.pack();
+    let profile = profile.pack();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -62,7 +63,7 @@ pub fn build_register_track_ix(
             root,
             commitment,
             size,
-            profile: profile.pack(),
+            profile,
         }.to_bytes(),
     }
 }
