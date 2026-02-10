@@ -4,5 +4,6 @@
 //! Uses erasure coding to reconstruct slices from the committee.
 
 pub mod worker;
+mod helpers;
 
 pub use worker::{run, RecoveryError};

@@ -1,10 +1,10 @@
 //! TrackInfo operations for track metadata
 
 use crate::columns::TrackCol;
-use crate::error::Result;
+use crate::error::{Result, TapeStoreError};
 use crate::types::{Pubkey, TrackInfo};
 use crate::TapeStore;
-use store::Store;
+use store::{Column, Store};
 
 /// Operations for track info
 pub trait TrackOps {
@@ -19,6 +19,14 @@ pub trait TrackOps {
 
     /// Check if track metadata exists without loading data
     fn has_track(&self, track_address: Pubkey) -> Result<bool>;
+
+    /// Paginated track iteration. Returns up to `limit` tracks starting after
+    /// `after_track` (or from the beginning if None). Ordered by Pubkey.
+    fn iter_tracks_from(
+        &self,
+        after_track: Option<Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<(Pubkey, TrackInfo)>>;
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
@@ -38,6 +46,40 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn has_track(&self, track_address: Pubkey) -> Result<bool> {
         Ok(self.contains::<TrackCol>(&track_address)?)
+    }
+
+    fn iter_tracks_from(
+        &self,
+        after_track: Option<Pubkey>,
+        limit: usize,
+    ) -> Result<Vec<(Pubkey, TrackInfo)>> {
+        let start_key = match after_track {
+            Some(track) => wincode::serialize(&track)
+                .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?,
+            None => Vec::new(),
+        };
+
+        let iter = self
+            .inner()
+            .inner()
+            .iter_from(TrackCol::CF_NAME, &start_key, store::Direction::Asc)?;
+
+        let mut results = Vec::new();
+        for (key_bytes, value_bytes) in iter {
+            let key: Pubkey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
+            // Skip the cursor key if resuming
+            if after_track.is_some() && Some(key) == after_track {
+                continue;
+            }
+            let info: TrackInfo = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track info: {}", e)))?;
+            results.push((key, info));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
     }
 }
 
@@ -102,5 +144,45 @@ mod tests {
 
         store.delete_track(track).unwrap();
         assert!(!store.has_track(track).unwrap());
+    }
+
+    #[test]
+    fn test_iter_tracks_from_all() {
+        let store = test_store();
+
+        for _ in 0..5 {
+            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+        }
+
+        let all = store.iter_tracks_from(None, 100).unwrap();
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
+    fn test_iter_tracks_from_pagination() {
+        let store = test_store();
+
+        for _ in 0..5 {
+            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+        }
+
+        // Get first 2
+        let first = store.iter_tracks_from(None, 2).unwrap();
+        assert_eq!(first.len(), 2);
+
+        // Get remaining after cursor
+        let cursor = first[1].0;
+        let rest = store.iter_tracks_from(Some(cursor), 100).unwrap();
+        assert_eq!(rest.len(), 3);
+
+        // Verify no overlap
+        assert!(rest.iter().all(|(k, _)| *k != cursor));
+    }
+
+    #[test]
+    fn test_iter_tracks_from_empty() {
+        let store = test_store();
+        let result = store.iter_tracks_from(None, 100).unwrap();
+        assert!(result.is_empty());
     }
 }

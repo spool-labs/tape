@@ -56,6 +56,22 @@ impl ClayCoder {
         self.clay.beta
     }
 
+    /// Compute the chunk size for a given input length (deterministic, no encoding needed).
+    ///
+    /// Mirrors the padding logic in clay_codes::encode: input is padded to
+    /// align to k × alpha × 2, then chunk_size = padded_len / k.
+    pub fn chunk_size_for(&self, input_len: usize) -> usize {
+        let alpha = self.alpha();
+        let min_size = self.k * alpha * 2;
+        let padded_len = if input_len == 0 {
+            min_size
+        } else {
+            let aligned = ((input_len + min_size - 1) / min_size) * min_size;
+            aligned.max(min_size)
+        };
+        padded_len / self.k
+    }
+
 }
 
 impl ErasureCoder for ClayCoder {
@@ -236,6 +252,31 @@ mod tests {
         let mut coder = test_coder();
         let result = coder.encode(&[]);
         assert!(matches!(result, Err(EncodeError::EmptyInput)));
+    }
+
+    #[test]
+    fn test_chunk_size_for() {
+        let mut coder = test_coder();
+
+        // Verify that chunk_size_for matches actual encoding output
+        for len in [100, 1000, 2000, 10_000, 100_000, 1_000_000] {
+            let data = make_data(len);
+            let chunks = coder.encode(&data).unwrap();
+            let actual_chunk_size = chunks[0].len();
+            let predicted = coder.chunk_size_for(len);
+            assert_eq!(
+                predicted, actual_chunk_size,
+                "chunk_size_for({len}) = {predicted}, actual = {actual_chunk_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_size_for_min() {
+        let coder = test_coder();
+        // Even for very small inputs, chunk_size must be at least alpha * 2
+        let min_chunk = coder.chunk_size_for(1);
+        assert!(min_chunk >= coder.alpha() * 2);
     }
 
 }
