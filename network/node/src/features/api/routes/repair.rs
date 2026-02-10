@@ -56,8 +56,16 @@ pub async fn post_repair<S: Store>(
 
     let chunk_size = total_data_len / num_stripes;
 
+    // Repair is only supported for Clay-encoded tracks
+    let profile = metadata.profile();
+    if !profile.is_clay() {
+        return Err(ApiError::InvalidBody(
+            "repair only supported for Clay encoding".into(),
+        ));
+    }
+
     // Compute alpha from the encoding profile's clay parameters
-    let clay_params = metadata.profile().clay_params();
+    let clay_params = profile.clay_params();
     let coder = ClayCoder::new(
         clay_params.n() as usize,
         clay_params.k() as usize,

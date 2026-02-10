@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::{self, StreamExt};
 use store::Store;
 use tape_core::erasure::{group_for_spool, group_start};
 use tape_core::spooler::SpoolIndex;
@@ -32,6 +33,12 @@ const SCAN_BATCH_SIZE: usize = 1000;
 
 /// Slices repaired per batch (network I/O, slow).
 const REPAIR_BATCH_SIZE: usize = 10;
+
+/// Maximum concurrent repair operations within a batch.
+const REPAIR_CONCURRENCY: usize = 4;
+
+/// Maximum times a track repair can fail before being skipped.
+const MAX_TRACK_RETRIES: u32 = 5;
 
 /// Error type for recovery operations.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +70,7 @@ pub async fn run<S: Store>(
     info!("Recovery thread starting");
 
     let mut interval = tokio::time::interval(RECOVERY_POLL_INTERVAL);
+    let mut failures: HashMap<(SpoolIndex, StorePubkey), u32> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -71,7 +79,7 @@ pub async fn run<S: Store>(
                 break;
             }
             _ = interval.tick() => {
-                if let Err(e) = poll_recovery(&ctx).await {
+                if let Err(e) = poll_recovery(&ctx, &mut failures).await {
                     warn!(error = %e, "recovery poll failed");
                 }
             }
@@ -82,7 +90,10 @@ pub async fn run<S: Store>(
 }
 
 /// Single recovery poll cycle.
-async fn poll_recovery<S: Store>(ctx: &NodeContext<S>) -> Result<(), RecoveryError> {
+async fn poll_recovery<S: Store>(
+    ctx: &NodeContext<S>,
+    failures: &mut HashMap<(SpoolIndex, StorePubkey), u32>,
+) -> Result<(), RecoveryError> {
     let our_spools = ctx.control_plane.get_our_spools();
     if our_spools.is_empty() {
         return Ok(());
@@ -95,9 +106,11 @@ async fn poll_recovery<S: Store>(ctx: &NodeContext<S>) -> Result<(), RecoveryErr
         by_group.entry(group).or_default().push(spool);
     }
 
+    let insecure = ctx.config.insecure;
+
     for (group, spools) in &by_group {
         // Resolve helpers once per group
-        let helpers = match resolve_group_helpers(ctx, spools[0]) {
+        let helpers = match resolve_group_helpers(ctx, spools[0], insecure) {
             Ok(h) => h,
             Err(e) => {
                 warn!(group, error = %e, "failed to resolve group helpers");
@@ -106,51 +119,67 @@ async fn poll_recovery<S: Store>(ctx: &NodeContext<S>) -> Result<(), RecoveryErr
         };
 
         for &spool in spools {
-            let status = ctx
-                .storage
+            if let Err(e) = process_spool(ctx, spool, *group, &helpers, failures).await {
+                warn!(spool, error = %e, "spool recovery failed, continuing");
+                continue;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Process a single spool's recovery: status check, scan, repair.
+async fn process_spool<S: Store>(
+    ctx: &NodeContext<S>,
+    spool: SpoolIndex,
+    group: u64,
+    helpers: &[GroupHelper],
+    failures: &mut HashMap<(SpoolIndex, StorePubkey), u32>,
+) -> Result<(), RecoveryError> {
+    let status = ctx
+        .storage
+        .store
+        .get_spool_status(spool)
+        .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+
+    match status {
+        Some(SpoolStatus::Active) => return Ok(()),
+        Some(SpoolStatus::LockedToMove) => return Ok(()),
+        None | Some(SpoolStatus::None) | Some(SpoolStatus::ActiveSync) => {
+            // Transition to ActiveRecover to begin scan
+            ctx.storage
                 .store
-                .get_spool_status(spool)
+                .set_spool_status(spool, SpoolStatus::ActiveRecover)
                 .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+            debug!(spool, "transitioned to ActiveRecover");
+        }
+        Some(SpoolStatus::ActiveRecover) => {
+            // Already in recovery, continue processing
+        }
+    }
 
-            match status {
-                Some(SpoolStatus::Active) => continue,
-                Some(SpoolStatus::LockedToMove) => continue,
-                None | Some(SpoolStatus::None) | Some(SpoolStatus::ActiveSync) => {
-                    // Transition to ActiveRecover to begin scan
-                    ctx.storage
-                        .store
-                        .set_spool_status(spool, SpoolStatus::ActiveRecover)
-                        .map_err(|e| RecoveryError::Storage(e.to_string()))?;
-                    debug!(spool, "transitioned to ActiveRecover");
-                }
-                Some(SpoolStatus::ActiveRecover) => {
-                    // Already in recovery, continue processing
-                }
-            }
+    let scan_complete = scan_batch(ctx, spool, group)?;
+    let _repaired = repair_batch(ctx, spool, helpers, failures).await?;
 
-            let scan_complete = scan_batch(ctx, spool, *group)?;
-            let _repaired = repair_batch(ctx, spool, &helpers).await?;
+    if scan_complete {
+        // Check if pending queue is also empty
+        let pending = ctx
+            .storage
+            .store
+            .iter_pending_recoveries(spool, 1)
+            .map_err(|e| RecoveryError::Storage(e.to_string()))?;
 
-            if scan_complete {
-                // Check if pending queue is also empty
-                let pending = ctx
-                    .storage
-                    .store
-                    .iter_pending_recoveries(spool, 1)
-                    .map_err(|e| RecoveryError::Storage(e.to_string()))?;
-
-                if pending.is_empty() {
-                    ctx.storage
-                        .store
-                        .set_spool_status(spool, SpoolStatus::Active)
-                        .map_err(|e| RecoveryError::Storage(e.to_string()))?;
-                    ctx.storage
-                        .store
-                        .remove_sync_progress(spool)
-                        .map_err(|e| RecoveryError::Storage(e.to_string()))?;
-                    info!(spool, "recovery complete, spool now Active");
-                }
-            }
+        if pending.is_empty() {
+            ctx.storage
+                .store
+                .set_spool_status(spool, SpoolStatus::Active)
+                .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+            ctx.storage
+                .store
+                .remove_sync_progress(spool)
+                .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+            info!(spool, "recovery complete, spool now Active");
         }
     }
 
@@ -191,6 +220,11 @@ fn scan_batch<S: Store>(
             _ => continue,
         }
 
+        // Skip empty tracks (#8)
+        if track_info.original_size == 0 {
+            continue;
+        }
+
         // Skip if we already have the slice
         let has = store
             .has_slice(spool, *track_address)
@@ -222,11 +256,16 @@ fn scan_batch<S: Store>(
 
 /// Process a batch of pending recoveries for the given spool.
 ///
+/// Phase 1: Pre-filter (sequential, fast DB ops)
+/// Phase 2: Concurrent repair (slow network I/O)
+/// Phase 3: Post-process results (sequential, fast DB ops)
+///
 /// Returns the number of successfully repaired slices.
 async fn repair_batch<S: Store>(
     ctx: &NodeContext<S>,
     spool: SpoolIndex,
     helpers: &[GroupHelper],
+    failures: &mut HashMap<(SpoolIndex, StorePubkey), u32>,
 ) -> Result<usize, RecoveryError> {
     let store = &ctx.storage.store;
 
@@ -237,30 +276,34 @@ async fn repair_batch<S: Store>(
         return Ok(0);
     }
 
-    let mut repaired = 0;
+    // Phase 1: Pre-filter (sequential, fast DB ops)
+    let mut to_repair: Vec<(StorePubkey, TrackInfo)> = Vec::new();
+    let mut removed = 0;
 
-    for track_address in batch {
+    for track_address in &batch {
         // Guard: already repaired (crash between put_slice and remove_pending)
         let has = store
-            .has_slice(spool, track_address)
+            .has_slice(spool, *track_address)
             .map_err(|e| RecoveryError::Storage(e.to_string()))?;
         if has {
             store
-                .remove_pending_recovery(spool, track_address)
+                .remove_pending_recovery(spool, *track_address)
                 .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+            removed += 1;
             continue;
         }
 
         // Guard: track deleted concurrently
         let track_info = match store
-            .get_track(track_address)
+            .get_track(*track_address)
             .map_err(|e| RecoveryError::Storage(e.to_string()))?
         {
             Some(info) => info,
             None => {
                 store
-                    .remove_pending_recovery(spool, track_address)
+                    .remove_pending_recovery(spool, *track_address)
                     .map_err(|e| RecoveryError::Storage(e.to_string()))?;
+                removed += 1;
                 continue;
             }
         };
@@ -271,17 +314,64 @@ async fn repair_batch<S: Store>(
             break;
         }
 
-        match repair_slice(ctx, spool, track_address, &track_info, helpers).await {
+        // Guard: skip tracks that have failed too many times
+        let fail_count = failures
+            .get(&(spool, *track_address))
+            .copied()
+            .unwrap_or(0);
+        if fail_count >= MAX_TRACK_RETRIES {
+            debug!(
+                spool,
+                track = %track_address,
+                fail_count,
+                "skipping after too many failures"
+            );
+            continue;
+        }
+
+        to_repair.push((*track_address, track_info));
+    }
+
+    if to_repair.is_empty() {
+        if removed > 0 {
+            ctx.metrics
+                .recovery_queue_len
+                .set(batch.len() as i64 - removed as i64);
+        }
+        return Ok(0);
+    }
+
+    // Phase 2: Concurrent repair (slow network I/O)
+    let results: Vec<(StorePubkey, Result<(), RecoveryError>)> = stream::iter(to_repair)
+        .map(|(addr, info)| {
+            let ctx = &ctx;
+            let helpers = &helpers;
+            async move {
+                let result = repair_slice(ctx, spool, addr, &info, helpers).await;
+                (addr, result)
+            }
+        })
+        .buffer_unordered(REPAIR_CONCURRENCY)
+        .collect()
+        .await;
+
+    // Phase 3: Post-process (sequential, fast DB ops)
+    let mut repaired = 0;
+    for (addr, result) in results {
+        match result {
             Ok(()) => {
                 store
-                    .remove_pending_recovery(spool, track_address)
+                    .remove_pending_recovery(spool, addr)
                     .map_err(|e| RecoveryError::Storage(e.to_string()))?;
                 repaired += 1;
+                ctx.metrics.slices_recovered_total.inc();
             }
             Err(e) => {
+                *failures.entry((spool, addr)).or_default() += 1;
+                ctx.metrics.recovery_failures_total.inc();
                 warn!(
                     spool,
-                    track = %track_address,
+                    track = %addr,
                     error = %e,
                     "repair failed, will retry"
                 );
@@ -307,6 +397,13 @@ async fn repair_slice<S: Store>(
     helpers: &[GroupHelper],
 ) -> Result<(), RecoveryError> {
     let profile = track_info.profile();
+
+    // Only Clay-encoded tracks support bandwidth-optimal repair (#1)
+    if !profile.is_clay() {
+        warn!(spool = our_spool, track = %track_address, "skipping non-Clay track");
+        return Ok(());
+    }
+
     let blob_len = track_info.original_size as usize;
     let stripe_size = pick_stripe_size(blob_len);
     let clay_params = profile.clay_params();
@@ -330,10 +427,8 @@ async fn repair_slice<S: Store>(
         .repair_plan_from_params(lost, &available, blob_len, stripe_size)
         .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
 
-    let track_id = tape_crypto::Pubkey::from(track_address).to_string();
-    let insecure = ctx.config.insecure;
-    let helper_data =
-        fan_out_repair_requests(helpers, &plan, &track_id, insecure).await?;
+    let track_id = track_address.to_string();
+    let helper_data = fan_out_repair_requests(helpers, &plan, &track_id).await?;
 
     let metadata = SliceMetadata::with_profile(blob_len, stripe_size, profile);
     let metadata_bytes = metadata.to_bytes();

@@ -4,7 +4,6 @@
 //! fans out repair sub-chunk requests to helper nodes.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 use futures::stream::{self, StreamExt};
 use store::Store;
@@ -27,8 +26,8 @@ pub struct GroupHelper {
     pub position: usize,
     /// Absolute spool index (group_start + position).
     pub spool_idx: SpoolIndex,
-    /// Resolved network address.
-    pub address: SocketAddr,
+    /// Pre-built node client (reused across repair requests).
+    pub client: NodeClient,
 }
 
 /// Maximum concurrent repair requests per fan-out.
@@ -41,6 +40,7 @@ const FAN_OUT_CONCURRENCY: usize = 8;
 pub fn resolve_group_helpers<S: Store>(
     ctx: &NodeContext<S>,
     our_spool: SpoolIndex,
+    insecure: bool,
 ) -> Result<Vec<GroupHelper>, RecoveryError> {
     let group = group_for_spool(our_spool);
     let start = group_start(group);
@@ -73,10 +73,14 @@ pub fn resolve_group_helpers<S: Store>(
                 let member = &committee[member_idx];
                 match member.network_address.to_socket_addr() {
                     Ok(address) => {
+                        let client = NodeClientBuilder::new()
+                            .accept_invalid_certs(insecure)
+                            .build(&address.to_string())
+                            .map_err(|e| RecoveryError::NodeClient(e.to_string()))?;
                         helpers.push(GroupHelper {
                             position,
                             spool_idx,
-                            address,
+                            client,
                         });
                     }
                     Err(e) => {
@@ -106,7 +110,6 @@ pub async fn fan_out_repair_requests(
     helpers: &[GroupHelper],
     plan: &RepairPlan,
     track_id: &str,
-    insecure: bool,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, RecoveryError> {
     // Collect which slice indices the plan actually needs
     let mut needed_slices: HashMap<usize, Vec<(u32, Vec<u32>)>> = HashMap::new();
@@ -125,7 +128,7 @@ pub async fn fan_out_repair_requests(
 
     let needed = needed_slices.len();
 
-    // Build (slice_index, client, request) tuples — one NodeClient per helper
+    // Build (slice_index, client, request) tuples — clone pre-built client per helper
     let mut requests: Vec<(SliceIndex, NodeClient, RepairRequest)> = Vec::new();
     for (slice_idx, stripe_plans) in &needed_slices {
         let helper = match helper_by_position.get(slice_idx) {
@@ -136,10 +139,7 @@ pub async fn fan_out_repair_requests(
             }
         };
 
-        let client = NodeClientBuilder::new()
-            .accept_invalid_certs(insecure)
-            .build(&helper.address.to_string())
-            .map_err(|e| RecoveryError::NodeClient(e.to_string()))?;
+        let client = helper.client.clone();
 
         let stripes: Vec<StripeSubChunkRequest> = stripe_plans
             .iter()

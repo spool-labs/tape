@@ -37,6 +37,7 @@ pub struct NodeMetrics {
 
     // Recovery metrics
     pub slices_recovered_total: IntCounter,
+    pub recovery_failures_total: IntCounter,
     pub recovery_queue_len: IntGauge,
 
     // GC metrics
@@ -181,6 +182,15 @@ impl NodeMetrics {
             .register(Box::new(slices_recovered_total.clone()))
             .ok();
 
+        let recovery_failures_total = IntCounter::new(
+            "tape_node_recovery_failures_total",
+            "Total number of slice recovery failures",
+        )
+        .expect("metric creation should not fail");
+        registry
+            .register(Box::new(recovery_failures_total.clone()))
+            .ok();
+
         let recovery_queue_len = IntGauge::new(
             "tape_node_recovery_queue_len",
             "Number of slices pending recovery",
@@ -212,6 +222,7 @@ impl NodeMetrics {
             blocks_processed_total,
             spools_synced_total,
             slices_recovered_total,
+            recovery_failures_total,
             recovery_queue_len,
             gc_runs_total,
             storage_bytes_used,
