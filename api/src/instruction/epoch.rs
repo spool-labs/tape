@@ -21,6 +21,7 @@ pub fn build_advance_epoch_ix(
             AccountMeta::new(system_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(epoch_address, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),
     }

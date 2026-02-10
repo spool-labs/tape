@@ -11718,6 +11718,7 @@ name = "tape-spooler"
 version = "0.3.0"
 dependencies = [
  "tape-core",
+ "tape-crypto",
 ]
 
 [[package]]

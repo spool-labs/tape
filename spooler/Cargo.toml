@@ -13,5 +13,6 @@ documentation = "https://docs.rs/tape-spooler"
 
 [dependencies]
 tape-core.workspace = true
+tape-crypto.workspace = true
 
 [dev-dependencies]

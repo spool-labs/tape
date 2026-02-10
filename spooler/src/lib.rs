@@ -11,7 +11,7 @@
 use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::{SpoolCount, SpoolerError};
 use tape_core::system::Committee;
-use tape_core::types::EpochNumber;
+use tape_crypto::hash::Hash;
 
 mod heap;
 mod priority;
@@ -49,7 +49,7 @@ pub fn migrate_dhondt<const SPOOLS: usize, const N: usize>(
     assignment: &mut tape_core::spooler::SpoolAssignment<SPOOLS>,
     current: &Committee<N>,
     next: &Committee<N>,
-    epoch: EpochNumber,
+    seed: &Hash,
 ) -> Result<(), SpoolerError> {
     let members_current = current.active_members();
     let members_next = next.active_members();
@@ -63,7 +63,7 @@ pub fn migrate_dhondt<const SPOOLS: usize, const N: usize>(
         &members_current,
         &members_next,
         &spool_counts,
-        epoch,
+        seed,
     )?;
     assignment.0.copy_from_slice(&spools);
     Ok(())
@@ -74,7 +74,7 @@ pub fn migrate_sainte_lague<const SPOOLS: usize, const N: usize>(
     assignment: &mut tape_core::spooler::SpoolAssignment<SPOOLS>,
     current: &Committee<N>,
     next: &Committee<N>,
-    epoch: EpochNumber,
+    seed: &Hash,
 ) -> Result<(), SpoolerError> {
     let members_current = current.active_members();
     let members_next = next.active_members();
@@ -88,7 +88,7 @@ pub fn migrate_sainte_lague<const SPOOLS: usize, const N: usize>(
         &members_current,
         &members_next,
         &spool_counts,
-        epoch,
+        seed,
     )?;
     assignment.0.copy_from_slice(&spools);
     Ok(())

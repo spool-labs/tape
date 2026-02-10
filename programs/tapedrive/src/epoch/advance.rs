@@ -12,6 +12,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         archive_info,
         epoch_info,
+        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -66,13 +67,22 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
+    // Extract the most recent slot hash for migration seed
+    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
+    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
+    // SlotHashes binary layout: 8-byte count, then (8-byte slot + 32-byte hash) entries.
+    // First entry's hash is at bytes 16..48.
+    let seed = tape_crypto::hash::Hash(
+        slot_hashes_data[16..48].try_into().map_err(|_| TapeError::UnexpectedState)?
+    );
+
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
     tape_spooler::migrate_dhondt(
         &mut system.spools,
         &system.committee,
         &system.committee_next,
-        epoch.id,
+        &seed,
     ).map_err(|_| TapeError::UnexpectedState)?;
 
     // Rotate committees: prev <- current <- next <- empty
@@ -166,6 +176,21 @@ mod tests {
         m
     }
 
+    /// Build a fake SlotHashes sysvar account with a single entry containing a zero hash.
+    fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {
+        // Layout: 8-byte count + (8-byte slot + 32-byte hash) per entry
+        let mut data = vec![0u8; 48];
+        data[0] = 1; // count = 1 (little-endian u64)
+        // slot = 0, hash = [0; 32] (all zeros = Hash::default)
+        (sysvar::slot_hashes::ID, solana_sdk::account::Account {
+            lamports: 1,
+            data,
+            owner: sysvar::ID,
+            executable: false,
+            rent_epoch: 0,
+        })
+    }
+
     #[test]
     fn test_advance_epoch() {
         let env = test_env();
@@ -222,6 +247,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Expected state after instruction
@@ -232,12 +258,13 @@ mod tests {
             SPOOL_COUNT as u16,
         ).unwrap();
 
+        let seed = tape_crypto::hash::Hash::default();
         let spools = migrate_spools(
             &system.spools.0,
             &system.committee.active_members(),
             &system.committee_next.active_members(),
             &seat_count,
-            e0,
+            &seed,
         ).expect("seat reassignment failed");
 
         let expected_seats = SpoolAssignment::try_from(spools.as_ref()).unwrap();
@@ -350,6 +377,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         env.process_instruction(
@@ -402,6 +430,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         env.process_instruction(
@@ -465,6 +494,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Should fail with InsufficientCommittee since committee_next < 20
@@ -534,6 +564,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Expected epoch state: syncing
@@ -608,6 +639,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Expected epoch state: syncing (bootstrap allowed)
@@ -680,6 +712,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Should FAIL - committee is non-empty so bootstrap exception doesn't apply
@@ -741,6 +774,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            slot_hashes_account(),
         ];
 
         // Should fail with InsufficientCommittee (empty is < 20)

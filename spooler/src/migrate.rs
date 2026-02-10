@@ -22,9 +22,9 @@
 //! frame, 32 KB heap) and uses fixed-size bitmasks instead of hash sets.
 
 use tape_core::types::NodeId;
-use tape_core::types::EpochNumber;
 use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::{SpoolCount, SpoolMapping, SpoolerError};
+use tape_crypto::hash::{Hash, hashv};
 use crate::MAX_SPOOLS_PER_NODE;
 const MAX_NODES: usize = MEMBER_COUNT;
 const MIN_NODES: usize = SPOOL_GROUP_SIZE;
@@ -113,11 +113,15 @@ fn take_k_lowest_bits(mut x: GroupSet, k: u32) -> GroupSet {
     out
 }
 
-/// Deterministic per-node offset into the group ring, derived from node identity and epoch.
+/// Deterministic per-node offset into the group ring, derived from node identity and a seed hash.
+///
+/// The seed is typically the slot hash at epoch transition, making the offset unpredictable
+/// until the transition executes on-chain.
 #[inline]
-fn group_offset(node_id: NodeId, epoch: EpochNumber) -> u32 {
-    const GOLDEN_RATIO: u64 = 0x9E3779B97F4A7C15;
-    ((node_id.0 ^ epoch.0).wrapping_mul(GOLDEN_RATIO) % (SPOOL_GROUP_COUNT as u64)) as u32
+fn group_offset(node_id: NodeId, seed: &Hash) -> u32 {
+    let h = hashv(&[seed.as_ref(), &node_id.0.to_le_bytes()]);
+    let val = u64::from_le_bytes(h.0[..8].try_into().unwrap());
+    (val % (SPOOL_GROUP_COUNT as u64)) as u32
 }
 
 /// Mutable per-node bookkeeping used throughout group processing.
@@ -312,7 +316,7 @@ fn build_previous_owners(
 fn compute_retain_masks(
     nodes: &[NodeState],
     prev_owner: &[Option<NodeIndex>],
-    epoch: EpochNumber,
+    seed: &Hash,
 ) -> (Vec<GroupSet>, Vec<SpoolCount>) {
     let num_next = nodes.len();
 
@@ -331,7 +335,7 @@ fn compute_retain_masks(
         if keep == 0 {
             continue;
         }
-        let offset = group_offset(nodes[i].node_id, epoch);
+        let offset = group_offset(nodes[i].node_id, seed);
         let rotated = rotate_groups_right(available, offset);
         let picked = take_k_lowest_bits(rotated, keep);
         retain_mask[i] = rotate_groups_left(picked, offset);
@@ -544,13 +548,13 @@ pub fn migrate_spools(
     current_members: &[NodeId],
     next_members: &[NodeId],
     next_spool_counts: &[SpoolCount],
-    epoch: EpochNumber,
+    seed: &Hash,
 ) -> Result<Vec<SpoolMapping>, SpoolerError> {
     validate(current_spools, next_members, next_spool_counts)?;
 
     let nodes = build_node_states(next_members, next_spool_counts);
     let prev_owner = build_previous_owners(current_spools, current_members, next_members)?;
-    let (retain_mask, planned_retentions) = compute_retain_masks(&nodes, &prev_owner, epoch);
+    let (retain_mask, planned_retentions) = compute_retain_masks(&nodes, &prev_owner, seed);
     let retain_nodes_per_group = build_retain_nodes_per_group(&retain_mask);
     let buckets = RemainingBuckets::new(&nodes);
     let num_next = next_members.len();
@@ -604,7 +608,7 @@ pub fn initial_assignment(
 ) -> Result<Vec<SpoolMapping>, SpoolerError> {
     let dummy_current: Vec<SpoolMapping> = vec![0; SPOOL_COUNT];
     let empty: &[NodeId] = &[];
-    migrate_spools(&dummy_current, empty, members, spool_counts, EpochNumber(0))
+    migrate_spools(&dummy_current, empty, members, spool_counts, &Hash::default())
 }
 
 #[cfg(test)]
@@ -688,7 +692,7 @@ mod tests {
         nm: &[NodeId],
         nc: &[SpoolCount],
     ) -> Vec<SpoolMapping> {
-        migrate_spools(cur, cm, nm, nc, EpochNumber(1)).unwrap()
+        migrate_spools(cur, cm, nm, nc, &Hash::default()).unwrap()
     }
 
     fn group_count(r: &[SpoolMapping], ni: SpoolMapping) -> usize {
@@ -789,7 +793,7 @@ mod tests {
         let epoch1 = initial_assignment(&members, &counts).unwrap();
         verify_group_constraints(&epoch1, n);
 
-        let epoch2 = migrate_spools(&epoch1, &members, &members, &counts, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members, &members, &counts, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, n);
         verify_counts(&epoch2, &counts);
 
@@ -809,7 +813,7 @@ mod tests {
         let stakes2: Vec<TAPE> = stakes1[..30].to_vec();
         let counts2 = dhondt_counts(&stakes2, SPOOL_COUNT as SpoolCount);
 
-        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, 30);
         verify_counts(&epoch2, &counts2);
 
@@ -830,7 +834,7 @@ mod tests {
         let stakes2: Vec<TAPE> = (1..=n2 as u64).map(|i| TAPE(i * 500)).collect();
         let counts2 = dhondt_counts(&stakes2, SPOOL_COUNT as SpoolCount);
 
-        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, n2);
         verify_counts(&epoch2, &counts2);
     }
@@ -846,7 +850,7 @@ mod tests {
         let members2: Vec<NodeId> = (101..=125).map(NodeId).collect();
         let counts2 = dhondt_counts(&stakes, SPOOL_COUNT as SpoolCount);
 
-        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members1, &members2, &counts2, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, n);
         verify_counts(&epoch2, &counts2);
     }
@@ -871,7 +875,7 @@ mod tests {
             let new_counts = dhondt_counts(&new_stakes, SPOOL_COUNT as SpoolCount);
 
             let next =
-                migrate_spools(&current, &members, &new_members, &new_counts, EpochNumber(epoch as u64))
+                migrate_spools(&current, &members, &new_members, &new_counts, &Hash::default())
                     .unwrap();
             verify_group_constraints(&next, n);
             verify_counts(&next, &new_counts);
@@ -1192,7 +1196,7 @@ mod tests {
         stakes2[0] = stakes2[0] + TAPE(500);
         let counts2 = dhondt_counts(&stakes2, SPOOL_COUNT as SpoolCount);
 
-        let epoch2 = migrate_spools(&epoch1, &members, &members, &counts2, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members, &members, &counts2, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, n);
         verify_counts(&epoch2, &counts2);
 
@@ -1367,7 +1371,7 @@ mod tests {
             let new_counts = dhondt_counts(&new_stakes, SPOOL_COUNT as SpoolCount);
 
             let next =
-                migrate_spools(&current, &members, &new_members, &new_counts, EpochNumber(epoch as u64))
+                migrate_spools(&current, &members, &new_members, &new_counts, &Hash::default())
                     .unwrap();
             verify_group_constraints(&next, n);
             verify_counts(&next, &new_counts);
@@ -1417,7 +1421,7 @@ mod tests {
         }
         let counts2 = dhondt_counts(&stakes2, SPOOL_COUNT as SpoolCount);
 
-        let epoch2 = migrate_spools(&epoch1, &members1, &members1, &counts2, EpochNumber(1)).unwrap();
+        let epoch2 = migrate_spools(&epoch1, &members1, &members1, &counts2, &Hash::default()).unwrap();
         verify_group_constraints(&epoch2, n);
         verify_counts(&epoch2, &counts2);
     }
@@ -1432,7 +1436,7 @@ mod tests {
         let mut spools = vec![0 as SpoolMapping; SPOOL_COUNT];
         spools[0] = 25;
         assert_eq!(
-            migrate_spools(&spools, &cur_members, &next_members, &counts, EpochNumber(1)).unwrap_err(),
+            migrate_spools(&spools, &cur_members, &next_members, &counts, &Hash::default()).unwrap_err(),
             SpoolerError::BadIndex,
         );
     }
@@ -1526,7 +1530,7 @@ mod tests {
         let prev = vec![0 as SpoolMapping; SPOOL_COUNT];
         let prev_m = vec![NodeId(1)];
         let next_m = make_members(20);
-        let result = migrate_spools(&prev, &prev_m, &next_m, &uniform(20, 50), EpochNumber(1)).unwrap();
+        let result = migrate_spools(&prev, &prev_m, &next_m, &uniform(20, 50), &Hash::default()).unwrap();
         verify_group_constraints(&result, 20);
 
         for g in 0..SPOOL_GROUP_COUNT {
@@ -1700,7 +1704,7 @@ mod tests {
         let stakes2: Vec<TAPE> = (1..=n2 as u64).map(|i| TAPE(i * 100)).collect();
         let c2 = dhondt_counts(&stakes2, SPOOL_COUNT as SpoolCount);
 
-        let r2 = migrate_spools(&r1, &m1, &m2, &c2, EpochNumber(1)).unwrap();
+        let r2 = migrate_spools(&r1, &m1, &m2, &c2, &Hash::default()).unwrap();
         verify_group_constraints(&r2, n2);
         verify_counts(&r2, &c2);
 
@@ -1737,7 +1741,7 @@ mod tests {
         let r1 = fresh(&m1, &c);
 
         let m2: Vec<NodeId> = (1001..=1128).map(NodeId).collect();
-        let r2 = migrate_spools(&r1, &m1, &m2, &c, EpochNumber(1)).unwrap();
+        let r2 = migrate_spools(&r1, &m1, &m2, &c, &Hash::default()).unwrap();
         verify_group_constraints(&r2, n);
         verify_counts(&r2, &c);
         assert_eq!(moved(&r1, &m1, &r2, &m2), SPOOL_COUNT);
@@ -1753,7 +1757,7 @@ mod tests {
 
         let s2: Vec<TAPE> = (1..=n as u64).rev().map(|i| TAPE(i * 1000)).collect();
         let c2 = dhondt_counts(&s2, SPOOL_COUNT as SpoolCount);
-        let r2 = migrate_spools(&r1, &m, &m, &c2, EpochNumber(1)).unwrap();
+        let r2 = migrate_spools(&r1, &m, &m, &c2, &Hash::default()).unwrap();
         verify_group_constraints(&r2, n);
         verify_counts(&r2, &c2);
 
@@ -1796,7 +1800,7 @@ mod tests {
             let new_counts = dhondt_counts(&new_stakes, SPOOL_COUNT as SpoolCount);
 
             let next =
-                migrate_spools(&current, &members, &new_members, &new_counts, EpochNumber(epoch as u64 + 1))
+                migrate_spools(&current, &members, &new_members, &new_counts, &Hash::default())
                     .unwrap();
             verify_group_constraints(&next, n);
             verify_counts(&next, &new_counts);
