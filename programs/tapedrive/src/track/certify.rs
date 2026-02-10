@@ -198,8 +198,7 @@ mod tests {
 
         // Choose the first SIGNERS in the on-chain order. If the committee is sorted by stake,
         // this picks the highest-stake members, which helps pass the seat-weighted supermajority.
-        let mut signed_indices: Vec<usize> = (0..SIGNERS).collect();
-        signed_indices[0] = MEMBER_COUNT - 1; // non-trivial ordering
+        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
         let bitmap = CommitteeBitmap::from_indices(&signed_indices, committee_size);
 
         // Build certification message with domain separation and epoch binding

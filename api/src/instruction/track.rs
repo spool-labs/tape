@@ -9,7 +9,7 @@ pub struct RegisterTrack {
     pub root: Hash,            // Merkle root of original data
     pub commitment: Hash,      // Erasure coding commitment
     pub size: [u8; 8],         // Size in bytes (including parity data)
-    pub profile: EncodingProfile, // Encoding profile (type + params)
+    pub profile: [u8; 16],    // Packed EncodingProfile (avoids alignment issues after discriminator strip)
 }
 
 #[repr(C)]
@@ -62,7 +62,7 @@ pub fn build_register_track_ix(
             root,
             commitment,
             size,
-            profile,
+            profile: profile.pack(),
         }.to_bytes(),
     }
 }

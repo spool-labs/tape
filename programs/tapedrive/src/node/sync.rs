@@ -132,7 +132,7 @@ mod tests {
             member(1, 1_000)
         ]);
         system.spools = SpoolAssignment::try_from_counts(
-            &[700, 250, 74]
+            &[700, 250, 50]
         ).expect("spools");
 
         epoch.id = EpochNumber(42);
@@ -207,7 +207,7 @@ mod tests {
 
         node.latest_sync_epoch = EpochNumber(7);
         system.spools = SpoolAssignment::try_from_counts(
-            &[250, 700, 74]
+            &[250, 700, 50]
         ).expect("spools");
 
         epoch.state = EpochState::syncing();

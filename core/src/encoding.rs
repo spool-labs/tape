@@ -272,6 +272,22 @@ impl EncodingProfile {
         self.k() + self.m()
     }
 
+    /// Pack into a byte array (for unaligned instruction data).
+    pub fn pack(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[..8].copy_from_slice(&self.encoding.to_le_bytes());
+        out[8..16].copy_from_slice(&self.params.to_le_bytes());
+        out
+    }
+
+    /// Unpack from a byte array.
+    pub fn unpack(data: [u8; 16]) -> Self {
+        Self {
+            encoding: u64::from_le_bytes(data[..8].try_into().unwrap()),
+            params: u64::from_le_bytes(data[8..16].try_into().unwrap()),
+        }
+    }
+
     /// Create an Unknown encoding profile (zeroed).
     #[inline]
     pub const fn unknown() -> Self {

@@ -199,7 +199,7 @@ mod tests {
         ]);
 
         system.spools_prev = SpoolAssignment::try_from_counts(
-            &[500, 300, 224]
+            &[500, 300, 200]
         ).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
@@ -314,7 +314,7 @@ mod tests {
             member(5, 1_000, 0),
         ]);
         // Node (id=2) gets 700 spools, others get less - node at index 0 after sort
-        system.spools_prev = SpoolAssignment::try_from_counts(&[700, 200, 124]).unwrap();
+        system.spools_prev = SpoolAssignment::try_from_counts(&[700, 200, 100]).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
         archive.recent_usage = StorageUnits(1_000);

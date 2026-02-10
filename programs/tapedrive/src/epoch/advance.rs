@@ -622,8 +622,8 @@ mod tests {
         // Previous committee is also EMPTY
         system.committee_prev = Committee::new();
 
-        // Next committee has < MIN_COMMITTEE_SIZE (10 nodes joining)
-        let next_members: Vec<CommitteeMember> = (1..=10)
+        // Next committee has < MIN_COMMITTEE_SIZE (20 nodes joining)
+        let next_members: Vec<CommitteeMember> = (1..=20)
             .map(|i| member(i, 1_000, 1_000_000, 1000))
             .collect();
         system.committee_next = Committee::from_members(&next_members);

@@ -2,6 +2,7 @@ use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackRegistered;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::encoding::EncodingProfile;
 use crate::error::*;
 
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -80,7 +81,8 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         args.commitment,
         spool_group,
     );
-    track.data.profile = args.profile;
+    let profile = EncodingProfile::unpack(args.profile);
+    track.data.profile = profile;
 
     let new_used = tape.used
          .checked_add(total_units)
@@ -99,7 +101,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         size: total_units,
         commitment: args.commitment,
         epoch: current_epoch(epoch),
-        profile: args.profile,
+        profile,
         spool_group: spool_group.to_le_bytes(),
     }.log();
 
