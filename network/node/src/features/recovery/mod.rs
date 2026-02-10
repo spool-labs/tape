@@ -1,9 +1,8 @@
-//! Recovery feature module.
-//!
-//! Handles recovery of slices that failed to sync from previous owners.
-//! Uses erasure coding to reconstruct slices from the committee.
-
+pub mod error;
 pub mod worker;
 mod helpers;
+mod repair;
+mod scan;
 
-pub use worker::{run, RecoveryError};
+pub use error::RecoveryError;
+pub use worker::run;

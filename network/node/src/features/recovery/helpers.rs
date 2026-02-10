@@ -18,7 +18,7 @@ use tracing::{debug, warn};
 
 use crate::core::context::NodeContext;
 
-use super::worker::RecoveryError;
+use super::error::RecoveryError;
 
 /// A helper node within the same spool group.
 pub struct GroupHelper {
@@ -50,8 +50,7 @@ pub fn resolve_group_helpers<S: Store>(
     let committee = ctx
         .storage
         .store
-        .get_committee(epoch)
-        .map_err(|e| RecoveryError::Storage(e.to_string()))?
+        .get_committee(epoch)?
         .ok_or(RecoveryError::NoCommittee)?;
 
     // Build spool → NodeInfo index from committee members
