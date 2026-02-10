@@ -21,10 +21,11 @@ pub trait SpoolOps {
     fn remove_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()>;
     fn has_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<bool>;
 
-    // Iterate pending recoveries for a spool
+    // Iterate pending recoveries for a spool (up to `limit`)
     fn iter_pending_recoveries(
         &self,
         spool_id: u16,
+        limit: usize,
     ) -> Result<Vec<Pubkey>>;
 
     // Sync progress
@@ -79,6 +80,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
     fn iter_pending_recoveries(
         &self,
         spool_id: u16,
+        limit: usize,
     ) -> Result<Vec<Pubkey>> {
         let prefix = SliceKey::spool_prefix(spool_id);
         let iter = self
@@ -91,6 +93,9 @@ impl<S: Store> SpoolOps for TapeStore<S> {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("pending recover key: {}", e)))?;
             results.push(key.track_address);
+            if results.len() >= limit {
+                break;
+            }
         }
         Ok(results)
     }
@@ -190,7 +195,7 @@ mod tests {
             .add_pending_recovery(99, Pubkey::new_unique())
             .unwrap();
 
-        let pending = store.iter_pending_recoveries(spool_id).unwrap();
+        let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
         assert_eq!(pending.len(), 3);
     }
 

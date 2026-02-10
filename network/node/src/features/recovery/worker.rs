@@ -39,9 +39,6 @@ pub enum RecoveryError {
     #[error("storage error: {0}")]
     Storage(String),
 
-    #[error("decode error: {0}")]
-    Decode(String),
-
     #[error("no committee members available")]
     NoCommittee,
 
@@ -56,9 +53,6 @@ pub enum RecoveryError {
 
     #[error("slicer error: {0}")]
     Slicer(String),
-
-    #[error("track not found: {0}")]
-    TrackNotFound(String),
 }
 
 /// Run the recovery worker loop.
@@ -142,7 +136,7 @@ async fn poll_recovery<S: Store>(ctx: &NodeContext<S>) -> Result<(), RecoveryErr
                 let pending = ctx
                     .storage
                     .store
-                    .iter_pending_recoveries(spool)
+                    .iter_pending_recoveries(spool, 1)
                     .map_err(|e| RecoveryError::Storage(e.to_string()))?;
 
                 if pending.is_empty() {
@@ -236,11 +230,9 @@ async fn repair_batch<S: Store>(
 ) -> Result<usize, RecoveryError> {
     let store = &ctx.storage.store;
 
-    let pending = store
-        .iter_pending_recoveries(spool)
+    let batch: Vec<StorePubkey> = store
+        .iter_pending_recoveries(spool, REPAIR_BATCH_SIZE)
         .map_err(|e| RecoveryError::Storage(e.to_string()))?;
-
-    let batch: Vec<StorePubkey> = pending.into_iter().take(REPAIR_BATCH_SIZE).collect();
     if batch.is_empty() {
         return Ok(0);
     }
@@ -289,7 +281,7 @@ async fn repair_batch<S: Store>(
             Err(e) => {
                 warn!(
                     spool,
-                    track = ?track_address,
+                    track = %track_address,
                     error = %e,
                     "repair failed, will retry"
                 );
@@ -320,7 +312,7 @@ async fn repair_slice<S: Store>(
     let clay_params = profile.clay_params();
 
     let coder = ClayCoder::from_params(clay_params);
-    let slicer = Slicer::with_profile(coder, stripe_size, true, profile);
+    let slicer = Slicer::with_profile(coder, stripe_size, profile.is_clay(), profile);
 
     let group = group_for_spool(our_spool);
     let start = group_start(group);
@@ -338,7 +330,7 @@ async fn repair_slice<S: Store>(
         .repair_plan_from_params(lost, &available, blob_len, stripe_size)
         .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
 
-    let track_id = bs58::encode(track_address.0).into_string();
+    let track_id = tape_crypto::Pubkey::from(track_address).to_string();
     let insecure = ctx.config.insecure;
     let helper_data =
         fan_out_repair_requests(helpers, &plan, &track_id, insecure).await?;
@@ -357,7 +349,7 @@ async fn repair_slice<S: Store>(
 
     debug!(
         spool = our_spool,
-        track = ?track_address,
+        track = %track_address,
         blob_len,
         "slice repaired"
     );

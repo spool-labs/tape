@@ -52,6 +52,13 @@ impl From<&solana_program::pubkey::Pubkey> for Pubkey {
     }
 }
 
+impl std::fmt::Display for Pubkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pk: solana_program::pubkey::Pubkey = (*self).into();
+        write!(f, "{pk}")
+    }
+}
+
 impl AsRef<[u8]> for Pubkey {
     fn as_ref(&self) -> &[u8] {
         &self.0

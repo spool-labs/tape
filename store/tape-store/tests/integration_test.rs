@@ -328,7 +328,7 @@ fn pending_recovery_operations() {
     assert!(store.has_pending_recovery(spool_id, track3).unwrap());
 
     // Iterate pending for spool
-    let pending = store.iter_pending_recoveries(spool_id).unwrap();
+    let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
     assert_eq!(pending.len(), 3);
 
     // Remove one

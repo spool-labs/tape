@@ -11,7 +11,7 @@ use store::Store;
 use tape_core::erasure::{group_for_spool, group_start, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolIndex;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
-use tape_node_client::NodeClientBuilder;
+use tape_node_client::{NodeClient, NodeClientBuilder};
 use tape_slicer::repair::RepairPlan;
 use tape_slicer::SliceIndex;
 use tape_store::ops::CommitteeOps;
@@ -123,8 +123,10 @@ pub async fn fan_out_repair_requests(
     let helper_by_position: HashMap<usize, &GroupHelper> =
         helpers.iter().map(|h| (h.position, h)).collect();
 
-    // Build (slice_index, address, request) tuples
-    let mut requests: Vec<(SliceIndex, SocketAddr, RepairRequest)> = Vec::new();
+    let needed = needed_slices.len();
+
+    // Build (slice_index, client, request) tuples — one NodeClient per helper
+    let mut requests: Vec<(SliceIndex, NodeClient, RepairRequest)> = Vec::new();
     for (slice_idx, stripe_plans) in &needed_slices {
         let helper = match helper_by_position.get(slice_idx) {
             Some(h) => h,
@@ -133,6 +135,11 @@ pub async fn fan_out_repair_requests(
                 continue;
             }
         };
+
+        let client = NodeClientBuilder::new()
+            .accept_invalid_certs(insecure)
+            .build(&helper.address.to_string())
+            .map_err(|e| RecoveryError::NodeClient(e.to_string()))?;
 
         let stripes: Vec<StripeSubChunkRequest> = stripe_plans
             .iter()
@@ -151,10 +158,9 @@ pub async fn fan_out_repair_requests(
         let si = SliceIndex::new(*slice_idx).ok_or(RecoveryError::RepairFailed(
             format!("invalid slice index {slice_idx}"),
         ))?;
-        requests.push((si, helper.address, request));
+        requests.push((si, client, request));
     }
 
-    let needed = plan.stripes[0].helpers.len();
     if requests.len() < needed {
         return Err(RecoveryError::NotEnoughHelpers {
             needed,
@@ -164,10 +170,13 @@ pub async fn fan_out_repair_requests(
 
     // Fan out concurrently
     let results: Vec<(SliceIndex, Result<Vec<u8>, RecoveryError>)> = stream::iter(requests)
-        .map(|(si, addr, req)| {
+        .map(|(si, client, req)| {
             let track_id = track_id.to_string();
             async move {
-                let result = send_repair_request(addr, &track_id, &req, insecure).await;
+                let result = client
+                    .request_repair(&track_id, &req)
+                    .await
+                    .map_err(|e| RecoveryError::NodeClient(e.to_string()));
                 (si, result)
             }
         })
@@ -204,21 +213,4 @@ pub async fn fan_out_repair_requests(
     );
 
     Ok(collected)
-}
-
-async fn send_repair_request(
-    addr: SocketAddr,
-    track_id: &str,
-    request: &RepairRequest,
-    insecure: bool,
-) -> Result<Vec<u8>, RecoveryError> {
-    let client = NodeClientBuilder::new()
-        .accept_invalid_certs(insecure)
-        .build(&addr.to_string())
-        .map_err(|e| RecoveryError::NodeClient(e.to_string()))?;
-
-    client
-        .request_repair(track_id, request)
-        .await
-        .map_err(|e| RecoveryError::NodeClient(e.to_string()))
 }
