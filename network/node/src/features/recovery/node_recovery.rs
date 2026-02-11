@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::spool_sync::{SpoolSyncHandler, SyncError, track_id_to_pubkey};
+use crate::features::spool_sync::{SpoolSyncHandler, SyncError, SyncSlice};
 
 use super::deferral::LiveUploadDeferral;
 use super::helpers::resolve_previous_owner;
@@ -96,7 +96,6 @@ pub async fn start_spool_recovery<S: Store + 'static>(
     info!(spools = spools_to_recover.len(), "starting spool recovery");
 
     // Phase 1: Bulk transfer from previous owners
-    let insecure = ctx.config.insecure;
     for &spool in &spools_to_recover {
         if cancel.is_cancelled() {
             break;
@@ -104,34 +103,31 @@ pub async fn start_spool_recovery<S: Store + 'static>(
 
         let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveSync);
 
-        if let Some((prev_addr, _client)) = resolve_previous_owner(&ctx, spool, insecure) {
+        if let Some(prev_addr) = resolve_previous_owner(&ctx, spool) {
             // Load persisted cursor for crash resume
             let resume_cursor = ctx.storage.store.get_spool_sync_cursor(spool)
                 .ok()
-                .flatten()
-                .map(|p| {
-                    let sdk_pubkey: solana_sdk::pubkey::Pubkey = p.into();
-                    sdk_pubkey.to_string()
-                });
+                .flatten();
 
             let store_ref = &ctx.storage.store;
-            let on_slice = |slice: crate::features::spool_sync::SyncSlice| -> Result<(), SyncError> {
-                let track_pubkey: Pubkey = track_id_to_pubkey(&slice.track_id)
-                    .map(|p| p.into())
-                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+            let on_slice = |slice: SyncSlice| -> Result<(), SyncError> {
+                // Don't trust sender — verify leaf hash
+                let computed_hash = tape_crypto::merkle::hash_leaf(&slice.data);
+                if computed_hash != slice.leaf_hash {
+                    warn!(track = %slice.track_address, "received slice failed leaf hash verification, skipping");
+                    return Ok(());
+                }
+
+                // Use our own spool variable (captured from loop), not sender's slice_index
                 store_ref
-                    .put_slice(slice.slice_index, track_pubkey, slice.data)
+                    .put_slice(spool, slice.track_address, slice.data)
                     .map_err(|e| SyncError::Storage(e.to_string()))?;
                 Ok(())
             };
 
-            let on_batch = |last_track: &str| -> Result<(), SyncError> {
-                let track_id = last_track.to_string();
-                let track_pubkey: Pubkey = track_id_to_pubkey(&track_id)
-                    .map(|p| p.into())
-                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+            let on_batch = |last_track: &Pubkey| -> Result<(), SyncError> {
                 store_ref
-                    .set_spool_sync_cursor(spool, track_pubkey)
+                    .set_spool_sync_cursor(spool, *last_track)
                     .map_err(|e| SyncError::Storage(e.to_string()))?;
                 Ok(())
             };
@@ -140,7 +136,7 @@ pub async fn start_spool_recovery<S: Store + 'static>(
                 .sync_spool_with_retry(
                     spool,
                     epoch,
-                    &prev_addr,
+                    prev_addr,
                     on_slice,
                     resume_cursor,
                     Some(on_batch),

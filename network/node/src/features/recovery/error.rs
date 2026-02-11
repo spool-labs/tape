@@ -15,6 +15,9 @@ pub enum RecoveryError {
     #[error("repair failed: {0}")]
     RepairFailed(String),
 
+    #[error("unsupported encoding type for repair")]
+    UnsupportedEncoding,
+
     #[error("skipped (already have enough slices)")]
     Skipped,
 

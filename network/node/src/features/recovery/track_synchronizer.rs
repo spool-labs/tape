@@ -27,6 +27,7 @@ use crate::core::context::NodeContext;
 
 use super::deferral::LiveUploadDeferral;
 use super::error::RecoveryError;
+use super::helpers::resolve_group_helpers;
 use super::recovery_service::attempt_full_recovery;
 use super::repair::repair_single_slice;
 
@@ -159,8 +160,23 @@ pub async fn recover_track_slice<S: Store>(
             }
         };
 
+        // Resolve helpers for repair
+        let insecure = ctx.config.insecure;
+        let helpers = match resolve_group_helpers(&ctx, our_spool, insecure) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(spool = our_spool, track = %track_address, error = %e, "failed to resolve helpers");
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(RETRY_DELAY) => {}
+                }
+                attempt += 1;
+                continue;
+            }
+        };
+
         // Attempt repair using shared repair_single_slice
-        match repair_single_slice(&ctx, our_spool, track_address, &track_info).await {
+        match repair_single_slice(&ctx, our_spool, track_address, &track_info, &helpers).await {
             Ok(repaired_slice) => {
                 if let Err(e) = ctx.storage.store.put_slice(our_spool, track_address, repaired_slice) {
                     warn!(spool = our_spool, track = %track_address, error = %e, "failed to store repaired slice");
@@ -175,17 +191,16 @@ pub async fn recover_track_slice<S: Store>(
                     return;
                 }
             }
-            Err(RecoveryError::NotEnoughHelpers { needed, available }) => {
+            Err(RecoveryError::UnsupportedEncoding)
+            | Err(RecoveryError::NotEnoughHelpers { .. }) => {
                 warn!(
                     spool = our_spool,
                     track = %track_address,
-                    needed,
-                    available,
                     attempt,
-                    "insufficient helpers for repair, trying full recovery"
+                    "repair not possible, trying full recovery"
                 );
 
-                // Fall back to full recovery: download k slices, decode, re-encode
+                // Fall back to full recovery — it resolves its own group members
                 let _permit = match slice_semaphore.acquire().await {
                     Ok(p) => p,
                     Err(_) => {

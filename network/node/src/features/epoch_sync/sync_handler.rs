@@ -395,7 +395,7 @@ pub async fn run(
 
     let sync_handler = SpoolSyncHandler::new()
         .with_max_concurrent(ctx.config.sync_concurrency.unwrap_or(10))
-        .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000))
+        .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000) as u32)
         .with_insecure(ctx.config.insecure);
 
     // Wait for catch-up to complete before making FSM decisions

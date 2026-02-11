@@ -10,6 +10,7 @@ use store::Store;
 use tape_core::erasure::{group_for_spool, group_start, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolIndex;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
+use tape_core::types::network::NetworkAddress;
 use tape_node_client::{NodeClient, NodeClientBuilder};
 use tape_slicer::repair::RepairPlan;
 use tape_slicer::SliceIndex;
@@ -112,26 +113,19 @@ pub fn resolve_group_helpers<S: Store>(
 
 /// Resolve the previous owner of a spool from the previous epoch's committee.
 ///
-/// Returns the network address string and a pre-built NodeClient, or None if
+/// Returns the network address of the previous owner, or None if
 /// no previous owner can be found.
 pub fn resolve_previous_owner<S: Store>(
     ctx: &NodeContext<S>,
     spool: SpoolIndex,
-    insecure: bool,
-) -> Option<(String, NodeClient)> {
+) -> Option<NetworkAddress> {
     let epoch = ctx.control_plane.current_epoch();
     let prev_epoch = tape_core::types::EpochNumber(epoch.as_u64().saturating_sub(1));
     let prev_committee = ctx.storage.store.get_committee(prev_epoch).ok()??;
 
     for member in &prev_committee {
         if member.spools.contains(&spool) {
-            let addr = member.network_address.to_socket_addr().ok()?;
-            let addr_str = addr.to_string();
-            let client = NodeClientBuilder::new()
-                .accept_invalid_certs(insecure)
-                .build(&addr_str)
-                .ok()?;
-            return Some((addr_str, client));
+            return Some(member.network_address);
         }
     }
     None

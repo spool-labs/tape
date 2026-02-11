@@ -5,15 +5,17 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
+use tape_core::types::network::NetworkAddress;
 use tape_node_client::{NodeClientBuilder, NodeError};
 
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
+use tape_store::types::Pubkey;
 
 use super::types::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
 
 /// Default batch size for sync requests.
-pub const DEFAULT_BATCH_SIZE: usize = 1000;
+pub const DEFAULT_BATCH_SIZE: u32 = 1000;
 
 /// Default max concurrent sync operations.
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 10;
@@ -57,7 +59,7 @@ pub struct SpoolSyncHandler {
     /// Semaphore to limit concurrent sync operations.
     permits: Arc<Semaphore>,
     /// Batch size for sync requests.
-    batch_size: usize,
+    batch_size: u32,
     /// Accept invalid TLS certificates (for local testing with self-signed certs).
     accept_invalid_certs: bool,
     /// Timeout before switching from spool transfer to direct recovery.
@@ -88,7 +90,7 @@ impl SpoolSyncHandler {
     }
 
     /// Set the batch size for sync requests.
-    pub fn with_batch_size(mut self, size: usize) -> Self {
+    pub fn with_batch_size(mut self, size: u32) -> Self {
         self.batch_size = size;
         self
     }
@@ -106,51 +108,53 @@ impl SpoolSyncHandler {
     /// # Arguments
     /// * `spool` - The spool index to sync
     /// * `from_epoch` - The epoch we're syncing from
-    /// * `prev_owner_address` - Address of the previous owner node
+    /// * `prev_owner_address` - Network address of the previous owner node
     /// * `on_slice` - Callback for each received slice
-    /// * `resume_cursor` - Optional starting track ID to resume from (persisted cursor)
-    /// * `on_batch` - Optional callback after each batch with last track_id for cursor persistence
+    /// * `resume_cursor` - Starting track pubkey to resume from (Pubkey::default() = from beginning)
+    /// * `on_batch` - Optional callback after each batch with last track pubkey for cursor persistence
+    /// * `cursor_out` - Updated in-place after each batch for cursor preservation across retries
     pub async fn sync_spool<F, B>(
         &self,
         spool: SpoolIndex,
         from_epoch: EpochNumber,
-        prev_owner_address: &str,
+        prev_owner_address: NetworkAddress,
         mut on_slice: F,
-        resume_cursor: Option<String>,
+        resume_cursor: Pubkey,
         on_batch: &mut Option<B>,
+        cursor_out: &mut Pubkey,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
-        B: FnMut(&str) -> Result<(), SyncError>,
+        B: FnMut(&Pubkey) -> Result<(), SyncError>,
     {
         let _permit = self.permits.acquire().await.map_err(|_| {
             SyncError::Storage("semaphore closed".to_string())
         })?;
 
+        let addr = prev_owner_address
+            .to_socket_addr()
+            .map_err(|e| SyncError::Storage(format!("invalid network address: {e}")))?;
         let client = NodeClientBuilder::new()
             .accept_invalid_certs(self.accept_invalid_certs)
-            .build(prev_owner_address)?;
+            .build(&addr.to_string())?;
 
-        let mut starting_track = resume_cursor.unwrap_or_default();
+        let mut starting_track = resume_cursor;
         let mut total_slices = 0;
 
         loop {
             let request = SyncSpoolRequest::new_v1(
                 spool,
-                starting_track.clone(),
+                starting_track,
                 self.batch_size,
                 from_epoch,
             );
 
-            // Serialize request for sending
-            let request_bytes = serde_json::to_vec(&request)
+            let request_bytes = wincode::serialize(&request)
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
-            // Send sync request
             let response_bytes = client.sync_spool(request_bytes).await?;
 
-            // Deserialize response
-            let response: SyncSpoolResponse = serde_json::from_slice(&response_bytes)
+            let response: SyncSpoolResponse = wincode::deserialize(&response_bytes)
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
             if response.is_empty() {
@@ -163,9 +167,9 @@ impl SpoolSyncHandler {
                 total_slices += 1;
             }
 
-            // Update pagination cursor and persist progress
             if let Some(last_slice) = slices.last() {
-                starting_track = last_slice.track_id.clone();
+                starting_track = last_slice.track_address;
+                *cursor_out = starting_track;
                 if let Some(ref mut cb) = on_batch {
                     cb(&starting_track)?;
                 }
@@ -177,7 +181,7 @@ impl SpoolSyncHandler {
         info!(
             spool = spool,
             slices = total_slices,
-            "Completed spool sync"
+            "spool sync complete"
         );
 
         Ok(total_slices)
@@ -191,7 +195,7 @@ impl SpoolSyncHandler {
     /// * `on_slice` - Callback for each received slice (must be thread-safe)
     pub async fn sync_spools<F>(
         &self,
-        spools: Vec<(SpoolIndex, String)>,
+        spools: Vec<(SpoolIndex, NetworkAddress)>,
         from_epoch: EpochNumber,
         on_slice: Arc<F>,
     ) -> Result<usize, SyncError>
@@ -201,20 +205,22 @@ impl SpoolSyncHandler {
         use futures::stream::{self, StreamExt};
 
         let results: Vec<Result<usize, SyncError>> = stream::iter(spools)
-            .map(|(spool, address): (SpoolIndex, String)| {
+            .map(|(spool, address): (SpoolIndex, NetworkAddress)| {
                 let handler = self.clone();
                 let on_slice = Arc::clone(&on_slice);
 
                 async move {
-                    let mut no_batch: Option<fn(&str) -> Result<(), SyncError>> = None;
+                    let mut no_batch: Option<fn(&Pubkey) -> Result<(), SyncError>> = None;
+                    let mut cursor_out = Pubkey::default();
                     handler
                         .sync_spool(
                             spool,
                             from_epoch,
-                            address.as_str(),
+                            address,
                             |slice| on_slice(slice),
-                            None,
+                            Pubkey::default(),
                             &mut no_batch,
+                            &mut cursor_out,
                         )
                         .await
                 }
@@ -240,19 +246,19 @@ impl SpoolSyncHandler {
         &self,
         spool: SpoolIndex,
         from_epoch: EpochNumber,
-        prev_owner_address: &str,
+        prev_owner_address: NetworkAddress,
         mut on_slice: F,
-        resume_cursor: Option<String>,
+        resume_cursor: Option<Pubkey>,
         mut on_batch: Option<B>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
-        B: FnMut(&str) -> Result<(), SyncError>,
+        B: FnMut(&Pubkey) -> Result<(), SyncError>,
     {
         let deadline = tokio::time::Instant::now() + self.recovery_timeout;
         let mut attempt = 0u32;
-        let mut cursor = resume_cursor;
+        let mut cursor = resume_cursor.unwrap_or_default();
 
         loop {
             match self
@@ -261,8 +267,9 @@ impl SpoolSyncHandler {
                     from_epoch,
                     prev_owner_address,
                     &mut on_slice,
-                    cursor.take(),
+                    cursor,
                     &mut on_batch,
+                    &mut cursor,
                 )
                 .await
             {

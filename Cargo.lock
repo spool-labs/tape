@@ -11622,6 +11622,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wincode 0.1.2",
+ "wincode-derive 0.1.1",
 ]
 
 [[package]]

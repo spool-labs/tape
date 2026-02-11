@@ -1,40 +1,27 @@
 //! Types for spool synchronization protocol.
 
-use serde::{Deserialize, Serialize};
-use solana_sdk::pubkey::Pubkey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 use tape_node_api::MERKLE_HEIGHT;
-
-/// Track identifier (Pubkey serialized as base58 string for JSON compatibility).
-pub type TrackId = String;
-
-/// Convert a Pubkey to TrackId for serialization.
-pub fn track_id_from_pubkey(pubkey: &Pubkey) -> TrackId {
-    pubkey.to_string()
-}
-
-/// Parse a TrackId back to Pubkey.
-pub fn track_id_to_pubkey(track_id: &TrackId) -> Result<Pubkey, &'static str> {
-    track_id.parse().map_err(|_| "invalid track id")
-}
+use tape_store::types::Pubkey;
+use wincode_derive::{SchemaRead, SchemaWrite};
 
 /// Sync request message (versioned for future compatibility).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, SchemaRead, SchemaWrite)]
 pub enum SyncSpoolRequest {
     V1(SyncSpoolRequestV1),
 }
 
 /// Version 1 of sync spool request.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, SchemaRead, SchemaWrite)]
 pub struct SyncSpoolRequestV1 {
     /// The spool index to sync.
     pub spool_index: SpoolIndex,
-    /// Starting track ID for pagination.
-    pub starting_track_id: TrackId,
+    /// Starting track address for pagination (Pubkey::default() = from beginning).
+    pub starting_track: Pubkey,
     /// Maximum number of slices to return per batch.
-    pub batch_size: usize,
+    pub batch_size: u32,
     /// The epoch this request is for.
     pub epoch: EpochNumber,
 }
@@ -43,13 +30,13 @@ impl SyncSpoolRequest {
     /// Create a new V1 request.
     pub fn new_v1(
         spool_index: SpoolIndex,
-        starting_track_id: TrackId,
-        batch_size: usize,
+        starting_track: Pubkey,
+        batch_size: u32,
         epoch: EpochNumber,
     ) -> Self {
         Self::V1(SyncSpoolRequestV1 {
             spool_index,
-            starting_track_id,
+            starting_track,
             batch_size,
             epoch,
         })
@@ -57,10 +44,10 @@ impl SyncSpoolRequest {
 }
 
 /// A single slice in a sync response.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, SchemaRead, SchemaWrite)]
 pub struct SyncSlice {
-    /// Track identifier (base58 pubkey).
-    pub track_id: TrackId,
+    /// Track address (Pubkey).
+    pub track_address: Pubkey,
     /// Slice/spool index (0 to SPOOL_COUNT-1).
     pub slice_index: SpoolIndex,
     /// Raw slice data.
@@ -72,7 +59,7 @@ pub struct SyncSlice {
 }
 
 /// Sync response message (versioned).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, SchemaRead, SchemaWrite)]
 pub enum SyncSpoolResponse {
     /// V1 response: list of slices.
     V1(Vec<SyncSlice>),
@@ -99,17 +86,6 @@ impl SyncSpoolResponse {
     }
 }
 
-/// Signed sync request for node-to-node communication.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignedSyncRequest {
-    /// The underlying request.
-    pub request: SyncSpoolRequest,
-    /// Ed25519 signature over the serialized request.
-    pub signature: Vec<u8>,
-    /// Public key of the signer.
-    pub signer_pubkey: Vec<u8>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,7 +95,7 @@ mod tests {
     fn test_sync_request_creation() {
         let request = SyncSpoolRequest::new_v1(
             42,
-            "track_0".to_string(),
+            Pubkey::default(),
             1000,
             EpochNumber(5),
         );
@@ -127,9 +103,31 @@ mod tests {
         match request {
             SyncSpoolRequest::V1(v1) => {
                 assert_eq!(v1.spool_index, 42);
-                assert_eq!(v1.starting_track_id, "track_0");
+                assert_eq!(v1.starting_track, Pubkey::default());
                 assert_eq!(v1.batch_size, 1000);
                 assert_eq!(v1.epoch, EpochNumber(5));
+            }
+        }
+    }
+
+    #[test]
+    fn test_sync_request_wincode_roundtrip() {
+        let request = SyncSpoolRequest::new_v1(
+            42,
+            Pubkey::new_unique(),
+            500,
+            EpochNumber(10),
+        );
+
+        let bytes = wincode::serialize(&request).unwrap();
+        let decoded: SyncSpoolRequest = wincode::deserialize(&bytes).unwrap();
+
+        match (&request, &decoded) {
+            (SyncSpoolRequest::V1(a), SyncSpoolRequest::V1(b)) => {
+                assert_eq!(a.spool_index, b.spool_index);
+                assert_eq!(a.starting_track, b.starting_track);
+                assert_eq!(a.batch_size, b.batch_size);
+                assert_eq!(a.epoch, b.epoch);
             }
         }
     }
@@ -140,7 +138,7 @@ mod tests {
         assert!(empty.is_empty());
 
         let non_empty = SyncSpoolResponse::new_v1(vec![SyncSlice {
-            track_id: "track_1".to_string(),
+            track_address: Pubkey::new_unique(),
             slice_index: 0,
             data: vec![1, 2, 3],
             leaf_hash: Hash::default(),
@@ -150,10 +148,23 @@ mod tests {
     }
 
     #[test]
-    fn test_track_id_conversion() {
-        let pubkey = Pubkey::new_unique();
-        let track_id = track_id_from_pubkey(&pubkey);
-        let parsed = track_id_to_pubkey(&track_id).unwrap();
-        assert_eq!(pubkey, parsed);
+    fn test_sync_response_wincode_roundtrip() {
+        let response = SyncSpoolResponse::new_v1(vec![SyncSlice {
+            track_address: Pubkey::new_unique(),
+            slice_index: 7,
+            data: vec![1, 2, 3, 4],
+            leaf_hash: Hash::default(),
+            merkle_proof: [Hash::default(); MERKLE_HEIGHT],
+        }]);
+
+        let bytes = wincode::serialize(&response).unwrap();
+        let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(response.slices().len(), decoded.slices().len());
+        assert_eq!(
+            response.slices()[0].track_address,
+            decoded.slices()[0].track_address
+        );
+        assert_eq!(response.slices()[0].data, decoded.slices()[0].data);
     }
 }
