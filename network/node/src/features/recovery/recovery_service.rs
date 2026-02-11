@@ -34,9 +34,6 @@ use super::inconsistency::check_consistency;
 /// Number of concurrent slice downloads during full recovery.
 const DOWNLOAD_CONCURRENCY: usize = 8;
 
-/// Extra slices beyond k to attempt downloading (handles failures).
-const INITIAL_EXTRA: usize = 3;
-
 /// Attempt full recovery: download k slices, decode, re-encode, extract target.
 ///
 /// This is the fallback path when bandwidth-optimal Clay repair fails because

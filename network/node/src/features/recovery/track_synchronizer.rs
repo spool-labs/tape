@@ -19,6 +19,8 @@ use tape_slicer::clay::ClayCoder;
 use tape_slicer::metadata::SliceMetadata;
 use tape_slicer::slicer::Slicer;
 use tape_slicer::SliceIndex;
+use solana_sdk::signer::Signer;
+use tape_api::program::tapedrive::node_pda;
 use tape_node_client::NodeClientBuilder;
 use tape_store::ops::{CommitteeOps, SliceOps, TrackOps};
 use tape_store::types::{Pubkey, TrackInfo};
@@ -36,7 +38,13 @@ use super::recovery_service::attempt_full_recovery;
 /// Delay between retry attempts when a track sync fails (30s fixed).
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
+/// Timeout for per-node metadata fetch requests.
+const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Fetch track metadata from committee peers when not available locally.
+///
+/// Iterates committee members sequentially, returning the first valid response.
+/// Skips our own node and applies a per-request timeout.
 async fn fetch_metadata_from_peers<S: Store>(
     ctx: &NodeContext<S>,
     track_address: Pubkey,
@@ -46,7 +54,14 @@ async fn fetch_metadata_from_peers<S: Store>(
     let insecure = ctx.config.insecure;
     let track_id = track_address.to_string();
 
+    let (our_node_address, _) = node_pda(ctx.keypair.pubkey());
+    let our_node_address: Pubkey = our_node_address.into();
+
     for member in &committee {
+        if member.node_address == our_node_address {
+            continue;
+        }
+
         let addr = match member.network_address.to_socket_addr() {
             Ok(a) => a,
             Err(_) => continue,
@@ -58,12 +73,21 @@ async fn fetch_metadata_from_peers<S: Store>(
             Ok(c) => c,
             Err(_) => continue,
         };
-        match client.get_metadata(&track_id).await {
-            Ok(bytes) => match wincode::deserialize::<TrackInfo>(&bytes) {
-                Ok(info) => return Some(info),
-                Err(_) => continue,
-            },
-            Err(_) => continue,
+
+        let result = tokio::time::timeout(
+            METADATA_REQUEST_TIMEOUT,
+            client.get_metadata(&track_id),
+        )
+        .await;
+
+        let bytes = match result {
+            Ok(Ok(b)) => b,
+            Ok(Err(_)) | Err(_) => continue,
+        };
+
+        match wincode::deserialize::<TrackInfo>(&bytes) {
+            Ok(info) if info.original_size > 0 => return Some(info),
+            _ => continue,
         }
     }
     None

@@ -72,15 +72,25 @@ pub fn resolve_group_helpers<S: Store>(
                 let member = &committee[member_idx];
                 match member.network_address.to_socket_addr() {
                     Ok(address) => {
-                        let client = NodeClientBuilder::new()
+                        match NodeClientBuilder::new()
                             .accept_invalid_certs(insecure)
                             .build(&address.to_string())
-                            .map_err(|e| RecoveryError::NodeClient(e.to_string()))?;
-                        helpers.push(GroupHelper {
-                            position,
-                            spool_idx,
-                            client,
-                        });
+                        {
+                            Ok(client) => {
+                                helpers.push(GroupHelper {
+                                    position,
+                                    spool_idx,
+                                    client,
+                                });
+                            }
+                            Err(e) => {
+                                warn!(
+                                    spool = spool_idx,
+                                    position,
+                                    "failed to build client: {e}"
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(
