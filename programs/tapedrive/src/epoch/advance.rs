@@ -12,6 +12,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         archive_info,
         epoch_info,
+        snapshot_state_info,
         slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -49,6 +50,19 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Ensure the archive schedule is aligned with the current epoch
     if archive.schedule.current_epoch() != epoch.id {
         return Err(TapeError::BadSchedule.into());
+    }
+
+    // Gate on previous epoch snapshot completion.
+    // Skip during bootstrap (epochs 0 and 1 have no prior snapshot).
+    let snapshot_state = snapshot_state_info
+        .is_snapshot_state()?
+        .as_account::<SnapshotState>(&tapedrive::ID)?;
+
+    if epoch.id >= EpochNumber(2) {
+        let required = EpochNumber(epoch.id.as_u64() - 1);
+        if snapshot_state.latest_epoch < required {
+            return Err(TapeError::SnapshotIncomplete.into());
+        }
     }
 
     // Save old epoch for event logging
@@ -203,6 +217,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         // Setup existing accounts
 
@@ -241,12 +256,19 @@ mod tests {
             StorageUnits(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
+        // Snapshot for epoch 41 must be complete to advance from epoch 42
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(41),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -349,6 +371,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -371,12 +394,18 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(1),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -402,6 +431,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -430,6 +460,7 @@ mod tests {
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, SnapshotState::zeroed().pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -455,6 +486,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -488,12 +520,18 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(1),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -520,6 +558,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -558,12 +597,18 @@ mod tests {
             StorageUnits(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(9),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -601,6 +646,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -633,12 +679,14 @@ mod tests {
             StorageUnits(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
+        // Epoch 1 — snapshot gate is skipped (bootstrap)
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, SnapshotState::zeroed().pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -676,6 +724,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -706,12 +755,18 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(1),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -738,6 +793,7 @@ mod tests {
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
         let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
 
         let mut epoch = Epoch::zeroed();
         let mut archive = Archive::zeroed();
@@ -768,12 +824,18 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
 
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(4),
+            ..SnapshotState::zeroed()
+        };
+
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
             sol(authority, 0),
             pda(system_address, system.pack(), tapedrive::ID),
             pda(archive_address, archive.pack(), tapedrive::ID),
             pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
 
@@ -783,6 +845,67 @@ mod tests {
             &accounts,
             &[
                 Check::err(TapeError::InsufficientCommittee.into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_advance_blocked_snapshot_incomplete() {
+        // Test that epoch advance is blocked when the previous epoch's snapshot is not done
+        let env = test_env();
+
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let instruction = build_advance_epoch_ix(fee_payer, authority);
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (snapshot_state_address, _) = snapshot_state_pda();
+
+        let mut epoch = Epoch::zeroed();
+        let mut archive = Archive::zeroed();
+        let mut system = System::zeroed();
+
+        let last_epoch = env.now() - (EPOCH_DURATION + 100);
+
+        let e0 = EpochNumber(5);
+
+        epoch.id = e0;
+        epoch.state = EpochState::active();
+        epoch.last_epoch = last_epoch;
+
+        let members: Vec<CommitteeMember> = (1..=20)
+            .map(|i| member(i, 1_000, 1_000_000, 1000))
+            .collect();
+        system.committee = Committee::from_members(&members);
+        system.committee_prev = Committee::from_members(&members);
+        system.committee_next = Committee::from_members(&members);
+
+        archive.schedule = EpochSchedule::new_at(epoch.id);
+
+        // latest_epoch = 3 but we need >= 4 to advance from epoch 5
+        let snapshot_state = SnapshotState {
+            latest_epoch: EpochNumber(3),
+            ..SnapshotState::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
+            slot_hashes_account(),
+        ];
+
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(TapeError::SnapshotIncomplete.into()),
             ]
         );
     }

@@ -26,8 +26,9 @@ pub const HISTORY:      &[u8] = b"history";
 pub const RESOURCE:     &[u8] = b"resource";
 pub const TRACK:        &[u8] = b"track";
 pub const STAKE:        &[u8] = b"stake";
-pub const CERTIFICATE:  &[u8] = b"certificate";
-pub const SNAPSHOT:     &[u8] = b"snapshot";
+pub const CERTIFICATE:      &[u8] = b"certificate";
+pub const SNAPSHOT:         &[u8] = b"snapshot";
+pub const SNAPSHOT_STATE:   &[u8] = b"snapshot_state";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
@@ -71,6 +72,12 @@ pub const ARCHIVE_ATA_BUMP: u8 =
         unsafe { &*(&spl_associated_token_account::id() as *const Pubkey as *const [u8; 32]) },
     )
     .1;
+
+pub const SNAPSHOT_STATE_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).0);
+
+pub const SNAPSHOT_STATE_BUMP: u8 =
+    ed25519::derive_program_address(&[SNAPSHOT_STATE], &PROGRAM_ID).1;
 
 // ====================================================================
 // PDA Functions
@@ -130,6 +137,16 @@ pub fn archive_ata() -> (Pubkey, u8) {
     (ARCHIVE_ATA, ARCHIVE_ATA_BUMP)
 }
 
+#[cfg(debug_assertions)]
+pub fn snapshot_state_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[SNAPSHOT_STATE], &id())
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn snapshot_state_pda() -> (Pubkey, u8) {
+    (SNAPSHOT_STATE_ADDRESS, SNAPSHOT_STATE_BUMP)
+}
 
 #[inline(always)]
 pub fn node_pda(authority: Pubkey) -> (Pubkey, u8) {
@@ -196,5 +213,9 @@ mod tests {
         let (pda, bump) = archive_ata();
         assert_eq!(pda, ARCHIVE_ATA);
         assert_eq!(bump, ARCHIVE_ATA_BUMP);
+
+        let (pda, bump) = snapshot_state_pda();
+        assert_eq!(pda, SNAPSHOT_STATE_ADDRESS);
+        assert_eq!(bump, SNAPSHOT_STATE_BUMP);
     }
 }

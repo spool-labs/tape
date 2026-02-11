@@ -1,7 +1,7 @@
 use tape_solana::*;
 
 use crate::program::*;
-use crate::state::{System, Epoch, Archive, Treasury};
+use crate::state::{System, Epoch, Archive, Treasury, SnapshotState};
 
 pub trait AccountInfoLoader {
     fn is_system(&self) -> Result<&Self, ProgramError>;
@@ -11,6 +11,7 @@ pub trait AccountInfoLoader {
     fn is_mint(&self) -> Result<&Self, ProgramError>;
     fn is_metadata(&self) -> Result<&Self, ProgramError>;
     fn is_treasury(&self) -> Result<&Self, ProgramError>;
+    fn is_snapshot_state(&self) -> Result<&Self, ProgramError>;
 }
 
 impl AccountInfoLoader for AccountInfo<'_> {
@@ -47,6 +48,11 @@ impl AccountInfoLoader for AccountInfo<'_> {
     fn is_treasury(&self) -> Result<&Self, ProgramError> {
         self.has_address(&TREASURY_ADDRESS)?
             .is_type::<Treasury>(&tapedrive::ID)
+    }
+
+    fn is_snapshot_state(&self) -> Result<&Self, ProgramError> {
+        self.has_address(&SNAPSHOT_STATE_ADDRESS)?
+            .is_type::<SnapshotState>(&tapedrive::ID)
     }
 }
 

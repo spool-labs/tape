@@ -12,6 +12,7 @@ pub fn build_advance_epoch_ix(
     let (system_address, _) = system_pda();
     let (archive_address, _) = archive_pda();
     let (epoch_address, _) = epoch_pda();
+    let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -21,6 +22,7 @@ pub fn build_advance_epoch_ix(
             AccountMeta::new(system_address, false),
             AccountMeta::new(archive_address, false),
             AccountMeta::new(epoch_address, false),
+            AccountMeta::new_readonly(snapshot_state_address, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: AdvanceEpoch {}.to_bytes(),

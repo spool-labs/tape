@@ -407,7 +407,6 @@ mod tests {
             committee_next,
             spools_prev: SpoolAssignment::<SPOOL_COUNT>::zeroed(),
             spools: SpoolAssignment::<SPOOL_COUNT>::zeroed(),
-            latest_snapshot_epoch: EpochNumber(0),
         }
     }
 

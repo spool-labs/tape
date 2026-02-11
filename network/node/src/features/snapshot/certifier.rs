@@ -229,13 +229,14 @@ pub async fn certify_snapshot_tracks<S: Store>(
         let profile = EncodingProfile::clay_default();
 
         // Submit RegisterSnapshot on-chain
+        let chunk_size = build_result.chunk_sizes[chunk_index] as u64;
         let register_ix = build_register_snapshot_ix(
             fee_payer,
             epoch,
             chunk_idx,
             commitment,
             profile,
-            0, // stripe_size (snapshot chunks are small enough for single stripe)
+            chunk_size,
             1, // stripe_count
             leaves,
         );

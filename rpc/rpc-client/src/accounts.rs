@@ -6,9 +6,9 @@ use rpc::{Rpc, RpcError};
 
 // Import tape-api types
 use tape_api::prelude::*;
-use tape_api::state::{AccountType, Archive, Epoch, History, Node, Stake, System, Tape, Track};
+use tape_api::state::{AccountType, Archive, Epoch, History, Node, SnapshotState, Stake, System, Tape, Track};
 use tape_api::program::tapedrive::{
-    self, SYSTEM_ADDRESS, EPOCH_ADDRESS, ARCHIVE_ADDRESS,
+    self, SYSTEM_ADDRESS, EPOCH_ADDRESS, ARCHIVE_ADDRESS, SNAPSHOT_STATE_ADDRESS,
     node_pda, stake_pda, tape_pda, track_pda, history_pda,
 };
 
@@ -77,6 +77,14 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         result
+    }
+
+    /// Fetch the SnapshotState singleton account
+    pub async fn get_snapshot_state(&self) -> Result<SnapshotState, RpcError> {
+        let account = self.rpc().get_account(&SNAPSHOT_STATE_ADDRESS).await?;
+        SnapshotState::unpack_with_discriminator(&account.data)
+            .map(|s| *s)
+            .map_err(|e| RpcError::Deserialization(e.to_string()))
     }
 
     /// Fetch the Archive singleton account

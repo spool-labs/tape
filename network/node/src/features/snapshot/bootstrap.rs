@@ -2,20 +2,23 @@
 //!
 //! New or lagging nodes can download epoch snapshots instead of replaying
 //! all Solana blocks from genesis. The bootstrap process:
-//! 1. Read `System.latest_snapshot_epoch` from chain
-//! 2. Download k_outer certified chunks (each from k_inner=7 slices)
-//! 3. Outer-RS-decode to get the serialized SnapshotLog
-//! 4. Replay events through block processor handlers
+//! 1. Read `SnapshotState` from chain (head pointer, latest_epoch)
+//! 2. Walk the linked list of snapshot tracks backward
+//! 3. Download k_outer certified chunks (each from k_inner=7 slices)
+//! 4. Outer-RS-decode to get the serialized SnapshotLog
+//! 5. Replay events through block processor handlers
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
+use solana_sdk::pubkey::Pubkey;
 use store::Store;
-use tape_api::program::tapedrive::snapshot_pda;
 use tape_core::erasure::{group_start, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
-use tape_core::types::{ChunkIndex, EpochNumber};
+use tape_core::spooler::SpoolGroup;
+use tape_core::types::EpochNumber;
 use tape_node_client::NodeClientBuilder;
 use tape_slicer::{ClayCoder, ClayParams, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::ops::CommitteeOps;
@@ -42,6 +45,7 @@ const DOWNLOAD_CONCURRENCY: usize = 10;
 pub async fn download_snapshot<S: Store>(
     ctx: &Arc<NodeContext<S>>,
     epoch: EpochNumber,
+    tracks: &[(SpoolGroup, Pubkey)],
 ) -> Result<SnapshotLog, SnapshotError> {
     info!(epoch = epoch.as_u64(), "Downloading snapshot");
 
@@ -56,12 +60,24 @@ pub async fn download_snapshot<S: Store>(
     let clay_params = ClayParams::default();
     let k_inner = clay_params.k() as usize;
 
+    // Build group_idx → track address map from pre-resolved addresses
+    let track_map: HashMap<SpoolGroup, Pubkey> = tracks
+        .iter()
+        .copied()
+        .collect();
+
     // For each spool group, try to download k_inner slices and decode the chunk
     let mut decoded_chunks: Vec<(usize, Vec<u8>)> = Vec::new();
 
     for group_idx in 0..SPOOL_GROUP_COUNT {
-        let (pda, _) = snapshot_pda(epoch, ChunkIndex(group_idx as u64));
-        let track_id = StorePubkey::from(pda).to_string();
+        let track_addr = match track_map.get(&(group_idx as SpoolGroup)) {
+            Some(addr) => *addr,
+            None => {
+                debug!(group = group_idx, "No track address for group, skipping");
+                continue;
+            }
+        };
+        let track_id = StorePubkey::from(track_addr).to_string();
         let start = group_start(group_idx as u64);
 
         // Build spool → client mapping for this group
@@ -327,7 +343,7 @@ fn replay_event<S: Store>(
 /// Full bootstrap orchestration: download and replay snapshots for all
 /// missing epochs.
 ///
-/// 1. Read System.latest_snapshot_epoch from chain
+/// 1. Read SnapshotState from chain (one RPC call)
 /// 2. Pause the block processor
 /// 3. For each epoch (oldest to newest): download + replay
 /// 4. Resume the block processor
@@ -335,8 +351,10 @@ pub async fn bootstrap_from_snapshots<S: Store>(
     ctx: Arc<NodeContext<S>>,
     cancel: CancellationToken,
 ) -> Result<(), SnapshotError> {
-    let system = ctx.control_plane.get_system();
-    let latest_snapshot = system.latest_snapshot_epoch;
+    let snapshot_state = ctx.rpc.get_snapshot_state().await
+        .map_err(|e| SnapshotError::Decode(format!("failed to fetch SnapshotState: {e}")))?;
+
+    let latest_snapshot = snapshot_state.latest_epoch;
 
     if latest_snapshot.as_u64() == 0 {
         info!("No snapshots available on-chain, skipping bootstrap");
@@ -359,26 +377,51 @@ pub async fn bootstrap_from_snapshots<S: Store>(
         "Starting snapshot bootstrap"
     );
 
+    // Walk the on-chain linked list from head backward to collect track addresses
+    let mut track_addr = snapshot_state.head;
+    let mut tracks_by_epoch: BTreeMap<EpochNumber, Vec<(SpoolGroup, Pubkey)>> = BTreeMap::new();
+
+    while track_addr != Pubkey::default() {
+        let track = ctx.rpc.get_track_by_address(&track_addr).await
+            .map_err(|e| SnapshotError::Decode(format!("fetch track {}: {e}", track_addr)))?;
+
+        let epoch = track.data.registered_epoch;
+        let group = track.data.spool_group;
+
+        if epoch > current && epoch <= latest_snapshot {
+            tracks_by_epoch.entry(epoch).or_default().push((group, track_addr));
+        }
+
+        // Follow back-pointer (track.key stores previous head address as Hash)
+        track_addr = Pubkey::new_from_array(track.key.0);
+
+        if epoch <= current { break; }
+    }
+
+    info!(
+        epochs = tracks_by_epoch.len(),
+        "Collected snapshot tracks from linked list"
+    );
+
     // Pause block processor to prevent concurrent state modification
     ctx.control_plane.request_block_processor_pause().await;
     info!("Block processor paused for snapshot bootstrap");
 
-    // Download and replay each epoch
-    let mut epoch = EpochNumber(current.as_u64() + 1);
-    while epoch <= latest_snapshot {
+    // Download and replay each epoch using resolved addresses
+    for (epoch, tracks) in &tracks_by_epoch {
         if cancel.is_cancelled() {
             info!("Snapshot bootstrap cancelled");
             break;
         }
         info!(epoch = epoch.as_u64(), "Bootstrapping epoch from snapshot");
 
-        match download_snapshot(&ctx, epoch).await {
+        match download_snapshot(&ctx, *epoch, tracks).await {
             Ok(log) => {
                 if let Err(e) = replay_snapshot(&ctx, &log).await {
                     warn!(epoch = epoch.as_u64(), error = %e, "Snapshot replay failed");
                     break;
                 }
-                ctx.control_plane.set_current_epoch(epoch);
+                ctx.control_plane.set_current_epoch(*epoch);
                 info!(epoch = epoch.as_u64(), "Epoch bootstrap complete");
             }
             Err(e) => {
@@ -386,8 +429,6 @@ pub async fn bootstrap_from_snapshots<S: Store>(
                 break;
             }
         }
-
-        epoch = EpochNumber(epoch.as_u64() + 1);
     }
 
     // Resume block processor

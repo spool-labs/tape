@@ -10,10 +10,12 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let args = RegisterSnapshot::try_from_bytes(data)?;
     let [
         fee_payer_info,
+        node_info,
         system_info,
         epoch_info,
         tape_info,
         track_info,
+        snapshot_state_info,
         system_program_info,
         rent_info,
     ] = accounts else {
@@ -31,10 +33,25 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     let (system_address, _) = system_pda();
 
-    let _system = system_info
+    let system = system_info
         .is_system()?
         .has_address(&system_address)?
         .as_account::<System>(&tapedrive::ID)?;
+
+    // Committee check: fee_payer must be a registered node in the current committee
+    let (node_address, _) = node_pda(*fee_payer_info.key);
+
+    let node = node_info
+        .has_address(&node_address)?
+        .as_account::<Node>(&tapedrive::ID)?;
+
+    if node.authority != *fee_payer_info.key {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if !system.committee.contains(&node.id) {
+        return Err(TapeError::NotInCommittee.into());
+    }
 
     let epoch = epoch_info
         .is_epoch()?
@@ -60,6 +77,11 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_empty()?
         .is_writable()?
         .has_address(&track_address)?;
+
+    let snapshot_state = snapshot_state_info
+        .is_writable()?
+        .is_snapshot_state()?
+        .as_account_mut::<SnapshotState>(&tapedrive::ID)?;
 
     // Enforce sequential registration: chunk_index must match tape.track_count % SPOOL_GROUP_COUNT.
     // This prevents gaps and ensures chunks are registered in order (0..49 per epoch).
@@ -88,12 +110,21 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
+    // Compute track size from stripe data
+    let stripe_size = u64::from_le_bytes(args.stripe_size);
+    let stripe_count = u64::from_le_bytes(args.stripe_count);
+    let track_size = StorageUnits(stripe_size.saturating_mul(stripe_count));
+
+    // Back-pointer: store the previous head address as a Hash so bootstrap
+    // can walk the linked list backward.
+    let back_pointer = Hash(snapshot_state.head.to_bytes());
+
     let track = track_info.as_account_mut::<Track>(&tapedrive::ID)?;
 
     track.id   = track_number.into();
     track.tape = tape_address;
-    track.key  = Hash::default();
-    track.size = StorageUnits(0);
+    track.key  = back_pointer;
+    track.size = track_size;
     track.data = TrackData::new(
         current_epoch(epoch),
         args.commitment,
@@ -102,11 +133,18 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let profile = EncodingProfile::unpack(args.profile);
     track.data.profile = profile;
 
+    snapshot_state.head = *track_info.key;
+    snapshot_state.commitment = args.commitment;
+    snapshot_state.count += 1;
+    snapshot_state.total_size = StorageUnits(
+        snapshot_state.total_size.as_u64().saturating_add(track_size.as_u64())
+    );
+
     TrackRegistered {
         track: *track_info.key,
         tape: tape_address,
-        key: Hash::default(),
-        size: StorageUnits(0),
+        key: back_pointer,
+        size: track_size,
         commitment: args.commitment,
         epoch: current_epoch(epoch),
         profile,

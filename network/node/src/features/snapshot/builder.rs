@@ -27,6 +27,8 @@ use crate::core::context::NodeContext;
 pub struct SnapshotBuildResult {
     /// Merkle root commitment for each of the 50 chunks.
     pub commitments: Vec<Hash>,
+    /// Byte size of each outer chunk (before inner encoding).
+    pub chunk_sizes: Vec<usize>,
     /// The 50 sets of 20 inner slices (only populated for owned spool groups).
     /// Index: [group_index] -> Some(slices) if we own spools in that group.
     pub group_slices: Vec<Option<Vec<Vec<u8>>>>,
@@ -104,9 +106,12 @@ pub async fn build_epoch_snapshot<S: Store>(
     // 5. Inner-Clay-encode each chunk → 20 slices, compute commitments
     let our_spools = ctx.control_plane.get_our_spools();
     let mut commitments = Vec::with_capacity(SPOOL_GROUP_COUNT);
+    let mut chunk_sizes = Vec::with_capacity(SPOOL_GROUP_COUNT);
     let mut group_slices: Vec<Option<Vec<Vec<u8>>>> = vec![None; SPOOL_GROUP_COUNT];
 
     for (group_idx, chunk) in chunks.iter().enumerate() {
+        chunk_sizes.push(chunk.len());
+
         let clay_params = ClayParams::default();
         let coder = ClayCoder::from_params(clay_params);
         let mut slicer = Slicer::new(coder);
@@ -153,6 +158,7 @@ pub async fn build_epoch_snapshot<S: Store>(
 
     Ok(SnapshotBuildResult {
         commitments,
+        chunk_sizes,
         group_slices,
     })
 }

@@ -4,6 +4,7 @@ mod exchange;
 mod feature;
 mod history;
 mod node;
+mod snapshot;
 mod stake;
 mod system;
 mod tape;
@@ -15,6 +16,7 @@ pub use epoch::*;
 pub use exchange::*;
 pub use history::*;
 pub use node::*;
+pub use snapshot::*;
 pub use stake::*;
 pub use system::*;
 pub use tape::*;
@@ -42,4 +44,6 @@ pub enum AccountType {
 
     Tape,
     Track,
+
+    SnapshotState,
 }

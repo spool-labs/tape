@@ -77,19 +77,23 @@ pub fn build_register_snapshot_ix(
     stripe_count: u64,
     leaves: [Hash; SPOOL_GROUP_SIZE],
 ) -> Instruction {
+    let (node_address, _) = node_pda(fee_payer);
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(system_address);
     let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
+    let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
+            AccountMeta::new_readonly(node_address, false),
             AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(tape_address, false),
             AccountMeta::new(track_address, false),
+            AccountMeta::new(snapshot_state_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
@@ -121,6 +125,7 @@ pub fn build_certify_snapshot_ix(
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(system_address);
     let (track_address, _) = snapshot_pda(epoch, chunk_index);
+    let (snapshot_state_address, _) = snapshot_state_pda();
 
     let epoch = epoch.pack();
     let chunk_index = chunk_index.pack();
@@ -129,10 +134,11 @@ pub fn build_certify_snapshot_ix(
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
-            AccountMeta::new(system_address, false),
+            AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new_readonly(tape_address, false),
             AccountMeta::new(track_address, false),
+            AccountMeta::new(snapshot_state_address, false),
         ],
         data: CertifySnapshot {
             epoch,
@@ -152,15 +158,19 @@ pub fn build_certify_snapshot_ix(
 pub fn build_reserve_snapshot_tape_ix(fee_payer: Pubkey) -> Instruction {
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
+    let (archive_address, _) = archive_pda();
     let (tape_address, _) = tape_pda(system_address);
+    let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
-            AccountMeta::new(system_address, false),
+            AccountMeta::new_readonly(system_address, false),
             AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new(archive_address, false),
             AccountMeta::new(tape_address, false),
+            AccountMeta::new(snapshot_state_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],

@@ -39,6 +39,8 @@ pub enum TapeError {
     BadSchedule = 0x32,
     #[error("bad epoch id")]
     BadEpochId = 0x33,
+    #[error("snapshot incomplete")]
+    SnapshotIncomplete = 0x34,
 
     // Committee (0x40-0x45)
     #[error("no quorum")]
@@ -128,7 +130,7 @@ impl TapeError {
 
     /// Errors that indicate retry later
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::TooSoon | Self::InsufficientCommittee)
+        matches!(self, Self::TooSoon | Self::InsufficientCommittee | Self::SnapshotIncomplete)
     }
 
     /// Action required before retrying
@@ -178,6 +180,7 @@ impl TapeError {
             Self::ListFull => "Blacklist is full",
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
             Self::InvalidTrackOrder => "Snapshot chunks must be registered in order",
+            Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
         }
     }
 }
