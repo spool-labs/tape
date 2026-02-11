@@ -1,6 +1,6 @@
 pub mod deferral;
 pub mod error;
-pub mod full_recovery;
+pub mod decode;
 pub mod scheduler;
 pub mod spool;
 pub mod worker;

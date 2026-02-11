@@ -32,7 +32,7 @@ pub fn encode_event<T: bytemuck::Pod>(event_type: EventType, event: &T) -> Strin
 /// # Example
 ///
 /// ```ignore
-/// use tape_node::features::block_processing::test_utils::TestTransaction;
+/// use tape_node::features::chain::test::TestTransaction;
 /// use tape_api::instruction::TapeInstruction;
 /// use tape_api::event::{EventType, EpochAdvanced};
 ///

@@ -11,9 +11,7 @@ use tape_core::spooler::SpoolIndex;
 use tape_node_api::SignResponse;
 use tracing::debug;
 
-use crate::features::api::ApiError;
-
-use super::{parse_track_id, ApiState};
+use super::{parse_track_id, ApiError, ApiState};
 
 /// GET /v1/tracks/:track_id/sign
 ///

@@ -20,7 +20,7 @@ use crate::core::context::NodeContext;
 
 use super::{NodeEvent, evaluate_transition};
 use super::fsm;
-use crate::features::track_recovery::{LiveUploadDeferral, TrackSyncHandler, recover_track_slice};
+use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler, recover_track_slice};
 
 /// Tracks scanned per DB page during node recovery.
 const SCAN_BATCH_SIZE: usize = 1000;

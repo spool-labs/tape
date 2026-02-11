@@ -3,11 +3,11 @@
 //! Each feature module is a vertical slice containing related functionality.
 
 pub mod api;
-pub mod block_processing;
-pub mod epoch_sync;
+pub mod chain;
+pub mod epoch;
 pub mod inconsistency;
-pub mod node_lifecycle;
+pub mod lifecycle;
 pub mod snapshot;
-pub mod spool_sync;
+pub mod sync;
 pub mod storage;
-pub mod track_recovery;
+pub mod recovery;

@@ -15,7 +15,7 @@ use crate::metrics::NodeMetrics;
 use crate::features::storage::StorageService;
 use tape_core::bls::BlsPrivateKey;
 
-use super::routes::{create_router, ApiState};
+use super::{create_router, ApiState};
 
 /// Handle for controlling a running server.
 pub struct ServerHandle {

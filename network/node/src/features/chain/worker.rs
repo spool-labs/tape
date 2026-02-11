@@ -15,11 +15,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::epoch_sync::FsmSignal;
+use crate::features::epoch::FsmSignal;
 
-use super::handlers;
+use super::handler;
 use super::parser::{parse_block, ParsedInstruction};
-use crate::features::snapshot::event_capture;
+use crate::features::snapshot::capture;
 
 /// Default polling interval (Solana slot time).
 ///
@@ -199,7 +199,7 @@ async fn process_instruction(
 ) -> Result<bool, BlockProcessorError> {
     // Capture event for snapshot log before processing
     let current_epoch = ctx.control_plane.current_epoch();
-    if let Some(event) = event_capture::to_replayable(&instruction, current_epoch) {
+    if let Some(event) = capture::to_replayable(&instruction, current_epoch) {
         use tape_store::ops::EventLogOps;
         if let Err(e) = ctx.storage.store.append_event(current_epoch, SlotNumber(slot), &event) {
             warn!(error = %e, "failed to append event to snapshot log");
@@ -221,7 +221,7 @@ async fn process_instruction(
             ctx.control_plane.start_epoch_sync(new_epoch);
 
             // Call the no-op handler (GC will be redesigned later)
-            if let Err(e) = handlers::handle_advance_epoch(
+            if let Err(e) = handler::handle_advance_epoch(
                 &ctx.storage.store,
                 old_epoch,
                 new_epoch,
@@ -268,7 +268,7 @@ async fn process_instruction(
 
             match event {
                 Some(ref e) => {
-                    if let Err(e) = handlers::handle_register_track(
+                    if let Err(e) = handler::handle_register_track(
                         &ctx.storage.store,
                         track.to_bytes(),
                         e,
@@ -286,7 +286,7 @@ async fn process_instruction(
         ParsedInstruction::CertifyTrack { track, event } => {
             let epoch = event.epoch;
             debug!(track = %track, epoch = epoch.as_u64(), "Detected CertifyTrack");
-            if let Err(e) = handlers::handle_certify_track(
+            if let Err(e) = handler::handle_certify_track(
                 &ctx.storage.store,
                 tape_store::types::Pubkey(track.to_bytes()),
                 epoch,
@@ -299,7 +299,7 @@ async fn process_instruction(
         ParsedInstruction::DeleteTrack { track, .. } => {
             debug!(track = %track, "Detected DeleteTrack");
             let current_epoch = ctx.control_plane.current_epoch();
-            if let Err(e) = handlers::handle_delete_track(
+            if let Err(e) = handler::handle_delete_track(
                 &ctx.storage.store,
                 track.to_bytes(),
                 current_epoch,
@@ -315,7 +315,7 @@ async fn process_instruction(
                 .unwrap_or_else(|| ctx.control_plane.current_epoch());
             debug!(track = %track, epoch = epoch.as_u64(), "Detected InvalidateTrack");
             let owned_spools = ctx.control_plane.get_our_spools();
-            if let Err(e) = handlers::handle_invalidate_track(
+            if let Err(e) = handler::handle_invalidate_track(
                 &ctx.storage.store,
                 track.to_bytes(),
                 epoch,
@@ -338,7 +338,7 @@ async fn process_instruction(
                 }
             };
 
-            if let Err(e) = handlers::handle_reserve_tape(
+            if let Err(e) = handler::handle_reserve_tape(
                 &ctx.storage.store,
                 tape.to_bytes(),
                 owner.to_bytes(),
@@ -353,7 +353,7 @@ async fn process_instruction(
         ParsedInstruction::DestroyTape { tape, .. } => {
             debug!(tape = %tape, "Detected DestroyTape");
             let current_epoch = ctx.control_plane.current_epoch();
-            if let Err(e) = handlers::handle_destroy_tape(
+            if let Err(e) = handler::handle_destroy_tape(
                 &ctx.storage.store,
                 tape.to_bytes(),
                 current_epoch,

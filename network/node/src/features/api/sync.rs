@@ -13,11 +13,10 @@ use tape_store::ops::SliceOps;
 use tape_store::types::Pubkey;
 use tracing::{debug, warn};
 
-use crate::features::api::ApiError;
-use crate::features::spool_sync::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
+use crate::features::sync::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
 use tape_crypto::Hash;
 
-use super::ApiState;
+use super::{ApiError, ApiState};
 
 /// POST /v1/migrate/sync_spool
 ///

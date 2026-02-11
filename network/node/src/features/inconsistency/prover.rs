@@ -25,8 +25,8 @@ use tracing::{debug, info, warn};
 
 use crate::core::context::NodeContext;
 
-use crate::features::track_recovery::RecoveryError;
-use crate::features::track_recovery::helpers::resolve_group_helpers;
+use crate::features::recovery::RecoveryError;
+use crate::features::recovery::helpers::resolve_group_helpers;
 
 /// Maximum concurrent inconsistency attestation requests.
 const ATTESTATION_CONCURRENCY: usize = 8;

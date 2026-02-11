@@ -15,9 +15,9 @@ use tracing::{error, info, Instrument};
 
 use crate::core::context::NodeContext;
 use crate::features::api::ServerHandle;
-use crate::features::block_processing as block;
-use crate::features::epoch_sync::{self as network_sync, FsmSignal};
-use crate::features::track_recovery::{LiveUploadDeferral, TrackSyncHandler};
+use crate::features::chain as block;
+use crate::features::epoch::{self as network_sync, FsmSignal};
+use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler};
 
 /// Signal channel capacity (small - only FSM wake-up signals).
 const SIGNAL_CHANNEL_CAPACITY: usize = 32;

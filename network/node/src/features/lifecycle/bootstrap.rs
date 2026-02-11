@@ -13,10 +13,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::spool_sync::SpoolSyncHandler;
+use crate::features::sync::SpoolSyncHandler;
 
 use super::{NodeEvent, evaluate_transition};
-use crate::features::track_recovery::start_spool_recovery;
+use crate::features::recovery::start_spool_recovery;
 
 /// Run metadata sync for newly assigned spools.
 ///

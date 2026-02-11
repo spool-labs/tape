@@ -7,7 +7,7 @@
 use tape_core::snapshot::ReplayableEvent;
 use tape_core::types::EpochNumber;
 
-use crate::features::block_processing::ParsedInstruction;
+use crate::features::chain::ParsedInstruction;
 
 /// Convert a parsed instruction to a replayable event for the snapshot log.
 ///

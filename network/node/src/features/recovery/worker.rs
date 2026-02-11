@@ -28,7 +28,7 @@ use crate::core::context::NodeContext;
 use super::deferral::LiveUploadDeferral;
 use super::error::RecoveryError;
 use super::helpers::resolve_group_helpers;
-use super::full_recovery::attempt_full_recovery;
+use super::decode::attempt_full_recovery;
 use super::repair::repair_single_slice;
 
 /// Delay between retry attempts when a track sync fails (30s fixed).

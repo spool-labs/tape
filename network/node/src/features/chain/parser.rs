@@ -44,7 +44,7 @@ pub fn parse_block(block: &UiConfirmedBlock) -> Result<ParsedBlock, ParseError> 
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_utils::TestTransaction;
+    use super::super::test::TestTransaction;
     use super::*;
     use solana_sdk::pubkey::Pubkey;
     use solana_transaction_status::UiConfirmedBlock;

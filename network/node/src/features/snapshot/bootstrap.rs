@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::block_processing::{
+use crate::features::chain::{
     handle_advance_epoch, handle_certify_track, handle_delete_track, handle_destroy_tape,
     handle_invalidate_track, handle_register_track, handle_reserve_tape,
 };

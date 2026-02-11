@@ -12,9 +12,7 @@ use tape_crypto::merkle::hash_leaf;
 use tape_node_api::SlicePayload;
 use tracing::debug;
 
-use crate::features::api::ApiError;
-
-use super::{parse_track_id, ApiState, SPOOL_COUNT};
+use super::{parse_track_id, ApiError, ApiState, SPOOL_COUNT};
 
 /// PUT /v1/tracks/:track_id/slices/:slice_index
 ///

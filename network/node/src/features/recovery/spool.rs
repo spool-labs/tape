@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
-use crate::features::spool_sync::{SpoolSyncHandler, SyncError, SyncSlice};
+use crate::features::sync::{SpoolSyncHandler, SyncError, SyncSlice};
 
 use super::deferral::LiveUploadDeferral;
 use super::helpers::resolve_previous_owner;
