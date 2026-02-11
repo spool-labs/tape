@@ -141,6 +141,15 @@ pub fn handle_invalidate_track<S: Store>(
 
     let track_address = Pubkey(track);
 
+    // Mark object as invalid before deleting data
+    store.put_object_info(
+        track_address,
+        ObjectInfo::Invalid {
+            epoch: current_epoch,
+            slot: tape_core::types::SlotNumber(0),
+        },
+    )?;
+
     // Delete slices from all owned spools
     for &spool in owned_spools {
         if let Err(e) = store.delete_slice(spool, track_address) {
@@ -340,6 +349,43 @@ mod tests {
             }
             _ => panic!("expected Valid"),
         }
+    }
+
+    #[test]
+    fn test_invalidate_track_sets_object_info_and_cleans_up() {
+        use tape_core::erasure::group_start;
+        use tape_store::ops::SliceOps;
+
+        let store = test_store();
+        let track = [2u8; 32];
+        let event = test_event();
+
+        // Register track first (creates ObjectInfo::Valid)
+        handle_register_track(&store, track, &event).unwrap();
+
+        // Store a slice so we can verify cleanup
+        let spool = group_start(5) + 0;
+        store.put_slice(spool, Pubkey(track), vec![1, 2, 3]).unwrap();
+        assert!(store.has_slice(spool, Pubkey(track)).unwrap());
+
+        // Invalidate
+        let owned_spools = vec![spool];
+        handle_invalidate_track(&store, track, EpochNumber(50), &owned_spools).unwrap();
+
+        // ObjectInfo should be Invalid
+        let obj = store.get_object_info(Pubkey(track)).unwrap().expect("object info should exist");
+        match obj {
+            ObjectInfo::Invalid { epoch, .. } => {
+                assert_eq!(epoch, EpochNumber(50));
+            }
+            _ => panic!("expected ObjectInfo::Invalid, got {:?}", obj),
+        }
+
+        // Track metadata should be deleted
+        assert!(store.get_track(Pubkey(track)).unwrap().is_none());
+
+        // Slice should be deleted
+        assert!(!store.has_slice(spool, Pubkey(track)).unwrap());
     }
 
     #[test]

@@ -199,7 +199,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::InvalidateTrack => {
-            let track = get_account(2)?;
+            let track = get_account(4)?;
             Ok(Some(RawInstruction::InvalidateTrack { track }))
         }
 
