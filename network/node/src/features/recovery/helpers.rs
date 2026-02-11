@@ -9,8 +9,8 @@ use futures::stream::{self, StreamExt};
 use store::Store;
 use tape_core::erasure::{group_for_spool, group_start, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolIndex;
-use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_core::types::network::NetworkAddress;
+use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClient, NodeClientBuilder};
 use tape_slicer::repair::RepairPlan;
 use tape_slicer::SliceIndex;
@@ -31,27 +31,18 @@ pub struct GroupHelper {
     pub client: NodeClient,
 }
 
-/// A resolved group member (data only, no client).
-pub struct GroupMember {
-    /// Position within the group (0..SPOOL_GROUP_SIZE), also the slice index.
-    pub position: usize,
-    /// Absolute spool index (group_start + position).
-    pub spool_idx: SpoolIndex,
-    /// Network address of the node holding this spool.
-    pub address: NetworkAddress,
-}
-
 /// Maximum concurrent repair requests per fan-out.
 const FAN_OUT_CONCURRENCY: usize = 8;
 
-/// Resolve group members from the local committee cache (data only, no clients).
+/// Resolve helpers in the same spool group from the local committee cache.
 ///
 /// Returns all other members in the group (skipping our own position).
 /// Zero RPC calls — all data comes from the locally-cached committee.
-pub fn resolve_group_members<S: Store>(
+pub fn resolve_group_helpers<S: Store>(
     ctx: &NodeContext<S>,
     our_spool: SpoolIndex,
-) -> Result<Vec<GroupMember>, RecoveryError> {
+    insecure: bool,
+) -> Result<Vec<GroupHelper>, RecoveryError> {
     let group = group_for_spool(our_spool);
     let start = group_start(group);
     let our_position = (our_spool - start) as usize;
@@ -71,7 +62,7 @@ pub fn resolve_group_members<S: Store>(
         }
     }
 
-    let mut members = Vec::with_capacity(SPOOL_GROUP_SIZE - 1);
+    let mut helpers = Vec::with_capacity(SPOOL_GROUP_SIZE - 1);
     for position in 0..SPOOL_GROUP_SIZE {
         if position == our_position {
             continue;
@@ -79,54 +70,32 @@ pub fn resolve_group_members<S: Store>(
         let spool_idx = start + position as SpoolIndex;
         match spool_to_node.get(&spool_idx) {
             Some(&member_idx) => {
-                members.push(GroupMember {
-                    position,
-                    spool_idx,
-                    address: committee[member_idx].network_address,
-                });
+                let member = &committee[member_idx];
+                let addr = match member.network_address.to_socket_addr() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(spool = spool_idx, position, "failed to resolve network address: {e}");
+                        continue;
+                    }
+                };
+                match NodeClientBuilder::new()
+                    .accept_invalid_certs(insecure)
+                    .build(&addr.to_string())
+                {
+                    Ok(client) => {
+                        helpers.push(GroupHelper {
+                            position,
+                            spool_idx,
+                            client,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(spool = spool_idx, position, "failed to build client: {e}");
+                    }
+                }
             }
             None => {
                 warn!(spool = spool_idx, position, "no committee member for spool");
-            }
-        }
-    }
-
-    Ok(members)
-}
-
-/// Resolve helpers in the same spool group from the local committee cache.
-///
-/// Returns all other members in the group (skipping our own position),
-/// with pre-built node clients for network requests.
-pub fn resolve_group_helpers<S: Store>(
-    ctx: &NodeContext<S>,
-    our_spool: SpoolIndex,
-    insecure: bool,
-) -> Result<Vec<GroupHelper>, RecoveryError> {
-    let members = resolve_group_members(ctx, our_spool)?;
-    let mut helpers = Vec::with_capacity(members.len());
-
-    for m in members {
-        let addr = match m.address.to_socket_addr() {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(spool = m.spool_idx, position = m.position, "failed to resolve network address: {e}");
-                continue;
-            }
-        };
-        match NodeClientBuilder::new()
-            .accept_invalid_certs(insecure)
-            .build(&addr.to_string())
-        {
-            Ok(client) => {
-                helpers.push(GroupHelper {
-                    position: m.position,
-                    spool_idx: m.spool_idx,
-                    client,
-                });
-            }
-            Err(e) => {
-                warn!(spool = m.spool_idx, position = m.position, "failed to build client: {e}");
             }
         }
     }
