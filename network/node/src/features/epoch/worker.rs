@@ -316,6 +316,18 @@ fn dispatch_node_status(
                 run_metadata_sync(ctx, sync_handler, cancel).await;
             });
         }
+        NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
+            let ctx = Arc::clone(ctx);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
+                    ctx, cancel
+                ).await {
+                    Ok(()) => info!("Snapshot bootstrap from lag detection complete"),
+                    Err(e) => warn!(error = %e, "Snapshot bootstrap failed, block processor will catch up"),
+                }
+            });
+        }
         NodeStatus::Active => {
             // Directly active — mark local sync complete
             ctx.control_plane.mark_local_sync_complete(epoch);
@@ -375,7 +387,17 @@ fn resume_from_persisted_status(
             }
         }
         NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
-            info!("persisted status is replay — block processor will catch up naturally");
+            info!("resuming from replay state — triggering snapshot bootstrap");
+            let ctx = Arc::clone(ctx);
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
+                    ctx, cancel
+                ).await {
+                    Ok(()) => info!("Snapshot bootstrap from resume complete"),
+                    Err(e) => warn!(error = %e, "Snapshot bootstrap failed on resume"),
+                }
+            });
         }
         _ => {}
     }
@@ -395,6 +417,22 @@ pub async fn run(
         .with_max_concurrent(ctx.config.sync_concurrency.unwrap_or(10))
         .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000) as u32)
         .with_insecure(ctx.config.insecure);
+
+    // If lagging, attempt snapshot bootstrap before grinding through blocks
+    if ctx.control_plane.is_catching_up() {
+        let node_status = ctx.control_plane.get_node_status();
+        if matches!(node_status, NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. })
+            || ctx.control_plane.is_catching_up()
+        {
+            info!("Node is lagging, attempting snapshot bootstrap");
+            match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
+                Arc::clone(&ctx), cancel.clone()
+            ).await {
+                Ok(()) => info!("Snapshot bootstrap complete"),
+                Err(e) => warn!(error = %e, "Snapshot bootstrap unavailable, falling back to block replay"),
+            }
+        }
+    }
 
     // Wait for catch-up to complete before making FSM decisions
     loop {

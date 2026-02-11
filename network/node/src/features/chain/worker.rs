@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
 use crate::features::epoch::FsmSignal;
+use crate::features::recovery::LiveUploadDeferral;
 
 use super::handler;
 use super::parser::{parse_block, ParsedInstruction};
@@ -59,6 +60,7 @@ pub enum BlockProcessorError {
 pub async fn run(
     ctx: Arc<NodeContext>,
     signal_tx: mpsc::Sender<FsmSignal>,
+    deferral: Arc<LiveUploadDeferral>,
     cancel: CancellationToken,
 ) -> Result<(), BlockProcessorError> {
     info!("Block processor starting");
@@ -86,7 +88,7 @@ pub async fn run(
                     info!("Block processor resumed");
                     continue;
                 }
-                if let Err(e) = poll_and_process(&ctx, &signal_tx, &mut last_slot).await {
+                if let Err(e) = poll_and_process(&ctx, &signal_tx, &deferral, &mut last_slot).await {
                     error!(error = %e, "Error processing blocks");
                 }
             }
@@ -100,6 +102,7 @@ pub async fn run(
 async fn poll_and_process(
     ctx: &NodeContext,
     signal_tx: &mpsc::Sender<FsmSignal>,
+    deferral: &Arc<LiveUploadDeferral>,
     last_slot: &mut SlotNumber,
 ) -> Result<(), BlockProcessorError> {
     let latest_slot = ctx
@@ -127,7 +130,7 @@ async fn poll_and_process(
     let mut state_changed = false;
 
     for slot in start_slot..=end_slot {
-        match process_slot(ctx, slot).await {
+        match process_slot(ctx, deferral, slot).await {
             Ok(changed) => {
                 state_changed |= changed;
             }
@@ -163,7 +166,7 @@ async fn poll_and_process(
 }
 
 /// Process a single slot. Returns true if FSM-relevant state changed.
-async fn process_slot(ctx: &NodeContext, slot: u64) -> Result<bool, BlockProcessorError> {
+async fn process_slot(ctx: &NodeContext, deferral: &Arc<LiveUploadDeferral>, slot: u64) -> Result<bool, BlockProcessorError> {
     let block = ctx
         .rpc
         .get_block(slot)
@@ -184,7 +187,7 @@ async fn process_slot(ctx: &NodeContext, slot: u64) -> Result<bool, BlockProcess
 
     let mut state_changed = false;
     for instruction in parsed.instructions {
-        state_changed |= process_instruction(ctx, slot, instruction).await?;
+        state_changed |= process_instruction(ctx, deferral, slot, instruction).await?;
     }
 
     ctx.metrics.blocks_processed_total.inc();
@@ -194,6 +197,7 @@ async fn process_slot(ctx: &NodeContext, slot: u64) -> Result<bool, BlockProcess
 /// Process a single parsed instruction. Returns true if FSM-relevant state changed.
 async fn process_instruction(
     ctx: &NodeContext,
+    deferral: &Arc<LiveUploadDeferral>,
     slot: u64,
     instruction: ParsedInstruction,
 ) -> Result<bool, BlockProcessorError> {
@@ -280,6 +284,12 @@ async fn process_instruction(
                     warn!(track = %track, "RegisterTrack without event, skipping");
                 }
             }
+
+            // Defer recovery for this track if a live upload is likely in progress
+            if ctx.control_plane.is_caught_up() {
+                deferral.begin_recovery(tape_store::types::Pubkey(track.to_bytes())).await;
+            }
+
             Ok(false)
         }
 

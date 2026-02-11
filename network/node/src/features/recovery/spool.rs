@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use store::Store;
-use tape_core::erasure::group_for_spool;
+use tape_core::erasure::{group_for_spool, group_start};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey, SpoolStatus};
@@ -30,18 +30,34 @@ use super::worker::recover_track_slice;
 /// Maximum queued recovery tasks before backpressure (spool recovery phase 2).
 const RECOVERY_TRACK_CONCURRENCY: usize = 1000;
 
-/// Verify a sync slice's leaf hash and store it if valid.
+/// Verify a sync slice against the on-chain commitment and store it if valid.
 ///
-/// Returns Ok(true) if stored, Ok(false) if skipped (hash mismatch).
+/// When track metadata is available, verifies the slice data against the stored
+/// commitment leaf hash for the spool's position in the group. Falls back to
+/// transit-integrity check (sender's claimed leaf hash) when metadata is unavailable.
+///
+/// Returns Ok(true) if stored, Ok(false) if skipped (verification failed).
 pub(crate) fn verify_and_store_sync_slice<S: Store>(
     store: &tape_store::TapeStore<S>,
     spool: SpoolIndex,
+    group: SpoolGroup,
     slice: &SyncSlice,
 ) -> Result<bool, SyncError> {
-    let computed_hash = tape_crypto::merkle::hash_leaf(&slice.data);
-    if computed_hash != slice.leaf_hash {
-        return Ok(false);
+    let position = (spool - group_start(group)) as usize;
+
+    // If we have track metadata, verify against on-chain commitment
+    if let Ok(Some(track_info)) = store.get_track(slice.track_address) {
+        if !track_info.verify_slice(position, &slice.data) {
+            return Ok(false);
+        }
+    } else {
+        // Fallback: verify sender's claimed hash (transit integrity only)
+        let computed_hash = tape_crypto::merkle::hash_leaf(&slice.data);
+        if computed_hash != slice.leaf_hash {
+            return Ok(false);
+        }
     }
+
     store
         .put_slice(spool, slice.track_address, slice.data.clone())
         .map_err(|e| SyncError::Storage(e.to_string()))?;
@@ -89,6 +105,7 @@ pub async fn start_spool_recovery<S: Store + 'static>(
 
         let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveSync);
 
+        let group = group_for_spool(spool);
         if let Some(prev_addr) = resolve_previous_owner(&ctx, spool) {
             // Load persisted cursor for crash resume
             let resume_cursor = ctx.storage.store.get_spool_sync_cursor(spool)
@@ -97,8 +114,8 @@ pub async fn start_spool_recovery<S: Store + 'static>(
 
             let store_ref = &ctx.storage.store;
             let on_slice = |slice: SyncSlice| -> Result<(), SyncError> {
-                if !verify_and_store_sync_slice(store_ref, spool, &slice)? {
-                    warn!(track = %slice.track_address, "received slice failed leaf hash verification, skipping");
+                if !verify_and_store_sync_slice(store_ref, spool, group, &slice)? {
+                    warn!(track = %slice.track_address, "received slice failed verification, skipping");
                 }
                 Ok(())
             };
@@ -241,13 +258,14 @@ mod tests {
     #[test]
     fn sync_slice_valid_hash_stores() {
         let store = test_store();
-        let spool: SpoolIndex = group_start(0) + 1;
+        let group: SpoolGroup = 0;
+        let spool: SpoolIndex = group_start(group) + 1;
         let data = vec![1, 2, 3, 4, 5];
         let hash = tape_crypto::merkle::hash_leaf(&data);
         let slice = make_sync_slice(data, hash);
         let track = slice.track_address;
 
-        let stored = verify_and_store_sync_slice(&store, spool, &slice).unwrap();
+        let stored = verify_and_store_sync_slice(&store, spool, group, &slice).unwrap();
         assert!(stored);
         assert!(store.has_slice(spool, track).unwrap());
     }
@@ -255,13 +273,14 @@ mod tests {
     #[test]
     fn sync_slice_tampered_data_skips() {
         let store = test_store();
-        let spool: SpoolIndex = group_start(0) + 2;
+        let group: SpoolGroup = 0;
+        let spool: SpoolIndex = group_start(group) + 2;
         let data = vec![1, 2, 3, 4, 5];
         let wrong_hash = tape_crypto::merkle::hash_leaf(&[99]);
         let slice = make_sync_slice(data, wrong_hash);
         let track = slice.track_address;
 
-        let stored = verify_and_store_sync_slice(&store, spool, &slice).unwrap();
+        let stored = verify_and_store_sync_slice(&store, spool, group, &slice).unwrap();
         assert!(!stored);
         assert!(!store.has_slice(spool, track).unwrap());
     }

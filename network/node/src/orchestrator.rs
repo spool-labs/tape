@@ -74,10 +74,11 @@ async fn run_inner(
     // Block processor: parses blocks, signals FSM when state changes
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
+        let deferral = Arc::clone(&deferral);
         let cancel = cancel.clone();
         let span = span.clone();
         async move {
-            block::run(ctx, signal_tx, cancel)
+            block::run(ctx, signal_tx, deferral, cancel)
                 .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::BlockProcessor(e.to_string()))
