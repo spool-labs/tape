@@ -130,7 +130,8 @@ mod tests {
 
         let info = TrackInfo {
             tape_address: Pubkey::new_unique(),
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_group: 3,
+            certified_epoch: None,
             original_size: 1024 * 1024,
             encoding_type: 2, // Clay
             encoding_params: 0,
@@ -310,7 +311,8 @@ mod tests {
             let track = Pubkey::new_unique();
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
-                spool_allocation: SpoolAllocation::SpoolGroup(3),
+                spool_group: 3,
+            certified_epoch: None,
                 original_size: 1024,
                 encoding_type: 1, // Basic
                 encoding_params: 0,
@@ -347,7 +349,8 @@ mod tests {
             let track = Pubkey::new_unique();
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
-                spool_allocation: SpoolAllocation::SpoolSingle(42),
+                spool_group: 0,
+            certified_epoch: None,
                 original_size: 512,
                 encoding_type: 1, // Basic
                 encoding_params: 0,

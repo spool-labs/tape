@@ -136,6 +136,16 @@ async fn poll_and_process(
     ctx.control_plane.set_last_processed_slot(*last_slot);
     ctx.metrics.last_processed_slot.set(last_slot.as_u64() as i64);
 
+    // Detect epoch lag for recovery FSM
+    let processed_epoch = ctx.control_plane.current_epoch();
+    let chain_epoch = ctx.control_plane.chain_epoch();
+    if chain_epoch > processed_epoch {
+        let lag = chain_epoch.as_u64() - processed_epoch.as_u64();
+        if lag >= 2 {
+            let _ = signal_tx.send(FsmSignal::DetectedLag { lag }).await;
+        }
+    }
+
     // Only signal FSM when caught up and state actually changed
     if state_changed && ctx.control_plane.is_caught_up() {
         let _ = signal_tx.send(FsmSignal::StateChanged).await;
@@ -260,7 +270,7 @@ async fn process_instruction(
             debug!(track = %track, epoch = epoch.as_u64(), "Detected CertifyTrack");
             if let Err(e) = handlers::handle_certify_track(
                 &ctx.storage.store,
-                track.to_bytes(),
+                tape_store::types::Pubkey(track.to_bytes()),
                 epoch,
             ) {
                 warn!(track = %track, error = %e, "Failed to mark track certified");
@@ -286,10 +296,12 @@ async fn process_instruction(
                 .map(|e| e.epoch)
                 .unwrap_or_else(|| ctx.control_plane.current_epoch());
             debug!(track = %track, epoch = epoch.as_u64(), "Detected InvalidateTrack");
+            let owned_spools = ctx.control_plane.get_our_spools();
             if let Err(e) = handlers::handle_invalidate_track(
                 &ctx.storage.store,
                 track.to_bytes(),
                 epoch,
+                &owned_spools,
             ) {
                 warn!(track = %track, error = %e, "Failed to schedule track for GC");
             }

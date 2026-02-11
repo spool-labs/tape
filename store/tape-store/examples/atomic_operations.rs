@@ -15,7 +15,8 @@ fn main() -> Result<()> {
         let track_address = Pubkey::new([i as u8; 32]);
         let info = TrackInfo {
             tape_address,
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_group: 3,
+            certified_epoch: None,
             original_size: 1024,
             encoding_type: 1,
             encoding_params: 0,

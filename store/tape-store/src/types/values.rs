@@ -1,9 +1,10 @@
 //! Value types for tape-store columns
 
-use crate::types::{Pubkey, SpoolAllocation};
+use crate::types::Pubkey;
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsPubkey;
 use tape_core::encoding::EncodingProfile;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::Hash;
@@ -21,8 +22,8 @@ pub struct TapeInfo {
 pub struct TrackInfo {
     /// Address of the tape this track belongs to
     pub tape_address: Pubkey,
-    /// How slices are allocated across spools
-    pub spool_allocation: SpoolAllocation,
+    /// Spool group this track's slices are distributed across (0..SPOOL_GROUP_COUNT-1)
+    pub spool_group: SpoolGroup,
     /// Original unencoded data size in bytes
     pub original_size: u64,
     /// Encoding type discriminant (EncodingType as u64)
@@ -31,6 +32,8 @@ pub struct TrackInfo {
     pub encoding_params: u64,
     /// Commitment hash (merkle root) — same as on-chain TrackData.commitment_hash
     pub commitment_hash: Hash,
+    /// Epoch when this track was certified (None if not yet certified)
+    pub certified_epoch: Option<EpochNumber>,
 }
 
 impl TrackInfo {
@@ -100,11 +103,12 @@ mod tests {
     fn test_track_info_roundtrip() {
         let info = TrackInfo {
             tape_address: Pubkey([1u8; 32]),
-            spool_allocation: SpoolAllocation::SpoolGroup(3u64),
+            spool_group: 3,
             original_size: 1024 * 1024,
             encoding_type: 2, // Clay
             encoding_params: 0x100714, // n=20, k=7, d=16 packed
             commitment_hash: Hash::default(),
+            certified_epoch: Some(EpochNumber(10)),
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -116,11 +120,12 @@ mod tests {
     fn test_track_info_basic_encoding() {
         let info = TrackInfo {
             tape_address: Pubkey([2u8; 32]),
-            spool_allocation: SpoolAllocation::SpoolSingle(42),
+            spool_group: 0,
             original_size: 512,
             encoding_type: 1, // Basic
             encoding_params: 0,
             commitment_hash: Hash::default(),
+            certified_epoch: None,
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -134,11 +139,12 @@ mod tests {
 
         let mut info = TrackInfo {
             tape_address: Pubkey([3u8; 32]),
-            spool_allocation: SpoolAllocation::SpoolGroup(1u64),
+            spool_group: 1,
             original_size: 1024,
             encoding_type: 0,
             encoding_params: 0,
             commitment_hash: Hash::default(),
+            certified_epoch: None,
         };
 
         // Set profile

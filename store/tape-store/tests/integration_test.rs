@@ -14,7 +14,8 @@ fn open_primary() {
     let track_address = Pubkey::new_unique();
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
-        spool_allocation: SpoolAllocation::SpoolGroup(3),
+        spool_group: 3,
+        certified_epoch: None,
         original_size: 1024,
         encoding_type: 1,
         encoding_params: 0,
@@ -39,7 +40,8 @@ fn open_primary_persistence() {
         let store = TapeStore::open_primary(&db_path).unwrap();
         let info = TrackInfo {
             tape_address,
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_group: 3,
+        certified_epoch: None,
             original_size: 512,
             encoding_type: 1,
             encoding_params: 0,
@@ -74,7 +76,8 @@ fn all_column_families() {
     let tape_address = Pubkey::new_unique();
     let track_info = TrackInfo {
         tape_address,
-        spool_allocation: SpoolAllocation::SpoolGroup(3),
+        spool_group: 3,
+        certified_epoch: None,
         original_size: 1024 * 1024,
         encoding_type: 2, // Clay
         encoding_params: 0,
@@ -223,7 +226,8 @@ fn track_operations() {
 
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
-        spool_allocation: SpoolAllocation::SpoolGroup(3),
+        spool_group: 3,
+        certified_epoch: None,
         original_size: 1024,
         encoding_type: 1,
         encoding_params: 0,

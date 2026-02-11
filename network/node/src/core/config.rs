@@ -7,6 +7,50 @@ use std::path::{Path, PathBuf};
 
 use super::utils::expand_path;
 
+use std::time::Duration;
+
+/// Recovery subsystem configuration parameters.
+#[derive(Debug, Clone)]
+pub struct RecoveryConfig {
+    /// Maximum concurrent track sync tasks.
+    pub max_concurrent_track_syncs: usize,
+    /// Maximum concurrent slice downloads across all tracks.
+    pub max_concurrent_slice_syncs: usize,
+    /// Maximum queued recovery tasks before backpressure.
+    pub recovery_track_concurrency: usize,
+    /// Maximum concurrent spool sync operations.
+    pub spool_sync_concurrency: usize,
+    /// Timeout for individual repair requests to helpers.
+    pub repair_request_timeout: Duration,
+    /// Timeout for individual slice download requests.
+    pub slice_request_timeout: Duration,
+    /// Timeout for metadata requests to peers.
+    pub metadata_request_timeout: Duration,
+    /// Total timeout before spool sync falls back to direct recovery.
+    pub spool_sync_recovery_timeout: Duration,
+    /// Maximum time to defer live uploads during recovery.
+    pub max_total_defer: Duration,
+    /// Delay between track sync retry attempts.
+    pub track_sync_retry_delay: Duration,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_track_syncs: 100,
+            max_concurrent_slice_syncs: 2000,
+            recovery_track_concurrency: 1000,
+            spool_sync_concurrency: 10,
+            repair_request_timeout: Duration::from_secs(45),
+            slice_request_timeout: Duration::from_secs(45),
+            metadata_request_timeout: Duration::from_secs(5),
+            spool_sync_recovery_timeout: Duration::from_secs(12 * 3600),
+            max_total_defer: Duration::from_secs(120),
+            track_sync_retry_delay: Duration::from_secs(30),
+        }
+    }
+}
+
 /// Error type for configuration loading.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -68,6 +112,9 @@ pub struct NodeConfig {
     /// Accept invalid TLS certificates from other nodes (for local testing).
     /// WARNING: Only enable for local development/testing with self-signed certs.
     pub insecure: bool,
+
+    /// Recovery subsystem configuration.
+    pub recovery: RecoveryConfig,
 }
 
 impl NodeConfig {
@@ -224,6 +271,7 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             sync_batch_size: raw.sync_batch_size,
             commission: raw.commission,
             insecure: raw.insecure,
+            recovery: RecoveryConfig::default(),
         })
     }
 }

@@ -15,6 +15,8 @@ use tape_metrics::MetricsRegistry;
 
 use super::config::NodeConfig;
 use super::utils::{load_bls_keypair, load_keypair, KeypairError};
+use tape_store::ops::MetaOps;
+
 use crate::control_plane::ControlPlane;
 use crate::features::storage::{StorageError, StorageService};
 use crate::metrics::NodeMetrics;
@@ -134,8 +136,13 @@ impl NodeContext<RocksStore> {
             }
         };
 
-        // 7. Initialize control plane cache
-        let control_plane = ControlPlane::new(system, epoch, node);
+        // 7. Initialize control plane cache (load persisted NodeStatus)
+        let node_status = storage
+            .store
+            .get_node_status()
+            .unwrap_or(None)
+            .unwrap_or_default();
+        let control_plane = ControlPlane::new(system, epoch, node, node_status);
 
         // 8. Initialize metrics registry and node metrics
         let registry = MetricsRegistry::init();

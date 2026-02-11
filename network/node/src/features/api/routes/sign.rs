@@ -9,7 +9,6 @@ use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::spool_in_group;
 use tape_core::spooler::SpoolIndex;
 use tape_node_api::SignResponse;
-use tape_store::types::SpoolAllocation;
 use tracing::debug;
 
 use crate::features::api::ApiError;
@@ -37,13 +36,7 @@ pub async fn get_sign<S: Store>(
         .map_err(|e| ApiError::Storage(e.to_string()))?
         .ok_or(ApiError::TrackNotFound)?;
 
-    // Filter owned spools to the track's spool group
-    let group = match track_info.spool_allocation {
-        SpoolAllocation::SpoolGroup(g) => g,
-        SpoolAllocation::SpoolSingle(_) => {
-            return Err(ApiError::Internal("single-spool tracks not supported for certification".into()));
-        }
-    };
+    let group = track_info.spool_group;
 
     let our_group_spools: Vec<SpoolIndex> = state
         .control_plane

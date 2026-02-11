@@ -12,6 +12,7 @@ use tape_core::bft::is_supermajority;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::prelude::*;
 use tape_core::spooler::SpoolIndex;
+use tape_store::types::NodeStatus;
 
 /// In-memory cache of on-chain control plane state.
 ///
@@ -100,6 +101,8 @@ struct ControlPlaneInner {
     /// Latest epoch known from the chain (from RPC).
     /// Used to detect catch-up mode: if epoch.id < chain_epoch, we're catching up.
     chain_epoch: EpochNumber,
+    /// Recovery lifecycle status (persisted via MetaOps on every transition).
+    node_status: NodeStatus,
 }
 
 impl ControlPlane {
@@ -107,7 +110,8 @@ impl ControlPlane {
     ///
     /// Initially assumes we're caught up (chain_epoch = epoch.id).
     /// Call `set_chain_epoch` after fetching from RPC to update.
-    pub fn new(system: System, epoch: Epoch, node: Node) -> Self {
+    /// `node_status` should be loaded from `MetaOps::get_node_status()` on startup.
+    pub fn new(system: System, epoch: Epoch, node: Node, node_status: NodeStatus) -> Self {
         let (our_spools, in_committee) = compute_our_spools(&system, &node);
         let chain_epoch = epoch.id;
 
@@ -122,6 +126,7 @@ impl ControlPlane {
                 sync_tracker: None,
                 local_sync_complete: None,
                 chain_epoch,
+                node_status,
             }),
         }
     }
@@ -168,6 +173,25 @@ impl ControlPlane {
     /// Get this node's ID.
     pub fn our_node_id(&self) -> NodeId {
         self.inner.read().unwrap().node.id
+    }
+
+    /// Get the current recovery lifecycle status.
+    pub fn get_node_status(&self) -> NodeStatus {
+        self.inner.read().unwrap().node_status.clone()
+    }
+
+    /// Update the recovery lifecycle status.
+    pub fn set_node_status(&self, status: NodeStatus) {
+        self.inner.write().unwrap().node_status = status;
+    }
+
+    /// Check if the node is in a replay state (RecoveryReplay or PartialReplay).
+    pub fn is_replaying(&self) -> bool {
+        let inner = self.inner.read().unwrap();
+        matches!(
+            inner.node_status,
+            NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. }
+        )
     }
 
     // -------------------------------------------------------------------------

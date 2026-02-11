@@ -7,7 +7,7 @@ use tape_api::event::TrackRegistered;
 use tape_core::types::EpochNumber;
 use tape_store::error::Result;
 use tape_store::ops::TrackOps;
-use tape_store::types::{Pubkey, SpoolAllocation, TrackInfo};
+use tape_store::types::{Pubkey, TrackInfo};
 use tape_store::TapeStore;
 use tracing::debug;
 
@@ -31,11 +31,12 @@ pub fn handle_register_track<S: Store>(
 
     let track_info = TrackInfo {
         tape_address: Pubkey(event.tape.to_bytes()),
-        spool_allocation: SpoolAllocation::SpoolGroup(spool_group),
+        spool_group,
         original_size: event.size.as_u64(),
         encoding_type: event.profile.encoding,
         encoding_params: event.profile.params,
         commitment_hash: event.commitment,
+        certified_epoch: None,
     };
 
     store.put_track(Pubkey(track), track_info)?;
@@ -43,16 +44,29 @@ pub fn handle_register_track<S: Store>(
 }
 
 /// Handle CertifyTrack instruction.
+///
+/// Marks the track as certified for the given epoch, enabling recovery
+/// to filter by certification status.
 pub fn handle_certify_track<S: Store>(
-    _store: &TapeStore<S>,
-    track: [u8; 32],
+    store: &TapeStore<S>,
+    track_address: Pubkey,
     epoch: EpochNumber,
 ) -> Result<()> {
-    debug!(
-        track = %bs58::encode(&track).into_string(),
-        epoch = epoch.as_u64(),
-        "CertifyTrack (no-op)"
-    );
+    if let Some(mut info) = store.get_track(track_address)? {
+        info.certified_epoch = Some(epoch);
+        store.put_track(track_address, info)?;
+        debug!(
+            track = %track_address,
+            epoch = epoch.as_u64(),
+            "CertifyTrack persisted"
+        );
+    } else {
+        debug!(
+            track = %track_address,
+            epoch = epoch.as_u64(),
+            "CertifyTrack: track not found"
+        );
+    }
     Ok(())
 }
 
@@ -71,15 +85,39 @@ pub fn handle_delete_track<S: Store>(
 }
 
 /// Handle InvalidateTrack instruction.
+///
+/// Deletes the track metadata and associated slices from owned spools.
+/// This is the GC path for invalidated tracks.
 pub fn handle_invalidate_track<S: Store>(
-    _store: &TapeStore<S>,
+    store: &TapeStore<S>,
     track: [u8; 32],
     current_epoch: EpochNumber,
+    owned_spools: &[tape_core::spooler::SpoolIndex],
 ) -> Result<()> {
+    use tape_store::ops::SliceOps;
+
+    let track_address = Pubkey(track);
+
+    // Delete slices from all owned spools
+    for &spool in owned_spools {
+        if let Err(e) = store.delete_slice(spool, track_address) {
+            debug!(
+                track = %track_address,
+                spool,
+                error = %e,
+                "failed to delete slice during invalidation"
+            );
+        }
+    }
+
+    // Delete track metadata
+    store.delete_track(track_address)?;
+
     debug!(
-        track = %bs58::encode(&track).into_string(),
+        track = %track_address,
         epoch = current_epoch.as_u64(),
-        "InvalidateTrack (no-op)"
+        spools_cleaned = owned_spools.len(),
+        "InvalidateTrack: cleaned up"
     );
     Ok(())
 }
@@ -199,14 +237,39 @@ mod tests {
 
         let info = store.get_track(Pubkey(track)).unwrap().expect("track should exist");
         assert_eq!(info.tape_address, Pubkey(tape_pubkey.to_bytes()));
-        assert_eq!(info.spool_allocation, SpoolAllocation::SpoolGroup(5u64));
+        assert_eq!(info.spool_group, 5);
         assert_eq!(info.original_size, 100);
     }
 
     #[test]
-    fn test_certify_track_noop() {
+    fn test_certify_track_persists() {
         let store = test_store();
-        let track = [1u8; 32];
+        let track = Pubkey([1u8; 32]);
+        let tape_pubkey = solana_program::pubkey::Pubkey::new_unique();
+
+        let event = TrackRegistered {
+            track: solana_program::pubkey::Pubkey::new_from_array(track.0),
+            tape: tape_pubkey,
+            key: tape_crypto::Hash::default(),
+            size: StorageUnits(100),
+            commitment: tape_crypto::Hash::default(),
+            epoch: EpochNumber(42),
+            profile: EncodingProfile::clay_default(),
+            spool_group: 5u64.to_le_bytes(),
+        };
+
+        handle_register_track(&store, track.0, &event).unwrap();
+        assert!(store.get_track(track).unwrap().unwrap().certified_epoch.is_none());
+
+        handle_certify_track(&store, track, EpochNumber(100)).unwrap();
+        let info = store.get_track(track).unwrap().unwrap();
+        assert_eq!(info.certified_epoch, Some(EpochNumber(100)));
+    }
+
+    #[test]
+    fn test_certify_track_missing() {
+        let store = test_store();
+        let track = Pubkey([99u8; 32]);
         handle_certify_track(&store, track, EpochNumber(100)).unwrap();
     }
 

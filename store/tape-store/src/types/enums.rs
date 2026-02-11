@@ -13,12 +13,12 @@ pub enum NodeStatus {
     Active,
     /// Node needs to recover metadata before joining
     RecoverMetadata,
-    /// Node is catching up during recovery
-    RecoveryCatchUp,
+    /// Node is catching up via block processing (lag >= 2 epochs)
+    RecoveryReplay,
     /// Node is actively recovering data for a specific epoch
     RecoveryInProgress { epoch: EpochNumber },
     /// Node is catching up with incomplete history
-    RecoveryCatchUpWithIncompleteHistory {
+    PartialReplay {
         first_complete_epoch: EpochNumber,
         epoch_at_start: EpochNumber,
     },
@@ -50,15 +50,6 @@ impl Default for SpoolStatus {
     fn default() -> Self {
         Self::None
     }
-}
-
-/// How a track's slices are allocated across spools
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub enum SpoolAllocation {
-    /// All slices go to a single spool
-    SpoolSingle(u16),
-    /// Slices are distributed across a spool group (0..SPOOL_GROUP_COUNT-1)
-    SpoolGroup(u64),
 }
 
 /// Information about a tracked object
@@ -110,11 +101,11 @@ mod tests {
             NodeStatus::Standby,
             NodeStatus::Active,
             NodeStatus::RecoverMetadata,
-            NodeStatus::RecoveryCatchUp,
+            NodeStatus::RecoveryReplay,
             NodeStatus::RecoveryInProgress {
                 epoch: EpochNumber(42),
             },
-            NodeStatus::RecoveryCatchUpWithIncompleteHistory {
+            NodeStatus::PartialReplay {
                 first_complete_epoch: EpochNumber(10),
                 epoch_at_start: EpochNumber(5),
             },
@@ -124,17 +115,6 @@ mod tests {
             let bytes = wincode::serialize(&status).unwrap();
             let decoded: NodeStatus = wincode::deserialize(&bytes).unwrap();
             assert_eq!(status, decoded);
-        }
-    }
-
-    #[test]
-    fn test_spool_allocation_roundtrip() {
-        let allocs = vec![SpoolAllocation::SpoolSingle(42), SpoolAllocation::SpoolGroup(3u64)];
-
-        for alloc in allocs {
-            let bytes = wincode::serialize(&alloc).unwrap();
-            let decoded: SpoolAllocation = wincode::deserialize(&bytes).unwrap();
-            assert_eq!(alloc, decoded);
         }
     }
 

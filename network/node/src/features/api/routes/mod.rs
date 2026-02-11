@@ -127,7 +127,7 @@ mod tests {
         let system = System::zeroed();
         let epoch = Epoch::zeroed();
         let node = Node::zeroed();
-        let control_plane = Arc::new(ControlPlane::new(system, epoch, node));
+        let control_plane = Arc::new(ControlPlane::new(system, epoch, node, Default::default()));
 
         ApiState { metrics, service, bls_keypair, control_plane }
     }

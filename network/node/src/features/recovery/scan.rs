@@ -4,7 +4,7 @@ use store::Store;
 use tape_core::erasure::group_for_spool;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{SpoolAllocation, SpoolStatus};
+use tape_store::types::SpoolStatus;
 use tape_store::TapeStore;
 use tracing::debug;
 
@@ -68,11 +68,7 @@ pub fn run_scan<S: Store>(
                 continue;
             }
 
-            // Look up group for this track
-            let group = match track_info.spool_allocation {
-                SpoolAllocation::SpoolGroup(g) => g,
-                _ => continue,
-            };
+            let group = track_info.spool_group;
 
             // Check if any of our recovering spools belong to this group
             let spools = match by_group.get(&group) {
@@ -140,7 +136,7 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::erasure::{group_for_spool, group_start};
-    use tape_store::types::{Pubkey, SpoolAllocation, TrackInfo};
+    use tape_store::types::{Pubkey, TrackInfo};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -149,11 +145,12 @@ mod tests {
     fn make_track(group: SpoolGroup, size: u64) -> TrackInfo {
         TrackInfo {
             tape_address: Pubkey::new_unique(),
-            spool_allocation: SpoolAllocation::SpoolGroup(group),
+            spool_group: group,
             original_size: size,
             encoding_type: 0,
             encoding_params: 0,
             commitment_hash: [0u8; 32].into(),
+            certified_epoch: None,
         }
     }
 

@@ -1,4 +1,5 @@
 use tape_store::error::TapeStoreError;
+use tape_store::types::Pubkey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
@@ -14,9 +15,15 @@ pub enum RecoveryError {
     #[error("repair failed: {0}")]
     RepairFailed(String),
 
+    #[error("skipped (already have enough slices)")]
+    Skipped,
+
     #[error("node client error: {0}")]
     NodeClient(String),
 
     #[error("slicer error: {0}")]
     Slicer(String),
+
+    #[error("inconsistency detected for track {track}")]
+    InconsistencyProof { track: Pubkey },
 }

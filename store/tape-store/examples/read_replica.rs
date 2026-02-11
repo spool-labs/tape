@@ -20,7 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let track_address = Pubkey::new([i as u8; 32]);
         let info = TrackInfo {
             tape_address,
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_group: 3,
+            certified_epoch: None,
             original_size: 1024,
             encoding_type: 1,
             encoding_params: 0,
@@ -50,11 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let new_track = Pubkey::new([10; 32]);
     let new_info = TrackInfo {
         tape_address,
-        spool_allocation: SpoolAllocation::SpoolGroup(3),
+        spool_group: 3,
         original_size: 1024,
         encoding_type: 1,
         encoding_params: 0,
         commitment_hash: Hash::default(),
+        certified_epoch: None,
     };
     primary.put_track(new_track, new_info)?;
 
@@ -85,7 +87,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let track_address = Pubkey::new([i; 32]);
         let info = TrackInfo {
             tape_address,
-            spool_allocation: SpoolAllocation::SpoolGroup(3),
+            spool_group: 3,
+            certified_epoch: None,
             original_size: 1024,
             encoding_type: 1,
             encoding_params: 0,

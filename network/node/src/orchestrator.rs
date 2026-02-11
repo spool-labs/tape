@@ -2,9 +2,11 @@
 //!
 //! Spawns and manages:
 //! - Thread A: Live updates (block processing)
-//! - Thread B: Network sync (epoch transitions)
+//! - Thread B: Network sync (epoch transitions + recovery FSM)
 //! - Thread C: Challenges (storage proofs)
-//! - Thread D: Recovery (erasure coding recovery)
+//!
+//! Recovery is event-driven from NodeStatus transitions in the FSM loop,
+//! not from a polling loop.
 
 use std::sync::Arc;
 
@@ -17,7 +19,7 @@ use crate::features::api::ServerHandle;
 use crate::features::block_processing as block;
 use crate::features::challenges;
 use crate::features::epoch_sync::{self as network_sync, FsmSignal};
-use crate::features::recovery;
+use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler};
 
 /// Signal channel capacity (small - only FSM wake-up signals).
 const SIGNAL_CHANNEL_CAPACITY: usize = 32;
@@ -33,9 +35,6 @@ pub enum OrchestratorError {
 
     #[error("thread C (challenges) failed: {0}")]
     Challenges(String),
-
-    #[error("thread D (recovery) failed: {0}")]
-    Recovery(String),
 
     #[error("server error: {0}")]
     Server(String),
@@ -63,6 +62,14 @@ async fn run_inner(
     // Create signal channel: block processor -> FSM loop
     let (signal_tx, signal_rx) = mpsc::channel::<FsmSignal>(SIGNAL_CHANNEL_CAPACITY);
 
+    // Create shared recovery resources
+    let recovery_config = &ctx.config.recovery;
+    let track_sync = Arc::new(TrackSyncHandler::with_limits(
+        recovery_config.max_concurrent_track_syncs,
+        recovery_config.max_concurrent_slice_syncs,
+    ));
+    let deferral = Arc::new(LiveUploadDeferral::new(recovery_config.max_total_defer));
+
     let cancel = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
 
@@ -82,13 +89,15 @@ async fn run_inner(
         }
     });
 
-    // FSM loop: executes actions based on on-chain state
+    // FSM loop: executes actions based on on-chain state + recovery FSM
     tasks.spawn({
         let ctx = Arc::clone(&ctx);
         let cancel = cancel.clone();
+        let track_sync = Arc::clone(&track_sync);
+        let deferral = Arc::clone(&deferral);
         let span = span.clone();
         async move {
-            network_sync::run(ctx, signal_rx, cancel)
+            network_sync::run(ctx, signal_rx, track_sync, deferral, cancel)
                 .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::NetworkSync(e.to_string()))
@@ -105,19 +114,6 @@ async fn run_inner(
                 .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::Challenges(e.to_string()))
-        }
-    });
-
-    // Thread D: Recovery
-    tasks.spawn({
-        let ctx = Arc::clone(&ctx);
-        let span = span.clone();
-        let cancel = cancel.clone();
-        async move {
-            recovery::run(ctx, cancel)
-                .instrument(span)
-                .await
-                .map_err(|e| OrchestratorError::Recovery(e.to_string()))
         }
     });
 
@@ -156,6 +152,9 @@ async fn run_inner(
     // Initiate graceful shutdown
     info!("Initiating graceful shutdown");
     cancel.cancel();
+
+    // Cancel all in-progress recovery tasks
+    track_sync.cancel_all().await;
 
     // Shutdown HTTP server
     server_handle.shutdown().await;
