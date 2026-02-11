@@ -2,7 +2,7 @@
 //!
 //! New or lagging nodes can download epoch snapshots instead of replaying
 //! all Solana blocks from genesis. The bootstrap process:
-//! 1. Read `SnapshotState` from chain (head pointer, latest_epoch)
+//! 1. Read `SnapshotState` from chain (tail pointer, latest_epoch)
 //! 2. Walk the linked list of snapshot tracks backward
 //! 3. Download k_outer certified chunks (each from k_inner=7 slices)
 //! 4. Outer-RS-decode to get the serialized SnapshotLog
@@ -377,8 +377,8 @@ pub async fn bootstrap_from_snapshots<S: Store>(
         "Starting snapshot bootstrap"
     );
 
-    // Walk the on-chain linked list from head backward to collect track addresses
-    let mut track_addr = snapshot_state.head;
+    // Walk the on-chain linked list from tail backward to collect track addresses
+    let mut track_addr = snapshot_state.tail;
     let mut tracks_by_epoch: BTreeMap<EpochNumber, Vec<(SpoolGroup, Pubkey)>> = BTreeMap::new();
 
     while track_addr != Pubkey::default() {
@@ -392,7 +392,7 @@ pub async fn bootstrap_from_snapshots<S: Store>(
             tracks_by_epoch.entry(epoch).or_default().push((group, track_addr));
         }
 
-        // Follow back-pointer (track.key stores previous head address as Hash)
+        // Follow back-pointer (track.key stores previous tail address as Hash)
         track_addr = Pubkey::new_from_array(track.key.0);
 
         if epoch <= current { break; }

@@ -5,10 +5,7 @@ use super::AccountType;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct SnapshotState {
-    /// Address of the most recently registered snapshot track.
-    pub head: Pubkey,
-
-    /// Commitment hash of the head track.
+    /// Commitment hash of the tail track.
     pub commitment: Hash,
 
     /// Total number of snapshot tracks registered.
@@ -25,6 +22,9 @@ pub struct SnapshotState {
 
     /// Cumulative snapshot data size.
     pub total_size: StorageUnits,
+
+    /// Address of the most recently registered snapshot track (tail of the linked list).
+    pub tail: Pubkey,
 }
 
 tape_solana::state!(AccountType, SnapshotState);

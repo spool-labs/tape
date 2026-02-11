@@ -115,9 +115,9 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let stripe_count = u64::from_le_bytes(args.stripe_count);
     let track_size = StorageUnits(stripe_size.saturating_mul(stripe_count));
 
-    // Back-pointer: store the previous head address as a Hash so bootstrap
+    // Back-pointer: store the previous tail address as a Hash so bootstrap
     // can walk the linked list backward.
-    let back_pointer = Hash(snapshot_state.head.to_bytes());
+    let back_pointer = Hash(snapshot_state.tail.to_bytes());
 
     let track = track_info.as_account_mut::<Track>(&tapedrive::ID)?;
 
@@ -133,7 +133,7 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     let profile = EncodingProfile::unpack(args.profile);
     track.data.profile = profile;
 
-    snapshot_state.head = *track_info.key;
+    snapshot_state.tail = *track_info.key;
     snapshot_state.commitment = args.commitment;
     snapshot_state.count += 1;
     snapshot_state.total_size = StorageUnits(

@@ -92,7 +92,7 @@ pub fn process_reserve_snapshot_tape(accounts: &[AccountInfo<'_>], data: &[u8]) 
 
     let snapshot = snapshot_state_info.as_account_mut::<SnapshotState>(&tapedrive::ID)?;
 
-    snapshot.head = Pubkey::zeroed();
+    snapshot.tail = Pubkey::zeroed();
     snapshot.commitment = Hash::zeroed();
     snapshot.latest_epoch = EpochNumber(0);
     snapshot.certifying_epoch = EpochNumber(0);
