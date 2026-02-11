@@ -258,6 +258,9 @@ mod tests {
             epoch: EpochNumber(2),
             profile: tape_core::encoding::EncodingProfile::clay_default(),
             spool_group: 0u64.to_le_bytes(),
+            stripe_size: 0u64.to_le_bytes(),
+            stripe_count: 0u64.to_le_bytes(),
+            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
         };
 
         let certify_event = TrackCertified {

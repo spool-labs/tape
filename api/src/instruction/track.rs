@@ -1,4 +1,5 @@
 use tape_core::prelude::*;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use crate::program::tapedrive::*;
 use tape_solana::*;
 
@@ -10,6 +11,9 @@ pub struct RegisterTrack {
     pub commitment: Hash,      // Erasure coding commitment
     pub size: [u8; 8],         // Size in bytes (including parity data)
     pub profile: [u8; 16],     // Packed EncodingProfile
+    pub stripe_size: [u8; 8],  // Stripe size in bytes
+    pub stripe_count: [u8; 8], // Number of stripes
+    pub leaves: [Hash; SPOOL_GROUP_SIZE], // Per-slice commitment leaf hashes
 }
 
 #[repr(C)]
@@ -36,6 +40,9 @@ pub fn build_register_track_ix(
     commitment: Hash,   // Erasure coding root
     key: Hash,          // Track identifier (e.g., file path hash)
     profile: EncodingProfile, // Encoding profile (type + params)
+    stripe_size: u64,   // Stripe size in bytes
+    stripe_count: u64,  // Number of stripes
+    leaves: [Hash; SPOOL_GROUP_SIZE], // Per-slice commitment leaf hashes
 ) -> Instruction {
 
     let (epoch_address, _) = epoch_pda();
@@ -64,6 +71,9 @@ pub fn build_register_track_ix(
             commitment,
             size,
             profile,
+            stripe_size: stripe_size.to_le_bytes(),
+            stripe_count: stripe_count.to_le_bytes(),
+            leaves,
         }.to_bytes(),
     }
 }

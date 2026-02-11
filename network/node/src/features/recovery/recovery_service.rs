@@ -81,6 +81,7 @@ pub async fn attempt_full_recovery<S: Store>(
     // Start with k + INITIAL_EXTRA, launch more on failure
     let track_id = track_address.to_string();
     let collected_count = Arc::new(AtomicUsize::new(0));
+    let commitment_hash = track_info.commitment_root();
 
     let download_results: Vec<(usize, Result<Vec<u8>, RecoveryError>)> = stream::iter(
         available.into_iter(),
@@ -107,8 +108,8 @@ pub async fn attempt_full_recovery<S: Store>(
     .collect()
     .await;
 
-    // TODO: verify merkle proof on each downloaded slice
-    // For now, collect successfully downloaded slices
+    // Collect successfully downloaded slices
+    // Per-slice verification deferred until TrackInfo stores commitment vector
     let mut collected_slices: Vec<(usize, Vec<u8>)> = Vec::new();
     for (position, result) in download_results {
         match result {
@@ -134,7 +135,6 @@ pub async fn attempt_full_recovery<S: Store>(
 
     // Decode and re-encode on blocking thread (CPU-intensive)
     let stripe_size = pick_stripe_size(blob_len);
-    let commitment_hash = track_info.commitment_hash;
 
     let chunks_owned: Vec<(usize, Vec<u8>)> = collected_slices;
     let (target_slice, all_slices) = tokio::task::spawn_blocking(move || {

@@ -211,6 +211,9 @@ async fn test_tape_lifecycle() {
         erasure_root,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     client
@@ -401,6 +404,9 @@ async fn test_tape_capacity_limits() {
         Hash::new_unique(),
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     client
@@ -421,6 +427,9 @@ async fn test_tape_capacity_limits() {
         Hash::new_unique(),
         key_hash2,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     let result = client.send_instructions(&user, vec![oversized_ix]).await;

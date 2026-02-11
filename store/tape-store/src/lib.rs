@@ -23,7 +23,7 @@
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status
 //! - `spool_pending_recovery`: Pending recovery queue
-//! - `spool_sync_progress`: Sync progress
+//! - `spool_sync_cursor`: Sync cursor
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Erasure-coded slice data
@@ -131,11 +131,12 @@ mod tests {
         let info = TrackInfo {
             tape_address: Pubkey::new_unique(),
             spool_group: 3,
-            certified_epoch: None,
             original_size: 1024 * 1024,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 2, // Clay
             encoding_params: 0,
-            commitment_hash: Hash::default(),
+            commitment: vec![],
         };
 
         store.put_track(address, info.clone()).unwrap();
@@ -312,11 +313,12 @@ mod tests {
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
                 spool_group: 3,
-            certified_epoch: None,
                 original_size: 1024,
+                stripe_size: 0,
+                stripe_count: 0,
                 encoding_type: 1, // Basic
                 encoding_params: 0,
-                commitment_hash: Hash::default(),
+                commitment: vec![],
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();
@@ -350,11 +352,12 @@ mod tests {
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
                 spool_group: 0,
-            certified_epoch: None,
                 original_size: 512,
+                stripe_size: 0,
+                stripe_count: 0,
                 encoding_type: 1, // Basic
                 encoding_params: 0,
-                commitment_hash: Hash::default(),
+                commitment: vec![],
             };
             store.put_track(track, info).unwrap();
             store.inner().inner().flush().unwrap();

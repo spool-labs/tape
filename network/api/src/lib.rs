@@ -31,6 +31,7 @@ pub const API_V1: &str = "/v1";
 
 /// Merkle tree height for blob encoding.
 /// 2^5 = 32 leaves (20 used = SPOOL_GROUP_SIZE).
+/// Matches `tape_core::erasure::COMMITMENT_TREE_HEIGHT`.
 pub const MERKLE_HEIGHT: usize = 5;
 
 // =============================================================================

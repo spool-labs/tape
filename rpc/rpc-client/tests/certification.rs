@@ -63,6 +63,9 @@ async fn create_tape_and_track(
         commitment,
         key,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     ctx.client

@@ -2,7 +2,6 @@
 //!
 //! Run with: cargo run --example atomic_operations
 
-use tape_crypto::Hash;
 use tape_store::{error::Result, ops::*, types::*, TapeStore};
 
 fn main() -> Result<()> {
@@ -16,11 +15,12 @@ fn main() -> Result<()> {
         let info = TrackInfo {
             tape_address,
             spool_group: 3,
-            certified_epoch: None,
             original_size: 1024,
             encoding_type: 1,
             encoding_params: 0,
-            commitment_hash: Hash::default(),
+            stripe_size: 0,
+            stripe_count: 0,
+            commitment: vec![],
         };
         store.put_track(track_address, info)?;
         println!("Created track {}", i);

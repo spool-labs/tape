@@ -1,12 +1,13 @@
-//! Inconsistency proof stub.
+//! Inconsistency detection via merkle root comparison.
 //!
 //! When full recovery detects that re-encoded slices don't match the on-chain
 //! commitment, the node should produce an inconsistency proof and submit it.
-//! This module stubs that flow — actual proof generation is not yet implemented.
+//! Actual BLS attestation for fraud proofs is not yet implemented, but this
+//! module performs the merkle root comparison to detect mismatches.
 
 use tape_crypto::Hash;
+use tape_slicer::merkle_helpers::blob_merkle_root;
 use tape_store::types::Pubkey;
-use tracing::warn;
 
 /// Result of an inconsistency check.
 #[derive(Debug)]
@@ -23,29 +24,56 @@ pub enum InconsistencyResult {
 
 /// Check slice consistency against an on-chain commitment.
 ///
-/// Stub: always returns `Consistent`. When implemented, this will compare
-/// re-encoded merkle root against the on-chain commitment hash and produce
-/// a fraud proof if they differ.
+/// Computes the merkle root of the re-encoded slices and compares it
+/// against the on-chain commitment hash. Returns `DetectedButUnproven`
+/// if they differ (BLS attestation not yet implemented).
 pub fn check_consistency(
-    _track: Pubkey,
-    _commitment: &Hash,
-    _reencoded_slices: &[Vec<u8>],
+    track: Pubkey,
+    commitment: &Hash,
+    reencoded_slices: &[Vec<u8>],
 ) -> InconsistencyResult {
-    warn!("inconsistency proof check is not yet implemented");
-    InconsistencyResult::Consistent
+    let computed_root = blob_merkle_root(reencoded_slices);
+    if computed_root != *commitment {
+        InconsistencyResult::DetectedButUnproven {
+            track,
+            expected_root: *commitment,
+            computed_root,
+        }
+    } else {
+        InconsistencyResult::Consistent
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_slicer::merkle_helpers::blob_merkle_root;
 
     #[test]
-    fn stub_returns_consistent() {
-        let result = check_consistency(
-            Pubkey([0u8; 32]),
-            &Hash::default(),
-            &[vec![1, 2, 3]],
-        );
+    fn matching_slices_are_consistent() {
+        let slices: Vec<Vec<u8>> = (0..20).map(|i| vec![i; 100]).collect();
+        let root = blob_merkle_root(&slices);
+
+        let result = check_consistency(Pubkey([0u8; 32]), &root, &slices);
         assert!(matches!(result, InconsistencyResult::Consistent));
+    }
+
+    #[test]
+    fn mismatched_slices_detected() {
+        let slices: Vec<Vec<u8>> = (0..20).map(|i| vec![i; 100]).collect();
+        let wrong_root = Hash::default();
+
+        let result = check_consistency(Pubkey([1u8; 32]), &wrong_root, &slices);
+        match result {
+            InconsistencyResult::DetectedButUnproven {
+                expected_root,
+                computed_root,
+                ..
+            } => {
+                assert_eq!(expected_root, wrong_root);
+                assert_eq!(computed_root, blob_merkle_root(&slices));
+            }
+            InconsistencyResult::Consistent => panic!("expected inconsistency"),
+        }
     }
 }

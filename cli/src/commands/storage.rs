@@ -16,6 +16,7 @@ use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
 use tape_core::encoding::EncodingProfile;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{NodeId, StorageUnits};
 use tape_crypto::Hash;
@@ -328,6 +329,9 @@ async fn upload_with_certification(
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     let register_sig = if fee_payer.pubkey() != authority {

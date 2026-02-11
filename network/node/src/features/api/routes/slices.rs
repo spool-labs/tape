@@ -44,7 +44,7 @@ pub async fn put_slice<S: Store>(
         return Err(ApiError::MerkleVerificationFailed);
     }
 
-    // Store the slice data
+    // Store the raw slice data
     let data_len = payload.data.len();
     state
         .service

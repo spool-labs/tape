@@ -104,36 +104,34 @@ impl<const N: usize> MerkleTree<N> {
         self.root
     }
 
-    /// Adds a new leaf to the tree.
-    pub fn add_leaf(&mut self, leaf: &[u8]) -> Result<u64, MerkleError> {
+    /// Insert a pre-hashed leaf into the tree.
+    pub fn add_leaf_hash(&mut self, leaf_hash: Hash) -> Result<u64, MerkleError> {
         if self.next_index >= Self::capacity() {
             return Err(MerkleError::TreeFull);
         }
 
         let inserted_index = self.next_index;
-
-        let mut cur = hash_leaf(leaf);
+        let mut cur = leaf_hash;
         let mut idx = inserted_index;
 
         for level in 0..N {
             if (idx & 1) == 0 {
-                
-                // Record the subtree and pair with empty at this level.
                 self.filled_subtrees[level] = cur;
                 cur = hash_pair(cur, EMPTY_ROOTS[level].into());
-                
             } else {
-                
-                // Combine with previously stored left subtree.
                 cur = hash_pair(self.filled_subtrees[level], cur);
             }
-            
             idx >>= 1;
         }
 
         self.root = cur;
         self.next_index += 1;
         Ok(inserted_index)
+    }
+
+    /// Adds a new leaf to the tree.
+    pub fn add_leaf(&mut self, leaf: &[u8]) -> Result<u64, MerkleError> {
+        self.add_leaf_hash(hash_leaf(leaf))
     }
 
     /// Replaces a leaf in the tree with a new leaf using the provided proof.
@@ -256,6 +254,15 @@ impl<const N: usize> MerkleTree<N> {
         }
     }
 
+}
+
+/// Compute a Merkle root from pre-hashed leaf values.
+pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
+    let mut tree = MerkleTree::<N>::new();
+    for h in hashes {
+        tree.add_leaf_hash(*h).expect("tree capacity");
+    }
+    tree.root()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,6 +577,23 @@ mod tests {
         let root_new2 = hash_pair(m_new2, n);
 
         assert_eq!(tree.root, root_new2);
+    }
+
+    #[test]
+    fn root_from_leaf_hashes_matches_add_leaf() {
+        let data: Vec<Vec<u8>> = (0..20u8).map(|i| vec![i; 100]).collect();
+
+        // Build tree via add_leaf (hashes raw data)
+        let mut tree = MerkleTree::<5>::new();
+        for d in &data {
+            tree.add_leaf(d).unwrap();
+        }
+
+        // Build root via root_from_leaf_hashes (pre-hashed)
+        let hashes: Vec<Hash> = data.iter().map(|d| hash_leaf(d)).collect();
+        let root = root_from_leaf_hashes::<5>(&hashes);
+
+        assert_eq!(tree.root(), root);
     }
 
     // NOTE: This is used for calculating EMPTY_ROOTS.

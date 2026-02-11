@@ -179,6 +179,9 @@ mod tests {
             epoch: EpochNumber(3),
             profile: EncodingProfile::clay_default(),
             spool_group: 5u64.to_le_bytes(),
+            stripe_size: 0u64.to_le_bytes(),
+            stripe_count: 0u64.to_le_bytes(),
+            leaves: [Hash::default(); SPOOL_GROUP_SIZE],
         };
 
         let log = encode_event(EventType::TrackRegistered, &event);

@@ -105,7 +105,9 @@ async fn register(
 ) -> Result<()> {
     use tape_api::instruction::build_register_track_ix;
     use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::types::StorageUnits;
+    use tape_crypto::Hash;
 
     let fee_payer = get_keypair(ctx)?;
 
@@ -151,6 +153,9 @@ async fn register(
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     let client = create_rpc_client(&ctx.rpc_url()).map_err(|e| anyhow::anyhow!("{}", e))?;

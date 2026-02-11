@@ -24,6 +24,9 @@ pub enum RecoveryError {
     #[error("slicer error: {0}")]
     Slicer(String),
 
+    #[error("merkle proof verification failed for position {position}")]
+    InvalidProof { position: usize },
+
     #[error("inconsistency detected for track {track}")]
     InconsistencyProof { track: Pubkey },
 }

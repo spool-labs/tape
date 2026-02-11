@@ -1,12 +1,12 @@
 //! Merkle tree helpers for blob commitments.
 
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_crypto::Hash;
 use tape_crypto::merkle::MerkleTree;
 
-pub const MERKLE_HEIGHT: usize = 5;
+pub const MERKLE_HEIGHT: usize = COMMITMENT_TREE_HEIGHT;
 
-pub type BlobMerkleTree = MerkleTree<{ MERKLE_HEIGHT }>;
+pub type BlobMerkleTree = MerkleTree<{ COMMITMENT_TREE_HEIGHT }>;
 pub type BlobMerkleRoot = Hash;
 
 /// Build a merkle tree from the slices of an erasure-coded blob.

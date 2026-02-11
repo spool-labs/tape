@@ -33,7 +33,7 @@ use rocksdb;
 /// ## Spool Columns (NOT epoch-namespaced)
 /// - `spool_status` - 2-byte SpoolIndexKey (PlainTable)
 /// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
-/// - `spool_sync_progress` - 2-byte SpoolIndexKey (PlainTable)
+/// - `spool_sync_cursor` - 2-byte SpoolIndexKey (PlainTable)
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
@@ -97,7 +97,7 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .build(),
 
         // Spool sync progress - 2-byte SpoolIndexKey (PlainTable)
-        ColumnFamilyConfig::new("spool_sync_progress")
+        ColumnFamilyConfig::new("spool_sync_cursor")
             .with_plain_table(2)
             .build(),
     ]
@@ -169,7 +169,7 @@ mod tests {
             "spool_status",
             "spool_pending_recovery",
             "slice",
-            "spool_sync_progress",
+            "spool_sync_cursor",
         ];
 
         assert_eq!(names, expected);

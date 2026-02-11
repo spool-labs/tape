@@ -87,7 +87,6 @@ impl<S: Store> TrackOps for TapeStore<S> {
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
-    use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -98,10 +97,11 @@ mod tests {
             tape_address: Pubkey::new_unique(),
             spool_group: 3,
             original_size: 1024 * 1024,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 2, // Clay
             encoding_params: 0,
-            commitment_hash: Hash::default(),
-            certified_epoch: None,
+            commitment: vec![],
         }
     }
 

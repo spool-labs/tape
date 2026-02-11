@@ -116,6 +116,9 @@ async fn test_write_track() {
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     client
@@ -176,6 +179,9 @@ async fn test_track_requires_tape() {
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     // This should fail because no tape exists
@@ -225,6 +231,9 @@ async fn test_track_metadata_storage() {
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     client
@@ -298,6 +307,9 @@ async fn test_track_commitment() {
         commitment_hash,
         key_hash,
         EncodingProfile::clay_default(),
+        0,
+        0,
+        [Hash::default(); SPOOL_GROUP_SIZE],
     );
 
     client
@@ -373,6 +385,9 @@ async fn test_multiple_tracks_on_tape() {
             commitment_hash,
             key_hash,
             EncodingProfile::clay_default(),
+            0,
+            0,
+            [Hash::default(); SPOOL_GROUP_SIZE],
         );
 
         client

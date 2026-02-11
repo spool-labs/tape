@@ -1,6 +1,6 @@
 //! Spool operations (NOT epoch-namespaced)
 
-use crate::columns::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncProgressCol};
+use crate::columns::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolStatus};
 use crate::TapeStore;
@@ -29,9 +29,9 @@ pub trait SpoolOps {
     ) -> Result<Vec<Pubkey>>;
 
     // Sync progress
-    fn get_sync_progress(&self, spool_id: u16) -> Result<Option<Pubkey>>;
-    fn set_sync_progress(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()>;
-    fn remove_sync_progress(&self, spool_id: u16) -> Result<()>;
+    fn get_spool_sync_cursor(&self, spool_id: u16) -> Result<Option<Pubkey>>;
+    fn set_spool_sync_cursor(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()>;
+    fn remove_spool_sync_cursor(&self, spool_id: u16) -> Result<()>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
@@ -100,20 +100,20 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(results)
     }
 
-    fn get_sync_progress(&self, spool_id: u16) -> Result<Option<Pubkey>> {
+    fn get_spool_sync_cursor(&self, spool_id: u16) -> Result<Option<Pubkey>> {
         let key = SpoolIndexKey::new(spool_id);
-        Ok(self.get::<SpoolSyncProgressCol>(&key)?)
+        Ok(self.get::<SpoolSyncCursorCol>(&key)?)
     }
 
-    fn set_sync_progress(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()> {
+    fn set_spool_sync_cursor(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
-        self.put::<SpoolSyncProgressCol>(&key, &last_synced_track)?;
+        self.put::<SpoolSyncCursorCol>(&key, &last_synced_track)?;
         Ok(())
     }
 
-    fn remove_sync_progress(&self, spool_id: u16) -> Result<()> {
+    fn remove_spool_sync_cursor(&self, spool_id: u16) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
-        self.delete::<SpoolSyncProgressCol>(&key)?;
+        self.delete::<SpoolSyncCursorCol>(&key)?;
         Ok(())
     }
 }
@@ -205,12 +205,12 @@ mod tests {
         let spool_id = 42;
         let track = Pubkey::new_unique();
 
-        assert!(store.get_sync_progress(spool_id).unwrap().is_none());
+        assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
 
-        store.set_sync_progress(spool_id, track).unwrap();
-        assert_eq!(store.get_sync_progress(spool_id).unwrap(), Some(track));
+        store.set_spool_sync_cursor(spool_id, track).unwrap();
+        assert_eq!(store.get_spool_sync_cursor(spool_id).unwrap(), Some(track));
 
-        store.remove_sync_progress(spool_id).unwrap();
-        assert!(store.get_sync_progress(spool_id).unwrap().is_none());
+        store.remove_spool_sync_cursor(spool_id).unwrap();
+        assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
     }
 }

@@ -1,6 +1,5 @@
 //! Integration tests for TapeStore with RocksDB backend
 
-use tape_crypto::Hash;
 use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
 
@@ -15,11 +14,12 @@ fn open_primary() {
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
         spool_group: 3,
-        certified_epoch: None,
         original_size: 1024,
+        stripe_size: 0,
+        stripe_count: 0,
         encoding_type: 1,
         encoding_params: 0,
-        commitment_hash: Hash::default(),
+        commitment: vec![],
     };
 
     store.put_track(track_address, info.clone()).unwrap();
@@ -41,11 +41,12 @@ fn open_primary_persistence() {
         let info = TrackInfo {
             tape_address,
             spool_group: 3,
-        certified_epoch: None,
             original_size: 512,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 1,
             encoding_params: 0,
-            commitment_hash: Hash::default(),
+            commitment: vec![],
         };
         store.put_track(track_address, info).unwrap();
     }
@@ -77,11 +78,12 @@ fn all_column_families() {
     let track_info = TrackInfo {
         tape_address,
         spool_group: 3,
-        certified_epoch: None,
         original_size: 1024 * 1024,
+        stripe_size: 0,
+        stripe_count: 0,
         encoding_type: 2, // Clay
         encoding_params: 0,
-        commitment_hash: Hash::default(),
+        commitment: vec![],
     };
     store.put_track(track_address, track_info).unwrap();
 
@@ -111,7 +113,7 @@ fn all_column_families() {
 
     // Sync progress
     let progress_track = Pubkey::new_unique();
-    store.set_sync_progress(42, progress_track).unwrap();
+    store.set_spool_sync_cursor(42, progress_track).unwrap();
 
     // Pending recovery
     store
@@ -157,7 +159,7 @@ fn all_column_families() {
         Some(SpoolStatus::Active)
     );
     assert_eq!(
-        store.get_sync_progress(42).unwrap(),
+        store.get_spool_sync_cursor(42).unwrap(),
         Some(progress_track)
     );
     assert!(store.has_pending_recovery(42, track_address).unwrap());
@@ -227,11 +229,12 @@ fn track_operations() {
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
         spool_group: 3,
-        certified_epoch: None,
         original_size: 1024,
+        stripe_size: 0,
+        stripe_count: 0,
         encoding_type: 1,
         encoding_params: 0,
-        commitment_hash: Hash::default(),
+        commitment: vec![],
     };
     store.put_track(track, info.clone()).unwrap();
 

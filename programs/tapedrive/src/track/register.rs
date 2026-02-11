@@ -1,8 +1,9 @@
 use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TrackRegistered;
-use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT};
 use tape_core::encoding::EncodingProfile;
+use tape_crypto::merkle::root_from_leaf_hashes;
 use crate::error::*;
 
 pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -84,6 +85,12 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let profile = EncodingProfile::unpack(args.profile);
     track.data.profile = profile;
 
+    // Verify leaf hashes produce the commitment root
+    let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&args.leaves);
+    if computed_root != args.commitment {
+        return Err(TapeError::InvalidCommitment.into());
+    }
+
     let new_used = tape.used
          .checked_add(total_units)
          .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -103,6 +110,9 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         epoch: current_epoch(epoch),
         profile,
         spool_group: spool_group.to_le_bytes(),
+        stripe_size: args.stripe_size,
+        stripe_count: args.stripe_count,
+        leaves: args.leaves,
     }.log();
 
     Ok(())
@@ -122,18 +132,24 @@ mod tests {
         let storage_units = StorageUnits(100);
 
         let data_root = Hash::new_unique();
-        let erasure_root = Hash::new_unique();
         let bucket_hash = Hash::new_unique();
         let profile = EncodingProfile::clay_default();
+
+        let leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        // Compute valid commitment from leaves
+        let commitment = tape_crypto::merkle::root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
 
         let instruction = build_register_track_ix(
             fee_payer,
             authority,
             storage_units,
             data_root,
-            erasure_root,
+            commitment,
             bucket_hash,
             profile,
+            0,
+            0,
+            leaves,
         );
 
         let (epoch_address, _) = epoch_pda();
@@ -166,7 +182,7 @@ mod tests {
 
         // Build expected track data with profile
         // spool_group = tape.track_count % SPOOL_GROUP_COUNT = 100 % 50 = 0
-        let mut expected_data = TrackData::new(EpochNumber(0), erasure_root, 0);
+        let mut expected_data = TrackData::new(EpochNumber(0), commitment, 0);
         expected_data.profile = profile;
 
         let env = test_env();

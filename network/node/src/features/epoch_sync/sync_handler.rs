@@ -25,7 +25,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
+use tape_store::ops::SpoolOps;
+use tape_store::types::SpoolStatus;
+
 use crate::features::recovery::deferral::LiveUploadDeferral;
+use crate::features::recovery::node_recovery::start_spool_recovery;
 use crate::features::recovery::track_sync::TrackSyncHandler;
 use crate::features::recovery::{NodeEvent, evaluate_transition, start_node_recovery, run_metadata_sync};
 use crate::features::spool_sync::SpoolSyncHandler;
@@ -350,6 +354,23 @@ fn resume_from_persisted_status(
                 run_metadata_sync(ctx, cancel).await;
             });
         }
+        NodeStatus::Active => {
+            let our_spools = ctx.control_plane.get_our_spools();
+            let has_recovering = our_spools.iter().any(|&s| {
+                ctx.storage.store.get_spool_status(s).ok().flatten()
+                    != Some(SpoolStatus::Active)
+            });
+            if has_recovering {
+                info!("resuming spool recovery on restart");
+                let ctx = Arc::clone(ctx);
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    start_spool_recovery(ctx, cancel).await;
+                });
+            } else {
+                ctx.control_plane.mark_local_sync_complete(ctx.control_plane.current_epoch());
+            }
+        }
         NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
             info!("persisted status is replay — block processor will catch up naturally");
         }
@@ -456,6 +477,17 @@ pub async fn run(
                 .filter(|s| !prev_set.contains(s))
                 .copied()
                 .collect();
+
+            // Seed status for carried-over spools
+            for &spool in &current_spools {
+                if prev_set.contains(&spool) {
+                    if ctx.storage.store.get_spool_status(spool).ok().flatten()
+                        != Some(SpoolStatus::Active)
+                    {
+                        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+                    }
+                }
+            }
 
             sync_retry.reset();
 

@@ -7,11 +7,12 @@
 use std::sync::Arc;
 
 use store::Store;
-use tape_core::erasure::spool_in_group;
-use tape_core::spooler::SpoolIndex;
+use tape_core::erasure::{group_for_spool, spool_in_group};
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::EpochNumber;
-use tape_store::ops::{MetaOps, SliceOps, TrackOps};
-use tape_store::types::Pubkey;
+use tape_store::ops::{MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::types::ObjectInfo;
+use tape_store::types::{Pubkey, SpoolStatus};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -20,6 +21,7 @@ use crate::core::context::NodeContext;
 
 use super::deferral::LiveUploadDeferral;
 use super::node_status;
+use super::scan::run_scan;
 use super::track_sync::TrackSyncHandler;
 use super::track_synchronizer::recover_track_slice;
 use super::{NodeEvent, evaluate_transition};
@@ -48,9 +50,112 @@ pub async fn run_metadata_sync<S: Store + 'static>(
         if let Err(e) = ctx.storage.store.set_node_status(new_status) {
             warn!(error = %e, "failed to persist node status");
         }
-        ctx.control_plane
-            .mark_local_sync_complete(ctx.control_plane.current_epoch());
+        // Spawn spool recovery — calls mark_local_sync_complete when done
+        let ctx2 = Arc::clone(&ctx);
+        let cancel2 = cancel.clone();
+        tokio::spawn(async move {
+            start_spool_recovery(ctx2, cancel2).await;
+        });
     }
+}
+
+/// Recover all non-Active spools using existing per-track recovery infrastructure.
+///
+/// Scans for missing slices across all recovering spools, dispatches
+/// per-track recovery tasks, and calls `mark_local_sync_complete` when done.
+pub async fn start_spool_recovery<S: Store + 'static>(
+    ctx: Arc<NodeContext<S>>,
+    cancel: CancellationToken,
+) {
+    let our_spools = ctx.control_plane.get_our_spools();
+    let epoch = ctx.control_plane.current_epoch();
+
+    // Identify spools needing recovery (not Active in store)
+    let mut spools_to_recover: Vec<SpoolIndex> = Vec::new();
+    for &spool in &our_spools {
+        match ctx.storage.store.get_spool_status(spool) {
+            Ok(Some(SpoolStatus::Active)) => continue,
+            _ => spools_to_recover.push(spool),
+        }
+    }
+
+    if spools_to_recover.is_empty() {
+        info!("all spools already active");
+        ctx.control_plane.mark_local_sync_complete(epoch);
+        return;
+    }
+
+    info!(spools = spools_to_recover.len(), "starting spool recovery");
+
+    // Mark recovering
+    for &spool in &spools_to_recover {
+        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveRecover);
+    }
+
+    // Scan to populate pending recovery queues
+    let recovering: Vec<(SpoolIndex, SpoolGroup)> = spools_to_recover
+        .iter()
+        .map(|&s| (s, group_for_spool(s)))
+        .collect();
+
+    match run_scan(&ctx.storage.store, &recovering) {
+        Ok(result) => info!(scanned = result.scanned, enqueued = result.enqueued, "scan complete"),
+        Err(e) => warn!(error = %e, "scan failed"),
+    }
+
+    // Dispatch per-track recovery
+    let track_sync = Arc::new(TrackSyncHandler::new());
+    let deferral = Arc::new(LiveUploadDeferral::default());
+    let slice_semaphore = track_sync.slice_semaphore();
+    let queue_semaphore = Arc::new(Semaphore::new(RECOVERY_TRACK_CONCURRENCY));
+
+    for &spool in &spools_to_recover {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let pending = match ctx.storage.store.iter_pending_recoveries(spool, usize::MAX) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(spool, error = %e, "read pending failed");
+                continue;
+            }
+        };
+
+        for track_address in pending {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let permit = match queue_semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+
+            let ctx = Arc::clone(&ctx);
+            let deferral = Arc::clone(&deferral);
+            let slice_sem = Arc::clone(&slice_semaphore);
+            let cancel = cancel.clone();
+
+            track_sync
+                .start_sync(track_address, async move {
+                    recover_track_slice(ctx, spool, track_address, deferral, slice_sem, cancel)
+                        .await;
+                    drop(permit);
+                })
+                .await;
+        }
+    }
+
+    track_sync.wait_all().await;
+
+    // Mark all recovered spools as Active
+    for &spool in &spools_to_recover {
+        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+    }
+
+    info!("spool recovery complete");
+    ctx.control_plane.mark_local_sync_complete(epoch);
 }
 
 /// Tracks scanned per DB page during node recovery.
@@ -121,11 +226,11 @@ pub async fn start_node_recovery<S: Store + 'static>(
             scanned += 1;
             cursor = Some(*track_address);
 
-            // Only recover certified tracks
-            let certified = match track_info.certified_epoch {
-                Some(ce) if ce <= epoch => true,
-                _ => false,
-            };
+            // Only recover certified tracks (certified_epoch is in ObjectInfo)
+            let certified = matches!(
+                ctx.storage.store.get_object_info(*track_address),
+                Ok(Some(ObjectInfo::Valid { certified_epoch: Some(ce), .. })) if ce <= epoch
+            );
             if !certified {
                 continue;
             }
@@ -232,15 +337,16 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn make_certified_track(group: u64, epoch: EpochNumber) -> TrackInfo {
+    fn make_certified_track(group: u64) -> TrackInfo {
         TrackInfo {
             tape_address: Pubkey::new_unique(),
             spool_group: group,
             original_size: 1024,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 2,
             encoding_params: 0,
-            commitment_hash: [0u8; 32].into(),
-            certified_epoch: Some(epoch),
+            commitment: vec![],
         }
     }
 
@@ -249,20 +355,21 @@ mod tests {
             tape_address: Pubkey::new_unique(),
             spool_group: group,
             original_size: 1024,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 2,
             encoding_params: 0,
-            commitment_hash: [0u8; 32].into(),
-            certified_epoch: None,
+            commitment: vec![],
         }
     }
 
     #[test]
-    fn test_certified_filter() {
-        let info = make_certified_track(0, EpochNumber(5));
-        assert_eq!(info.certified_epoch, Some(EpochNumber(5)));
+    fn test_track_construction() {
+        let info = make_certified_track(0);
+        assert_eq!(info.spool_group, 0);
 
         let info2 = make_uncertified_track(0);
-        assert_eq!(info2.certified_epoch, None);
+        assert_eq!(info2.spool_group, 0);
     }
 
     #[test]

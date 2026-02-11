@@ -6,8 +6,8 @@ use store::Store;
 use tape_api::event::TrackRegistered;
 use tape_core::types::EpochNumber;
 use tape_store::error::Result;
-use tape_store::ops::TrackOps;
-use tape_store::types::{Pubkey, TrackInfo};
+use tape_store::ops::{ObjectInfoOps, TrackOps};
+use tape_store::types::{ObjectInfo, Pubkey, TrackInfo};
 use tape_store::TapeStore;
 use tracing::debug;
 
@@ -33,39 +33,82 @@ pub fn handle_register_track<S: Store>(
         tape_address: Pubkey(event.tape.to_bytes()),
         spool_group,
         original_size: event.size.as_u64(),
+        stripe_size: u64::from_le_bytes(event.stripe_size),
+        stripe_count: u64::from_le_bytes(event.stripe_count),
         encoding_type: event.profile.encoding,
         encoding_params: event.profile.params,
-        commitment_hash: event.commitment,
-        certified_epoch: None,
+        commitment: event.leaves.to_vec(),
     };
 
-    store.put_track(Pubkey(track), track_info)?;
+    let track_pubkey = Pubkey(track);
+    store.put_track(track_pubkey, track_info)?;
+
+    // Initialize ObjectInfo for this track
+    store.put_object_info(
+        track_pubkey,
+        ObjectInfo::Valid {
+            is_stored: false,
+            track_address: track_pubkey,
+            registered_epoch: event.epoch,
+            certified_epoch: None,
+            slot: tape_core::types::SlotNumber(0),
+        },
+    )?;
+
     Ok(())
 }
 
 /// Handle CertifyTrack instruction.
 ///
-/// Marks the track as certified for the given epoch, enabling recovery
+/// Updates ObjectInfo with the certification epoch, enabling recovery
 /// to filter by certification status.
 pub fn handle_certify_track<S: Store>(
     store: &TapeStore<S>,
     track_address: Pubkey,
     epoch: EpochNumber,
 ) -> Result<()> {
-    if let Some(mut info) = store.get_track(track_address)? {
-        info.certified_epoch = Some(epoch);
-        store.put_track(track_address, info)?;
-        debug!(
-            track = %track_address,
-            epoch = epoch.as_u64(),
-            "CertifyTrack persisted"
-        );
-    } else {
-        debug!(
-            track = %track_address,
-            epoch = epoch.as_u64(),
-            "CertifyTrack: track not found"
-        );
+    match store.get_object_info(track_address)? {
+        Some(ObjectInfo::Valid {
+            is_stored,
+            track_address: ta,
+            registered_epoch,
+            slot,
+            ..
+        }) => {
+            store.put_object_info(
+                track_address,
+                ObjectInfo::Valid {
+                    is_stored,
+                    track_address: ta,
+                    registered_epoch,
+                    certified_epoch: Some(epoch),
+                    slot,
+                },
+            )?;
+            debug!(
+                track = %track_address,
+                epoch = epoch.as_u64(),
+                "CertifyTrack persisted"
+            );
+        }
+        _ => {
+            // Create ObjectInfo if missing (e.g., node started after registration)
+            store.put_object_info(
+                track_address,
+                ObjectInfo::Valid {
+                    is_stored: false,
+                    track_address,
+                    registered_epoch: epoch,
+                    certified_epoch: Some(epoch),
+                    slot: tape_core::types::SlotNumber(0),
+                },
+            )?;
+            debug!(
+                track = %track_address,
+                epoch = epoch.as_u64(),
+                "CertifyTrack: created ObjectInfo"
+            );
+        }
     }
     Ok(())
 }
@@ -209,6 +252,7 @@ mod tests {
     use super::*;
     use store_memory::MemoryStore;
     use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::types::StorageUnits;
     use tape_store::TapeStore;
 
@@ -216,22 +260,28 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    #[test]
-    fn test_register_track_persists() {
-        let store = test_store();
-        let track = [1u8; 32];
-        let tape_pubkey = solana_program::pubkey::Pubkey::new_unique();
-
-        let event = TrackRegistered {
-            track: solana_program::pubkey::Pubkey::new_from_array(track),
-            tape: tape_pubkey,
+    fn test_event() -> TrackRegistered {
+        TrackRegistered {
+            track: solana_program::pubkey::Pubkey::new_unique(),
+            tape: solana_program::pubkey::Pubkey::new_unique(),
             key: tape_crypto::Hash::default(),
             size: StorageUnits(100),
             commitment: tape_crypto::Hash::default(),
             epoch: EpochNumber(42),
             profile: EncodingProfile::clay_default(),
             spool_group: 5u64.to_le_bytes(),
-        };
+            stripe_size: 0u64.to_le_bytes(),
+            stripe_count: 0u64.to_le_bytes(),
+            leaves: [tape_crypto::Hash::default(); SPOOL_GROUP_SIZE],
+        }
+    }
+
+    #[test]
+    fn test_register_track_persists() {
+        let store = test_store();
+        let track = [1u8; 32];
+        let event = test_event();
+        let tape_pubkey = event.tape;
 
         handle_register_track(&store, track, &event).unwrap();
 
@@ -239,31 +289,41 @@ mod tests {
         assert_eq!(info.tape_address, Pubkey(tape_pubkey.to_bytes()));
         assert_eq!(info.spool_group, 5);
         assert_eq!(info.original_size, 100);
+
+        // ObjectInfo should also be created
+        let obj = store.get_object_info(Pubkey(track)).unwrap().expect("object info should exist");
+        match obj {
+            ObjectInfo::Valid { certified_epoch, registered_epoch, .. } => {
+                assert_eq!(registered_epoch, EpochNumber(42));
+                assert!(certified_epoch.is_none());
+            }
+            _ => panic!("expected ObjectInfo::Valid"),
+        }
     }
 
     #[test]
     fn test_certify_track_persists() {
         let store = test_store();
         let track = Pubkey([1u8; 32]);
-        let tape_pubkey = solana_program::pubkey::Pubkey::new_unique();
-
-        let event = TrackRegistered {
-            track: solana_program::pubkey::Pubkey::new_from_array(track.0),
-            tape: tape_pubkey,
-            key: tape_crypto::Hash::default(),
-            size: StorageUnits(100),
-            commitment: tape_crypto::Hash::default(),
-            epoch: EpochNumber(42),
-            profile: EncodingProfile::clay_default(),
-            spool_group: 5u64.to_le_bytes(),
-        };
+        let event = test_event();
 
         handle_register_track(&store, track.0, &event).unwrap();
-        assert!(store.get_track(track).unwrap().unwrap().certified_epoch.is_none());
+
+        // Before certification
+        match store.get_object_info(track).unwrap().unwrap() {
+            ObjectInfo::Valid { certified_epoch, .. } => assert!(certified_epoch.is_none()),
+            _ => panic!("expected Valid"),
+        }
 
         handle_certify_track(&store, track, EpochNumber(100)).unwrap();
-        let info = store.get_track(track).unwrap().unwrap();
-        assert_eq!(info.certified_epoch, Some(EpochNumber(100)));
+
+        // After certification
+        match store.get_object_info(track).unwrap().unwrap() {
+            ObjectInfo::Valid { certified_epoch, .. } => {
+                assert_eq!(certified_epoch, Some(EpochNumber(100)));
+            }
+            _ => panic!("expected Valid"),
+        }
     }
 
     #[test]
@@ -271,6 +331,15 @@ mod tests {
         let store = test_store();
         let track = Pubkey([99u8; 32]);
         handle_certify_track(&store, track, EpochNumber(100)).unwrap();
+
+        // Should create ObjectInfo even without prior registration
+        let obj = store.get_object_info(track).unwrap().expect("should create ObjectInfo");
+        match obj {
+            ObjectInfo::Valid { certified_epoch, .. } => {
+                assert_eq!(certified_epoch, Some(EpochNumber(100)));
+            }
+            _ => panic!("expected Valid"),
+        }
     }
 
     #[test]

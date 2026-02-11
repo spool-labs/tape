@@ -13,6 +13,6 @@ pub(crate) mod scan;
 
 pub use deferral::LiveUploadDeferral;
 pub use error::RecoveryError;
-pub use node_recovery::{start_node_recovery, run_metadata_sync};
+pub use node_recovery::{start_node_recovery, run_metadata_sync, start_spool_recovery};
 pub use node_status::{NodeEvent, evaluate_transition, is_replaying};
 pub use track_sync::TrackSyncHandler;

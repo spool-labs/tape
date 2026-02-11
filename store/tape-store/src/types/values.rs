@@ -26,14 +26,16 @@ pub struct TrackInfo {
     pub spool_group: SpoolGroup,
     /// Original unencoded data size in bytes
     pub original_size: u64,
+    /// Stripe size in bytes (from encoding)
+    pub stripe_size: u64,
+    /// Number of stripes
+    pub stripe_count: u64,
     /// Encoding type discriminant (EncodingType as u64)
     pub encoding_type: u64,
     /// Encoding params (e.g., ClayParams packed as u64)
     pub encoding_params: u64,
-    /// Commitment hash (merkle root) — same as on-chain TrackData.commitment_hash
-    pub commitment_hash: Hash,
-    /// Epoch when this track was certified (None if not yet certified)
-    pub certified_epoch: Option<EpochNumber>,
+    /// Per-slice commitment leaf hashes (SPOOL_GROUP_SIZE entries)
+    pub commitment: Vec<Hash>,
 }
 
 impl TrackInfo {
@@ -49,6 +51,21 @@ impl TrackInfo {
     pub fn set_profile(&mut self, profile: EncodingProfile) {
         self.encoding_type = profile.encoding;
         self.encoding_params = profile.params;
+    }
+
+    /// Recompute the commitment root from stored leaf hashes.
+    pub fn commitment_root(&self) -> Hash {
+        tape_crypto::merkle::root_from_leaf_hashes::<
+            { tape_core::erasure::COMMITMENT_TREE_HEIGHT },
+        >(&self.commitment)
+    }
+
+    /// Verify a single slice against its stored leaf hash.
+    pub fn verify_slice(&self, position: usize, data: &[u8]) -> bool {
+        if position >= self.commitment.len() {
+            return false;
+        }
+        tape_crypto::merkle::hash_leaf(data) == self.commitment[position]
     }
 }
 
@@ -105,10 +122,11 @@ mod tests {
             tape_address: Pubkey([1u8; 32]),
             spool_group: 3,
             original_size: 1024 * 1024,
+            stripe_size: 10 * 1024 * 1024,
+            stripe_count: 1,
             encoding_type: 2, // Clay
             encoding_params: 0x100714, // n=20, k=7, d=16 packed
-            commitment_hash: Hash::default(),
-            certified_epoch: Some(EpochNumber(10)),
+            commitment: vec![Hash::default(); 20],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -122,10 +140,11 @@ mod tests {
             tape_address: Pubkey([2u8; 32]),
             spool_group: 0,
             original_size: 512,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 1, // Basic
             encoding_params: 0,
-            commitment_hash: Hash::default(),
-            certified_epoch: None,
+            commitment: vec![],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -141,10 +160,11 @@ mod tests {
             tape_address: Pubkey([3u8; 32]),
             spool_group: 1,
             original_size: 1024,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 0,
             encoding_params: 0,
-            commitment_hash: Hash::default(),
-            certified_epoch: None,
+            commitment: vec![],
         };
 
         // Set profile

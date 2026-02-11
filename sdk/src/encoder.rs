@@ -4,6 +4,7 @@
 //! raw blobs into network-ready slices with merkle commitments.
 
 use tape_core::encoding::{EncodingProfile, EncodingType};
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolIndex;
 use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
 use tape_crypto::Hash;
@@ -256,6 +257,22 @@ impl BlobEncoder {
         }
 
         Ok((output, root))
+    }
+
+    /// Encode a blob and return slices with proofs, root, and leaf hashes.
+    ///
+    /// Returns the leaf hashes as a fixed-size array suitable for passing
+    /// to the RegisterTrack instruction.
+    pub fn encode_with_leaves(
+        &mut self,
+        data: Vec<u8>,
+    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; SPOOL_GROUP_SIZE]), UploadError> {
+        let (slices, root) = self.encode_with_proofs(data)?;
+        let mut leaves = [Hash::default(); SPOOL_GROUP_SIZE];
+        for s in &slices {
+            leaves[s.index as usize] = s.leaf_hash;
+        }
+        Ok((slices, root, leaves))
     }
 }
 

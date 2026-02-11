@@ -15,7 +15,7 @@
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
 //! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
-//! - `spool_sync_progress`: Sync progress (SpoolIndexKey -> Pubkey)
+//! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Pubkey)
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)
@@ -39,7 +39,7 @@ pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
 pub use slice::SliceCol;
-pub use spool::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncProgressCol};
+pub use spool::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncCursorCol};
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
@@ -56,5 +56,5 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_status",
     "spool_pending_recovery",
     "slice",
-    "spool_sync_progress",
+    "spool_sync_cursor",
 ];

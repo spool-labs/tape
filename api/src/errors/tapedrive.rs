@@ -84,11 +84,13 @@ pub enum TapeError {
     #[error("zero shares")]
     ZeroShares = 0x66,
 
-    // Blacklist (0x70-0x71)
+    // Commitment (0x70-0x72)
     #[error("bad proof")]
     BadProof = 0x70,
     #[error("list full")]
     ListFull = 0x71,
+    #[error("invalid commitment")]
+    InvalidCommitment = 0x72,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -172,6 +174,7 @@ impl TapeError {
             Self::ZeroShares => "Cannot operate on zero shares",
             Self::BadProof => "Invalid proof",
             Self::ListFull => "Blacklist is full",
+            Self::InvalidCommitment => "Leaf hashes do not match commitment root",
         }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! - SpoolStatusCol: spool_id -> SpoolStatus
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
-//! - SpoolSyncProgressCol: spool_id -> Pubkey (last synced track)
+//! - SpoolSyncCursorCol: spool_id -> Pubkey (last synced track)
 
 use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolStatus};
 use store::Column;
@@ -31,14 +31,14 @@ impl Column for SpoolPendingRecoveryCol {
     type Value = ();
 }
 
-/// Spool sync progress tracking
+/// Spool sync cursor tracking
 ///
 /// Key: SpoolIndexKey (2 bytes: spool_id BE)
 /// Value: Pubkey (last synced track address)
-pub struct SpoolSyncProgressCol;
+pub struct SpoolSyncCursorCol;
 
-impl Column for SpoolSyncProgressCol {
-    const CF_NAME: &'static str = "spool_sync_progress";
+impl Column for SpoolSyncCursorCol {
+    const CF_NAME: &'static str = "spool_sync_cursor";
     type Key = SpoolIndexKey;
     type Value = Pubkey;
 }

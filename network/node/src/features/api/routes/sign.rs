@@ -64,7 +64,7 @@ pub async fn get_sign<S: Store>(
     let certify_message = CertifyMessage::new(
         epoch,
         track_address.to_bytes(),
-        track_info.commitment_hash.0,
+        track_info.commitment_root().0,
     );
     let message = certify_message.to_bytes();
 

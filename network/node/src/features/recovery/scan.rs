@@ -46,7 +46,7 @@ pub fn run_scan<S: Store>(
         by_group.entry(group).or_default().push(spool);
     }
 
-    let mut cursor = store.get_sync_progress(SCAN_CURSOR_SPOOL)?;
+    let mut cursor = store.get_spool_sync_cursor(SCAN_CURSOR_SPOOL)?;
     let mut total_enqueued = 0usize;
     let mut total_scanned = 0usize;
 
@@ -88,7 +88,7 @@ pub fn run_scan<S: Store>(
 
         // Persist cursor for crash-resumability
         if let Some(key) = last_key {
-            store.set_sync_progress(SCAN_CURSOR_SPOOL, key)?;
+            store.set_spool_sync_cursor(SCAN_CURSOR_SPOOL, key)?;
             cursor = Some(key);
         }
 
@@ -98,7 +98,7 @@ pub fn run_scan<S: Store>(
     }
 
     // Clear sentinel cursor on completion
-    store.remove_sync_progress(SCAN_CURSOR_SPOOL)?;
+    store.remove_spool_sync_cursor(SCAN_CURSOR_SPOOL)?;
 
     if total_enqueued > 0 {
         debug!(enqueued = total_enqueued, scanned = total_scanned, "scan complete");
@@ -147,10 +147,11 @@ mod tests {
             tape_address: Pubkey::new_unique(),
             spool_group: group,
             original_size: size,
+            stripe_size: 0,
+            stripe_count: 0,
             encoding_type: 0,
             encoding_params: 0,
-            commitment_hash: [0u8; 32].into(),
-            certified_epoch: None,
+            commitment: vec![],
         }
     }
 
@@ -304,7 +305,7 @@ mod tests {
         run_scan(&store, &[(spool, group)]).unwrap();
 
         // Sentinel cursor should be cleared after completion
-        assert!(store.get_sync_progress(SCAN_CURSOR_SPOOL).unwrap().is_none());
+        assert!(store.get_spool_sync_cursor(SCAN_CURSOR_SPOOL).unwrap().is_none());
     }
 
     #[test]

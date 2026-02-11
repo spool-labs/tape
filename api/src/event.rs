@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use solana_program::pubkey::Pubkey;
 use tape_core::encoding::EncodingProfile;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_core::prelude::Hash;
 
@@ -59,6 +60,12 @@ pub struct TrackRegistered {
     pub profile: EncodingProfile,
     /// Assigned spool group index (0..SPOOL_GROUP_COUNT-1)
     pub spool_group: [u8; 8],
+    /// Stripe size in bytes
+    pub stripe_size: [u8; 8],
+    /// Number of stripes
+    pub stripe_count: [u8; 8],
+    /// Per-slice commitment leaf hashes
+    pub leaves: [Hash; SPOOL_GROUP_SIZE],
 }
 
 tape_solana::event!(EventType, TrackRegistered);
