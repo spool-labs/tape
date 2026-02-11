@@ -180,6 +180,65 @@ impl<'de> SchemaRead<'de> for SliceKey {
     }
 }
 
+/// Key for event log entries (20 bytes)
+///
+/// Format: [epoch BE 8 bytes][slot BE 8 bytes][seq BE 4 bytes]
+///
+/// This enables:
+/// - Prefix scan by epoch (first 8 bytes)
+/// - Ordered iteration by (slot, sequence) within an epoch
+/// - Efficient deletion of all events for an epoch
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EventLogKey {
+    pub epoch: u64,
+    pub slot: u64,
+    pub seq: u32,
+}
+
+impl EventLogKey {
+    pub const SIZE: usize = 20;
+
+    pub fn new(epoch: u64, slot: u64, seq: u32) -> Self {
+        Self { epoch, slot, seq }
+    }
+
+    /// Create prefix bytes for epoch-based iteration (first 8 bytes).
+    pub fn epoch_prefix(epoch: u64) -> [u8; 8] {
+        epoch.to_be_bytes()
+    }
+}
+
+impl SchemaWrite for EventLogKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.epoch.to_be_bytes())?;
+        writer.write_exact(&src.slot.to_be_bytes())?;
+        writer.write_exact(&src.seq.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for EventLogKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<EventLogKey>) -> ReadResult<()> {
+        let epoch_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let slot_bytes: [u8; 8] = unsafe { reader.get_t()? };
+        let seq_bytes: [u8; 4] = unsafe { reader.get_t()? };
+        dst.write(EventLogKey {
+            epoch: u64::from_be_bytes(epoch_bytes),
+            slot: u64::from_be_bytes(slot_bytes),
+            seq: u32::from_be_bytes(seq_bytes),
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

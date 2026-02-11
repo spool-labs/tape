@@ -1,6 +1,6 @@
 use solana_program::pubkey::Pubkey;
 use const_crypto::ed25519;
-use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
+use tape_core::{prelude::{Bitmap, Hash}, types::{ChunkIndex, EpochNumber}};
 use super::token::MINT_ADDRESS;
 
 pub use tape_core::erasure::MEMBER_COUNT;
@@ -27,6 +27,7 @@ pub const RESOURCE:     &[u8] = b"resource";
 pub const TRACK:        &[u8] = b"track";
 pub const STAKE:        &[u8] = b"stake";
 pub const CERTIFICATE:  &[u8] = b"certificate";
+pub const SNAPSHOT:     &[u8] = b"snapshot";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 
@@ -158,6 +159,15 @@ pub fn track_pda(authority: Pubkey, hash: Hash) -> (Pubkey, u8) {
 #[inline(always)]
 pub fn cert_pda(parent: Pubkey, message: Hash, epoch: EpochNumber) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[CERTIFICATE, parent.as_ref(), message.as_ref(), &epoch.pack()], &id())
+}
+
+/// Derive the snapshot track PDA for a given epoch and chunk index.
+#[inline(always)]
+pub fn snapshot_pda(epoch: EpochNumber, chunk_index: ChunkIndex) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[SNAPSHOT, &epoch.pack(), &chunk_index.pack()],
+        &id(),
+    )
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ pub mod blacklist;
 pub mod epoch;
 pub mod error;
 pub mod node;
+pub mod snapshot;
 pub mod staking;
 pub mod tape;
 pub mod track;
@@ -13,6 +14,7 @@ use archive::*;
 use blacklist::*;
 use epoch::*;
 use node::*;
+use snapshot::*;
 use staking::*;
 use tape::*;
 use track::*;
@@ -83,6 +85,11 @@ pub fn process_instruction(
             TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
             TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,
             TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,
+
+            // Snapshot
+            TapeInstruction::ReserveSnapshotTape => process_reserve_snapshot_tape(accounts, data)?,
+            TapeInstruction::RegisterSnapshot => process_register_snapshot(accounts, data)?,
+            TapeInstruction::CertifySnapshot => process_certify_snapshot(accounts, data)?,
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

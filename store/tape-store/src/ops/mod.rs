@@ -11,6 +11,7 @@
 //! - `SliceOps`: Slice data storage
 
 mod committee;
+mod event_log;
 mod meta;
 mod object_info;
 mod slice;
@@ -20,6 +21,7 @@ mod track;
 
 // Re-export operation traits
 pub use committee::CommitteeOps;
+pub use event_log::EventLogOps;
 pub use meta::MetaOps;
 pub use object_info::ObjectInfoOps;
 pub use slice::SliceOps;

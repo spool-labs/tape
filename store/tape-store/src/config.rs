@@ -100,6 +100,13 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
         ColumnFamilyConfig::new("spool_sync_cursor")
             .with_plain_table(2)
             .build(),
+
+        // Event log - 20-byte EventLogKey (epoch 8B + slot 8B + seq 4B)
+        // 8-byte epoch prefix for efficient per-epoch scanning and deletion
+        ColumnFamilyConfig::new("event_log")
+            .with_block_based()
+            .with_prefix_extractor(8)
+            .build(),
     ]
 }
 
@@ -150,7 +157,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 11);
+        assert_eq!(configs.len(), 12);
     }
 
     #[test]
@@ -170,6 +177,7 @@ mod tests {
             "spool_pending_recovery",
             "slice",
             "spool_sync_cursor",
+            "event_log",
         ];
 
         assert_eq!(names, expected);

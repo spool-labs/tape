@@ -19,6 +19,7 @@ use crate::features::epoch_sync::FsmSignal;
 
 use super::handlers;
 use super::parser::{parse_block, ParsedInstruction};
+use crate::features::snapshot::event_capture;
 
 /// Default polling interval (Solana slot time).
 ///
@@ -78,6 +79,13 @@ pub async fn run(
                 break;
             }
             _ = tokio::time::sleep(poll_interval) => {
+                // Check for pause request (snapshot bootstrap)
+                if ctx.control_plane.is_paused() {
+                    info!("Block processor pausing for snapshot bootstrap");
+                    ctx.control_plane.wait_for_resume().await;
+                    info!("Block processor resumed");
+                    continue;
+                }
                 if let Err(e) = poll_and_process(&ctx, &signal_tx, &mut last_slot).await {
                     error!(error = %e, "Error processing blocks");
                 }
@@ -176,7 +184,7 @@ async fn process_slot(ctx: &NodeContext, slot: u64) -> Result<bool, BlockProcess
 
     let mut state_changed = false;
     for instruction in parsed.instructions {
-        state_changed |= process_instruction(ctx, instruction).await?;
+        state_changed |= process_instruction(ctx, slot, instruction).await?;
     }
 
     ctx.metrics.blocks_processed_total.inc();
@@ -186,8 +194,18 @@ async fn process_slot(ctx: &NodeContext, slot: u64) -> Result<bool, BlockProcess
 /// Process a single parsed instruction. Returns true if FSM-relevant state changed.
 async fn process_instruction(
     ctx: &NodeContext,
+    slot: u64,
     instruction: ParsedInstruction,
 ) -> Result<bool, BlockProcessorError> {
+    // Capture event for snapshot log before processing
+    let current_epoch = ctx.control_plane.current_epoch();
+    if let Some(event) = event_capture::to_replayable(&instruction, current_epoch) {
+        use tape_store::ops::EventLogOps;
+        if let Err(e) = ctx.storage.store.append_event(current_epoch, SlotNumber(slot), &event) {
+            warn!(error = %e, "failed to append event to snapshot log");
+        }
+    }
+
     match instruction {
         ParsedInstruction::AdvanceEpoch { event } => {
             let old_epoch = event.old_epoch;

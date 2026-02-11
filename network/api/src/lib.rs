@@ -177,6 +177,24 @@ pub const SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const SYNC_SPOOL_PATH: &str = "/v1/migrate/sync_spool";
 
 // =============================================================================
+// Snapshot Operations
+// =============================================================================
+
+/// GET endpoint for snapshot chunk BLS signature.
+///
+/// Path parameters:
+/// - `epoch`: Epoch number
+/// - `chunk_index`: Chunk index (0..SPOOL_GROUP_COUNT-1)
+///
+/// Returns: SignResponse with BLS signature, node_id, and member_index
+pub const SNAPSHOT_SIGN_PATH: &str = "/v1/snapshots/{epoch}/sign/{chunk_index}";
+
+/// Build a snapshot sign endpoint URL.
+pub fn snapshot_sign_url(epoch: u64, chunk_index: u64) -> String {
+    format!("/v1/snapshots/{}/sign/{}", epoch, chunk_index)
+}
+
+// =============================================================================
 // Repair Types
 // =============================================================================
 

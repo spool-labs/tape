@@ -7,7 +7,7 @@ use solana_sdk::signature::Signer;
 
 use tape_api::instruction::{
     build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
-    build_initialize_mint_ix,
+    build_initialize_mint_ix, build_reserve_snapshot_tape_ix,
 };
 use rpc_client::{RpcConfig, RpcClient};
 
@@ -17,7 +17,7 @@ use crate::Context;
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCommand {
-    /// Initialize the full system (InitMint + CreateSystem + ExpandSystem + Initialize).
+    /// Initialize the full system (InitMint + CreateSystem + ExpandSystem + Initialize + ReserveSnapshotTape).
     Init,
 
     /// Advance to next epoch (permissionless).
@@ -53,7 +53,7 @@ async fn init_system(ctx: &Context) -> Result<()> {
     ctx.print(&format!("Signer: {}", keypair.pubkey()));
 
     if ctx.dry_run {
-        ctx.print("[DRY RUN] Would execute: InitMint, CreateSystem, ExpandSystem (multiple), Initialize");
+        ctx.print("[DRY RUN] Would execute: InitMint, CreateSystem, ExpandSystem (multiple), Initialize, ReserveSnapshotTape");
         return Ok(());
     }
 
@@ -109,6 +109,15 @@ async fn init_system(ctx: &Context) -> Result<()> {
         .send_instructions(&keypair, vec![ix])
         .await
         .map_err(|e| anyhow::anyhow!("Initialize failed: {}", e))?;
+    ctx.print(&format!("  Transaction: {}", sig));
+
+    // Step 5: Reserve snapshot tape (system-owned tape for epoch snapshots)
+    ctx.print("Step 5: Reserving snapshot tape...");
+    let ix = build_reserve_snapshot_tape_ix(keypair.pubkey());
+    let sig = client
+        .send_instructions(&keypair, vec![ix])
+        .await
+        .map_err(|e| anyhow::anyhow!("ReserveSnapshotTape failed: {}", e))?;
     ctx.print(&format!("  Transaction: {}", sig));
 
     ctx.print("System initialized successfully!");

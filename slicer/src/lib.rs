@@ -5,6 +5,7 @@ pub mod coder;
 pub mod errors;
 pub mod merkle_helpers;
 pub mod metadata;
+pub mod outer;
 pub mod reed_solomon;
 pub mod clay;
 pub mod repair;
@@ -27,3 +28,4 @@ pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree,
 pub use slice_index::SliceIndex;
 pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};
 pub use reed_solomon::MAX_SLICE_BYTES;
+pub use outer::{OuterCoder, DEFAULT_K_OUTER};

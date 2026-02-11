@@ -9,6 +9,7 @@ pub mod spooler;
 pub mod staking;
 pub mod system;
 pub mod types;
+pub mod snapshot;
 pub mod tape;
 mod macros;
 

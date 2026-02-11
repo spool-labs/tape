@@ -518,6 +518,24 @@ pub async fn run(
                 }
             }
 
+            // Spawn snapshot build + certify for the completed epoch
+            if in_committee {
+                let snap_ctx = Arc::clone(&ctx);
+                let completed_epoch = last_evaluated_epoch;
+                tokio::spawn(async move {
+                    if let Err(e) = crate::features::snapshot::builder::build_and_certify(
+                        snap_ctx,
+                        completed_epoch,
+                    ).await {
+                        warn!(
+                            epoch = completed_epoch.as_u64(),
+                            error = %e,
+                            "Snapshot build/certify failed"
+                        );
+                    }
+                });
+            }
+
             last_evaluated_epoch = current_epoch;
             prev_spools = current_spools;
         }

@@ -5,6 +5,7 @@ mod metadata;
 mod repair;
 mod sign;
 mod slices;
+mod snapshot;
 mod status;
 mod sync;
 
@@ -27,6 +28,7 @@ pub use metadata::{get_metadata, put_metadata, get_metadata_status};
 pub use repair::{post_repair, post_inconsistency};
 pub use sign::get_sign;
 pub use slices::{get_slice, put_slice, get_slice_status};
+pub use snapshot::get_snapshot_sign;
 pub use status::{get_track_status, health_check};
 pub use sync::sync_spool;
 
@@ -41,6 +43,7 @@ pub use tape_node_api::{
     REPAIR_PATH as REPAIR_ENDPOINT,
     INCONSISTENCY_PATH as INCONSISTENCY_ENDPOINT,
     SYNC_SPOOL_PATH as SYNC_SPOOL_ENDPOINT, SIGN_PATH as SIGN_ENDPOINT,
+    SNAPSHOT_SIGN_PATH as SNAPSHOT_SIGN_ENDPOINT,
 };
 
 /// Shared state for API handlers.
@@ -90,6 +93,8 @@ pub fn create_router<S: Store + Send + Sync + 'static>(state: ApiState<S>) -> Ro
         .route(INFO_ENDPOINT, get(get_info::<S>))
         // Node stats (block processor metrics)
         .route(STATS_ENDPOINT, get(get_stats::<S>))
+        // Snapshot certification signature
+        .route(SNAPSHOT_SIGN_ENDPOINT, get(get_snapshot_sign::<S>))
         // Spool sync (node-to-node)
         .route(SYNC_SPOOL_ENDPOINT, post(sync_spool::<S>))
         .with_state(state)

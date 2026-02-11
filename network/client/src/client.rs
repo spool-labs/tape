@@ -401,6 +401,45 @@ impl NodeClient {
         Ok(sign_response)
     }
 
+    /// Request a BLS signature for a snapshot chunk.
+    ///
+    /// Similar to `get_signature`, but for snapshot certification.
+    /// Calls `GET /v1/snapshots/{epoch}/sign/{chunk_index}`.
+    pub async fn get_snapshot_signature(
+        &self,
+        epoch: u64,
+        chunk_index: u64,
+    ) -> Result<SignResponse, NodeError> {
+        let url = self.base_url
+            .join(&format!("/v1/snapshots/{}/sign/{}", epoch, chunk_index))?;
+
+        let response = self.inner
+            .get(url)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(NodeError::NotFound);
+        }
+
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(NodeError::server_error(status.as_u16(), "Node is not in committee"));
+        }
+
+        if !status.is_success() {
+            let message = response.text().await.unwrap_or_default();
+            return Err(NodeError::server_error(status.as_u16(), message));
+        }
+
+        let sign_response: SignResponse = response
+            .json()
+            .await
+            .map_err(|e| NodeError::InvalidResponse(format!("Failed to parse SignResponse: {}", e)))?;
+
+        Ok(sign_response)
+    }
+
     /// Request an inconsistency attestation from this node.
     ///
     /// Sends the computed root and receives a BLS signature if the node

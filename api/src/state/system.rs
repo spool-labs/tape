@@ -26,6 +26,10 @@ pub struct System {
 
     /// The current spool assignment.
     pub spools: SpoolAssignment<SPOOL_COUNT>,
+
+    /// The most recent epoch for which a complete snapshot was certified.
+    /// Bootstrapping nodes read this to find their starting point.
+    pub latest_snapshot_epoch: EpochNumber,
 }
 
 impl System {

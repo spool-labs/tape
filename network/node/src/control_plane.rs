@@ -4,7 +4,9 @@
 //! that is updated by Thread A (live updates) as blocks are processed.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use tokio::sync::Notify;
 
 use tape_api::fsm::{NodeAction, NodeStateMachine};
 use tape_api::state::{Epoch, Node, System};
@@ -21,6 +23,12 @@ use tape_store::types::NodeStatus;
 /// Other threads read from it to make decisions.
 pub struct ControlPlane {
     inner: RwLock<ControlPlaneInner>,
+    /// Block processor pause flag (atomic for lock-free hot-path check).
+    paused: AtomicBool,
+    /// Notifies the block processor to resume after a pause.
+    resume_notify: Notify,
+    /// Notifies the requester that the block processor has acknowledged the pause.
+    pause_ack: Notify,
 }
 
 /// Tracks sync progress for an epoch transition.
@@ -128,6 +136,9 @@ impl ControlPlane {
                 chain_epoch,
                 node_status,
             }),
+            paused: AtomicBool::new(false),
+            resume_notify: Notify::new(),
+            pause_ack: Notify::new(),
         }
     }
 
@@ -234,6 +245,34 @@ impl ControlPlane {
     pub fn set_current_epoch(&self, epoch: EpochNumber) {
         let mut inner = self.inner.write().unwrap();
         inner.epoch.id = epoch;
+    }
+
+    // -------------------------------------------------------------------------
+    // Block processor pause/resume (for snapshot bootstrap)
+    // -------------------------------------------------------------------------
+
+    /// Request the block processor to pause. Waits for acknowledgment.
+    pub async fn request_block_processor_pause(&self) {
+        self.paused.store(true, Ordering::Release);
+        self.pause_ack.notified().await;
+    }
+
+    /// Resume the block processor after a pause.
+    pub fn resume_block_processor(&self) {
+        self.paused.store(false, Ordering::Release);
+        self.resume_notify.notify_one();
+    }
+
+    /// Check if the block processor is paused (lock-free).
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
+
+    /// Acknowledge a pause request and wait for resume.
+    /// Called by the block processor when it detects is_paused().
+    pub async fn wait_for_resume(&self) {
+        self.pause_ack.notify_one();
+        self.resume_notify.notified().await;
     }
 
     // -------------------------------------------------------------------------

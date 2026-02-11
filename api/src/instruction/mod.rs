@@ -6,6 +6,8 @@ mod epoch;
 mod exchange;
 mod node;
 mod pool;
+mod snapshot;
+pub use snapshot::*;
 mod stake;
 mod stream;
 mod tape;
@@ -119,6 +121,11 @@ pub enum TapeInstruction {
     CertifyTrack,
     InvalidateTrack,
 
+    // Snapshot
+    ReserveSnapshotTape = 0xC0,
+    RegisterSnapshot,
+    CertifySnapshot,
+
     // Stream
     //CreateStream = 0xB0,
     //RegisterStream,
@@ -185,6 +192,10 @@ tape_solana::instruction!(TapeInstruction, RegisterTrack);
 tape_solana::instruction!(TapeInstruction, DeleteTrack);
 tape_solana::instruction!(TapeInstruction, CertifyTrack);
 tape_solana::instruction!(TapeInstruction, InvalidateTrack);
+
+tape_solana::instruction!(TapeInstruction, ReserveSnapshotTape);
+tape_solana::instruction!(TapeInstruction, RegisterSnapshot);
+tape_solana::instruction!(TapeInstruction, CertifySnapshot);
 
 //instruction!(TapeInstruction, CreateStream);
 //instruction!(TapeInstruction, RegisterStream);

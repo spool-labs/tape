@@ -10,9 +10,10 @@
 
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{EpochNumber, Hash, NodeStatus, Pubkey, SlotNumber, UnitKey};
+use crate::types::{ChunkIndex, EpochNumber, Hash, NodeStatus, Pubkey, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
+use tape_core::erasure::SPOOL_GROUP_COUNT;
 
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
@@ -51,6 +52,11 @@ pub trait MetaOps {
     fn set_gc_started_epoch(&self, epoch: EpochNumber) -> Result<()>;
     fn get_gc_completed_epoch(&self) -> Result<Option<EpochNumber>>;
     fn set_gc_completed_epoch(&self, epoch: EpochNumber) -> Result<()>;
+
+    // Snapshot commitments (per epoch+chunk_index)
+    fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>>;
+    fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()>;
+    fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()>;
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
@@ -183,6 +189,39 @@ impl<S: Store> MetaOps for TapeStore<S> {
         self.put::<GcCol>(&key, &epoch)?;
         Ok(())
     }
+
+    fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>> {
+        let key = format!("snapshot:{}:{}", epoch.as_u64(), chunk_index.as_u64());
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 32,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes.copy_from_slice(&bytes);
+                Ok(Some(Hash(hash_bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()> {
+        let key = format!("snapshot:{}:{}", epoch.as_u64(), chunk_index.as_u64());
+        let bytes = commitment.0.to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()> {
+        for i in 0..SPOOL_GROUP_COUNT {
+            let key = format!("snapshot:{}:{}", epoch.as_u64(), i);
+            self.delete::<MetaCol>(&key)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -274,5 +313,29 @@ mod tests {
 
         assert_eq!(store.get_gc_started_epoch().unwrap(), Some(started));
         assert_eq!(store.get_gc_completed_epoch().unwrap(), Some(completed));
+    }
+
+    #[test]
+    fn test_snapshot_commitment_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(42);
+        let hash = Hash::new_unique();
+
+        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
+
+        store.set_snapshot_commitment(epoch, ChunkIndex(0), hash).unwrap();
+        assert_eq!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap(), Some(hash));
+
+        // Different chunk index returns None
+        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
+
+        // Set multiple chunks, then delete all
+        store.set_snapshot_commitment(epoch, ChunkIndex(1), Hash::new_unique()).unwrap();
+        store.set_snapshot_commitment(epoch, ChunkIndex(2), Hash::new_unique()).unwrap();
+        store.delete_snapshot_commitments(epoch).unwrap();
+
+        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
+        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
+        assert!(store.get_snapshot_commitment(epoch, ChunkIndex(2)).unwrap().is_none());
     }
 }

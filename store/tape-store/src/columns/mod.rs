@@ -24,6 +24,7 @@
 //! - `committee`: Committee by epoch (EpochKey -> Vec<NodeInfo>)
 
 pub mod committee;
+pub mod event_log;
 pub mod gc;
 pub mod meta;
 pub mod object_info;
@@ -35,6 +36,7 @@ pub mod track;
 
 // Re-export all column types
 pub use committee::CommitteeCol;
+pub use event_log::EventLogCol;
 pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
@@ -44,7 +46,7 @@ pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 
-/// List of all column family names in the store (11 total)
+/// List of all column family names in the store (12 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
     "committee",
@@ -57,4 +59,5 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_pending_recovery",
     "slice",
     "spool_sync_cursor",
+    "event_log",
 ];
