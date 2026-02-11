@@ -108,12 +108,16 @@ pub async fn attempt_full_recovery<S: Store>(
     .collect()
     .await;
 
-    // Collect successfully downloaded slices
-    // Per-slice verification deferred until TrackInfo stores commitment vector
     let mut collected_slices: Vec<(usize, Vec<u8>)> = Vec::new();
     for (position, result) in download_results {
         match result {
             Ok(data) => {
+                if !track_info.commitment.is_empty()
+                    && !track_info.verify_slice(position, &data)
+                {
+                    warn!(position, "downloaded slice failed leaf verification, skipping");
+                    continue;
+                }
                 collected_slices.push((position, data));
                 if collected_slices.len() >= k {
                     break;

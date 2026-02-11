@@ -110,6 +110,33 @@ pub fn resolve_group_helpers<S: Store>(
     Ok(helpers)
 }
 
+/// Resolve the previous owner of a spool from the previous epoch's committee.
+///
+/// Returns the network address string and a pre-built NodeClient, or None if
+/// no previous owner can be found.
+pub fn resolve_previous_owner<S: Store>(
+    ctx: &NodeContext<S>,
+    spool: SpoolIndex,
+    insecure: bool,
+) -> Option<(String, NodeClient)> {
+    let epoch = ctx.control_plane.current_epoch();
+    let prev_epoch = tape_core::types::EpochNumber(epoch.as_u64().saturating_sub(1));
+    let prev_committee = ctx.storage.store.get_committee(prev_epoch).ok()??;
+
+    for member in &prev_committee {
+        if member.spools.contains(&spool) {
+            let addr = member.network_address.to_socket_addr().ok()?;
+            let addr_str = addr.to_string();
+            let client = NodeClientBuilder::new()
+                .accept_invalid_certs(insecure)
+                .build(&addr_str)
+                .ok()?;
+            return Some((addr_str, client));
+        }
+    }
+    None
+}
+
 /// Fan out repair requests to helper nodes and collect sub-chunk responses.
 ///
 /// Groups the per-stripe helper plans by network-level slice index,

@@ -293,6 +293,7 @@ fn dispatch_node_status(
     epoch: tape_core::types::EpochNumber,
     track_sync: &Arc<TrackSyncHandler>,
     deferral: &Arc<LiveUploadDeferral>,
+    sync_handler: &SpoolSyncHandler,
     cancel: &CancellationToken,
 ) {
     match new_status {
@@ -312,8 +313,9 @@ fn dispatch_node_status(
         NodeStatus::RecoverMetadata => {
             let ctx = Arc::clone(ctx);
             let cancel = cancel.clone();
+            let sync_handler = sync_handler.clone();
             tokio::spawn(async move {
-                run_metadata_sync(ctx, cancel).await;
+                run_metadata_sync(ctx, sync_handler, cancel).await;
             });
         }
         NodeStatus::Active => {
@@ -329,6 +331,7 @@ fn resume_from_persisted_status(
     ctx: &Arc<NodeContext>,
     track_sync: &Arc<TrackSyncHandler>,
     deferral: &Arc<LiveUploadDeferral>,
+    sync_handler: &SpoolSyncHandler,
     cancel: &CancellationToken,
 ) {
     let status = ctx.control_plane.get_node_status();
@@ -350,8 +353,9 @@ fn resume_from_persisted_status(
             info!("resuming metadata sync from persisted state");
             let ctx = Arc::clone(ctx);
             let cancel = cancel.clone();
+            let sync_handler = sync_handler.clone();
             tokio::spawn(async move {
-                run_metadata_sync(ctx, cancel).await;
+                run_metadata_sync(ctx, sync_handler, cancel).await;
             });
         }
         NodeStatus::Active => {
@@ -364,8 +368,9 @@ fn resume_from_persisted_status(
                 info!("resuming spool recovery on restart");
                 let ctx = Arc::clone(ctx);
                 let cancel = cancel.clone();
+                let sync_handler = sync_handler.clone();
                 tokio::spawn(async move {
-                    start_spool_recovery(ctx, cancel).await;
+                    start_spool_recovery(ctx, sync_handler, cancel).await;
                 });
             } else {
                 ctx.control_plane.mark_local_sync_complete(ctx.control_plane.current_epoch());
@@ -414,7 +419,7 @@ pub async fn run(
     info!("Catch-up complete, entering main FSM loop");
 
     // Resume any in-progress recovery from persisted state
-    resume_from_persisted_status(&ctx, &track_sync, &deferral, &cancel);
+    resume_from_persisted_status(&ctx, &track_sync, &deferral, &sync_handler, &cancel);
 
     let mut interval = tokio::time::interval(EPOCH_ADVANCE_POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -507,7 +512,7 @@ pub async fn run(
                 );
                 apply_node_status_transition(&ctx, new_status.clone());
                 dispatch_node_status(
-                    &ctx, &new_status, current_epoch, &track_sync, &deferral, &cancel,
+                    &ctx, &new_status, current_epoch, &track_sync, &deferral, &sync_handler, &cancel,
                 );
             } else if in_committee && new_spools.is_empty() {
                 if matches!(current_status, NodeStatus::Active) {

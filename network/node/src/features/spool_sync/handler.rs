@@ -107,16 +107,21 @@ impl SpoolSyncHandler {
     /// * `spool` - The spool index to sync
     /// * `from_epoch` - The epoch we're syncing from
     /// * `prev_owner_address` - Address of the previous owner node
-    /// * `on_slice` - Callback for each received slice (includes merkle proofs)
-    pub async fn sync_spool<F>(
+    /// * `on_slice` - Callback for each received slice
+    /// * `resume_cursor` - Optional starting track ID to resume from (persisted cursor)
+    /// * `on_batch` - Optional callback after each batch with last track_id for cursor persistence
+    pub async fn sync_spool<F, B>(
         &self,
         spool: SpoolIndex,
         from_epoch: EpochNumber,
         prev_owner_address: &str,
         mut on_slice: F,
+        resume_cursor: Option<String>,
+        on_batch: &mut Option<B>,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
+        B: FnMut(&str) -> Result<(), SyncError>,
     {
         let _permit = self.permits.acquire().await.map_err(|_| {
             SyncError::Storage("semaphore closed".to_string())
@@ -126,7 +131,7 @@ impl SpoolSyncHandler {
             .accept_invalid_certs(self.accept_invalid_certs)
             .build(prev_owner_address)?;
 
-        let mut starting_track = String::new();
+        let mut starting_track = resume_cursor.unwrap_or_default();
         let mut total_slices = 0;
 
         loop {
@@ -158,9 +163,12 @@ impl SpoolSyncHandler {
                 total_slices += 1;
             }
 
-            // Update pagination cursor
+            // Update pagination cursor and persist progress
             if let Some(last_slice) = slices.last() {
                 starting_track = last_slice.track_id.clone();
+                if let Some(ref mut cb) = on_batch {
+                    cb(&starting_track)?;
+                }
             } else {
                 break;
             }
@@ -198,10 +206,16 @@ impl SpoolSyncHandler {
                 let on_slice = Arc::clone(&on_slice);
 
                 async move {
+                    let mut no_batch: Option<fn(&str) -> Result<(), SyncError>> = None;
                     handler
-                        .sync_spool(spool, from_epoch, address.as_str(), |slice| {
-                            on_slice(slice)
-                        })
+                        .sync_spool(
+                            spool,
+                            from_epoch,
+                            address.as_str(),
+                            |slice| on_slice(slice),
+                            None,
+                            &mut no_batch,
+                        )
                         .await
                 }
             })
@@ -222,24 +236,34 @@ impl SpoolSyncHandler {
     /// Retries on transient failures with exponential backoff (1min → 10min).
     /// Returns `Err(SyncError::TimedOut)` if the total timeout is exceeded,
     /// signaling the caller should fall back to direct recovery.
-    pub async fn sync_spool_with_retry<F>(
+    pub async fn sync_spool_with_retry<F, B>(
         &self,
         spool: SpoolIndex,
         from_epoch: EpochNumber,
         prev_owner_address: &str,
-        on_slice: F,
+        mut on_slice: F,
+        resume_cursor: Option<String>,
+        mut on_batch: Option<B>,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
+        B: FnMut(&str) -> Result<(), SyncError>,
     {
         let deadline = tokio::time::Instant::now() + self.recovery_timeout;
         let mut attempt = 0u32;
-        let mut on_slice = on_slice;
+        let mut cursor = resume_cursor;
 
         loop {
             match self
-                .sync_spool(spool, from_epoch, prev_owner_address, &mut on_slice)
+                .sync_spool(
+                    spool,
+                    from_epoch,
+                    prev_owner_address,
+                    &mut on_slice,
+                    cursor.take(),
+                    &mut on_batch,
+                )
                 .await
             {
                 Ok(count) => return Ok(count),

@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use crate::core::context::NodeContext;
 
 use super::error::RecoveryError;
-use super::helpers::{fan_out_repair_requests, GroupHelper};
+use super::helpers::{fan_out_repair_requests, resolve_group_helpers, GroupHelper};
 
 /// Slices repaired per batch (network I/O, slow).
 const REPAIR_BATCH_SIZE: usize = 10;
@@ -26,6 +26,73 @@ const REPAIR_CONCURRENCY: usize = 4;
 
 /// Maximum times a track repair can fail before being skipped.
 const MAX_TRACK_RETRIES: u32 = 5;
+
+/// Repair a single missing slice using Clay code bandwidth-optimal repair.
+///
+/// Resolves helpers, computes the repair plan, fans out sub-chunk requests,
+/// reconstructs the slice, and verifies against the commitment.
+/// Returns the repaired slice bytes — the caller decides whether to store.
+pub async fn repair_single_slice<S: Store>(
+    ctx: &NodeContext<S>,
+    our_spool: SpoolIndex,
+    track_address: StorePubkey,
+    track_info: &TrackInfo,
+) -> Result<Vec<u8>, RecoveryError> {
+    let profile = track_info.profile();
+
+    if !profile.is_clay() {
+        return Err(RecoveryError::NotEnoughHelpers {
+            needed: 0,
+            available: 0,
+        });
+    }
+
+    let insecure = ctx.config.insecure;
+    let helpers = resolve_group_helpers(ctx, our_spool, insecure)?;
+
+    let blob_len = track_info.original_size as usize;
+    let stripe_size = pick_stripe_size(blob_len);
+    let clay_params = profile.clay_params();
+
+    let coder = ClayCoder::from_params(clay_params);
+    let slicer = Slicer::with_profile(coder, stripe_size, profile.is_clay(), profile);
+
+    let group = group_for_spool(our_spool);
+    let start = group_start(group);
+    let our_position = (our_spool - start) as usize;
+
+    let lost = SliceIndex::new(our_position)
+        .ok_or_else(|| RecoveryError::RepairFailed("invalid position".into()))?;
+
+    let available: Vec<SliceIndex> = helpers
+        .iter()
+        .filter_map(|h| SliceIndex::new(h.position))
+        .collect();
+
+    let plan = slicer
+        .repair_plan_from_params(lost, &available, blob_len, stripe_size)
+        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
+
+    let track_id = track_address.to_string();
+    let helper_data = fan_out_repair_requests(&helpers, &plan, &track_id).await?;
+
+    let metadata = SliceMetadata::with_profile(blob_len, stripe_size, profile);
+    let metadata_bytes = metadata.to_bytes();
+
+    let repaired_slice = slicer
+        .repair(&plan, &helper_data, &metadata_bytes)
+        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
+
+    if !track_info.commitment.is_empty()
+        && !track_info.verify_slice(our_position, &repaired_slice)
+    {
+        return Err(RecoveryError::RepairFailed(
+            "repaired slice failed leaf hash verification".into(),
+        ));
+    }
+
+    Ok(repaired_slice)
+}
 
 /// Process a batch of pending recoveries for the given spool.
 ///
@@ -37,7 +104,7 @@ const MAX_TRACK_RETRIES: u32 = 5;
 pub async fn repair_batch<S: Store>(
     ctx: &NodeContext<S>,
     spool: SpoolIndex,
-    helpers: &[GroupHelper],
+    _helpers: &[GroupHelper],
     failures: &mut HashMap<(SpoolIndex, StorePubkey), u32>,
 ) -> Result<usize, RecoveryError> {
     let store = &ctx.storage.store;
@@ -106,9 +173,8 @@ pub async fn repair_batch<S: Store>(
     let results: Vec<(StorePubkey, Result<(), RecoveryError>)> = stream::iter(to_repair)
         .map(|(addr, info)| {
             let ctx = &ctx;
-            let helpers = &helpers;
             async move {
-                let result = repair_slice(ctx, spool, addr, &info, helpers).await;
+                let result = repair_and_store(ctx, spool, addr, &info).await;
                 (addr, result)
             }
         })
@@ -145,56 +211,14 @@ pub async fn repair_batch<S: Store>(
     Ok(repaired)
 }
 
-/// Repair a single missing slice using Clay code repair.
-///
-/// All metadata is derived locally from TrackInfo -- zero RPC calls.
-async fn repair_slice<S: Store>(
+/// Repair a single slice and store it. Used by repair_batch.
+async fn repair_and_store<S: Store>(
     ctx: &NodeContext<S>,
     our_spool: SpoolIndex,
     track_address: StorePubkey,
     track_info: &TrackInfo,
-    helpers: &[GroupHelper],
 ) -> Result<(), RecoveryError> {
-    let profile = track_info.profile();
-
-    // Only Clay-encoded tracks support bandwidth-optimal repair
-    if !profile.is_clay() {
-        warn!(spool = our_spool, track = %track_address, "skipping non-Clay track");
-        return Ok(());
-    }
-
-    let blob_len = track_info.original_size as usize;
-    let stripe_size = pick_stripe_size(blob_len);
-    let clay_params = profile.clay_params();
-
-    let coder = ClayCoder::from_params(clay_params);
-    let slicer = Slicer::with_profile(coder, stripe_size, profile.is_clay(), profile);
-
-    let group = group_for_spool(our_spool);
-    let start = group_start(group);
-    let our_position = (our_spool - start) as usize;
-
-    let lost = SliceIndex::new(our_position)
-        .ok_or_else(|| RecoveryError::RepairFailed("invalid position".into()))?;
-
-    let available: Vec<SliceIndex> = helpers
-        .iter()
-        .filter_map(|h| SliceIndex::new(h.position))
-        .collect();
-
-    let plan = slicer
-        .repair_plan_from_params(lost, &available, blob_len, stripe_size)
-        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
-
-    let track_id = track_address.to_string();
-    let helper_data = fan_out_repair_requests(helpers, &plan, &track_id).await?;
-
-    let metadata = SliceMetadata::with_profile(blob_len, stripe_size, profile);
-    let metadata_bytes = metadata.to_bytes();
-
-    let repaired_slice = slicer
-        .repair(&plan, &helper_data, &metadata_bytes)
-        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
+    let repaired_slice = repair_single_slice(ctx, our_spool, track_address, track_info).await?;
 
     ctx.storage
         .store
@@ -203,7 +227,7 @@ async fn repair_slice<S: Store>(
     debug!(
         spool = our_spool,
         track = %track_address,
-        blob_len,
+        blob_len = track_info.original_size,
         "slice repaired"
     );
 

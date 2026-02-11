@@ -18,8 +18,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
+use crate::features::spool_sync::{SpoolSyncHandler, SyncError, track_id_to_pubkey};
 
 use super::deferral::LiveUploadDeferral;
+use super::helpers::resolve_previous_owner;
 use super::node_status;
 use super::scan::run_scan;
 use super::track_sync::TrackSyncHandler;
@@ -34,6 +36,7 @@ use super::{NodeEvent, evaluate_transition};
 /// This function unblocks the RecoverMetadata state.
 pub async fn run_metadata_sync<S: Store + 'static>(
     ctx: Arc<NodeContext<S>>,
+    sync_handler: SpoolSyncHandler,
     cancel: CancellationToken,
 ) {
     info!("metadata sync starting");
@@ -54,17 +57,22 @@ pub async fn run_metadata_sync<S: Store + 'static>(
         let ctx2 = Arc::clone(&ctx);
         let cancel2 = cancel.clone();
         tokio::spawn(async move {
-            start_spool_recovery(ctx2, cancel2).await;
+            start_spool_recovery(ctx2, sync_handler, cancel2).await;
         });
     }
 }
 
-/// Recover all non-Active spools using existing per-track recovery infrastructure.
+/// Recover all non-Active spools using bulk transfer + per-track recovery.
 ///
-/// Scans for missing slices across all recovering spools, dispatches
-/// per-track recovery tasks, and calls `mark_local_sync_complete` when done.
+/// For each recovering spool:
+/// 1. Try bulk transfer from the previous owner (ActiveSync phase)
+/// 2. Fall back to per-track recovery for any remaining slices (ActiveRecover phase)
+/// 3. Mark spool Active on completion
+///
+/// Calls `mark_local_sync_complete` when all spools are recovered.
 pub async fn start_spool_recovery<S: Store + 'static>(
     ctx: Arc<NodeContext<S>>,
+    sync_handler: SpoolSyncHandler,
     cancel: CancellationToken,
 ) {
     let our_spools = ctx.control_plane.get_our_spools();
@@ -87,67 +95,142 @@ pub async fn start_spool_recovery<S: Store + 'static>(
 
     info!(spools = spools_to_recover.len(), "starting spool recovery");
 
-    // Mark recovering
-    for &spool in &spools_to_recover {
-        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveRecover);
-    }
-
-    // Scan to populate pending recovery queues
-    let recovering: Vec<(SpoolIndex, SpoolGroup)> = spools_to_recover
-        .iter()
-        .map(|&s| (s, group_for_spool(s)))
-        .collect();
-
-    match run_scan(&ctx.storage.store, &recovering) {
-        Ok(result) => info!(scanned = result.scanned, enqueued = result.enqueued, "scan complete"),
-        Err(e) => warn!(error = %e, "scan failed"),
-    }
-
-    // Dispatch per-track recovery
-    let track_sync = Arc::new(TrackSyncHandler::new());
-    let deferral = Arc::new(LiveUploadDeferral::default());
-    let slice_semaphore = track_sync.slice_semaphore();
-    let queue_semaphore = Arc::new(Semaphore::new(RECOVERY_TRACK_CONCURRENCY));
-
+    // Phase 1: Bulk transfer from previous owners
+    let insecure = ctx.config.insecure;
     for &spool in &spools_to_recover {
         if cancel.is_cancelled() {
             break;
         }
 
-        let pending = match ctx.storage.store.iter_pending_recoveries(spool, usize::MAX) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(spool, error = %e, "read pending failed");
-                continue;
-            }
-        };
+        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveSync);
 
-        for track_address in pending {
+        if let Some((prev_addr, _client)) = resolve_previous_owner(&ctx, spool, insecure) {
+            // Load persisted cursor for crash resume
+            let resume_cursor = ctx.storage.store.get_spool_sync_cursor(spool)
+                .ok()
+                .flatten()
+                .map(|p| {
+                    let sdk_pubkey: solana_sdk::pubkey::Pubkey = p.into();
+                    sdk_pubkey.to_string()
+                });
+
+            let store_ref = &ctx.storage.store;
+            let on_slice = |slice: crate::features::spool_sync::SyncSlice| -> Result<(), SyncError> {
+                let track_pubkey: Pubkey = track_id_to_pubkey(&slice.track_id)
+                    .map(|p| p.into())
+                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+                store_ref
+                    .put_slice(slice.slice_index, track_pubkey, slice.data)
+                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+                Ok(())
+            };
+
+            let on_batch = |last_track: &str| -> Result<(), SyncError> {
+                let track_id = last_track.to_string();
+                let track_pubkey: Pubkey = track_id_to_pubkey(&track_id)
+                    .map(|p| p.into())
+                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+                store_ref
+                    .set_spool_sync_cursor(spool, track_pubkey)
+                    .map_err(|e| SyncError::Storage(e.to_string()))?;
+                Ok(())
+            };
+
+            let result = sync_handler
+                .sync_spool_with_retry(
+                    spool,
+                    epoch,
+                    &prev_addr,
+                    on_slice,
+                    resume_cursor,
+                    Some(on_batch),
+                    &cancel,
+                )
+                .await;
+
+            match result {
+                Ok(count) => {
+                    info!(spool, slices = count, "bulk transfer complete");
+                    let _ = ctx.storage.store.remove_spool_sync_cursor(spool);
+                    let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+                    continue; // Skip per-track recovery for this spool
+                }
+                Err(e) => {
+                    warn!(spool, error = %e, "bulk transfer failed, falling through to per-track recovery");
+                }
+            }
+        }
+
+        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveRecover);
+    }
+
+    // Phase 2: Per-track recovery for remaining non-Active spools
+    let mut remaining: Vec<SpoolIndex> = Vec::new();
+    for &spool in &spools_to_recover {
+        match ctx.storage.store.get_spool_status(spool) {
+            Ok(Some(SpoolStatus::Active)) => continue,
+            _ => remaining.push(spool),
+        }
+    }
+
+    if !remaining.is_empty() {
+        // Scan to populate pending recovery queues
+        let recovering: Vec<(SpoolIndex, SpoolGroup)> = remaining
+            .iter()
+            .map(|&s| (s, group_for_spool(s)))
+            .collect();
+
+        match run_scan(&ctx.storage.store, &recovering) {
+            Ok(result) => info!(scanned = result.scanned, enqueued = result.enqueued, "scan complete"),
+            Err(e) => warn!(error = %e, "scan failed"),
+        }
+
+        // Dispatch per-track recovery
+        let track_sync = Arc::new(TrackSyncHandler::new());
+        let deferral = Arc::new(LiveUploadDeferral::default());
+        let slice_semaphore = track_sync.slice_semaphore();
+        let queue_semaphore = Arc::new(Semaphore::new(RECOVERY_TRACK_CONCURRENCY));
+
+        for &spool in &remaining {
             if cancel.is_cancelled() {
                 break;
             }
 
-            let permit = match queue_semaphore.clone().acquire_owned().await {
+            let pending = match ctx.storage.store.iter_pending_recoveries(spool, usize::MAX) {
                 Ok(p) => p,
-                Err(_) => break,
+                Err(e) => {
+                    warn!(spool, error = %e, "read pending failed");
+                    continue;
+                }
             };
 
-            let ctx = Arc::clone(&ctx);
-            let deferral = Arc::clone(&deferral);
-            let slice_sem = Arc::clone(&slice_semaphore);
-            let cancel = cancel.clone();
+            for track_address in pending {
+                if cancel.is_cancelled() {
+                    break;
+                }
 
-            track_sync
-                .start_sync(track_address, async move {
-                    recover_track_slice(ctx, spool, track_address, deferral, slice_sem, cancel)
-                        .await;
-                    drop(permit);
-                })
-                .await;
+                let permit = match queue_semaphore.clone().acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+
+                let ctx = Arc::clone(&ctx);
+                let deferral = Arc::clone(&deferral);
+                let slice_sem = Arc::clone(&slice_semaphore);
+                let cancel = cancel.clone();
+
+                track_sync
+                    .start_sync(track_address, async move {
+                        recover_track_slice(ctx, spool, track_address, deferral, slice_sem, cancel)
+                            .await;
+                        drop(permit);
+                    })
+                    .await;
+            }
         }
-    }
 
-    track_sync.wait_all().await;
+        track_sync.wait_all().await;
+    }
 
     // Mark all recovered spools as Active
     for &spool in &spools_to_recover {

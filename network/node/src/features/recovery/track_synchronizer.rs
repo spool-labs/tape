@@ -3,8 +3,8 @@
 //! Handles recovery of a single slice for a given track:
 //! 1. Wait for recovery window (deferral)
 //! 2. Check if slice already stored → return early
-//! 3. Attempt bandwidth-optimal clay repair (existing code from repair.rs)
-//! 4. If InsufficientHelpers → attempt full recovery (Phase 5)
+//! 3. Attempt bandwidth-optimal clay repair (via repair_single_slice)
+//! 4. If InsufficientHelpers → attempt full recovery
 //! 5. On error → sleep 30s and retry (infinite)
 //! 6. Clear recovery deferral on completion
 
@@ -14,11 +14,6 @@ use std::time::Duration;
 use store::Store;
 use tape_core::erasure::{group_for_spool, group_start};
 use tape_core::spooler::SpoolIndex;
-use tape_slicer::adaptive::pick_stripe_size;
-use tape_slicer::clay::ClayCoder;
-use tape_slicer::metadata::SliceMetadata;
-use tape_slicer::slicer::Slicer;
-use tape_slicer::SliceIndex;
 use solana_sdk::signer::Signer;
 use tape_api::program::tapedrive::node_pda;
 use tape_node_client::NodeClientBuilder;
@@ -32,8 +27,8 @@ use crate::core::context::NodeContext;
 
 use super::deferral::LiveUploadDeferral;
 use super::error::RecoveryError;
-use super::helpers::{fan_out_repair_requests, resolve_group_helpers};
 use super::recovery_service::attempt_full_recovery;
+use super::repair::repair_single_slice;
 
 /// Delay between retry attempts when a track sync fails (30s fixed).
 const RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -164,17 +159,21 @@ pub async fn recover_track_slice<S: Store>(
             }
         };
 
-        // Attempt repair
-        match attempt_repair(&ctx, our_spool, track_address, &track_info).await {
-            Ok(()) => {
-                debug!(
-                    spool = our_spool,
-                    track = %track_address,
-                    attempt,
-                    "track slice recovered via repair"
-                );
-                deferral.end_recovery(&track_address).await;
-                return;
+        // Attempt repair using shared repair_single_slice
+        match repair_single_slice(&ctx, our_spool, track_address, &track_info).await {
+            Ok(repaired_slice) => {
+                if let Err(e) = ctx.storage.store.put_slice(our_spool, track_address, repaired_slice) {
+                    warn!(spool = our_spool, track = %track_address, error = %e, "failed to store repaired slice");
+                } else {
+                    debug!(
+                        spool = our_spool,
+                        track = %track_address,
+                        attempt,
+                        "track slice recovered via repair"
+                    );
+                    deferral.end_recovery(&track_address).await;
+                    return;
+                }
             }
             Err(RecoveryError::NotEnoughHelpers { needed, available }) => {
                 warn!(
@@ -197,7 +196,18 @@ pub async fn recover_track_slice<S: Store>(
 
                 match attempt_full_recovery(&ctx, track_address, &track_info, our_spool).await {
                     Ok(slice_data) => {
-                        if let Err(e) =
+                        let group = group_for_spool(our_spool);
+                        let start = group_start(group);
+                        let position = (our_spool - start) as usize;
+                        if !track_info.commitment.is_empty()
+                            && !track_info.verify_slice(position, &slice_data)
+                        {
+                            warn!(
+                                spool = our_spool,
+                                track = %track_address,
+                                "full recovery slice failed leaf verification, retrying"
+                            );
+                        } else if let Err(e) =
                             ctx.storage
                                 .store
                                 .put_slice(our_spool, track_address, slice_data)
@@ -211,7 +221,6 @@ pub async fn recover_track_slice<S: Store>(
                     }
                     Err(RecoveryError::InconsistencyProof { track }) => {
                         warn!(track = %track, "inconsistency detected, stubbed");
-                        // TODO: submit_inconsistency_proof(track)
                         deferral.end_recovery(&track_address).await;
                         return;
                     }
@@ -243,65 +252,4 @@ pub async fn recover_track_slice<S: Store>(
         }
         attempt += 1;
     }
-}
-
-/// Single repair attempt using Clay code bandwidth-optimal repair.
-///
-/// Reuses the same repair logic from `repair.rs::repair_slice`.
-async fn attempt_repair<S: Store>(
-    ctx: &NodeContext<S>,
-    our_spool: SpoolIndex,
-    track_address: Pubkey,
-    track_info: &TrackInfo,
-) -> Result<(), RecoveryError> {
-    let profile = track_info.profile();
-
-    if !profile.is_clay() {
-        return Err(RecoveryError::NotEnoughHelpers {
-            needed: 0,
-            available: 0,
-        });
-    }
-
-    let insecure = ctx.config.insecure;
-    let helpers = resolve_group_helpers(ctx, our_spool, insecure)?;
-
-    let blob_len = track_info.original_size as usize;
-    let stripe_size = pick_stripe_size(blob_len);
-    let clay_params = profile.clay_params();
-
-    let coder = ClayCoder::from_params(clay_params);
-    let slicer = Slicer::with_profile(coder, stripe_size, profile.is_clay(), profile);
-
-    let group = group_for_spool(our_spool);
-    let start = group_start(group);
-    let our_position = (our_spool - start) as usize;
-
-    let lost = SliceIndex::new(our_position)
-        .ok_or_else(|| RecoveryError::RepairFailed("invalid position".into()))?;
-
-    let available: Vec<SliceIndex> = helpers
-        .iter()
-        .filter_map(|h| SliceIndex::new(h.position))
-        .collect();
-
-    let plan = slicer
-        .repair_plan_from_params(lost, &available, blob_len, stripe_size)
-        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
-
-    let track_id = track_address.to_string();
-    let helper_data = fan_out_repair_requests(&helpers, &plan, &track_id).await?;
-
-    let metadata = SliceMetadata::with_profile(blob_len, stripe_size, profile);
-    let metadata_bytes = metadata.to_bytes();
-
-    let repaired_slice = slicer
-        .repair(&plan, &helper_data, &metadata_bytes)
-        .map_err(|e| RecoveryError::Slicer(e.to_string()))?;
-
-    ctx.storage
-        .store
-        .put_slice(our_spool, track_address, repaired_slice)?;
-
-    Ok(())
 }
