@@ -18,11 +18,9 @@ use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
 
-use super::deferral::LiveUploadDeferral;
-use super::node_status;
-use super::track_sync::TrackSyncHandler;
-use super::track_synchronizer::recover_track_slice;
 use super::{NodeEvent, evaluate_transition};
+use super::fsm;
+use crate::features::track_recovery::{LiveUploadDeferral, TrackSyncHandler, recover_track_slice};
 
 /// Tracks scanned per DB page during node recovery.
 const SCAN_BATCH_SIZE: usize = 1000;
@@ -48,7 +46,7 @@ pub async fn start_node_recovery<S: Store + 'static>(
     cancel: CancellationToken,
 ) {
     // Guard: abort if node is still replaying
-    if node_status::is_replaying(&ctx.control_plane.get_node_status()) {
+    if fsm::is_replaying(&ctx.control_plane.get_node_status()) {
         info!("node is still replaying, deferring recovery");
         return;
     }

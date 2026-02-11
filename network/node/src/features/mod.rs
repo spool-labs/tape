@@ -4,8 +4,9 @@
 
 pub mod api;
 pub mod block_processing;
-pub mod challenges;
 pub mod epoch_sync;
-pub mod recovery;
+pub mod inconsistency;
+pub mod node_lifecycle;
 pub mod spool_sync;
 pub mod storage;
+pub mod track_recovery;

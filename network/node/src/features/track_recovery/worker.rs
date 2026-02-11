@@ -28,7 +28,7 @@ use crate::core::context::NodeContext;
 use super::deferral::LiveUploadDeferral;
 use super::error::RecoveryError;
 use super::helpers::resolve_group_helpers;
-use super::recovery_service::attempt_full_recovery;
+use super::full_recovery::attempt_full_recovery;
 use super::repair::repair_single_slice;
 
 /// Delay between retry attempts when a track sync fails (30s fixed).
@@ -251,7 +251,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
                         let ctx = Arc::clone(&ctx);
                         let ti = track_info.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = super::inconsistency::handle_inconsistency(ctx, track, computed_root, &ti).await {
+                            if let Err(e) = crate::features::inconsistency::handle_inconsistency(ctx, track, computed_root, &ti).await {
                                 warn!(track = %track, error = %e, "inconsistency proof failed");
                             }
                         });

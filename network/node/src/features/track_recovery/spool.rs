@@ -24,8 +24,8 @@ use crate::features::spool_sync::{SpoolSyncHandler, SyncError, SyncSlice};
 use super::deferral::LiveUploadDeferral;
 use super::helpers::resolve_previous_owner;
 use super::scan::run_scan;
-use super::track_sync::TrackSyncHandler;
-use super::track_synchronizer::recover_track_slice;
+use super::scheduler::TrackSyncHandler;
+use super::worker::recover_track_slice;
 
 /// Maximum queued recovery tasks before backpressure (spool recovery phase 2).
 const RECOVERY_TRACK_CONCURRENCY: usize = 1000;

@@ -15,9 +15,8 @@ use tracing::{info, warn};
 use crate::core::context::NodeContext;
 use crate::features::spool_sync::SpoolSyncHandler;
 
-use super::node_status;
-use super::spool_recovery::start_spool_recovery;
 use super::{NodeEvent, evaluate_transition};
+use crate::features::track_recovery::start_spool_recovery;
 
 /// Run metadata sync for newly assigned spools.
 ///

@@ -15,7 +15,7 @@ use tape_core::types::EpochNumber;
 /// This wraps the base FSM action with additional states that are
 /// specific to the node's runtime behavior, not modeled on-chain.
 #[derive(Debug, Clone)]
-pub enum ExtendedNodeAction {
+pub enum LocalNodeAction {
     /// Action from the base FSM (on-chain state machine).
     Base(BaseNodeAction),
 
@@ -39,31 +39,31 @@ pub enum ExtendedNodeAction {
     RecoveryQueued { spool_idx: SpoolIndex },
 }
 
-impl ExtendedNodeAction {
+impl LocalNodeAction {
     /// Create an extended action from a base action.
     pub fn from_base(action: BaseNodeAction) -> Self {
-        ExtendedNodeAction::Base(action)
+        LocalNodeAction::Base(action)
     }
 
     /// Returns true if this action requires submitting a transaction.
     pub fn requires_transaction(&self) -> bool {
         match self {
-            ExtendedNodeAction::Base(base) => base.requires_transaction(),
+            LocalNodeAction::Base(base) => base.requires_transaction(),
             _ => false,
         }
     }
 
     /// Returns true if the node is in catch-up mode.
     pub fn is_catching_up(&self) -> bool {
-        matches!(self, ExtendedNodeAction::CatchingUp { .. })
+        matches!(self, LocalNodeAction::CatchingUp { .. })
     }
 
     /// Returns true if the node is waiting for something.
     pub fn is_waiting(&self) -> bool {
         match self {
-            ExtendedNodeAction::Base(base) => base.is_waiting(),
-            ExtendedNodeAction::WaitForLocalSync { .. } => true,
-            ExtendedNodeAction::CatchingUp { .. } => true,
+            LocalNodeAction::Base(base) => base.is_waiting(),
+            LocalNodeAction::WaitForLocalSync { .. } => true,
+            LocalNodeAction::CatchingUp { .. } => true,
             _ => false,
         }
     }
@@ -71,7 +71,7 @@ impl ExtendedNodeAction {
     /// Returns true if the node is blocked and cannot proceed.
     pub fn is_blocked(&self) -> bool {
         match self {
-            ExtendedNodeAction::Base(base) => base.is_blocked(),
+            LocalNodeAction::Base(base) => base.is_blocked(),
             _ => false,
         }
     }
@@ -79,15 +79,15 @@ impl ExtendedNodeAction {
     /// Get the underlying base action if this is a Base variant.
     pub fn as_base(&self) -> Option<&BaseNodeAction> {
         match self {
-            ExtendedNodeAction::Base(base) => Some(base),
+            LocalNodeAction::Base(base) => Some(base),
             _ => None,
         }
     }
 }
 
-impl From<BaseNodeAction> for ExtendedNodeAction {
+impl From<BaseNodeAction> for LocalNodeAction {
     fn from(action: BaseNodeAction) -> Self {
-        ExtendedNodeAction::Base(action)
+        LocalNodeAction::Base(action)
     }
 }
 
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn test_from_base() {
         let base = NodeAction::SyncEpoch;
-        let extended = ExtendedNodeAction::from_base(base.clone());
+        let extended = LocalNodeAction::from_base(base.clone());
 
         assert!(extended.requires_transaction());
         assert!(!extended.is_catching_up());
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_catching_up() {
-        let action = ExtendedNodeAction::CatchingUp {
+        let action = LocalNodeAction::CatchingUp {
             current_epoch: EpochNumber(5),
             chain_epoch: EpochNumber(10),
         };
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_wait_for_local_sync() {
-        let action = ExtendedNodeAction::WaitForLocalSync {
+        let action = LocalNodeAction::WaitForLocalSync {
             epoch: EpochNumber(5),
         };
 
@@ -135,12 +135,12 @@ mod tests {
     #[test]
     fn test_as_base() {
         let base = NodeAction::AdvanceEpoch;
-        let extended = ExtendedNodeAction::from_base(base.clone());
+        let extended = LocalNodeAction::from_base(base.clone());
 
         assert!(extended.as_base().is_some());
         assert_eq!(*extended.as_base().unwrap(), NodeAction::AdvanceEpoch);
 
-        let catching_up = ExtendedNodeAction::CatchingUp {
+        let catching_up = LocalNodeAction::CatchingUp {
             current_epoch: EpochNumber(5),
             chain_epoch: EpochNumber(10),
         };

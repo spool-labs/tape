@@ -3,7 +3,6 @@
 //! Spawns and manages:
 //! - Thread A: Live updates (block processing)
 //! - Thread B: Network sync (epoch transitions + recovery FSM)
-//! - Thread C: Challenges (storage proofs)
 //!
 //! Recovery is event-driven from NodeStatus transitions in the FSM loop,
 //! not from a polling loop.
@@ -17,9 +16,8 @@ use tracing::{error, info, Instrument};
 use crate::core::context::NodeContext;
 use crate::features::api::ServerHandle;
 use crate::features::block_processing as block;
-use crate::features::challenges;
 use crate::features::epoch_sync::{self as network_sync, FsmSignal};
-use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler};
+use crate::features::track_recovery::{LiveUploadDeferral, TrackSyncHandler};
 
 /// Signal channel capacity (small - only FSM wake-up signals).
 const SIGNAL_CHANNEL_CAPACITY: usize = 32;
@@ -32,9 +30,6 @@ pub enum OrchestratorError {
 
     #[error("thread B (network sync) failed: {0}")]
     NetworkSync(String),
-
-    #[error("thread C (challenges) failed: {0}")]
-    Challenges(String),
 
     #[error("server error: {0}")]
     Server(String),
@@ -101,19 +96,6 @@ async fn run_inner(
                 .instrument(span)
                 .await
                 .map_err(|e| OrchestratorError::NetworkSync(e.to_string()))
-        }
-    });
-
-    // Thread C: Challenges (stub)
-    tasks.spawn({
-        let ctx = Arc::clone(&ctx);
-        let cancel = cancel.clone();
-        let span = span.clone();
-        async move {
-            challenges::run(ctx, cancel)
-                .instrument(span)
-                .await
-                .map_err(|e| OrchestratorError::Challenges(e.to_string()))
         }
     });
 

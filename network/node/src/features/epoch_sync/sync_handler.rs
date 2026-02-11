@@ -28,10 +28,8 @@ use crate::core::context::NodeContext;
 use tape_store::ops::SpoolOps;
 use tape_store::types::SpoolStatus;
 
-use crate::features::recovery::deferral::LiveUploadDeferral;
-use crate::features::recovery::spool_recovery::start_spool_recovery;
-use crate::features::recovery::track_sync::TrackSyncHandler;
-use crate::features::recovery::{NodeEvent, evaluate_transition, start_node_recovery, run_metadata_sync};
+use crate::features::node_lifecycle::{NodeEvent, evaluate_transition, start_node_recovery, run_metadata_sync};
+use crate::features::track_recovery::{LiveUploadDeferral, TrackSyncHandler, start_spool_recovery};
 use crate::features::spool_sync::SpoolSyncHandler;
 
 /// Outcome of executing an FSM action.

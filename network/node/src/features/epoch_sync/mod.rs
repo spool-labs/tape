@@ -7,7 +7,7 @@
 mod fsm;
 mod sync_handler;
 
-pub use fsm::ExtendedNodeAction;
+pub use fsm::LocalNodeAction;
 pub use sync_handler::{
     run, execute_action, refresh_state,
     FsmSignal, HandlerOutcome, NetworkSyncError,
