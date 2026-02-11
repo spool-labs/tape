@@ -180,6 +180,31 @@ pub const SYNC_SPOOL_PATH: &str = "/v1/migrate/sync_spool";
 // Repair Types
 // =============================================================================
 
+/// Request for inconsistency attestation.
+///
+/// Sent by the detecting node to spool group peers. Serialized with wincode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct InconsistencyRequest {
+    /// Merkle root computed by the detecting node after full recovery
+    /// (decode + re-encode). Differs from on-chain commitment.
+    pub computed_root: Hash,
+}
+
+/// Response from the inconsistency attestation endpoint.
+///
+/// Returned by POST /v1/tracks/{track_id}/inconsistency
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InconsistencyResponse {
+    /// BLS signature over the InvalidateMessage (32 bytes, compressed G1).
+    pub signature: [u8; 32],
+    /// NodeId of the attesting node.
+    pub node_id: u64,
+    /// Committee member index for bitmap construction.
+    pub member_index: u8,
+    /// Epoch number that was signed.
+    pub epoch: u64,
+}
+
 /// Request for sub-chunk extraction (bandwidth-optimal repair).
 ///
 /// Sent by the repairing node to each helper. Serialized with wincode.

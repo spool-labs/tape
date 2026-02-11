@@ -51,6 +51,8 @@ pub struct ApiState<S: Store = store_rocks::RocksStore> {
     pub bls_keypair: Arc<BlsPrivateKey>,
     /// Control plane for committee membership.
     pub control_plane: Arc<ControlPlane>,
+    /// Whether to accept invalid TLS certificates (for local/test).
+    pub insecure: bool,
 }
 
 // Manual Clone impl since Arc<T> is Clone regardless of T
@@ -61,6 +63,7 @@ impl<S: Store> Clone for ApiState<S> {
             service: self.service.clone(),
             bls_keypair: self.bls_keypair.clone(),
             control_plane: self.control_plane.clone(),
+            insecure: self.insecure,
         }
     }
 }
@@ -129,7 +132,7 @@ mod tests {
         let node = Node::zeroed();
         let control_plane = Arc::new(ControlPlane::new(system, epoch, node, Default::default()));
 
-        ApiState { metrics, service, bls_keypair, control_plane }
+        ApiState { metrics, service, bls_keypair, control_plane, insecure: true }
     }
 
     #[tokio::test]

@@ -1,13 +1,35 @@
-//! Inconsistency detection via merkle root comparison.
+//! Inconsistency detection and proof submission.
 //!
 //! When full recovery detects that re-encoded slices don't match the on-chain
-//! commitment, the node should produce an inconsistency proof and submit it.
-//! Actual BLS attestation for fraud proofs is not yet implemented, but this
-//! module performs the merkle root comparison to detect mismatches.
+//! commitment, the node fans out to spool group peers for independent
+//! verification, collects BLS attestations, aggregates, and submits an
+//! InvalidateTrack instruction on-chain.
 
+use std::sync::Arc;
+
+use futures::stream::{self, StreamExt};
+use solana_sdk::signer::Signer;
+use store::Store;
+use tape_api::instruction::build_invalidate_track_ix;
+use tape_api::program::tapedrive::{epoch_pda, system_pda, CommitteeBitmap};
+use tape_core::bft::is_supermajority;
+use tape_core::bls::BlsSignature;
+use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+use tape_core::cert::invalidate::InvalidateMessage;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_crypto::Hash;
+use tape_node_api::InconsistencyRequest;
 use tape_slicer::merkle_helpers::blob_merkle_root;
-use tape_store::types::Pubkey;
+use tape_store::types::{Pubkey, TrackInfo};
+use tracing::{debug, info, warn};
+
+use crate::core::context::NodeContext;
+
+use super::error::RecoveryError;
+use super::helpers::resolve_group_helpers;
+
+/// Maximum concurrent inconsistency attestation requests.
+const ATTESTATION_CONCURRENCY: usize = 8;
 
 /// Result of an inconsistency check.
 #[derive(Debug)]
@@ -42,6 +64,130 @@ pub fn check_consistency(
     } else {
         InconsistencyResult::Consistent
     }
+}
+
+/// Fan out to spool group peers, collect BLS attestations, aggregate,
+/// and submit an InvalidateTrack instruction on-chain.
+pub async fn handle_inconsistency<S: Store>(
+    ctx: Arc<NodeContext<S>>,
+    track_address: Pubkey,
+    computed_root: Hash,
+    track_info: &TrackInfo,
+) -> Result<(), RecoveryError> {
+    let spool_group = track_info.spool_group;
+    let start = tape_core::erasure::group_start(spool_group);
+    let insecure = ctx.config.insecure;
+
+    // Resolve spool group helpers
+    let helpers = resolve_group_helpers(&ctx, start, insecure)?;
+
+    if helpers.is_empty() {
+        return Err(RecoveryError::NotEnoughHelpers {
+            needed: 1,
+            available: 0,
+        });
+    }
+
+    let track_id = track_address.to_string();
+    let request = InconsistencyRequest { computed_root };
+
+    // Fan out attestation requests to all group helpers
+    let results: Vec<_> = stream::iter(helpers.into_iter())
+        .map(|helper| {
+            let tid = track_id.clone();
+            let req = request.clone();
+            let position = helper.position;
+            async move {
+                let result = helper.client.post_inconsistency(&tid, &req).await;
+                (position, result)
+            }
+        })
+        .buffer_unordered(ATTESTATION_CONCURRENCY)
+        .collect()
+        .await;
+
+    // Collect successful attestations
+    let mut signatures = Vec::new();
+    let mut member_indices = Vec::new();
+
+    // Include our own signature
+    let epoch = ctx.control_plane.current_epoch();
+    let invalidate_message = InvalidateMessage::new(
+        epoch,
+        track_address.to_bytes(),
+        computed_root.0,
+    );
+    let message = invalidate_message.to_bytes();
+
+    let our_sig = ctx
+        .bls_keypair
+        .sign(&message)
+        .map_err(|e| RecoveryError::RepairFailed(format!("BLS signing failed: {:?}", e)))?;
+
+    let system = ctx.control_plane.get_system();
+    let node_id = ctx.control_plane.our_node_id();
+    if let Some(our_index) = system.committee.index_of(&node_id) {
+        signatures.push(our_sig);
+        member_indices.push(our_index);
+    }
+
+    // Collect peer attestations
+    for (position, result) in results {
+        match result {
+            Ok(resp) => {
+                signatures.push(BlsSignature(G1CompressedPoint(resp.signature)));
+                member_indices.push(resp.member_index as usize);
+                debug!(position, node_id = resp.node_id, "collected inconsistency attestation");
+            }
+            Err(e) => {
+                warn!(position, error = %e, "inconsistency attestation request failed");
+            }
+        }
+    }
+
+    // Check spool-group-weighted supermajority
+    let committee_size = system.committee.size();
+    let bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
+    let weight = system.spools.group_weight(spool_group, &bitmap);
+
+    if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
+        return Err(RecoveryError::RepairFailed(format!(
+            "insufficient attestation weight: {weight}/{SPOOL_GROUP_SIZE}"
+        )));
+    }
+
+    // Aggregate BLS signatures
+    let agg_sig = BlsSignature::aggregate(&signatures)
+        .map_err(|e| RecoveryError::RepairFailed(format!("BLS aggregation failed: {:?}", e)))?;
+
+    // Build and submit InvalidateTrack instruction
+    let (system_address, _) = system_pda();
+    let (epoch_address, _) = epoch_pda();
+
+    let ix = build_invalidate_track_ix(
+        ctx.keypair.pubkey().into(),
+        system_address.into(),
+        epoch_address.into(),
+        track_info.tape_address.into(),
+        track_address.into(),
+        bitmap,
+        agg_sig,
+        computed_root,
+    );
+
+    ctx.rpc
+        .send_instructions(&ctx.keypair, vec![ix])
+        .await
+        .map_err(|e| RecoveryError::RepairFailed(format!("InvalidateTrack submission failed: {}", e)))?;
+
+    info!(
+        track = %track_address,
+        signers = signatures.len(),
+        weight,
+        "InvalidateTrack submitted successfully"
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]

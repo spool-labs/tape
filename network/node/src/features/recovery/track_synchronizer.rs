@@ -138,7 +138,7 @@ pub fn verify_and_store_slice<S: Store>(
 /// 4. Fall back to full recovery if insufficient helpers
 /// 5. Retry infinitely on failure with 30s fixed delay
 /// 6. Clear deferral on completion
-pub async fn recover_track_slice<S: Store>(
+pub async fn recover_track_slice<S: Store + 'static>(
     ctx: Arc<NodeContext<S>>,
     our_spool: SpoolIndex,
     track_address: Pubkey,
@@ -246,8 +246,15 @@ pub async fn recover_track_slice<S: Store>(
                             }
                         }
                     }
-                    Err(RecoveryError::InconsistencyProof { track }) => {
-                        warn!(track = %track, "inconsistency detected, stubbed");
+                    Err(RecoveryError::InconsistencyProof { track, computed_root }) => {
+                        warn!(track = %track, "inconsistency detected, submitting proof");
+                        let ctx = Arc::clone(&ctx);
+                        let ti = track_info.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = super::inconsistency::handle_inconsistency(ctx, track, computed_root, &ti).await {
+                                warn!(track = %track, error = %e, "inconsistency proof failed");
+                            }
+                        });
                         deferral.end_recovery(&track_address).await;
                         return;
                     }

@@ -29,7 +29,11 @@ pub struct CertifyTrack {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct InvalidateTrack {}
+pub struct InvalidateTrack {
+    pub bitmap: CommitteeBitmap,
+    pub signature: BlsSignature,
+    pub computed_root: Hash,
+}
 
 
 pub fn build_register_track_ix(
@@ -128,6 +132,34 @@ pub fn build_certify_track_ix(
         data: CertifyTrack {
             bitmap,
             signature,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_invalidate_track_ix(
+    fee_payer: Pubkey,
+    system_address: Pubkey,
+    epoch_address: Pubkey,
+    tape_address: Pubkey,
+    track_address: Pubkey,
+    bitmap: CommitteeBitmap,
+    signature: BlsSignature,
+    computed_root: Hash,
+) -> Instruction {
+    Instruction {
+        program_id: crate::program::tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer, true),
+
+            AccountMeta::new_readonly(system_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
+            AccountMeta::new_readonly(tape_address, false),
+            AccountMeta::new(track_address, false),
+        ],
+        data: InvalidateTrack {
+            bitmap,
+            signature,
+            computed_root,
         }.to_bytes(),
     }
 }

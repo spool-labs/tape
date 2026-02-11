@@ -1,3 +1,4 @@
+use tape_crypto::Hash;
 use tape_store::error::TapeStoreError;
 use tape_store::types::Pubkey;
 
@@ -31,7 +32,7 @@ pub enum RecoveryError {
     InvalidProof { position: usize },
 
     #[error("inconsistency detected for track {track}")]
-    InconsistencyProof { track: Pubkey },
+    InconsistencyProof { track: Pubkey, computed_root: Hash },
 
     #[error("track metadata unavailable from local store or peers")]
     MetadataUnavailable,

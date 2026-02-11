@@ -84,6 +84,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
             service: self.service.clone(),
             bls_keypair: self.bls_keypair.clone(),
             control_plane: self.control_plane.clone(),
+            insecure: self.config.insecure,
         };
 
         // Merge with observability routes from tape-metrics
@@ -107,6 +108,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
             service: self.service.clone(),
             bls_keypair: self.bls_keypair.clone(),
             control_plane: self.control_plane.clone(),
+            insecure: self.config.insecure,
         };
 
         // Merge with observability routes from tape-metrics

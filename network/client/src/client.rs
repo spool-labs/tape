@@ -7,7 +7,7 @@ use std::time::Instant;
 use reqwest::Client;
 use url::Url;
 
-use tape_node_api::{SlicePayload, SignResponse, CONTENT_TYPE_WINCODE};
+use tape_node_api::{InconsistencyRequest, InconsistencyResponse, SlicePayload, SignResponse, CONTENT_TYPE_WINCODE};
 
 use crate::error::NodeError;
 
@@ -399,5 +399,65 @@ impl NodeClient {
         }
 
         Ok(sign_response)
+    }
+
+    /// Request an inconsistency attestation from this node.
+    ///
+    /// Sends the computed root and receives a BLS signature if the node
+    /// independently verifies the inconsistency.
+    ///
+    /// # Arguments
+    /// * `track_id` - The track identifier (base58-encoded pubkey)
+    /// * `request` - The inconsistency request with computed root
+    pub async fn post_inconsistency(
+        &self,
+        track_id: &str,
+        request: &InconsistencyRequest,
+    ) -> Result<InconsistencyResponse, NodeError> {
+        #[cfg(feature = "metrics")]
+        let start = Instant::now();
+
+        let body = wincode::serialize(request)
+            .map_err(|e| NodeError::Serialization(e.to_string()))?;
+
+        let url = self.base_url
+            .join(&format!("/v1/tracks/{}/inconsistency", track_id))?;
+
+        let response = self.inner
+            .post(url)
+            .header("Content-Type", CONTENT_TYPE_WINCODE)
+            .body(body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("post_inconsistency", "not_found", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::NotFound);
+        }
+
+        if !status.is_success() {
+            let message = response.text().await.unwrap_or_default();
+            #[cfg(feature = "metrics")]
+            if let Some(metrics) = &self.metrics {
+                metrics.record_request("post_inconsistency", "error", start.elapsed().as_secs_f64());
+            }
+            return Err(NodeError::server_error(status.as_u16(), message));
+        }
+
+        let resp: InconsistencyResponse = response
+            .json()
+            .await
+            .map_err(|e| NodeError::InvalidResponse(format!("Failed to parse InconsistencyResponse: {}", e)))?;
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = &self.metrics {
+            metrics.record_request("post_inconsistency", "success", start.elapsed().as_secs_f64());
+        }
+
+        Ok(resp)
     }
 }

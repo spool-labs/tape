@@ -17,10 +17,12 @@ use futures::stream::{self, StreamExt};
 use store::Store;
 use tape_core::erasure::{group_for_spool, group_start};
 use tape_core::spooler::SpoolIndex;
+use tape_crypto::Hash;
 use tape_node_client::NodeClient;
 use tape_slicer::adaptive::pick_stripe_size;
 use tape_slicer::clay::ClayCoder;
 use tape_slicer::coder::ErasureCoder;
+use tape_slicer::merkle_helpers::blob_merkle_root;
 use tape_slicer::slicer::Slicer;
 use tape_store::types::{Pubkey, TrackInfo};
 use tracing::{debug, warn};
@@ -29,10 +31,132 @@ use crate::core::context::NodeContext;
 
 use super::error::RecoveryError;
 use super::helpers::resolve_group_helpers;
-use super::inconsistency::check_consistency;
 
 /// Number of concurrent slice downloads during full recovery.
 const DOWNLOAD_CONCURRENCY: usize = 8;
+
+/// Download k slices, decode, re-encode, and return the computed merkle root
+/// along with all re-encoded slices.
+///
+/// This is the core recovery computation factored out so it can be reused by
+/// both `attempt_full_recovery` (slice recovery) and the inconsistency
+/// attestation endpoint (independent verification).
+pub async fn compute_recovery_root<S: Store>(
+    ctx: &NodeContext<S>,
+    track_address: Pubkey,
+    track_info: &TrackInfo,
+) -> Result<(Hash, Vec<Vec<u8>>), RecoveryError> {
+    let profile = track_info.profile();
+    let clay_params = profile.clay_params();
+    let k = clay_params.k() as usize;
+    let blob_len = track_info.original_size as usize;
+
+    let insecure = ctx.config.insecure;
+
+    // We need to pick a spool from this track's group to resolve helpers.
+    // Use group_start as the reference spool (we're downloading, not targeting).
+    let spool_group = track_info.spool_group;
+    let start = group_start(spool_group);
+    // Use start as "our spool" — resolve_group_helpers will skip it,
+    // giving us SPOOL_GROUP_SIZE-1 helpers which is enough for k.
+    let helpers = resolve_group_helpers(ctx, start, insecure)?;
+
+    let available: Vec<(usize, SpoolIndex, NodeClient)> = helpers
+        .into_iter()
+        .map(|h| (h.position, h.spool_idx, h.client))
+        .collect();
+
+    if available.len() < k {
+        return Err(RecoveryError::NotEnoughHelpers {
+            needed: k,
+            available: available.len(),
+        });
+    }
+
+    let track_id = track_address.to_string();
+    let collected_count = Arc::new(AtomicUsize::new(0));
+
+    let download_results: Vec<(usize, Result<Vec<u8>, RecoveryError>)> = stream::iter(
+        available.into_iter(),
+    )
+    .map(|(position, spool_idx, client)| {
+        let tid = track_id.clone();
+        let collected = Arc::clone(&collected_count);
+        async move {
+            if collected.load(Ordering::Relaxed) >= k {
+                return (position, Err(RecoveryError::Skipped));
+            }
+            let result = client
+                .get_slice(&tid, spool_idx)
+                .await
+                .map_err(|e| RecoveryError::NodeClient(e.to_string()));
+            if result.is_ok() {
+                collected.fetch_add(1, Ordering::Relaxed);
+            }
+            (position, result)
+        }
+    })
+    .buffer_unordered(DOWNLOAD_CONCURRENCY)
+    .collect()
+    .await;
+
+    let mut collected_slices: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (position, result) in download_results {
+        match result {
+            Ok(data) => {
+                if !track_info.commitment.is_empty()
+                    && !track_info.verify_slice(position, &data)
+                {
+                    warn!(position, "downloaded slice failed leaf verification, skipping");
+                    continue;
+                }
+                collected_slices.push((position, data));
+                if collected_slices.len() >= k {
+                    break;
+                }
+            }
+            Err(RecoveryError::Skipped) => {}
+            Err(e) => {
+                warn!(position, error = %e, "failed to download slice for recovery");
+            }
+        }
+    }
+
+    if collected_slices.len() < k {
+        return Err(RecoveryError::NotEnoughHelpers {
+            needed: k,
+            available: collected_slices.len(),
+        });
+    }
+
+    let stripe_size = pick_stripe_size(blob_len);
+
+    let all_slices = tokio::task::spawn_blocking(move || {
+        let coder = ClayCoder::from_params(clay_params);
+        let mut slicer = Slicer::with_profile(coder, stripe_size, true, profile);
+
+        let chunks: Vec<(usize, &[u8])> = collected_slices
+            .iter()
+            .map(|(pos, data)| (*pos, data.as_slice()))
+            .collect();
+
+        let original = slicer
+            .decode(&chunks)
+            .map_err(|e| RecoveryError::Slicer(format!("decode failed: {}", e)))?;
+
+        let all_slices = slicer
+            .encode(&original)
+            .map_err(|e| RecoveryError::Slicer(format!("re-encode failed: {}", e)))?;
+
+        Ok::<_, RecoveryError>(all_slices)
+    })
+    .await
+    .map_err(|e| RecoveryError::RepairFailed(format!("spawn_blocking panicked: {}", e)))??;
+
+    let computed_root = blob_merkle_root(&all_slices);
+
+    Ok((computed_root, all_slices))
+}
 
 /// Attempt full recovery: download k slices, decode, re-encode, extract target.
 ///
@@ -174,14 +298,11 @@ pub async fn attempt_full_recovery<S: Store>(
     .map_err(|e| RecoveryError::RepairFailed(format!("spawn_blocking panicked: {}", e)))??;
 
     // Verify commitment: check re-encoded merkle root matches on-chain
-    let consistency = check_consistency(
-        track_address,
-        &commitment_hash,
-        &all_slices,
-    );
-    if let super::inconsistency::InconsistencyResult::DetectedButUnproven { .. } = consistency {
+    let computed_root = blob_merkle_root(&all_slices);
+    if computed_root != commitment_hash {
         return Err(RecoveryError::InconsistencyProof {
             track: track_address,
+            computed_root,
         });
     }
 
