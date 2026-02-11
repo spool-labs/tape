@@ -8,6 +8,4 @@ mod types;
 pub use handler::{
     SpoolSyncHandler, SyncError, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENT_SYNCS,
 };
-pub use types::{
-    SyncSlice, SyncSpoolRequest, SyncSpoolRequestV1, SyncSpoolResponse,
-};
+pub use types::{SyncSlice, SyncSpoolRequest};

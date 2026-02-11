@@ -52,22 +52,22 @@ pub fn is_replaying(status: &NodeStatus) -> bool {
 ///
 /// Complete transition table:
 ///
-/// | From | Event | Condition | To |
-/// |------|-------|-----------|-----|
-/// | Standby | EpochChanged | in_committee, new_spools | RecoverMetadata |
-/// | Standby | EpochChanged | in_committee, no new_spools | Active |
-/// | Active | EpochChanged | in_committee, new_spools | RecoverMetadata |
-/// | Active | EpochChanged | !in_committee | Standby |
-/// | Active/Standby | EpochChanged | processed < latest (lag) | RecoveryReplay |
-/// | RecoverMetadata | MetadataSyncComplete | | Active |
-/// | RecoveryReplay | EpochChanged | caught_up, in_committee, new_spools | RecoverMetadata |
-/// | RecoveryReplay | EpochChanged | caught_up, in_committee, no new_spools | RecoveryInProgress(epoch) |
-/// | RecoveryReplay | EpochChanged | caught_up, !in_committee | Standby |
-/// | PartialReplay | EpochChanged | caught_up, in_committee, new_spools | RecoverMetadata |
-/// | PartialReplay | EpochChanged | caught_up, in_committee, no new_spools | RecoveryInProgress(epoch) |
-/// | PartialReplay | EpochChanged | caught_up, !in_committee | Standby |
-/// | RecoveryInProgress | RecoveryComplete | epoch matches | Active |
-/// | Any | DetectedLag | lag >= 2 | RecoveryReplay |
+/// | From               | Event                | Condition                              | To                        |
+/// |--------------------|----------------------|----------------------------------------|---------------------------|
+/// | Standby            | EpochChanged         | in_committee, new_spools               | RecoverMetadata           |
+/// | Standby            | EpochChanged         | in_committee, no new_spools            | Active                    |
+/// | Active             | EpochChanged         | in_committee, new_spools               | RecoverMetadata           |
+/// | Active             | EpochChanged         | !in_committee                          | Standby                   |
+/// | Active/Standby     | EpochChanged         | processed < latest (lag)               | RecoveryReplay            |
+/// | RecoverMetadata    | MetadataSyncComplete |                                        | Active                    |
+/// | RecoveryReplay     | EpochChanged         | caught_up, in_committee, new_spools    | RecoverMetadata           |
+/// | RecoveryReplay     | EpochChanged         | caught_up, in_committee, no new_spools | RecoveryInProgress(epoch) |
+/// | RecoveryReplay     | EpochChanged         | caught_up, !in_committee               | Standby                   |
+/// | PartialReplay      | EpochChanged         | caught_up, in_committee, new_spools    | RecoverMetadata           |
+/// | PartialReplay      | EpochChanged         | caught_up, in_committee, no new_spools | RecoveryInProgress(epoch) |
+/// | PartialReplay      | EpochChanged         | caught_up, !in_committee               | Standby                   |
+/// | RecoveryInProgress | RecoveryComplete     | epoch matches                          | Active                    |
+/// | Any                | DetectedLag          | lag >= 2                               | RecoveryReplay            |
 pub fn evaluate_transition(current: &NodeStatus, event: &NodeEvent) -> Option<NodeStatus> {
     match (current, event) {
         // Any state → RecoveryReplay when lagging >= 2 epochs

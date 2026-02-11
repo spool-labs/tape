@@ -12,7 +12,7 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_store::types::Pubkey;
 
-use super::types::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
+use super::types::{SyncSlice, SyncSpoolRequest};
 
 /// Default batch size for sync requests.
 pub const DEFAULT_BATCH_SIZE: u32 = 1000;
@@ -142,27 +142,26 @@ impl SpoolSyncHandler {
         let mut total_slices = 0;
 
         loop {
-            let request = SyncSpoolRequest::new_v1(
-                spool,
+            let request = SyncSpoolRequest {
+                spool_index: spool,
                 starting_track,
-                self.batch_size,
-                from_epoch,
-            );
+                batch_size: self.batch_size,
+                epoch: from_epoch,
+            };
 
             let request_bytes = wincode::serialize(&request)
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
             let response_bytes = client.sync_spool(request_bytes).await?;
 
-            let response: SyncSpoolResponse = wincode::deserialize(&response_bytes)
+            let slices: Vec<SyncSlice> = wincode::deserialize(&response_bytes)
                 .map_err(|e| SyncError::Serialization(e.to_string()))?;
 
-            if response.is_empty() {
+            if slices.is_empty() {
                 break;
             }
 
-            let slices = response.slices();
-            for slice in slices {
+            for slice in &slices {
                 on_slice(slice.clone())?;
                 total_slices += 1;
             }

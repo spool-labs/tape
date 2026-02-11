@@ -13,7 +13,7 @@ use tape_store::ops::SliceOps;
 use tape_store::types::Pubkey;
 use tracing::{debug, warn};
 
-use crate::features::sync::{SyncSlice, SyncSpoolRequest, SyncSpoolResponse};
+use crate::features::sync::{SyncSlice, SyncSpoolRequest};
 use tape_crypto::Hash;
 
 use super::{ApiError, ApiState};
@@ -32,14 +32,10 @@ pub async fn sync_spool<S: Store>(
             ApiError::InvalidBody(e.to_string())
         })?;
 
-    let (request_spool_index, starting_track, batch_size, request_epoch) = match &request {
-        SyncSpoolRequest::V1(v1) => (
-            v1.spool_index,
-            v1.starting_track,
-            v1.batch_size as usize,
-            v1.epoch,
-        ),
-    };
+    let request_spool_index = request.spool_index;
+    let starting_track = request.starting_track;
+    let batch_size = request.batch_size as usize;
+    let request_epoch = request.epoch;
 
     debug!(
         spool = request_spool_index,
@@ -107,8 +103,7 @@ pub async fn sync_spool<S: Store>(
         })
         .collect();
 
-    let response = SyncSpoolResponse::new_v1(slices);
-    let response_bytes = wincode::serialize(&response).map_err(|e| {
+    let response_bytes = wincode::serialize(&slices).map_err(|e| {
         warn!(error = %e, "failed to serialize sync_spool response");
         ApiError::Serialization(e.to_string())
     })?;
