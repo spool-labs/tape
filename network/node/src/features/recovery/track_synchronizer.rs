@@ -89,6 +89,46 @@ async fn fetch_metadata_from_peers<S: Store>(
     None
 }
 
+/// Resolve track metadata: try local store, fall back to peer fan-out.
+pub async fn resolve_track_metadata<S: Store>(
+    ctx: &NodeContext<S>,
+    track_address: Pubkey,
+) -> Result<TrackInfo, RecoveryError> {
+    match ctx.storage.store.get_track(track_address) {
+        Ok(Some(info)) => Ok(info),
+        Ok(None) => {
+            match fetch_metadata_from_peers(ctx, track_address).await {
+                Some(info) => {
+                    let _ = ctx.storage.store.put_track(track_address, info.clone());
+                    Ok(info)
+                }
+                None => Err(RecoveryError::MetadataUnavailable),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Verify a slice against the track commitment and store it.
+pub fn verify_and_store_slice<S: Store>(
+    store: &tape_store::TapeStore<S>,
+    spool: SpoolIndex,
+    track_address: Pubkey,
+    track_info: &TrackInfo,
+    position: usize,
+    slice_data: Vec<u8>,
+) -> Result<(), RecoveryError> {
+    if !track_info.commitment.is_empty()
+        && !track_info.verify_slice(position, &slice_data)
+    {
+        return Err(RecoveryError::RepairFailed(
+            "slice failed leaf hash verification".into(),
+        ));
+    }
+    store.put_slice(spool, track_address, slice_data)?;
+    Ok(())
+}
+
 /// Recover a single slice for a track, with infinite retries.
 ///
 /// This is the core recovery loop for one (track, spool) pair:
@@ -109,6 +149,10 @@ pub async fn recover_track_slice<S: Store>(
     // Step 1: Wait for recovery window
     deferral.wait_for_recovery_window(&track_address).await;
 
+    let group = group_for_spool(our_spool);
+    let start = group_start(group);
+    let position = (our_spool - start) as usize;
+
     let mut attempt = 0u64;
     loop {
         if cancel.is_cancelled() {
@@ -125,32 +169,14 @@ pub async fn recover_track_slice<S: Store>(
             Ok(false) => {}
             Err(e) => {
                 warn!(spool = our_spool, track = %track_address, error = %e, "storage check failed");
-                // Retry on storage errors
             }
         }
 
-        // Get track metadata — try local, then fan-out to peers
-        let track_info = match ctx.storage.store.get_track(track_address) {
-            Ok(Some(info)) => info,
-            Ok(None) => {
-                match fetch_metadata_from_peers(&ctx, track_address).await {
-                    Some(info) => {
-                        let _ = ctx.storage.store.put_track(track_address, info.clone());
-                        info
-                    }
-                    None => {
-                        warn!(track = %track_address, attempt, "metadata unavailable from peers");
-                        tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            _ = tokio::time::sleep(RETRY_DELAY) => {}
-                        }
-                        attempt += 1;
-                        continue;
-                    }
-                }
-            }
+        // Resolve track metadata
+        let track_info = match resolve_track_metadata(&ctx, track_address).await {
+            Ok(info) => info,
             Err(e) => {
-                warn!(track = %track_address, error = %e, "failed to get track info");
+                warn!(track = %track_address, attempt, error = %e, "metadata unavailable");
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(RETRY_DELAY) => {}
@@ -175,20 +201,18 @@ pub async fn recover_track_slice<S: Store>(
             }
         };
 
-        // Attempt repair using shared repair_single_slice
+        // Attempt repair
         match repair_single_slice(&ctx, our_spool, track_address, &track_info, &helpers).await {
             Ok(repaired_slice) => {
-                if let Err(e) = ctx.storage.store.put_slice(our_spool, track_address, repaired_slice) {
-                    warn!(spool = our_spool, track = %track_address, error = %e, "failed to store repaired slice");
-                } else {
-                    debug!(
-                        spool = our_spool,
-                        track = %track_address,
-                        attempt,
-                        "track slice recovered via repair"
-                    );
-                    deferral.end_recovery(&track_address).await;
-                    return;
+                match verify_and_store_slice(&ctx.storage.store, our_spool, track_address, &track_info, position, repaired_slice) {
+                    Ok(()) => {
+                        debug!(spool = our_spool, track = %track_address, attempt, "track slice recovered via repair");
+                        deferral.end_recovery(&track_address).await;
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(spool = our_spool, track = %track_address, error = %e, "verify/store failed after repair");
+                    }
                 }
             }
             Err(RecoveryError::UnsupportedEncoding)
@@ -200,7 +224,7 @@ pub async fn recover_track_slice<S: Store>(
                     "repair not possible, trying full recovery"
                 );
 
-                // Fall back to full recovery — it resolves its own group members
+                // Fall back to full recovery
                 let _permit = match slice_semaphore.acquire().await {
                     Ok(p) => p,
                     Err(_) => {
@@ -211,27 +235,15 @@ pub async fn recover_track_slice<S: Store>(
 
                 match attempt_full_recovery(&ctx, track_address, &track_info, our_spool).await {
                     Ok(slice_data) => {
-                        let group = group_for_spool(our_spool);
-                        let start = group_start(group);
-                        let position = (our_spool - start) as usize;
-                        if !track_info.commitment.is_empty()
-                            && !track_info.verify_slice(position, &slice_data)
-                        {
-                            warn!(
-                                spool = our_spool,
-                                track = %track_address,
-                                "full recovery slice failed leaf verification, retrying"
-                            );
-                        } else if let Err(e) =
-                            ctx.storage
-                                .store
-                                .put_slice(our_spool, track_address, slice_data)
-                        {
-                            warn!(spool = our_spool, track = %track_address, error = %e, "failed to store recovered slice");
-                        } else {
-                            debug!(spool = our_spool, track = %track_address, "full recovery succeeded");
-                            deferral.end_recovery(&track_address).await;
-                            return;
+                        match verify_and_store_slice(&ctx.storage.store, our_spool, track_address, &track_info, position, slice_data) {
+                            Ok(()) => {
+                                debug!(spool = our_spool, track = %track_address, "full recovery succeeded");
+                                deferral.end_recovery(&track_address).await;
+                                return;
+                            }
+                            Err(e) => {
+                                warn!(spool = our_spool, track = %track_address, error = %e, "verify/store failed after full recovery");
+                            }
                         }
                     }
                     Err(RecoveryError::InconsistencyProof { track }) => {
@@ -260,11 +272,80 @@ pub async fn recover_track_slice<S: Store>(
             }
         }
 
-        // Wait before retry — infinite loop with 30s fixed delay
+        // Wait before retry
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = tokio::time::sleep(RETRY_DELAY) => {}
         }
         attempt += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use store_memory::MemoryStore;
+    use tape_core::erasure::group_start;
+    use tape_store::TapeStore;
+
+    fn test_store() -> TapeStore<MemoryStore> {
+        TapeStore::new(MemoryStore::new())
+    }
+
+    fn make_track_info(commitment: Vec<tape_crypto::hash::Hash>) -> TrackInfo {
+        TrackInfo {
+            tape_address: Pubkey::new_unique(),
+            spool_group: 0,
+            original_size: 1024,
+            stripe_size: 0,
+            stripe_count: 0,
+            encoding_type: 2,
+            encoding_params: 0,
+            commitment,
+        }
+    }
+
+    #[test]
+    fn verify_and_store_succeeds_without_commitment() {
+        let store = test_store();
+        let spool: SpoolIndex = group_start(0) + 3;
+        let track = Pubkey::new_unique();
+        let info = make_track_info(vec![]);
+        let data = vec![1, 2, 3, 4];
+
+        let result = verify_and_store_slice(&store, spool, track, &info, 3, data.clone());
+        assert!(result.is_ok());
+        assert!(store.has_slice(spool, track).unwrap());
+    }
+
+    #[test]
+    fn verify_and_store_succeeds_with_valid_commitment() {
+        let store = test_store();
+        let spool: SpoolIndex = group_start(0);
+        let track = Pubkey::new_unique();
+        let data = vec![10, 20, 30];
+        let leaf_hash = tape_crypto::merkle::hash_leaf(&data);
+
+        // commitment has one leaf at position 0
+        let info = make_track_info(vec![leaf_hash]);
+
+        let result = verify_and_store_slice(&store, spool, track, &info, 0, data);
+        assert!(result.is_ok());
+        assert!(store.has_slice(spool, track).unwrap());
+    }
+
+    #[test]
+    fn verify_and_store_rejects_invalid_commitment() {
+        let store = test_store();
+        let spool: SpoolIndex = group_start(0);
+        let track = Pubkey::new_unique();
+        let data = vec![10, 20, 30];
+        let wrong_hash = tape_crypto::merkle::hash_leaf(&[99, 99]);
+
+        let info = make_track_info(vec![wrong_hash]);
+
+        let result = verify_and_store_slice(&store, spool, track, &info, 0, data);
+        assert!(result.is_err());
+        assert!(!store.has_slice(spool, track).unwrap());
     }
 }

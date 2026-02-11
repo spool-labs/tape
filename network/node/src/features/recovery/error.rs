@@ -32,4 +32,7 @@ pub enum RecoveryError {
 
     #[error("inconsistency detected for track {track}")]
     InconsistencyProof { track: Pubkey },
+
+    #[error("track metadata unavailable from local store or peers")]
+    MetadataUnavailable,
 }
