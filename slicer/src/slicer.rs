@@ -125,6 +125,9 @@ pub struct Slicer<C: ErasureCoder> {
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
     pub profile: EncodingProfile,
+    /// Chunk/group index embedded in slice metadata. Ensures that identical
+    /// data chunks at different positions produce distinct commitments.
+    pub chunk_index: u64,
 }
 
 impl<C: ErasureCoder> Slicer<C> {
@@ -137,6 +140,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size: DEFAULT_STRIPE_SIZE,
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
+            chunk_index: 0,
         }
     }
 
@@ -149,6 +153,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size: DEFAULT_STRIPE_SIZE,
             strategy: MappingStrategy::Rotated,
             profile: EncodingProfile::clay_default(),
+            chunk_index: 0,
         }
     }
 
@@ -159,6 +164,7 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size,
             strategy: MappingStrategy::Identity,
             profile: EncodingProfile::clay_default(),
+            chunk_index: 0,
         }
     }
 
@@ -169,7 +175,14 @@ impl<C: ErasureCoder> Slicer<C> {
             stripe_size,
             strategy: if rotated { MappingStrategy::Rotated } else { MappingStrategy::Identity },
             profile,
+            chunk_index: 0,
         }
+    }
+
+    /// Set the chunk index for metadata. Ensures identical data at different
+    /// positions produces distinct slice commitments.
+    pub fn set_chunk_index(&mut self, index: u64) {
+        self.chunk_index = index;
     }
 
     /// Get the current stripe size.
@@ -271,8 +284,9 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
             distribute_chunks(self.strategy, n, s, &chunks, &mut slices);
         }
 
-        // Append metadata
-        let metadata = SliceMetadata::with_profile(blob_len, self.stripe_size, self.profile);
+        // Append metadata (includes chunk_index for position-dependent commitment)
+        let mut metadata = SliceMetadata::with_profile(blob_len, self.stripe_size, self.profile);
+        metadata.chunk_index = self.chunk_index;
         for slice in &mut slices {
             slice.extend_from_slice(&metadata.to_bytes());
         }
@@ -362,7 +376,8 @@ impl<C: ErasureCoder> Slicer<C> {
         distribute_chunks(self.strategy, n, 0, &chunks, &mut slices);
 
         // Append metadata (blob_len = 0 for empty blob)
-        let metadata = SliceMetadata::with_profile(0, self.stripe_size, self.profile);
+        let mut metadata = SliceMetadata::with_profile(0, self.stripe_size, self.profile);
+        metadata.chunk_index = self.chunk_index;
         for slice in &mut slices {
             slice.extend_from_slice(&metadata.to_bytes());
         }
@@ -683,6 +698,31 @@ mod tests {
 
         let result = validate_layout(&refs, &meta);
         assert!(matches!(result, Err(DecodeError::InvalidLayout)));
+    }
+
+    #[test]
+    fn test_chunk_index_differentiates_commitments() {
+        use crate::blob_merkle_root;
+
+        // Encode identical zero data at two different chunk indices
+        let zeros = vec![0u8; 1000];
+
+        let mut slicer_a = Slicer::new(ClayCoder::from_params(
+            tape_core::encoding::ClayParams::default(),
+        ));
+        slicer_a.set_chunk_index(0);
+        let slices_a = slicer_a.encode(&zeros).unwrap();
+
+        let mut slicer_b = Slicer::new(ClayCoder::from_params(
+            tape_core::encoding::ClayParams::default(),
+        ));
+        slicer_b.set_chunk_index(1);
+        let slices_b = slicer_b.encode(&zeros).unwrap();
+
+        let root_a = blob_merkle_root(&slices_a);
+        let root_b = blob_merkle_root(&slices_b);
+
+        assert_ne!(root_a, root_b, "identical data at different chunk indices must produce different commitments");
     }
 
 }

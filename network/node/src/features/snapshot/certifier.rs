@@ -55,18 +55,33 @@ pub async fn certify_snapshot_tracks<S: Store>(
         "Starting snapshot certification"
     );
 
-    // Resolve committee members and their network addresses
-    let committee = ctx
+    // Persisted committee provides network addresses (resolved during persistence).
+    let persisted = ctx
         .storage
         .store
         .get_committee(epoch)
         .map_err(SnapshotError::Store)?
         .ok_or_else(|| SnapshotError::Encode("no committee found".into()))?;
 
-    // Build spool → member index lookup
+    // Current system provides the committee ordering and spool assignment
+    // that CertifySnapshot checks on-chain. The persisted committee may have
+    // been captured before rotation, so its indices can differ from on-chain.
+    let system = ctx.control_plane.get_system();
+    let committee_size = system.committee.size();
+
+    // Build current-committee-ordered member info for network address resolution.
+    // Match persisted NodeInfo to current committee positions by BLS pubkey.
+    let mut members: Vec<Option<NodeInfo>> = vec![None; committee_size];
+    for (current_idx, cm) in system.committee.iter().enumerate() {
+        if let Some(info) = persisted.iter().find(|info| info.bls_pubkey == cm.key) {
+            members[current_idx] = Some(info.clone());
+        }
+    }
+
+    // Build spool → current member index (matches on-chain system.spools)
     let mut spool_to_member: HashMap<u16, usize> = HashMap::new();
-    for (idx, member) in committee.iter().enumerate() {
-        for &spool in &member.spools {
+    for idx in 0..committee_size {
+        for spool in system.spools.spools_for_member(idx) {
             spool_to_member.insert(spool, idx);
         }
     }
@@ -86,7 +101,7 @@ pub async fn certify_snapshot_tracks<S: Store>(
                 ctx,
                 epoch,
                 build_result,
-                &committee,
+                &members,
                 &spool_to_member,
                 fee_payer,
                 insecure,
@@ -169,7 +184,7 @@ async fn try_certify_chunk<S: Store>(
     ctx: &Arc<NodeContext<S>>,
     epoch: EpochNumber,
     build_result: &SnapshotBuildResult,
-    committee: &[NodeInfo],
+    members: &[Option<NodeInfo>],
     spool_to_member: &HashMap<u16, usize>,
     fee_payer: solana_sdk::pubkey::Pubkey,
     insecure: bool,
@@ -192,7 +207,18 @@ async fn try_certify_chunk<S: Store>(
     let mut failures = 0usize;
 
     for (&member_idx, _spools) in &group_members {
-        let member = &committee[member_idx];
+        let member = match &members[member_idx] {
+            Some(info) => info,
+            None => {
+                debug!(
+                    member_idx = member_idx,
+                    chunk_index = chunk_index,
+                    "No address info for committee member, skipping"
+                );
+                failures += 1;
+                continue;
+            }
+        };
         let addr: std::net::SocketAddr = match member.network_address.to_socket_addr() {
             Ok(a) => a,
             Err(e) => {
@@ -234,7 +260,7 @@ async fn try_certify_chunk<S: Store>(
         }
 
         // Early exit: check if we have spool-weighted supermajority
-        let weight = compute_spool_weight(&signatures, spool_to_member, committee.len(), chunk_index);
+        let weight = compute_spool_weight(&signatures, spool_to_member, members.len(), chunk_index);
         if is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
             debug!(
                 chunk_index = chunk_index,
@@ -256,7 +282,7 @@ async fn try_certify_chunk<S: Store>(
     }
 
     // Final supermajority check
-    let final_weight = compute_spool_weight(&signatures, spool_to_member, committee.len(), chunk_index);
+    let final_weight = compute_spool_weight(&signatures, spool_to_member, members.len(), chunk_index);
 
     if !is_supermajority(final_weight, SPOOL_GROUP_SIZE as u64) {
         debug!(
@@ -288,7 +314,7 @@ async fn try_certify_chunk<S: Store>(
 
     let member_indices: Vec<usize> =
         signatures.iter().map(|(idx, _)| *idx as usize).collect();
-    let bitmap = CommitteeBitmap::from_indices(&member_indices, committee.len());
+    let bitmap = CommitteeBitmap::from_indices(&member_indices, members.len());
 
     // Get leaf hashes for RegisterSnapshot
     let leaves: [tape_crypto::Hash; SPOOL_GROUP_SIZE] =

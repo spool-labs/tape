@@ -119,6 +119,7 @@ pub async fn build_epoch_snapshot<S: Store>(
         let clay_params = ClayParams::default();
         let coder = ClayCoder::from_params(clay_params);
         let mut slicer = Slicer::new(coder);
+        slicer.set_chunk_index(group_idx as u64);
 
         let slices = slicer
             .encode(chunk)

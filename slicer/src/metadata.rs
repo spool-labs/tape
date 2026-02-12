@@ -16,6 +16,8 @@ use crate::errors::DecodeError;
 /// - `blob_len`: Original unencoded blob size in bytes
 /// - `stripe_size`: Stripe size used during encoding
 /// - `profile`: Encoding profile (type + params, 16 bytes)
+/// - `chunk_index`: Position-dependent salt ensuring identical data chunks
+///   (e.g. trailing zero-padded outer RS chunks) produce distinct commitments.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub struct SliceMetadata {
@@ -27,6 +29,9 @@ pub struct SliceMetadata {
     pub stripe_size: u64,
     /// Encoding profile (type + params).
     pub profile: EncodingProfile,
+    /// Chunk/group index — ensures unique commitments per position even when
+    /// multiple outer-RS chunks contain identical data (e.g. zero padding).
+    pub chunk_index: u64,
 }
 
 impl SliceMetadata {
@@ -48,6 +53,7 @@ impl SliceMetadata {
             blob_len: blob_len as u64,
             stripe_size: stripe_size as u64,
             profile,
+            chunk_index: 0,
         }
     }
 
@@ -94,6 +100,11 @@ impl SliceMetadata {
     pub fn profile(&self) -> EncodingProfile {
         self.profile
     }
+
+    /// Get the chunk index.
+    pub fn chunk_index(&self) -> u64 {
+        self.chunk_index
+    }
 }
 
 #[cfg(test)]
@@ -102,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_size() {
-        assert_eq!(SliceMetadata::SIZE, 40);
+        assert_eq!(SliceMetadata::SIZE, 48);
     }
 
     #[test]

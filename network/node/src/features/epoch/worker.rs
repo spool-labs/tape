@@ -640,9 +640,10 @@ async fn persist_committee_for_epoch(
         return;
     }
 
-    // The block processor sets current_epoch before the system state is refreshed,
-    // so the control plane's system still reflects the completed epoch's state.
-    // Use committee/spools (not committee_prev/spools_prev) since they haven't rotated yet.
+    // The block processor may set current_epoch before the system state is refreshed,
+    // so the control plane's system may still reflect the completed epoch's state.
+    // Use committee/spools (not committee_prev/spools_prev) since they may not have rotated yet.
+    // The certifier reconciles any index mismatch against the current on-chain committee.
     let system = ctx.control_plane.get_system();
     let committee = &system.committee;
     let spools = &system.spools;
