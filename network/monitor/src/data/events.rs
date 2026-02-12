@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use tape_api::state::Epoch;
+use tape_api::state::{Epoch, SnapshotState};
 use tape_core::types::{EpochNumber, NodeId};
 
 use super::{EventType, NetworkEvent, NodeState};
@@ -28,6 +28,10 @@ pub struct EventWatcher {
     previous_track_count: u64,
     /// Previous tape count.
     previous_tape_count: u64,
+    /// Previous snapshot latest_epoch (fully certified).
+    previous_snapshot_latest_epoch: Option<EpochNumber>,
+    /// Previous snapshot certified_count (for certifying_epoch).
+    previous_snapshot_certified_count: u64,
     /// Whether this is the first update (skip initial state as "events").
     first_update: bool,
 }
@@ -41,6 +45,8 @@ impl EventWatcher {
             previous_phase: None,
             previous_track_count: 0,
             previous_tape_count: 0,
+            previous_snapshot_latest_epoch: None,
+            previous_snapshot_certified_count: 0,
             first_update: true,
         }
     }
@@ -64,12 +70,13 @@ impl EventWatcher {
         epoch: Option<&Epoch>,
         track_count: u64,
         tape_count: u64,
+        snapshot: Option<&SnapshotState>,
     ) -> Vec<NetworkEvent> {
         let mut events = Vec::new();
 
         // Skip generating events on first update - we're just capturing initial state
         if self.first_update {
-            self.capture_initial_state(nodes, epoch, track_count, tape_count);
+            self.capture_initial_state(nodes, epoch, track_count, tape_count, snapshot);
             self.first_update = false;
             return events;
         }
@@ -116,6 +123,11 @@ impl EventWatcher {
             self.previous_tape_count = tape_count;
         }
 
+        // Check for snapshot certification changes
+        if let Some(snap) = snapshot {
+            events.extend(self.check_snapshot_changes(snap));
+        }
+
         events
     }
 
@@ -126,6 +138,7 @@ impl EventWatcher {
         epoch: Option<&Epoch>,
         track_count: u64,
         tape_count: u64,
+        snapshot: Option<&SnapshotState>,
     ) {
         // Store initial node health states
         for node in nodes {
@@ -141,6 +154,12 @@ impl EventWatcher {
         // Store initial counts
         self.previous_track_count = track_count;
         self.previous_tape_count = tape_count;
+
+        // Store initial snapshot state
+        if let Some(snap) = snapshot {
+            self.previous_snapshot_latest_epoch = Some(snap.latest_epoch);
+            self.previous_snapshot_certified_count = snap.certified_count;
+        }
     }
 
     /// Check for node health state transitions.
@@ -208,7 +227,7 @@ impl EventWatcher {
             if *prev_phase != current_phase && self.previous_epoch == Some(epoch.id) {
                 events.push(NetworkEvent::new(
                     EventType::EpochTransition,
-                    format!("Epoch {} entered {} phase", epoch.id, current_phase),
+                    format!("Epoch E{} entered {} phase", epoch.id.0, current_phase),
                 ));
             }
         }
@@ -233,6 +252,27 @@ impl EventWatcher {
         }
     }
 
+    /// Check for snapshot certification state changes.
+    fn check_snapshot_changes(&mut self, snapshot: &SnapshotState) -> Vec<NetworkEvent> {
+        let mut events = Vec::new();
+
+        // Check if a new epoch was fully certified
+        if let Some(prev_epoch) = self.previous_snapshot_latest_epoch {
+            if snapshot.latest_epoch > prev_epoch {
+                events.push(NetworkEvent::new(
+                    EventType::SnapshotCertified,
+                    format!("Snapshot E{} fully certified", snapshot.latest_epoch.0),
+                ));
+            }
+        }
+
+        // Update stored state
+        self.previous_snapshot_latest_epoch = Some(snapshot.latest_epoch);
+        self.previous_snapshot_certified_count = snapshot.certified_count;
+
+        events
+    }
+
     /// Reset the watcher state (useful when reconnecting).
     pub fn reset(&mut self) {
         self.previous_node_health.clear();
@@ -240,6 +280,8 @@ impl EventWatcher {
         self.previous_phase = None;
         self.previous_track_count = 0;
         self.previous_tape_count = 0;
+        self.previous_snapshot_latest_epoch = None;
+        self.previous_snapshot_certified_count = 0;
         self.first_update = true;
     }
 
@@ -281,7 +323,7 @@ mod tests {
         let mut watcher = EventWatcher::new();
         let nodes = vec![make_test_node(1, HealthStatus::Online)];
 
-        let events = watcher.update_state(&nodes, None, 100, 10);
+        let events = watcher.update_state(&nodes, None, 100, 10, None);
 
         // First update should not generate events
         assert!(events.is_empty());
@@ -293,11 +335,11 @@ mod tests {
 
         // Initial state: node online
         let nodes = vec![make_test_node(1, HealthStatus::Online)];
-        watcher.update_state(&nodes, None, 0, 0);
+        watcher.update_state(&nodes, None, 0, 0, None);
 
         // Node goes offline
         let nodes = vec![make_test_node(1, HealthStatus::Offline)];
-        let events = watcher.update_state(&nodes, None, 0, 0);
+        let events = watcher.update_state(&nodes, None, 0, 0, None);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::NodeOffline);
@@ -309,11 +351,11 @@ mod tests {
 
         // Initial state: node offline
         let nodes = vec![make_test_node(1, HealthStatus::Offline)];
-        watcher.update_state(&nodes, None, 0, 0);
+        watcher.update_state(&nodes, None, 0, 0, None);
 
         // Node comes online
         let nodes = vec![make_test_node(1, HealthStatus::Online)];
-        let events = watcher.update_state(&nodes, None, 0, 0);
+        let events = watcher.update_state(&nodes, None, 0, 0, None);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::NodeOnline);
@@ -324,10 +366,10 @@ mod tests {
         let mut watcher = EventWatcher::new();
 
         // Initial state
-        watcher.update_state(&[], None, 100, 10);
+        watcher.update_state(&[], None, 100, 10, None);
 
         // Track count increases
-        let events = watcher.update_state(&[], None, 105, 10);
+        let events = watcher.update_state(&[], None, 105, 10, None);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::TrackCertified);
@@ -339,10 +381,10 @@ mod tests {
         let mut watcher = EventWatcher::new();
 
         let nodes = vec![make_test_node(1, HealthStatus::Online)];
-        watcher.update_state(&nodes, None, 100, 10);
+        watcher.update_state(&nodes, None, 100, 10, None);
 
         // Same state, no changes
-        let events = watcher.update_state(&nodes, None, 100, 10);
+        let events = watcher.update_state(&nodes, None, 100, 10, None);
 
         assert!(events.is_empty());
     }

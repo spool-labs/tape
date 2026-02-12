@@ -104,6 +104,37 @@ impl<'a> NodeDetailPopup<'a> {
         ]
     }
 
+    /// Build epoch status section showing FSM action.
+    fn build_epoch_status_section(&self) -> Vec<Line<'a>> {
+        let action_str = if self.node.fsm_action.is_empty() {
+            "--".to_string()
+        } else {
+            self.node.fsm_action.clone()
+        };
+
+        let action_style = if self.node.fsm_action.starts_with("Sync")
+            || self.node.fsm_action.starts_with("Advance")
+            || self.node.fsm_action.starts_with("Join")
+            || self.node.fsm_action.starts_with("AdvEpoch")
+        {
+            Style::default().fg(ratatui::style::Color::Green)
+        } else if self.node.fsm_action.starts_with("Wait") {
+            Style::default().fg(ratatui::style::Color::Yellow)
+        } else {
+            self.theme.dim_style()
+        };
+
+        vec![
+            Line::default(),
+            Line::styled("EPOCH STATUS", self.theme.header_style()),
+            Line::styled("-".repeat(40), self.theme.dim_style()),
+            Line::from(vec![
+                Span::styled("Action:     ", self.theme.text_style()),
+                Span::styled(action_str, action_style),
+            ]),
+        ]
+    }
+
     /// Build stake schedule section.
     fn build_stake_section(&self) -> Vec<Line<'a>> {
         let mut lines = vec![
@@ -364,6 +395,7 @@ impl Widget for NodeDetailPopup<'_> {
 
         // Build content
         let mut lines = self.build_info_lines();
+        lines.extend(self.build_epoch_status_section());
         lines.extend(self.build_stake_section());
         lines.extend(self.build_rewards_section());
         lines.extend(self.build_metrics_section());

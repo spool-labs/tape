@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use futures::future::join_all;
 use rpc_client::{RpcClient, RpcConfig, SolanaRpc};
 use solana_sdk::pubkey::Pubkey;
-use tape_api::state::{Archive, Epoch, Node, System};
+use tape_api::state::{Archive, Epoch, Node, SnapshotState, System};
 
 use super::{HealthStatus, NodeState};
 
@@ -142,6 +142,16 @@ impl DataFetcher {
             .get_slot()
             .await
             .context("Failed to fetch current slot")
+    }
+
+    /// Fetch the SnapshotState singleton account.
+    ///
+    /// Returns None if the account doesn't exist yet.
+    pub async fn fetch_snapshot_state(&self) -> Result<SnapshotState> {
+        self.rpc_client
+            .get_snapshot_state()
+            .await
+            .context("Failed to fetch SnapshotState account")
     }
 
     /// Fetch all tapes and compute aggregate statistics.
@@ -374,24 +384,25 @@ impl DataFetcher {
     pub async fn fetch_dashboard_data_graceful(
         &self,
         health_timeout_ms: u64,
-    ) -> (Option<System>, Option<Epoch>, Option<Archive>, Vec<NodeState>, TapeStats, u64, Vec<String>) {
+    ) -> (Option<Box<System>>, Option<Epoch>, Option<Archive>, Vec<NodeState>, TapeStats, u64, Option<SnapshotState>, Vec<String>) {
         let mut errors = Vec::new();
 
-        // Fetch on-chain state in parallel (including slot)
-        let (system_result, epoch_result, archive_result, nodes_result, tapes_result, slot_result) = tokio::join!(
+        // Fetch on-chain state in parallel (including slot and snapshot)
+        let (system_result, epoch_result, archive_result, nodes_result, tapes_result, slot_result, snapshot_result) = tokio::join!(
             self.fetch_system(),
             self.fetch_epoch(),
             self.fetch_archive(),
             self.fetch_all_nodes(),
             self.rpc_client.get_all_tapes(),
             self.fetch_slot(),
+            self.fetch_snapshot_state(),
         );
 
         // Slot is best-effort, default to 0 if unavailable
         let current_slot = slot_result.unwrap_or(0);
 
         let system = match system_result {
-            Ok(s) => Some(s),
+            Ok(s) => Some(Box::new(s)),
             Err(e) => {
                 errors.push(format!("System: {}", e));
                 None
@@ -449,6 +460,12 @@ impl DataFetcher {
             }
         };
 
+        // Snapshot is optional - account may not exist yet
+        let snapshot = match snapshot_result {
+            Ok(s) => Some(s),
+            Err(_) => None, // Silently ignore - snapshot account may not be initialized
+        };
+
         // Only fetch health if we have nodes
         let node_states = if !nodes.is_empty() {
             self.fetch_all_node_health(&nodes, health_timeout_ms).await
@@ -456,7 +473,7 @@ impl DataFetcher {
             Vec::new()
         };
 
-        (system, epoch, archive, node_states, tape_stats, current_slot, errors)
+        (system, epoch, archive, node_states, tape_stats, current_slot, snapshot, errors)
     }
 }
 

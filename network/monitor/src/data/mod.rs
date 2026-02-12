@@ -159,6 +159,8 @@ pub enum EventType {
     NodeJoined,
     /// A node left the committee.
     NodeLeft,
+    /// A snapshot epoch was fully certified.
+    SnapshotCertified,
     /// Generic info event.
     Info,
     /// Warning event.
@@ -179,6 +181,7 @@ impl EventType {
             EventType::DataUploaded => "↑",
             EventType::DataDownloaded => "↓",
             EventType::EpochTransition => "→",
+            EventType::SnapshotCertified => "S",
             EventType::NodeJoined => "+",
             EventType::NodeLeft => "-",
             EventType::Info => "i",

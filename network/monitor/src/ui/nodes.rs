@@ -58,7 +58,7 @@ impl<'a> NodeListView<'a> {
 
     fn build_table(&self, _height: u16) -> Table<'a> {
         // Header with color column
-        let header_cells = ["", "ST", "ID", "NAME", "STAKE", "SPOOLS", "LATENCY", "COMM"]
+        let header_cells = ["", "ST", "ID", "NAME", "STAKE", "SPOOLS", "ACTION", "LATENCY", "COMM"]
             .iter()
             .map(|h| Cell::from(*h).style(self.theme.header_style()));
         let header = Row::new(header_cells).height(1);
@@ -109,13 +109,28 @@ impl<'a> NodeListView<'a> {
                 let slot = self.app.get_color_slot(node.id).unwrap_or(0);
                 let color = Theme::member_color(slot as usize);
 
+                // Color the action based on type
+                let action_str = if node.fsm_action.is_empty() { "--" } else { &node.fsm_action };
+                let action_style = if node.fsm_action.starts_with("Sync")
+                    || node.fsm_action.starts_with("Advance")
+                    || node.fsm_action.starts_with("Join")
+                    || node.fsm_action.starts_with("AdvEpoch")
+                {
+                    Style::default().fg(ratatui::style::Color::Green)
+                } else if node.fsm_action.starts_with("Wait") {
+                    Style::default().fg(ratatui::style::Color::Yellow)
+                } else {
+                    self.theme.dim_style()
+                };
+
                 let cells = vec![
                     Cell::from("█").style(Style::default().fg(color)),
                     Cell::from(status_sym).style(status_style),
                     Cell::from(format!("{}", node.id.0)),
-                    Cell::from(truncate_name(&node.name, 18)),
+                    Cell::from(truncate_name(&node.name, 16)),
                     Cell::from(format!("{} TAPE", node.stake.as_string())),
                     Cell::from(format!("{}", node.spool_count)),
+                    Cell::from(action_str.to_string()).style(action_style),
                     Cell::from(latency_str),
                     Cell::from(node.commission_display()),
                 ];
@@ -130,9 +145,10 @@ impl<'a> NodeListView<'a> {
                 Constraint::Length(2),  // Color
                 Constraint::Length(3),  // ST
                 Constraint::Length(5),  // ID
-                Constraint::Length(18), // NAME
+                Constraint::Length(16), // NAME
                 Constraint::Length(18), // STAKE
                 Constraint::Length(8),  // SPOOLS
+                Constraint::Length(14), // ACTION
                 Constraint::Length(9),  // LATENCY
                 Constraint::Length(7),  // COMM
             ],

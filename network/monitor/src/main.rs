@@ -48,9 +48,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use app::{App, EpochPhase, NodeState as AppNodeState, StakeScheduleEntry};
 use data::{BlockProcessor, DataCache, DataFetcher, EventWatcher, NodeState as DataNodeState, TapeStats, TapedriveEvent, ToNetworkEvent};
+use tape_api::fsm::{NodeStateMachine, NodeAction};
 use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_api::prelude::Committee;
-use tape_api::state::{Archive, Epoch, Node, System};
+use tape_api::state::{Archive, Epoch, Node, SnapshotState, System};
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::coin::TAPE;
@@ -122,25 +123,30 @@ struct Args {
     health_timeout_ms: u64,
 }
 
-/// Message from background data fetcher
+/// Message from background data fetcher.
+///
+/// System is boxed because it's ~45KB (three Committee<128> arrays + two SpoolAssignment<1000>).
+/// Without boxing, multiple copies in the async state machine overflow the tokio worker thread stack.
 enum FetchResult {
     /// All data fetched successfully
     Success {
-        system: System,
+        system: Box<System>,
         epoch: Epoch,
         archive: Archive,
         nodes: Vec<DataNodeState>,
         tape_stats: TapeStats,
         slot: u64,
+        snapshot: Option<SnapshotState>,
     },
     /// Partial data fetched (some accounts may not exist yet)
     Partial {
-        system: Option<System>,
+        system: Option<Box<System>>,
         epoch: Option<Epoch>,
         archive: Option<Archive>,
         nodes: Vec<DataNodeState>,
         tape_stats: TapeStats,
         slot: u64,
+        snapshot: Option<SnapshotState>,
         errors: Vec<String>,
     },
     /// Complete fetch failure (e.g., RPC connection lost)
@@ -238,18 +244,19 @@ async fn main() -> Result<()> {
 
                 if should_fetch {
                     // Use graceful fetch that handles missing/partial accounts
-                    let (system, epoch, archive, nodes, tape_stats, slot, errors) =
+                    let (system, epoch, archive, nodes, tape_stats, slot, snapshot, errors) =
                         fetcher.fetch_dashboard_data_graceful(health_timeout_ms).await;
 
                     // If we got all three main accounts, treat as success
                     if system.is_some() && epoch.is_some() && archive.is_some() {
                         let _ = tx.send(FetchResult::Success {
-                            system: system.unwrap(),
+                            system: system.unwrap(), // already Box<System>
                             epoch: epoch.unwrap(),
                             archive: archive.unwrap(),
                             nodes,
                             tape_stats,
                             slot,
+                            snapshot,
                         }).await;
                     } else if system.is_some() || epoch.is_some() || archive.is_some() || !nodes.is_empty() || slot > 0 {
                         // Partial data available - send what we have
@@ -260,6 +267,7 @@ async fn main() -> Result<()> {
                             nodes,
                             tape_stats,
                             slot,
+                            snapshot,
                             errors,
                         }).await;
                     } else {
@@ -343,8 +351,10 @@ async fn run_app(
 
         // Check for data from background fetcher (non-blocking)
         match rx.try_recv() {
-            Ok(FetchResult::Success { system, epoch, archive, nodes, tape_stats, slot }) => {
-                cache.update_all(system.clone(), epoch.clone(), archive.clone(), nodes.clone());
+            Ok(FetchResult::Success { system, epoch, archive, nodes, tape_stats, slot, snapshot }) => {
+                // system is Box<System> — pass references to avoid 45KB stack copies
+                cache.mark_refreshed();
+                cache.update_snapshot(snapshot);
                 app.rpc_connected = true;
                 app.last_refresh = std::time::Instant::now();
                 app.fetch_errors.clear(); // Clear errors on successful fetch
@@ -356,16 +366,20 @@ async fn run_app(
                     Some(&epoch),
                     tape_stats.track_count,
                     tape_stats.active_tapes,
+                    snapshot.as_ref(),
                 );
                 for evt in events {
                     app.add_event(convert_network_event(&evt));
                 }
 
-                update_app_from_data(app, &system, &epoch, &archive, &nodes, &tape_stats);
+                update_app_from_data(app, &system, &epoch, &archive, &nodes, &tape_stats, snapshot.as_ref());
                 app.update_color_slots();
             }
-            Ok(FetchResult::Partial { system, epoch, archive, nodes, tape_stats, slot, errors }) => {
+            Ok(FetchResult::Partial { system, epoch, archive, nodes, tape_stats, slot, snapshot, errors }) => {
                 // Handle partial data - update what we can
+                // system is Option<Box<System>> — use as_deref() to get Option<&System>
+                cache.mark_refreshed();
+                cache.update_snapshot(snapshot);
                 app.rpc_connected = true; // RPC is working, just missing accounts
                 app.last_refresh = std::time::Instant::now();
                 app.current_slot = slot;
@@ -379,6 +393,7 @@ async fn run_app(
                     epoch.as_ref(),
                     tape_stats.track_count,
                     tape_stats.active_tapes,
+                    snapshot.as_ref(),
                 );
                 for evt in events {
                     app.add_event(convert_network_event(&evt));
@@ -393,7 +408,7 @@ async fn run_app(
                     ));
                 }
 
-                update_app_from_partial_data(app, system.as_ref(), epoch.as_ref(), archive.as_ref(), &nodes, &tape_stats);
+                update_app_from_partial_data(app, system.as_deref(), epoch.as_ref(), archive.as_ref(), &nodes, &tape_stats, snapshot.as_ref());
                 app.update_color_slots();
             }
             Ok(FetchResult::Error(err)) => {
@@ -448,6 +463,7 @@ fn update_app_from_data(
     archive: &Archive,
     nodes: &[DataNodeState],
     tape_stats: &TapeStats,
+    snapshot: Option<&SnapshotState>,
 ) {
     // Update epoch information
     app.epoch = epoch.id;
@@ -516,8 +532,96 @@ fn update_app_from_data(
         })
         .collect();
 
+    // Update snapshot state
+    update_snapshot_fields(app, snapshot);
+
+    // Compute FSM actions for each node
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    compute_fsm_actions(app, system, epoch, nodes, current_time);
+
     // Compute throughput and request rates from node stats
     compute_rates(app);
+}
+
+/// Update snapshot fields in app state from SnapshotState.
+fn update_snapshot_fields(app: &mut App, snapshot: Option<&SnapshotState>) {
+    if let Some(snap) = snapshot {
+        app.snapshot_available = true;
+        app.snapshot_latest_epoch = snap.latest_epoch;
+        app.snapshot_certifying_epoch = snap.certifying_epoch;
+        app.snapshot_certified_count = snap.certified_count;
+        app.snapshot_total_count = snap.count;
+        app.snapshot_total_size = snap.total_size;
+    } else {
+        app.snapshot_available = false;
+    }
+}
+
+/// Format a NodeAction as a short display string.
+fn format_fsm_action(action: &NodeAction) -> String {
+    match action {
+        NodeAction::SyncEpoch => "Sync".to_string(),
+        NodeAction::AdvancePool => "Advance".to_string(),
+        NodeAction::JoinNetwork => "Join".to_string(),
+        NodeAction::AdvanceEpoch => "AdvEpoch".to_string(),
+        NodeAction::WaitForSyncQuorum { current_weight } => {
+            format!("Wait Sync {}", current_weight)
+        }
+        NodeAction::WaitForSettleQuorum { current_weight } => {
+            format!("Wait Settle {}", current_weight)
+        }
+        NodeAction::WaitForEpochDuration { seconds_remaining } => {
+            format!("Wait {}s", seconds_remaining)
+        }
+        NodeAction::WaitForCommitteeThreshold { current_size, required_size } => {
+            format!("Wait {}/{}", current_size, required_size)
+        }
+        NodeAction::NotInCommittee => "--".to_string(),
+        NodeAction::EpochBlocked { .. } => "Blocked".to_string(),
+        NodeAction::UnknownPhase { .. } => "???".to_string(),
+    }
+}
+
+/// Compute FSM action for each node in the current committee.
+fn compute_fsm_actions(
+    app: &mut App,
+    system: &System,
+    epoch: &Epoch,
+    nodes: &[DataNodeState],
+    current_time: i64,
+) {
+    // Build node lookup for accessing Node accounts
+    let node_lookup: HashMap<NodeId, &DataNodeState> = nodes
+        .iter()
+        .map(|n| (n.node.id, n))
+        .collect();
+
+    // Compute FSM action for current committee nodes
+    for app_node in &mut app.nodes {
+        if let Some(data_node) = node_lookup.get(&app_node.id) {
+            let action = NodeStateMachine::determine_action(system, epoch, &data_node.node, current_time);
+            app_node.fsm_action = format_fsm_action(&action);
+        }
+    }
+
+    // Compute FSM action for prev committee nodes
+    for app_node in &mut app.committee_prev_nodes {
+        if let Some(data_node) = node_lookup.get(&app_node.id) {
+            let action = NodeStateMachine::determine_action(system, epoch, &data_node.node, current_time);
+            app_node.fsm_action = format_fsm_action(&action);
+        }
+    }
+
+    // Compute FSM action for next committee nodes
+    for app_node in &mut app.committee_next_nodes {
+        if let Some(data_node) = node_lookup.get(&app_node.id) {
+            let action = NodeStateMachine::determine_action(system, epoch, &data_node.node, current_time);
+            app_node.fsm_action = format_fsm_action(&action);
+        }
+    }
 }
 
 /// Compute throughput and request rates from aggregated node stats.
@@ -646,6 +750,7 @@ fn build_committee_nodes(
                     spool_count: assigned_spools.len() as u16,
                     assigned_spools,
                     stats: data_node.stats.clone(),
+                    fsm_action: String::new(),
                 }
             } else {
                 // Node in committee but not in our node list (shouldn't happen often)
@@ -666,6 +771,7 @@ fn build_committee_nodes(
                     spool_count: assigned_spools.len() as u16,
                     assigned_spools,
                     stats: None,
+                    fsm_action: String::new(),
                 }
             }
         })
@@ -705,6 +811,7 @@ fn build_committee_nodes_no_spools(
                     spool_count: 0,  // NEXT committee has no spool assignments yet
                     assigned_spools: Vec::new(),
                     stats: data_node.stats.clone(),
+                    fsm_action: String::new(),
                 }
             } else {
                 AppNodeState {
@@ -724,6 +831,7 @@ fn build_committee_nodes_no_spools(
                     spool_count: 0,
                     assigned_spools: Vec::new(),
                     stats: None,
+                    fsm_action: String::new(),
                 }
             }
         })
@@ -741,6 +849,7 @@ fn convert_network_event(event: &data::NetworkEvent) -> app::NetworkEvent {
         data::EventType::DataUploaded => app::EventType::SliceUploaded,
         data::EventType::DataDownloaded => app::EventType::BlobDownloaded,
         data::EventType::EpochTransition => app::EventType::EpochTransition,
+        data::EventType::SnapshotCertified => app::EventType::SnapshotCertified,
         data::EventType::NodeJoined => app::EventType::NodeOnline,
         data::EventType::NodeLeft => app::EventType::NodeOffline,
         data::EventType::Info => app::EventType::TrackCertified, // Map info to something visible
@@ -763,6 +872,7 @@ fn update_app_from_partial_data(
     archive: Option<&Archive>,
     nodes: &[DataNodeState],
     tape_stats: &TapeStats,
+    snapshot: Option<&SnapshotState>,
 ) {
     // Detect reset: epoch went backwards or all committees are empty
     let is_reset = if let (Some(epoch_data), Some(system_data)) = (epoch, system) {
@@ -893,6 +1003,7 @@ fn update_app_from_partial_data(
                     spool_count: 0,
                     assigned_spools: Vec::new(),
                     stats: data_node.stats.clone(),
+                    fsm_action: String::new(),
                 }
             })
             .collect();
@@ -901,6 +1012,18 @@ fn update_app_from_partial_data(
         app.committee_next_nodes.clear();
         app.spools_prev = None;
         app.spools_current = None;
+    }
+
+    // Update snapshot state
+    update_snapshot_fields(app, snapshot);
+
+    // Compute FSM actions if we have system and epoch
+    if let (Some(system), Some(epoch)) = (system, epoch) {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        compute_fsm_actions(app, system, epoch, nodes, current_time);
     }
 
     // Compute throughput and request rates from node stats

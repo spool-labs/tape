@@ -27,9 +27,9 @@ impl ToNetworkEvent for TapedriveEvent {
             TapedriveEvent::EpochAdvanced(e) => NetworkEvent::new(
                 EventType::EpochTransition,
                 format!(
-                    "Epoch {} -> {} (committee: {})",
-                    e.old_epoch,
-                    e.new_epoch,
+                    "Epoch E{} -> E{} (committee: {})",
+                    e.old_epoch.0,
+                    e.new_epoch.0,
                     u64::from_le_bytes(e.committee_size)
                 ),
                 "",
@@ -37,25 +37,25 @@ impl ToNetworkEvent for TapedriveEvent {
 
             TapedriveEvent::TrackRegistered(e) => NetworkEvent::new(
                 EventType::TrackRegistered,
-                format!("Track registered ({}MB)", e.size.0),
+                format!("Track registered ({})", format_size(e.size)),
                 truncate_pubkey(&e.track),
             ),
 
             TapedriveEvent::TrackCertified(e) => NetworkEvent::new(
                 EventType::TrackCertified,
-                format!("Track certified (epoch {})", e.epoch),
+                format!("Track certified (E{})", e.epoch.0),
                 truncate_pubkey(&e.track),
             ),
 
             TapedriveEvent::TrackDeleted(e) => NetworkEvent::new(
                 EventType::TrackRegistered, // Reuse type, icon is appropriate
-                format!("Track deleted ({}MB)", e.size.0),
+                format!("Track deleted ({})", format_size(e.size)),
                 truncate_pubkey(&e.track),
             ),
 
             TapedriveEvent::TrackInvalidated(e) => NetworkEvent::new(
                 EventType::TrackRegistered,
-                format!("Track invalidated (epoch {})", e.epoch),
+                format!("Track invalidated (E{})", e.epoch.0),
                 truncate_pubkey(&e.track),
             ),
 
@@ -76,15 +76,15 @@ impl ToNetworkEvent for TapedriveEvent {
 
             TapedriveEvent::NodeRegistered(e) => NetworkEvent::new(
                 EventType::NodeOnline,
-                format!("Node #{} registered", e.id),
+                format!("Node #{} registered", e.id.0),
                 truncate_pubkey(&e.node),
             ),
 
             TapedriveEvent::NodeJoinedCommittee(e) => NetworkEvent::new(
                 EventType::NodeOnline,
                 format!(
-                    "Node joined committee (epoch {}, stake: {})",
-                    e.activation_epoch,
+                    "Node joined committee (E{}, stake: {} TAPE)",
+                    e.activation_epoch.0,
                     u64::from_le_bytes(e.stake) / 1_000_000
                 ),
                 "",
@@ -92,7 +92,7 @@ impl ToNetworkEvent for TapedriveEvent {
 
             TapedriveEvent::NodeSynced(e) => NetworkEvent::new(
                 EventType::NodeOnline,
-                format!("Node #{} synced (epoch {})", e.id, e.epoch),
+                format!("Node #{} synced (E{})", e.id.0, e.epoch.0),
                 truncate_pubkey(&e.node),
             ),
         }
@@ -106,6 +106,16 @@ fn truncate_pubkey(pubkey: &Pubkey) -> String {
         format!("{}...{}", &s[..4], &s[s.len() - 4..])
     } else {
         s
+    }
+}
+
+/// Format StorageUnits (MB) for human-readable display.
+fn format_size(size: tape_core::types::StorageUnits) -> String {
+    let mb = size.0;
+    if mb >= 1_000 {
+        format!("{:.1} GB", mb as f64 / 1_000.0)
+    } else {
+        format!("{} MB", mb)
     }
 }
 

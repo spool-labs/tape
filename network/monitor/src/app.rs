@@ -130,6 +130,8 @@ pub struct NodeState {
     pub assigned_spools: Vec<SpoolIndex>,
     /// Block processor stats from the node (if online).
     pub stats: Option<NodeStats>,
+    /// FSM action display string (e.g. "Sync", "Advance", "Wait 3s").
+    pub fsm_action: String,
 }
 
 impl Default for NodeState {
@@ -151,6 +153,7 @@ impl Default for NodeState {
             spool_count: 0,
             assigned_spools: Vec::new(),
             stats: None,
+            fsm_action: String::new(),
         }
     }
 }
@@ -205,6 +208,8 @@ pub enum EventType {
     BlobDownloaded,
     /// Epoch transitioned.
     EpochTransition,
+    /// Snapshot epoch fully certified.
+    SnapshotCertified,
     /// Error occurred.
     Error,
 }
@@ -220,6 +225,7 @@ impl EventType {
             EventType::SliceUploaded => "↑",
             EventType::BlobDownloaded => "↓",
             EventType::EpochTransition => "→",
+            EventType::SnapshotCertified => "S",
             EventType::Error => "✗",
         }
     }
@@ -401,6 +407,20 @@ pub struct App {
     /// Spool assignment array for current committee (for highlighting).
     pub spools_current: Option<[u8; SPOOL_COUNT]>,
 
+    // Snapshot state
+    /// Last fully certified snapshot epoch.
+    pub snapshot_latest_epoch: EpochNumber,
+    /// Epoch currently being certified.
+    pub snapshot_certifying_epoch: EpochNumber,
+    /// Number of chunks certified for certifying_epoch.
+    pub snapshot_certified_count: u64,
+    /// Total snapshot tracks registered.
+    pub snapshot_total_count: u64,
+    /// Cumulative snapshot data size.
+    pub snapshot_total_size: StorageUnits,
+    /// Whether snapshot data is available.
+    pub snapshot_available: bool,
+
     // Network stats
     /// Aggregated network statistics.
     pub stats: NetworkStats,
@@ -502,7 +522,7 @@ impl EventFilter {
             ),
             EventFilter::System => matches!(
                 event_type,
-                EventType::EpochTransition | EventType::Error | EventType::SliceUploaded | EventType::BlobDownloaded
+                EventType::EpochTransition | EventType::Error | EventType::SliceUploaded | EventType::BlobDownloaded | EventType::SnapshotCertified
             ),
         }
     }
@@ -540,6 +560,13 @@ impl App {
             spool_assignments: Vec::new(),
             spools_prev: None,
             spools_current: None,
+
+            snapshot_latest_epoch: EpochNumber(0),
+            snapshot_certifying_epoch: EpochNumber(0),
+            snapshot_certified_count: 0,
+            snapshot_total_count: 0,
+            snapshot_total_size: StorageUnits(0),
+            snapshot_available: false,
 
             stats: NetworkStats::default(),
 
@@ -834,6 +861,7 @@ impl App {
                 spool_count: *spools,
                 assigned_spools: (0..*spools).collect(),
                 stats: None,
+                fsm_action: String::new(),
             })
             .collect();
 
@@ -857,6 +885,7 @@ impl App {
                 spool_count: (50 - i as u16 / 2).max(5),
                 assigned_spools: Vec::new(),
                 stats: None,
+                fsm_action: String::new(),
             });
         }
 

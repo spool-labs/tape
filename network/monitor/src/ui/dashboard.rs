@@ -10,7 +10,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::app::{App, EpochPhase};
+use crate::app::App;
+use crate::app::EpochPhase;
 use crate::theme::Theme;
 use crate::ui::widgets::{EpochProgress, EventLog, NodeGrid, SpoolBar, SpoolHighlight};
 
@@ -183,6 +184,51 @@ impl<'a> Dashboard<'a> {
 
         Paragraph::new(lines).render(inner, buf);
     }
+
+    /// Render snapshot certification status panel.
+    fn render_snapshot(&self, area: Rect, buf: &mut Buffer) {
+        let block = Block::default()
+            .title(Span::styled(" SNAPSHOT ", self.theme.header_style()))
+            .borders(Borders::ALL)
+            .border_style(self.theme.border_style());
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        if inner.height < 1 || inner.width < 30 {
+            return;
+        }
+
+        let line = if !self.app.snapshot_available {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("Not initialized", self.theme.dim_style()),
+            ])
+        } else {
+            let certified_str = format!("Certified: E{}", self.app.snapshot_latest_epoch.0);
+            let certifying_str = format!(
+                "Certifying: E{} ({}/{})",
+                self.app.snapshot_certifying_epoch.0,
+                self.app.snapshot_certified_count,
+                tape_core::erasure::SPOOL_GROUP_COUNT,
+            );
+            let tracks_str = format!("{} tracks", format_number(self.app.snapshot_total_count));
+            let size_str = format_storage_units(self.app.snapshot_total_size.0);
+
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(certified_str, Style::default().fg(ratatui::style::Color::Green)),
+                Span::styled(" | ", self.theme.dim_style()),
+                Span::styled(certifying_str, self.theme.text_style()),
+                Span::styled(" | ", self.theme.dim_style()),
+                Span::styled(tracks_str, self.theme.text_style()),
+                Span::styled(" | ", self.theme.dim_style()),
+                Span::styled(size_str, self.theme.text_style()),
+            ])
+        };
+
+        Paragraph::new(line).render(inner, buf);
+    }
 }
 
 impl Widget for Dashboard<'_> {
@@ -193,10 +239,11 @@ impl Widget for Dashboard<'_> {
             .constraints([
                 Constraint::Length(3),   // Header
                 Constraint::Length(4),   // Epoch progress
-                Constraint::Length(5),   // NETWORK stats (more compact)
+                Constraint::Length(5),   // NETWORK stats
+                Constraint::Length(3),   // Snapshot status
                 Constraint::Length(14),  // Three committees
-                Constraint::Length(11), // Spool distribution (+1)
-                Constraint::Min(7),      // Log (-1)
+                Constraint::Length(17),  // Spool distribution (grouped 7×3 blocks)
+                Constraint::Min(7),      // Log
             ])
             .split(area);
 
@@ -209,6 +256,9 @@ impl Widget for Dashboard<'_> {
         // Render full-width network stats
         self.render_network_stats(main_chunks[2], buf);
 
+        // Render snapshot status
+        self.render_snapshot(main_chunks[3], buf);
+
         // Split committees into three columns
         let committee_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -217,7 +267,7 @@ impl Widget for Dashboard<'_> {
                 Constraint::Percentage(34),
                 Constraint::Percentage(33),
             ])
-            .split(main_chunks[3]);
+            .split(main_chunks[4]);
 
         // Render PREV committee
         NodeGrid::new(self.theme)
@@ -257,10 +307,10 @@ impl Widget for Dashboard<'_> {
             _ => SpoolHighlight::Unavailable,
         };
 
-        SpoolBar::new(self.theme).highlight(highlight).render(main_chunks[4], buf);
+        SpoolBar::new(self.theme).highlight(highlight).render(main_chunks[5], buf);
 
         // Render log (renamed from events)
-        EventLog::new(self.app, self.theme).render(main_chunks[5], buf);
+        EventLog::new(self.app, self.theme).render(main_chunks[6], buf);
     }
 }
 
@@ -289,6 +339,17 @@ fn format_tape(flux: u64) -> String {
         format!("{} μTAPE", format_number(flux))
     } else {
         "0 TAPE".to_string()
+    }
+}
+
+/// Format storage units (MB) for display.
+fn format_storage_units(mb: u64) -> String {
+    if mb >= 1_000_000 {
+        format!("{:.1} TB", mb as f64 / 1_000_000.0)
+    } else if mb >= 1_000 {
+        format!("{:.1} GB", mb as f64 / 1_000.0)
+    } else {
+        format!("{} MB", mb)
     }
 }
 

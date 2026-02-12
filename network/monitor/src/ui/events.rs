@@ -36,6 +36,7 @@ impl<'a> EventListView<'a> {
             EventType::SliceUploaded => Style::default().fg(ratatui::style::Color::Blue),
             EventType::BlobDownloaded => Style::default().fg(ratatui::style::Color::Magenta),
             EventType::EpochTransition => self.theme.text_style(),
+            EventType::SnapshotCertified => Style::default().fg(ratatui::style::Color::Cyan),
             EventType::Error => self.theme.error_style(),
         }
     }

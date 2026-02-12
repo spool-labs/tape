@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use tape_api::state::{Archive, Epoch, System};
+use tape_api::state::{Archive, Epoch, SnapshotState, System};
 
 use super::{NetworkEvent, NodeState};
 
@@ -27,6 +27,7 @@ pub struct DataCache {
     system: Option<System>,
     epoch: Option<Epoch>,
     archive: Option<Archive>,
+    snapshot: Option<SnapshotState>,
     nodes: Vec<NodeState>,
 
     // Event log (newest first)
@@ -54,6 +55,7 @@ impl DataCache {
             system: None,
             epoch: None,
             archive: None,
+            snapshot: None,
             nodes: Vec::new(),
             events: VecDeque::with_capacity(MAX_EVENTS),
             refresh_interval,
@@ -184,6 +186,20 @@ impl DataCache {
     }
 
     // ========================================================================
+    // Snapshot State
+    // ========================================================================
+
+    /// Get the cached SnapshotState account data.
+    pub fn get_snapshot(&self) -> Option<&SnapshotState> {
+        self.snapshot.as_ref()
+    }
+
+    /// Update the cached SnapshotState account data.
+    pub fn update_snapshot(&mut self, snapshot: Option<SnapshotState>) {
+        self.snapshot = snapshot;
+    }
+
+    // ========================================================================
     // Node State
     // ========================================================================
 
@@ -310,6 +326,7 @@ impl DataCache {
         self.system = None;
         self.epoch = None;
         self.archive = None;
+        self.snapshot = None;
         self.nodes.clear();
         self.rpc_connected = false;
         self.last_slot = None;
