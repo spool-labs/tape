@@ -129,6 +129,10 @@ impl SolanaRpc {
     }
 
     /// Handle error and determine if retry should continue.
+    ///
+    /// Failover is best-effort: if all endpoints have been tried, we still
+    /// retry on the current endpoint using backoff. Backoff is the sole
+    /// authority on when to stop retrying.
     async fn handle_error(
         &self,
         _method: &str,
@@ -157,20 +161,13 @@ impl SolanaRpc {
             metrics.record_retry(_method, err.category());
         }
 
-        // Try failover if appropriate
+        // Try failover if appropriate (best-effort — if exhausted, we still
+        // retry on the current endpoint via backoff below)
         if err.should_failover() {
-            if let Err(e) = self.try_failover().await {
-                #[cfg(feature = "metrics")]
-                tracing::warn!(error = ?e, "Failover failed");
-
-                // If failover fails with exhausted endpoints, return that error
-                if matches!(e, RpcError::AllEndpointsFailed { .. }) {
-                    return Err(e);
-                }
-            }
+            let _ = self.try_failover().await;
         }
 
-        // Check if we can retry
+        // Backoff controls when to stop retrying
         if let Some(delay) = backoff.next_delay() {
             #[cfg(feature = "metrics")]
             tracing::debug!(
@@ -188,6 +185,9 @@ impl SolanaRpc {
     }
 
     /// Handle timeout and determine if retry should continue.
+    ///
+    /// Failover is best-effort: if all endpoints have been tried, we still
+    /// retry on the current endpoint using backoff.
     async fn handle_timeout(
         &self,
         _method: &str,
@@ -207,14 +207,10 @@ impl SolanaRpc {
             metrics.record_retry(_method, "timeout");
         }
 
-        // Try failover on timeout
-        if let Err(e) = self.try_failover().await {
-            if matches!(e, RpcError::AllEndpointsFailed { .. }) {
-                return Err(e);
-            }
-        }
+        // Try failover on timeout (best-effort)
+        let _ = self.try_failover().await;
 
-        // Check if we can retry
+        // Backoff controls when to stop retrying
         if let Some(delay) = backoff.next_delay() {
             #[cfg(feature = "metrics")]
             tracing::debug!(
@@ -230,8 +226,8 @@ impl SolanaRpc {
         }
     }
 
-    /// Reset failover state on success.
-    async fn on_success(&self) {
+    /// Reset failover state for a fresh operation.
+    async fn reset_failover(&self) {
         let mut failover = self.failover.write().await;
         failover.reset();
     }
@@ -276,6 +272,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -285,7 +282,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(slot)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -310,6 +307,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -319,7 +317,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(hash)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -346,6 +344,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
         let commitment = self.config.commitment;
 
         loop {
@@ -368,7 +367,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(block)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -393,6 +392,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -402,7 +402,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(height)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -429,6 +429,7 @@ impl Rpc for SolanaRpc {
 
         let pubkey = *pubkey;
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -438,7 +439,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(account)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -468,6 +469,7 @@ impl Rpc for SolanaRpc {
 
         let pubkeys = pubkeys.to_vec();
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -481,7 +483,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(accounts)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -517,6 +519,7 @@ impl Rpc for SolanaRpc {
 
         let program_id = *program_id;
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let config_clone = config.clone();
@@ -531,7 +534,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(accounts)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -563,6 +566,7 @@ impl Rpc for SolanaRpc {
 
         let transaction = transaction.clone();
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -576,7 +580,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(sig)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -606,6 +610,7 @@ impl Rpc for SolanaRpc {
 
         let transaction = transaction.clone();
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -619,7 +624,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(sig)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
@@ -654,6 +659,7 @@ impl Rpc for SolanaRpc {
 
         let signature = *signature;
         let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        self.reset_failover().await;
 
         loop {
             let result = {
@@ -667,7 +673,7 @@ impl Rpc for SolanaRpc {
 
             match result {
                 Ok(Ok(status)) => {
-                    self.on_success().await;
+                    self.reset_failover().await;
 
                     #[cfg(feature = "metrics")]
                     if let Some(metrics) = &self.metrics {
