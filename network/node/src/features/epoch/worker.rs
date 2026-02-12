@@ -546,8 +546,9 @@ pub async fn run(
                 persist_committee_for_epoch(&ctx, completed_epoch).await;
             }
 
-            // Snapshot build for the completed epoch
-            if in_committee {
+            // Snapshot build for the completed epoch.
+            // Don't abort an in-progress snapshot — let it finish its retries.
+            if in_committee && !snapshot_task.is_running().await {
                 let snap_ctx = Arc::clone(&ctx);
                 snapshot_task
                     .spawn(async move {
@@ -565,6 +566,11 @@ pub async fn run(
                         }
                     })
                     .await;
+            } else if in_committee {
+                debug!(
+                    epoch = completed_epoch.as_u64(),
+                    "Skipping snapshot build — previous snapshot still in progress"
+                );
             }
 
             last_evaluated_epoch = current_epoch;

@@ -325,6 +325,13 @@ async fn try_certify_chunk<S: Store>(
         leaves,
     );
 
+    debug!(
+        chunk_index = chunk_index,
+        epoch = epoch.as_u64(),
+        commitment = %hex::encode(commitment.0),
+        "Submitting RegisterSnapshot"
+    );
+
     match ctx.rpc.send_instructions(&ctx.keypair, vec![register_ix]).await {
         Ok(sig) => {
             debug!(

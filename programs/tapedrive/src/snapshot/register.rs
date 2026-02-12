@@ -150,3 +150,101 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_test::*;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_crypto::merkle::hash_leaf;
+
+    #[test]
+    fn test_register_snapshot() {
+        let fee_payer = Pubkey::new_unique();
+        let (system_address, _) = system_pda();
+        let (epoch_address, _) = epoch_pda();
+        let (tape_address, _) = tape_pda(system_address);
+        let (node_address, _) = node_pda(fee_payer);
+        let (snapshot_state_address, _) = snapshot_state_pda();
+
+        let epoch_number = EpochNumber(5);
+        let spool_group = 7u64;
+
+        // Build valid leaf hashes and commitment
+        let leaves: [Hash; SPOOL_GROUP_SIZE] = {
+            let mut arr = [Hash::default(); SPOOL_GROUP_SIZE];
+            for i in 0..SPOOL_GROUP_SIZE {
+                arr[i] = hash_leaf(&vec![i as u8; 100]);
+            }
+            arr
+        };
+        let commitment = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&leaves);
+
+        // PDA derived from commitment
+        let (track_address, _) = snapshot_pda(epoch_number, commitment);
+
+        // Set up a committee with our node
+        let node_id = NodeId(42);
+        let mut system = System::zeroed();
+        system.committee = Committee::from_members(&[CommitteeMember {
+            id: node_id,
+            stake: TAPE(1_000_000),
+            ..CommitteeMember::zeroed()
+        }]);
+
+        let node = Node {
+            id: node_id,
+            authority: fee_payer,
+            ..Node::zeroed()
+        };
+
+        let tape = Tape {
+            authority: system_address,
+            capacity: StorageUnits(100_000),
+            active_epoch: EpochNumber(0),
+            expiry_epoch: EpochNumber(100),
+            ..Tape::zeroed()
+        };
+
+        let epoch = Epoch {
+            id: EpochNumber(epoch_number.as_u64() + 1),
+            ..Epoch::zeroed()
+        };
+
+        let snapshot_state = SnapshotState::zeroed();
+        let profile = EncodingProfile::clay_default();
+
+        let instruction = build_register_snapshot_ix(
+            fee_payer,
+            epoch_number,
+            spool_group,
+            commitment,
+            profile,
+            10_000_000, // stripe_size: 10MB
+            1,          // stripe_count
+            leaves,
+        );
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            pda(node_address, node.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(epoch_address, epoch.pack(), tapedrive::ID),
+            pda(tape_address, tape.pack(), tapedrive::ID),
+            empty(track_address),
+            pda(snapshot_state_address, snapshot_state.pack(), tapedrive::ID),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+            ],
+        );
+    }
+
+}
