@@ -63,6 +63,11 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static, V: Send + Sync + 'static> Cle
         self.entries.read().await.len()
     }
 
+    /// The configured time-to-live for entries.
+    pub fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
     /// Cancel token for shutdown.
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()

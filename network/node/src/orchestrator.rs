@@ -68,6 +68,15 @@ async fn run_inner(
     let cancel = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
 
+    // Spawn deferral cleanup task (evicts expired entries)
+    tasks.spawn({
+        let deferral = Arc::clone(&deferral);
+        async move {
+            deferral.run_cleanup().await;
+            Ok(())
+        }
+    });
+
     // Capture span for spawned tasks (they don't inherit parent span automatically)
     let span = tracing::Span::current();
 
@@ -135,6 +144,7 @@ async fn run_inner(
     // Initiate graceful shutdown
     info!("Initiating graceful shutdown");
     cancel.cancel();
+    deferral.cancel_token().cancel();
 
     // Cancel all in-progress recovery tasks
     track_sync.cancel_all().await;

@@ -29,7 +29,7 @@ use crate::core::{Backoff, BackoffConfig, ManagedTask};
 use tape_store::ops::SpoolOps;
 use tape_store::types::SpoolStatus;
 
-use crate::features::lifecycle::{NodeEvent, evaluate_transition, start_node_recovery, run_metadata_sync};
+use crate::features::lifecycle::{NodeEvent, evaluate_transition, is_replaying, start_node_recovery, run_metadata_sync};
 use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler, start_spool_recovery};
 use crate::features::sync::SpoolSyncHandler;
 
@@ -267,15 +267,13 @@ async fn spawn_recovery(
 async fn spawn_metadata_sync(
     task: &ManagedTask,
     ctx: &Arc<NodeContext>,
-    sync_handler: &SpoolSyncHandler,
     cancel: &CancellationToken,
 ) {
     let ctx = Arc::clone(ctx);
     let cancel = cancel.clone();
-    let sync_handler = sync_handler.clone();
 
     task.spawn(async move {
-        run_metadata_sync(ctx, sync_handler, cancel).await;
+        run_metadata_sync(ctx, cancel).await;
     })
     .await;
 }
@@ -290,8 +288,28 @@ async fn spawn_bootstrap(
     let cancel = cancel.clone();
 
     task.spawn(async move {
-        match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(ctx, cancel).await {
-            Ok(()) => info!("Snapshot bootstrap complete"),
+        match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
+            Arc::clone(&ctx), cancel,
+        ).await {
+            Ok(()) => {
+                info!("Snapshot bootstrap complete");
+                // Evaluate FSM transition now rather than waiting for block
+                // processor to fire EpochChanged. Prevents a tight loop of
+                // no-op bootstrap spawns while status stays RecoveryReplay.
+                let current_status = ctx.control_plane.get_node_status();
+                if is_replaying(&current_status) {
+                    let event = NodeEvent::EpochChanged {
+                        processed_epoch: ctx.control_plane.current_epoch(),
+                        latest_epoch: ctx.control_plane.chain_epoch(),
+                        in_committee: ctx.control_plane.is_in_committee(),
+                        new_spools: vec![],
+                    };
+                    if let Some(new_status) = evaluate_transition(&current_status, &event) {
+                        info!(from = ?current_status, to = ?new_status, "post-bootstrap transition");
+                        apply_node_status_transition(&ctx, new_status);
+                    }
+                }
+            }
             Err(e) => warn!(error = %e, "Snapshot bootstrap failed, block processor will catch up"),
         }
     })
@@ -389,7 +407,7 @@ pub async fn run(
             NodeStatus::RecoverMetadata => {
                 if !metadata_task.is_running().await {
                     info!("dispatching metadata sync task");
-                    spawn_metadata_sync(&metadata_task, &ctx, &sync_handler, &cancel).await;
+                    spawn_metadata_sync(&metadata_task, &ctx, &cancel).await;
                 }
             }
             NodeStatus::Active => {

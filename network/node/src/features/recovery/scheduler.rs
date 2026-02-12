@@ -58,7 +58,7 @@ impl TrackSyncHandler {
     /// track-level concurrency permit.
     ///
     /// If a sync for this track is already in progress, the existing one is
-    /// cancelled first.
+    /// cancelled first. Completed entries are evicted opportunistically.
     pub async fn start_sync<F>(
         &self,
         track_address: Pubkey,
@@ -67,6 +67,12 @@ impl TrackSyncHandler {
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
+        // Opportunistically evict completed entries
+        {
+            let mut map = self.in_progress.write().await;
+            map.retain(|_, (h, _)| !h.is_finished());
+        }
+
         // Cancel any existing sync for this track
         self.cancel_sync(&track_address).await;
 
@@ -114,11 +120,6 @@ impl TrackSyncHandler {
             cancel.cancel();
             let _ = handle.await;
         }
-    }
-
-    /// Remove a completed task from tracking (called after join).
-    pub async fn remove_completed(&self, track_address: &Pubkey) {
-        self.in_progress.write().await.remove(track_address);
     }
 
     /// Number of currently in-progress syncs.

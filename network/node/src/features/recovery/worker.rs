@@ -246,13 +246,11 @@ pub async fn recover_track_slice<S: Store + 'static>(
                     }
                     Err(RecoveryError::InconsistencyProof { track, computed_root }) => {
                         warn!(track = %track, "inconsistency detected, submitting proof");
-                        let ctx = Arc::clone(&ctx);
-                        let ti = track_info.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = crate::features::inconsistency::handle_inconsistency(ctx, track, computed_root, &ti).await {
-                                warn!(track = %track, error = %e, "inconsistency proof failed");
-                            }
-                        });
+                        if let Err(e) = crate::features::inconsistency::handle_inconsistency(
+                            Arc::clone(&ctx), track, computed_root, &track_info
+                        ).await {
+                            warn!(track = %track, error = %e, "inconsistency proof failed");
+                        }
                         deferral.end_recovery(&track_address).await;
                         return;
                     }
