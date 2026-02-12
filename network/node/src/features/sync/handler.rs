@@ -14,23 +14,16 @@ use tape_store::types::Pubkey;
 
 use super::types::{SyncSlice, SyncSpoolRequest};
 
+use crate::core::{Backoff, BackoffConfig};
+
 /// Default batch size for sync requests.
 pub const DEFAULT_BATCH_SIZE: u32 = 1000;
 
 /// Default max concurrent sync operations.
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 10;
 
-/// Minimum backoff delay between retry attempts.
-const MIN_BACKOFF: Duration = Duration::from_secs(60);
-
-/// Maximum backoff delay between retry attempts.
-const MAX_BACKOFF: Duration = Duration::from_secs(600);
-
 /// Default timeout before switching from spool sync to direct recovery.
 pub const DEFAULT_SPOOL_SYNC_TIMEOUT: Duration = Duration::from_secs(12 * 3600);
-
-/// Maximum retry attempts before falling back to recovery.
-const MAX_RETRY_ATTEMPTS: u32 = 10;
 
 /// Error type for spool sync operations.
 #[derive(Debug, thiserror::Error)]
@@ -238,8 +231,8 @@ impl SpoolSyncHandler {
 
     /// Sync a spool with exponential backoff retry.
     ///
-    /// Retries on transient failures with exponential backoff (1min → 10min).
-    /// Returns `Err(SyncError::TimedOut)` if the total timeout is exceeded,
+    /// Retries on transient failures with exponential backoff (60s → 10min, max 10 attempts).
+    /// Returns `Err(SyncError::TimedOut)` if the total timeout or max retries are exceeded,
     /// signaling the caller should fall back to direct recovery.
     pub async fn sync_spool_with_retry<F, B>(
         &self,
@@ -256,7 +249,7 @@ impl SpoolSyncHandler {
         B: FnMut(&Pubkey) -> Result<(), SyncError>,
     {
         let deadline = tokio::time::Instant::now() + self.recovery_timeout;
-        let mut attempt = 0u32;
+        let mut backoff = Backoff::new(BackoffConfig::spool_sync());
         let mut cursor = resume_cursor.unwrap_or_default();
 
         loop {
@@ -273,15 +266,6 @@ impl SpoolSyncHandler {
                 .await
             {
                 Ok(count) => return Ok(count),
-                Err(e) if attempt >= MAX_RETRY_ATTEMPTS => {
-                    warn!(
-                        spool,
-                        attempts = attempt,
-                        error = %e,
-                        "spool sync exhausted retries, falling back to recovery"
-                    );
-                    return Err(SyncError::TimedOut(spool));
-                }
                 Err(e) => {
                     if tokio::time::Instant::now() >= deadline {
                         warn!(
@@ -292,21 +276,30 @@ impl SpoolSyncHandler {
                         return Err(SyncError::TimedOut(spool));
                     }
 
-                    let backoff = MIN_BACKOFF * 2u32.saturating_pow(attempt);
-                    let backoff = backoff.min(MAX_BACKOFF);
-                    attempt += 1;
+                    let delay = match backoff.next_delay() {
+                        Some(d) => d,
+                        None => {
+                            warn!(
+                                spool,
+                                attempts = backoff.attempt(),
+                                error = %e,
+                                "spool sync exhausted retries, falling back to recovery"
+                            );
+                            return Err(SyncError::TimedOut(spool));
+                        }
+                    };
 
                     warn!(
                         spool,
-                        attempt,
-                        backoff_secs = backoff.as_secs(),
+                        attempt = backoff.attempt(),
+                        backoff_secs = delay.as_secs(),
                         error = %e,
                         "spool sync failed, retrying"
                     );
 
                     tokio::select! {
                         _ = cancel.cancelled() => return Err(SyncError::Storage("cancelled".into())),
-                        _ = tokio::time::sleep(backoff) => {}
+                        _ = tokio::time::sleep(delay) => {}
                     }
                 }
             }

@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
+use crate::core::{Backoff, BackoffConfig, ManagedTask};
 use tape_store::ops::SpoolOps;
 use tape_store::types::SpoolStatus;
 
@@ -53,49 +54,6 @@ pub enum FsmSignal {
 /// Polling interval for epoch advancement monitoring.
 pub const EPOCH_ADVANCE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Minimum backoff for SyncEpoch tx retries.
-const SYNC_EPOCH_MIN_BACKOFF: Duration = Duration::from_secs(1);
-
-/// Maximum backoff for SyncEpoch tx retries.
-const SYNC_EPOCH_MAX_BACKOFF: Duration = Duration::from_secs(3600);
-
-/// Tracks exponential backoff for SyncEpoch transaction failures.
-struct SyncEpochRetry {
-    consecutive_failures: u32,
-    last_attempt: Option<tokio::time::Instant>,
-}
-
-impl SyncEpochRetry {
-    fn new() -> Self {
-        Self {
-            consecutive_failures: 0,
-            last_attempt: None,
-        }
-    }
-
-    /// Returns true if enough time has elapsed since the last failure.
-    fn should_attempt(&self) -> bool {
-        match self.last_attempt {
-            None => true,
-            Some(last) => {
-                let backoff =
-                    SYNC_EPOCH_MIN_BACKOFF * 2u32.saturating_pow(self.consecutive_failures);
-                let backoff = backoff.min(SYNC_EPOCH_MAX_BACKOFF);
-                last.elapsed() >= backoff
-            }
-        }
-    }
-
-    fn record_failure(&mut self) {
-        self.last_attempt = Some(tokio::time::Instant::now());
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-    }
-
-    fn reset(&mut self) {
-        self.consecutive_failures = 0;
-        self.last_attempt = None;
-    }
-}
 
 /// Compute units required for AdvanceEpoch instruction.
 pub const ADVANCE_EPOCH_COMPUTE_UNITS: u32 = 1_400_000;
@@ -284,123 +242,60 @@ fn apply_node_status_transition(
     }
 }
 
-/// Handle a NodeStatus transition by dispatching the appropriate action.
-fn dispatch_node_status(
+/// Spawn recovery work into the recovery ManagedTask.
+async fn spawn_recovery(
+    task: &ManagedTask,
     ctx: &Arc<NodeContext>,
-    new_status: &NodeStatus,
     epoch: tape_core::types::EpochNumber,
     track_sync: &Arc<TrackSyncHandler>,
     deferral: &Arc<LiveUploadDeferral>,
-    sync_handler: &SpoolSyncHandler,
     cancel: &CancellationToken,
 ) {
-    match new_status {
-        NodeStatus::RecoveryInProgress { epoch: recovery_epoch } => {
-            let our_spools = ctx.control_plane.get_our_spools();
-            let ctx = Arc::clone(ctx);
-            let track_sync = Arc::clone(track_sync);
-            let deferral = Arc::clone(deferral);
-            let cancel = cancel.clone();
-            let recovery_epoch = *recovery_epoch;
+    let our_spools = ctx.control_plane.get_our_spools();
+    let ctx = Arc::clone(ctx);
+    let track_sync = Arc::clone(track_sync);
+    let deferral = Arc::clone(deferral);
+    let cancel = cancel.clone();
 
-            tokio::spawn(async move {
-                start_node_recovery(ctx, recovery_epoch, our_spools, track_sync, deferral, cancel)
-                    .await;
-            });
-        }
-        NodeStatus::RecoverMetadata => {
-            let ctx = Arc::clone(ctx);
-            let cancel = cancel.clone();
-            let sync_handler = sync_handler.clone();
-            tokio::spawn(async move {
-                run_metadata_sync(ctx, sync_handler, cancel).await;
-            });
-        }
-        NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
-            let ctx = Arc::clone(ctx);
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
-                    ctx, cancel
-                ).await {
-                    Ok(()) => info!("Snapshot bootstrap from lag detection complete"),
-                    Err(e) => warn!(error = %e, "Snapshot bootstrap failed, block processor will catch up"),
-                }
-            });
-        }
-        NodeStatus::Active => {
-            // Directly active — mark local sync complete
-            ctx.control_plane.mark_local_sync_complete(epoch);
-        }
-        _ => {}
-    }
+    task.spawn(async move {
+        start_node_recovery(ctx, epoch, our_spools, track_sync, deferral, cancel).await;
+    })
+    .await;
 }
 
-/// Resume recovery on startup based on persisted NodeStatus.
-fn resume_from_persisted_status(
+/// Spawn metadata sync into the metadata ManagedTask.
+async fn spawn_metadata_sync(
+    task: &ManagedTask,
     ctx: &Arc<NodeContext>,
-    track_sync: &Arc<TrackSyncHandler>,
-    deferral: &Arc<LiveUploadDeferral>,
     sync_handler: &SpoolSyncHandler,
     cancel: &CancellationToken,
 ) {
-    let status = ctx.control_plane.get_node_status();
-    match &status {
-        NodeStatus::RecoveryInProgress { epoch } => {
-            info!(epoch = epoch.as_u64(), "resuming node recovery from persisted state");
-            let our_spools = ctx.control_plane.get_our_spools();
-            let ctx = Arc::clone(ctx);
-            let track_sync = Arc::clone(track_sync);
-            let deferral = Arc::clone(deferral);
-            let cancel = cancel.clone();
-            let epoch = *epoch;
+    let ctx = Arc::clone(ctx);
+    let cancel = cancel.clone();
+    let sync_handler = sync_handler.clone();
 
-            tokio::spawn(async move {
-                start_node_recovery(ctx, epoch, our_spools, track_sync, deferral, cancel).await;
-            });
+    task.spawn(async move {
+        run_metadata_sync(ctx, sync_handler, cancel).await;
+    })
+    .await;
+}
+
+/// Spawn bootstrap into the bootstrap ManagedTask.
+async fn spawn_bootstrap(
+    task: &ManagedTask,
+    ctx: &Arc<NodeContext>,
+    cancel: &CancellationToken,
+) {
+    let ctx = Arc::clone(ctx);
+    let cancel = cancel.clone();
+
+    task.spawn(async move {
+        match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(ctx, cancel).await {
+            Ok(()) => info!("Snapshot bootstrap complete"),
+            Err(e) => warn!(error = %e, "Snapshot bootstrap failed, block processor will catch up"),
         }
-        NodeStatus::RecoverMetadata => {
-            info!("resuming metadata sync from persisted state");
-            let ctx = Arc::clone(ctx);
-            let cancel = cancel.clone();
-            let sync_handler = sync_handler.clone();
-            tokio::spawn(async move {
-                run_metadata_sync(ctx, sync_handler, cancel).await;
-            });
-        }
-        NodeStatus::Active => {
-            let our_spools = ctx.control_plane.get_our_spools();
-            let has_recovering = our_spools.iter().any(|&s| {
-                ctx.storage.store.get_spool_status(s).ok().flatten()
-                    != Some(SpoolStatus::Active)
-            });
-            if has_recovering {
-                info!("resuming spool recovery on restart");
-                let ctx = Arc::clone(ctx);
-                let cancel = cancel.clone();
-                let sync_handler = sync_handler.clone();
-                tokio::spawn(async move {
-                    start_spool_recovery(ctx, sync_handler, cancel).await;
-                });
-            } else {
-                ctx.control_plane.mark_local_sync_complete(ctx.control_plane.current_epoch());
-            }
-        }
-        NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
-            info!("resuming from replay state — triggering snapshot bootstrap");
-            let ctx = Arc::clone(ctx);
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
-                    ctx, cancel
-                ).await {
-                    Ok(()) => info!("Snapshot bootstrap from resume complete"),
-                    Err(e) => warn!(error = %e, "Snapshot bootstrap failed on resume"),
-                }
-            });
-        }
-        _ => {}
-    }
+    })
+    .await;
 }
 
 /// Run the FSM-driven network sync loop.
@@ -418,19 +313,20 @@ pub async fn run(
         .with_batch_size(ctx.config.sync_batch_size.unwrap_or(1000) as u32)
         .with_insecure(ctx.config.insecure);
 
+    // Managed tasks for exclusive background operations
+    let bootstrap_task = ManagedTask::new("bootstrap");
+    let recovery_task = ManagedTask::new("recovery");
+    let metadata_task = ManagedTask::new("metadata_sync");
+    let snapshot_task = ManagedTask::new("snapshot_build");
+
     // If lagging, attempt snapshot bootstrap before grinding through blocks
     if ctx.control_plane.is_catching_up() {
-        let node_status = ctx.control_plane.get_node_status();
-        if matches!(node_status, NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. })
-            || ctx.control_plane.is_catching_up()
-        {
-            info!("Node is lagging, attempting snapshot bootstrap");
-            match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
-                Arc::clone(&ctx), cancel.clone()
-            ).await {
-                Ok(()) => info!("Snapshot bootstrap complete"),
-                Err(e) => warn!(error = %e, "Snapshot bootstrap unavailable, falling back to block replay"),
-            }
+        info!("Node is lagging, attempting snapshot bootstrap");
+        match crate::features::snapshot::bootstrap::bootstrap_from_snapshots(
+            Arc::clone(&ctx), cancel.clone()
+        ).await {
+            Ok(()) => info!("Snapshot bootstrap complete"),
+            Err(e) => warn!(error = %e, "Snapshot bootstrap unavailable, falling back to block replay"),
         }
     }
 
@@ -454,16 +350,75 @@ pub async fn run(
 
     info!("Catch-up complete, entering main FSM loop");
 
-    // Resume any in-progress recovery from persisted state
-    resume_from_persisted_status(&ctx, &track_sync, &deferral, &sync_handler, &cancel);
-
     let mut interval = tokio::time::interval(EPOCH_ADVANCE_POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut sync_retry = SyncEpochRetry::new();
+    let mut sync_retry = Backoff::new(BackoffConfig::sync_epoch());
     let mut last_evaluated_epoch = ctx.control_plane.current_epoch();
     let mut prev_spools = ctx.control_plane.get_our_spools();
 
     loop {
+        // Poll completed managed tasks — propagate panics
+        for task in [&bootstrap_task, &recovery_task, &metadata_task, &snapshot_task] {
+            if let Some(result) = task.poll().await {
+                match result {
+                    Ok(()) => debug!(task = task.name(), "background task completed"),
+                    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                    Err(e) => warn!(task = task.name(), error = %e, "background task failed"),
+                }
+            }
+        }
+
+        // Loop-driven dispatch: check NodeStatus and start work if needed
+        let status = ctx.control_plane.get_node_status();
+        match &status {
+            NodeStatus::RecoveryReplay | NodeStatus::PartialReplay { .. } => {
+                if !bootstrap_task.is_running().await {
+                    info!(status = ?status, "dispatching bootstrap task");
+                    spawn_bootstrap(&bootstrap_task, &ctx, &cancel).await;
+                }
+            }
+            NodeStatus::RecoveryInProgress { epoch } => {
+                if !recovery_task.is_running().await {
+                    info!(epoch = epoch.as_u64(), "dispatching recovery task");
+                    spawn_recovery(
+                        &recovery_task, &ctx, *epoch, &track_sync, &deferral, &cancel,
+                    )
+                    .await;
+                }
+            }
+            NodeStatus::RecoverMetadata => {
+                if !metadata_task.is_running().await {
+                    info!("dispatching metadata sync task");
+                    spawn_metadata_sync(&metadata_task, &ctx, &sync_handler, &cancel).await;
+                }
+            }
+            NodeStatus::Active => {
+                // Check for spools needing spool-level recovery on startup
+                if !recovery_task.is_running().await {
+                    let our_spools = ctx.control_plane.get_our_spools();
+                    let has_recovering = our_spools.iter().any(|&s| {
+                        ctx.storage.store.get_spool_status(s).ok().flatten()
+                            != Some(SpoolStatus::Active)
+                    });
+                    if has_recovering {
+                        info!("dispatching spool recovery for non-active spools");
+                        let ctx2 = Arc::clone(&ctx);
+                        let cancel2 = cancel.clone();
+                        let sh = sync_handler.clone();
+                        recovery_task
+                            .spawn(async move {
+                                start_spool_recovery(ctx2, sh, cancel2).await;
+                            })
+                            .await;
+                    } else {
+                        ctx.control_plane
+                            .mark_local_sync_complete(ctx.control_plane.current_epoch());
+                    }
+                }
+            }
+            _ => {}
+        }
+
         tokio::select! {
             _ = cancel.cancelled() => {
                 info!("FSM loop shutting down");
@@ -546,32 +501,34 @@ pub async fn run(
                     to = ?new_status,
                     "NodeStatus transition from epoch change"
                 );
-                apply_node_status_transition(&ctx, new_status.clone());
-                dispatch_node_status(
-                    &ctx, &new_status, current_epoch, &track_sync, &deferral, &sync_handler, &cancel,
-                );
+                apply_node_status_transition(&ctx, new_status);
+                // Loop-driven: next iteration will see the new status and dispatch
             } else if in_committee && new_spools.is_empty() {
                 if matches!(current_status, NodeStatus::Active) {
                     ctx.control_plane.mark_local_sync_complete(current_epoch);
                 }
             }
 
-            // Spawn snapshot build + certify for the completed epoch
+            // Snapshot build for the completed epoch
             if in_committee {
                 let snap_ctx = Arc::clone(&ctx);
                 let completed_epoch = last_evaluated_epoch;
-                tokio::spawn(async move {
-                    if let Err(e) = crate::features::snapshot::builder::build_and_certify(
-                        snap_ctx,
-                        completed_epoch,
-                    ).await {
-                        warn!(
-                            epoch = completed_epoch.as_u64(),
-                            error = %e,
-                            "Snapshot build/certify failed"
-                        );
-                    }
-                });
+                snapshot_task
+                    .spawn(async move {
+                        if let Err(e) = crate::features::snapshot::builder::build_and_certify(
+                            snap_ctx,
+                            completed_epoch,
+                        )
+                        .await
+                        {
+                            warn!(
+                                epoch = completed_epoch.as_u64(),
+                                error = %e,
+                                "Snapshot build/certify failed"
+                            );
+                        }
+                    })
+                    .await;
             }
 
             last_evaluated_epoch = current_epoch;
@@ -614,6 +571,12 @@ pub async fn run(
             }
         }
     }
+
+    // Structured shutdown: abort all managed tasks
+    bootstrap_task.abort().await;
+    recovery_task.abort().await;
+    metadata_task.abort().await;
+    snapshot_task.abort().await;
 
     Ok(())
 }

@@ -5,7 +5,7 @@
 //! 2. Check if slice already stored → return early
 //! 3. Attempt bandwidth-optimal clay repair (via repair_single_slice)
 //! 4. If InsufficientHelpers → attempt full recovery
-//! 5. On error → sleep 30s and retry (infinite)
+//! 5. On error → retry with exponential backoff (30s → 5min)
 //! 6. Clear recovery deferral on completion
 
 use std::sync::Arc;
@@ -24,15 +24,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::core::context::NodeContext;
+use crate::core::{Backoff, BackoffConfig};
 
 use super::deferral::LiveUploadDeferral;
 use super::error::RecoveryError;
 use super::helpers::resolve_group_helpers;
 use super::decode::attempt_full_recovery;
 use super::repair::repair_single_slice;
-
-/// Delay between retry attempts when a track sync fails (30s fixed).
-const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Timeout for per-node metadata fetch requests.
 const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -129,14 +127,14 @@ pub fn verify_and_store_slice<S: Store>(
     Ok(())
 }
 
-/// Recover a single slice for a track, with infinite retries.
+/// Recover a single slice for a track, with exponential backoff retries.
 ///
 /// This is the core recovery loop for one (track, spool) pair:
 /// 1. Wait for recovery window (deferral)
 /// 2. Check if already stored
 /// 3. Attempt repair via Clay code helpers
 /// 4. Fall back to full recovery if insufficient helpers
-/// 5. Retry infinitely on failure with 30s fixed delay
+/// 5. Retry on failure with exponential backoff (30s → 5min)
 /// 6. Clear deferral on completion
 pub async fn recover_track_slice<S: Store + 'static>(
     ctx: Arc<NodeContext<S>>,
@@ -153,7 +151,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
     let start = group_start(group);
     let position = (our_spool - start) as usize;
 
-    let mut attempt = 0u64;
+    let mut backoff = Backoff::new(BackoffConfig::track_recovery());
     loop {
         if cancel.is_cancelled() {
             return;
@@ -176,12 +174,12 @@ pub async fn recover_track_slice<S: Store + 'static>(
         let track_info = match resolve_track_metadata(&ctx, track_address).await {
             Ok(info) => info,
             Err(e) => {
-                warn!(track = %track_address, attempt, error = %e, "metadata unavailable");
+                warn!(track = %track_address, attempt = backoff.attempt(), error = %e, "metadata unavailable");
+                let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(RETRY_DELAY) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
-                attempt += 1;
                 continue;
             }
         };
@@ -192,11 +190,11 @@ pub async fn recover_track_slice<S: Store + 'static>(
             Ok(h) => h,
             Err(e) => {
                 warn!(spool = our_spool, track = %track_address, error = %e, "failed to resolve helpers");
+                let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(RETRY_DELAY) => {}
+                    _ = tokio::time::sleep(delay) => {}
                 }
-                attempt += 1;
                 continue;
             }
         };
@@ -206,7 +204,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
             Ok(repaired_slice) => {
                 match verify_and_store_slice(&ctx.storage.store, our_spool, track_address, &track_info, position, repaired_slice) {
                     Ok(()) => {
-                        debug!(spool = our_spool, track = %track_address, attempt, "track slice recovered via repair");
+                        debug!(spool = our_spool, track = %track_address, attempt = backoff.attempt(), "track slice recovered via repair");
                         deferral.end_recovery(&track_address).await;
                         return;
                     }
@@ -220,7 +218,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
                 warn!(
                     spool = our_spool,
                     track = %track_address,
-                    attempt,
+                    attempt = backoff.attempt(),
                     "repair not possible, trying full recovery"
                 );
 
@@ -272,19 +270,19 @@ pub async fn recover_track_slice<S: Store + 'static>(
                 warn!(
                     spool = our_spool,
                     track = %track_address,
-                    attempt,
+                    attempt = backoff.attempt(),
                     error = %e,
                     "repair attempt failed"
                 );
             }
         }
 
-        // Wait before retry
+        // Wait before retry with exponential backoff
+        let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
         tokio::select! {
             _ = cancel.cancelled() => return,
-            _ = tokio::time::sleep(RETRY_DELAY) => {}
+            _ = tokio::time::sleep(delay) => {}
         }
-        attempt += 1;
     }
 }
 
