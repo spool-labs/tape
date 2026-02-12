@@ -17,44 +17,6 @@ pub struct BackoffConfig {
     pub max_retries: Option<u32>,
 }
 
-impl BackoffConfig {
-    /// Backoff suitable for SyncEpoch transaction retries (1s → 1h).
-    pub fn sync_epoch() -> Self {
-        Self {
-            min_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(3600),
-            max_retries: None,
-        }
-    }
-
-    /// Backoff suitable for spool sync retries (60s → 10min, max 10 attempts).
-    pub fn spool_sync() -> Self {
-        Self {
-            min_delay: Duration::from_secs(60),
-            max_delay: Duration::from_secs(600),
-            max_retries: Some(10),
-        }
-    }
-
-    /// Backoff suitable for snapshot certification retries (2s → 30s, max 8 attempts).
-    pub fn snapshot_certify() -> Self {
-        Self {
-            min_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(30),
-            max_retries: Some(8),
-        }
-    }
-
-    /// Backoff suitable for track recovery retries (30s → 5min).
-    pub fn track_recovery() -> Self {
-        Self {
-            min_delay: Duration::from_secs(30),
-            max_delay: Duration::from_secs(300),
-            max_retries: None,
-        }
-    }
-}
-
 /// Stateful backoff tracker.
 ///
 /// Each call to `next_delay()` returns an exponentially increasing duration,
@@ -321,17 +283,4 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn preset_configs() {
-        let se = BackoffConfig::sync_epoch();
-        assert_eq!(se.min_delay, Duration::from_secs(1));
-        assert_eq!(se.max_delay, Duration::from_secs(3600));
-        assert!(se.max_retries.is_none());
-
-        let ss = BackoffConfig::spool_sync();
-        assert_eq!(ss.max_retries, Some(10));
-
-        let tr = BackoffConfig::track_recovery();
-        assert_eq!(tr.min_delay, Duration::from_secs(30));
-    }
 }

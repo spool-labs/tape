@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
@@ -34,6 +35,14 @@ use tracing::{debug, info, warn};
 use super::builder::{SnapshotBuildResult, SnapshotError};
 use crate::core::backoff::{Backoff, BackoffConfig};
 use crate::core::context::NodeContext;
+
+fn snapshot_certify_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_secs(2),
+        max_delay: Duration::from_secs(30),
+        max_retries: Some(8),
+    }
+}
 
 /// Certify all 50 snapshot tracks for a completed epoch.
 ///
@@ -91,7 +100,7 @@ pub async fn certify_snapshot_tracks<S: Store>(
 
     // Track which chunks still need certification.
     let mut pending: Vec<usize> = (0..SPOOL_GROUP_COUNT).collect();
-    let mut backoff = Backoff::new(BackoffConfig::snapshot_certify());
+    let mut backoff = Backoff::new(snapshot_certify_backoff());
 
     loop {
         let mut still_pending = Vec::new();

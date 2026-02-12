@@ -32,6 +32,14 @@ use super::helpers::resolve_group_helpers;
 use super::decode::attempt_full_recovery;
 use super::repair::repair_single_slice;
 
+fn track_recovery_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_secs(30),
+        max_delay: Duration::from_secs(300),
+        max_retries: None,
+    }
+}
+
 /// Timeout for per-node metadata fetch requests.
 const METADATA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -160,7 +168,9 @@ pub async fn recover_track_slice<S: Store + 'static>(
     let start = group_start(group);
     let position = (our_spool - start) as usize;
 
-    let mut backoff = Backoff::new(BackoffConfig::track_recovery());
+    let backoff_config = track_recovery_backoff();
+    let fallback_delay = backoff_config.max_delay;
+    let mut backoff = Backoff::new(backoff_config);
     loop {
         if cancel.is_cancelled() {
             return;
@@ -184,7 +194,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
             Ok(info) => info,
             Err(e) => {
                 warn!(track = %track_address, attempt = backoff.attempt(), error = %e, "metadata unavailable");
-                let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
+                let delay = backoff.next_delay().unwrap_or(fallback_delay);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(delay) => {}
@@ -199,7 +209,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
             Ok(h) => h,
             Err(e) => {
                 warn!(spool = our_spool, track = %track_address, error = %e, "failed to resolve helpers");
-                let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
+                let delay = backoff.next_delay().unwrap_or(fallback_delay);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(delay) => {}
@@ -285,7 +295,7 @@ pub async fn recover_track_slice<S: Store + 'static>(
         }
 
         // Wait before retry with exponential backoff
-        let delay = backoff.next_delay().unwrap_or(BackoffConfig::track_recovery().max_delay);
+        let delay = backoff.next_delay().unwrap_or(fallback_delay);
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}

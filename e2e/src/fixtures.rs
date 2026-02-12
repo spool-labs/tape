@@ -88,9 +88,8 @@ pub fn save_keypair(keypair: &Keypair, path: &Path) -> Result<()> {
 
 /// Load a keypair from a file.
 pub fn load_keypair(path: &Path) -> Result<Keypair> {
-    let json = std::fs::read_to_string(path).context("Failed to read keypair file")?;
-    let bytes: Vec<u8> = serde_json::from_str(&json)?;
-    Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair: {}", e))
+    tape_sdk::load_solana_keypair(path)
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 /// Get the default Solana keypair path.

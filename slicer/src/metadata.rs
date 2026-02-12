@@ -39,7 +39,7 @@ impl SliceMetadata {
     pub const VERSION: u64 = 0;
 
     /// Size of serialized metadata in bytes.
-    pub const SIZE: usize = std::mem::size_of::<Self>(); // 40 bytes
+    pub const SIZE: usize = std::mem::size_of::<Self>(); // 48 bytes
 
     /// Create metadata for encoding with default Clay profile.
     pub fn new(blob_len: usize, stripe_size: usize) -> Self {
@@ -118,7 +118,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip() {
-        let meta = SliceMetadata::new(12345, STRIPE_SIZES[0]);
+        let mut meta = SliceMetadata::new(12345, STRIPE_SIZES[0]);
+        meta.chunk_index = 42;
         let bytes = meta.to_bytes();
 
         // Simulate slice with metadata suffix
@@ -129,6 +130,7 @@ mod tests {
         assert_eq!(parsed.blob_len(), 12345);
         assert_eq!(parsed.stripe_size(), STRIPE_SIZES[0]);
         assert_eq!(parsed.version(), SliceMetadata::VERSION);
+        assert_eq!(parsed.chunk_index(), 42);
     }
 
     #[test]

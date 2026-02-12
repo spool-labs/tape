@@ -13,3 +13,9 @@ pub use error::RecoveryError;
 pub use scheduler::TrackSyncHandler;
 pub use spool::start_spool_recovery;
 pub use worker::recover_track_slice;
+
+/// Maximum queued recovery tasks before backpressure.
+pub(crate) const RECOVERY_TRACK_CONCURRENCY: usize = 1000;
+
+/// Tracks scanned per DB page during recovery.
+pub(crate) const SCAN_BATCH_SIZE: usize = 1000;

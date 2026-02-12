@@ -14,7 +14,6 @@ use tape_crypto::Pubkey;
 use tape_metrics::MetricsRegistry;
 
 use super::config::NodeConfig;
-use super::utils::{load_bls_keypair, load_keypair, KeypairError};
 use tape_store::ops::MetaOps;
 
 use crate::control_plane::ControlPlane;
@@ -44,15 +43,6 @@ pub enum ContextError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-impl From<KeypairError> for ContextError {
-    fn from(err: KeypairError) -> Self {
-        match err {
-            KeypairError::Keypair(msg) => ContextError::Keypair(msg),
-            KeypairError::BlsKeypair(msg) => ContextError::BlsKeypair(msg),
-        }
-    }
 }
 
 /// Central context holding all shared node state.
@@ -90,12 +80,14 @@ impl NodeContext<RocksStore> {
     /// 8. Initializing metrics
     pub async fn from_config(config: NodeConfig, rpc_url: &str) -> Result<Arc<Self>, ContextError> {
         // 1. Load keypair
-        let keypair = load_keypair(&config.node_keypair)?;
+        let keypair = tape_sdk::load_solana_keypair(Path::new(&config.node_keypair))
+            .map_err(|e| ContextError::Keypair(e.to_string()))?;
         let authority = keypair.pubkey();
         tracing::info!(authority = %authority, "Loaded node keypair");
 
         // 2. Load BLS keypair
-        let bls_keypair = load_bls_keypair(&config.bls_keypair)?;
+        let bls_keypair = tape_sdk::load_bls_keypair(&config.bls_keypair)
+            .map_err(|e| ContextError::BlsKeypair(e.to_string()))?;
         tracing::info!("Loaded BLS keypair");
 
         // 3. Create RPC client

@@ -20,13 +20,10 @@ use crate::core::context::NodeContext;
 
 use super::{NodeEvent, evaluate_transition};
 use super::fsm;
-use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler, recover_track_slice};
-
-/// Tracks scanned per DB page during node recovery.
-const SCAN_BATCH_SIZE: usize = 1000;
-
-/// Maximum queued recovery tasks before backpressure.
-const RECOVERY_TRACK_CONCURRENCY: usize = 1000;
+use crate::features::recovery::{
+    LiveUploadDeferral, TrackSyncHandler, recover_track_slice,
+    RECOVERY_TRACK_CONCURRENCY, SCAN_BATCH_SIZE,
+};
 
 /// Run full node recovery for all certified tracks before the given epoch.
 ///

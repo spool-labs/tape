@@ -11524,6 +11524,7 @@ dependencies = [
  "tape-api",
  "tape-core",
  "tape-crypto",
+ "tape-sdk",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",

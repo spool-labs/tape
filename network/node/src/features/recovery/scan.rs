@@ -7,9 +7,7 @@ use tape_store::TapeStore;
 use tracing::debug;
 
 use super::error::RecoveryError;
-
-/// Tracks scanned per DB page.
-const SCAN_BATCH_SIZE: usize = 1000;
+use super::SCAN_BATCH_SIZE;
 
 /// Sentinel spool ID for the shared scan cursor, outside valid [0, 1000).
 const SCAN_CURSOR_SPOOL: u16 = u16::MAX;

@@ -26,13 +26,21 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
-use crate::core::{Backoff, BackoffConfig, ManagedTask};
+use crate::core::{current_timestamp, Backoff, BackoffConfig, ManagedTask};
 use tape_store::ops::{CommitteeOps, SpoolOps};
 use tape_store::types::SpoolStatus;
 
 use crate::features::lifecycle::{NodeEvent, evaluate_transition, is_replaying, start_node_recovery, run_metadata_sync};
 use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler, start_spool_recovery};
 use crate::features::sync::SpoolSyncHandler;
+
+fn sync_epoch_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(3600),
+        max_retries: None,
+    }
+}
 
 /// Outcome of executing an FSM action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,14 +116,6 @@ fn categorize_tx_error(err: &str, action_name: &str) -> Result<HandlerOutcome, N
         "{} failed: {}",
         action_name, err
     )))
-}
-
-/// Get the current Unix timestamp in seconds.
-fn current_timestamp() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
 
 /// Try to advance the epoch.
@@ -371,7 +371,7 @@ pub async fn run(
 
     let mut interval = tokio::time::interval(EPOCH_ADVANCE_POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut sync_retry = Backoff::new(BackoffConfig::sync_epoch());
+    let mut sync_retry = Backoff::new(sync_epoch_backoff());
     let mut last_evaluated_epoch = ctx.control_plane.current_epoch();
     let mut prev_spools = ctx.control_plane.get_our_spools();
 

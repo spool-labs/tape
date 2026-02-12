@@ -26,9 +26,7 @@ use super::helpers::resolve_previous_owner;
 use super::scan::run_scan;
 use super::scheduler::TrackSyncHandler;
 use super::worker::recover_track_slice;
-
-/// Maximum queued recovery tasks before backpressure (spool recovery phase 2).
-const RECOVERY_TRACK_CONCURRENCY: usize = 1000;
+use super::RECOVERY_TRACK_CONCURRENCY;
 
 /// Verify a sync slice against the on-chain commitment and store it if valid.
 ///

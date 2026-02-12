@@ -24,7 +24,4 @@ pub use config::{default_config_content, ConfigError, NodeConfig, TlsConfig};
 pub use context::{ContextError, NodeContext};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
-pub use utils::{
-    current_timestamp, default_config_path, expand_path, load_bls_keypair, load_keypair,
-    KeypairError,
-};
+pub use utils::{current_timestamp, default_config_path, expand_path};

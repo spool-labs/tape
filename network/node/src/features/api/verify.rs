@@ -1,30 +1,23 @@
 //! Independent inconsistency verification and BLS attestation.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use axum::{
     body::Bytes,
     extract::{Path, State},
     Json,
 };
-use futures::stream::{self, StreamExt};
 use store::Store;
 use tape_core::cert::invalidate::InvalidateMessage;
 use tape_core::erasure::{group_start, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolIndex;
 use tape_node_api::{InconsistencyRequest, InconsistencyResponse};
-use tape_node_client::{NodeClient, NodeClientBuilder};
-use tape_slicer::adaptive::pick_stripe_size;
-use tape_slicer::clay::ClayCoder;
-use tape_slicer::coder::ErasureCoder;
-use tape_slicer::merkle_helpers::blob_merkle_root;
-use tape_slicer::slicer::Slicer;
+use tape_node_client::NodeClientBuilder;
 use tape_store::ops::CommitteeOps;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::{parse_track_id, ApiError, ApiState};
+use crate::features::recovery::decode::download_and_reencode;
 
 /// Number of concurrent slice downloads during inconsistency verification.
 const VERIFY_DOWNLOAD_CONCURRENCY: usize = 8;
@@ -125,11 +118,6 @@ async fn independently_verify<S: Store>(
     track_address: tape_crypto::Pubkey,
     track_info: &tape_store::types::TrackInfo,
 ) -> Result<tape_crypto::Hash, ApiError> {
-    let profile = track_info.profile();
-    let clay_params = profile.clay_params();
-    let k = clay_params.k() as usize;
-    let blob_len = track_info.original_size as usize;
-
     let spool_group = track_info.spool_group;
     let start = group_start(spool_group);
 
@@ -149,7 +137,7 @@ async fn independently_verify<S: Store>(
         }
     }
 
-    let mut available: Vec<(usize, SpoolIndex, NodeClient)> = Vec::new();
+    let mut available = Vec::new();
     for position in 0..SPOOL_GROUP_SIZE {
         let spool_idx = start + position as SpoolIndex;
         if let Some(&member_idx) = spool_to_node.get(&spool_idx) {
@@ -168,89 +156,11 @@ async fn independently_verify<S: Store>(
         }
     }
 
-    if available.len() < k {
-        return Err(ApiError::Internal(format!(
-            "not enough helpers: needed {k}, available {}",
-            available.len()
-        )));
-    }
-
     let track_id_str = track_address.to_string();
-    let collected_count = Arc::new(AtomicUsize::new(0));
-
-    let download_results: Vec<(usize, Result<Vec<u8>, String>)> = stream::iter(
-        available.into_iter(),
-    )
-    .map(|(position, spool_idx, client)| {
-        let tid = track_id_str.clone();
-        let collected = Arc::clone(&collected_count);
-        async move {
-            if collected.load(Ordering::Relaxed) >= k {
-                return (position, Err("skipped".into()));
-            }
-            let result = client
-                .get_slice(&tid, spool_idx)
-                .await
-                .map_err(|e| e.to_string());
-            if result.is_ok() {
-                collected.fetch_add(1, Ordering::Relaxed);
-            }
-            (position, result)
-        }
-    })
-    .buffer_unordered(VERIFY_DOWNLOAD_CONCURRENCY)
-    .collect()
-    .await;
-
-    let mut collected_slices: Vec<(usize, Vec<u8>)> = Vec::new();
-    for (position, result) in download_results {
-        match result {
-            Ok(data) => {
-                if !track_info.commitment.is_empty()
-                    && !track_info.verify_slice(position, &data)
-                {
-                    warn!(position, "downloaded slice failed leaf verification, skipping");
-                    continue;
-                }
-                collected_slices.push((position, data));
-                if collected_slices.len() >= k {
-                    break;
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-
-    if collected_slices.len() < k {
-        return Err(ApiError::Internal(format!(
-            "not enough slices downloaded: needed {k}, got {}",
-            collected_slices.len()
-        )));
-    }
-
-    let stripe_size = pick_stripe_size(blob_len);
-
-    let computed_root = tokio::task::spawn_blocking(move || {
-        let coder = ClayCoder::from_params(clay_params);
-        let mut slicer = Slicer::with_profile(coder, stripe_size, true, profile);
-
-        let chunks: Vec<(usize, &[u8])> = collected_slices
-            .iter()
-            .map(|(pos, data)| (*pos, data.as_slice()))
-            .collect();
-
-        let original = slicer
-            .decode(&chunks)
-            .map_err(|e| ApiError::Internal(format!("decode failed: {}", e)))?;
-
-        let all_slices = slicer
-            .encode(&original)
-            .map_err(|e| ApiError::Internal(format!("re-encode failed: {}", e)))?;
-
-        Ok::<_, ApiError>(blob_merkle_root(&all_slices))
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("spawn_blocking panicked: {}", e)))??;
+    let (computed_root, _all_slices) =
+        download_and_reencode(available, track_info, &track_id_str, VERIFY_DOWNLOAD_CONCURRENCY)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok(computed_root)
 }

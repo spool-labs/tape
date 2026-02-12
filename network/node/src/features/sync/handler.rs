@@ -18,6 +18,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::{Backoff, BackoffConfig};
 
+fn spool_sync_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_secs(60),
+        max_delay: Duration::from_secs(600),
+        max_retries: Some(10),
+    }
+}
+
 /// Default batch size for sync requests.
 pub const DEFAULT_BATCH_SIZE: u32 = 1000;
 
@@ -260,7 +268,7 @@ impl SpoolSyncHandler {
         B: FnMut(&Pubkey) -> Result<(), SyncError>,
     {
         let deadline = tokio::time::Instant::now() + self.recovery_timeout;
-        let mut backoff = Backoff::new(BackoffConfig::spool_sync());
+        let mut backoff = Backoff::new(spool_sync_backoff());
         let mut cursor = resume_cursor.unwrap_or_default();
 
         loop {
