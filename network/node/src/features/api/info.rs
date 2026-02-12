@@ -19,12 +19,15 @@ pub async fn get_info<S: Store>(State(state): State<ApiState<S>>) -> Response {
         "node_id": node_id.as_u64(),
     });
 
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&info).unwrap_or_default(),
-    )
-        .into_response()
+    match serde_json::to_string(&info) {
+        Ok(json) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            json,
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// GET /v1/stats
@@ -45,10 +48,13 @@ pub async fn get_stats<S: Store>(State(state): State<ApiState<S>>) -> Response {
         requests_total: state.metrics.requests_handled_total.get(),
     };
 
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_string(&stats).unwrap_or_default(),
-    )
-        .into_response()
+    match serde_json::to_string(&stats) {
+        Ok(json) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            json,
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }

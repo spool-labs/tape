@@ -103,7 +103,9 @@ pub async fn start_spool_recovery<S: Store + 'static>(
             break;
         }
 
-        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveSync);
+        if let Err(e) = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveSync) {
+            warn!(spool, error = %e, "failed to set spool status to ActiveSync");
+        }
 
         let group = group_for_spool(spool);
         if let Some(prev_addr) = resolve_previous_owner(&ctx, spool) {
@@ -142,8 +144,12 @@ pub async fn start_spool_recovery<S: Store + 'static>(
             match result {
                 Ok(count) => {
                     info!(spool, slices = count, "bulk transfer complete");
-                    let _ = ctx.storage.store.remove_spool_sync_cursor(spool);
-                    let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+                    if let Err(e) = ctx.storage.store.remove_spool_sync_cursor(spool) {
+                        warn!(spool, error = %e, "failed to remove spool sync cursor");
+                    }
+                    if let Err(e) = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active) {
+                        warn!(spool, error = %e, "failed to set spool status to Active after sync");
+                    }
                     continue; // Skip per-track recovery for this spool
                 }
                 Err(e) => {
@@ -152,7 +158,9 @@ pub async fn start_spool_recovery<S: Store + 'static>(
             }
         }
 
-        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveRecover);
+        if let Err(e) = ctx.storage.store.set_spool_status(spool, SpoolStatus::ActiveRecover) {
+            warn!(spool, error = %e, "failed to set spool status to ActiveRecover");
+        }
     }
 
     // Phase 2: Per-track recovery for remaining non-Active spools
@@ -225,7 +233,9 @@ pub async fn start_spool_recovery<S: Store + 'static>(
 
     // Mark all recovered spools as Active
     for &spool in &spools_to_recover {
-        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+        if let Err(e) = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active) {
+            warn!(spool, error = %e, "failed to set spool status to Active after recovery");
+        }
     }
 
     info!("spool recovery complete");

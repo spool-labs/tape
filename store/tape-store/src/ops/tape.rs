@@ -16,6 +16,9 @@ pub trait TapeOps {
 
     /// Delete tape info
     fn delete_tape(&self, tape_address: Pubkey) -> Result<()>;
+
+    /// Iterate all stored tapes
+    fn iter_all_tapes(&self) -> Result<Vec<(Pubkey, TapeInfo)>>;
 }
 
 impl<S: Store> TapeOps for TapeStore<S> {
@@ -31,6 +34,10 @@ impl<S: Store> TapeOps for TapeStore<S> {
     fn delete_tape(&self, tape_address: Pubkey) -> Result<()> {
         self.delete::<TapeCol>(&tape_address)?;
         Ok(())
+    }
+
+    fn iter_all_tapes(&self) -> Result<Vec<(Pubkey, TapeInfo)>> {
+        Ok(self.iter::<TapeCol>()?.into_iter().collect())
     }
 }
 
@@ -59,6 +66,25 @@ mod tests {
 
         let retrieved = store.get_tape(tape).unwrap().unwrap();
         assert_eq!(retrieved, info);
+    }
+
+    #[test]
+    fn test_iter_all_tapes() {
+        let store = test_store();
+
+        assert!(store.iter_all_tapes().unwrap().is_empty());
+
+        let tape1 = Pubkey::new_unique();
+        let tape2 = Pubkey::new_unique();
+        store.put_tape(tape1, TapeInfo { end_epoch: EpochNumber(100) }).unwrap();
+        store.put_tape(tape2, TapeInfo { end_epoch: EpochNumber(200) }).unwrap();
+
+        let tapes = store.iter_all_tapes().unwrap();
+        assert_eq!(tapes.len(), 2);
+
+        let addresses: Vec<Pubkey> = tapes.iter().map(|(addr, _)| *addr).collect();
+        assert!(addresses.contains(&tape1));
+        assert!(addresses.contains(&tape2));
     }
 
     #[test]

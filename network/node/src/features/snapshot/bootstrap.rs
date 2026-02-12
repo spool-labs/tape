@@ -281,7 +281,9 @@ fn replay_event<S: Store>(
         }
 
         ReplayableEvent::DeleteTrack { track, epoch } => {
-            handle_delete_track(&ctx.storage.store, *track, *epoch).map_err(SnapshotError::Store)?;
+            let owned_spools = ctx.control_plane.get_our_spools();
+            handle_delete_track(&ctx.storage.store, *track, *epoch, &owned_spools)
+                .map_err(SnapshotError::Store)?;
         }
 
         ReplayableEvent::InvalidateTrack { track, epoch } => {
@@ -296,7 +298,8 @@ fn replay_event<S: Store>(
         } => {
             ctx.control_plane.set_current_epoch(*new_epoch);
             ctx.control_plane.start_epoch_sync(*new_epoch);
-            handle_advance_epoch(&ctx.storage.store, *old_epoch, *new_epoch)
+            let owned_spools = ctx.control_plane.get_our_spools();
+            handle_advance_epoch(&ctx.storage.store, *old_epoch, *new_epoch, &owned_spools)
                 .map_err(SnapshotError::Store)?;
         }
 
@@ -329,7 +332,9 @@ fn replay_event<S: Store>(
         }
 
         ReplayableEvent::DestroyTape { tape, epoch } => {
-            handle_destroy_tape(&ctx.storage.store, *tape, *epoch).map_err(SnapshotError::Store)?;
+            let owned_spools = ctx.control_plane.get_our_spools();
+            handle_destroy_tape(&ctx.storage.store, *tape, *epoch, &owned_spools)
+                .map_err(SnapshotError::Store)?;
         }
 
         ReplayableEvent::RegisterNode { .. } | ReplayableEvent::JoinNetwork { .. } => {

@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
 use store::Store;
-use tape_core::erasure::group_for_spool;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::SpoolStatus;
 use tape_store::TapeStore;
 use tracing::debug;
 
@@ -108,27 +106,6 @@ pub fn run_scan<S: Store>(
         enqueued: total_enqueued,
         scanned: total_scanned,
     })
-}
-
-/// Collect all spools in ActiveRecover state, returning (spool_index, group).
-pub fn collect_recovering_spools<S: Store>(
-    store: &TapeStore<S>,
-) -> Result<Vec<(SpoolIndex, SpoolGroup)>, RecoveryError> {
-    let all = store.iter_all_spools()?;
-    Ok(all
-        .into_iter()
-        .filter(|(_, status)| *status == SpoolStatus::ActiveRecover)
-        .map(|(spool, _)| (spool, group_for_spool(spool)))
-        .collect())
-}
-
-/// Check if recovery is complete for a spool (pending queue empty).
-pub fn is_spool_recovery_complete<S: Store>(
-    store: &TapeStore<S>,
-    spool: SpoolIndex,
-) -> Result<bool, RecoveryError> {
-    let pending = store.iter_pending_recoveries(spool, 1)?;
-    Ok(pending.is_empty())
 }
 
 #[cfg(test)]
@@ -339,50 +316,4 @@ mod tests {
         assert_eq!(pending1.len(), 1000);
     }
 
-    #[test]
-    fn test_collect_recovering_spools() {
-        let store = test_store();
-        store
-            .set_spool_status(10, SpoolStatus::Active)
-            .unwrap();
-        store
-            .set_spool_status(20, SpoolStatus::ActiveRecover)
-            .unwrap();
-        store
-            .set_spool_status(30, SpoolStatus::ActiveSync)
-            .unwrap();
-        store
-            .set_spool_status(40, SpoolStatus::ActiveRecover)
-            .unwrap();
-
-        let recovering = collect_recovering_spools(&store).unwrap();
-        assert_eq!(recovering.len(), 2);
-
-        let spools: Vec<SpoolIndex> = recovering.iter().map(|(s, _)| *s).collect();
-        assert!(spools.contains(&20));
-        assert!(spools.contains(&40));
-
-        // Check groups are correct
-        for (spool, group) in &recovering {
-            assert_eq!(*group, group_for_spool(*spool));
-        }
-    }
-
-    #[test]
-    fn test_is_spool_recovery_complete() {
-        let store = test_store();
-        let spool: SpoolIndex = 10;
-
-        // Empty queue = complete
-        assert!(is_spool_recovery_complete(&store, spool).unwrap());
-
-        // Add pending = not complete
-        let addr = Pubkey::new_unique();
-        store.add_pending_recovery(spool, addr).unwrap();
-        assert!(!is_spool_recovery_complete(&store, spool).unwrap());
-
-        // Remove pending = complete again
-        store.remove_pending_recovery(spool, addr).unwrap();
-        assert!(is_spool_recovery_complete(&store, spool).unwrap());
-    }
 }

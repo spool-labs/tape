@@ -224,11 +224,12 @@ async fn process_instruction(
             ctx.control_plane.set_current_epoch(new_epoch);
             ctx.control_plane.start_epoch_sync(new_epoch);
 
-            // Call the no-op handler (GC will be redesigned later)
+            let owned_spools = ctx.control_plane.get_our_spools();
             if let Err(e) = handler::handle_advance_epoch(
                 &ctx.storage.store,
                 old_epoch,
                 new_epoch,
+                &owned_spools,
             ) {
                 warn!(error = %e, "AdvanceEpoch handler failed");
             }
@@ -309,12 +310,14 @@ async fn process_instruction(
         ParsedInstruction::DeleteTrack { track, .. } => {
             debug!(track = %track, "Detected DeleteTrack");
             let current_epoch = ctx.control_plane.current_epoch();
+            let owned_spools = ctx.control_plane.get_our_spools();
             if let Err(e) = handler::handle_delete_track(
                 &ctx.storage.store,
                 track.to_bytes(),
                 current_epoch,
+                &owned_spools,
             ) {
-                warn!(track = %track, error = %e, "Failed to schedule track for GC");
+                warn!(track = %track, error = %e, "DeleteTrack handler failed");
             }
             Ok(false)
         }
@@ -363,12 +366,14 @@ async fn process_instruction(
         ParsedInstruction::DestroyTape { tape, .. } => {
             debug!(tape = %tape, "Detected DestroyTape");
             let current_epoch = ctx.control_plane.current_epoch();
+            let owned_spools = ctx.control_plane.get_our_spools();
             if let Err(e) = handler::handle_destroy_tape(
                 &ctx.storage.store,
                 tape.to_bytes(),
                 current_epoch,
+                &owned_spools,
             ) {
-                warn!(tape = %tape, error = %e, "Failed to schedule tape for GC");
+                warn!(tape = %tape, error = %e, "DestroyTape handler failed");
             }
             Ok(false)
         }

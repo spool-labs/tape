@@ -9,7 +9,6 @@ use axum::{
 use store::Store;
 use tape_node_api::RepairRequest;
 use tape_slicer::clay::ClayCoder;
-use tape_slicer::coder::ErasureCoder;
 use tracing::debug;
 
 use super::{parse_track_id, ApiError, ApiState};
