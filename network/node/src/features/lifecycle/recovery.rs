@@ -127,12 +127,17 @@ pub async fn start_node_recovery<S: Store + 'static>(
                     }
                 }
 
-                // Backpressure: wait for queue slot
-                let _queue_permit = match queue_semaphore.clone().acquire_owned().await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        warn!("queue semaphore closed");
-                        break;
+                // Backpressure: wait for queue slot (with cancellation)
+                let _queue_permit = tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    result = queue_semaphore.clone().acquire_owned() => {
+                        match result {
+                            Ok(p) => p,
+                            Err(_) => {
+                                warn!("queue semaphore closed");
+                                break;
+                            }
+                        }
                     }
                 };
 
@@ -167,7 +172,7 @@ pub async fn start_node_recovery<S: Store + 'static>(
     );
 
     // Wait for all dispatched track syncs to complete
-    track_sync.wait_all().await;
+    track_sync.wait_all(&cancel).await;
 
     info!(
         dispatched,

@@ -36,6 +36,15 @@ impl BackoffConfig {
         }
     }
 
+    /// Backoff suitable for snapshot certification retries (2s → 30s, max 8 attempts).
+    pub fn snapshot_certify() -> Self {
+        Self {
+            min_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(30),
+            max_retries: Some(8),
+        }
+    }
+
     /// Backoff suitable for track recovery retries (30s → 5min).
     pub fn track_recovery() -> Self {
         Self {

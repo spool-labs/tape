@@ -20,14 +20,16 @@ use super::{create_router, ApiState};
 /// Handle for controlling a running server.
 pub struct ServerHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 impl ServerHandle {
-    /// Signal the server to shut down gracefully.
+    /// Signal the server to shut down gracefully and await completion.
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
+        let _ = self.join_handle.await;
     }
 }
 
@@ -125,7 +127,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
         // Spawn server task
         let span = tracing::Span::current();
-        tokio::spawn(tracing::Instrument::instrument(async move {
+        let join_handle = tokio::spawn(tracing::Instrument::instrument(async move {
             let server = axum::serve(listener, app);
             tokio::select! {
                 result = server => {
@@ -141,6 +143,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
 
         Ok(ServerHandle {
             shutdown_tx: Some(shutdown_tx),
+            join_handle,
         })
     }
 

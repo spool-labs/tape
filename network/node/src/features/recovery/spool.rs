@@ -228,7 +228,7 @@ pub async fn start_spool_recovery<S: Store + 'static>(
             }
         }
 
-        track_sync.wait_all().await;
+        track_sync.wait_all(&cancel).await;
     }
 
     // Mark all recovered spools as Active

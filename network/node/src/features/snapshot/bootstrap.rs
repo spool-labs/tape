@@ -46,6 +46,7 @@ pub async fn download_snapshot<S: Store>(
     ctx: &Arc<NodeContext<S>>,
     epoch: EpochNumber,
     tracks: &[(SpoolGroup, Pubkey)],
+    cancel: &CancellationToken,
 ) -> Result<SnapshotLog, SnapshotError> {
     info!(epoch = epoch.as_u64(), "Downloading snapshot");
 
@@ -70,6 +71,10 @@ pub async fn download_snapshot<S: Store>(
     let mut decoded_chunks: Vec<(usize, Vec<u8>)> = Vec::new();
 
     for group_idx in 0..SPOOL_GROUP_COUNT {
+        if cancel.is_cancelled() {
+            return Err(SnapshotError::Cancelled);
+        }
+
         let track_addr = match track_map.get(&(group_idx as SpoolGroup)) {
             Some(addr) => *addr,
             None => {
@@ -227,6 +232,7 @@ pub async fn download_snapshot<S: Store>(
 pub async fn replay_snapshot<S: Store>(
     ctx: &Arc<NodeContext<S>>,
     log: &SnapshotLog,
+    cancel: &CancellationToken,
 ) -> Result<(), SnapshotError> {
     info!(
         epoch = log.epoch.as_u64(),
@@ -235,6 +241,10 @@ pub async fn replay_snapshot<S: Store>(
     );
 
     for entry in &log.entries {
+        if cancel.is_cancelled() {
+            return Err(SnapshotError::Cancelled);
+        }
+
         for event in &entry.events {
             if let Err(e) = replay_event(ctx, event) {
                 warn!(
@@ -420,9 +430,9 @@ pub async fn bootstrap_from_snapshots<S: Store>(
         }
         info!(epoch = epoch.as_u64(), "Bootstrapping epoch from snapshot");
 
-        match download_snapshot(&ctx, *epoch, tracks).await {
+        match download_snapshot(&ctx, *epoch, tracks, &cancel).await {
             Ok(log) => {
-                if let Err(e) = replay_snapshot(&ctx, &log).await {
+                if let Err(e) = replay_snapshot(&ctx, &log, &cancel).await {
                     warn!(epoch = epoch.as_u64(), error = %e, "Snapshot replay failed");
                     break;
                 }

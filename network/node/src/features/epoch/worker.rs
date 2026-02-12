@@ -550,11 +550,13 @@ pub async fn run(
             // Don't abort an in-progress snapshot — let it finish its retries.
             if in_committee && !snapshot_task.is_running().await {
                 let snap_ctx = Arc::clone(&ctx);
+                let snap_cancel = cancel.clone();
                 snapshot_task
                     .spawn(async move {
                         if let Err(e) = crate::features::snapshot::builder::build_and_certify(
                             snap_ctx,
                             completed_epoch,
+                            snap_cancel,
                         )
                         .await
                         {
@@ -738,19 +740,19 @@ pub async fn execute_action(
 ) -> Option<Result<HandlerOutcome, NetworkSyncError>> {
     let result = match action {
         NodeAction::AdvanceEpoch => {
-            info!("FSM: AdvanceEpoch");
+            //info!("FSM: AdvanceEpoch");
             try_advance_epoch(ctx).await
         }
         NodeAction::SyncEpoch => {
-            info!("FSM: SyncEpoch");
+            //info!("FSM: SyncEpoch");
             try_sync_epoch(ctx, sync_handler).await
         }
         NodeAction::AdvancePool => {
-            info!("FSM: AdvancePool");
+            //info!("FSM: AdvancePool");
             try_advance_pool(ctx).await
         }
         NodeAction::JoinNetwork => {
-            info!("FSM: JoinNetwork");
+            //info!("FSM: JoinNetwork");
             try_join_network(ctx).await
         }
 

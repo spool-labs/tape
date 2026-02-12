@@ -14,6 +14,8 @@ use tape_store::types::Pubkey;
 
 use super::types::{SyncSlice, SyncSpoolRequest};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::core::{Backoff, BackoffConfig};
 
 /// Default batch size for sync requests.
@@ -115,6 +117,7 @@ impl SpoolSyncHandler {
         resume_cursor: Pubkey,
         on_batch: &mut Option<B>,
         cursor_out: &mut Pubkey,
+        cancel: &CancellationToken,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
@@ -135,6 +138,10 @@ impl SpoolSyncHandler {
         let mut total_slices = 0;
 
         loop {
+            if cancel.is_cancelled() {
+                return Err(SyncError::Storage("cancelled".into()));
+            }
+
             let request = SyncSpoolRequest {
                 spool_index: spool,
                 starting_track,
@@ -190,16 +197,19 @@ impl SpoolSyncHandler {
         spools: Vec<(SpoolIndex, NetworkAddress)>,
         from_epoch: EpochNumber,
         on_slice: Arc<F>,
+        cancel: &CancellationToken,
     ) -> Result<usize, SyncError>
     where
         F: Fn(SyncSlice) -> Result<(), SyncError> + Send + Sync + 'static,
     {
         use futures::stream::{self, StreamExt};
 
+        let cancel = cancel.clone();
         let results: Vec<Result<usize, SyncError>> = stream::iter(spools)
             .map(|(spool, address): (SpoolIndex, NetworkAddress)| {
                 let handler = self.clone();
                 let on_slice = Arc::clone(&on_slice);
+                let cancel = cancel.clone();
 
                 async move {
                     let mut no_batch: Option<fn(&Pubkey) -> Result<(), SyncError>> = None;
@@ -213,6 +223,7 @@ impl SpoolSyncHandler {
                             Pubkey::default(),
                             &mut no_batch,
                             &mut cursor_out,
+                            &cancel,
                         )
                         .await
                 }
@@ -242,7 +253,7 @@ impl SpoolSyncHandler {
         mut on_slice: F,
         resume_cursor: Option<Pubkey>,
         mut on_batch: Option<B>,
-        cancel: &tokio_util::sync::CancellationToken,
+        cancel: &CancellationToken,
     ) -> Result<usize, SyncError>
     where
         F: FnMut(SyncSlice) -> Result<(), SyncError>,
@@ -262,6 +273,7 @@ impl SpoolSyncHandler {
                     cursor,
                     &mut on_batch,
                     &mut cursor,
+                    cancel,
                 )
                 .await
             {

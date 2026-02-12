@@ -19,6 +19,7 @@ use tape_api::program::tapedrive::snapshot_pda;
 use tape_store::ops::{EventLogOps, MetaOps, SliceOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_crypto::Hash;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::core::context::NodeContext;
@@ -51,6 +52,9 @@ pub enum SnapshotError {
 
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// Build the epoch snapshot: read events, serialize, two-level encode, store slices.
@@ -169,6 +173,7 @@ pub async fn build_epoch_snapshot<S: Store>(
 pub async fn build_and_certify<S: Store>(
     ctx: Arc<NodeContext<S>>,
     epoch: EpochNumber,
+    cancel: CancellationToken,
 ) -> Result<(), SnapshotError> {
     let result = build_epoch_snapshot(&ctx, epoch).await?;
 
@@ -178,7 +183,7 @@ pub async fn build_and_certify<S: Store>(
     );
 
     // Certify all 50 snapshot tracks
-    if let Err(e) = super::certifier::certify_snapshot_tracks(&ctx, epoch, &result).await {
+    if let Err(e) = super::certifier::certify_snapshot_tracks(&ctx, epoch, &result, &cancel).await {
         warn!(
             epoch = epoch.as_u64(),
             error = %e,

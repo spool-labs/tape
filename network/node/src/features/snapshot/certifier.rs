@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
@@ -29,19 +28,12 @@ use tape_crypto::merkle::hash_leaf;
 use tape_node_client::{NodeClientBuilder, SignResponse};
 use tape_store::ops::CommitteeOps;
 use tape_store::types::NodeInfo;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::builder::{SnapshotBuildResult, SnapshotError};
+use crate::core::backoff::{Backoff, BackoffConfig};
 use crate::core::context::NodeContext;
-
-/// Maximum retry rounds for chunks that fail due to insufficient weight.
-const MAX_RETRY_ROUNDS: u32 = 8;
-
-/// Initial delay between retry rounds (doubles each round, capped at MAX_RETRY_DELAY).
-const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
-
-/// Maximum delay between retry rounds.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Certify all 50 snapshot tracks for a completed epoch.
 ///
@@ -55,6 +47,7 @@ pub async fn certify_snapshot_tracks<S: Store>(
     ctx: &Arc<NodeContext<S>>,
     epoch: EpochNumber,
     build_result: &SnapshotBuildResult,
+    cancel: &CancellationToken,
 ) -> Result<(), SnapshotError> {
     info!(
         epoch = epoch.as_u64(),
@@ -83,22 +76,9 @@ pub async fn certify_snapshot_tracks<S: Store>(
 
     // Track which chunks still need certification.
     let mut pending: Vec<usize> = (0..SPOOL_GROUP_COUNT).collect();
-    let mut round = 0u32;
-    let mut delay = INITIAL_RETRY_DELAY;
+    let mut backoff = Backoff::new(BackoffConfig::snapshot_certify());
 
-    while !pending.is_empty() && round <= MAX_RETRY_ROUNDS {
-        if round > 0 {
-            info!(
-                epoch = epoch.as_u64(),
-                round = round,
-                remaining = pending.len(),
-                delay_secs = delay.as_secs(),
-                "Retrying uncertified chunks"
-            );
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(MAX_RETRY_DELAY);
-        }
-
+    loop {
         let mut still_pending = Vec::new();
 
         for &chunk_index in &pending {
@@ -122,15 +102,36 @@ pub async fn certify_snapshot_tracks<S: Store>(
             }
         }
 
-        // If no progress was made this round, increment retry counter
-        if still_pending.len() == pending.len() {
-            round += 1;
-        } else {
-            // Progress — reset retry counter but keep the delay
-            round = 0;
+        pending = still_pending;
+        if pending.is_empty() {
+            break;
         }
 
-        pending = still_pending;
+        let delay = match backoff.next_delay() {
+            Some(d) => d,
+            None => {
+                warn!(
+                    epoch = epoch.as_u64(),
+                    uncertified = pending.len(),
+                    chunks = ?pending,
+                    "Snapshot certification exhausted retries"
+                );
+                break;
+            }
+        };
+
+        info!(
+            epoch = epoch.as_u64(),
+            attempt = backoff.attempt(),
+            remaining = pending.len(),
+            delay_secs = delay.as_secs(),
+            "Retrying uncertified chunks"
+        );
+
+        tokio::select! {
+            _ = cancel.cancelled() => return Err(SnapshotError::Cancelled),
+            _ = tokio::time::sleep(delay) => {}
+        }
     }
 
     if !pending.is_empty() {

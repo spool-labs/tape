@@ -129,7 +129,7 @@ impl TrackSyncHandler {
     }
 
     /// Wait for all in-progress syncs to complete.
-    pub async fn wait_all(&self) {
+    pub async fn wait_all(&self, cancel: &CancellationToken) {
         loop {
             // Check if empty
             {
@@ -140,7 +140,10 @@ impl TrackSyncHandler {
             }
 
             // Yield to let tasks make progress
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
 
             // Clean up completed entries
             let mut map = self.in_progress.write().await;
@@ -175,7 +178,8 @@ mod tests {
 
         // Give the task time to complete
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        handler.wait_all().await;
+        let cancel = CancellationToken::new();
+        handler.wait_all(&cancel).await;
         assert_eq!(handler.active_count().await, 0);
     }
 
@@ -231,7 +235,8 @@ mod tests {
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        handler.wait_all().await;
+        let cancel = CancellationToken::new();
+        handler.wait_all(&cancel).await;
         assert_eq!(handler.active_count().await, 0);
     }
 }
