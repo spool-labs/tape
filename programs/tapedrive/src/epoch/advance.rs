@@ -2,6 +2,8 @@ use tape_solana::*;
 use crate::error::*;
 use tape_api::prelude::*;
 use tape_api::event::EpochAdvanced;
+use tape_crypto::hash::Hash;
+use sysvar::slot_hashes::SlotHashes;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let now = Clock::get()?.unix_timestamp;
@@ -52,18 +54,11 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
-    // Gate on previous epoch snapshot completion.
-    // Skip during bootstrap (epochs 0 and 1 have no prior snapshot).
+    // Snapshot gate
     let snapshot_state = snapshot_state_info
         .is_snapshot_state()?
         .as_account::<SnapshotState>(&tapedrive::ID)?;
-
-    if epoch.id >= EpochNumber(2) {
-        let required = EpochNumber(epoch.id.as_u64() - 1);
-        if snapshot_state.latest_epoch < required {
-            return Err(TapeError::SnapshotIncomplete.into());
-        }
-    }
+    require_previous_snapshot(epoch, &snapshot_state)?;
 
     // Save old epoch for event logging
     let old_epoch = epoch.id;
@@ -81,14 +76,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    // Extract the most recent slot hash for migration seed
-    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
-    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
-    // SlotHashes binary layout: 8-byte count, then (8-byte slot + 32-byte hash) entries.
-    // First entry's hash is at bytes 16..48.
-    let seed = tape_crypto::hash::Hash(
-        slot_hashes_data[16..48].try_into().map_err(|_| TapeError::UnexpectedState)?
-    );
+    // Extract seed from slot hashes
+    let seed = slot_hash_seed(slot_hashes_info)?;
 
     // Save previous spools, then reassign for the next committee
     system.spools_prev = system.spools;
@@ -124,31 +113,8 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.last_epoch = now;
     epoch.state = EpochState::syncing();
 
-    // Update the archive storage price and capacity based on the new committee preferences
-    {
-        let mut storage_prices : Vec<ValueAndWeight> = vec![];
-        let mut storage_capacities : Vec<ValueAndWeight> = vec![];
-        let mut total_weight = 0u64;
-
-        system.committee.iter().for_each(|member| {
-            let weight = member.weight as u64;
-            let preferences = &member.preferences;
-
-            storage_prices
-                .push((preferences.storage_price.into(), weight));
-            storage_capacities
-                .push((preferences.storage_capacity.into(), weight));
-
-            total_weight = total_weight.saturating_add(weight);
-        });
-
-        // We select the lowest price that achieves quorum
-        // and the highest capacity that achieves quorum
-        archive.storage_capacity =
-            quorum_above(&storage_capacities, total_weight).into();
-        archive.storage_price =
-            quorum_below(&storage_prices, total_weight).into();
-    }
+    // Update storage price/capacity from committee preferences
+    update_storage_params(archive, &system.committee);
 
     // Calculate committee size and total stake for event
     let committee_size = system.committee.size() as u64;
@@ -174,6 +140,50 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     );
 
     Ok(())
+}
+
+fn require_previous_snapshot(epoch: &Epoch, snapshot: &SnapshotState) -> ProgramResult {
+    if epoch.id > EpochNumber(1) {
+        let required = epoch.id - EpochNumber(1);
+        if snapshot.latest_epoch < required {
+            return Err(TapeError::SnapshotIncomplete.into());
+        }
+    }
+    Ok(())
+}
+
+fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
+    // SlotHashes binary layout: 8-byte count, then (8-byte slot + 32-byte hash) entries.
+    // First entry's hash is at bytes 16..48.
+
+    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
+    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
+    let seed = Hash(
+        slot_hashes_data[16..48]
+            .try_into()
+            .map_err(|_| TapeError::UnexpectedState)?
+    );
+    Ok(seed)
+}
+
+fn update_storage_params(archive: &mut Archive, committee: &Committee<MEMBER_COUNT>) {
+    let mut total_weight = 0u64;
+    let mut storage_prices = Vec::new();
+    let mut storage_capacities = Vec::new();
+
+    for member in committee.iter() {
+        let weight = member.weight as u64;
+
+        storage_prices.push((member.preferences.storage_price.into(), weight));
+        storage_capacities.push((member.preferences.storage_capacity.into(), weight));
+
+        total_weight = total_weight.saturating_add(weight);
+    }
+
+    archive.storage_capacity =
+        quorum_above(&storage_capacities, total_weight).into();
+    archive.storage_price =
+        quorum_below(&storage_prices, total_weight).into();
 }
 
 
