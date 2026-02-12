@@ -46,7 +46,7 @@ async fn test_normal_mode_lifecycle_5_epochs() {
     let ctx = TestContext::builder()
         .nodes(NUM_NODES)
         .port(BASE_PORT)
-        .timeout(Duration::from_secs(600))
+        .timeout(Duration::from_secs(300))
         .build_and_bootstrap_to_epoch(EpochNumber(4))
         .await
         .expect("Failed to setup and bootstrap to epoch 4");

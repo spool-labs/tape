@@ -95,6 +95,8 @@ pub enum TapeError {
     InvalidCommitment = 0x72,
     #[error("invalid track order")]
     InvalidTrackOrder = 0x73,
+    #[error("already certified")]
+    AlreadyCertified = 0x74,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -124,6 +126,7 @@ impl TapeError {
             Self::BadEpochState
                 | Self::AlreadyAdvanced
                 | Self::AlreadySynced
+                | Self::AlreadyCertified
                 | Self::UnexpectedState
         )
     }
@@ -181,6 +184,7 @@ impl TapeError {
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
             Self::InvalidTrackOrder => "Snapshot chunks must be registered in order",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
+            Self::AlreadyCertified => "Snapshot track already certified",
         }
     }
 }

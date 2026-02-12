@@ -50,6 +50,11 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Derive expected track PDA from instruction data and verify
     let epoch_number = EpochNumber::unpack(args.epoch);
+
+    // Snapshot must be for a past epoch (epoch has already advanced)
+    if epoch_number >= current_epoch(epoch) {
+        return Err(ProgramError::InvalidArgument);
+    }
     let chunk_index = ChunkIndex::unpack(args.chunk_index);
 
     if chunk_index.as_usize() >= SPOOL_GROUP_COUNT {
@@ -59,6 +64,11 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
     if track_address != *track_info.key {
         return Err(ProgramError::InvalidAccountData);
+    }
+
+    // Already certified — idempotent success for race conditions
+    if track.data.is_certified() {
+        return Err(TapeError::AlreadyCertified.into());
     }
 
     if !track.data.is_registered() {
@@ -92,7 +102,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Build snapshot message with domain separation
     let snapshot_message = SnapshotMessage::new(
-        current_epoch(epoch),
+        epoch_number,
         chunk_index,
         track.data.commitment_hash.0,
     );
@@ -112,7 +122,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     let signer_count = indices.len() as u64;
 
     track.data.set_certified(
-        current_epoch(epoch),
+        epoch_number,
     );
 
     // Track certification progress per epoch.
@@ -131,7 +141,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     TrackCertified {
         track: *track_info.key,
-        epoch: current_epoch(epoch),
+        epoch: epoch_number,
         signer_count: signer_count.to_le_bytes(),
         signer_weight: weight.to_le_bytes(),
     }.log();
@@ -207,8 +217,9 @@ mod tests {
             ..Track::zeroed()
         };
 
+        // Epoch account reflects the CURRENT epoch (already advanced past the snapshot epoch)
         let epoch = Epoch {
-            id: epoch_number,
+            id: EpochNumber(epoch_number.as_u64() + 1),
             ..Epoch::zeroed()
         };
 

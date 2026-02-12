@@ -73,17 +73,18 @@ async fn run_inner(
     let cancel = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
 
+    // Capture span for spawned tasks (they don't inherit parent span automatically)
+    let span = tracing::Span::current();
+
     // Spawn deferral cleanup task (evicts expired entries)
     tasks.spawn({
         let deferral = Arc::clone(&deferral);
+        let span = span.clone();
         async move {
-            deferral.run_cleanup().await;
+            deferral.run_cleanup().instrument(span).await;
             Ok(())
         }
     });
-
-    // Capture span for spawned tasks (they don't inherit parent span automatically)
-    let span = tracing::Span::current();
 
     // Block processor: parses blocks, signals FSM when state changes
     tasks.spawn({

@@ -18,15 +18,16 @@ use tape_api::instruction::{
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::EpochNumber;
 use tape_store::ops::MetaOps;
-use tape_store::types::NodeStatus;
+use tape_store::types::{NodeInfo, NodeStatus};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::core::context::NodeContext;
 use crate::core::{Backoff, BackoffConfig, ManagedTask};
-use tape_store::ops::SpoolOps;
+use tape_store::ops::{CommitteeOps, SpoolOps};
 use tape_store::types::SpoolStatus;
 
 use crate::features::lifecycle::{NodeEvent, evaluate_transition, is_replaying, start_node_recovery, run_metadata_sync};
@@ -257,9 +258,9 @@ async fn spawn_recovery(
     let deferral = Arc::clone(deferral);
     let cancel = cancel.clone();
 
-    task.spawn(async move {
+    task.spawn(Box::pin(async move {
         start_node_recovery(ctx, epoch, our_spools, track_sync, deferral, cancel).await;
-    })
+    }))
     .await;
 }
 
@@ -430,9 +431,9 @@ pub async fn run(
                         let cancel2 = cancel.clone();
                         let sh = sync_handler.clone();
                         recovery_task
-                            .spawn(async move {
+                            .spawn(Box::pin(async move {
                                 start_spool_recovery(ctx2, sh, cancel2).await;
-                            })
+                            }))
                             .await;
                     } else {
                         ctx.control_plane
@@ -539,10 +540,15 @@ pub async fn run(
                 }
             }
 
+            // Persist committee for the completed epoch (needed by snapshot certifier)
+            let completed_epoch = last_evaluated_epoch;
+            if completed_epoch > EpochNumber(0) {
+                persist_committee_for_epoch(&ctx, completed_epoch).await;
+            }
+
             // Snapshot build for the completed epoch
             if in_committee {
                 let snap_ctx = Arc::clone(&ctx);
-                let completed_epoch = last_evaluated_epoch;
                 snapshot_task
                     .spawn(async move {
                         if let Err(e) = crate::features::snapshot::builder::build_and_certify(
@@ -609,6 +615,84 @@ pub async fn run(
     snapshot_task.abort().await;
 
     Ok(())
+}
+
+/// Persist the committee for a completed epoch to the local store.
+///
+/// After an epoch advance from N to N+1, `system.committee_prev` holds epoch N's
+/// committee and `system.spools_prev` holds epoch N's spool assignment. For each
+/// member, we resolve their Node account via RPC to get network address and TLS
+/// pubkey, then store the result for use by snapshot certification and recovery.
+async fn persist_committee_for_epoch(
+    ctx: &NodeContext,
+    completed_epoch: EpochNumber,
+) {
+    // Skip if already persisted
+    if let Ok(Some(_)) = ctx.storage.store.get_committee(completed_epoch) {
+        return;
+    }
+
+    // The block processor sets current_epoch before the system state is refreshed,
+    // so the control plane's system still reflects the completed epoch's state.
+    // Use committee/spools (not committee_prev/spools_prev) since they haven't rotated yet.
+    let system = ctx.control_plane.get_system();
+    let committee = &system.committee;
+    let spools = &system.spools;
+
+    if committee.size() == 0 {
+        info!(
+            epoch = completed_epoch.as_u64(),
+            "skipping committee persistence for empty committee_prev"
+        );
+        return;
+    }
+
+    let mut members = Vec::with_capacity(committee.size());
+    for (member_idx, member) in committee.iter().enumerate() {
+        let member_spools = spools.spools_for_member(member_idx);
+
+        // Resolve Node account via RPC to get network address and TLS pubkey
+        match ctx.rpc.get_node_by_id(member.id).await {
+            Ok((pubkey, node)) => {
+                members.push(NodeInfo {
+                    node_address: pubkey.into(),
+                    bls_pubkey: node.metadata.bls_pubkey,
+                    tls_pubkey: node.metadata.network_tls.into(),
+                    network_address: node.metadata.network_address,
+                    spools: member_spools,
+                });
+            }
+            Err(e) => {
+                warn!(
+                    node_id = member.id.as_u64(),
+                    error = %e,
+                    "failed to resolve node for committee persistence"
+                );
+            }
+        }
+    }
+
+    if members.is_empty() {
+        warn!(
+            epoch = completed_epoch.as_u64(),
+            "could not resolve any committee members"
+        );
+        return;
+    }
+
+    if let Err(e) = ctx.storage.store.put_committee(completed_epoch, members) {
+        warn!(
+            epoch = completed_epoch.as_u64(),
+            error = %e,
+            "failed to persist committee"
+        );
+    } else {
+        info!(
+            epoch = completed_epoch.as_u64(),
+            size = committee.size(),
+            "persisted committee for epoch"
+        );
+    }
 }
 
 /// Refresh on-chain state into control plane.

@@ -6,7 +6,7 @@
 
 use tokio::sync::Mutex;
 use tokio::task::{JoinError, JoinHandle};
-use tracing::debug;
+use tracing::{debug, Instrument};
 
 /// An exclusive background task slot.
 ///
@@ -34,7 +34,8 @@ impl ManagedTask {
             // Wait for the old task to finish (abort is asynchronous)
             let _ = old.await;
         }
-        *guard = Some(tokio::spawn(future));
+        let span = tracing::Span::current();
+        *guard = Some(tokio::spawn(future.instrument(span)));
         debug!(task = self.name, "spawned new task");
     }
 

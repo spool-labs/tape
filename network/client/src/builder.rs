@@ -71,11 +71,13 @@ impl NodeClientBuilder {
     /// # Arguments
     /// * `address` - The node address (host:port or full URL)
     pub fn build(self, address: &str) -> Result<NodeClient, NodeError> {
-        // Parse address - add https:// if no scheme
+        // Parse address - add scheme if missing.
+        // Use http:// when accept_invalid_certs is set (TLS not yet implemented on server).
         let base_url = if address.starts_with("http://") || address.starts_with("https://") {
             Url::parse(address)?
         } else {
-            Url::parse(&format!("https://{}", address))?
+            let scheme = if self.accept_invalid_certs { "http" } else { "https" };
+            Url::parse(&format!("{}://{}", scheme, address))?
         };
 
         let client = Client::builder()

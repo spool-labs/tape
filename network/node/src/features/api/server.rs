@@ -124,7 +124,8 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         // Spawn server task
-        tokio::spawn(async move {
+        let span = tracing::Span::current();
+        tokio::spawn(tracing::Instrument::instrument(async move {
             let server = axum::serve(listener, app);
             tokio::select! {
                 result = server => {
@@ -136,7 +137,7 @@ impl<S: Store + Send + Sync + 'static> Server<S> {
                     tracing::info!("Server shutdown signal received");
                 }
             }
-        });
+        }, span));
 
         Ok(ServerHandle {
             shutdown_tx: Some(shutdown_tx),

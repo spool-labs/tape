@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, warn, Instrument};
 
 use tape_store::types::Pubkey;
 
@@ -80,6 +80,7 @@ impl TrackSyncHandler {
         let cancel_clone = cancel.clone();
         let permit = Arc::clone(&self.track_semaphore);
 
+        let span = tracing::Span::current();
         let handle = tokio::spawn(async move {
             let _permit = match permit.acquire().await {
                 Ok(p) => p,
@@ -95,7 +96,7 @@ impl TrackSyncHandler {
                 }
                 _ = task => {}
             }
-        });
+        }.instrument(span));
 
         self.in_progress
             .write()

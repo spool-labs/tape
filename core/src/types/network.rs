@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-#[cfg(not(feature = "solana"))]
+#[cfg(not(target_os = "solana"))]
 use core::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +99,7 @@ impl NetworkAddress {
     #[inline]
     pub fn is_ipv6(&self) -> bool { self.flags() == 1 }
 
-    #[cfg(not(feature = "solana"))]
+    #[cfg(not(target_os = "solana"))]
     pub fn from(addr: &str) -> Result<Self, NetworkAddressError> {
         match addr.parse::<SocketAddr>() {
             Ok(sa) => Ok(Self::from_socket_addr(sa)),
@@ -107,7 +107,7 @@ impl NetworkAddress {
         }
     }
 
-    #[cfg(not(feature = "solana"))]
+    #[cfg(not(target_os = "solana"))]
     pub fn from_socket_addr(addr: SocketAddr) -> Self {
         match addr {
             SocketAddr::V4(v4) => {
@@ -122,7 +122,7 @@ impl NetworkAddress {
         }
     }
 
-    #[cfg(not(feature = "solana"))]
+    #[cfg(not(target_os = "solana"))]
     pub fn to_socket_addr(&self) -> Result<SocketAddr, &'static str> {
         let port = u16::from_le(self.port_le());
         match self.flags() {
@@ -140,7 +140,7 @@ impl NetworkAddress {
     }
 }
 
-#[cfg(not(feature = "solana"))]
+#[cfg(not(target_os = "solana"))]
 impl From<SocketAddr> for NetworkAddress {
     fn from(sa: SocketAddr) -> Self { Self::from_socket_addr(sa) }
 }
@@ -155,7 +155,7 @@ impl AsMut<[u8]> for NetworkAddress {
 
 
 #[cfg(test)]
-#[cfg(not(feature = "solana"))]
+#[cfg(not(target_os = "solana"))]
 mod tests {
     use super::*;
     use bytemuck::{cast_slice, try_from_bytes};

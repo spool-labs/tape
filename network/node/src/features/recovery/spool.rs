@@ -219,11 +219,11 @@ pub async fn start_spool_recovery<S: Store + 'static>(
                 let cancel = cancel.clone();
 
                 track_sync
-                    .start_sync(track_address, async move {
+                    .start_sync(track_address, Box::pin(async move {
                         recover_track_slice(ctx, spool, track_address, deferral, slice_sem, cancel)
                             .await;
                         drop(permit);
-                    })
+                    }))
                     .await;
             }
         }

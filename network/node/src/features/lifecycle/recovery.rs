@@ -143,11 +143,11 @@ pub async fn start_node_recovery<S: Store + 'static>(
                 let slice_sem = Arc::clone(&slice_semaphore);
 
                 track_sync
-                    .start_sync(track_addr, async move {
+                    .start_sync(track_addr, Box::pin(async move {
                         recover_track_slice(ctx, spool, track_addr, deferral, slice_sem, cancel)
                             .await;
                         drop(_queue_permit);
-                    })
+                    }))
                     .await;
 
                 dispatched += 1;

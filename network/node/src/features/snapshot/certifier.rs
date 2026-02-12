@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signer::Signer;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_api::instruction::{
     build_certify_snapshot_ix, build_register_snapshot_ix,
 };
@@ -50,7 +52,7 @@ pub async fn certify_snapshot_tracks<S: Store>(
     let committee = ctx
         .storage
         .store
-        .get_committee(ctx.control_plane.current_epoch())
+        .get_committee(epoch)
         .map_err(SnapshotError::Store)?
         .ok_or_else(|| SnapshotError::Encode("no committee found".into()))?;
 
@@ -251,7 +253,10 @@ pub async fn certify_snapshot_tracks<S: Store>(
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("already in use") || err_str.contains("already initialized") {
+                if err_str.contains("already in use")
+                    || err_str.contains("already initialized")
+                    || err_str.contains("uninitialized account")
+                {
                     debug!(chunk_index = chunk_index, "Snapshot track already registered");
                 } else {
                     warn!(chunk_index = chunk_index, error = %e, "RegisterSnapshot failed");
@@ -260,7 +265,7 @@ pub async fn certify_snapshot_tracks<S: Store>(
             }
         }
 
-        // Submit CertifySnapshot on-chain
+        // Submit CertifySnapshot on-chain (BLS verification needs extra compute)
         let certify_ix = build_certify_snapshot_ix(
             fee_payer,
             epoch,
@@ -269,7 +274,8 @@ pub async fn certify_snapshot_tracks<S: Store>(
             aggregated,
         );
 
-        match ctx.rpc.send_instructions(&ctx.keypair, vec![certify_ix]).await {
+        let compute_ix = ComputeBudgetInstruction::set_compute_unit_limit(400_000);
+        match ctx.rpc.send_instructions(&ctx.keypair, vec![compute_ix, certify_ix]).await {
             Ok(sig) => {
                 debug!(
                     chunk_index = chunk_index,
@@ -279,8 +285,12 @@ pub async fn certify_snapshot_tracks<S: Store>(
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("already certified") {
-                    debug!(chunk_index = chunk_index, "Snapshot track already certified");
+                if let Some(tape_err) = TapeError::from_error_string(&err_str) {
+                    if tape_err.is_already_done() {
+                        debug!(chunk_index = chunk_index, "Snapshot track already certified");
+                    } else {
+                        warn!(chunk_index = chunk_index, error = %e, "CertifySnapshot failed");
+                    }
                 } else {
                     warn!(chunk_index = chunk_index, error = %e, "CertifySnapshot failed");
                 }
