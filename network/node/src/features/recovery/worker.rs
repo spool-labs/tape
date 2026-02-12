@@ -44,7 +44,14 @@ async fn fetch_metadata_from_peers<S: Store>(
     track_address: Pubkey,
 ) -> Option<TrackInfo> {
     let epoch = ctx.control_plane.current_epoch();
-    let committee = ctx.storage.store.get_committee(epoch).ok()??;
+    let committee = match ctx.storage.store.get_committee(epoch) {
+        Ok(Some(c)) => c,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!(epoch = epoch.as_u64(), error = %e, "failed to read committee");
+            return None;
+        }
+    };
     let insecure = ctx.config.insecure;
     let track_id = track_address.to_string();
 
@@ -97,7 +104,9 @@ pub async fn resolve_track_metadata<S: Store>(
         Ok(None) => {
             match fetch_metadata_from_peers(ctx, track_address).await {
                 Some(info) => {
-                    let _ = ctx.storage.store.put_track(track_address, info.clone());
+                    if let Err(e) = ctx.storage.store.put_track(track_address, info.clone()) {
+                        warn!(track = %track_address, error = %e, "failed to persist fetched track metadata");
+                    }
                     Ok(info)
                 }
                 None => Err(RecoveryError::MetadataUnavailable),

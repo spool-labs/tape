@@ -85,7 +85,7 @@ impl NodeContext<RocksStore> {
     /// 3. Creating the RPC client
     /// 4. Opening RocksDB storage
     /// 5. Fetching initial on-chain state (System, Epoch, Node)
-    /// 6. Auto-registering node if account doesn't exist
+    /// 6. Verifying node account exists
     /// 7. Initializing the ControlPlane cache
     /// 8. Initializing metrics
     pub async fn from_config(config: NodeConfig, rpc_url: &str) -> Result<Arc<Self>, ContextError> {
@@ -127,11 +127,8 @@ impl NodeContext<RocksStore> {
                 node
             }
             Err(e) => {
-                // TODO: Implement auto-registration if enabled in config
-                // For now, just error out
                 return Err(ContextError::ChainState(format!(
-                    "Node account not found and auto-registration not implemented: {}",
-                    e
+                    "Node account not found: {}. Register with `tape node register` first.", e
                 )));
             }
         };

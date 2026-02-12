@@ -36,8 +36,8 @@ const ATTESTATION_CONCURRENCY: usize = 8;
 pub enum InconsistencyResult {
     /// Slices are consistent with on-chain commitment.
     Consistent,
-    /// Inconsistency detected but proof generation not yet implemented.
-    DetectedButUnproven {
+    /// Merkle root mismatch detected between re-encoded slices and on-chain commitment.
+    Inconsistent {
         track: Pubkey,
         expected_root: Hash,
         computed_root: Hash,
@@ -47,8 +47,8 @@ pub enum InconsistencyResult {
 /// Check slice consistency against an on-chain commitment.
 ///
 /// Computes the merkle root of the re-encoded slices and compares it
-/// against the on-chain commitment hash. Returns `DetectedButUnproven`
-/// if they differ (BLS attestation not yet implemented).
+/// against the on-chain commitment hash. Returns `Inconsistent`
+/// if they differ, triggering BLS attestation fan-out.
 pub fn check_consistency(
     track: Pubkey,
     commitment: &Hash,
@@ -56,7 +56,7 @@ pub fn check_consistency(
 ) -> InconsistencyResult {
     let computed_root = blob_merkle_root(reencoded_slices);
     if computed_root != *commitment {
-        InconsistencyResult::DetectedButUnproven {
+        InconsistencyResult::Inconsistent {
             track,
             expected_root: *commitment,
             computed_root,
@@ -211,7 +211,7 @@ mod tests {
 
         let result = check_consistency(Pubkey([1u8; 32]), &wrong_root, &slices);
         match result {
-            InconsistencyResult::DetectedButUnproven {
+            InconsistencyResult::Inconsistent {
                 expected_root,
                 computed_root,
                 ..

@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, Instrument};
@@ -21,6 +23,9 @@ use crate::features::recovery::{LiveUploadDeferral, TrackSyncHandler};
 
 /// Signal channel capacity (small - only FSM wake-up signals).
 const SIGNAL_CHANNEL_CAPACITY: usize = 32;
+
+/// Timeout for graceful shutdown of worker tasks.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Error type for orchestrator.
 #[derive(Debug, thiserror::Error)]
@@ -153,8 +158,7 @@ async fn run_inner(
     server_handle.shutdown().await;
 
     // Wait for all tasks to complete with timeout
-    let shutdown_timeout = std::time::Duration::from_secs(30);
-    let shutdown_deadline = tokio::time::Instant::now() + shutdown_timeout;
+    let shutdown_deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
 
     while let Ok(Some(task_result)) =
         tokio::time::timeout_at(shutdown_deadline, tasks.join_next()).await
@@ -170,11 +174,6 @@ async fn run_inner(
                 error!(error = %join_error, "Worker task panic during shutdown");
             }
         }
-    }
-
-    // Shutdown storage
-    if let Err(e) = ctx.storage.shutdown().await {
-        error!(error = %e, "Storage shutdown error");
     }
 
     info!("Orchestrator shutdown complete");

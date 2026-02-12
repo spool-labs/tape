@@ -202,11 +202,6 @@ impl<S: Store> StorageService<S> {
         Ok(self.store.count_slices_by_spool(spool_idx.into())?)
     }
 
-    /// Shutdown storage gracefully.
-    pub async fn shutdown(&self) -> Result<(), StorageError> {
-        tracing::info!("Storage service shutting down");
-        Ok(())
-    }
 }
 
 #[cfg(test)]

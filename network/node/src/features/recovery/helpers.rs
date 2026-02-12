@@ -113,7 +113,14 @@ pub fn resolve_previous_owner<S: Store>(
 ) -> Option<NetworkAddress> {
     let epoch = ctx.control_plane.current_epoch();
     let prev_epoch = tape_core::types::EpochNumber(epoch.as_u64().saturating_sub(1));
-    let prev_committee = ctx.storage.store.get_committee(prev_epoch).ok()??;
+    let prev_committee = match ctx.storage.store.get_committee(prev_epoch) {
+        Ok(Some(c)) => c,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!(epoch = prev_epoch.as_u64(), error = %e, "failed to read previous committee");
+            return None;
+        }
+    };
 
     for member in &prev_committee {
         if member.spools.contains(&spool) {

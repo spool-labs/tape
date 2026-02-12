@@ -42,9 +42,6 @@ pub enum ApiError {
 
     #[error("incomplete slice data for signing")]
     IncompleteSliceData,
-
-    #[error("not implemented")]
-    NotImplemented,
 }
 
 impl IntoResponse for ApiError {
@@ -62,7 +59,6 @@ impl IntoResponse for ApiError {
             ApiError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::MerkleVerificationFailed => StatusCode::BAD_REQUEST,
             ApiError::IncompleteSliceData => StatusCode::PRECONDITION_FAILED,
-            ApiError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
         };
 
         (status, self.to_string()).into_response()

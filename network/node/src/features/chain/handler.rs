@@ -299,7 +299,10 @@ fn destroy_tape_tracks<S: Store>(
                 continue;
             }
             for &spool in owned_spools {
-                let _ = store.delete_slice(spool, *track_address);
+                if let Err(e) = store.delete_slice(spool, *track_address) {
+                    debug!(track = %track_address, spool, error = %e,
+                           "failed to delete slice during tape destruction");
+                }
             }
             store.delete_object_info(*track_address)?;
             store.delete_track(*track_address)?;

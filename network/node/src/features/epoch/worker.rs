@@ -355,7 +355,7 @@ pub async fn run(
                 info!("FSM loop shutting down during catch-up");
                 return Ok(());
             }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            _ = tokio::time::sleep(EPOCH_ADVANCE_POLL_INTERVAL) => {
                 if ctx.control_plane.is_caught_up() {
                     break;
                 }
@@ -415,8 +415,14 @@ pub async fn run(
                 if !recovery_task.is_running().await {
                     let our_spools = ctx.control_plane.get_our_spools();
                     let has_recovering = our_spools.iter().any(|&s| {
-                        ctx.storage.store.get_spool_status(s).ok().flatten()
-                            != Some(SpoolStatus::Active)
+                        match ctx.storage.store.get_spool_status(s) {
+                            Ok(Some(SpoolStatus::Active)) => false,
+                            Ok(_) => true,
+                            Err(e) => {
+                                warn!(spool = s, error = %e, "failed to read spool status");
+                                true
+                            }
+                        }
                     });
                     if has_recovering {
                         info!("dispatching spool recovery for non-active spools");
@@ -495,10 +501,16 @@ pub async fn run(
             // Seed status for carried-over spools
             for &spool in &current_spools {
                 if prev_set.contains(&spool) {
-                    if ctx.storage.store.get_spool_status(spool).ok().flatten()
-                        != Some(SpoolStatus::Active)
-                    {
-                        let _ = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active);
+                    match ctx.storage.store.get_spool_status(spool) {
+                        Ok(Some(SpoolStatus::Active)) => {}
+                        Ok(_) => {
+                            if let Err(e) = ctx.storage.store.set_spool_status(spool, SpoolStatus::Active) {
+                                warn!(spool, error = %e, "failed to set carried-over spool to Active");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(spool, error = %e, "failed to read spool status");
+                        }
                     }
                 }
             }
