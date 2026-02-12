@@ -19,7 +19,7 @@ use super::{ApiError, ApiState};
 ///
 /// BLS-sign a snapshot chunk certification message.
 /// Verifies that we're in committee and have stored slices for this chunk's spool group,
-/// then signs a SnapshotMessage binding (epoch, chunk_index, commitment_hash).
+/// then signs a SnapshotMessage binding (epoch, commitment_hash).
 pub async fn get_snapshot_sign<S: Store>(
     State(state): State<ApiState<S>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
@@ -56,7 +56,7 @@ pub async fn get_snapshot_sign<S: Store>(
         .ok_or(ApiError::IncompleteSliceData)?
         .0;
 
-    let message = SnapshotMessage::new(epoch, ChunkIndex(chunk_index), commitment_hash);
+    let message = SnapshotMessage::new(epoch, commitment_hash);
     let message_bytes = message.to_bytes();
 
     let signature = state

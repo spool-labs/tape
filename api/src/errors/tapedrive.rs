@@ -93,8 +93,6 @@ pub enum TapeError {
     ListFull = 0x71,
     #[error("invalid commitment")]
     InvalidCommitment = 0x72,
-    #[error("invalid track order")]
-    InvalidTrackOrder = 0x73,
     #[error("already certified")]
     AlreadyCertified = 0x74,
 }
@@ -182,7 +180,6 @@ impl TapeError {
             Self::BadProof => "Invalid proof",
             Self::ListFull => "Blacklist is full",
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
-            Self::InvalidTrackOrder => "Snapshot chunks must be registered in order",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
             Self::AlreadyCertified => "Snapshot track already certified",
         }

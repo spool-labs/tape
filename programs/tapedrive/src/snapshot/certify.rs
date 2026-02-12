@@ -48,20 +48,17 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // Derive expected track PDA from instruction data and verify
+    // Derive expected track PDA from the track's commitment and verify
     let epoch_number = EpochNumber::unpack(args.epoch);
 
     // Snapshot must be for a past epoch (epoch has already advanced)
     if epoch_number >= current_epoch(epoch) {
         return Err(ProgramError::InvalidArgument);
     }
-    let chunk_index = ChunkIndex::unpack(args.chunk_index);
 
-    if chunk_index.as_usize() >= SPOOL_GROUP_COUNT {
-        return Err(ProgramError::InvalidArgument);
-    }
+    let commitment = track.data.commitment_hash;
 
-    let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
+    let (track_address, _) = snapshot_pda(epoch_number, commitment);
     if track_address != *track_info.key {
         return Err(ProgramError::InvalidAccountData);
     }
@@ -76,6 +73,10 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     }
 
     let group = track.data.spool_group();
+    if (group as usize) >= SPOOL_GROUP_COUNT {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     let weight = system.spools.group_weight(group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
@@ -103,8 +104,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
     // Build snapshot message with domain separation
     let snapshot_message = SnapshotMessage::new(
         epoch_number,
-        chunk_index,
-        track.data.commitment_hash.0,
+        commitment.0,
     );
     let message = snapshot_message.to_bytes();
 
@@ -163,8 +163,9 @@ mod tests {
         let (tape_address, _) = tape_pda(system_address);
 
         let epoch_number = EpochNumber(42);
-        let chunk_index = ChunkIndex(49); // Last chunk triggers latest_epoch update
-        let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
+        let commitment_hash = Hash::new_unique();
+        let spool_group = 49u64; // Last chunk triggers latest_epoch update
+        let (track_address, _) = snapshot_pda(epoch_number, commitment_hash);
 
         const SIGNERS: usize = 75;
 
@@ -205,13 +206,12 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let commitment_hash = Hash::new_unique();
         let track = Track {
             tape: tape_address,
             key: Hash::default(),
             data: TrackData {
                 commitment_hash,
-                spool_group: chunk_index.as_u64(),
+                spool_group,
                 ..TrackData::zeroed()
             },
             ..Track::zeroed()
@@ -233,7 +233,6 @@ mod tests {
 
         let snapshot_message = SnapshotMessage::new(
             epoch_number,
-            chunk_index,
             commitment_hash.0,
         );
         let message = snapshot_message.to_bytes();
@@ -256,7 +255,7 @@ mod tests {
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
         let instruction = build_certify_snapshot_ix(
-            fee_payer, epoch_number, chunk_index, bitmap, agg_sig,
+            fee_payer, epoch_number, commitment_hash, bitmap, agg_sig,
         );
 
         let (snapshot_state_address, _) = snapshot_state_pda();

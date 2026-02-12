@@ -57,16 +57,16 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
-    let chunk_index = ChunkIndex::unpack(args.chunk_index);
-    if chunk_index.as_usize() >= SPOOL_GROUP_COUNT {
+    let spool_group = u64::from_le_bytes(args.spool_group);
+    if (spool_group as usize) >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
     }
 
     let epoch_number = EpochNumber::unpack(args.epoch);
 
-    // Derive expected PDA for this snapshot track
+    // Derive expected PDA for this snapshot track (keyed by commitment)
     let (tape_address, _) = tape_pda(system_address);
-    let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
+    let (track_address, _) = snapshot_pda(epoch_number, args.commitment);
 
     let tape = tape_info
         .is_writable()?
@@ -83,26 +83,19 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_snapshot_state()?
         .as_account_mut::<SnapshotState>(&tapedrive::ID)?;
 
-    // Enforce sequential registration: chunk_index must match tape.track_count % SPOOL_GROUP_COUNT.
-    // This prevents gaps and ensures chunks are registered in order (0..49 per epoch).
-    let expected_chunk = ChunkIndex(tape.track_count % SPOOL_GROUP_COUNT as u64);
-    if chunk_index != expected_chunk {
-        return Err(TapeError::InvalidTrackOrder.into());
-    }
-
     // Verify leaf hashes produce the commitment root
     let computed_root = root_from_leaf_hashes::<COMMITMENT_TREE_HEIGHT>(&args.leaves);
     if computed_root != args.commitment {
         return Err(TapeError::InvalidCommitment.into());
     }
 
-    // Create the track account using snapshot PDA seeds
+    // Create the track account using snapshot PDA seeds (epoch + commitment)
     create_program_account::<Track>(
         track_info,
         system_program_info,
         fee_payer_info,
         &tapedrive::ID,
-        &[SNAPSHOT, &epoch_number.pack(), &chunk_index.pack()],
+        &[SNAPSHOT, &epoch_number.pack(), &args.commitment.0],
     )?;
 
     let track_number = tape.track_count;
@@ -129,7 +122,7 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
     track.data = TrackData::new(
         current_epoch(epoch),
         args.commitment,
-        chunk_index.as_u64(),
+        spool_group,
     );
     let profile = EncodingProfile::unpack(args.profile);
     track.data.profile = profile;
@@ -149,7 +142,7 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         commitment: args.commitment,
         epoch: current_epoch(epoch),
         profile,
-        spool_group: chunk_index.pack(),
+        spool_group: spool_group.to_le_bytes(),
         stripe_size: args.stripe_size,
         stripe_count: args.stripe_count,
         leaves: args.leaves,

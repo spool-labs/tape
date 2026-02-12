@@ -17,15 +17,15 @@ pub struct ReserveSnapshotTape {}
 
 /// Instruction data for RegisterSnapshot.
 ///
-/// Registers a snapshot track for a specific epoch and chunk index.
+/// Registers a snapshot track for a specific epoch and spool group.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RegisterSnapshot {
     /// Epoch this snapshot covers.
     pub epoch: [u8; 8],
 
-    /// Chunk index (0..SPOOL_GROUP_COUNT-1), packed as u64 LE.
-    pub chunk_index: [u8; 8],
+    /// Spool group index (0..SPOOL_GROUP_COUNT-1), packed as u64 LE.
+    pub spool_group: [u8; 8],
 
     /// Commitment hash (merkle root over 20 inner slices).
     pub commitment: Hash,
@@ -52,9 +52,6 @@ pub struct CertifySnapshot {
     /// Epoch this snapshot covers.
     pub epoch: [u8; 8],
 
-    /// Chunk index (0..SPOOL_GROUP_COUNT-1).
-    pub chunk_index: [u8; 8],
-
     /// Bitmap of committee members who signed.
     pub bitmap: CommitteeBitmap,
 
@@ -70,7 +67,7 @@ pub struct CertifySnapshot {
 pub fn build_register_snapshot_ix(
     fee_payer: Pubkey,
     epoch_number: EpochNumber,
-    chunk_index: ChunkIndex,
+    spool_group: u64,
     commitment: Hash,
     profile: EncodingProfile,
     stripe_size: u64,
@@ -81,7 +78,7 @@ pub fn build_register_snapshot_ix(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(system_address);
-    let (track_address, _) = snapshot_pda(epoch_number, chunk_index);
+    let (track_address, _) = snapshot_pda(epoch_number, commitment);
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
@@ -99,7 +96,7 @@ pub fn build_register_snapshot_ix(
         ],
         data: RegisterSnapshot {
             epoch: epoch_number.pack(),
-            chunk_index: chunk_index.pack(),
+            spool_group: spool_group.to_le_bytes(),
             commitment,
             profile: profile.pack(),
             stripe_size: stripe_size.to_le_bytes(),
@@ -117,18 +114,17 @@ pub fn build_register_snapshot_ix(
 pub fn build_certify_snapshot_ix(
     fee_payer: Pubkey,
     epoch: EpochNumber,
-    chunk_index: ChunkIndex,
+    commitment: Hash,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(system_address);
-    let (track_address, _) = snapshot_pda(epoch, chunk_index);
+    let (track_address, _) = snapshot_pda(epoch, commitment);
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     let epoch = epoch.pack();
-    let chunk_index = chunk_index.pack();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -142,7 +138,6 @@ pub fn build_certify_snapshot_ix(
         ],
         data: CertifySnapshot {
             epoch,
-            chunk_index,
             bitmap,
             signature,
         }

@@ -134,7 +134,7 @@ pub async fn build_epoch_snapshot<S: Store>(
 
         if we_own_group {
             // Derive a deterministic track address for snapshot slice storage
-            let (pda, _) = snapshot_pda(epoch, ChunkIndex(group_idx as u64));
+            let (pda, _) = snapshot_pda(epoch, commitment);
             let track_address: StorePubkey = pda.into();
 
             // Store slices for owned spools
