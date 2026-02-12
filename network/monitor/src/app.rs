@@ -622,16 +622,16 @@ impl App {
 
     /// Calculate epoch progress as percentage (0-100).
     /// For Active phase: time-based progress.
-    /// For Syncing/Settling phases: weight-based progress toward 2/3 threshold.
+    /// For Syncing/Settling phases: spool-weight-based progress toward 2/3 threshold.
     pub fn epoch_progress(&self) -> u8 {
         match self.phase {
             EpochPhase::Syncing | EpochPhase::Settling => {
-                // Progress toward BFT supermajority threshold
-                let committee_size = self.nodes.len() as u64;
-                if committee_size == 0 {
+                // Progress toward BFT supermajority of SPOOL_COUNT.
+                // On-chain, weight is accumulated as spool counts against SPOOL_COUNT total.
+                let threshold = self.supermajority_threshold();
+                if threshold == 0 {
                     return 0;
                 }
-                let threshold = min_correct(committee_size);
                 ((self.epoch_weight * 100) / threshold).min(100) as u8
             }
             EpochPhase::Active | EpochPhase::Unknown => {
@@ -660,12 +660,9 @@ impl App {
     }
 
     /// Get the BFT supermajority threshold for phase transitions.
+    /// On-chain, sync/settle weight is measured against SPOOL_COUNT (not node count).
     pub fn supermajority_threshold(&self) -> u64 {
-        let committee_size = self.nodes.len() as u64;
-        if committee_size == 0 {
-            return 1;
-        }
-        min_correct(committee_size)
+        min_correct(SPOOL_COUNT as u64)
     }
 
     /// Calculate time remaining in epoch.
