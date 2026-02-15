@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 description = "Tapedrive storage node runtime"
 
+[[bin]]
+name = "tape-node"
+path = "src/bin/node/main.rs"
+required-features = ["rpc"]
+
 [dependencies]
 # Workspace crates
 tape-api = { workspace = true, features = ["wincode"] }
@@ -42,6 +47,10 @@ serde_json = { workspace = true }
 rpc-client = { workspace = true, optional = true }
 rpc-solana = { workspace = true, optional = true }
 
+# Binary-only deps (pulled in via rpc feature)
+clap = { version = "4", features = ["derive"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
 [features]
 default = []
-rpc = ["dep:rpc-client", "dep:rpc-solana"]
+rpc = ["dep:rpc-client", "dep:rpc-solana", "dep:clap", "dep:tracing-subscriber"]

@@ -24,7 +24,7 @@ members = [
   "metrics",
   "network/api",
   "network/client",
-  "node",
+  "network/node",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
@@ -46,7 +46,7 @@ default-members = [
   "metrics",
   "network/api",
   "network/client",
-  "node",
+  "network/node",
 ]
 
 [workspace.package]
@@ -81,7 +81,7 @@ tape-test = { version = "0.3.0", path = "./test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
-tape-node = { version = "0.3.0", path = "./node" }
+tape-node = { version = "0.3.0", path = "./network/node" }
 
 # program dependencies
 bytemuck = "1.14.3"

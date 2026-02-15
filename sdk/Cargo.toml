@@ -50,7 +50,7 @@ rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-tape-node = { path = "../node" }
+tape-node = { path = "../network/node" }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }

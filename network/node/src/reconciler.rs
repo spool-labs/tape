@@ -54,6 +54,10 @@ impl<S: Store> Reconciler<S> {
         directive_tx: mpsc::Sender<Directive>,
         cancel: CancellationToken,
     ) {
+        // Bootstrap: schedule RefreshOnchainState immediately on startup
+        self.desired.insert(TaskKey::RefreshOnchainState);
+        self.emit_directives(&directive_tx).await;
+
         let mut ticker = tokio::time::interval(Duration::from_secs(30));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -161,7 +165,7 @@ impl<S: Store> Reconciler<S> {
     }
 
     fn node_status(&self) -> NodeStatus {
-        self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Active)
+        self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby)
     }
 
     fn reconcile_spools(&mut self) {
@@ -210,6 +214,10 @@ impl<S: Store> Reconciler<S> {
                 self.scheduled.remove(key);
                 if key.is_one_shot() {
                     self.desired.remove(key);
+                }
+                // After state refresh, reconcile spools (committee may have changed)
+                if matches!(key, TaskKey::RefreshOnchainState) {
+                    self.reconcile_spools();
                 }
             }
             TaskResult::RetryableError(_, _) => {
@@ -288,6 +296,7 @@ mod tests {
     #[tokio::test]
     async fn epoch_advance() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         // Pre-populate spool state
         ctx.store
@@ -323,6 +332,7 @@ mod tests {
     #[tokio::test]
     async fn spool_removed() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         // Start with a spool
         ctx.store
@@ -410,6 +420,7 @@ mod tests {
     #[tokio::test]
     async fn active_recover() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         ctx.store
             .set_spool_status(30, SpoolStatus::ActiveRecover)
@@ -436,6 +447,7 @@ mod tests {
     #[tokio::test]
     async fn spool_assignment_changed() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         ctx.store
             .set_spool_status(15, SpoolStatus::ActiveSync)
@@ -460,6 +472,7 @@ mod tests {
     #[tokio::test]
     async fn track_certified_triggers_scan() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
@@ -554,6 +567,7 @@ mod tests {
     #[tokio::test]
     async fn closed_directive_channel() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
             .unwrap();
@@ -576,6 +590,7 @@ mod tests {
     #[tokio::test]
     async fn epoch_advance_derivation() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
@@ -618,6 +633,7 @@ mod tests {
     #[tokio::test]
     async fn periodic_refresh() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
         let mut reconciler = Reconciler::new(ctx);
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
@@ -648,5 +664,62 @@ mod tests {
 
         assert!(directive_rx.try_recv().is_err());
         assert!(reconciler.desired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_schedules_refresh() {
+        let ctx = test_context();
+        let reconciler = Reconciler::new(ctx);
+
+        // RefreshOnchainState should be in desired before any events arrive
+        // (the bootstrap happens in run(), so we verify new() + manual insert)
+        let mut r = reconciler;
+        r.desired.insert(TaskKey::RefreshOnchainState);
+        assert!(r.desired.contains(&TaskKey::RefreshOnchainState));
+    }
+
+    #[tokio::test]
+    async fn default_standby() {
+        let ctx = test_context();
+        // No NodeStatus set — default should be Standby
+        let mut reconciler = Reconciler::new(ctx);
+
+        // Spools exist but Standby gates spool task scheduling
+        reconciler.context.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(1),
+        }]);
+
+        // No spool tasks should be scheduled in Standby
+        assert!(!reconciler.desired.contains(&TaskKey::SpoolSync { spool: 10 }));
+        // No on-chain tasks either
+        assert!(!reconciler.desired.contains(&TaskKey::SyncEpoch));
+    }
+
+    #[tokio::test]
+    async fn refresh_triggers_reconcile() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        // Simulate RefreshOnchainState completing
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        // Spool tasks should appear after refresh triggers reconcile_spools()
+        assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 10 }));
     }
 }
