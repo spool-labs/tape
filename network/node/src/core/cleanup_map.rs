@@ -63,6 +63,27 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static, V: Send + Sync + 'static> Cle
         self.entries.read().await.len()
     }
 
+    /// Trim the map to at most `max_entries` by removing oldest entries first.
+    pub async fn trim_oldest(&self, max_entries: usize) -> usize {
+        let mut map = self.entries.write().await;
+        if map.len() <= max_entries {
+            return 0;
+        }
+
+        let remove_count = map.len() - max_entries;
+        let mut by_age: Vec<(K, Instant)> = map
+            .iter()
+            .map(|(key, (inserted, _))| (key.clone(), *inserted))
+            .collect();
+        by_age.sort_by_key(|(_, inserted)| *inserted);
+
+        for (key, _) in by_age.into_iter().take(remove_count) {
+            map.remove(&key);
+        }
+
+        remove_count
+    }
+
     /// The configured time-to-live for entries.
     pub fn ttl(&self) -> Duration {
         self.ttl

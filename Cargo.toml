@@ -5,22 +5,14 @@ members = [
   "core",
   "crypto",
   "solana",
-  "network/blocks",
-  "test",
-  "metrics",
+  "blocks",
   "programs/exchange",
   "programs/staking",
   "programs/tapedrive",
   "programs/token",
   "slicer",
   "spooler",
-  "network/node",
-  "network/api",
-  "network/client",
-  "network/monitor",
-  "network/gateway",
   "sdk",
-  "cli",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
@@ -28,29 +20,21 @@ members = [
   "rpc/rpc",
   "rpc/rpc-solana",
   "rpc/rpc-client",
-  "rpc/rpc-test",
-  "e2e",
+  "rpc/rpc-litesvm",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
 # - test: program testing, requires solana feature
-# - rpc/rpc-test: uses solana-test-validator, has rocksdb version conflict
+# - e2e: validator-backed end-to-end tests (disabled by default)
 default-members = [
   "api",
   "core",
   "crypto",
   "solana",
-  "network/blocks",
-  "metrics",
+  "blocks",
   "slicer",
   "spooler",
-  "network/node",
-  "network/api",
-  "network/client",
-  "network/monitor",
-  "network/gateway",
   "sdk",
-  "cli",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
@@ -58,7 +42,6 @@ default-members = [
   "rpc/rpc",
   "rpc/rpc-solana",
   "rpc/rpc-client",
-  "e2e",
 ]
 
 [workspace.package]
@@ -73,36 +56,26 @@ keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
 tape-api = { version = "0.3.0", path = "./api" }
-tape-blocks = { version = "0.3.0", path = "./network/blocks" }
+tape-blocks = { version = "0.3.0", path = "./blocks" }
 tape-core = { version = "0.3.0", path = "./core" }
 tape-crypto = { version = "0.3.0", path = "./crypto" }
 tape-solana = { version = "0.3.0", path = "./solana" }
-tape-test = { version = "0.3.0", path = "./test" }
 
 rpc = { version = "0.3.0", path = "./rpc/rpc" }
 rpc-solana = { version = "0.3.0", path = "./rpc/rpc-solana" }
 rpc-client = { version = "0.3.0", path = "./rpc/rpc-client" }
-rpc-test = { version = "0.3.0", path = "./rpc/rpc-test" }
-tape-metrics = { version = "0.3.0", path = "./metrics" }
 
 tape-store = { version = "0.3.0", path = "./store/tape-store" }
-tape-node = { version = "0.3.0", path = "./network/node" }
-tape-node-api = { version = "0.3.0", path = "./network/api" }
-tape-node-client = { version = "0.3.0", path = "./network/client" }
-tape-gateway = { version = "0.3.0", path = "./network/gateway" }
 tape-slicer = { version = "0.3.0", path = "./slicer" }
 tape-spooler = { version = "0.3.0", path = "./spooler" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
 tape-sdk = { version = "0.3.0", path = "./sdk" }
-
-# tape-archive = { version = "0.3.0", path = "./tape-archive" }
-# tape-cli = { version = "0.3.0", path = "./tape-cli" }
-# tape-network = { version = "0.3.0", path = "./tape-node" }
-# tape-program = { version = "0.3.0", path = "./tape-program" }
-# tape-solana = { version = "0.3.0", path = "./tape-solana" }
-# tape-utils = { version = "0.3.0", path = "./tape-utils" }
+tape-test = { version = "0.3.0", path = "./test" }
+tape-metrics = { version = "0.3.0", path = "./metrics" }
+tape-node-api = { version = "0.3.0", path = "./network/api" }
+tape-node-client = { version = "0.3.0", path = "./network/client" }
 
 # program dependencies
 bytemuck = "1.14.3"
@@ -121,7 +94,6 @@ solana-transaction-status = "=2.3"
 solana-account-decoder = "=2.3"
 solana-transaction-status-client-types = "=2.3"
 solana-curve25519 = "=2.3"
-solana-test-validator = "=2.3"
 
 mpl-token-metadata = "5.1"
 spl-token = { version = "^4", features = ["no-entrypoint"] }
@@ -152,7 +124,7 @@ colored = "3.0.0"
 dialoguer = "0.11.0"
 dirs = "5.0"
 tokio = { version = "1.37", features = ["full"] }
-reqwest = { version = "0.12", features = ["default", "json",] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 indicatif = "0.17"
 console = "0.15"
 mime = "0.3"

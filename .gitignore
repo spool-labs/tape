@@ -1,4 +1,5 @@
 /target
+*/**/target
 /grind
 /deploy
 
@@ -12,3 +13,5 @@
 
 .vscode
 .codebase-index
+
+.tmp/

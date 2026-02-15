@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rpc::Rpc;
 use rpc_client::{RpcClient, RpcConfig};
 use rpc_solana::SolanaRpc;
 use solana_sdk::signature::Keypair;
@@ -17,6 +18,7 @@ use super::config::NodeConfig;
 use tape_store::ops::MetaOps;
 
 use crate::control_plane::ControlPlane;
+use crate::core::current_timestamp;
 use crate::features::storage::{StorageError, StorageService};
 use crate::metrics::NodeMetrics;
 
@@ -47,9 +49,9 @@ pub enum ContextError {
 
 /// Central context holding all shared node state.
 ///
-/// Generic over the storage backend `S`. Use [`NodeContext::from_config`] for
+/// Generic over storage backend `S` and RPC backend `R`. Use [`NodeContext::from_config`] for
 /// production (RocksStore) or [`NodeContext::new`] for testing with custom stores.
-pub struct NodeContext<S: Store = RocksStore> {
+pub struct NodeContext<S: Store = RocksStore, R: Rpc = SolanaRpc> {
     /// Node configuration.
     pub config: Arc<NodeConfig>,
     /// This node's authority keypair.
@@ -57,16 +59,18 @@ pub struct NodeContext<S: Store = RocksStore> {
     /// BLS private key for committee signing.
     pub bls_keypair: Arc<BlsPrivateKey>,
     /// Tape RPC client for chain interactions.
-    pub rpc: Arc<RpcClient<SolanaRpc>>,
+    pub rpc: Arc<RpcClient<R>>,
     /// Slice storage service.
     pub storage: Arc<StorageService<S>>,
     /// In-memory cache of on-chain control plane state.
     pub control_plane: Arc<ControlPlane>,
     /// Prometheus metrics.
     pub metrics: Arc<NodeMetrics>,
+    /// Time source used by FSM/epoch logic.
+    pub now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
-impl NodeContext<RocksStore> {
+impl NodeContext<RocksStore, SolanaRpc> {
     /// Construct context from config with RocksDB storage.
     ///
     /// This handles:
@@ -145,11 +149,12 @@ impl NodeContext<RocksStore> {
             storage: Arc::new(storage),
             control_plane: Arc::new(control_plane),
             metrics: Arc::new(metrics),
+            now_fn: Arc::new(current_timestamp),
         }))
     }
 }
 
-impl<S: Store> NodeContext<S> {
+impl<S: Store, R: Rpc> NodeContext<S, R> {
     /// Construct context with a custom storage backend.
     ///
     /// Use this for testing with in-memory stores or other backends.
@@ -157,9 +162,30 @@ impl<S: Store> NodeContext<S> {
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
-        rpc: RpcClient<SolanaRpc>,
+        rpc: RpcClient<R>,
         storage: StorageService<S>,
         control_plane: ControlPlane,
+    ) -> Arc<Self> {
+        Self::new_with_clock(
+            config,
+            keypair,
+            bls_keypair,
+            rpc,
+            storage,
+            control_plane,
+            Arc::new(current_timestamp),
+        )
+    }
+
+    /// Construct context with a custom time source.
+    pub fn new_with_clock(
+        config: NodeConfig,
+        keypair: Keypair,
+        bls_keypair: BlsPrivateKey,
+        rpc: RpcClient<R>,
+        storage: StorageService<S>,
+        control_plane: ControlPlane,
+        now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(config),
@@ -169,6 +195,7 @@ impl<S: Store> NodeContext<S> {
             storage: Arc::new(storage),
             control_plane: Arc::new(control_plane),
             metrics: Arc::new(NodeMetrics::new()),
+            now_fn,
         })
     }
 
@@ -185,6 +212,11 @@ impl<S: Store> NodeContext<S> {
     /// Get this node's assigned spools.
     pub fn our_spools(&self) -> Vec<tape_core::spooler::SpoolIndex> {
         self.control_plane.get_our_spools()
+    }
+
+    /// Current timestamp for FSM and epoch decisions.
+    pub fn now(&self) -> i64 {
+        (self.now_fn)()
     }
 }
 

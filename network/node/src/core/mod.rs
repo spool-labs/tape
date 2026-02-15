@@ -20,7 +20,10 @@ pub mod utils;
 // Re-export commonly used items at the module level
 pub use backoff::{Backoff, BackoffConfig, retry_with_backoff};
 pub use cleanup_map::CleanupMap;
-pub use config::{default_config_content, ConfigError, NodeConfig, TlsConfig};
+pub use config::{
+    ConfigError, IngressLimitsConfig, NodeApiConfig, NodeConfig, TlsConfig,
+    TransportSecurityConfig, default_config_content,
+};
 pub use context::{ContextError, NodeContext};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
