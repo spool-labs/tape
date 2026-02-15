@@ -1,0 +1,140 @@
+//! SpoolSync — sync spool data from a peer that previously owned it.
+
+use std::sync::Arc;
+
+use store::Store;
+use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
+use tape_node_client::NodeClientBuilder;
+use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps};
+use tape_store::types::Pubkey;
+use tape_store::types::SpoolStatus;
+use tokio_util::sync::CancellationToken;
+
+use crate::core::NodeContext;
+use crate::supervisor::TaskOutcome;
+
+const SYNC_BATCH_SIZE: u32 = 100;
+
+pub async fn run<S: Store>(
+    context: Arc<NodeContext<S>>,
+    spool: u16,
+    cancel: CancellationToken,
+) -> TaskOutcome {
+    // Read current epoch
+    let epoch = match context.store.get_current_epoch() {
+        Ok(Some(e)) => e,
+        Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
+        Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
+    };
+
+    if epoch.as_u64() == 0 {
+        if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+            return TaskOutcome::Retryable(format!("set spool active: {e}"));
+        }
+        return TaskOutcome::Success;
+    }
+
+    // Look up previous epoch committee to find the peer that owned this spool
+    let prev_epoch = tape_core::types::EpochNumber(epoch.as_u64() - 1);
+    let prev_committee = match context.store.get_committee(prev_epoch) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return TaskOutcome::Retryable("no committee for previous epoch".into())
+        }
+        Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
+    };
+
+    // Find the node that owned this spool in the previous epoch
+    let prev_owner = prev_committee
+        .iter()
+        .find(|node| node.spools.contains(&spool));
+
+    let prev_owner = match prev_owner {
+        Some(n) => n,
+        None => {
+            tracing::info!(spool, "no previous owner, marking active");
+            if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+                return TaskOutcome::Retryable(format!("set spool active: {e}"));
+            }
+            return TaskOutcome::Success;
+        }
+    };
+
+    // Build client for previous owner
+    let addr = match prev_owner.network_address.to_socket_addr() {
+        Ok(a) => a,
+        Err(e) => return TaskOutcome::Retryable(format!("parse network address: {e}")),
+    };
+    let client = match NodeClientBuilder::new().build(&addr.to_string()) {
+        Ok(c) => c,
+        Err(e) => return TaskOutcome::Retryable(format!("build client: {e}")),
+    };
+
+    // Resume from cursor if we have one
+    let mut cursor: Option<[u8; 32]> = context
+        .store
+        .get_spool_sync_cursor(spool)
+        .ok()
+        .flatten()
+        .map(|p| p.0);
+
+    loop {
+        if cancel.is_cancelled() {
+            return TaskOutcome::Success;
+        }
+
+        let request = SyncSpoolRequest {
+            spool_index: spool,
+            cursor,
+            limit: SYNC_BATCH_SIZE,
+        };
+
+        let request_bytes = match wincode::serialize(&request) {
+            Ok(b) => b,
+            Err(e) => return TaskOutcome::Retryable(format!("serialize request: {e}")),
+        };
+
+        let response_bytes = match client.sync_spool(request_bytes).await {
+            Ok(b) => b,
+            Err(e) => return TaskOutcome::Retryable(format!("sync_spool rpc: {e}")),
+        };
+
+        let response: SyncSpoolResponse = match wincode::deserialize(&response_bytes) {
+            Ok(r) => r,
+            Err(e) => return TaskOutcome::Retryable(format!("deserialize response: {e}")),
+        };
+
+        for entry in &response.entries {
+            let track_address = Pubkey(entry.track_address);
+            if let Err(e) =
+                context
+                    .store
+                    .put_slice(spool, track_address, entry.slice_data.clone())
+            {
+                return TaskOutcome::Retryable(format!("put_slice: {e}"));
+            }
+        }
+
+        // Update cursor for resume
+        if let Some(last) = response.entries.last() {
+            let last_addr = Pubkey(last.track_address);
+            if let Err(e) = context.store.set_spool_sync_cursor(spool, last_addr) {
+                return TaskOutcome::Retryable(format!("set cursor: {e}"));
+            }
+        }
+
+        match response.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+
+    // Sync complete — clean up
+    let _ = context.store.remove_spool_sync_cursor(spool);
+    if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+        return TaskOutcome::Retryable(format!("set spool active: {e}"));
+    }
+
+    tracing::info!(spool, "spool sync complete");
+    TaskOutcome::Success
+}

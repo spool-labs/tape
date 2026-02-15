@@ -5,25 +5,86 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use store::Store;
+use tape_core::encoding::EncodingType;
+use tape_core::erasure::spool_for_slice;
 use tape_node_api::{RepairRequest, BINARY_CONTENT};
+use tape_slicer::ClayCoder;
+use tape_store::ops::{SliceOps, TrackOps};
 
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// POST /v1/tracks/:track_id/repair — extract sub-chunks for repair.
 pub async fn post_repair<S: Store>(
-    State(_state): State<AppState<S>>,
-    Path(_track_id): Path<String>,
+    State(state): State<AppState<S>>,
+    Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _request: RepairRequest = wincode::deserialize(&body)
+    let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|e| ApiError::BadRequest(format!("repair request: {e}")))?;
 
-    // Repair logic will be implemented with supervisor tasks.
-    // Return empty response as stub.
+    let track_address = super::status::parse_track_address(&track_id)?;
+
+    let track_info = state
+        .context
+        .store
+        .get_track(track_address)
+        .map_err(|e| ApiError::InternalError(e.to_string()))?
+        .ok_or(ApiError::NotFound)?;
+
+    // Only Clay encoding supports sub-chunk repair
+    let profile = track_info.profile();
+    let encoding_type = profile
+        .encoding_type()
+        .ok_or_else(|| ApiError::BadRequest("unknown encoding type".into()))?;
+
+    if encoding_type != EncodingType::Clay {
+        return Err(ApiError::BadRequest("repair only supported for Clay encoding".into()));
+    }
+
+    let clay_params = profile.clay_params();
+    let coder = ClayCoder::from_params(clay_params);
+    let alpha = coder.alpha();
+
+    // Load the helper slice
+    let helper_spool = request.helper_spool;
+    let helper_global = spool_for_slice(track_info.spool_group, helper_spool as usize);
+
+    let slice_data = state
+        .context
+        .store
+        .get_slice(helper_global, track_address)
+        .map_err(|e| ApiError::InternalError(e.to_string()))?
+        .ok_or(ApiError::NotFound)?;
+
+    let chunk_size = track_info.stripe_size as usize;
+    if chunk_size == 0 || alpha == 0 {
+        return Err(ApiError::BadRequest("invalid encoding parameters".into()));
+    }
+    let sub_chunk_size = chunk_size / alpha;
+
+    // Extract requested sub-chunks
+    let mut out = Vec::new();
+
+    for stripe_req in &request.stripes {
+        let stripe_offset = stripe_req.stripe as usize * chunk_size;
+        let chunk = slice_data
+            .get(stripe_offset..stripe_offset + chunk_size)
+            .ok_or_else(|| ApiError::BadRequest("stripe out of bounds".into()))?;
+
+        for &sc_idx in &stripe_req.sub_chunks {
+            let start = sc_idx as usize * sub_chunk_size;
+            let end = start + sub_chunk_size;
+            let sc = chunk
+                .get(start..end)
+                .ok_or_else(|| ApiError::BadRequest("sub-chunk out of bounds".into()))?;
+            out.extend_from_slice(sc);
+        }
+    }
+
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, BINARY_CONTENT)],
-        Vec::<u8>::new(),
+        out,
     ))
 }

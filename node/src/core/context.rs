@@ -52,6 +52,9 @@ pub struct NodeContext<S: Store> {
     pub store: Arc<TapeStore<S>>,
     /// Time source used by FSM/epoch logic.
     pub now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// RPC client for on-chain operations (only available with `rpc` feature).
+    #[cfg(feature = "rpc")]
+    pub rpc: Option<Arc<rpc_client::RpcClient<rpc_solana::SolanaRpc>>>,
 }
 
 impl<S: Store> NodeContext<S> {
@@ -79,6 +82,27 @@ impl<S: Store> NodeContext<S> {
             bls_keypair: Arc::new(bls_keypair),
             store: Arc::new(store),
             now_fn,
+            #[cfg(feature = "rpc")]
+            rpc: None,
+        })
+    }
+
+    /// Construct context with an RPC client for on-chain operations.
+    #[cfg(feature = "rpc")]
+    pub fn new_with_rpc(
+        config: NodeConfig,
+        keypair: Keypair,
+        bls_keypair: BlsPrivateKey,
+        store: TapeStore<S>,
+        rpc: rpc_client::RpcClient<rpc_solana::SolanaRpc>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(config),
+            keypair: Arc::new(keypair),
+            bls_keypair: Arc::new(bls_keypair),
+            store: Arc::new(store),
+            now_fn: Arc::new(current_timestamp),
+            rpc: Some(Arc::new(rpc)),
         })
     }
 

@@ -197,7 +197,9 @@ mod tests {
     use tape_core::types::EpochNumber;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
-    use tape_node_api::SlicePayload;
+    use tape_node_api::{
+        RepairRequest, SlicePayload, StripeSubChunkRequest, SyncSpoolRequest, SyncSpoolResponse,
+    };
     use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
     use tape_store::types::{Pubkey, SpoolStatus, TrackInfo};
     use tape_store::{MemoryStore, TapeStore};
@@ -457,6 +459,276 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn repair_extract() {
+        use tape_core::encoding::{ClayParams, EncodingProfile};
+        use tape_slicer::ClayCoder;
+
+        let ctx = test_context();
+        let spool_group = 0u64;
+        let helper_slice_index = 1u16;
+        let helper_spool = spool_for_slice(spool_group, helper_slice_index as usize);
+
+        ctx.store
+            .set_spool_status(helper_spool, SpoolStatus::Active)
+            .unwrap();
+
+        // Create Clay-encoded track
+        let clay_params = ClayParams::new(20, 7, 16);
+        let coder = ClayCoder::from_params(clay_params);
+        let alpha = coder.alpha();
+        let chunk_size = alpha * 16; // sub_chunk_size = 16
+        let sub_chunk_size = chunk_size / alpha;
+        let stripe_count = 2u64;
+
+        let profile = EncodingProfile::clay(clay_params);
+        let mut track_info = TrackInfo {
+            tape_address: Pubkey([0; 32]),
+            spool_group,
+            original_size: 0,
+            stripe_size: chunk_size as u64,
+            stripe_count,
+            encoding_type: 0,
+            encoding_params: 0,
+            commitment: vec![Hash::default(); 20],
+        };
+        track_info.set_profile(profile);
+
+        let track_address = Pubkey::new_unique();
+        let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();
+        ctx.store
+            .put_track(track_address, track_info)
+            .unwrap();
+
+        // Store a slice with known data pattern
+        let total_size = chunk_size * stripe_count as usize;
+        let mut slice_data = vec![0u8; total_size];
+        for (i, b) in slice_data.iter_mut().enumerate() {
+            *b = (i % 256) as u8;
+        }
+        ctx.store
+            .put_slice(helper_spool, track_address, slice_data.clone())
+            .unwrap();
+
+        // Request sub-chunks 0 and 1 from stripe 0
+        let request = RepairRequest {
+            lost_slice: 0,
+            helper_spool: helper_slice_index,
+            stripes: vec![StripeSubChunkRequest {
+                stripe: 0,
+                sub_chunks: vec![0, 1],
+            }],
+        };
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post(format!("/v1/tracks/{track_b58}/repair"))
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // Verify: sub-chunk 0 = bytes [0..sub_chunk_size], sub-chunk 1 = [sub_chunk_size..2*sub_chunk_size]
+        assert_eq!(body.len(), 2 * sub_chunk_size);
+        assert_eq!(&body[..sub_chunk_size], &slice_data[..sub_chunk_size]);
+        assert_eq!(
+            &body[sub_chunk_size..2 * sub_chunk_size],
+            &slice_data[sub_chunk_size..2 * sub_chunk_size]
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_missing_track() {
+        let ctx = test_context();
+
+        let request = RepairRequest {
+            lost_slice: 0,
+            helper_spool: 1,
+            stripes: vec![],
+        };
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post("/v1/tracks/11111111111111111111111111111111/repair")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sync_roundtrip() {
+        let ctx = test_context();
+        let spool_id = 42u16;
+
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        let track1 = Pubkey::new_unique();
+        let track2 = Pubkey::new_unique();
+        let track3 = Pubkey::new_unique();
+
+        ctx.store
+            .put_slice(spool_id, track1, vec![1, 2, 3])
+            .unwrap();
+        ctx.store
+            .put_slice(spool_id, track2, vec![4, 5, 6])
+            .unwrap();
+        ctx.store
+            .put_slice(spool_id, track3, vec![7, 8, 9])
+            .unwrap();
+
+        let request = SyncSpoolRequest {
+            spool_index: spool_id,
+            cursor: None,
+            limit: 100,
+        };
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post("/v1/sync/spool")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response: SyncSpoolResponse = wincode::deserialize(&body).unwrap();
+
+        assert_eq!(response.entries.len(), 3);
+        assert!(response.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_pagination() {
+        let ctx = test_context();
+        let spool_id = 10u16;
+
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        // Insert 50 slices
+        let mut tracks = Vec::new();
+        for i in 0..50u8 {
+            let track = Pubkey::new_unique();
+            ctx.store
+                .put_slice(spool_id, track, vec![i])
+                .unwrap();
+            tracks.push(track);
+        }
+
+        // Request with limit=10
+        let request = SyncSpoolRequest {
+            spool_index: spool_id,
+            cursor: None,
+            limit: 10,
+        };
+
+        let app = test_router(ctx.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/v1/sync/spool")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page1: SyncSpoolResponse = wincode::deserialize(&body).unwrap();
+
+        assert_eq!(page1.entries.len(), 10);
+        assert!(page1.next_cursor.is_some());
+
+        // Fetch next page using cursor
+        let request2 = SyncSpoolRequest {
+            spool_index: spool_id,
+            cursor: page1.next_cursor,
+            limit: 10,
+        };
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post("/v1/sync/spool")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request2).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page2: SyncSpoolResponse = wincode::deserialize(&body).unwrap();
+
+        assert_eq!(page2.entries.len(), 10);
+        // No overlap between pages
+        assert_ne!(page1.entries[9].track_address, page2.entries[0].track_address);
+    }
+
+    #[tokio::test]
+    async fn sync_empty_spool() {
+        let ctx = test_context();
+        let spool_id = 77u16;
+
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        let request = SyncSpoolRequest {
+            spool_index: spool_id,
+            cursor: None,
+            limit: 100,
+        };
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post("/v1/sync/spool")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response: SyncSpoolResponse = wincode::deserialize(&body).unwrap();
+
+        assert!(response.entries.is_empty());
+        assert!(response.next_cursor.is_none());
     }
 
     #[tokio::test]

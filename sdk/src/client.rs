@@ -8,6 +8,7 @@ use tape_core::erasure::{group_start, spool_for_slice, SPOOL_COUNT, SPOOL_GROUP_
 use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::Committee;
 use tape_core::types::NetworkAddress;
+use tape_node_client::Pubkey;
 use tape_slicer::BlobMerkleRoot;
 
 use crate::communication::NodeCommunicationFactory;
@@ -85,17 +86,17 @@ impl TapeClient {
     /// For full blob upload with encoding, use `upload_blob()` instead.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `spool_group` - The spool group for this track
     /// * `slices` - Pre-encoded slices with merkle proofs (should be SPOOL_GROUP_SIZE)
     pub async fn upload_slices(
         &self,
-        track_id: &str,
+        track: Pubkey,
         spool_group: SpoolGroup,
         slices: Vec<SliceWithProof>,
     ) -> Result<(), UploadError> {
         let uploader = DistributedUploader::new(
-            track_id.to_string(),
+            track,
             spool_group,
             slices,
             self.router.clone(),
@@ -114,12 +115,12 @@ impl TapeClient {
     /// for passing directly to the decoder.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `spool_group` - The spool group for this track
     /// * `min_slices` - Minimum slices needed for reconstruction (k from track's encoding profile)
     pub async fn download_slices(
         &self,
-        track_id: &str,
+        track: Pubkey,
         spool_group: SpoolGroup,
         min_slices: usize,
     ) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
@@ -138,7 +139,7 @@ impl TapeClient {
         }
 
         let downloader = ParallelDownloader::new(
-            track_id.to_string(),
+            track,
             slice_to_address,
             self.node_factory.clone(),
             min_slices,
@@ -204,7 +205,7 @@ impl TapeClient {
     /// 3. Uploads all slices with their proofs to the correct storage nodes
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier for this blob
+    /// * `track` - The track public key
     /// * `data` - Raw blob data to upload
     ///
     /// # Returns
@@ -218,7 +219,7 @@ impl TapeClient {
     /// 3. Collect BLS certifications from nodes
     pub async fn upload_blob(
         &self,
-        track_id: &str,
+        track: Pubkey,
         spool_group: SpoolGroup,
         data: Vec<u8>,
     ) -> Result<BlobMerkleRoot, ClientError> {
@@ -230,7 +231,7 @@ impl TapeClient {
 
         // Upload all slices with their proofs using group-aware routing
         let uploader = DistributedUploader::new(
-            track_id.to_string(),
+            track,
             spool_group,
             slices_with_proofs,
             self.router.clone(),
@@ -249,7 +250,7 @@ impl TapeClient {
     /// before downloading all slices.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `spool_group` - The spool group for this track
     ///
     /// # Returns
@@ -258,7 +259,7 @@ impl TapeClient {
     /// # Fault Tolerance
     /// Tries random slices from different nodes until one responds.
     /// Randomized order ensures load is spread across nodes.
-    pub async fn probe_slice_size(&self, track_id: &str, spool_group: SpoolGroup) -> Result<usize, DownloadError> {
+    pub async fn probe_slice_size(&self, track: Pubkey, spool_group: SpoolGroup) -> Result<usize, DownloadError> {
         use rand::seq::SliceRandom;
         use std::collections::HashMap;
 
@@ -274,7 +275,7 @@ impl TapeClient {
 
         // min_slices=1 since we only need one slice for probing size
         let downloader = ParallelDownloader::new(
-            track_id.to_string(),
+            track,
             slice_to_address,
             self.node_factory.clone(),
             1,
@@ -322,13 +323,13 @@ impl TapeClient {
     /// Or use `download_blob_verified()` which does this automatically.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `spool_group` - The spool group for this track
     /// * `min_slices` - Minimum slices needed (k from on-chain track profile)
-    pub async fn download_blob(&self, track_id: &str, spool_group: SpoolGroup, min_slices: usize) -> Result<Vec<u8>, ClientError> {
+    pub async fn download_blob(&self, track: Pubkey, spool_group: SpoolGroup, min_slices: usize) -> Result<Vec<u8>, ClientError> {
         // Download enough slices (fault-tolerant - continues on node failures)
         let slices = self
-            .download_slices(track_id, spool_group, min_slices)
+            .download_slices(track, spool_group, min_slices)
             .await
             .map_err(ClientError::Download)?;
 
@@ -347,7 +348,7 @@ impl TapeClient {
     /// matches the expected Merkle root commitment.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier for the blob
+    /// * `track` - The track public key
     /// * `expected_commitment` - The Merkle root from on-chain track data
     ///
     /// # Returns
@@ -357,13 +358,13 @@ impl TapeClient {
     /// Returns `ClientError::CommitmentMismatch` if verification fails.
     pub async fn download_blob_verified(
         &self,
-        track_id: &str,
+        track: Pubkey,
         spool_group: SpoolGroup,
         min_slices: usize,
         expected_commitment: &BlobMerkleRoot,
     ) -> Result<Vec<u8>, ClientError> {
         // Download and decode
-        let data = self.download_blob(track_id, spool_group, min_slices).await?;
+        let data = self.download_blob(track, spool_group, min_slices).await?;
 
         // Re-encode to verify commitment using RotatedSlicer
         let mut encoder = BlobEncoder::new();

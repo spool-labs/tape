@@ -78,6 +78,30 @@ impl SlicePayload {
     }
 }
 
+/// Request for spool synchronization.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncSpoolRequest {
+    pub spool_index: u16,
+    /// Last track address received, or empty to start from the beginning.
+    pub cursor: Option<[u8; 32]>,
+    pub limit: u32,
+}
+
+/// Response from spool synchronization.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncSpoolResponse {
+    pub entries: Vec<SyncSpoolEntry>,
+    /// Next cursor for pagination, or None if no more entries.
+    pub next_cursor: Option<[u8; 32]>,
+}
+
+/// A single slice entry in a sync response.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncSpoolEntry {
+    pub track_address: [u8; 32],
+    pub slice_data: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +179,48 @@ mod tests {
         let bytes = wincode::serialize(&req).unwrap();
         let decoded: RepairRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn sync_spool_request() {
+        let req = SyncSpoolRequest {
+            spool_index: 42,
+            cursor: Some([0xAA; 32]),
+            limit: 100,
+        };
+        let bytes = wincode::serialize(&req).unwrap();
+        let decoded: SyncSpoolRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn sync_spool_response() {
+        let resp = SyncSpoolResponse {
+            entries: vec![
+                SyncSpoolEntry {
+                    track_address: [0x11; 32],
+                    slice_data: vec![1, 2, 3],
+                },
+                SyncSpoolEntry {
+                    track_address: [0x22; 32],
+                    slice_data: vec![4, 5, 6],
+                },
+            ],
+            next_cursor: Some([0x22; 32]),
+        };
+        let bytes = wincode::serialize(&resp).unwrap();
+        let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn sync_spool_empty() {
+        let resp = SyncSpoolResponse {
+            entries: vec![],
+            next_cursor: None,
+        };
+        let bytes = wincode::serialize(&resp).unwrap();
+        let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, decoded);
     }
 }

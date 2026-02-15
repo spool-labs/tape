@@ -285,8 +285,7 @@ impl CertificationCollector {
             members
         };
 
-        // Track ID is the base58 string of the track address
-        let track_id = track_address.to_string();
+        let track = tape_node_client::Pubkey(track_address.to_bytes());
 
         let target_count = group_members.len();
         // Channel for streaming results as they complete
@@ -322,7 +321,6 @@ impl CertificationCollector {
                 }
             };
 
-            let track_id_clone = track_id.clone();
             let node_id = member.id;
             let pubkey = member.key;
             let sem_clone = semaphore.clone();
@@ -331,7 +329,7 @@ impl CertificationCollector {
 
             tokio::spawn(async move {
                 let _permit = sem_clone.acquire_owned().await;
-                let result = request_signature_with_retry(&client, &track_id_clone, &retry_config).await;
+                let result = request_signature_with_retry(&client, track, &retry_config).await;
 
                 // Send result through channel (ignore error if receiver dropped - early exit)
                 let _ = tx_clone
@@ -514,10 +512,10 @@ impl CertificationCollector {
 /// Request a signature from a node with retry logic.
 async fn request_signature_with_retry(
     client: &NodeClient,
-    track_id: &str,
+    track: tape_node_client::Pubkey,
     retry_config: &RetryConfig,
 ) -> Result<BlsSignResponse, NodeSignError> {
-    with_retry(retry_config, || client.get_signature(track_id))
+    with_retry(retry_config, || client.get_signature(track))
         .await
         .map_err(|e| NodeSignError::from(&e))
 }
@@ -543,14 +541,14 @@ mod tests {
     #[test]
     fn test_certification_config_fast() {
         let config = CertificationConfig::fast();
-        assert_eq!(config.retry.max_retries, 1);
+        assert_eq!(config.retry.max_retries, 3);
         assert_eq!(config.max_concurrent, 64);
     }
 
     #[test]
     fn test_certification_config_resilient() {
         let config = CertificationConfig::resilient();
-        assert_eq!(config.retry.max_retries, 5);
+        assert_eq!(config.retry.max_retries, 10);
         assert_eq!(config.max_concurrent, 16);
     }
 

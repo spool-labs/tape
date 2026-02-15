@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_core::spooler::SpoolIndex;
+use tape_node_client::Pubkey;
 use tokio::sync::Semaphore;
 
 use crate::communication::NodeCommunicationFactory;
@@ -16,7 +17,7 @@ const DEFAULT_CONCURRENCY: usize = 64;
 
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
-    track_id: String,
+    track: Pubkey,
     /// Maps slice_index → node address (for proper spool-based routing)
     slice_to_address: HashMap<SpoolIndex, String>,
     factory: NodeCommunicationFactory,
@@ -31,18 +32,18 @@ impl ParallelDownloader {
     /// Create a new downloader with spool-based routing.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `slice_to_address` - Map of slice_index → node address (from spool assignment)
     /// * `factory` - Factory for creating node clients
     /// * `min_slices` - Minimum slices needed for reconstruction (k from track's encoding profile)
     pub fn new(
-        track_id: String,
+        track: Pubkey,
         slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
         min_slices: usize,
     ) -> Self {
         Self {
-            track_id,
+            track,
             slice_to_address,
             factory,
             concurrency: DEFAULT_CONCURRENCY,
@@ -53,14 +54,14 @@ impl ParallelDownloader {
 
     /// Create a new downloader with custom concurrency limit.
     pub fn with_concurrency(
-        track_id: String,
+        track: Pubkey,
         slice_to_address: HashMap<SpoolIndex, String>,
         factory: NodeCommunicationFactory,
         min_slices: usize,
         concurrency: usize,
     ) -> Self {
         Self {
-            track_id,
+            track,
             slice_to_address,
             factory,
             concurrency,
@@ -109,14 +110,14 @@ impl ParallelDownloader {
 
             let address = address.clone();
             let factory = self.factory.clone();
-            let track_id = self.track_id.clone();
+            let track = self.track;
             let sem = semaphore.clone();
 
             futures.push(async move {
                 // Acquire permit before making request
                 let _permit = sem.acquire().await.expect("semaphore closed");
                 let client = factory.client_for_address(&address)?;
-                let result = client.get_slice(&track_id, slice_idx).await;
+                let result = client.get_slice(track, slice_idx).await;
                 Ok::<_, DownloadError>((slice_idx, result))
             });
         }
@@ -156,7 +157,7 @@ impl ParallelDownloader {
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
         let client = self.factory.client_for_address(address)?;
-        let data = client.get_slice(&self.track_id, slice_idx).await?;
+        let data = client.get_slice(self.track, slice_idx).await?;
 
         Ok(data)
     }
@@ -178,9 +179,10 @@ mod tests {
         let slice_map = make_slice_map(&["localhost:8080", "localhost:8081"]);
         let min_slices = 10;
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices);
+        let track = Pubkey::new_unique();
+        let downloader = ParallelDownloader::new(track, slice_map, factory, min_slices);
 
-        assert_eq!(downloader.track_id, "track_123");
+        assert_eq!(downloader.track, track);
         assert!(downloader.exclude_slices.is_empty());
         assert_eq!(downloader.min_slices, min_slices);
     }
@@ -191,7 +193,7 @@ mod tests {
         let slice_map = make_slice_map(&["localhost:8080"]);
         let min_slices = 6;
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices)
+        let downloader = ParallelDownloader::new(Pubkey::new_unique(), slice_map, factory, min_slices)
             .exclude_slice(42)
             .exclude_slice(100);
 
@@ -207,7 +209,7 @@ mod tests {
         let min_slices = 10;
         let excludes: Vec<SpoolIndex> = vec![10, 20, 30];
 
-        let downloader = ParallelDownloader::new("track_123".to_string(), slice_map, factory, min_slices)
+        let downloader = ParallelDownloader::new(Pubkey::new_unique(), slice_map, factory, min_slices)
             .with_excluded_slices(excludes);
 
         assert_eq!(downloader.exclude_slices.len(), 3);

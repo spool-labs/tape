@@ -10,7 +10,7 @@ keywords.workspace = true
 
 [features]
 default = []
-metrics = ["tape-node-client/metrics", "tape-metrics/metrics"]
+metrics = ["tape-metrics/metrics"]
 
 [dependencies]
 # Internal crates
@@ -50,7 +50,7 @@ rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-tape-node = { path = "../network/node" }
+tape-node = { path = "../node" }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }

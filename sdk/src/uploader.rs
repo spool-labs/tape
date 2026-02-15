@@ -14,6 +14,8 @@ use tape_node_api::SlicePayload;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use tape_node_client::Pubkey;
+
 use crate::communication::NodeCommunicationFactory;
 use crate::encoder::SliceMerkleProof;
 use crate::error::UploadError;
@@ -47,7 +49,7 @@ impl SliceWithProof {
 
     /// Convert to SlicePayload for network transmission.
     pub fn to_payload(&self) -> SlicePayload {
-        SlicePayload::new(self.data.clone(), self.leaf_hash, self.merkle_proof)
+        SlicePayload::new(self.data.clone(), self.leaf_hash, self.merkle_proof.to_vec())
     }
 }
 
@@ -57,7 +59,7 @@ impl SliceWithProof {
 /// is sent to the node that owns that slice's spool according to the
 /// SpoolAssignment.
 pub struct DistributedUploader<const MEMBERS: usize> {
-    track_id: String,
+    track: Pubkey,
     spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
     router: SliceRouter<MEMBERS>,
@@ -70,13 +72,13 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
     /// Create a new uploader with group-aware spool-based routing.
     ///
     /// # Arguments
-    /// * `track_id` - The track identifier
+    /// * `track` - The track public key
     /// * `spool_group` - The spool group for this track
     /// * `slices` - The encoded slices with merkle proofs (should be SPOOL_GROUP_SIZE)
     /// * `router` - SliceRouter with committee and spool assignments
     /// * `factory` - Factory for creating node clients
     pub fn new(
-        track_id: String,
+        track: Pubkey,
         spool_group: SpoolGroup,
         slices: Vec<SliceWithProof>,
         router: SliceRouter<MEMBERS>,
@@ -90,7 +92,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
         }
 
         Ok(Self {
-            track_id,
+            track,
             spool_group,
             slices,
             router,
@@ -142,7 +144,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             .into_iter()
             .map(|(member_idx, slice_spool_pairs)| {
                 let factory = self.factory.clone();
-                let track_id = self.track_id.clone();
+                let track = self.track;
                 let permit = self.concurrency_limit.clone();
                 let retry_count = self.retry_count;
 
@@ -177,7 +179,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                         for attempt in 0..retry_count {
                             let payload = slice.to_payload();
                             // Use global spool index so nodes store under the correct key
-                            match client.put_slice(&track_id, global_spool, &payload).await {
+                            match client.put_slice_internal(track, global_spool, &payload).await {
                                 Ok(_) => {
                                     last_error = None;
                                     break;
@@ -314,7 +316,7 @@ mod tests {
         let router: SliceRouter<10> = make_test_router(2);
 
         let uploader = DistributedUploader::new(
-            "track_123".to_string(),
+            Pubkey::new_unique(),
             0, // spool group 0
             slices,
             router,

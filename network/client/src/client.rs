@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use reqwest::Client;
+use tape_store::types::Pubkey;
 use url::Url;
 
 use tape_node_api::{
@@ -34,11 +35,12 @@ impl NodeClient {
     /// PUT a slice via the public (authority-signed) route.
     pub async fn put_slice(
         &self,
-        track_id: &str,
+        track: Pubkey,
         slice_index: u16,
         payload: &SignedMessage,
     ) -> Result<(), NodeError> {
-        let url = self.url(&tape_node_api::slice_url(track_id, slice_index))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::slice_url(&track_id, slice_index))?;
         let body =
             wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -61,11 +63,12 @@ impl NodeClient {
     /// PUT a slice via the internal (peer-authenticated) route.
     pub async fn put_slice_internal(
         &self,
-        track_id: &str,
+        track: Pubkey,
         slice_index: u16,
         payload: &SlicePayload,
     ) -> Result<(), NodeError> {
-        let url = self.url(&tape_node_api::internal_slice_url(track_id, slice_index))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::internal_slice_url(&track_id, slice_index))?;
         let body =
             wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -88,10 +91,11 @@ impl NodeClient {
     /// GET a slice's raw data.
     pub async fn get_slice(
         &self,
-        track_id: &str,
+        track: Pubkey,
         slice_index: u16,
     ) -> Result<Vec<u8>, NodeError> {
-        let url = self.url(&tape_node_api::slice_url(track_id, slice_index))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::slice_url(&track_id, slice_index))?;
         let start = Instant::now();
 
         let resp = self
@@ -112,8 +116,9 @@ impl NodeClient {
     }
 
     /// GET track metadata.
-    pub async fn get_metadata(&self, track_id: &str) -> Result<Vec<u8>, NodeError> {
-        let url = self.url(&tape_node_api::metadata_url(track_id))?;
+    pub async fn get_metadata(&self, track: Pubkey) -> Result<Vec<u8>, NodeError> {
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::metadata_url(&track_id))?;
         let start = Instant::now();
 
         let resp = self
@@ -136,10 +141,11 @@ impl NodeClient {
     /// PUT track metadata via the public route.
     pub async fn put_metadata(
         &self,
-        track_id: &str,
+        track: Pubkey,
         metadata: Vec<u8>,
     ) -> Result<(), NodeError> {
-        let url = self.url(&tape_node_api::metadata_url(track_id))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::metadata_url(&track_id))?;
         let len = metadata.len() as u64;
         let start = Instant::now();
 
@@ -160,10 +166,11 @@ impl NodeClient {
     /// PUT track metadata via the internal route.
     pub async fn put_metadata_internal(
         &self,
-        track_id: &str,
+        track: Pubkey,
         metadata: Vec<u8>,
     ) -> Result<(), NodeError> {
-        let url = self.url(&tape_node_api::internal_metadata_url(track_id))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::internal_metadata_url(&track_id))?;
         let len = metadata.len() as u64;
         let start = Instant::now();
 
@@ -261,10 +268,11 @@ impl NodeClient {
     /// POST repair request.
     pub async fn request_repair(
         &self,
-        track_id: &str,
+        track: Pubkey,
         request: &RepairRequest,
     ) -> Result<Vec<u8>, NodeError> {
-        let url = self.url(&tape_node_api::repair_url(track_id))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::repair_url(&track_id))?;
         let body =
             wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -290,8 +298,9 @@ impl NodeClient {
     }
 
     /// GET track BLS signature.
-    pub async fn get_signature(&self, track_id: &str) -> Result<BlsSignResponse, NodeError> {
-        let url = self.url(&tape_node_api::sign_url(track_id))?;
+    pub async fn get_signature(&self, track: Pubkey) -> Result<BlsSignResponse, NodeError> {
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::sign_url(&track_id))?;
         let start = Instant::now();
 
         let resp = self
@@ -340,10 +349,11 @@ impl NodeClient {
     /// POST inconsistency attestation.
     pub async fn post_inconsistency(
         &self,
-        track_id: &str,
+        track: Pubkey,
         request: &InconsistencyRequest,
     ) -> Result<BlsInconsistencyResponse, NodeError> {
-        let url = self.url(&tape_node_api::inconsistency_url(track_id))?;
+        let track_id = track.to_string();
+        let url = self.url(&tape_node_api::inconsistency_url(&track_id))?;
         let body =
             wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;

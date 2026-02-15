@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use solana_sdk::signer::Signer;
 use store::Store;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -84,8 +85,56 @@ impl<S: Store> Reconciler<S> {
             match change {
                 StateChange::EpochAdvanced { .. } => {
                     self.reconcile_spools();
+                    // Schedule one-shot on-chain tasks for the new epoch
+                    self.desired.insert(TaskKey::RefreshOnchainState);
+                    self.desired.insert(TaskKey::SyncEpoch);
+                    self.desired.insert(TaskKey::JoinNetwork);
                 }
-                _ => {}
+                StateChange::SpoolAssignmentChanged => {
+                    self.reconcile_spools();
+                }
+                StateChange::TrackCertified { .. } => {
+                    // A new track was certified — schedule recovery scans for
+                    // owned spools so we pick up any missing slices.
+                    self.schedule_recovery_scans();
+                }
+                StateChange::NodeJoinedCommittee { node } => {
+                    // If this is our node, refresh on-chain state
+                    if *node == self.context.keypair.pubkey() {
+                        self.desired.insert(TaskKey::RefreshOnchainState);
+                    }
+                }
+                StateChange::NodeSynced { node } => {
+                    // If this is our node, SyncEpoch completed on-chain
+                    if *node == self.context.keypair.pubkey() {
+                        self.desired.remove(&TaskKey::SyncEpoch);
+                    }
+                }
+                // No reconciler action needed for these events
+                StateChange::TrackRegistered { .. }
+                | StateChange::TrackDeleted { .. }
+                | StateChange::TrackInvalidated { .. }
+                | StateChange::TapeReserved { .. }
+                | StateChange::TapeDestroyed { .. }
+                | StateChange::NodeRegistered { .. } => {}
+            }
+        }
+    }
+
+    fn schedule_recovery_scans(&mut self) {
+        let owned_spools = match self.context.store.iter_all_spools() {
+            Ok(spools) => spools,
+            Err(e) => {
+                tracing::error!("failed to read spool status for recovery scan: {e}");
+                return;
+            }
+        };
+
+        for (spool_id, status) in &owned_spools {
+            // Only scan spools that are fully active (not mid-sync)
+            if matches!(status, SpoolStatus::Active | SpoolStatus::ActiveRecover) {
+                self.desired
+                    .insert(TaskKey::RecoveryScan { spool: *spool_id });
             }
         }
     }
@@ -231,6 +280,10 @@ mod tests {
 
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 10 }));
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 20 }));
+        // Epoch advance also schedules one-shot on-chain tasks
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+        assert!(scheduled.contains(&TaskKey::SyncEpoch));
+        assert!(scheduled.contains(&TaskKey::JoinNetwork));
     }
 
     #[tokio::test]
@@ -344,6 +397,107 @@ mod tests {
         }
 
         assert!(scheduled.contains(&TaskKey::SpoolRecovery { spool: 30 }));
+    }
+
+    #[tokio::test]
+    async fn spool_assignment_changed() {
+        let ctx = test_context();
+
+        ctx.store
+            .set_spool_status(15, SpoolStatus::ActiveSync)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::SpoolAssignmentChanged]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 15 }));
+    }
+
+    #[tokio::test]
+    async fn track_certified_triggers_scan() {
+        let ctx = test_context();
+
+        ctx.store
+            .set_spool_status(5, SpoolStatus::Active)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::TrackCertified {
+            track: solana_sdk::pubkey::Pubkey::new_unique(),
+        }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::RecoveryScan { spool: 5 }));
+    }
+
+    #[tokio::test]
+    async fn our_node_joined() {
+        let ctx = test_context();
+        let our_pubkey = ctx.keypair.pubkey();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::NodeJoinedCommittee { node: our_pubkey }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+    }
+
+    #[tokio::test]
+    async fn other_node_joined() {
+        let ctx = test_context();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::NodeJoinedCommittee {
+            node: solana_sdk::pubkey::Pubkey::new_unique(),
+        }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        // No directives expected for another node joining
+        assert!(directive_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn node_synced_clears_task() {
+        let ctx = test_context();
+        let our_pubkey = ctx.keypair.pubkey();
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.desired.insert(TaskKey::SyncEpoch);
+        reconciler.scheduled.insert(TaskKey::SyncEpoch);
+
+        reconciler.update_desired(&[StateChange::NodeSynced { node: our_pubkey }]);
+
+        assert!(!reconciler.desired.contains(&TaskKey::SyncEpoch));
     }
 
     #[tokio::test]

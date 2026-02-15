@@ -16,3 +16,4 @@ pub mod ingestor;
 pub mod pipeline;
 pub mod reconciler;
 pub mod supervisor;
+pub mod tasks;

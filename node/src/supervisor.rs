@@ -404,7 +404,8 @@ impl<S: Store + 'static> Supervisor<S> {
         let category = key.category();
         let k = key.clone();
 
-        self.join_set.spawn(execute_task(ctx, k, token_clone, sem));
+        self.join_set
+            .spawn(crate::tasks::execute_task(ctx, k, token_clone, sem));
 
         self.running.insert(
             key.clone(),
@@ -433,26 +434,6 @@ impl<S: Store + 'static> Supervisor<S> {
             .map(|e| e.0.due)
             .unwrap_or_else(far_future)
     }
-}
-
-async fn execute_task<S: Store>(
-    _context: Arc<NodeContext<S>>,
-    key: TaskKey,
-    cancel: CancellationToken,
-    semaphore: Arc<Semaphore>,
-) -> (TaskKey, TaskOutcome) {
-    let _permit = match semaphore.acquire().await {
-        Ok(permit) => permit,
-        Err(_) => return (key, TaskOutcome::Permanent("semaphore closed".into())),
-    };
-
-    if cancel.is_cancelled() {
-        return (key, TaskOutcome::Success);
-    }
-
-    tracing::info!(task = ?key, "executing stub task");
-
-    (key, TaskOutcome::Success)
 }
 
 #[cfg(test)]

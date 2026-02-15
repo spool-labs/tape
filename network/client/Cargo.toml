@@ -6,6 +6,7 @@ description = "HTTP client for peer-to-peer storage node communication"
 
 [dependencies]
 tape-node-api = { workspace = true }
+tape-store = { workspace = true }
 tape-crypto = { workspace = true }
 tape-metrics = { workspace = true }
 reqwest = { workspace = true }

@@ -16,6 +16,7 @@ tape-spooler = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
 tape-node-api = { workspace = true }
+tape-node-client = { workspace = true }
 
 # External
 tokio = { workspace = true }
@@ -36,3 +37,11 @@ axum = { workspace = true }
 tower = { version = "0.5", features = ["limit"] }
 wincode = { workspace = true }
 serde_json = { workspace = true }
+
+# Optional RPC support (not needed for tests)
+rpc-client = { workspace = true, optional = true }
+rpc-solana = { workspace = true, optional = true }
+
+[features]
+default = []
+rpc = ["dep:rpc-client", "dep:rpc-solana"]
