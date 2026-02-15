@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use tape_core::types::BasisPoints;
 
 use super::utils::expand_path;
-
-use std::time::Duration;
 
 /// Recovery subsystem configuration parameters.
 #[derive(Debug, Clone)]
@@ -107,7 +108,7 @@ pub struct NodeConfig {
     pub sync_batch_size: Option<usize>,
 
     /// Commission rate in basis points (0-10000). Used during registration.
-    pub commission: Option<u64>,
+    pub commission: Option<BasisPoints>,
 
     /// Recovery subsystem configuration.
     pub recovery: RecoveryConfig,
@@ -297,7 +298,7 @@ impl TryFrom<RawNodeConfig> for NodeConfig {
             poll_interval_ms: raw.poll_interval_ms,
             sync_concurrency: raw.sync_concurrency,
             sync_batch_size: raw.sync_batch_size,
-            commission: raw.commission,
+            commission: raw.commission.map(BasisPoints),
             recovery: RecoveryConfig::default(),
             node_api: raw.node_api,
         })

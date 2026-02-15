@@ -22,6 +22,8 @@ members = [
   # "rpc/rpc-client",
   # "rpc/rpc-litesvm",
   "metrics",
+  "network/api",
+  "network/client",
   "node",
 ]
 # Programs and test crates excluded from default cargo build/check:
@@ -42,6 +44,8 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "metrics",
+  "network/api",
+  "network/client",
   "node",
 ]
 

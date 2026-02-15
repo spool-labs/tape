@@ -1,0 +1,22 @@
+[package]
+name = "tape-node-client"
+version.workspace = true
+edition.workspace = true
+description = "HTTP client for peer-to-peer storage node communication"
+
+[dependencies]
+tape-node-api = { workspace = true }
+tape-crypto = { workspace = true }
+tape-metrics = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+url = "2"
+wincode = { workspace = true }
+rustls = "0.23"
+rustls-pemfile = "2"
+x509-parser = "0.16"
+prometheus = { workspace = true }

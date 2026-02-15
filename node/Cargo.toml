@@ -15,6 +15,7 @@ tape-slicer = { workspace = true }
 tape-spooler = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true }
+tape-node-api = { workspace = true }
 
 # External
 tokio = { workspace = true }
@@ -31,3 +32,7 @@ serde_yaml = "0.9"
 dirs = { workspace = true }
 shellexpand = "3"
 prometheus = { workspace = true }
+axum = { workspace = true }
+tower = { version = "0.5", features = ["limit"] }
+wincode = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,488 @@
+//! HTTP server — axum-based API for node-to-node and public endpoints.
+//!
+//! Serves slice data, metadata, BLS signing, repair, sync, and health routes.
+//! Uses tower middleware for body limits, concurrency throttling, and load shedding.
+
+pub mod error;
+pub mod handlers;
+pub mod state;
+
+use std::sync::Arc;
+
+use axum::extract::DefaultBodyLimit;
+use axum::routing::{get, post, put};
+use axum::Router;
+use store::Store;
+use tokio_util::sync::CancellationToken;
+use tower::limit::ConcurrencyLimitLayer;
+
+use crate::core::NodeContext;
+use state::AppState;
+
+/// The HTTP server serving the node API.
+pub struct HttpServer<S: Store> {
+    context: Arc<NodeContext<S>>,
+}
+
+impl<S: Store + 'static> HttpServer<S> {
+    pub fn new(context: Arc<NodeContext<S>>) -> Self {
+        Self { context }
+    }
+
+    /// Build the axum router with all routes and middleware.
+    fn build_router(&self) -> Router {
+        let state = AppState {
+            context: self.context.clone(),
+        };
+        let limits = &self.context.config.node_api.ingress_limits;
+
+        // Observability routes (no body limits needed)
+        let observability = Router::new()
+            .route("/v1/health", get(handlers::health::health::<S>))
+            .route("/v1/info", get(handlers::health::info::<S>))
+            .route("/v1/stats", get(handlers::health::stats::<S>));
+
+        // Status routes (lightweight checks)
+        let status = Router::new()
+            .route(
+                "/v1/tracks/{track_id}/slices/{slice_index}/status",
+                get(handlers::status::slice_status::<S>),
+            )
+            .route(
+                "/v1/tracks/{track_id}/metadata/status",
+                get(handlers::status::metadata_status::<S>),
+            )
+            .route(
+                "/v1/tracks/{track_id}/status",
+                get(handlers::status::track_status::<S>),
+            );
+
+        // Slice read
+        let slice_read = Router::new().route(
+            "/v1/tracks/{track_id}/slices/{slice_index}",
+            get(handlers::slice::get_slice::<S>),
+        );
+
+        // Sign routes (read-only BLS signing)
+        let sign = Router::new()
+            .route(
+                "/v1/tracks/{track_id}/sign",
+                get(handlers::sign::get_signature::<S>),
+            )
+            .route(
+                "/v1/snapshots/{epoch}/{chunk_index}/sign",
+                get(handlers::sign::get_snapshot_signature::<S>),
+            );
+
+        // Metadata read
+        let metadata_read = Router::new().route(
+            "/v1/tracks/{track_id}/metadata",
+            get(handlers::metadata::get_metadata::<S>),
+        );
+
+        // Public data ingestion (PUT slice + PUT metadata)
+        let mut public_data = Router::new()
+            .route(
+                "/v1/tracks/{track_id}/slices/{slice_index}",
+                put(handlers::slice::put_slice::<S>),
+            )
+            .layer(DefaultBodyLimit::max(limits.slice_body_max))
+            .merge(
+                Router::new()
+                    .route(
+                        "/v1/tracks/{track_id}/metadata",
+                        put(handlers::metadata::put_metadata::<S>),
+                    )
+                    .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
+            );
+
+        if let Some(limit) = limits.public_slice_limit {
+            public_data = public_data.layer(ConcurrencyLimitLayer::new(limit));
+        }
+
+        // Internal data ingestion
+        let internal_data = Router::new()
+            .route(
+                "/v1/internal/tracks/{track_id}/slices/{slice_index}",
+                put(handlers::slice::put_slice_internal::<S>),
+            )
+            .layer(DefaultBodyLimit::max(limits.slice_body_max))
+            .merge(
+                Router::new()
+                    .route(
+                        "/v1/internal/tracks/{track_id}/metadata",
+                        put(handlers::metadata::put_metadata_internal::<S>),
+                    )
+                    .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
+            );
+
+        // Sync spool
+        let mut sync = Router::new()
+            .route("/v1/sync/spool", post(handlers::sync::sync_spool::<S>))
+            .layer(DefaultBodyLimit::max(limits.sync_body_max));
+
+        if let Some(limit) = limits.sync_spool_limit {
+            sync = sync.layer(ConcurrencyLimitLayer::new(limit));
+        }
+
+        // Repair
+        let mut repair = Router::new()
+            .route(
+                "/v1/tracks/{track_id}/repair",
+                post(handlers::repair::post_repair::<S>),
+            )
+            .layer(DefaultBodyLimit::max(limits.repair_body_max));
+
+        if let Some(limit) = limits.repair_limit {
+            repair = repair.layer(ConcurrencyLimitLayer::new(limit));
+        }
+
+        // Inconsistency
+        let mut inconsistency = Router::new()
+            .route(
+                "/v1/tracks/{track_id}/inconsistency",
+                post(handlers::inconsistency::post_inconsistency::<S>),
+            )
+            .layer(DefaultBodyLimit::max(limits.inconsistency_body_max));
+
+        if let Some(limit) = limits.inconsistency_limit {
+            inconsistency = inconsistency.layer(ConcurrencyLimitLayer::new(limit));
+        }
+
+        // Assemble all route groups
+        let mut app = Router::new()
+            .merge(observability)
+            .merge(status)
+            .merge(slice_read)
+            .merge(metadata_read)
+            .merge(sign)
+            .merge(internal_data)
+            .merge(sync)
+            .merge(repair)
+            .merge(inconsistency);
+
+        // Only add public data routes if public_ingest is enabled
+        if limits.public_ingest {
+            app = app.merge(public_data);
+        }
+
+        app.with_state(state)
+    }
+
+    /// Start the HTTP server and run until the cancellation token fires.
+    pub async fn serve(self, cancel: CancellationToken) -> Result<(), anyhow::Error> {
+        let addr = self.context.config.bind_address;
+        let router = self.build_router();
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!("HTTP server listening on {addr}");
+
+        axum::serve(listener, router)
+            .with_graceful_shutdown(cancel.cancelled_owned())
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tape_core::bls::BlsPrivateKey;
+    use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+    use tape_core::types::EpochNumber;
+    use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
+    use tape_crypto::Hash;
+    use tape_node_api::SlicePayload;
+    use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+    use tape_store::types::{Pubkey, SpoolStatus, TrackInfo};
+    use tape_store::{MemoryStore, TapeStore};
+    use tower::ServiceExt;
+
+    use crate::core::config::RecoveryConfig;
+    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
+
+    fn test_config() -> NodeConfig {
+        NodeConfig {
+            version: 1,
+            name: "test-node".to_string(),
+            tls_keypair: PathBuf::from("/dev/null"),
+            bls_keypair: PathBuf::from("/dev/null"),
+            node_keypair: String::new(),
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            public_host: "localhost".to_string(),
+            public_port: 0,
+            tls: TlsConfig::default(),
+            storage_path: "/tmp".to_string(),
+            poll_interval_ms: None,
+            sync_concurrency: None,
+            sync_batch_size: None,
+            commission: None,
+            recovery: RecoveryConfig::default(),
+            node_api: NodeApiConfig::default(),
+        }
+    }
+
+    fn test_context() -> Arc<NodeContext<MemoryStore>> {
+        let config = test_config();
+        let keypair = solana_sdk::signature::Keypair::new();
+        let bls_keypair = BlsPrivateKey::from_random();
+        let store = TapeStore::new(MemoryStore::new());
+        NodeContext::new(config, keypair, bls_keypair, store)
+    }
+
+    fn test_router(ctx: Arc<NodeContext<MemoryStore>>) -> Router {
+        HttpServer::new(ctx).build_router()
+    }
+
+    fn make_track_with_data(
+        spool_group: u64,
+        slice_data: &[&[u8]],
+    ) -> (TrackInfo, Vec<Hash>) {
+        let leaf_hashes: Vec<Hash> = slice_data.iter().map(|d| hash_leaf(d)).collect();
+        // Pad to SPOOL_GROUP_SIZE with hash_leaf(&[]) so the tree matches
+        // proofs built via create_merkle_proof with empty slices.
+        let empty_leaf = hash_leaf(&[]);
+        let mut padded = leaf_hashes.clone();
+        while padded.len() < tape_core::erasure::SPOOL_GROUP_SIZE {
+            padded.push(empty_leaf);
+        }
+        let info = TrackInfo {
+            tape_address: Pubkey([0; 32]),
+            spool_group,
+            original_size: 0,
+            stripe_size: 0,
+            stripe_count: 0,
+            encoding_type: 1,
+            encoding_params: 0,
+            commitment: padded,
+        };
+        (info, leaf_hashes)
+    }
+
+    #[tokio::test]
+    async fn health() {
+        let ctx = test_context();
+        let app = test_router(ctx);
+
+        let resp = app
+            .oneshot(Request::get("/v1/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_slice_missing() {
+        let ctx = test_context();
+        // Set up a spool so we can route requests
+        let app = test_router(ctx);
+
+        let resp = app
+            .oneshot(
+                Request::get("/v1/tracks/11111111111111111111111111111111/slices/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_and_get_slice() {
+        let ctx = test_context();
+        let spool_group = 0u64;
+        let slice_index = 0u16;
+        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+
+        // Register the spool
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        // Create track with proper commitment
+        let data = vec![0xABu8; 100];
+        let (track_info, _leaf_hashes) = make_track_with_data(spool_group, &[&data]);
+
+        let track_address = Pubkey::new_unique();
+        let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();
+        ctx.store
+            .put_track(track_address, track_info.clone())
+            .unwrap();
+        ctx.store
+            .set_current_epoch(EpochNumber(1))
+            .unwrap();
+
+        // Create a valid SlicePayload with merkle proof
+        let leaf_hash = hash_leaf(&data);
+        let mut padded_data: Vec<&[u8]> = vec![&data];
+        let empty = vec![0u8; 0];
+        while padded_data.len() < tape_core::erasure::SPOOL_GROUP_SIZE {
+            padded_data.push(&empty);
+        }
+        let proof = create_merkle_proof(&padded_data, 0, COMMITMENT_TREE_HEIGHT);
+        let payload = SlicePayload::new(data.clone(), leaf_hash, proof);
+
+        // PUT slice via internal route
+        let app = test_router(ctx.clone());
+        let put_resp = app
+            .oneshot(
+                Request::put(format!(
+                    "/v1/internal/tracks/{track_b58}/slices/{slice_index}"
+                ))
+                .header("content-type", "application/octet-stream")
+                .body(Body::from(wincode::serialize(&payload).unwrap()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        // GET slice
+        let app = test_router(ctx);
+        let get_resp = app
+            .oneshot(
+                Request::get(format!(
+                    "/v1/tracks/{track_b58}/slices/{slice_index}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), &data[..]);
+    }
+
+    #[tokio::test]
+    async fn put_bad_proof() {
+        let ctx = test_context();
+        let spool_group = 0u64;
+        let slice_index = 0u16;
+        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        let data = vec![0xABu8; 100];
+        let (track_info, _) = make_track_with_data(spool_group, &[&data]);
+
+        let track_address = Pubkey::new_unique();
+        let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();
+        ctx.store
+            .put_track(track_address, track_info)
+            .unwrap();
+
+        // Create payload with bad proof
+        let leaf_hash = hash_leaf(&data);
+        let bad_proof = vec![Hash::from([0xFF; 32]); COMMITMENT_TREE_HEIGHT];
+        let payload = SlicePayload::new(data, leaf_hash, bad_proof);
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::put(format!(
+                    "/v1/internal/tracks/{track_b58}/slices/{slice_index}"
+                ))
+                .header("content-type", "application/octet-stream")
+                .body(Body::from(wincode::serialize(&payload).unwrap()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn slice_status_check() {
+        let ctx = test_context();
+        let spool_group = 0u64;
+        let slice_index = 0u16;
+        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+
+        ctx.store
+            .set_spool_status(spool_id, SpoolStatus::Active)
+            .unwrap();
+
+        let track_address = Pubkey::new_unique();
+        let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();
+        let (track_info, _) = make_track_with_data(spool_group, &[&[1u8; 10]]);
+        ctx.store
+            .put_track(track_address, track_info)
+            .unwrap();
+
+        // Check status when slice doesn't exist
+        let app = test_router(ctx.clone());
+        let resp = app
+            .oneshot(
+                Request::get(format!(
+                    "/v1/tracks/{track_b58}/slices/{slice_index}/status"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Store a slice
+        ctx.store
+            .put_slice(spool_id, track_address, vec![1u8; 10])
+            .unwrap();
+
+        // Check status when slice exists
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::get(format!(
+                    "/v1/tracks/{track_b58}/slices/{slice_index}/status"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn body_limit() {
+        let mut config = test_config();
+        config.node_api.ingress_limits.metadata_body_max = 10;
+        let ctx = NodeContext::new(
+            config,
+            solana_sdk::signature::Keypair::new(),
+            BlsPrivateKey::from_random(),
+            TapeStore::new(MemoryStore::new()),
+        );
+        let track_address = Pubkey::new_unique();
+        let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::put(format!("/v1/tracks/{track_b58}/metadata"))
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(vec![0u8; 100]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
