@@ -22,7 +22,7 @@ pub use enums::{NodeStatus, ObjectInfo, SpoolStatus};
 pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, UnitKey};
 
 // Re-export value types
-pub use values::{NodeInfo, TapeInfo, TrackInfo};
+pub use values::{InvalidationProof, NodeInfo, TapeInfo, TrackInfo};
 
 // Re-export wrapper types
 pub use impls::Pubkey;

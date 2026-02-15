@@ -13,26 +13,30 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use axum::Router;
 use store::Store;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::core::NodeContext;
+use crate::fsm::UserEvent;
 use state::AppState;
 
 /// The HTTP server serving the node API.
 pub struct HttpServer<S: Store> {
     context: Arc<NodeContext<S>>,
+    user_event_tx: Option<mpsc::Sender<UserEvent>>,
 }
 
 impl<S: Store + 'static> HttpServer<S> {
-    pub fn new(context: Arc<NodeContext<S>>) -> Self {
-        Self { context }
+    pub fn new(context: Arc<NodeContext<S>>, user_event_tx: Option<mpsc::Sender<UserEvent>>) -> Self {
+        Self { context, user_event_tx }
     }
 
     /// Build the axum router with all routes and middleware.
     fn build_router(&self) -> Router {
         let state = AppState {
             context: self.context.clone(),
+            user_event_tx: self.user_event_tx.clone(),
         };
         let limits = &self.context.config.node_api.ingress_limits;
 
@@ -238,7 +242,7 @@ mod tests {
     }
 
     fn test_router(ctx: Arc<NodeContext<MemoryStore>>) -> Router {
-        HttpServer::new(ctx).build_router()
+        HttpServer::new(ctx, None).build_router()
     }
 
     fn make_track_with_data(

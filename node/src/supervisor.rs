@@ -299,7 +299,9 @@ impl<S: Store + 'static> Supervisor<S> {
 
         match outcome {
             TaskOutcome::Success => {
-                let _ = self.result_tx.send(TaskResult::Success(key)).await;
+                if self.result_tx.send(TaskResult::Success(key)).await.is_err() {
+                    tracing::debug!("result channel closed");
+                }
             }
             TaskOutcome::Retryable(err) => {
                 let category = key.category();
@@ -320,10 +322,14 @@ impl<S: Store + 'static> Supervisor<S> {
                             attempt: attempt + 1,
                         }));
                         self.pending_retry.insert(key.clone());
-                        let _ = self
+                        if self
                             .result_tx
                             .send(TaskResult::RetryableError(key, err))
-                            .await;
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!("result channel closed");
+                        }
                     }
                     None => {
                         tracing::error!(
@@ -331,18 +337,26 @@ impl<S: Store + 'static> Supervisor<S> {
                             attempt,
                             "max retries exceeded, treating as permanent failure"
                         );
-                        let _ = self
+                        if self
                             .result_tx
                             .send(TaskResult::PermanentError(key, err))
-                            .await;
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!("result channel closed");
+                        }
                     }
                 }
             }
             TaskOutcome::Permanent(err) => {
-                let _ = self
+                if self
                     .result_tx
                     .send(TaskResult::PermanentError(key, err))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("result channel closed");
+                }
             }
         }
     }
@@ -489,16 +503,14 @@ mod tests {
             supervisor.run(directive_rx, cancel_clone).await;
         });
 
+        let key = TaskKey::RecoveryScan { spool: 0 };
         directive_tx
-            .send(Directive::Schedule(TaskKey::RefreshOnchainState))
+            .send(Directive::Schedule(key.clone()))
             .await
             .unwrap();
 
         let result = result_rx.recv().await.unwrap();
-        assert!(matches!(
-            result,
-            TaskResult::Success(TaskKey::RefreshOnchainState)
-        ));
+        assert!(matches!(result, TaskResult::Success(ref k) if *k == key));
 
         cancel.cancel();
         handle.await.unwrap();
@@ -621,7 +633,7 @@ mod tests {
             supervisor.run(directive_rx, cancel_clone).await;
         });
 
-        let key = TaskKey::RefreshOnchainState;
+        let key = TaskKey::RecoveryScan { spool: 0 };
 
         // Schedule the same key twice rapidly
         directive_tx

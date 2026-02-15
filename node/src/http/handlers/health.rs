@@ -32,7 +32,7 @@ pub async fn stats<S: Store>(
     State(state): State<AppState<S>>,
 ) -> Result<impl IntoResponse, ApiError> {
     use tape_node_api::NodeStats;
-    use tape_store::ops::MetaOps;
+    use tape_store::ops::{MetaOps, SliceOps, SpoolOps};
 
     let store = &state.context.store;
     let current_epoch = store
@@ -46,15 +46,25 @@ pub async fn stats<S: Store>(
         .map(|s| s.0)
         .unwrap_or(0);
 
+    let owned_spools_list = store.iter_all_spools().unwrap_or_default();
+    let owned_spools = owned_spools_list.len() as u64;
+
+    let mut slices_stored: u64 = 0;
+    for (spool_id, _status) in &owned_spools_list {
+        if let Ok(count) = store.count_slices_by_spool(*spool_id) {
+            slices_stored += count as u64;
+        }
+    }
+
     let stats = NodeStats {
         last_processed_slot: last_slot,
         blocks_processed: 0,
         epoch_transitions: 0,
         current_epoch,
-        owned_spools: 0,
+        owned_spools,
         tracks_stored: 0,
         storage_bytes_used: 0,
-        slices_stored: 0,
+        slices_stored,
         bytes_uploaded: 0,
         bytes_downloaded: 0,
         requests_total: 0,

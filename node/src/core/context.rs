@@ -10,6 +10,7 @@ use solana_sdk::signer::Signer;
 use store::Store;
 use tape_core::bls::BlsPrivateKey;
 use tape_crypto::Pubkey;
+use tape_store::ops::{CommitteeOps, MetaOps};
 use tape_store::TapeStore;
 
 use super::config::NodeConfig;
@@ -114,5 +115,167 @@ impl<S: Store> NodeContext<S> {
     /// Current timestamp for FSM and epoch decisions.
     pub fn now(&self) -> i64 {
         (self.now_fn)()
+    }
+
+    /// Look up our (node_id, member_index) in the current committee.
+    /// Returns (0, 0) if committee not loaded or node not found.
+    pub fn committee_identity(&self) -> (u64, u8) {
+        let epoch = match self.store.get_current_epoch() {
+            Ok(Some(e)) => e,
+            _ => return (0, 0),
+        };
+        let committee = match self.store.get_committee(epoch) {
+            Ok(Some(c)) => c,
+            _ => return (0, 0),
+        };
+        let our_bls = match self.bls_keypair.public_key() {
+            Ok(pk) => pk,
+            Err(_) => return (0, 0),
+        };
+        let member_index = committee
+            .iter()
+            .position(|m| m.bls_pubkey == our_bls)
+            .unwrap_or(0) as u8;
+        let node_id = self
+            .store
+            .get_node_id()
+            .ok()
+            .flatten()
+            .map(|id| id.0)
+            .unwrap_or(0);
+        (node_id, member_index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    use bytemuck::Zeroable;
+    use tape_core::bls::BlsPubkey;
+    use tape_core::types::network::NetworkAddress;
+    use tape_core::types::{EpochNumber, NodeId};
+    use tape_store::ops::CommitteeOps;
+    use tape_store::types::NodeInfo;
+    use tape_store::MemoryStore;
+
+    use crate::core::config::RecoveryConfig;
+    use crate::core::{NodeApiConfig, NodeConfig, TlsConfig};
+
+    fn test_config() -> NodeConfig {
+        NodeConfig {
+            version: 1,
+            name: "test-node".to_string(),
+            tls_keypair: PathBuf::from("/dev/null"),
+            bls_keypair: PathBuf::from("/dev/null"),
+            node_keypair: String::new(),
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            public_host: "localhost".to_string(),
+            public_port: 0,
+            tls: TlsConfig::default(),
+            storage_path: "/tmp".to_string(),
+            poll_interval_ms: None,
+            sync_concurrency: None,
+            sync_batch_size: None,
+            commission: None,
+            recovery: RecoveryConfig::default(),
+            node_api: NodeApiConfig::default(),
+        }
+    }
+
+    #[test]
+    fn committee_identity_lookup() {
+        let bls_key = BlsPrivateKey::from_random();
+        let our_bls = bls_key.public_key().unwrap();
+
+        let store = tape_store::TapeStore::new(MemoryStore::new());
+        let ctx = NodeContext::new(
+            test_config(),
+            solana_sdk::signature::Keypair::new(),
+            bls_key,
+            store,
+        );
+
+        // Set epoch and committee with our key at position 2
+        let epoch = EpochNumber(5);
+        ctx.store.set_current_epoch(epoch).unwrap();
+
+        let committee = vec![
+            NodeInfo {
+                node_address: tape_store::types::Pubkey::new([1u8; 32]),
+                bls_pubkey: BlsPubkey::zeroed(),
+                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
+                spools: vec![],
+            },
+            NodeInfo {
+                node_address: tape_store::types::Pubkey::new([2u8; 32]),
+                bls_pubkey: BlsPubkey::zeroed(),
+                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8001),
+                spools: vec![],
+            },
+            NodeInfo {
+                node_address: tape_store::types::Pubkey::new([3u8; 32]),
+                bls_pubkey: our_bls,
+                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8002),
+                spools: vec![],
+            },
+        ];
+        ctx.store.put_committee(epoch, committee).unwrap();
+
+        let (node_id, member_index) = ctx.committee_identity();
+        assert_eq!(member_index, 2);
+        assert_eq!(node_id, 0); // no node_id stored yet
+    }
+
+    #[test]
+    fn committee_identity_missing() {
+        let bls_key = BlsPrivateKey::from_random();
+        let store = tape_store::TapeStore::new(MemoryStore::new());
+        let ctx = NodeContext::new(
+            test_config(),
+            solana_sdk::signature::Keypair::new(),
+            bls_key,
+            store,
+        );
+
+        // No epoch, no committee
+        let (node_id, member_index) = ctx.committee_identity();
+        assert_eq!(node_id, 0);
+        assert_eq!(member_index, 0);
+    }
+
+    #[test]
+    fn committee_identity_with_node_id() {
+        let bls_key = BlsPrivateKey::from_random();
+        let our_bls = bls_key.public_key().unwrap();
+
+        let store = tape_store::TapeStore::new(MemoryStore::new());
+        let ctx = NodeContext::new(
+            test_config(),
+            solana_sdk::signature::Keypair::new(),
+            bls_key,
+            store,
+        );
+
+        let epoch = EpochNumber(1);
+        ctx.store.set_current_epoch(epoch).unwrap();
+        ctx.store.set_node_id(NodeId(42)).unwrap();
+
+        let committee = vec![NodeInfo {
+            node_address: tape_store::types::Pubkey::new([1u8; 32]),
+            bls_pubkey: our_bls,
+            tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
+            spools: vec![],
+        }];
+        ctx.store.put_committee(epoch, committee).unwrap();
+
+        let (node_id, member_index) = ctx.committee_identity();
+        assert_eq!(node_id, 42);
+        assert_eq!(member_index, 0);
     }
 }

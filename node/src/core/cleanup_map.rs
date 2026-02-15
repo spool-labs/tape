@@ -63,6 +63,11 @@ impl<K: Eq + Hash + Clone + Send + Sync + 'static, V: Send + Sync + 'static> Cle
         self.entries.read().await.len()
     }
 
+    /// Whether the map has no entries (including potentially expired but not yet evicted).
+    pub async fn is_empty(&self) -> bool {
+        self.entries.read().await.is_empty()
+    }
+
     /// Trim the map to at most `max_entries` by removing oldest entries first.
     pub async fn trim_oldest(&self, max_entries: usize) -> usize {
         let mut map = self.entries.write().await;

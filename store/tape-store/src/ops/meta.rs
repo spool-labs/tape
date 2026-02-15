@@ -10,16 +10,18 @@
 
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{ChunkIndex, EpochNumber, Hash, NodeStatus, Pubkey, SlotNumber, UnitKey};
+use crate::types::{ChunkIndex, EpochNumber, Hash, InvalidationProof, NodeStatus, Pubkey, SlotNumber, UnitKey};
 use crate::TapeStore;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::types::NodeId;
 
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const CURRENT_EPOCH_KEY: &str = "current_epoch";
 const NODE_ADDRESS_KEY: &str = "node_address";
+const NODE_ID_KEY: &str = "node_id";
 
 // GC keys
 const GC_STARTED_KEY: &str = "started";
@@ -43,6 +45,10 @@ pub trait MetaOps {
     fn get_node_address(&self) -> Result<Option<Pubkey>>;
     fn set_node_address(&self, address: Pubkey) -> Result<()>;
 
+    // Node ID
+    fn get_node_id(&self) -> Result<Option<NodeId>>;
+    fn set_node_id(&self, id: NodeId) -> Result<()>;
+
     // Sync cursor
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>>;
     fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()>;
@@ -57,6 +63,11 @@ pub trait MetaOps {
     fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>>;
     fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()>;
     fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()>;
+
+    // Invalidation proofs
+    fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
+    fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()>;
+    fn delete_invalidation_proof(&self, track: Pubkey) -> Result<()>;
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
@@ -159,6 +170,31 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
+    fn get_node_id(&self) -> Result<Option<NodeId>> {
+        let key = NODE_ID_KEY.to_string();
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut id_bytes = [0u8; 8];
+                id_bytes.copy_from_slice(&bytes);
+                Ok(Some(NodeId(u64::from_le_bytes(id_bytes))))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_node_id(&self, id: NodeId) -> Result<()> {
+        let key = NODE_ID_KEY.to_string();
+        let bytes = id.0.to_le_bytes().to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>> {
         Ok(self.get::<SyncCursorCol>(&UnitKey)?)
     }
@@ -220,6 +256,32 @@ impl<S: Store> MetaOps for TapeStore<S> {
             let key = format!("snapshot:{}:{}", epoch.as_u64(), i);
             self.delete::<MetaCol>(&key)?;
         }
+        Ok(())
+    }
+
+    fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>> {
+        let key = format!("invalidation:{}", track);
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                let proof: InvalidationProof = wincode::deserialize(&bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("invalidation proof: {}", e)))?;
+                Ok(Some(proof))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()> {
+        let key = format!("invalidation:{}", track);
+        let bytes = wincode::serialize(&proof)
+            .map_err(|e| TapeStoreError::Serialization(format!("invalidation proof: {}", e)))?;
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn delete_invalidation_proof(&self, track: Pubkey) -> Result<()> {
+        let key = format!("invalidation:{}", track);
+        self.delete::<MetaCol>(&key)?;
         Ok(())
     }
 }
@@ -289,6 +351,17 @@ mod tests {
     }
 
     #[test]
+    fn test_node_id_roundtrip() {
+        let store = test_store();
+        let id = NodeId(42);
+
+        assert!(store.get_node_id().unwrap().is_none());
+
+        store.set_node_id(id).unwrap();
+        assert_eq!(store.get_node_id().unwrap(), Some(id));
+    }
+
+    #[test]
     fn test_sync_cursor_roundtrip() {
         let store = test_store();
         let slot = SlotNumber(999999);
@@ -337,5 +410,24 @@ mod tests {
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(2)).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_invalidation_proof_roundtrip() {
+        let store = test_store();
+        let track = Pubkey::new_unique();
+        let proof = InvalidationProof {
+            bitmap: 0xFF,
+            signature: [1u8; 32],
+            computed_root: [2u8; 32],
+        };
+
+        assert!(store.get_invalidation_proof(track).unwrap().is_none());
+
+        store.set_invalidation_proof(track, proof.clone()).unwrap();
+        assert_eq!(store.get_invalidation_proof(track).unwrap(), Some(proof));
+
+        store.delete_invalidation_proof(track).unwrap();
+        assert!(store.get_invalidation_proof(track).unwrap().is_none());
     }
 }

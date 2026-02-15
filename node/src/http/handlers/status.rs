@@ -3,6 +3,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use store::Store;
+use tape_core::erasure::spool_for_slice;
 use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::types::Pubkey;
 
@@ -23,7 +24,7 @@ pub async fn slice_status<S: Store>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let spool_id = tape_core::erasure::spool_for_slice(track_info.spool_group, slice_index as usize);
+    let spool_id = spool_for_slice(track_info.spool_group, slice_index as usize);
 
     let exists = state
         .context

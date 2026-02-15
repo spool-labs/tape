@@ -5,6 +5,7 @@ use std::sync::Arc;
 use store::Store;
 use tape_node_api::RepairRequest;
 use tape_node_client::NodeClientBuilder;
+use tape_core::erasure::spool_in_group;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
@@ -58,77 +59,77 @@ pub async fn run<S: Store>(
             }
         };
 
-        // Find a helper node with a different spool in the same group
-        let helper = committee.iter().find(|node| {
+        // Find all helper nodes with a different spool in the same group
+        let helpers: Vec<_> = committee.iter().filter(|node| {
             node.spools.iter().any(|&s| {
                 s != spool
-                    && tape_core::erasure::spool_in_group(s, track_info.spool_group)
+                    && spool_in_group(s, track_info.spool_group)
             })
-        });
+        }).collect();
 
-        let helper = match helper {
-            Some(h) => h,
-            None => {
-                tracing::warn!(?track_addr, spool, "no helper found for recovery");
-                continue;
-            }
-        };
+        if helpers.is_empty() {
+            tracing::warn!(?track_addr, spool, "no helper found for recovery");
+            continue;
+        }
 
-        // Find which spool the helper owns in this group
-        let helper_spool = helper
-            .spools
-            .iter()
-            .find(|&&s| {
-                s != spool
-                    && tape_core::erasure::spool_in_group(s, track_info.spool_group)
-            })
-            .copied()
-            .unwrap();
+        let mut recovered = false;
+        for helper in &helpers {
+            let helper_spool = match helper.spools.iter().find(|&&s| {
+                s != spool && spool_in_group(s, track_info.spool_group)
+            }) {
+                Some(&s) => s,
+                None => continue,
+            };
 
-        let addr = match helper.network_address.to_socket_addr() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!(?track_addr, "parse helper address: {e}");
-                continue;
-            }
-        };
-
-        let client = match NodeClientBuilder::new().build(&addr.to_string()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(?track_addr, "build helper client: {e}");
-                continue;
-            }
-        };
-
-        // Request full slice via repair (request all sub-chunks for all stripes)
-        let request = RepairRequest {
-            lost_slice: spool,
-            helper_spool,
-            stripes: (0..track_info.stripe_count as u32)
-                .map(|s| tape_node_api::StripeSubChunkRequest {
-                    stripe: s,
-                    sub_chunks: vec![], // empty = request raw slice via sync instead
-                })
-                .collect(),
-        };
-
-        // Try repair, on failure just continue (will retry next cycle)
-        match client.request_repair(track_addr, &request).await {
-            Ok(data) if !data.is_empty() => {
-                if let Err(e) = context.store.put_slice(spool, track_addr, data) {
-                    tracing::warn!(?track_addr, "put_slice error: {e}");
+            let addr = match helper.network_address.to_socket_addr() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(?track_addr, "parse helper address: {e}");
                     continue;
                 }
-                let _ = context.store.remove_pending_recovery(spool, track_addr);
-                tracing::debug!(?track_addr, spool, "recovered slice");
+            };
+
+            let client = match NodeClientBuilder::new().build(&addr.to_string()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(?track_addr, "build helper client: {e}");
+                    continue;
+                }
+            };
+
+            let request = RepairRequest {
+                lost_slice: spool,
+                helper_spool,
+                stripes: (0..track_info.stripe_count as u32)
+                    .map(|s| tape_node_api::StripeSubChunkRequest {
+                        stripe: s,
+                        sub_chunks: vec![],
+                    })
+                    .collect(),
+            };
+
+            match client.request_repair(track_addr, &request).await {
+                Ok(data) if !data.is_empty() => {
+                    if let Err(e) = context.store.put_slice(spool, track_addr, data) {
+                        tracing::warn!(?track_addr, "put_slice error: {e}");
+                        continue;
+                    }
+                    let _ = context.store.remove_pending_recovery(spool, track_addr);
+                    tracing::debug!(?track_addr, spool, "recovered slice");
+                    recovered = true;
+                    break;
+                }
+                Ok(_) => {
+                    tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "empty repair response");
+                }
+                Err(e) => {
+                    tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "repair error: {e}");
+                }
             }
-            Ok(_) => {
-                tracing::debug!(?track_addr, spool, "empty repair response");
-            }
-            Err(e) => {
-                tracing::debug!(?track_addr, spool, "repair error: {e}");
-            }
+        }
+
+        if !recovered {
+            tracing::debug!(?track_addr, spool, "all helpers exhausted");
         }
     }
 

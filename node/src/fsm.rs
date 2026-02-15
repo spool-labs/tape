@@ -50,6 +50,12 @@ pub enum StateChange {
     NodeSynced { node: Pubkey },
 }
 
+/// An event from user-facing HTTP handlers, forwarded to the FSM.
+#[derive(Debug)]
+pub enum UserEvent {
+    SliceAccepted { track: Pubkey, spool: u16 },
+}
+
 /// Single-writer state machine that processes blocks and updates local storage.
 pub struct Fsm<S: Store> {
     context: Arc<NodeContext<S>>,

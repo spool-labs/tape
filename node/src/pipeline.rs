@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
-use crate::fsm::{Fsm, StateChange};
+use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, BlockSource, IngestedBlock};
 use crate::reconciler::{Directive, Reconciler};
@@ -21,6 +21,7 @@ use crate::supervisor::{Supervisor, TaskResult};
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
 const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
+const USER_EVENT_CHANNEL_CAPACITY: usize = 256;
 const DIRECTIVE_CHANNEL_CAPACITY: usize = 256;
 const RESULT_CHANNEL_CAPACITY: usize = 256;
 
@@ -34,11 +35,13 @@ pub async fn spawn_pipeline<S: Store + 'static>(
     cancel: CancellationToken,
 ) -> (
     mpsc::Receiver<Vec<StateChange>>,
+    mpsc::Sender<UserEvent>,
     tokio::task::JoinHandle<()>,
     tokio::task::JoinHandle<()>,
 ) {
     let (block_tx, mut block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
     let (change_tx, change_rx) = mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
+    let (user_event_tx, mut user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
 
     let ingestor_context = context.clone();
     let ingestor_cancel = cancel.clone();
@@ -60,7 +63,9 @@ pub async fn spawn_pipeline<S: Store + 'static>(
                         Some(block) => {
                             match fsm.apply(&block) {
                                 Ok(changes) if !changes.is_empty() => {
-                                    let _ = change_tx.send(changes).await;
+                                    if change_tx.send(changes).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 Ok(_) => {}
                                 Err(e) => tracing::error!("FSM error: {e}"),
@@ -69,12 +74,18 @@ pub async fn spawn_pipeline<S: Store + 'static>(
                         None => break,
                     }
                 }
+                event = user_event_rx.recv() => {
+                    match event {
+                        Some(_event) => { /* future: handle UserEvent */ }
+                        None => break,
+                    }
+                }
                 _ = fsm_cancel.cancelled() => break,
             }
         }
     });
 
-    (change_rx, ingestor_handle, fsm_handle)
+    (change_rx, user_event_tx, ingestor_handle, fsm_handle)
 }
 
 /// Handles for all runtime tasks.
@@ -92,7 +103,7 @@ pub async fn spawn_runtime<S: Store + 'static>(
     source: Arc<dyn BlockSource>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
-    let (change_rx, ingestor_handle, fsm_handle) =
+    let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
         spawn_pipeline(context.clone(), source, cancel.clone()).await;
 
     let (directive_tx, directive_rx) = mpsc::channel::<Directive>(DIRECTIVE_CHANNEL_CAPACITY);
@@ -115,7 +126,7 @@ pub async fn spawn_runtime<S: Store + 'static>(
     let http_ctx = context;
     let http_cancel = cancel;
     let http_handle = tokio::spawn(async move {
-        let server = HttpServer::new(http_ctx);
+        let server = HttpServer::new(http_ctx, Some(user_event_tx));
         if let Err(e) = server.serve(http_cancel).await {
             tracing::error!("HTTP server error: {e}");
         }
@@ -296,7 +307,7 @@ mod tests {
 
         // We use spawn_pipeline + manual block injection since MockBlockSource
         // can't produce real UiConfirmedBlocks. Wire reconciler + supervisor manually.
-        let (change_rx, _ingestor_handle, _fsm_handle) =
+        let (change_rx, _user_event_tx, _ingestor_handle, _fsm_handle) =
             spawn_pipeline(ctx.clone(), Arc::new(MockBlockSource::new(vec![])), cancel.clone())
                 .await;
 
@@ -326,5 +337,69 @@ mod tests {
         cancel.cancel();
         reconciler_handle.await.unwrap();
         supervisor_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fsm_exits_on_closed_change() {
+        let ctx = test_context();
+        let cancel = CancellationToken::new();
+
+        let (block_tx, mut block_rx) =
+            mpsc::channel::<crate::ingestor::IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
+        let (change_tx, change_rx) =
+            mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
+
+        let fsm_ctx = ctx.clone();
+        let fsm_cancel = cancel.clone();
+        let fsm_handle = tokio::spawn(async move {
+            let fsm = Fsm::new(fsm_ctx);
+            loop {
+                tokio::select! {
+                    block = block_rx.recv() => {
+                        match block {
+                            Some(block) => {
+                                match fsm.apply(&block) {
+                                    Ok(changes) if !changes.is_empty() => {
+                                        if change_tx.send(changes).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => panic!("FSM error: {e}"),
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = fsm_cancel.cancelled() => break,
+                }
+            }
+        });
+
+        // Drop the change receiver — sends will fail
+        drop(change_rx);
+
+        // Send a block that produces a StateChange
+        let block = crate::ingestor::IngestedBlock {
+            slot: SlotNumber(10),
+            instructions: vec![ParsedInstruction::AdvanceEpoch {
+                event: EpochAdvanced {
+                    old_epoch: EpochNumber(0),
+                    new_epoch: EpochNumber(1),
+                    timestamp: [0; 8],
+                    committee_size: [0; 8],
+                    total_stake: [0; 8],
+                    storage_price: [0; 8],
+                    storage_capacity: StorageUnits(0),
+                },
+            }],
+        };
+        let _ = block_tx.send(block).await;
+
+        // FSM should exit within 1s because change_tx.send fails
+        tokio::time::timeout(std::time::Duration::from_secs(1), fsm_handle)
+            .await
+            .expect("FSM should exit when change channel closes")
+            .unwrap();
     }
 }

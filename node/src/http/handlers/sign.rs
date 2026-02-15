@@ -6,7 +6,7 @@ use axum::response::IntoResponse;
 use store::Store;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::cert::track::CertifyMessage;
-use tape_core::types::EpochNumber;
+use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_node_api::{BlsSignResponse, BINARY_CONTENT};
 use tape_store::ops::{MetaOps, TrackOps};
 use crate::http::error::ApiError;
@@ -41,10 +41,11 @@ pub async fn get_signature<S: Store>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
+    let (node_id, member_index) = state.context.committee_identity();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
-        node_id: 0,
-        member_index: 0,
+        node_id,
+        member_index,
         epoch: epoch.0,
     };
 
@@ -64,7 +65,7 @@ pub async fn get_snapshot_signature<S: Store>(
     Path((epoch, chunk_index)): Path<(u64, u64)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let epoch = EpochNumber(epoch);
-    let chunk_idx = tape_core::types::ChunkIndex(chunk_index);
+    let chunk_idx = ChunkIndex(chunk_index);
 
     let commitment = state
         .context
@@ -80,10 +81,11 @@ pub async fn get_snapshot_signature<S: Store>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
+    let (node_id, member_index) = state.context.committee_identity();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
-        node_id: 0,
-        member_index: 0,
+        node_id,
+        member_index,
         epoch: epoch.0,
     };
 

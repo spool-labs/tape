@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use store::Store;
 use tape_core::types::EpochNumber;
 use tape_node_api::{InconsistencyRequest, BlsInconsistencyResponse, BINARY_CONTENT};
+use tape_core::cert::track::CertifyMessage;
 use tape_store::ops::{MetaOps, TrackOps};
 
 use crate::http::error::ApiError;
@@ -45,7 +46,7 @@ pub async fn post_inconsistency<S: Store>(
 
     // BLS sign the inconsistency attestation
     // Use the certify message format with the requester's root
-    let msg = tape_core::cert::track::CertifyMessage::new(
+    let msg = CertifyMessage::new(
         epoch,
         track_address.0,
         request.computed_root.into(),
@@ -56,10 +57,11 @@ pub async fn post_inconsistency<S: Store>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
+    let (node_id, member_index) = state.context.committee_identity();
     let resp = BlsInconsistencyResponse {
         signature: sig.0 .0,
-        node_id: 0,
-        member_index: 0,
+        node_id,
+        member_index,
         epoch: epoch.0,
     };
 

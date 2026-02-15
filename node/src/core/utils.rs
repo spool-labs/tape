@@ -22,7 +22,7 @@ pub fn expand_path(path: &str) -> PathBuf {
 pub fn current_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64
 }
 

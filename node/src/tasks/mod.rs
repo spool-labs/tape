@@ -51,31 +51,31 @@ pub async fn execute_task<S: Store>(
             #[cfg(feature = "rpc")]
             { refresh_onchain_state::run(context, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Success }
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::AdvanceEpoch => {
             #[cfg(feature = "rpc")]
             { advance_epoch::run(context, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Success }
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::SyncEpoch => {
             #[cfg(feature = "rpc")]
             { sync_epoch::run(context, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Success }
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::JoinNetwork => {
             #[cfg(feature = "rpc")]
             { join_network::run(context, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Success }
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::AdvancePool => {
             #[cfg(feature = "rpc")]
             { advance_pool::run(context, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Success }
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::SpoolSync { spool } => {
             spool_sync::run(context, *spool, cancel).await
@@ -90,7 +90,7 @@ pub async fn execute_task<S: Store>(
             #[cfg(feature = "rpc")]
             { invalidate_track::run(context, *track, cancel).await }
             #[cfg(not(feature = "rpc"))]
-            { let _ = track; TaskOutcome::Success }
+            { let _ = track; TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
         TaskKey::SnapshotBuild
         | TaskKey::SnapshotCertify

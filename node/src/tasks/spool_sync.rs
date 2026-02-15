@@ -5,6 +5,7 @@ use std::sync::Arc;
 use store::Store;
 use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_node_client::NodeClientBuilder;
+use tape_core::types::EpochNumber;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps};
 use tape_store::types::Pubkey;
 use tape_store::types::SpoolStatus;
@@ -35,7 +36,7 @@ pub async fn run<S: Store>(
     }
 
     // Look up previous epoch committee to find the peer that owned this spool
-    let prev_epoch = tape_core::types::EpochNumber(epoch.as_u64() - 1);
+    let prev_epoch = EpochNumber(epoch.as_u64() - 1);
     let prev_committee = match context.store.get_committee(prev_epoch) {
         Ok(Some(c)) => c,
         Ok(None) => {

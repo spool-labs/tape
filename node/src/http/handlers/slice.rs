@@ -7,11 +7,13 @@ use axum::response::IntoResponse;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+use tape_core::types::EpochNumber;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_crypto::ed25519::{PublicKey, Signature};
 use tape_node_api::{BlsSignResponse, SignedMessage, SlicePayload, BINARY_CONTENT};
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
+use crate::fsm::UserEvent;
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
@@ -103,10 +105,18 @@ pub async fn put_slice<S: Store>(
         .put_slice(spool_id, track_address, payload.data)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
 
+    // Notify FSM of accepted slice
+    if let Some(tx) = &state.user_event_tx {
+        let _ = tx.try_send(UserEvent::SliceAccepted {
+            track: track_address.into(),
+            spool: spool_id,
+        });
+    }
+
     // BLS sign a CertifyMessage
-    let epoch = tape_store::ops::MetaOps::get_current_epoch(&*state.context.store)
+    let epoch = state.context.store.get_current_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(tape_core::types::EpochNumber(0));
+        .unwrap_or(EpochNumber(0));
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state
@@ -115,10 +125,11 @@ pub async fn put_slice<S: Store>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
+    let (node_id, member_index) = state.context.committee_identity();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
-        node_id: 0,
-        member_index: 0,
+        node_id,
+        member_index,
         epoch: epoch.0,
     };
 
@@ -179,10 +190,18 @@ pub async fn put_slice_internal<S: Store>(
         .put_slice(spool_id, track_address, payload.data)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
 
+    // Notify FSM of accepted slice
+    if let Some(tx) = &state.user_event_tx {
+        let _ = tx.try_send(UserEvent::SliceAccepted {
+            track: track_address.into(),
+            spool: spool_id,
+        });
+    }
+
     // BLS sign a CertifyMessage
-    let epoch = tape_store::ops::MetaOps::get_current_epoch(&*state.context.store)
+    let epoch = state.context.store.get_current_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(tape_core::types::EpochNumber(0));
+        .unwrap_or(EpochNumber(0));
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state
@@ -191,10 +210,11 @@ pub async fn put_slice_internal<S: Store>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
+    let (node_id, member_index) = state.context.committee_identity();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
-        node_id: 0,
-        member_index: 0,
+        node_id,
+        member_index,
         epoch: epoch.0,
     };
 

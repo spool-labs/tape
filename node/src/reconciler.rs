@@ -6,14 +6,15 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use solana_sdk::signer::Signer;
 use store::Store;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use tape_store::ops::SpoolOps;
-use tape_store::types::SpoolStatus;
+use tape_store::ops::{MetaOps, SpoolOps};
+use tape_store::types::{NodeStatus, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::fsm::StateChange;
@@ -53,6 +54,9 @@ impl<S: Store> Reconciler<S> {
         directive_tx: mpsc::Sender<Directive>,
         cancel: CancellationToken,
     ) {
+        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 changes = change_rx.recv() => {
@@ -75,6 +79,11 @@ impl<S: Store> Reconciler<S> {
                     }
                 }
 
+                _ = ticker.tick() => {
+                    self.periodic_tasks();
+                    self.emit_directives(&directive_tx).await;
+                }
+
                 _ = cancel.cancelled() => break,
             }
         }
@@ -85,10 +94,11 @@ impl<S: Store> Reconciler<S> {
             match change {
                 StateChange::EpochAdvanced { .. } => {
                     self.reconcile_spools();
-                    // Schedule one-shot on-chain tasks for the new epoch
-                    self.desired.insert(TaskKey::RefreshOnchainState);
-                    self.desired.insert(TaskKey::SyncEpoch);
-                    self.desired.insert(TaskKey::JoinNetwork);
+                    if matches!(self.node_status(), NodeStatus::Active) {
+                        self.desired.insert(TaskKey::RefreshOnchainState);
+                        self.desired.insert(TaskKey::SyncEpoch);
+                        self.desired.insert(TaskKey::JoinNetwork);
+                    }
                 }
                 StateChange::SpoolAssignmentChanged => {
                     self.reconcile_spools();
@@ -122,6 +132,10 @@ impl<S: Store> Reconciler<S> {
     }
 
     fn schedule_recovery_scans(&mut self) {
+        if matches!(self.node_status(), NodeStatus::Standby) {
+            return;
+        }
+
         let owned_spools = match self.context.store.iter_all_spools() {
             Ok(spools) => spools,
             Err(e) => {
@@ -139,7 +153,22 @@ impl<S: Store> Reconciler<S> {
         }
     }
 
+    fn periodic_tasks(&mut self) {
+        if matches!(self.node_status(), NodeStatus::Active) {
+            self.desired.insert(TaskKey::RefreshOnchainState);
+            self.desired.insert(TaskKey::AdvanceEpoch);
+        }
+    }
+
+    fn node_status(&self) -> NodeStatus {
+        self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Active)
+    }
+
     fn reconcile_spools(&mut self) {
+        if matches!(self.node_status(), NodeStatus::Standby) {
+            return;
+        }
+
         let owned_spools = match self.context.store.iter_all_spools() {
             Ok(spools) => spools,
             Err(e) => {
@@ -196,16 +225,20 @@ impl<S: Store> Reconciler<S> {
     async fn emit_directives(&mut self, tx: &mpsc::Sender<Directive>) {
         // Schedule: in desired but not yet scheduled
         let to_schedule: Vec<_> = self.desired.difference(&self.scheduled).cloned().collect();
-        for key in &to_schedule {
-            let _ = tx.send(Directive::Schedule(key.clone())).await;
-            self.scheduled.insert(key.clone());
+        for key in to_schedule {
+            if tx.send(Directive::Schedule(key.clone())).await.is_err() {
+                return;
+            }
+            self.scheduled.insert(key);
         }
 
         // Cancel: scheduled but no longer desired
         let to_cancel: Vec<_> = self.scheduled.difference(&self.desired).cloned().collect();
-        for key in &to_cancel {
-            let _ = tx.send(Directive::Cancel(key.clone())).await;
-            self.scheduled.remove(key);
+        for key in to_cancel {
+            if tx.send(Directive::Cancel(key.clone())).await.is_err() {
+                return;
+            }
+            self.scheduled.remove(&key);
         }
     }
 }
@@ -217,6 +250,7 @@ mod tests {
 
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::EpochNumber;
+    use tape_store::ops::MetaOps;
     use tape_store::{MemoryStore, TapeStore};
 
     use crate::core::config::RecoveryConfig;
@@ -515,5 +549,104 @@ mod tests {
         // Should still be desired (continuous task), but removed from scheduled
         assert!(reconciler.desired.contains(&key));
         assert!(!reconciler.scheduled.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn closed_directive_channel() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, directive_rx) = mpsc::channel(16);
+
+        // Drop the receiver — sends will fail
+        drop(directive_rx);
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(1),
+        }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        // scheduled must stay empty — sends failed, no mutation
+        assert!(reconciler.scheduled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn epoch_advance_derivation() {
+        let ctx = test_context();
+
+        ctx.store
+            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .unwrap();
+        ctx.store
+            .set_spool_status(20, SpoolStatus::ActiveSync)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(1),
+        }]);
+
+        // 2 SpoolSync + RefreshOnchainState + SyncEpoch + JoinNetwork
+        assert_eq!(reconciler.desired.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn standby_blocks_tasks() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .unwrap();
+        ctx.store.set_node_status(NodeStatus::Standby).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(1),
+        }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        // No directives — standby blocks everything
+        assert!(directive_rx.try_recv().is_err());
+        assert!(reconciler.desired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn periodic_refresh() {
+        let ctx = test_context();
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.periodic_tasks();
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+        assert!(scheduled.contains(&TaskKey::AdvanceEpoch));
+    }
+
+    #[tokio::test]
+    async fn periodic_standby_skip() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Standby).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.periodic_tasks();
+        reconciler.emit_directives(&directive_tx).await;
+
+        assert!(directive_rx.try_recv().is_err());
+        assert!(reconciler.desired.is_empty());
     }
 }

@@ -84,6 +84,14 @@ mod network_address_serde {
     }
 }
 
+/// Proof data needed to submit an on-chain track invalidation
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct InvalidationProof {
+    pub bitmap: u128,
+    pub signature: [u8; 32],
+    pub computed_root: [u8; 32],
+}
+
 /// Information about a single committee member
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodeInfo {
