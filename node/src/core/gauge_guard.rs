@@ -3,7 +3,7 @@
 //! All "active count" metrics MUST use `GaugeGuard`. No manual
 //! `gauge.inc()` / `gauge.dec()` pairs.
 
-use tape_metrics::prometheus::IntGauge;
+use prometheus::IntGauge;
 
 /// RAII guard that increments a gauge on creation and decrements on drop.
 ///

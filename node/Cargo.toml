@@ -1,0 +1,33 @@
+[package]
+name = "tape-node"
+version.workspace = true
+edition.workspace = true
+description = "Tapedrive storage node runtime"
+
+[dependencies]
+# Workspace crates
+tape-api = { workspace = true, features = ["wincode"] }
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-store = { workspace = true }
+tape-blocks = { workspace = true }
+tape-slicer = { workspace = true }
+tape-spooler = { workspace = true }
+store = { workspace = true }
+store-rocks = { workspace = true }
+
+# External
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+solana-sdk = { workspace = true }
+solana-transaction-status = { workspace = true }
+async-trait = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_yaml = "0.9"
+dirs = { workspace = true }
+shellexpand = "3"
+prometheus = { workspace = true }

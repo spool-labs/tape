@@ -12,20 +12,23 @@ members = [
   "programs/token",
   "slicer",
   "spooler",
-  "sdk",
+  # "sdk",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
   "store/tape-store",
-  "rpc/rpc",
-  "rpc/rpc-solana",
-  "rpc/rpc-client",
-  "rpc/rpc-litesvm",
+  # "rpc/rpc",
+  # "rpc/rpc-solana",
+  # "rpc/rpc-client",
+  # "rpc/rpc-litesvm",
+  "metrics",
+  "node",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
 # - test: program testing, requires solana feature
 # - e2e: validator-backed end-to-end tests (disabled by default)
+# - sdk, rpc/*: not yet created
 default-members = [
   "api",
   "core",
@@ -34,14 +37,12 @@ default-members = [
   "blocks",
   "slicer",
   "spooler",
-  "sdk",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
   "store/tape-store",
-  "rpc/rpc",
-  "rpc/rpc-solana",
-  "rpc/rpc-client",
+  "metrics",
+  "node",
 ]
 
 [workspace.package]
@@ -76,6 +77,7 @@ tape-test = { version = "0.3.0", path = "./test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
+tape-node = { version = "0.3.0", path = "./node" }
 
 # program dependencies
 bytemuck = "1.14.3"

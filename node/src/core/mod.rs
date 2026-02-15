@@ -1,13 +1,13 @@
-//! Core module - shared utilities for the storage node.
+//! Core module — shared utilities for the storage node runtime.
 //!
-//! This module centralizes code that is used across multiple features:
+//! This module centralizes code that is used across multiple components:
 //! - `backoff`: Shared retry infrastructure with exponential backoff
 //! - `cleanup_map`: Time-bounded map with background eviction
 //! - `config`: Node configuration loading and parsing
 //! - `context`: Central shared state for the storage node
 //! - `gauge_guard`: RAII metric guards for active-count gauges
 //! - `managed_task`: Exclusive background task lifecycle management
-//! - `utils`: Common helper functions (path expansion, keypair loading, etc.)
+//! - `utils`: Common helper functions (path expansion, timestamps)
 
 pub mod backoff;
 pub mod cleanup_map;
@@ -17,7 +17,6 @@ pub mod gauge_guard;
 pub mod managed_task;
 pub mod utils;
 
-// Re-export commonly used items at the module level
 pub use backoff::{Backoff, BackoffConfig, retry_with_backoff};
 pub use cleanup_map::CleanupMap;
 pub use config::{

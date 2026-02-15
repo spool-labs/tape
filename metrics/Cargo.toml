@@ -1,0 +1,12 @@
+[package]
+name = "tape-metrics"
+version.workspace = true
+edition.workspace = true
+description = "Metrics infrastructure for Tapedrive"
+
+[features]
+default = []
+metrics = ["prometheus"]
+
+[dependencies]
+prometheus = { workspace = true, optional = true }
