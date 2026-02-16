@@ -20,6 +20,9 @@ pub trait TrackOps {
     /// Check if track metadata exists without loading data
     fn has_track(&self, track_address: Pubkey) -> Result<bool>;
 
+    /// Count all tracks without loading data.
+    fn count_tracks(&self) -> Result<usize>;
+
     /// Paginated track iteration. Returns up to `limit` tracks starting after
     /// `after_track` (or from the beginning if None). Ordered by Pubkey.
     fn iter_tracks_from(
@@ -46,6 +49,14 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn has_track(&self, track_address: Pubkey) -> Result<bool> {
         Ok(self.contains::<TrackCol>(&track_address)?)
+    }
+
+    fn count_tracks(&self) -> Result<usize> {
+        let iter = self
+            .inner()
+            .inner()
+            .iter_from(TrackCol::CF_NAME, &[], store::Direction::Asc)?;
+        Ok(iter.count())
     }
 
     fn iter_tracks_from(
@@ -144,6 +155,17 @@ mod tests {
 
         store.delete_track(track).unwrap();
         assert!(!store.has_track(track).unwrap());
+    }
+
+    #[test]
+    fn count_tracks() {
+        let store = test_store();
+        assert_eq!(store.count_tracks().unwrap(), 0);
+
+        for _ in 0..3 {
+            store.put_track(Pubkey::new_unique(), make_track_info()).unwrap();
+        }
+        assert_eq!(store.count_tracks().unwrap(), 3);
     }
 
     #[test]

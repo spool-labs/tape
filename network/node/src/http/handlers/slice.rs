@@ -39,6 +39,7 @@ pub async fn get_slice<S: Store>(
         .get_slice(spool_id, track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
+    state.context.stats.add_downloaded(data.len() as u64);
 
     Ok((
         StatusCode::OK,
@@ -99,18 +100,22 @@ pub async fn put_slice<S: Store>(
     verify_spool_ownership(&state, spool_id)?;
 
     // Store the slice
+    let data_len = payload.data.len() as u64;
     state
         .context
         .store
         .put_slice(spool_id, track_address, payload.data)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state.context.stats.add_uploaded(data_len);
 
     // Notify FSM of accepted slice
     if let Some(tx) = &state.user_event_tx {
-        let _ = tx.try_send(UserEvent::SliceAccepted {
+        if tx.try_send(UserEvent::SliceAccepted {
             track: track_address.into(),
             spool: spool_id,
-        });
+        }).is_err() {
+            tracing::warn!(spool = spool_id, "user event channel full or closed");
+        }
     }
 
     // BLS sign a CertifyMessage
@@ -184,18 +189,22 @@ pub async fn put_slice_internal<S: Store>(
     verify_spool_ownership(&state, spool_id)?;
 
     // Store the slice
+    let data_len = payload.data.len() as u64;
     state
         .context
         .store
         .put_slice(spool_id, track_address, payload.data)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    state.context.stats.add_uploaded(data_len);
 
     // Notify FSM of accepted slice
     if let Some(tx) = &state.user_event_tx {
-        let _ = tx.try_send(UserEvent::SliceAccepted {
+        if tx.try_send(UserEvent::SliceAccepted {
             track: track_address.into(),
             spool: spool_id,
-        });
+        }).is_err() {
+            tracing::warn!(spool = spool_id, "user event channel full or closed");
+        }
     }
 
     // BLS sign a CertifyMessage

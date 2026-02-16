@@ -54,20 +54,23 @@ pub async fn spawn_pipeline<S: Store + 'static>(
     });
 
     let fsm_cancel = cancel.clone();
+    let fsm_context = context.clone();
     let fsm_handle = tokio::spawn(async move {
-        let fsm = Fsm::new(context);
+        let fsm = Fsm::new(fsm_context.clone());
         loop {
             tokio::select! {
                 block = block_rx.recv() => {
                     match block {
                         Some(block) => {
                             match fsm.apply(&block) {
-                                Ok(changes) if !changes.is_empty() => {
-                                    if change_tx.send(changes).await.is_err() {
-                                        break;
+                                Ok(changes) => {
+                                    fsm_context.stats.inc_blocks();
+                                    if !changes.is_empty() {
+                                        if change_tx.send(changes).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
-                                Ok(_) => {}
                                 Err(e) => tracing::error!("FSM error: {e}"),
                             }
                         }
@@ -76,7 +79,11 @@ pub async fn spawn_pipeline<S: Store + 'static>(
                 }
                 event = user_event_rx.recv() => {
                     match event {
-                        Some(_event) => { /* future: handle UserEvent */ }
+                        Some(event) => {
+                            if let Err(e) = fsm.apply_user_event(&event) {
+                                tracing::error!("FSM user event error: {e}");
+                            }
+                        }
                         None => break,
                     }
                 }

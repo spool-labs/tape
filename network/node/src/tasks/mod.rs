@@ -92,11 +92,25 @@ pub async fn execute_task<S: Store>(
             #[cfg(not(feature = "rpc"))]
             { let _ = track; TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
-        TaskKey::SnapshotBuild
-        | TaskKey::SnapshotCertify
-        | TaskKey::SnapshotBootstrap
-        | TaskKey::RegisterSnapshot
-        | TaskKey::CertifySnapshot => snapshot::run_stub(&key),
+        TaskKey::SnapshotBuild => {
+            snapshot::run_build(context, cancel).await
+        }
+        TaskKey::SnapshotCertify => {
+            snapshot::run_certify(context, cancel).await
+        }
+        TaskKey::RegisterSnapshot => {
+            #[cfg(feature = "rpc")]
+            { snapshot::run_register(context, cancel).await }
+            #[cfg(not(feature = "rpc"))]
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+        }
+        TaskKey::CertifySnapshot => {
+            #[cfg(feature = "rpc")]
+            { snapshot::run_certify_onchain(context, cancel).await }
+            #[cfg(not(feature = "rpc"))]
+            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+        }
+        TaskKey::SnapshotBootstrap => snapshot::run_stub(&key),
     };
 
     (key, outcome)

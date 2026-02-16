@@ -15,6 +15,7 @@ pub mod config;
 pub mod context;
 pub mod gauge_guard;
 pub mod managed_task;
+pub mod stats;
 pub mod utils;
 
 pub use backoff::{Backoff, BackoffConfig, retry_with_backoff};
@@ -26,4 +27,5 @@ pub use config::{
 pub use context::{ContextError, NodeContext};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
+pub use stats::RuntimeStats;
 pub use utils::{current_timestamp, default_config_path, expand_path};

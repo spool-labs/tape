@@ -96,12 +96,15 @@ impl<S: Store> Reconciler<S> {
     fn update_desired(&mut self, changes: &[StateChange]) {
         for change in changes {
             match change {
-                StateChange::EpochAdvanced { .. } => {
+                StateChange::EpochAdvanced { epoch } => {
                     self.reconcile_spools();
                     if matches!(self.node_status(), NodeStatus::Active) {
                         self.desired.insert(TaskKey::RefreshOnchainState);
                         self.desired.insert(TaskKey::SyncEpoch);
                         self.desired.insert(TaskKey::JoinNetwork);
+                        if epoch.0 >= 2 {
+                            self.desired.insert(TaskKey::SnapshotBuild);
+                        }
                     }
                 }
                 StateChange::SpoolAssignmentChanged => {
@@ -218,6 +221,21 @@ impl<S: Store> Reconciler<S> {
                 // After state refresh, reconcile spools (committee may have changed)
                 if matches!(key, TaskKey::RefreshOnchainState) {
                     self.reconcile_spools();
+                }
+                // Snapshot pipeline chaining
+                match key {
+                    TaskKey::SnapshotBuild => {
+                        self.desired.insert(TaskKey::RegisterSnapshot);
+                        self.desired.insert(TaskKey::SnapshotCertify);
+                    }
+                    TaskKey::SnapshotCertify => {
+                        self.desired.insert(TaskKey::CertifySnapshot);
+                    }
+                    TaskKey::CertifySnapshot => {
+                        self.desired.remove(&TaskKey::SnapshotBuild);
+                        self.desired.remove(&TaskKey::SnapshotCertify);
+                    }
+                    _ => {}
                 }
             }
             TaskResult::RetryableError(_, _) => {
@@ -721,5 +739,77 @@ mod tests {
 
         // Spool tasks should appear after refresh triggers reconcile_spools()
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 10 }));
+    }
+
+    #[tokio::test]
+    async fn epoch_schedules_build() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(3),
+        }]);
+
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotBuild));
+    }
+
+    #[tokio::test]
+    async fn epoch_skips_build_early() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(1),
+        }]);
+
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotBuild));
+    }
+
+    #[tokio::test]
+    async fn build_chains_certify() {
+        let ctx = test_context();
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.desired.insert(TaskKey::SnapshotBuild);
+        reconciler.scheduled.insert(TaskKey::SnapshotBuild);
+
+        reconciler.handle_result(&TaskResult::Success(TaskKey::SnapshotBuild));
+
+        assert!(reconciler.desired.contains(&TaskKey::RegisterSnapshot));
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotCertify));
+    }
+
+    #[tokio::test]
+    async fn certify_chains_onchain() {
+        let ctx = test_context();
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.desired.insert(TaskKey::SnapshotCertify);
+        reconciler.scheduled.insert(TaskKey::SnapshotCertify);
+
+        reconciler.handle_result(&TaskResult::Success(TaskKey::SnapshotCertify));
+
+        assert!(reconciler.desired.contains(&TaskKey::CertifySnapshot));
+    }
+
+    #[tokio::test]
+    async fn onchain_clears_pipeline() {
+        let ctx = test_context();
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.desired.insert(TaskKey::SnapshotBuild);
+        reconciler.desired.insert(TaskKey::SnapshotCertify);
+        reconciler.desired.insert(TaskKey::CertifySnapshot);
+        reconciler.scheduled.insert(TaskKey::CertifySnapshot);
+
+        reconciler.handle_result(&TaskResult::Success(TaskKey::CertifySnapshot));
+
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotCertify));
+        assert!(!reconciler.desired.contains(&TaskKey::CertifySnapshot));
     }
 }

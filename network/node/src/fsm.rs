@@ -66,6 +66,38 @@ impl<S: Store> Fsm<S> {
         Self { context }
     }
 
+    /// Apply a user event (e.g. slice accepted by HTTP handler).
+    pub fn apply_user_event(&self, event: &UserEvent) -> Result<(), FsmError> {
+        match event {
+            UserEvent::SliceAccepted { track, .. } => {
+                let key: tape_store::types::Pubkey = (*track).into();
+                let Some(obj) = self.context.store.get_object_info(key)? else {
+                    return Ok(());
+                };
+                if let ObjectInfo::Valid {
+                    is_stored: false,
+                    track_address,
+                    registered_epoch,
+                    certified_epoch,
+                    slot,
+                } = obj
+                {
+                    self.context.store.put_object_info(
+                        key,
+                        ObjectInfo::Valid {
+                            is_stored: true,
+                            track_address,
+                            registered_epoch,
+                            certified_epoch,
+                            slot,
+                        },
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Apply a single ingested block to local state.
     ///
     /// Returns the state changes produced, which the reconciler uses to
@@ -155,6 +187,7 @@ impl<S: Store> Fsm<S> {
             },
         )?;
 
+        self.context.stats.inc_epochs();
         changes.push(StateChange::EpochAdvanced {
             epoch: event.new_epoch,
         });
@@ -607,6 +640,58 @@ mod tests {
             slot: SlotNumber(slot),
             instructions,
         }
+    }
+
+    #[test]
+    fn slice_accepted() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let block = make_block(100, vec![make_register_track(track, tape, 1)]);
+        fsm.apply(&block).unwrap();
+
+        // Verify is_stored starts false
+        let store_track: tape_store::types::Pubkey = track.into();
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(obj, ObjectInfo::Valid { is_stored: false, .. }));
+
+        // Apply SliceAccepted
+        fsm.apply_user_event(&UserEvent::SliceAccepted { track, spool: 0 })
+            .unwrap();
+
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(obj, ObjectInfo::Valid { is_stored: true, .. }));
+    }
+
+    #[test]
+    fn slice_accepted_idempotent() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let block = make_block(100, vec![make_register_track(track, tape, 1)]);
+        fsm.apply(&block).unwrap();
+
+        let event = UserEvent::SliceAccepted { track, spool: 0 };
+        fsm.apply_user_event(&event).unwrap();
+        fsm.apply_user_event(&event).unwrap();
+
+        let store_track: tape_store::types::Pubkey = track.into();
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(obj, ObjectInfo::Valid { is_stored: true, .. }));
+    }
+
+    #[test]
+    fn slice_accepted_missing() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx);
+
+        let track = Pubkey::new_unique();
+        let event = UserEvent::SliceAccepted { track, spool: 0 };
+        fsm.apply_user_event(&event).unwrap(); // no-op, no error
     }
 
     #[test]

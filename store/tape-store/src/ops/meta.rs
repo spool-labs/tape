@@ -10,7 +10,10 @@
 
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{ChunkIndex, EpochNumber, Hash, InvalidationProof, NodeStatus, Pubkey, SlotNumber, UnitKey};
+use crate::types::{
+    ChunkIndex, EpochNumber, Hash, InvalidationProof, NodeStatus, Pubkey, SlotNumber,
+    SnapshotCertResult, SnapshotChunkMeta, UnitKey,
+};
 use crate::TapeStore;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
@@ -63,6 +66,16 @@ pub trait MetaOps {
     fn get_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex) -> Result<Option<Hash>>;
     fn set_snapshot_commitment(&self, epoch: EpochNumber, chunk_index: ChunkIndex, commitment: Hash) -> Result<()>;
     fn delete_snapshot_commitments(&self, epoch: EpochNumber) -> Result<()>;
+
+    // Snapshot metadata (encoding params + leaf hashes for registration)
+    fn get_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotChunkMeta>>;
+    fn set_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex, meta: SnapshotChunkMeta) -> Result<()>;
+    fn delete_snapshot_metadata(&self, epoch: EpochNumber) -> Result<()>;
+
+    // Snapshot certification results
+    fn get_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>>;
+    fn set_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()>;
+    fn delete_snapshot_certifications(&self, epoch: EpochNumber) -> Result<()>;
 
     // Invalidation proofs
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
@@ -259,6 +272,62 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
+    fn get_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotChunkMeta>> {
+        let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), chunk.as_u64());
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                let meta: SnapshotChunkMeta = wincode::deserialize(&bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot metadata: {}", e)))?;
+                Ok(Some(meta))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex, meta: SnapshotChunkMeta) -> Result<()> {
+        let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), chunk.as_u64());
+        let bytes = wincode::serialize(&meta)
+            .map_err(|e| TapeStoreError::Serialization(format!("snapshot metadata: {}", e)))?;
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn delete_snapshot_metadata(&self, epoch: EpochNumber) -> Result<()> {
+        for i in 0..SPOOL_GROUP_COUNT {
+            let key = format!("snapshot_meta:{}:{}", epoch.as_u64(), i);
+            self.delete::<MetaCol>(&key)?;
+        }
+        Ok(())
+    }
+
+    fn get_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>> {
+        let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                let result: SnapshotCertResult = wincode::deserialize(&bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot certification: {}", e)))?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()> {
+        let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
+        let bytes = wincode::serialize(&result)
+            .map_err(|e| TapeStoreError::Serialization(format!("snapshot certification: {}", e)))?;
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn delete_snapshot_certifications(&self, epoch: EpochNumber) -> Result<()> {
+        for i in 0..SPOOL_GROUP_COUNT {
+            let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), i);
+            self.delete::<MetaCol>(&key)?;
+        }
+        Ok(())
+    }
+
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>> {
         let key = format!("invalidation:{}", track);
         match self.get::<MetaCol>(&key)? {
@@ -410,6 +479,53 @@ mod tests {
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(0)).unwrap().is_none());
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(1)).unwrap().is_none());
         assert!(store.get_snapshot_commitment(epoch, ChunkIndex(2)).unwrap().is_none());
+    }
+
+    #[test]
+    fn snapshot_metadata_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(10);
+        let chunk = ChunkIndex(5);
+
+        assert!(store.get_snapshot_metadata(epoch, chunk).unwrap().is_none());
+
+        let meta = SnapshotChunkMeta {
+            leaves: vec![Hash::new_unique(); 20],
+            stripe_size: 1024 * 1024,
+            stripe_count: 3,
+            encoding_type: 2,
+            encoding_params: 0x100714,
+        };
+
+        store.set_snapshot_metadata(epoch, chunk, meta.clone()).unwrap();
+        assert_eq!(store.get_snapshot_metadata(epoch, chunk).unwrap(), Some(meta));
+
+        // Different chunk returns None
+        assert!(store.get_snapshot_metadata(epoch, ChunkIndex(6)).unwrap().is_none());
+
+        store.delete_snapshot_metadata(epoch).unwrap();
+        assert!(store.get_snapshot_metadata(epoch, chunk).unwrap().is_none());
+    }
+
+    #[test]
+    fn snapshot_certification_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(10);
+        let chunk = ChunkIndex(5);
+
+        assert!(store.get_snapshot_certification(epoch, chunk).unwrap().is_none());
+
+        let cert = SnapshotCertResult {
+            member_indices: vec![0, 2, 5, 7],
+            signature: [0xAB; 32],
+            epoch: 10,
+        };
+
+        store.set_snapshot_certification(epoch, chunk, cert.clone()).unwrap();
+        assert_eq!(store.get_snapshot_certification(epoch, chunk).unwrap(), Some(cert));
+
+        store.delete_snapshot_certifications(epoch).unwrap();
+        assert!(store.get_snapshot_certification(epoch, chunk).unwrap().is_none());
     }
 
     #[test]

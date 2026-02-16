@@ -14,6 +14,7 @@ use tape_store::ops::{CommitteeOps, MetaOps};
 use tape_store::TapeStore;
 
 use super::config::NodeConfig;
+use super::stats::RuntimeStats;
 use super::utils::current_timestamp;
 
 /// Error type for context initialization.
@@ -51,6 +52,8 @@ pub struct NodeContext<S: Store> {
     pub bls_keypair: Arc<BlsPrivateKey>,
     /// Typed storage layer.
     pub store: Arc<TapeStore<S>>,
+    /// Runtime statistics (atomic counters).
+    pub stats: RuntimeStats,
     /// Time source used by FSM/epoch logic.
     pub now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// RPC client for on-chain operations (only available with `rpc` feature).
@@ -82,6 +85,7 @@ impl<S: Store> NodeContext<S> {
             keypair: Arc::new(keypair),
             bls_keypair: Arc::new(bls_keypair),
             store: Arc::new(store),
+            stats: RuntimeStats::default(),
             now_fn,
             #[cfg(feature = "rpc")]
             rpc: None,
@@ -102,6 +106,7 @@ impl<S: Store> NodeContext<S> {
             keypair: Arc::new(keypair),
             bls_keypair: Arc::new(bls_keypair),
             store: Arc::new(store),
+            stats: RuntimeStats::default(),
             now_fn: Arc::new(current_timestamp),
             rpc: Some(Arc::new(rpc)),
         })

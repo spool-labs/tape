@@ -31,8 +31,9 @@ pub async fn info<S: Store>(
 pub async fn stats<S: Store>(
     State(state): State<AppState<S>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    use std::sync::atomic::Ordering::Relaxed;
     use tape_node_api::NodeStats;
-    use tape_store::ops::{MetaOps, SliceOps, SpoolOps};
+    use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
     let store = &state.context.store;
     let current_epoch = store
@@ -56,17 +57,18 @@ pub async fn stats<S: Store>(
         }
     }
 
+    let rs = &state.context.stats;
     let stats = NodeStats {
         last_processed_slot: last_slot,
-        blocks_processed: 0,
-        epoch_transitions: 0,
+        blocks_processed: rs.blocks_processed.load(Relaxed),
+        epoch_transitions: rs.epoch_transitions.load(Relaxed),
         current_epoch,
         owned_spools,
-        tracks_stored: 0,
+        tracks_stored: store.count_tracks().unwrap_or(0) as u64,
         storage_bytes_used: 0,
         slices_stored,
-        bytes_uploaded: 0,
-        bytes_downloaded: 0,
+        bytes_uploaded: rs.bytes_uploaded.load(Relaxed),
+        bytes_downloaded: rs.bytes_downloaded.load(Relaxed),
         requests_total: 0,
     };
 

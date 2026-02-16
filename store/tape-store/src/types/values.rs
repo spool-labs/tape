@@ -92,6 +92,37 @@ pub struct InvalidationProof {
     pub computed_root: [u8; 32],
 }
 
+/// Snapshot chunk encoding metadata (stored during build, consumed during registration).
+///
+/// This is intentionally separate from `TrackInfo`: snapshots are built before
+/// on-chain registration creates any track state, and we only store local slices
+/// (not all group slices). Persisting this metadata lets `RegisterSnapshot` resume
+/// after crashes without re-running full snapshot encoding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SnapshotChunkMeta {
+    /// Per-slice leaf hashes (SPOOL_GROUP_SIZE entries)
+    pub leaves: Vec<Hash>,
+    /// Stripe size used during encoding
+    pub stripe_size: u64,
+    /// Number of stripes
+    pub stripe_count: u64,
+    /// Encoding type discriminant
+    pub encoding_type: u64,
+    /// Encoding params
+    pub encoding_params: u64,
+}
+
+/// Collected BLS certification for a snapshot chunk
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SnapshotCertResult {
+    /// Committee member indices that signed
+    pub member_indices: Vec<u8>,
+    /// Aggregated BLS signature bytes
+    pub signature: [u8; 32],
+    /// Epoch of the certification
+    pub epoch: u64,
+}
+
 /// Information about a single committee member
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodeInfo {
