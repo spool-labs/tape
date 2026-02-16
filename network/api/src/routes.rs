@@ -103,6 +103,11 @@ pub fn snapshot_sign_url(epoch: u64, chunk_index: u64) -> String {
     format!("/v1/snapshots/{epoch}/{chunk_index}/sign")
 }
 
+/// Build a snapshot commitments endpoint URL.
+pub fn snapshot_commitments_url(epoch: u64) -> String {
+    format!("/v1/snapshots/{epoch}/commitments")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

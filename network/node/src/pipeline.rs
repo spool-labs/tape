@@ -158,7 +158,7 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
     use tape_store::ops::{MetaOps, SpoolOps};
-    use tape_store::types::SpoolStatus;
+    use tape_store::types::{NodeStatus, SpoolStatus};
     use tape_store::{MemoryStore, TapeStore};
 
     use crate::core::config::RecoveryConfig;
@@ -344,6 +344,43 @@ mod tests {
         cancel.cancel();
         reconciler_handle.await.unwrap();
         supervisor_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ingestor_waits_for_bootstrap() {
+        let ctx = test_context();
+        let cancel = CancellationToken::new();
+
+        // Active at epoch 5, no cursor → bootstrap needed
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_current_epoch(EpochNumber(5)).unwrap();
+
+        let source = Arc::new(MockBlockSource::new(vec![]));
+        let (block_tx, _block_rx) =
+            mpsc::channel::<crate::ingestor::IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
+
+        let ingestor_ctx = ctx.clone();
+        let ingestor_cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            BlockIngestor::run(ingestor_ctx, source, block_tx, ingestor_cancel)
+                .await
+                .unwrap();
+        });
+
+        // Ingestor should be in the wait loop
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Simulate bootstrap completing by setting cursor
+        ctx.store
+            .set_sync_cursor(SlotNumber(1000))
+            .unwrap();
+
+        // Wait for ingestor to notice (2s poll + margin)
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Clean shutdown
+        cancel.cancel();
+        handle.await.unwrap();
     }
 
     #[tokio::test]

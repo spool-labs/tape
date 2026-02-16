@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use store::Store;
 use tape_node_api::RepairRequest;
-use tape_node_client::NodeClientBuilder;
+use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_core::erasure::spool_in_group;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
@@ -118,7 +118,7 @@ pub async fn run<S: Store>(
                         .collect(),
                 };
 
-                match client.request_repair(track_addr, &request).await {
+                match with_retry(&RetryConfig::fast(), || client.request_repair(track_addr, &request)).await {
                     Ok(data) if !data.is_empty() => {
                         if let Err(e) = context.store.put_slice(spool, track_addr, data) {
                             tracing::warn!(?track_addr, "put_slice error: {e}");

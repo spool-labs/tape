@@ -346,6 +346,31 @@ impl NodeClient {
         wincode::deserialize(&bytes).map_err(|e| NodeError::InvalidResponse(e.to_string()))
     }
 
+    /// GET /v1/snapshots/:epoch/commitments — fetch snapshot chunk commitments.
+    pub async fn get_snapshot_commitments(
+        &self,
+        epoch: u64,
+    ) -> Result<Vec<tape_crypto::Hash>, NodeError> {
+        let url = self.url(&tape_node_api::snapshot_commitments_url(epoch))?;
+        let start = Instant::now();
+
+        let resp = self
+            .inner
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| self.map_reqwest_error(e))?;
+
+        self.record("get_snapshot_commitments", &resp, start, 0, 0);
+        let resp = self.check_status_return(resp).await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| self.map_reqwest_error(e))?;
+        self.record_rx("get_snapshot_commitments", bytes.len() as u64);
+        wincode::deserialize(&bytes).map_err(|e| NodeError::InvalidResponse(e.to_string()))
+    }
+
     /// POST inconsistency attestation.
     pub async fn post_inconsistency(
         &self,

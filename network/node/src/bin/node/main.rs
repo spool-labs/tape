@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
     let store = TapeStore::open_primary(&db_path)
         .with_context(|| format!("failed to open database at {}", db_path.display()))?;
 
+    // Initialize store metrics (registers tape_store_* families with prometheus)
+    store::init_metrics();
+
     // Create RPC client
     let rpc_url = cli
         .rpc_url

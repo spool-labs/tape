@@ -15,7 +15,6 @@ pub async fn run<S: Store>(
     context: Arc<NodeContext<S>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let _ = &cancel;
     let rpc = match context.rpc.as_ref() {
         Some(r) => r,
         None => return TaskOutcome::Permanent("no rpc client".into()),
@@ -26,7 +25,11 @@ pub async fn run<S: Store>(
 
     let ix = build_advance_pool_ix(pubkey, pubkey, pool_address);
 
-    match rpc.send_instructions(&context.keypair, vec![ix]).await {
+    let result = tokio::select! {
+        r = rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        _ = cancel.cancelled() => return TaskOutcome::Success,
+    };
+    match result {
         Ok(sig) => {
             tracing::info!(%sig, "advance_pool submitted");
             TaskOutcome::Success

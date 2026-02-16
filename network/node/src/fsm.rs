@@ -17,7 +17,7 @@ use tape_api::event::{
     TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };
 use tape_blocks::ParsedInstruction;
-use tape_core::snapshot::ReplayableEvent;
+use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::error::TapeStoreError;
 use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, TapeOps, TrackOps};
@@ -491,6 +491,120 @@ impl<S: Store> Fsm<S> {
         changes.push(StateChange::NodeJoinedCommittee { node });
         Ok(())
     }
+
+    /// Replay a snapshot log into local state.
+    ///
+    /// This applies the same store operations as the live FSM handlers but
+    /// skips event log writes and StateChange emission. Used by
+    /// SnapshotBootstrap after downloading and decoding a snapshot.
+    pub fn replay_snapshot(&self, log: &SnapshotLog) -> Result<(), FsmError> {
+        for entry in &log.entries {
+            for event in &entry.events {
+                self.apply_replay_event(event, entry.slot)?;
+            }
+        }
+        self.context.store.set_sync_cursor(log.end_slot)?;
+        Ok(())
+    }
+
+    fn apply_replay_event(
+        &self,
+        event: &ReplayableEvent,
+        slot: SlotNumber,
+    ) -> Result<(), FsmError> {
+        match event {
+            ReplayableEvent::AdvanceEpoch { new_epoch, .. } => {
+                self.context.store.set_current_epoch(*new_epoch)?;
+            }
+            ReplayableEvent::RegisterTrack { track, event_data } => {
+                let track_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*track).into();
+                let event: &TrackRegistered = bytemuck::from_bytes(event_data);
+                let mut track_info = TrackInfo {
+                    tape_address: event.tape.into(),
+                    spool_group: u64::from_le_bytes(event.spool_group),
+                    original_size: event.size.0,
+                    stripe_size: u64::from_le_bytes(event.stripe_size),
+                    stripe_count: u64::from_le_bytes(event.stripe_count),
+                    encoding_type: 0,
+                    encoding_params: 0,
+                    commitment: event.leaves.to_vec(),
+                };
+                track_info.set_profile(event.profile);
+                self.context.store.put_track(track_key, track_info)?;
+                let object_info = ObjectInfo::Valid {
+                    is_stored: false,
+                    track_address: track_key,
+                    registered_epoch: event.epoch,
+                    certified_epoch: None,
+                    slot,
+                };
+                self.context.store.put_object_info(track_key, object_info)?;
+            }
+            ReplayableEvent::CertifyTrack { track, epoch } => {
+                let track_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*track).into();
+                if let Some(obj) = self.context.store.get_object_info(track_key)? {
+                    if let ObjectInfo::Valid {
+                        is_stored,
+                        track_address,
+                        registered_epoch,
+                        slot: reg_slot,
+                        ..
+                    } = obj
+                    {
+                        self.context.store.put_object_info(
+                            track_key,
+                            ObjectInfo::Valid {
+                                is_stored,
+                                track_address,
+                                registered_epoch,
+                                certified_epoch: Some(*epoch),
+                                slot: reg_slot,
+                            },
+                        )?;
+                    }
+                }
+            }
+            ReplayableEvent::DeleteTrack { track, .. } => {
+                let track_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*track).into();
+                self.context.store.delete_track(track_key)?;
+                self.context.store.delete_object_info(track_key)?;
+            }
+            ReplayableEvent::InvalidateTrack { track, epoch } => {
+                let track_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*track).into();
+                self.context.store.put_object_info(
+                    track_key,
+                    ObjectInfo::Invalid {
+                        epoch: *epoch,
+                        slot,
+                    },
+                )?;
+            }
+            ReplayableEvent::ReserveTape {
+                tape, expiry_epoch, ..
+            } => {
+                let tape_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*tape).into();
+                self.context.store.put_tape(
+                    tape_key,
+                    TapeInfo {
+                        end_epoch: *expiry_epoch,
+                    },
+                )?;
+            }
+            ReplayableEvent::DestroyTape { tape, .. } => {
+                let tape_key: tape_store::types::Pubkey =
+                    Pubkey::new_from_array(*tape).into();
+                self.context.store.delete_tape(tape_key)?;
+            }
+            // SyncEpoch, RegisterNode, JoinNetwork — no local store ops needed
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -915,5 +1029,221 @@ mod tests {
         // Should have at least the AdvanceEpoch event (in slot 1)
         // and RegisterTrack event (in slot 2)
         assert!(entries.len() >= 2);
+    }
+
+    // --- replay_snapshot tests ---
+
+    use tape_core::snapshot::{SnapshotEntry, SnapshotLog};
+
+    fn make_log(entries: Vec<SnapshotEntry>, end_slot: u64) -> SnapshotLog {
+        SnapshotLog {
+            version: 1,
+            epoch: EpochNumber(1),
+            start_slot: SlotNumber(1),
+            end_slot: SlotNumber(end_slot),
+            entries,
+        }
+    }
+
+    #[test]
+    fn replay_advance_epoch() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let log = make_log(
+            vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![ReplayableEvent::AdvanceEpoch {
+                    old_epoch: EpochNumber(0),
+                    new_epoch: EpochNumber(5),
+                }],
+            }],
+            10,
+        );
+        fsm.replay_snapshot(&log).unwrap();
+
+        assert_eq!(
+            ctx.store.get_current_epoch().unwrap(),
+            Some(EpochNumber(5))
+        );
+    }
+
+    #[test]
+    fn replay_register_track() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let event = TrackRegistered {
+            track,
+            tape,
+            key: Hash::default(),
+            size: StorageUnits(2048),
+            commitment: Hash::default(),
+            epoch: EpochNumber(1),
+            profile: EncodingProfile::basic_default(),
+            spool_group: 7u64.to_le_bytes(),
+            stripe_size: (512u64).to_le_bytes(),
+            stripe_count: 4u64.to_le_bytes(),
+            leaves: [Hash::default(); 20],
+        };
+        let event_data = bytemuck::bytes_of(&event).to_vec();
+
+        let log = make_log(
+            vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![ReplayableEvent::RegisterTrack {
+                    track: track.to_bytes(),
+                    event_data,
+                }],
+            }],
+            10,
+        );
+        fsm.replay_snapshot(&log).unwrap();
+
+        let store_track: tape_store::types::Pubkey = track.into();
+        let info = ctx.store.get_track(store_track).unwrap().unwrap();
+        assert_eq!(info.spool_group, 7);
+        assert_eq!(info.original_size, 2048);
+
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(
+            obj,
+            ObjectInfo::Valid {
+                registered_epoch,
+                certified_epoch: None,
+                ..
+            } if registered_epoch == EpochNumber(1)
+        ));
+    }
+
+    #[test]
+    fn replay_certify_track() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let reg_event = TrackRegistered {
+            track,
+            tape,
+            key: Hash::default(),
+            size: StorageUnits(1024),
+            commitment: Hash::default(),
+            epoch: EpochNumber(1),
+            profile: EncodingProfile::basic_default(),
+            spool_group: 0u64.to_le_bytes(),
+            stripe_size: 512u64.to_le_bytes(),
+            stripe_count: 1u64.to_le_bytes(),
+            leaves: [Hash::default(); 20],
+        };
+
+        let log = make_log(
+            vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![
+                    ReplayableEvent::RegisterTrack {
+                        track: track.to_bytes(),
+                        event_data: bytemuck::bytes_of(&reg_event).to_vec(),
+                    },
+                    ReplayableEvent::CertifyTrack {
+                        track: track.to_bytes(),
+                        epoch: EpochNumber(2),
+                    },
+                ],
+            }],
+            10,
+        );
+        fsm.replay_snapshot(&log).unwrap();
+
+        let store_track: tape_store::types::Pubkey = track.into();
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(
+            obj,
+            ObjectInfo::Valid {
+                certified_epoch: Some(epoch),
+                ..
+            } if epoch == EpochNumber(2)
+        ));
+    }
+
+    #[test]
+    fn replay_delete_track() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+        let reg_event = TrackRegistered {
+            track,
+            tape,
+            key: Hash::default(),
+            size: StorageUnits(1024),
+            commitment: Hash::default(),
+            epoch: EpochNumber(1),
+            profile: EncodingProfile::basic_default(),
+            spool_group: 0u64.to_le_bytes(),
+            stripe_size: 512u64.to_le_bytes(),
+            stripe_count: 1u64.to_le_bytes(),
+            leaves: [Hash::default(); 20],
+        };
+
+        let log = make_log(
+            vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![
+                    ReplayableEvent::RegisterTrack {
+                        track: track.to_bytes(),
+                        event_data: bytemuck::bytes_of(&reg_event).to_vec(),
+                    },
+                    ReplayableEvent::DeleteTrack {
+                        track: track.to_bytes(),
+                        epoch: EpochNumber(1),
+                    },
+                ],
+            }],
+            10,
+        );
+        fsm.replay_snapshot(&log).unwrap();
+
+        let store_track: tape_store::types::Pubkey = track.into();
+        assert!(ctx.store.get_track(store_track).unwrap().is_none());
+        assert!(ctx.store.get_object_info(store_track).unwrap().is_none());
+    }
+
+    #[test]
+    fn replay_cursor_update() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let log = make_log(vec![], 999);
+        fsm.replay_snapshot(&log).unwrap();
+
+        assert_eq!(
+            ctx.store.get_sync_cursor().unwrap(),
+            Some(SlotNumber(999))
+        );
+    }
+
+    #[test]
+    fn replay_no_event_log() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let log = make_log(
+            vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![ReplayableEvent::AdvanceEpoch {
+                    old_epoch: EpochNumber(0),
+                    new_epoch: EpochNumber(1),
+                }],
+            }],
+            10,
+        );
+        fsm.replay_snapshot(&log).unwrap();
+
+        // Replay must not write to event log
+        assert!(!ctx.store.has_epoch_events(EpochNumber(1)).unwrap());
     }
 }

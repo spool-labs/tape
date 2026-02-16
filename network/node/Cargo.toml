@@ -54,4 +54,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 
 [features]
 default = []
-rpc = ["dep:rpc-client", "dep:rpc-solana", "dep:clap", "dep:tracing-subscriber"]
+rpc = ["dep:rpc-client", "dep:rpc-solana", "dep:clap", "dep:tracing-subscriber", "store/metrics"]

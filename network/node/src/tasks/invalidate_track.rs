@@ -21,7 +21,6 @@ pub async fn run<S: Store>(
     track: Pubkey,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let _ = &cancel;
     let rpc = match context.rpc.as_ref() {
         Some(r) => r,
         None => return TaskOutcome::Permanent("no rpc client".into()),
@@ -36,12 +35,20 @@ pub async fn run<S: Store>(
         Err(e) => return TaskOutcome::Retryable(format!("read proof: {e}")),
     };
 
+    if cancel.is_cancelled() {
+        return TaskOutcome::Success;
+    }
+
     // Read track info to get tape_address
     let track_info = match context.store.get_track(store_track) {
         Ok(Some(t)) => t,
         Ok(None) => return TaskOutcome::Permanent("track not found in store".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read track: {e}")),
     };
+
+    if cancel.is_cancelled() {
+        return TaskOutcome::Success;
+    }
 
     let tape_address: Pubkey = track_info.tape_address.into();
     let (system_address, _) = system_pda();
@@ -63,7 +70,11 @@ pub async fn run<S: Store>(
         computed_root,
     );
 
-    match rpc.send_instructions(&context.keypair, vec![ix]).await {
+    let result = tokio::select! {
+        r = rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        _ = cancel.cancelled() => return TaskOutcome::Success,
+    };
+    match result {
         Ok(sig) => {
             tracing::info!(%sig, %track, "invalidate_track submitted");
             let _ = context.store.delete_invalidation_proof(store_track);

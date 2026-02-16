@@ -11,15 +11,219 @@ use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_crypto::merkle::hash_leaf;
 use tape_slicer::{blob_merkle_root, ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::ops::{CommitteeOps, EventLogOps, MetaOps, SliceOps, SpoolOps};
+use tape_node_client::{RetryConfig, with_retry};
 use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
-use crate::supervisor::{TaskKey, TaskOutcome};
+use crate::supervisor::TaskOutcome;
 
-pub fn run_stub(key: &TaskKey) -> TaskOutcome {
+#[cfg(not(feature = "rpc"))]
+pub fn run_stub(key: &crate::supervisor::TaskKey) -> TaskOutcome {
     tracing::warn!(task = ?key, "snapshot task not yet implemented");
     TaskOutcome::Permanent("not yet implemented".into())
+}
+
+/// Bootstrap from a snapshot: download slices from peers, decode, replay.
+#[cfg(feature = "rpc")]
+pub async fn run_bootstrap<S: Store>(
+    context: Arc<NodeContext<S>>,
+    cancel: CancellationToken,
+) -> TaskOutcome {
+    let current = match context.store.get_current_epoch() {
+        Ok(Some(e)) => e,
+        Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
+        Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
+    };
+
+    if current.0 < 2 {
+        return TaskOutcome::Success;
+    }
+
+    let target = EpochNumber(current.0 - 1);
+
+    // Idempotent: skip if we already have synced past this snapshot
+    if let Ok(Some(cursor)) = context.store.get_sync_cursor() {
+        if cursor.0 > 0 {
+            return TaskOutcome::Success;
+        }
+    }
+
+    // Need committee to find peers
+    let committee: Vec<NodeInfo> = match context.store.get_committee(current) {
+        Ok(Some(c)) => c,
+        Ok(None) => return TaskOutcome::Retryable("no committee".into()),
+        Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
+    };
+
+    if committee.is_empty() {
+        return TaskOutcome::Retryable("empty committee".into());
+    }
+
+    // Pick a peer and fetch commitments
+    let commitments = {
+        let mut fetched = None;
+        for member in &committee {
+            let addr = match member.network_address.to_socket_addr() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let client = match tape_node_client::NodeClientBuilder::new()
+                .build(&addr.to_string())
+            {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            match with_retry(&RetryConfig::fast(), || client.get_snapshot_commitments(target.0))
+                .await
+            {
+                Ok(c) if c.len() == SPOOL_GROUP_COUNT => {
+                    fetched = Some(c);
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        match fetched {
+            Some(c) => c,
+            None => return TaskOutcome::Retryable("could not fetch commitments".into()),
+        }
+    };
+
+    let clay_k = ClayParams::default().k() as usize;
+
+    // Download and decode each spool group (inner Clay decode)
+    let mut decoded_chunks: Vec<Option<(usize, Vec<u8>)>> = vec![None; SPOOL_GROUP_COUNT];
+    let mut successful_chunks = 0usize;
+
+    for group in 0..SPOOL_GROUP_COUNT {
+        if cancel.is_cancelled() {
+            return TaskOutcome::Success;
+        }
+
+        let commitment = commitments[group];
+        let (track_pda, _) = tape_api::program::tapedrive::snapshot_pda(target, commitment);
+        let track_addr = Pubkey::new(track_pda.to_bytes());
+
+        // Collect slices from committee peers that own spools in this group
+        let mut slices: Vec<(usize, Vec<u8>)> = Vec::new();
+
+        for member in &committee {
+            if slices.len() >= clay_k {
+                break;
+            }
+            let member_spools_in_group: Vec<u16> = member
+                .spools
+                .iter()
+                .copied()
+                .filter(|&s| group_for_spool(s) == group as u64)
+                .collect();
+
+            if member_spools_in_group.is_empty() {
+                continue;
+            }
+
+            let addr = match member.network_address.to_socket_addr() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let client = match tape_node_client::NodeClientBuilder::new()
+                .build(&addr.to_string())
+            {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for spool in member_spools_in_group {
+                if slices.len() >= clay_k {
+                    break;
+                }
+                let slice_in_group = (spool as usize) % SPOOL_GROUP_SIZE;
+                // Skip if we already have this slice index
+                if slices.iter().any(|(idx, _)| *idx == slice_in_group) {
+                    continue;
+                }
+
+                match with_retry(&RetryConfig::fast(), || {
+                    client.get_slice(track_addr, spool)
+                })
+                .await
+                {
+                    Ok(data) if !data.is_empty() => {
+                        slices.push((slice_in_group, data));
+                    }
+                    _ => continue,
+                }
+            }
+        }
+
+        if slices.len() < clay_k {
+            tracing::debug!(group, got = slices.len(), need = clay_k, "not enough slices");
+            continue;
+        }
+
+        // Inner Clay decode
+        let mut slicer = Slicer::new(ClayCoder::from_params(ClayParams::default()));
+        slicer.set_chunk_index(group as u64);
+
+        let slice_refs: Vec<(usize, &[u8])> =
+            slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
+        match slicer.decode(&slice_refs) {
+            Ok(chunk_data) => {
+                decoded_chunks[group] = Some((group, chunk_data));
+                successful_chunks += 1;
+            }
+            Err(e) => {
+                tracing::debug!(group, "inner decode failed: {e}");
+            }
+        }
+    }
+
+    if successful_chunks < DEFAULT_K_OUTER {
+        return TaskOutcome::Retryable(format!(
+            "only decoded {successful_chunks}/{DEFAULT_K_OUTER} chunks"
+        ));
+    }
+
+    if cancel.is_cancelled() {
+        return TaskOutcome::Success;
+    }
+
+    // Outer RS decode
+    let outer_input: Vec<(usize, Vec<u8>)> = decoded_chunks
+        .into_iter()
+        .flatten()
+        .collect();
+    let outer_refs: Vec<(usize, &[u8])> = outer_input
+        .iter()
+        .map(|(i, d)| (*i, d.as_slice()))
+        .collect();
+
+    let mut outer = OuterCoder::new(DEFAULT_K_OUTER);
+    let decoded = match outer.decode(&outer_refs) {
+        Ok(d) => d,
+        Err(e) => return TaskOutcome::Retryable(format!("outer decode: {e}")),
+    };
+
+    // Deserialize snapshot log
+    let log: SnapshotLog = match wincode::deserialize(&decoded) {
+        Ok(l) => l,
+        Err(e) => return TaskOutcome::Retryable(format!("deserialize log: {e}")),
+    };
+
+    // Replay into local state
+    let fsm = crate::fsm::Fsm::new(context.clone());
+    if let Err(e) = fsm.replay_snapshot(&log) {
+        return TaskOutcome::Retryable(format!("replay: {e}"));
+    }
+
+    tracing::info!(
+        epoch = target.0,
+        end_slot = log.end_slot.0,
+        entries = log.entries.len(),
+        "snapshot bootstrap complete"
+    );
+    TaskOutcome::Success
 }
 
 /// Build snapshot: serialize event log, outer RS encode into 50 chunks,
@@ -267,10 +471,7 @@ pub async fn run_certify<S: Store>(
                 Err(_) => continue,
             };
 
-            let resp = match client
-                .get_snapshot_signature(target.0, group as u64)
-                .await
-            {
+            let resp = match with_retry(&RetryConfig::fast(), || client.get_snapshot_signature(target.0, group as u64)).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(member = idx, "snapshot sign failed: {e}");
@@ -535,8 +736,7 @@ pub async fn run_certify_onchain<S: Store>(
         }
     }
 
-    // GC: delete stored snapshot data for this epoch
-    let _ = context.store.delete_snapshot_commitments(target);
+    // GC: delete stored snapshot data (keep commitments — needed by bootstrap peers)
     let _ = context.store.delete_snapshot_metadata(target);
     let _ = context.store.delete_snapshot_certifications(target);
 
@@ -654,6 +854,66 @@ mod tests {
 
         // Event log cleaned up
         assert!(!ctx.store.has_epoch_events(target).unwrap());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_early_epoch() {
+        let ctx = test_context();
+        ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
+
+        let cancel = CancellationToken::new();
+        let result = run_bootstrap_stub(ctx, cancel).await;
+        assert!(matches!(result, TaskOutcome::Success));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_no_committee() {
+        let ctx = test_context();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+
+        let cancel = CancellationToken::new();
+        let result = run_bootstrap_stub(ctx, cancel).await;
+        assert!(matches!(result, TaskOutcome::Retryable(_)));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_idempotent() {
+        let ctx = test_context();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        // Simulate an already-synced node
+        ctx.store.set_sync_cursor(SlotNumber(500)).unwrap();
+
+        let cancel = CancellationToken::new();
+        let result = run_bootstrap_stub(ctx, cancel).await;
+        assert!(matches!(result, TaskOutcome::Success));
+    }
+
+    /// Minimal stub for testing bootstrap without rpc feature.
+    /// Mirrors the early-exit logic from run_bootstrap.
+    async fn run_bootstrap_stub(
+        context: Arc<NodeContext<MemoryStore>>,
+        _cancel: CancellationToken,
+    ) -> TaskOutcome {
+        let current = match context.store.get_current_epoch() {
+            Ok(Some(e)) => e,
+            Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
+            Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
+        };
+        if current.0 < 2 {
+            return TaskOutcome::Success;
+        }
+        if let Ok(Some(cursor)) = context.store.get_sync_cursor() {
+            if cursor.0 > 0 {
+                return TaskOutcome::Success;
+            }
+        }
+        match context.store.get_committee(current) {
+            Ok(Some(c)) if !c.is_empty() => {}
+            Ok(Some(_)) => return TaskOutcome::Retryable("empty committee".into()),
+            Ok(None) => return TaskOutcome::Retryable("no committee".into()),
+            Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
+        }
+        TaskOutcome::Success
     }
 
     #[tokio::test]

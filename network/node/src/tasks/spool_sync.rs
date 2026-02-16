@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use store::Store;
 use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
-use tape_node_client::NodeClientBuilder;
+use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_core::types::EpochNumber;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps};
 use tape_store::types::Pubkey;
@@ -95,7 +95,7 @@ pub async fn run<S: Store>(
             Err(e) => return TaskOutcome::Retryable(format!("serialize request: {e}")),
         };
 
-        let response_bytes = match client.sync_spool(request_bytes).await {
+        let response_bytes = match with_retry(&RetryConfig::fast(), || client.sync_spool(request_bytes.clone())).await {
             Ok(b) => b,
             Err(e) => return TaskOutcome::Retryable(format!("sync_spool rpc: {e}")),
         };

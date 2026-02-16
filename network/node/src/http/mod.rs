@@ -44,7 +44,12 @@ impl<S: Store + 'static> HttpServer<S> {
         let observability = Router::new()
             .route("/v1/health", get(handlers::health::health::<S>))
             .route("/v1/info", get(handlers::health::info::<S>))
-            .route("/v1/stats", get(handlers::health::stats::<S>));
+            .route("/v1/stats", get(handlers::health::stats::<S>))
+            .route("/v1/metrics", get(handlers::metrics::get_metrics))
+            .route(
+                "/v1/snapshots/{epoch}/commitments",
+                get(handlers::snapshot::get_commitments::<S>),
+            );
 
         // Status routes (lightweight checks)
         let status = Router::new()
@@ -733,6 +738,54 @@ mod tests {
 
         assert!(response.entries.is_empty());
         assert!(response.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn commitments_found() {
+        use tape_core::erasure::SPOOL_GROUP_COUNT;
+        use tape_core::types::ChunkIndex;
+
+        let ctx = test_context();
+        let epoch = EpochNumber(5);
+        for i in 0..SPOOL_GROUP_COUNT {
+            ctx.store
+                .set_snapshot_commitment(epoch, ChunkIndex(i as u64), Hash::new_unique())
+                .unwrap();
+        }
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::get("/v1/snapshots/5/commitments")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let commitments: Vec<Hash> = wincode::deserialize(&body).unwrap();
+        assert_eq!(commitments.len(), SPOOL_GROUP_COUNT);
+    }
+
+    #[tokio::test]
+    async fn commitments_missing() {
+        let ctx = test_context();
+        let app = test_router(ctx);
+
+        let resp = app
+            .oneshot(
+                Request::get("/v1/snapshots/99/commitments")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

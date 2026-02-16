@@ -183,6 +183,15 @@ impl<S: Store> Reconciler<S> {
         self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby)
     }
 
+    fn needs_snapshot_bootstrap(&self) -> bool {
+        if !matches!(self.node_status(), NodeStatus::Active) {
+            return false;
+        }
+        let current_epoch = self.context.store.get_current_epoch().ok().flatten();
+        let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
+        matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
+    }
+
     fn reconcile_spools(&mut self) {
         if matches!(self.node_status(), NodeStatus::Standby) {
             return;
@@ -233,6 +242,13 @@ impl<S: Store> Reconciler<S> {
                 // After state refresh, reconcile spools (committee may have changed)
                 if matches!(key, TaskKey::RefreshOnchainState) {
                     self.reconcile_spools();
+                    if self.needs_snapshot_bootstrap() {
+                        self.desired.insert(TaskKey::SnapshotBootstrap);
+                    }
+                }
+                // After bootstrap, refresh on-chain state to reconcile spools
+                if matches!(key, TaskKey::SnapshotBootstrap) {
+                    self.desired.insert(TaskKey::RefreshOnchainState);
                 }
                 // Snapshot pipeline chaining
                 match key {
@@ -644,23 +660,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuous_requeued() {
-        let ctx = test_context();
-        let mut reconciler = Reconciler::new(ctx);
-
-        // SpoolSync is NOT one-shot
-        let key = TaskKey::SpoolSync { spool: 5 };
-        reconciler.desired.insert(key.clone());
-        reconciler.scheduled.insert(key.clone());
-
-        reconciler.handle_result(&TaskResult::Success(key.clone()));
-
-        // Should still be desired (continuous task), but removed from scheduled
-        assert!(reconciler.desired.contains(&key));
-        assert!(!reconciler.scheduled.contains(&key));
-    }
-
-    #[tokio::test]
     async fn closed_directive_channel() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
@@ -681,6 +680,54 @@ mod tests {
 
         // scheduled must stay empty — sends failed, no mutation
         assert!(reconciler.scheduled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_trigger() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        // No sync cursor → needs bootstrap
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotBootstrap));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_not_needed() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store
+            .set_sync_cursor(tape_core::types::SlotNumber(500))
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotBootstrap));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_schedules_refresh() {
+        let ctx = test_context();
+        let mut reconciler = Reconciler::new(ctx);
+
+        reconciler.desired.insert(TaskKey::SnapshotBootstrap);
+        reconciler.scheduled.insert(TaskKey::SnapshotBootstrap);
+
+        reconciler.handle_result(&TaskResult::Success(TaskKey::SnapshotBootstrap));
+
+        // SnapshotBootstrap is one-shot, so removed from desired
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotBootstrap));
+        // RefreshOnchainState should be scheduled after bootstrap
+        assert!(reconciler.desired.contains(&TaskKey::RefreshOnchainState));
     }
 
     #[tokio::test]

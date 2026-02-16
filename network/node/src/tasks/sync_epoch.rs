@@ -16,7 +16,6 @@ pub async fn run<S: Store>(
     context: Arc<NodeContext<S>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let _ = &cancel;
     let rpc = match context.rpc.as_ref() {
         Some(r) => r,
         None => return TaskOutcome::Permanent("no rpc client".into()),
@@ -33,12 +32,20 @@ pub async fn run<S: Store>(
         Err(e) => return TaskOutcome::Retryable(format!("iter spools: {e}")),
     };
 
+    if cancel.is_cancelled() {
+        return TaskOutcome::Success;
+    }
+
     let pubkey = context.keypair.pubkey();
     let (node_address, _) = node_pda(pubkey);
 
     let ix = build_epoch_sync_ix(pubkey, pubkey, node_address, epoch, &owned_spools);
 
-    match rpc.send_instructions(&context.keypair, vec![ix]).await {
+    let result = tokio::select! {
+        r = rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        _ = cancel.cancelled() => return TaskOutcome::Success,
+    };
+    match result {
         Ok(sig) => {
             tracing::info!(%sig, ?epoch, "sync_epoch submitted");
             TaskOutcome::Success

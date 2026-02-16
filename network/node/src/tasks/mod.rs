@@ -110,7 +110,12 @@ pub async fn execute_task<S: Store>(
             #[cfg(not(feature = "rpc"))]
             { TaskOutcome::Permanent("rpc feature disabled".into()) }
         }
-        TaskKey::SnapshotBootstrap => snapshot::run_stub(&key),
+        TaskKey::SnapshotBootstrap => {
+            #[cfg(feature = "rpc")]
+            { snapshot::run_bootstrap(context, cancel).await }
+            #[cfg(not(feature = "rpc"))]
+            { snapshot::run_stub(&key) }
+        }
     };
 
     (key, outcome)

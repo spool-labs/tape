@@ -77,7 +77,8 @@ impl TaskKey {
 
             TaskKey::SnapshotBuild | TaskKey::SnapshotCertify => TaskCategory::CpuHeavy,
 
-            TaskKey::SnapshotBootstrap | TaskKey::RefreshOnchainState => TaskCategory::Internal,
+            TaskKey::SnapshotBootstrap => TaskCategory::PeerHttp,
+            TaskKey::RefreshOnchainState => TaskCategory::Internal,
         }
     }
 
@@ -96,6 +97,10 @@ impl TaskKey {
                 | TaskKey::RefreshOnchainState
                 | TaskKey::RecoveryScan { .. }
                 | TaskKey::SpoolRecovery { .. }
+                | TaskKey::SnapshotBuild
+                | TaskKey::SnapshotCertify
+                | TaskKey::SnapshotBootstrap
+                | TaskKey::SpoolSync { .. }
         )
     }
 }
@@ -740,8 +745,9 @@ mod tests {
         assert!(TaskKey::RefreshOnchainState.is_one_shot());
         assert!(TaskKey::RecoveryScan { spool: 0 }.is_one_shot());
         assert!(TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
-        assert!(!TaskKey::SpoolSync { spool: 0 }.is_one_shot());
-        assert!(!TaskKey::SnapshotBuild.is_one_shot());
+        assert!(TaskKey::SpoolSync { spool: 0 }.is_one_shot());
+        assert!(TaskKey::SnapshotBuild.is_one_shot());
+        assert!(TaskKey::SnapshotCertify.is_one_shot());
     }
 
     #[test]
