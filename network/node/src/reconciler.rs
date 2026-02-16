@@ -126,10 +126,12 @@ impl<S: Store> Reconciler<S> {
                         self.desired.remove(&TaskKey::SyncEpoch);
                     }
                 }
+                StateChange::TrackDeleted { track }
+                | StateChange::TrackInvalidated { track } => {
+                    self.remove_track_recoveries(track);
+                }
                 // No reconciler action needed for these events
                 StateChange::TrackRegistered { .. }
-                | StateChange::TrackDeleted { .. }
-                | StateChange::TrackInvalidated { .. }
                 | StateChange::TapeReserved { .. }
                 | StateChange::TapeDestroyed { .. }
                 | StateChange::NodeRegistered { .. } => {}
@@ -190,6 +192,17 @@ impl<S: Store> Reconciler<S> {
         let current_epoch = self.context.store.get_current_epoch().ok().flatten();
         let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
         matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
+    }
+
+    fn remove_track_recoveries(&self, track: &solana_sdk::pubkey::Pubkey) {
+        let store_track: tape_store::types::Pubkey = track.into();
+        let owned_spools = match self.context.store.iter_all_spools() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for (spool_id, _) in &owned_spools {
+            let _ = self.context.store.remove_pending_recovery(*spool_id, store_track);
+        }
     }
 
     fn reconcile_spools(&mut self) {
@@ -936,5 +949,29 @@ mod tests {
         assert!(!reconciler.desired.contains(&TaskKey::SnapshotBuild));
         assert!(!reconciler.desired.contains(&TaskKey::SnapshotCertify));
         assert!(!reconciler.desired.contains(&TaskKey::CertifySnapshot));
+    }
+
+    #[tokio::test]
+    async fn delete_cancels_recovery() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store
+            .set_spool_status(5, SpoolStatus::Active)
+            .unwrap();
+
+        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let store_track: tape_store::types::Pubkey = (&track).into();
+
+        // Add pending recovery for this track
+        ctx.store.add_pending_recovery(5, store_track).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx.clone());
+
+        // TrackDeleted should remove pending recovery
+        reconciler.update_desired(&[StateChange::TrackDeleted { track }]);
+
+        // Verify pending recovery was removed
+        let pending = ctx.store.iter_pending_recoveries(5, 100).unwrap();
+        assert!(pending.is_empty());
     }
 }

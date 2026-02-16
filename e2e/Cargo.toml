@@ -1,0 +1,28 @@
+[package]
+name = "e2e"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+rpc-client = { workspace = true }
+rpc-litesvm = { workspace = true }
+tape-api = { workspace = true }
+tape-core = { workspace = true }
+tape-crypto = { workspace = true }
+tape-node = { workspace = true }
+tape-node-api = { workspace = true }
+tape-store = { workspace = true }
+store-memory = { workspace = true }
+wincode = { workspace = true }
+
+solana-sdk = { workspace = true }
+tape-node-client = { workspace = true }
+rcgen = "0.13"
+rustls-pki-types = "1"
+tokio-rustls = "0.26"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

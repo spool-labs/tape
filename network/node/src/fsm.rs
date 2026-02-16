@@ -20,7 +20,8 @@ use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::error::TapeStoreError;
-use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, TapeOps, TrackOps};
+use tape_core::erasure::spool_in_group;
+use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, TapeInfo, TrackInfo};
 
 use crate::core::NodeContext;
@@ -178,6 +179,9 @@ impl<S: Store> Fsm<S> {
             .unwrap_or(EpochNumber(0));
         self.context.store.set_current_epoch(event.new_epoch)?;
 
+        // GC expired tapes (end_epoch <= new_epoch)
+        self.gc_expired_tapes(event.new_epoch)?;
+
         self.context.store.append_event(
             event.new_epoch,
             slot,
@@ -329,8 +333,15 @@ impl<S: Store> Fsm<S> {
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
     ) -> Result<(), FsmError> {
-        self.context.store.delete_track(track.into())?;
-        self.context.store.delete_object_info(track.into())?;
+        let store_track: tape_store::types::Pubkey = track.into();
+
+        // Read track info before deleting (need spool_group for slice cleanup)
+        if let Ok(Some(info)) = self.context.store.get_track(store_track) {
+            self.cleanup_slices_for_track(store_track, info.spool_group)?;
+        }
+
+        self.context.store.delete_track(store_track)?;
+        self.context.store.delete_object_info(store_track)?;
 
         let epoch = self
             .context
@@ -350,6 +361,53 @@ impl<S: Store> Fsm<S> {
         Ok(())
     }
 
+    fn cleanup_slices_for_track(
+        &self,
+        track: tape_store::types::Pubkey,
+        spool_group: u64,
+    ) -> Result<(), FsmError> {
+        let owned_spools = self.context.store.iter_all_spools()?;
+        for (spool_id, _status) in &owned_spools {
+            if spool_in_group(*spool_id, spool_group) {
+                let _ = self.context.store.delete_slice(*spool_id, track);
+            }
+        }
+        Ok(())
+    }
+
+    fn cascade_delete_tape_tracks(
+        &self,
+        tape: tape_store::types::Pubkey,
+    ) -> Result<(), FsmError> {
+        let mut cursor = None;
+        loop {
+            let tracks = self.context.store.iter_tracks_from(cursor, 100)?;
+            if tracks.is_empty() {
+                break;
+            }
+            for (track_addr, track_info) in &tracks {
+                if track_info.tape_address == tape {
+                    self.cleanup_slices_for_track(*track_addr, track_info.spool_group)?;
+                    self.context.store.delete_track(*track_addr)?;
+                    self.context.store.delete_object_info(*track_addr)?;
+                }
+            }
+            cursor = tracks.last().map(|(addr, _)| *addr);
+        }
+        Ok(())
+    }
+
+    fn gc_expired_tapes(&self, current_epoch: EpochNumber) -> Result<(), FsmError> {
+        let tapes = self.context.store.iter_all_tapes()?;
+        for (tape_addr, tape_info) in &tapes {
+            if tape_info.end_epoch <= current_epoch {
+                self.cascade_delete_tape_tracks(*tape_addr)?;
+                self.context.store.delete_tape(*tape_addr)?;
+            }
+        }
+        Ok(())
+    }
+
     fn handle_invalidate_track(
         &self,
         track: Pubkey,
@@ -357,13 +415,18 @@ impl<S: Store> Fsm<S> {
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
     ) -> Result<(), FsmError> {
+        let store_track: tape_store::types::Pubkey = track.into();
+
+        // Delete slices before marking invalid
+        if let Ok(Some(info)) = self.context.store.get_track(store_track) {
+            self.cleanup_slices_for_track(store_track, info.spool_group)?;
+        }
+
         let invalid = ObjectInfo::Invalid {
             epoch: event.epoch,
             slot,
         };
-        self.context
-            .store
-            .put_object_info(track.into(), invalid)?;
+        self.context.store.put_object_info(store_track, invalid)?;
 
         let epoch = self
             .context
@@ -422,7 +485,12 @@ impl<S: Store> Fsm<S> {
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
     ) -> Result<(), FsmError> {
-        self.context.store.delete_tape(tape.into())?;
+        let store_tape: tape_store::types::Pubkey = tape.into();
+
+        // Cascade-delete all tracks belonging to this tape
+        self.cascade_delete_tape_tracks(store_tape)?;
+
+        self.context.store.delete_tape(store_tape)?;
 
         let epoch = self
             .context
@@ -615,6 +683,8 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
+    use tape_store::ops::{SliceOps, SpoolOps};
+    use tape_store::types::SpoolStatus;
     use tape_store::{MemoryStore, TapeStore};
 
     use crate::core::config::RecoveryConfig;
@@ -1245,5 +1315,195 @@ mod tests {
 
         // Replay must not write to event log
         assert!(!ctx.store.has_epoch_events(EpochNumber(1)).unwrap());
+    }
+
+    // --- data lifecycle tests ---
+
+    #[test]
+    fn delete_track_cleans_slices() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+
+        // Register track in spool group 3 (spools 60-79)
+        let block1 = make_block(100, vec![make_register_track(track, tape, 1)]);
+        fsm.apply(&block1).unwrap();
+
+        // Own spool 60 (in group 3) and store a slice
+        let store_track: tape_store::types::Pubkey = track.into();
+        ctx.store
+            .set_spool_status(60, SpoolStatus::Active)
+            .unwrap();
+        ctx.store
+            .put_slice(60, store_track, vec![1, 2, 3])
+            .unwrap();
+        assert!(ctx.store.has_slice(60, store_track).unwrap());
+
+        // Delete track — should clean up slice
+        let block2 = make_block(101, vec![make_delete_track(track)]);
+        fsm.apply(&block2).unwrap();
+
+        assert!(!ctx.store.has_slice(60, store_track).unwrap());
+        assert!(ctx.store.get_track(store_track).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_track_no_track() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        // Delete a track that was never registered — no-op, no error
+        let track = Pubkey::new_unique();
+        let block = make_block(100, vec![make_delete_track(track)]);
+        fsm.apply(&block).unwrap();
+    }
+
+    #[test]
+    fn epoch_gc_expired() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let tape = Pubkey::new_unique();
+        let track = Pubkey::new_unique();
+
+        // Reserve tape expiring at epoch 5, register a track
+        let block1 = make_block(
+            100,
+            vec![
+                make_advance_epoch(0, 1),
+                make_reserve_tape(tape, 5),
+                make_register_track(track, tape, 1),
+            ],
+        );
+        fsm.apply(&block1).unwrap();
+
+        // Store a slice
+        let store_track: tape_store::types::Pubkey = track.into();
+        ctx.store
+            .set_spool_status(60, SpoolStatus::Active)
+            .unwrap();
+        ctx.store
+            .put_slice(60, store_track, vec![1, 2, 3])
+            .unwrap();
+
+        // Advance to epoch 5 — tape expires, should be GC'd
+        let block2 = make_block(200, vec![make_advance_epoch(1, 5)]);
+        fsm.apply(&block2).unwrap();
+
+        let store_tape: tape_store::types::Pubkey = tape.into();
+        assert!(ctx.store.get_tape(store_tape).unwrap().is_none());
+        assert!(ctx.store.get_track(store_track).unwrap().is_none());
+        assert!(!ctx.store.has_slice(60, store_track).unwrap());
+    }
+
+    #[test]
+    fn epoch_gc_keeps_active() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let tape = Pubkey::new_unique();
+
+        // Reserve tape expiring at epoch 10
+        let block1 = make_block(100, vec![make_reserve_tape(tape, 10)]);
+        fsm.apply(&block1).unwrap();
+
+        // Advance to epoch 5 — tape still active
+        let block2 = make_block(200, vec![make_advance_epoch(0, 5)]);
+        fsm.apply(&block2).unwrap();
+
+        let store_tape: tape_store::types::Pubkey = tape.into();
+        assert!(ctx.store.get_tape(store_tape).unwrap().is_some());
+    }
+
+    #[test]
+    fn destroy_tape_cascades() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let tape = Pubkey::new_unique();
+        let track1 = Pubkey::new_unique();
+        let track2 = Pubkey::new_unique();
+
+        // Reserve tape, register 2 tracks on it
+        let block1 = make_block(
+            100,
+            vec![
+                make_reserve_tape(tape, 50),
+                make_register_track(track1, tape, 1),
+                make_register_track(track2, tape, 1),
+            ],
+        );
+        fsm.apply(&block1).unwrap();
+
+        // Own spool 60 (group 3) and store slices for both tracks
+        let st1: tape_store::types::Pubkey = track1.into();
+        let st2: tape_store::types::Pubkey = track2.into();
+        ctx.store
+            .set_spool_status(60, SpoolStatus::Active)
+            .unwrap();
+        ctx.store.put_slice(60, st1, vec![1, 2, 3]).unwrap();
+        ctx.store.put_slice(60, st2, vec![4, 5, 6]).unwrap();
+
+        // Destroy tape — should cascade-delete both tracks and slices
+        let block2 = make_block(101, vec![make_destroy_tape(tape)]);
+        fsm.apply(&block2).unwrap();
+
+        let store_tape: tape_store::types::Pubkey = tape.into();
+        assert!(ctx.store.get_tape(store_tape).unwrap().is_none());
+        assert!(ctx.store.get_track(st1).unwrap().is_none());
+        assert!(ctx.store.get_track(st2).unwrap().is_none());
+        assert!(ctx.store.get_object_info(st1).unwrap().is_none());
+        assert!(ctx.store.get_object_info(st2).unwrap().is_none());
+        assert!(!ctx.store.has_slice(60, st1).unwrap());
+        assert!(!ctx.store.has_slice(60, st2).unwrap());
+    }
+
+    #[test]
+    fn destroy_tape_no_tracks() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let tape = Pubkey::new_unique();
+        let block1 = make_block(100, vec![make_reserve_tape(tape, 50)]);
+        fsm.apply(&block1).unwrap();
+
+        // Destroy tape with no tracks — no error
+        let block2 = make_block(101, vec![make_destroy_tape(tape)]);
+        fsm.apply(&block2).unwrap();
+
+        let store_tape: tape_store::types::Pubkey = tape.into();
+        assert!(ctx.store.get_tape(store_tape).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalidate_track_cleans_slices() {
+        let ctx = test_context();
+        let fsm = Fsm::new(ctx.clone());
+
+        let track = Pubkey::new_unique();
+        let tape = Pubkey::new_unique();
+
+        // Register track in spool group 3 (spools 60-79)
+        let block1 = make_block(100, vec![make_register_track(track, tape, 1)]);
+        fsm.apply(&block1).unwrap();
+
+        // Own spool 60 and store a slice
+        let store_track: tape_store::types::Pubkey = track.into();
+        ctx.store
+            .set_spool_status(60, SpoolStatus::Active)
+            .unwrap();
+        ctx.store
+            .put_slice(60, store_track, vec![1, 2, 3])
+            .unwrap();
+
+        // Invalidate track — should clean up slice and mark invalid
+        let block2 = make_block(101, vec![make_invalidate_track(track, 2)]);
+        fsm.apply(&block2).unwrap();
+
+        assert!(!ctx.store.has_slice(60, store_track).unwrap());
+        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
+        assert!(matches!(obj, ObjectInfo::Invalid { .. }));
     }
 }
