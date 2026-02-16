@@ -22,6 +22,8 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use rand::Rng;
+
 use crate::core::{BackoffConfig, NodeContext};
 use crate::reconciler::Directive;
 
@@ -92,6 +94,8 @@ impl TaskKey {
                 | TaskKey::CertifySnapshot
                 | TaskKey::InvalidateTrack { .. }
                 | TaskKey::RefreshOnchainState
+                | TaskKey::RecoveryScan { .. }
+                | TaskKey::SpoolRecovery { .. }
         )
     }
 }
@@ -189,15 +193,22 @@ fn backoff_for(category: TaskCategory) -> BackoffConfig {
     }
 }
 
-/// Compute the delay for a given attempt using exponential backoff.
+/// Compute the delay for a given attempt using exponential backoff with half-jitter.
 fn compute_delay(config: &BackoffConfig, attempt: u32) -> Option<Duration> {
     if let Some(max) = config.max_retries {
         if attempt >= max {
             return None;
         }
     }
-    let delay = config.min_delay * 2u32.saturating_pow(attempt);
-    Some(delay.min(config.max_delay))
+    let base = config.min_delay * 2u32.saturating_pow(attempt);
+    let base = base.min(config.max_delay);
+
+    // Half-jitter: uniform(base/2, base) to break thundering herd
+    let half = base / 2;
+    let jitter = Duration::from_millis(
+        rand::thread_rng().gen_range(0..=half.as_millis() as u64)
+    );
+    Some(half + jitter)
 }
 
 fn far_future() -> tokio::time::Instant {
@@ -727,9 +738,10 @@ mod tests {
         assert!(TaskKey::AdvanceEpoch.is_one_shot());
         assert!(TaskKey::SyncEpoch.is_one_shot());
         assert!(TaskKey::RefreshOnchainState.is_one_shot());
+        assert!(TaskKey::RecoveryScan { spool: 0 }.is_one_shot());
+        assert!(TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
         assert!(!TaskKey::SpoolSync { spool: 0 }.is_one_shot());
         assert!(!TaskKey::SnapshotBuild.is_one_shot());
-        assert!(!TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
     }
 
     #[test]
@@ -739,9 +751,20 @@ mod tests {
             max_delay: Duration::from_secs(60),
             max_retries: Some(3),
         };
-        assert_eq!(compute_delay(&config, 0), Some(Duration::from_secs(1)));
-        assert_eq!(compute_delay(&config, 1), Some(Duration::from_secs(2)));
-        assert_eq!(compute_delay(&config, 2), Some(Duration::from_secs(4)));
+
+        // With half-jitter, delay is in [base/2, base]
+        let d = compute_delay(&config, 0).unwrap(); // base=1s
+        assert!(d >= Duration::from_millis(500));
+        assert!(d <= Duration::from_secs(1));
+
+        let d = compute_delay(&config, 1).unwrap(); // base=2s
+        assert!(d >= Duration::from_secs(1));
+        assert!(d <= Duration::from_secs(2));
+
+        let d = compute_delay(&config, 2).unwrap(); // base=4s
+        assert!(d >= Duration::from_secs(2));
+        assert!(d <= Duration::from_secs(4));
+
         assert_eq!(compute_delay(&config, 3), None); // max retries exceeded
     }
 
@@ -752,7 +775,9 @@ mod tests {
             max_delay: Duration::from_secs(5),
             max_retries: None,
         };
-        assert_eq!(compute_delay(&config, 10), Some(Duration::from_secs(5)));
+        let d = compute_delay(&config, 10).unwrap(); // base capped at 5s
+        assert!(d >= Duration::from_millis(2500));
+        assert!(d <= Duration::from_secs(5));
     }
 
     #[tokio::test]

@@ -42,6 +42,7 @@ axum = { workspace = true }
 tower = { version = "0.5", features = ["limit"] }
 wincode = { workspace = true }
 serde_json = { workspace = true }
+rand = { workspace = true }
 
 # Optional RPC support (not needed for tests)
 rpc-client = { workspace = true, optional = true }

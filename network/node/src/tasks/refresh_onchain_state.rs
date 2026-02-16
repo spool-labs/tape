@@ -21,7 +21,6 @@ pub async fn run<S: Store>(
     context: Arc<NodeContext<S>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let _ = &cancel;
     let rpc = match context.rpc.as_ref() {
         Some(r) => r,
         None => return TaskOutcome::Permanent("no rpc client".into()),
@@ -32,10 +31,14 @@ pub async fn run<S: Store>(
         Err(e) => return TaskOutcome::Retryable(format!("get_system: {e}")),
     };
 
+    if cancel.is_cancelled() { return TaskOutcome::Success; }
+
     let epoch_account = match rpc.get_epoch().await {
         Ok(e) => e,
         Err(e) => return TaskOutcome::Retryable(format!("get_epoch: {e}")),
     };
+
+    if cancel.is_cancelled() { return TaskOutcome::Success; }
 
     let all_nodes = match rpc.get_all_nodes().await {
         Ok(n) => n,

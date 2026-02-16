@@ -13,7 +13,8 @@ use store::Store;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use tape_store::ops::{MetaOps, SpoolOps};
+use tape_core::erasure::spool_in_group;
+use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeStatus, SpoolStatus};
 
 use crate::core::NodeContext;
@@ -110,10 +111,8 @@ impl<S: Store> Reconciler<S> {
                 StateChange::SpoolAssignmentChanged => {
                     self.reconcile_spools();
                 }
-                StateChange::TrackCertified { .. } => {
-                    // A new track was certified — schedule recovery scans for
-                    // owned spools so we pick up any missing slices.
-                    self.schedule_recovery_scans();
+                StateChange::TrackCertified { track } => {
+                    self.check_track_slices(track);
                 }
                 StateChange::NodeJoinedCommittee { node } => {
                     // If this is our node, refresh on-chain state
@@ -138,24 +137,37 @@ impl<S: Store> Reconciler<S> {
         }
     }
 
-    fn schedule_recovery_scans(&mut self) {
+    fn check_track_slices(&mut self, track: &solana_sdk::pubkey::Pubkey) {
         if matches!(self.node_status(), NodeStatus::Standby) {
             return;
         }
 
+        let store_track: tape_store::types::Pubkey = track.into();
+
+        let track_info = match self.context.store.get_track(store_track) {
+            Ok(Some(t)) => t,
+            _ => return,
+        };
+
         let owned_spools = match self.context.store.iter_all_spools() {
-            Ok(spools) => spools,
-            Err(e) => {
-                tracing::error!("failed to read spool status for recovery scan: {e}");
-                return;
-            }
+            Ok(s) => s,
+            Err(_) => return,
         };
 
         for (spool_id, status) in &owned_spools {
-            // Only scan spools that are fully active (not mid-sync)
-            if matches!(status, SpoolStatus::Active | SpoolStatus::ActiveRecover) {
-                self.desired
-                    .insert(TaskKey::RecoveryScan { spool: *spool_id });
+            if !matches!(status, SpoolStatus::Active | SpoolStatus::ActiveRecover) {
+                continue;
+            }
+            if !spool_in_group(*spool_id, track_info.spool_group) {
+                continue;
+            }
+            match self.context.store.has_slice(*spool_id, store_track) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = self.context.store.add_pending_recovery(*spool_id, store_track);
+                    self.desired.insert(TaskKey::SpoolRecovery { spool: *spool_id });
+                }
+                Err(_) => {}
             }
         }
     }
@@ -276,7 +288,8 @@ mod tests {
 
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::EpochNumber;
-    use tape_store::ops::MetaOps;
+    use tape_store::ops::{MetaOps, SliceOps, TrackOps};
+    use tape_store::types::TrackInfo;
     use tape_store::{MemoryStore, TapeStore};
 
     use crate::core::config::RecoveryConfig;
@@ -487,21 +500,38 @@ mod tests {
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 15 }));
     }
 
+    fn make_track_info(spool_group: u64) -> TrackInfo {
+        TrackInfo {
+            tape_address: tape_store::types::Pubkey([0u8; 32]),
+            spool_group,
+            original_size: 1024,
+            stripe_size: 512,
+            stripe_count: 2,
+            encoding_type: 0,
+            encoding_params: 0,
+            commitment: vec![],
+        }
+    }
+
     #[tokio::test]
-    async fn track_certified_triggers_scan() {
+    async fn certified_missing_slice() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
+        // Spool 5 is in group 0 (spools 0-19)
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
 
+        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let store_track: tape_store::types::Pubkey = (&track).into();
+        ctx.store.put_track(store_track, make_track_info(0)).unwrap();
+        // No slice stored → missing
+
         let mut reconciler = Reconciler::new(ctx);
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
-        reconciler.update_desired(&[StateChange::TrackCertified {
-            track: solana_sdk::pubkey::Pubkey::new_unique(),
-        }]);
+        reconciler.update_desired(&[StateChange::TrackCertified { track }]);
         reconciler.emit_directives(&directive_tx).await;
 
         let mut scheduled = HashSet::new();
@@ -511,7 +541,55 @@ mod tests {
             }
         }
 
-        assert!(scheduled.contains(&TaskKey::RecoveryScan { spool: 5 }));
+        assert!(scheduled.contains(&TaskKey::SpoolRecovery { spool: 5 }));
+    }
+
+    #[tokio::test]
+    async fn certified_have_slice() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        ctx.store
+            .set_spool_status(5, SpoolStatus::Active)
+            .unwrap();
+
+        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let store_track: tape_store::types::Pubkey = (&track).into();
+        ctx.store.put_track(store_track, make_track_info(0)).unwrap();
+        ctx.store.put_slice(5, store_track, vec![1, 2, 3]).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::TrackCertified { track }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        // No recovery needed — we have the slice
+        assert!(directive_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn certified_wrong_group() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        // Spool 5 is in group 0, but track is in group 1
+        ctx.store
+            .set_spool_status(5, SpoolStatus::Active)
+            .unwrap();
+
+        let track = solana_sdk::pubkey::Pubkey::new_unique();
+        let store_track: tape_store::types::Pubkey = (&track).into();
+        ctx.store.put_track(store_track, make_track_info(1)).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.update_desired(&[StateChange::TrackCertified { track }]);
+        reconciler.emit_directives(&directive_tx).await;
+
+        // No action — spool not in this track's group
+        assert!(directive_rx.try_recv().is_err());
     }
 
     #[tokio::test]

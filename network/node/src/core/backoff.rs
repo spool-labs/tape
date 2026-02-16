@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use rand::Rng;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -44,8 +45,16 @@ impl Backoff {
             }
         }
 
-        let delay = self.config.min_delay * 2u32.saturating_pow(self.attempt);
-        let delay = delay.min(self.config.max_delay);
+        let base = self.config.min_delay * 2u32.saturating_pow(self.attempt);
+        let base = base.min(self.config.max_delay);
+
+        // Half-jitter: uniform(base/2, base) to break thundering herd
+        let half = base / 2;
+        let jitter = Duration::from_millis(
+            rand::thread_rng().gen_range(0..=half.as_millis() as u64)
+        );
+        let delay = half + jitter;
+
         self.attempt += 1;
         self.last_attempt = Some(tokio::time::Instant::now());
         Some(delay)
@@ -137,10 +146,23 @@ mod tests {
         };
         let mut b = Backoff::new(config);
 
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(1)));
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(2)));
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(4)));
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(8)));
+        // With half-jitter, delay is in [base/2, base]
+        let d = b.next_delay().unwrap(); // base=1s
+        assert!(d >= Duration::from_millis(500));
+        assert!(d <= Duration::from_secs(1));
+
+        let d = b.next_delay().unwrap(); // base=2s
+        assert!(d >= Duration::from_secs(1));
+        assert!(d <= Duration::from_secs(2));
+
+        let d = b.next_delay().unwrap(); // base=4s
+        assert!(d >= Duration::from_secs(2));
+        assert!(d <= Duration::from_secs(4));
+
+        let d = b.next_delay().unwrap(); // base=8s
+        assert!(d >= Duration::from_secs(4));
+        assert!(d <= Duration::from_secs(8));
+
         assert_eq!(b.attempt(), 4);
     }
 
@@ -153,11 +175,31 @@ mod tests {
         };
         let mut b = Backoff::new(config);
 
-        b.next_delay(); // 1
-        b.next_delay(); // 2
-        b.next_delay(); // 4
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(5))); // capped at 5
-        assert_eq!(b.next_delay(), Some(Duration::from_secs(5))); // stays capped
+        b.next_delay(); // base=1s
+        b.next_delay(); // base=2s
+        b.next_delay(); // base=4s
+        let d = b.next_delay().unwrap(); // base=5s (capped)
+        assert!(d >= Duration::from_millis(2500));
+        assert!(d <= Duration::from_secs(5));
+        let d = b.next_delay().unwrap(); // stays capped
+        assert!(d >= Duration::from_millis(2500));
+        assert!(d <= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn jitter_bounded() {
+        let config = BackoffConfig {
+            min_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(60),
+            max_retries: None,
+        };
+
+        for _ in 0..20 {
+            let mut b = Backoff::new(config.clone());
+            let d = b.next_delay().unwrap(); // base=10s
+            assert!(d >= Duration::from_secs(5));
+            assert!(d <= Duration::from_secs(10));
+        }
     }
 
     #[test]
