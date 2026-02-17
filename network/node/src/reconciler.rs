@@ -103,6 +103,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                     if matches!(self.node_status(), NodeStatus::Active) {
                         self.desired.insert(TaskKey::RefreshOnchainState);
                         self.desired.insert(TaskKey::SyncEpoch);
+                        self.desired.insert(TaskKey::AdvancePool);
                         self.desired.insert(TaskKey::JoinNetwork);
                         if epoch.0 >= 2 {
                             self.desired.insert(TaskKey::SnapshotBuild);
@@ -354,6 +355,7 @@ mod tests {
         // Epoch advance also schedules one-shot on-chain tasks
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
         assert!(scheduled.contains(&TaskKey::SyncEpoch));
+        assert!(scheduled.contains(&TaskKey::AdvancePool));
         assert!(scheduled.contains(&TaskKey::JoinNetwork));
     }
 
@@ -729,8 +731,21 @@ mod tests {
             epoch: EpochNumber(1),
         }]);
 
-        // 2 SpoolSync + RefreshOnchainState + SyncEpoch + JoinNetwork
-        assert_eq!(reconciler.desired.len(), 5);
+        // 2 SpoolSync + RefreshOnchainState + SyncEpoch + AdvancePool + JoinNetwork
+        assert_eq!(reconciler.desired.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn schedules_pool() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.update_desired(&[StateChange::EpochAdvanced {
+            epoch: EpochNumber(2),
+        }]);
+
+        assert!(reconciler.desired.contains(&TaskKey::AdvancePool));
     }
 
     #[tokio::test]

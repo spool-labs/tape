@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use solana_sdk::signer::Signer;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_api::instruction::build_epoch_sync_ix;
 use tape_api::program::tapedrive::node_pda;
 use tape_store::ops::{MetaOps, SpoolOps};
@@ -12,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
+use crate::tasks::parse_tape_error;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
@@ -46,6 +48,12 @@ pub async fn run<S: Store, R: Rpc>(
             tracing::info!(%sig, ?epoch, "sync_epoch submitted");
             TaskOutcome::Success
         }
-        Err(e) => TaskOutcome::Retryable(format!("sync_epoch: {e}")),
+        Err(ref e) => match parse_tape_error(e) {
+            Some(TapeError::AlreadySynced) => {
+                tracing::info!("sync_epoch already completed");
+                TaskOutcome::Success
+            }
+            _ => TaskOutcome::Retryable(format!("sync_epoch: {e}")),
+        },
     }
 }
