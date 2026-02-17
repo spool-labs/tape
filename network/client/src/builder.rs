@@ -86,7 +86,12 @@ impl NodeClientBuilder {
 
     /// Build a `NodeClient` from a host:port address string.
     pub fn build(self, address: &str) -> Result<NodeClient, NodeError> {
-        let url: Url = format!("https://{address}")
+        let value = if address.contains("://") {
+            address.to_string()
+        } else {
+            format!("http://{address}")
+        };
+        let url: Url = value
             .parse()
             .map_err(NodeError::Url)?;
         self.build_with_url(url)
@@ -105,8 +110,7 @@ impl NodeClientBuilder {
     fn build_client(&self) -> Result<Client, NodeError> {
         let mut builder = Client::builder()
             .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
-            .http2_prior_knowledge();
+            .timeout(self.request_timeout);
 
         // TLS pinning
         if !self.server_tls_keys.is_empty() {

@@ -2,13 +2,15 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::encoding::ClayParams;
 use tape_core::erasure::{group_for_spool, spool_for_slice, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::SnapshotLog;
-use tape_core::types::{ChunkIndex, EpochNumber};
+use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
 use tape_crypto::merkle::hash_leaf;
 use tape_slicer::{blob_merkle_root, ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::ops::{CommitteeOps, EventLogOps, MetaOps, SliceOps, SpoolOps};
@@ -18,6 +20,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
+
+const SNAPSHOT_REGISTER_CU: u32 = 700_000;
+const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
+const SNAPSHOT_SIGN_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Bootstrap from a snapshot: download slices from peers, decode, replay.
 pub async fn run_bootstrap<S: Store, R: Rpc>(
@@ -62,9 +68,7 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            let client = match tape_node_client::NodeClientBuilder::new()
-                .build(&addr.to_string())
-            {
+            let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -121,9 +125,7 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            let client = match tape_node_client::NodeClientBuilder::new()
-                .build(&addr.to_string())
-            {
+            let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -233,7 +235,7 @@ pub async fn run_build<S: Store, R: Rpc>(
     };
 
     if current.0 < 2 {
-        return TaskOutcome::Success;
+        return TaskOutcome::Retryable("snapshot certify requires epoch >= 2".into());
     }
 
     let target = EpochNumber(current.0 - 1);
@@ -251,13 +253,11 @@ pub async fn run_build<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("read events: {e}")),
     };
 
-    if entries.is_empty() {
-        return TaskOutcome::Success;
-    }
-
     // Build snapshot log
-    let start_slot = entries.first().unwrap().slot;
-    let end_slot = entries.last().unwrap().slot;
+    let (start_slot, end_slot) = match (entries.first(), entries.last()) {
+        (Some(first), Some(last)) => (first.slot, last.slot),
+        _ => (SlotNumber(0), SlotNumber(0)),
+    };
     let log = SnapshotLog {
         version: 1,
         epoch: target,
@@ -376,22 +376,29 @@ pub async fn run_certify<S: Store, R: Rpc>(
     };
 
     if current.0 < 2 {
-        return TaskOutcome::Success;
+        return TaskOutcome::Retryable("snapshot register requires epoch >= 2".into());
     }
 
     let target = EpochNumber(current.0 - 1);
+    tracing::debug!(current_epoch = current.0, target_epoch = target.0, "run_certify start");
 
     // Guard: commitments must exist (build completed)
     match context.store.get_snapshot_commitment(target, ChunkIndex(0)) {
         Ok(Some(_)) => {}
-        Ok(None) => return TaskOutcome::Retryable("build not yet completed".into()),
+        Ok(None) => {
+            tracing::debug!(target_epoch = target.0, "run_certify waiting for build");
+            return TaskOutcome::Retryable("build not yet completed".into());
+        }
         Err(e) => return TaskOutcome::Retryable(format!("check commitment: {e}")),
     }
 
     // Load committee for signature collection
     let committee: Vec<NodeInfo> = match context.store.get_committee(current) {
         Ok(Some(c)) => c,
-        Ok(None) => return TaskOutcome::Retryable("no committee".into()),
+        Ok(None) => {
+            tracing::debug!(current_epoch = current.0, "run_certify no committee in local store");
+            return TaskOutcome::Retryable("no committee".into());
+        }
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
 
@@ -405,6 +412,13 @@ pub async fn run_certify<S: Store, R: Rpc>(
     for &spool in &owned_spools {
         our_groups.insert(group_for_spool(spool));
     }
+    tracing::debug!(
+        target_epoch = target.0,
+        committee_size = committee.len(),
+        owned_spools = owned_spools.len(),
+        groups = our_groups.len(),
+        "run_certify inputs"
+    );
 
     for group in our_groups {
         if cancel.is_cancelled() {
@@ -418,12 +432,15 @@ pub async fn run_certify<S: Store, R: Rpc>(
             .store
             .get_snapshot_certification(target, chunk_index)
         {
-            Ok(Some(_)) => continue,
+            Ok(Some(_)) => {
+                tracing::debug!(epoch = target.0, group, "snapshot cert already present locally");
+                continue;
+            }
             Ok(None) => {}
             Err(e) => return TaskOutcome::Retryable(format!("check cert: {e}")),
         }
 
-        let _commitment = match context
+        let commitment = match context
             .store
             .get_snapshot_commitment(target, chunk_index)
         {
@@ -436,52 +453,132 @@ pub async fn run_certify<S: Store, R: Rpc>(
         let mut signatures = Vec::new();
         let mut member_indices = Vec::new();
         let mut weight: u64 = 0;
+        let mut members_considered = 0usize;
+        let mut members_no_weight = 0usize;
+        let mut peer_addr_invalid = 0usize;
+        let mut peer_client_build_fail = 0usize;
+        let mut peer_rpc_success = 0usize;
+        let mut peer_rpc_fail = 0usize;
+        let mut epoch_mismatch = 0usize;
+        let mut sig_invalid = 0usize;
+        let mut member_index_overflow = 0usize;
+        let mut max_group_weight = 0u64;
 
         for (idx, member) in committee.iter().enumerate() {
             if cancel.is_cancelled() {
                 return TaskOutcome::Success;
             }
 
+            members_considered += 1;
             // Weight = number of spools this member owns in our group
             let member_weight: u64 = member
                 .spools
                 .iter()
                 .filter(|&&s| group_for_spool(s) == group)
                 .count() as u64;
+            max_group_weight += member_weight;
 
             if member_weight == 0 {
+                members_no_weight += 1;
                 continue;
             }
 
             let addr: std::net::SocketAddr = match member.network_address.to_socket_addr() {
                 Ok(a) => a,
-                Err(_) => continue,
+                Err(_) => {
+                    peer_addr_invalid += 1;
+                    continue;
+                }
             };
 
-            let client = match tape_node_client::NodeClientBuilder::new()
-                .build(&addr.to_string())
-            {
+            let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    peer_client_build_fail += 1;
+                    tracing::debug!(epoch = target.0, group, member = idx, "snapshot peer client build failed: {e}");
+                    continue;
+                }
             };
 
-            let resp = match with_retry(&RetryConfig::fast(), || client.get_snapshot_signature(target.0, group as u64)).await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::debug!(member = idx, "snapshot sign failed: {e}");
+            tracing::debug!(
+                epoch = target.0,
+                group,
+                member = idx,
+                timeout_secs = SNAPSHOT_SIGN_TIMEOUT.as_secs(),
+                "snapshot sign request start"
+            );
+            let call_start = Instant::now();
+            let resp = match tokio::time::timeout(
+                SNAPSHOT_SIGN_TIMEOUT,
+                with_retry(&RetryConfig::fast(), || {
+                    client.get_snapshot_signature(target.0, group as u64)
+                }),
+            )
+            .await
+            {
+                Ok(Ok(r)) => {
+                    peer_rpc_success += 1;
+                    tracing::debug!(
+                        epoch = target.0,
+                        group,
+                        member = idx,
+                        elapsed_ms = call_start.elapsed().as_millis() as u64,
+                        "snapshot sign request success"
+                    );
+                    r
+                }
+                Ok(Err(e)) => {
+                    peer_rpc_fail += 1;
+                    tracing::debug!(
+                        epoch = target.0,
+                        group,
+                        member = idx,
+                        elapsed_ms = call_start.elapsed().as_millis() as u64,
+                        "snapshot sign request failed: {e}"
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    peer_rpc_fail += 1;
+                    tracing::warn!(
+                        epoch = target.0,
+                        group,
+                        member = idx,
+                        elapsed_ms = call_start.elapsed().as_millis() as u64,
+                        timeout_secs = SNAPSHOT_SIGN_TIMEOUT.as_secs(),
+                        "snapshot sign request timed out"
+                    );
                     continue;
                 }
             };
 
             if resp.epoch != target.0 {
+                epoch_mismatch += 1;
                 tracing::warn!(member = idx, "epoch mismatch in sign response");
                 continue;
             }
 
-            signatures.push(tape_core::bls::BlsSignature(
+            let sig = tape_core::bls::BlsSignature(
                 tape_crypto::bls12254::min_sig::G1CompressedPoint(resp.signature),
-            ));
-            member_indices.push(resp.member_index);
+            );
+            let msg = SnapshotMessage::new(target, commitment.0).to_bytes();
+            if sig.verify_aggregate(msg, &[member.bls_pubkey]).is_err() {
+                sig_invalid += 1;
+                tracing::warn!(member = idx, "invalid snapshot partial signature");
+                continue;
+            }
+
+            let member_index = match u8::try_from(idx) {
+                Ok(i) => i,
+                Err(_) => {
+                    member_index_overflow += 1;
+                    tracing::warn!(member = idx, "committee index overflow");
+                    continue;
+                }
+            };
+
+            signatures.push(sig);
+            member_indices.push(member_index);
             weight += member_weight;
 
             if tape_core::bft::is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
@@ -489,7 +586,28 @@ pub async fn run_certify<S: Store, R: Rpc>(
             }
         }
 
-        if !tape_core::bft::is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
+        let quorum = tape_core::bft::is_supermajority(weight, SPOOL_GROUP_SIZE as u64);
+        tracing::info!(
+            epoch = target.0,
+            group,
+            quorum,
+            gathered_weight = weight,
+            needed_weight = SPOOL_GROUP_SIZE,
+            max_group_weight,
+            signatures = signatures.len(),
+            members_considered,
+            members_no_weight,
+            peer_addr_invalid,
+            peer_client_build_fail,
+            peer_rpc_success,
+            peer_rpc_fail,
+            epoch_mismatch,
+            sig_invalid,
+            member_index_overflow,
+            "snapshot certify group summary"
+        );
+
+        if !quorum {
             return TaskOutcome::Retryable(format!(
                 "insufficient signatures for group {group}: {weight}/{}",
                 SPOOL_GROUP_SIZE
@@ -526,6 +644,7 @@ pub async fn run_register<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+    use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::signer::Signer;
 
     let current = match context.store.get_current_epoch() {
@@ -535,7 +654,7 @@ pub async fn run_register<S: Store, R: Rpc>(
     };
 
     if current.0 < 2 {
-        return TaskOutcome::Success;
+        return TaskOutcome::Retryable("snapshot onchain certify requires epoch >= 2".into());
     }
 
     let target = EpochNumber(current.0 - 1);
@@ -585,6 +704,7 @@ pub async fn run_register<S: Store, R: Rpc>(
             params: meta.encoding_params,
         };
 
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_REGISTER_CU);
         let ix = tape_api::prelude::build_register_snapshot_ix(
             pubkey,
             target,
@@ -596,13 +716,17 @@ pub async fn run_register<S: Store, R: Rpc>(
             leaves,
         );
 
-        match context.rpc.send_instructions(&context.keypair, vec![ix]).await {
+        match context
+            .rpc
+            .send_instructions(&context.keypair, vec![cu_ix, ix])
+            .await
+        {
             Ok(sig) => {
                 tracing::info!(%sig, group, epoch = target.0, "register_snapshot submitted");
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.contains("already") {
+                if err_str.contains("already") || err_str.contains("uninitialized account") {
                     tracing::debug!(group, "snapshot chunk already registered");
                 } else {
                     return TaskOutcome::Retryable(format!(
@@ -622,6 +746,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+    use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::signer::Signer;
 
     let current = match context.store.get_current_epoch() {
@@ -635,12 +760,23 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     }
 
     let target = EpochNumber(current.0 - 1);
+    tracing::debug!(
+        current_epoch = current.0,
+        target_epoch = target.0,
+        "run_certify_onchain start"
+    );
     let pubkey = context.keypair.pubkey();
 
     // Get committee for bitmap reconstruction
     let committee: Vec<NodeInfo> = match context.store.get_committee(current) {
         Ok(Some(c)) => c,
-        Ok(None) => return TaskOutcome::Retryable("no committee".into()),
+        Ok(None) => {
+            tracing::debug!(
+                current_epoch = current.0,
+                "run_certify_onchain no committee in local store"
+            );
+            return TaskOutcome::Retryable("no committee".into());
+        }
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
 
@@ -654,6 +790,13 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     for &spool in &owned_spools {
         our_groups.insert(group_for_spool(spool));
     }
+    tracing::debug!(
+        target_epoch = target.0,
+        committee_size = committee.len(),
+        owned_spools = owned_spools.len(),
+        groups = our_groups.len(),
+        "run_certify_onchain inputs"
+    );
 
     for group in our_groups {
         if cancel.is_cancelled() {
@@ -666,8 +809,23 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
             .store
             .get_snapshot_certification(target, chunk_index)
         {
-            Ok(Some(c)) => c,
-            Ok(None) => continue,
+            Ok(Some(c)) => {
+                tracing::debug!(
+                    epoch = target.0,
+                    group,
+                    members = c.member_indices.len(),
+                    "snapshot certify_onchain found local cert"
+                );
+                c
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    epoch = target.0,
+                    group,
+                    "snapshot certify_onchain missing local cert"
+                );
+                continue;
+            }
             Err(e) => return TaskOutcome::Retryable(format!("read cert: {e}")),
         };
 
@@ -693,6 +851,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
             tape_crypto::bls12254::min_sig::G1CompressedPoint(cert.signature),
         );
 
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_CERTIFY_CU);
         let ix = tape_api::prelude::build_certify_snapshot_ix(
             pubkey,
             target,
@@ -701,7 +860,11 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
             sig,
         );
 
-        match context.rpc.send_instructions(&context.keypair, vec![ix]).await {
+        match context
+            .rpc
+            .send_instructions(&context.keypair, vec![cu_ix, ix])
+            .await
+        {
             Ok(tx_sig) => {
                 tracing::info!(%tx_sig, group, epoch = target.0, "certify_snapshot submitted");
             }
@@ -738,23 +901,30 @@ mod tests {
     use crate::test_util::test_context;
 
     #[tokio::test]
-    async fn build_skips_early_epochs() {
+    async fn build_waits_epoch2() {
         let ctx = test_context();
         ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run_build(ctx, cancel).await;
-        assert!(matches!(result, TaskOutcome::Success));
+        assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
     #[tokio::test]
     async fn build_empty_epoch() {
         let ctx = test_context();
+        let target = EpochNumber(2);
         ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_build(ctx, cancel).await;
+        let result = run_build(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
+        assert!(
+            ctx.store
+                .get_snapshot_commitment(target, ChunkIndex(0))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]

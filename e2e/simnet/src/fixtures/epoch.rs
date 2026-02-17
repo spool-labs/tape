@@ -7,6 +7,7 @@ use tape_api::instruction::build_advance_epoch_ix;
 use tape_api::program::EPOCH_DURATION;
 use tape_core::types::EpochNumber;
 
+use crate::log::append_log;
 use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
@@ -151,6 +152,7 @@ impl SimnetScenario<'_> {
             self.pool_many(payer_index, participants).await?;
             self.join_many(payer_index, participants).await?;
             self.wait_next_quorum(participants.len(), timeout).await?;
+            self.wait_snapshot_ready_for(current, timeout).await?;
 
             self.warp_epoch()?;
             self.advance_epoch_with_retry(timeout).await?;
@@ -167,12 +169,51 @@ impl SimnetScenario<'_> {
             match self.advance_epoch_any().await {
                 Ok(_) => return Ok(()),
                 Err(error) => {
+                    let diag = self.snapshot_diag().await;
+                    append_log(&format!("advance_epoch retryable={:?} snapshot={diag}", error));
                     if start.elapsed() >= timeout || !is_retryable_advance_error(&error) {
-                        return Err(error).context("advance_epoch_with_retry");
+                        return Err(error)
+                            .context(format!("advance_epoch_with_retry snapshot={diag}"));
                     }
                 }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn wait_snapshot_ready_for(&self, current_epoch: u64, timeout: Duration) -> Result<()> {
+        if current_epoch <= 1 {
+            return Ok(());
+        }
+        let required = current_epoch.saturating_sub(1);
+        let start = Instant::now();
+        loop {
+            let state = self.read_snapshot_state().await?;
+            let latest = state.latest_epoch.as_u64();
+            if latest >= required {
+                return Ok(());
+            }
+            if start.elapsed() >= timeout {
+                bail!(
+                    "timed out waiting snapshot latest_epoch >= {required}; latest={}, certifying={}, certified_count={}",
+                    latest,
+                    state.certifying_epoch.as_u64(),
+                    state.certified_count
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn snapshot_diag(&self) -> String {
+        match self.read_snapshot_state().await {
+            Ok(state) => format!(
+                "latest={} certifying={} certified_count={}",
+                state.latest_epoch.as_u64(),
+                state.certifying_epoch.as_u64(),
+                state.certified_count
+            ),
+            Err(e) => format!("snapshot_state_error={e:#}"),
         }
     }
 }

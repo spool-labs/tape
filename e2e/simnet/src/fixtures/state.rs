@@ -1,8 +1,8 @@
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use tape_api::prelude::{Archive, Epoch, System};
+use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
 use tape_node::supervisor::{TaskKey, TaskOutcome};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +23,14 @@ impl SimnetScenario<'_> {
     pub async fn read_archive(&self) -> Result<Archive> {
         let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_archive().await.context("read archive")
+    }
+
+    pub async fn read_snapshot_state(&self) -> Result<SnapshotState> {
+        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        client
+            .get_snapshot_state()
+            .await
+            .context("read snapshot state")
     }
 
     pub async fn committee_size(&self) -> Result<usize> {

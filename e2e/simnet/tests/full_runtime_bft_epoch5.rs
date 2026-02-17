@@ -10,7 +10,7 @@ async fn full_runtime_bft_epoch5() {
     let mut harness = SimnetBuilder::new()
         .node_count(31)
         .runtime_mode(NodeRuntimeMode::Full)
-        .base_port(25_000)
+        .file_log(true)
         .slot_advance_per_tx(1)
         .build()
         .expect("build harness");
