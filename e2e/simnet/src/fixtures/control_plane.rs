@@ -56,18 +56,24 @@ impl SimnetScenario<'_> {
         let amount = TAPE::parse(&amount_tape.to_string())
             .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
 
-        let mut ixs = build_authority_with_tokens_ix(payer.pubkey(), authority, amount);
-        ixs.insert(
-            0,
-            ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH),
-        );
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_HIGH)];
+        let payer_is_authority = payer.pubkey() == authority;
+        if !payer_is_authority {
+            ixs.extend(build_authority_with_tokens_ix(
+                payer.pubkey(),
+                authority,
+                amount,
+            ));
+        }
         ixs.push(build_stake_with_pool_ix(
             payer.pubkey(),
             authority,
             node_address,
             amount,
         ));
-        ixs.push(build_close_ata_ix(authority, payer.pubkey()));
+        if !payer_is_authority {
+            ixs.push(build_close_ata_ix(authority, payer.pubkey()));
+        }
 
         self.harness
             .chain()

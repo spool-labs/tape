@@ -8476,6 +8476,7 @@ dependencies = [
  "tape-api",
  "tape-core",
  "tape-node",
+ "tape-node-client",
  "tape-store",
  "tokio",
  "tokio-rustls 0.26.4",

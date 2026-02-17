@@ -28,6 +28,8 @@ pub struct NodeFixture {
     context: Arc<NodeContext<MemoryStore, LiteSvmRpc>>,
     cancel: Option<CancellationToken>,
     runtime: Option<RuntimeHandles>,
+    tls_cert_path: PathBuf,
+    tls_key_path: PathBuf,
     _tls_dir: PathBuf,
 }
 
@@ -45,7 +47,13 @@ impl NodeFixture {
         let store = TapeStore::new(MemoryStore::new());
         let tls_dir = tls::temp_dir(&format!("tape-simnet-{id}"))?;
         let (cert_path, key_path) = tls::write_cert(&keypair, &tls_dir, &format!("sim-node-{id}"))?;
-        let config = test_node_config(id, bind_addr, public_port, cert_path, key_path);
+        let config = test_node_config(
+            id,
+            bind_addr,
+            public_port,
+            cert_path.clone(),
+            key_path.clone(),
+        );
 
         let context = NodeContext::new(
             config,
@@ -62,6 +70,8 @@ impl NodeFixture {
             context,
             cancel: None,
             runtime: None,
+            tls_cert_path: cert_path,
+            tls_key_path: key_path,
             _tls_dir: tls_dir,
         })
     }
@@ -88,6 +98,14 @@ impl NodeFixture {
 
     pub fn network_address(&self) -> NetworkAddress {
         NetworkAddress::new_ipv4([127, 0, 0, 1], self.context.config.public_port)
+    }
+
+    pub fn tls_cert_path(&self) -> PathBuf {
+        self.tls_cert_path.clone()
+    }
+
+    pub fn tls_key_path(&self) -> PathBuf {
+        self.tls_key_path.clone()
     }
 
     pub fn is_running(&self) -> bool {

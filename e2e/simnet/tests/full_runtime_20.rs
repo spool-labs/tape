@@ -25,12 +25,12 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
             ChainFixture::deploy_path(&workspace, "staking"),
             ChainFixture::external_program_path(&workspace, "mpl_token_metadata"),
         ];
-        if required.iter().any(|p| !p.exists()) {
-            eprintln!(
-                "skipping full-runtime simnet test: missing program artifacts in target/deploy"
-            );
-            return;
-        }
+        let missing: Vec<_> = required.iter().filter(|p| !p.exists()).collect();
+        assert!(
+            missing.is_empty(),
+            "missing required simnet program artifacts: {:?}",
+            missing
+        );
     }
 
     harness.start_all().await.expect("start all runtimes");
@@ -49,6 +49,15 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         let join_results = scenario.join_network().await;
         assert_eq!(join_results.len(), 20);
         assert!(join_results.iter().all(|r| r.result.is_err()));
+
+        scenario
+            .wait_nodes_healthy(Duration::from_secs(20))
+            .await
+            .expect("nodes should expose healthy http endpoints");
+
+        let system = scenario.read_system().await.expect("read system");
+        assert_eq!(system.committee.size(), 0);
+        assert_eq!(system.committee_next.size(), 0);
 
         scenario
             .wait_for_all_nodes_epoch(Some(EpochNumber(0)), Duration::from_secs(20))

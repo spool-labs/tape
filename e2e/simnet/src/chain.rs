@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rpc::Rpc;
@@ -83,10 +84,8 @@ impl ChainFixture {
             )
             .context("load staking program")?;
 
-        let mpl_id = Pubkey::new_from_array([
-            11, 112, 237, 216, 130, 43, 189, 93, 179, 17, 202, 196, 160, 86, 123, 136, 39, 37,
-            41, 119, 108, 180, 241, 177, 232, 43, 206, 234, 221, 148, 139, 28,
-        ]);
+        let mpl_id = Pubkey::from_str("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+            .context("parse mpl token metadata program id")?;
         self.rpc
             .add_program_from_file(
                 mpl_id,
