@@ -11,6 +11,7 @@ use std::time::Duration;
 use rpc::Rpc;
 use solana_sdk::signer::Signer;
 use store::Store;
+use tape_api::program::tapedrive::EPOCH_DURATION;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -60,7 +61,10 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         self.desired.insert(TaskKey::RefreshOnchainState);
         self.emit_directives(&directive_tx).await;
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(30));
+        // Refresh often enough to observe committee/epoch transitions in local/test
+        // while capping cadence for production.
+        let refresh_secs = (EPOCH_DURATION / 2).clamp(1, 30) as u64;
+        let mut ticker = tokio::time::interval(Duration::from_secs(refresh_secs));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -100,15 +104,10 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             match change {
                 StateChange::EpochAdvanced { epoch } => {
                     self.reconcile_spools();
-                    if matches!(self.node_status(), NodeStatus::Active) {
-                        self.desired.insert(TaskKey::RefreshOnchainState);
-                        self.desired.insert(TaskKey::SyncEpoch);
-                        self.desired.insert(TaskKey::AdvancePool);
-                        self.desired.insert(TaskKey::JoinNetwork);
-                        if epoch.0 >= 2 {
-                            self.desired.insert(TaskKey::SnapshotBuild);
-                        }
-                    }
+                    // Always refresh after epoch transitions so Standby nodes can
+                    // observe new committee membership before lifecycle scheduling.
+                    self.desired.insert(TaskKey::RefreshOnchainState);
+                    self.schedule_lifecycle(*epoch);
                 }
                 StateChange::SpoolAssignmentChanged => {
                     self.reconcile_spools();
@@ -177,8 +176,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     fn periodic_tasks(&mut self) {
+        self.desired.insert(TaskKey::RefreshOnchainState);
         if matches!(self.node_status(), NodeStatus::Active) {
-            self.desired.insert(TaskKey::RefreshOnchainState);
             self.desired.insert(TaskKey::AdvanceEpoch);
         }
     }
@@ -241,6 +240,18 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         }
     }
 
+    fn schedule_lifecycle(&mut self, epoch: tape_core::types::EpochNumber) {
+        if !matches!(self.node_status(), NodeStatus::Active) {
+            return;
+        }
+        self.desired.insert(TaskKey::SyncEpoch);
+        self.desired.insert(TaskKey::AdvancePool);
+        self.desired.insert(TaskKey::JoinNetwork);
+        if epoch.0 >= 2 {
+            self.desired.insert(TaskKey::SnapshotBuild);
+        }
+    }
+
     fn handle_result(&mut self, result: &TaskResult) {
         let key = match result {
             TaskResult::Success(k) => k,
@@ -257,6 +268,9 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 // After state refresh, reconcile spools (committee may have changed)
                 if matches!(key, TaskKey::RefreshOnchainState) {
                     self.reconcile_spools();
+                    if let Ok(Some(epoch)) = self.context.store.get_current_epoch() {
+                        self.schedule_lifecycle(epoch);
+                    }
                     if self.needs_snapshot_bootstrap() {
                         self.desired.insert(TaskKey::SnapshotBootstrap);
                     }
@@ -764,9 +778,18 @@ mod tests {
         }]);
         reconciler.emit_directives(&directive_tx).await;
 
-        // No directives — standby blocks everything
-        assert!(directive_rx.try_recv().is_err());
-        assert!(reconciler.desired.is_empty());
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        // Standby still refreshes on epoch transitions, but does not schedule lifecycle tasks.
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+        assert!(!scheduled.contains(&TaskKey::SyncEpoch));
+        assert!(!scheduled.contains(&TaskKey::AdvancePool));
+        assert!(!scheduled.contains(&TaskKey::JoinNetwork));
     }
 
     #[tokio::test]
@@ -801,8 +824,15 @@ mod tests {
         reconciler.periodic_tasks();
         reconciler.emit_directives(&directive_tx).await;
 
-        assert!(directive_rx.try_recv().is_err());
-        assert!(reconciler.desired.is_empty());
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch));
     }
 
     #[tokio::test]
@@ -860,6 +890,23 @@ mod tests {
 
         // Spool tasks should appear after refresh triggers reconcile_spools()
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 10 }));
+    }
+
+    #[tokio::test]
+    async fn refresh_lifecycle() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+
+        assert!(reconciler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(reconciler.desired.contains(&TaskKey::AdvancePool));
+        assert!(reconciler.desired.contains(&TaskKey::JoinNetwork));
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotBuild));
     }
 
     #[tokio::test]

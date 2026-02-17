@@ -25,10 +25,11 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("get epoch: {e}")),
     };
 
-    let owned_spools: Vec<u16> = match context.store.iter_all_spools() {
+    let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {
         Ok(spools) => spools.into_iter().map(|(id, _)| id).collect(),
         Err(e) => return TaskOutcome::Retryable(format!("iter spools: {e}")),
     };
+    owned_spools.sort_unstable();
 
     if cancel.is_cancelled() {
         return TaskOutcome::Success;
