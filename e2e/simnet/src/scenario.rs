@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use solana_sdk::signature::Signature;
 use tape_api::consts::NAME_LENGTH;
+use tape_api::errors::is_account_state_pending_error;
 use tape_api::instruction::{
     build_advance_epoch_ix, build_create_system_ix, build_expand_system_ix, build_initialize_ix,
     build_initialize_mint_ix, build_join_network_ix, build_register_node_ix,
@@ -94,7 +95,7 @@ impl<'a> SimnetScenario<'a> {
                     let es = format!("{e:?}");
                     if es.contains("AccountAlreadyInitialized")
                         || es.contains("already initialized")
-                        || es.contains("uninitialized account")
+                        || is_account_state_pending_error(&es)
                     {
                         break;
                     }

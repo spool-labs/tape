@@ -96,6 +96,18 @@ impl std::fmt::Display for ProgramError {
 #[cfg(not(target_os = "solana"))]
 impl std::error::Error for ProgramError {}
 
+/// Returns true when an RPC/account error indicates account state is not ready yet.
+///
+/// This is used by clients/tasks to treat account ordering races as retriable/pending
+/// rather than hard failures.
+#[cfg(not(target_os = "solana"))]
+pub fn is_account_state_pending_error(s: &str) -> bool {
+    s.contains("Invalid account owner")
+        || s.contains("uninitialized account")
+        || s.contains("AccountNotInitialized")
+        || s.contains("Could not find account")
+}
+
 #[cfg(not(target_os = "solana"))]
 fn parse_codes(s: &str) -> Vec<u32> {
     let mut out = Vec::new();
@@ -135,7 +147,7 @@ fn parse_codes(s: &str) -> Vec<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_codes, ProgramError};
+    use super::{is_account_state_pending_error, parse_codes, ProgramError};
     use crate::errors::TapeError;
 
     #[test]
@@ -149,5 +161,14 @@ mod tests {
         let msg = "x 0xdead y custom program error: 0x34";
         let got = ProgramError::from_error_string(msg);
         assert_eq!(got, Some(ProgramError::Tape(TapeError::SnapshotIncomplete)));
+    }
+
+    #[test]
+    fn pending_account_state_error() {
+        assert!(is_account_state_pending_error("Invalid account owner"));
+        assert!(is_account_state_pending_error("uninitialized account"));
+        assert!(is_account_state_pending_error("AccountNotInitialized"));
+        assert!(is_account_state_pending_error("Could not find account"));
+        assert!(!is_account_state_pending_error("custom program error: 0x34"));
     }
 }

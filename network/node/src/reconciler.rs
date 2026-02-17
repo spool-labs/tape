@@ -15,10 +15,11 @@ use tape_api::program::tapedrive::EPOCH_DURATION;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use tape_core::erasure::{group_for_spool, spool_in_group};
-use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_core::erasure::spool_in_group;
+use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{ChunkIndex, NodeStatus, SpoolStatus};
 
+use crate::committee::our_snapshot_groups;
 use crate::core::NodeContext;
 use crate::fsm::StateChange;
 use crate::supervisor::{TaskKey, TaskResult};
@@ -276,13 +277,22 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             return;
         }
 
-        let owned_groups: HashSet<u64> = match self.context.store.iter_all_spools() {
-            Ok(spools) => spools
-                .into_iter()
-                .map(|(id, _)| group_for_spool(id))
-                .collect(),
+        let owned_groups: HashSet<u64> = match self.context.store.get_committee(epoch) {
+            Ok(Some(committee)) => {
+                match our_snapshot_groups(&committee, self.context.keypair.pubkey()) {
+                    Ok(groups) => groups,
+                    Err(e) => {
+                        tracing::warn!("snapshot pipeline: {e}");
+                        HashSet::new()
+                    }
+                }
+            }
+            Ok(None) => {
+                tracing::warn!("snapshot pipeline: missing committee for epoch {}", epoch.0);
+                HashSet::new()
+            }
             Err(e) => {
-                tracing::warn!("snapshot pipeline: failed to read owned spools: {e}");
+                tracing::warn!("snapshot pipeline: failed to read committee: {e}");
                 HashSet::new()
             }
         };
@@ -380,11 +390,31 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
 mod tests {
     use super::*;
 
+    use bytemuck::Zeroable;
+    use tape_api::program::tapedrive::node_pda;
+    use tape_core::bls::BlsPubkey;
+    use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
-    use tape_store::ops::{MetaOps, SliceOps, TrackOps};
-    use tape_store::types::{SnapshotCertResult, TrackInfo};
+    use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, TrackOps};
+    use tape_store::types::{NodeInfo, SnapshotCertResult, TrackInfo};
 
     use crate::test_util::test_context;
+
+    fn put_our_committee<S: Store, R: Rpc>(
+        ctx: &Arc<NodeContext<S, R>>,
+        epoch: EpochNumber,
+        spools: Vec<u16>,
+    ) {
+        let (node_address, _) = node_pda(ctx.keypair.pubkey());
+        let members = vec![NodeInfo {
+            node_address: tape_store::types::Pubkey::new(node_address.to_bytes()),
+            bls_pubkey: BlsPubkey::zeroed(),
+            tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
+            spools,
+        }];
+        ctx.store.put_committee(epoch, members).unwrap();
+    }
 
     #[tokio::test]
     async fn epoch_advance() {
@@ -991,7 +1021,7 @@ mod tests {
     async fn built_epoch_schedules_certify() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
             .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
@@ -1008,7 +1038,7 @@ mod tests {
     async fn certified_epoch_schedules_onchain() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
             .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
@@ -1036,8 +1066,7 @@ mod tests {
     async fn partial_cert_schedules_onchain_and_certify() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
-        ctx.store.set_spool_status(25, SpoolStatus::Active).unwrap();
+        put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
         let target = EpochNumber(2);
         ctx.store
             .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
@@ -1066,7 +1095,7 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
-        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
             .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())

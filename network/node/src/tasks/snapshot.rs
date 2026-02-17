@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rpc::Rpc;
+use solana_sdk::signature::Signer;
 use store::Store;
+use tape_api::errors::is_account_state_pending_error;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::encoding::ClayParams;
 use tape_core::erasure::{group_for_spool, spool_for_slice, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
@@ -19,6 +21,7 @@ use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
+use crate::committee::{our_member, our_member_index, our_snapshot_groups};
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
@@ -403,28 +406,42 @@ pub async fn run_certify<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
 
-    // Determine which spool groups we're responsible for certifying
-    let owned_spools: HashSet<u16> = match context.store.iter_all_spools() {
-        Ok(spools) => spools.into_iter().map(|(id, _)| id).collect(),
-        Err(e) => return TaskOutcome::Retryable(format!("read spools: {e}")),
+    // Derive owned groups from committee-assigned (global) spool IDs.
+    let our_groups: HashSet<u64> = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
+        Ok(groups) => groups,
+        Err(e) => return TaskOutcome::Retryable(e.into()),
     };
-
-    let mut our_groups: HashSet<u64> = HashSet::new();
-    for &spool in &owned_spools {
-        our_groups.insert(group_for_spool(spool));
-    }
+    let our_member_index = match our_member_index(&committee, context.keypair.pubkey()) {
+        Ok(index) => index,
+        Err(e) => return TaskOutcome::Retryable(e.into()),
+    };
+    let owned_spools = match our_member(&committee, context.keypair.pubkey()) {
+        Ok(member) => member.spools.len(),
+        Err(e) => return TaskOutcome::Retryable(e.into()),
+    };
     tracing::debug!(
         target_epoch = target.0,
         committee_size = committee.len(),
-        owned_spools = owned_spools.len(),
+        owned_spools,
         groups = our_groups.len(),
         "run_certify inputs"
     );
 
-    for group in our_groups {
+    let mut groups: Vec<u64> = our_groups.into_iter().collect();
+    groups.sort_unstable();
+    if !groups.is_empty() {
+        let offset = our_member_index % groups.len();
+        groups.rotate_left(offset);
+    }
+    let mut certified_groups = 0usize;
+    let mut pending_quorum = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+
+    for group in groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
+        let group_start = Instant::now();
 
         let chunk_index = ChunkIndex(group);
 
@@ -469,9 +486,8 @@ pub async fn run_certify<S: Store, R: Rpc>(
             if cancel.is_cancelled() {
                 return TaskOutcome::Success;
             }
-
             members_considered += 1;
-            // Weight = number of spools this member owns in our group
+
             let member_weight: u64 = member
                 .spools
                 .iter()
@@ -511,9 +527,7 @@ pub async fn run_certify<S: Store, R: Rpc>(
             let call_start = Instant::now();
             let resp = match tokio::time::timeout(
                 SNAPSHOT_SIGN_TIMEOUT,
-                with_retry(&RetryConfig::fast(), || {
-                    client.get_snapshot_signature(target.0, group as u64)
-                }),
+                client.get_snapshot_signature(target.0, group as u64),
             )
             .await
             {
@@ -581,7 +595,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
             signatures.push(sig);
             member_indices.push(member_index);
             weight += member_weight;
-
             if tape_core::bft::is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
                 break;
             }
@@ -605,20 +618,22 @@ pub async fn run_certify<S: Store, R: Rpc>(
             epoch_mismatch,
             sig_invalid,
             member_index_overflow,
+            group_elapsed_ms = group_start.elapsed().as_millis() as u64,
             "snapshot certify group summary"
         );
 
         if !quorum {
-            return TaskOutcome::Retryable(format!(
-                "insufficient signatures for group {group}: {weight}/{}",
-                SPOOL_GROUP_SIZE
-            ));
+            pending_quorum += 1;
+            continue;
         }
 
         // Aggregate signatures
         let aggregated = match tape_core::bls::BlsSignature::aggregate(&signatures) {
             Ok(s) => s,
-            Err(e) => return TaskOutcome::Retryable(format!("aggregate sigs: {e:?}")),
+            Err(e) => {
+                failed.push(format!("group {group}: aggregate sigs: {e:?}"));
+                continue;
+            }
         };
 
         // Store result
@@ -632,8 +647,32 @@ pub async fn run_certify<S: Store, R: Rpc>(
             .store
             .set_snapshot_certification(target, chunk_index, cert)
         {
-            return TaskOutcome::Retryable(format!("store cert: {e}"));
+            failed.push(format!("group {group}: store cert: {e}"));
+            continue;
         }
+
+        certified_groups += 1;
+    }
+
+    if !failed.is_empty() {
+        return TaskOutcome::Retryable(format!(
+            "snapshot certify progress epoch={} certified={} pending_quorum={} failed={} {}",
+            target.0,
+            certified_groups,
+            pending_quorum,
+            failed.len(),
+            failed.first().cloned().unwrap_or_default()
+        ));
+    }
+
+    if pending_quorum > 0 {
+        tracing::debug!(
+            epoch = target.0,
+            certified_groups,
+            pending_quorum,
+            "snapshot certify waiting for more partial signatures"
+        );
+        return TaskOutcome::Success;
     }
 
     tracing::info!(epoch = target.0, "snapshot certification collected");
@@ -727,7 +766,7 @@ pub async fn run_register<S: Store, R: Rpc>(
             }
             Err(ref e) => {
                 if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false)
-                    || e.to_string().contains("uninitialized account")
+                    || is_account_state_pending_error(&e.to_string())
                 {
                     tracing::debug!(group, "snapshot chunk already registered");
                 } else {
@@ -780,28 +819,36 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
 
-    // Determine our spool groups
-    let owned_spools: HashSet<u16> = match context.store.iter_all_spools() {
-        Ok(spools) => spools.into_iter().map(|(id, _)| id).collect(),
-        Err(e) => return TaskOutcome::Retryable(format!("read spools: {e}")),
+    // Derive owned groups from committee-assigned (global) spool IDs.
+    let our_groups: HashSet<u64> = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
+        Ok(groups) => groups,
+        Err(e) => return TaskOutcome::Retryable(e.into()),
     };
-
-    let mut our_groups: HashSet<u64> = HashSet::new();
-    for &spool in &owned_spools {
-        our_groups.insert(group_for_spool(spool));
-    }
+    let our_member_index = match our_member_index(&committee, context.keypair.pubkey()) {
+        Ok(index) => index,
+        Err(e) => return TaskOutcome::Retryable(e.into()),
+    };
+    let owned_spools = match our_member(&committee, context.keypair.pubkey()) {
+        Ok(member) => member.spools.len(),
+        Err(e) => return TaskOutcome::Retryable(e.into()),
+    };
     tracing::debug!(
         target_epoch = target.0,
         committee_size = committee.len(),
-        owned_spools = owned_spools.len(),
+        owned_spools,
         groups = our_groups.len(),
         "run_certify_onchain inputs"
     );
 
     let mut groups: Vec<u64> = our_groups.into_iter().collect();
     groups.sort_unstable();
+    if !groups.is_empty() {
+        let offset = our_member_index % groups.len();
+        groups.rotate_left(offset);
+    }
     let mut submitted = 0usize;
     let mut missing_local = 0usize;
+    let mut pending_register = 0usize;
     let mut failed: Vec<String> = Vec::new();
 
     for group in groups {
@@ -877,9 +924,13 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
                 submitted += 1;
             }
             Err(ref e) => {
+                let err_text = e.to_string();
                 if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false) {
                     tracing::debug!(group, "snapshot chunk already certified");
                     submitted += 1;
+                } else if is_account_state_pending_error(&err_text) {
+                    // RegisterSnapshot for this chunk has not landed yet.
+                    pending_register += 1;
                 } else {
                     failed.push(format!("group {group}: {e}"));
                 }
@@ -889,21 +940,23 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
 
     if !failed.is_empty() {
         return TaskOutcome::Retryable(format!(
-            "certify_snapshot progress epoch={} submitted={} missing_local={} failed={} {}",
+            "certify_snapshot progress epoch={} submitted={} missing_local={} pending_register={} failed={} {}",
             target.0,
             submitted,
             missing_local,
+            pending_register,
             failed.len(),
             failed.first().cloned().unwrap_or_default()
         ));
     }
 
-    if missing_local > 0 {
+    if missing_local > 0 || pending_register > 0 {
         tracing::debug!(
             epoch = target.0,
             submitted,
             missing_local,
-            "certify_snapshot waiting for additional local certifications"
+            pending_register,
+            "certify_snapshot waiting for local certs and/or register completion"
         );
         return TaskOutcome::Success;
     }

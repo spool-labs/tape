@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod reconciler;
 pub mod supervisor;
 pub mod tasks;
+pub(crate) mod committee;
 
 #[cfg(test)]
 pub(crate) mod test_util;
