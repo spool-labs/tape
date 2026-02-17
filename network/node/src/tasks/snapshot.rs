@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
+use crate::tasks::parse_tape_error;
 
 const SNAPSHOT_REGISTER_CU: u32 = 700_000;
 const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
@@ -724,14 +725,13 @@ pub async fn run_register<S: Store, R: Rpc>(
             Ok(sig) => {
                 tracing::info!(%sig, group, epoch = target.0, "register_snapshot submitted");
             }
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("already") || err_str.contains("uninitialized account") {
+            Err(ref e) => {
+                if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false)
+                    || e.to_string().contains("uninitialized account")
+                {
                     tracing::debug!(group, "snapshot chunk already registered");
                 } else {
-                    return TaskOutcome::Retryable(format!(
-                        "register_snapshot group {group}: {e}"
-                    ));
+                    return TaskOutcome::Retryable(format!("register_snapshot group {group}: {e}"));
                 }
             }
         }
@@ -798,7 +798,13 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
         "run_certify_onchain inputs"
     );
 
-    for group in our_groups {
+    let mut groups: Vec<u64> = our_groups.into_iter().collect();
+    groups.sort_unstable();
+    let mut submitted = 0usize;
+    let mut missing_local = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+
+    for group in groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
@@ -824,6 +830,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
                     group,
                     "snapshot certify_onchain missing local cert"
                 );
+                missing_local += 1;
                 continue;
             }
             Err(e) => return TaskOutcome::Retryable(format!("read cert: {e}")),
@@ -867,18 +874,38 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
         {
             Ok(tx_sig) => {
                 tracing::info!(%tx_sig, group, epoch = target.0, "certify_snapshot submitted");
+                submitted += 1;
             }
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("already") {
+            Err(ref e) => {
+                if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false) {
                     tracing::debug!(group, "snapshot chunk already certified");
+                    submitted += 1;
                 } else {
-                    return TaskOutcome::Retryable(format!(
-                        "certify_snapshot group {group}: {e}"
-                    ));
+                    failed.push(format!("group {group}: {e}"));
                 }
             }
         }
+    }
+
+    if !failed.is_empty() {
+        return TaskOutcome::Retryable(format!(
+            "certify_snapshot progress epoch={} submitted={} missing_local={} failed={} {}",
+            target.0,
+            submitted,
+            missing_local,
+            failed.len(),
+            failed.first().cloned().unwrap_or_default()
+        ));
+    }
+
+    if missing_local > 0 {
+        tracing::debug!(
+            epoch = target.0,
+            submitted,
+            missing_local,
+            "certify_snapshot waiting for additional local certifications"
+        );
+        return TaskOutcome::Success;
     }
 
     // GC: delete stored snapshot data (keep commitments — needed by bootstrap peers)

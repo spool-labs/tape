@@ -120,6 +120,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_already_certified() {
+        let err = RpcError::Transaction("custom program error: 0x74".to_string());
+        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyCertified));
+    }
+
+    #[test]
     fn skip_non_tx() {
         let err = RpcError::Request("boom".to_string());
         assert_eq!(parse_tape_error(&err), None);

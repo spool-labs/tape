@@ -15,9 +15,9 @@ use tape_api::program::tapedrive::EPOCH_DURATION;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use tape_core::erasure::spool_in_group;
+use tape_core::erasure::{group_for_spool, spool_in_group};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeStatus, SpoolStatus};
+use tape_store::types::{ChunkIndex, NodeStatus, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::fsm::StateChange;
@@ -247,8 +247,73 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         self.desired.insert(TaskKey::SyncEpoch);
         self.desired.insert(TaskKey::AdvancePool);
         self.desired.insert(TaskKey::JoinNetwork);
-        if epoch.0 >= 2 {
+        self.schedule_snapshot_pipeline(epoch);
+    }
+
+    fn schedule_snapshot_pipeline(&mut self, epoch: tape_core::types::EpochNumber) {
+        if epoch.0 < 2 {
+            self.desired.remove(&TaskKey::SnapshotBuild);
+            self.desired.remove(&TaskKey::SnapshotCertify);
+            self.desired.remove(&TaskKey::RegisterSnapshot);
+            self.desired.remove(&TaskKey::CertifySnapshot);
+            return;
+        }
+
+        let target = tape_core::types::EpochNumber(epoch.0 - 1);
+        let built = self
+            .context
+            .store
+            .get_snapshot_commitment(target, ChunkIndex(0))
+            .ok()
+            .flatten()
+            .is_some();
+
+        if !built {
             self.desired.insert(TaskKey::SnapshotBuild);
+            self.desired.remove(&TaskKey::SnapshotCertify);
+            self.desired.remove(&TaskKey::RegisterSnapshot);
+            self.desired.remove(&TaskKey::CertifySnapshot);
+            return;
+        }
+
+        let owned_groups: HashSet<u64> = match self.context.store.iter_all_spools() {
+            Ok(spools) => spools
+                .into_iter()
+                .map(|(id, _)| group_for_spool(id))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("snapshot pipeline: failed to read owned spools: {e}");
+                HashSet::new()
+            }
+        };
+
+        let local_cert_count = owned_groups
+            .iter()
+            .filter(|group| {
+                self.context
+                    .store
+                    .get_snapshot_certification(target, ChunkIndex(**group))
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+            .count();
+        let has_any_local_cert = local_cert_count > 0;
+        let all_local_certs = !owned_groups.is_empty() && local_cert_count == owned_groups.len();
+
+        self.desired.remove(&TaskKey::SnapshotBuild);
+        if has_any_local_cert {
+            self.desired.insert(TaskKey::RegisterSnapshot);
+            self.desired.insert(TaskKey::CertifySnapshot);
+        } else {
+            self.desired.remove(&TaskKey::RegisterSnapshot);
+            self.desired.remove(&TaskKey::CertifySnapshot);
+        }
+
+        if all_local_certs {
+            self.desired.remove(&TaskKey::SnapshotCertify);
+        } else {
+            self.desired.insert(TaskKey::SnapshotCertify);
         }
     }
 
@@ -278,21 +343,6 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 // After bootstrap, refresh on-chain state to reconcile spools
                 if matches!(key, TaskKey::SnapshotBootstrap) {
                     self.desired.insert(TaskKey::RefreshOnchainState);
-                }
-                // Snapshot pipeline chaining
-                match key {
-                    TaskKey::SnapshotBuild => {
-                        self.desired.insert(TaskKey::RegisterSnapshot);
-                        self.desired.insert(TaskKey::SnapshotCertify);
-                    }
-                    TaskKey::SnapshotCertify => {
-                        self.desired.insert(TaskKey::CertifySnapshot);
-                    }
-                    TaskKey::CertifySnapshot => {
-                        self.desired.remove(&TaskKey::SnapshotBuild);
-                        self.desired.remove(&TaskKey::SnapshotCertify);
-                    }
-                    _ => {}
                 }
             }
             TaskResult::RetryableError(_, _) => {
@@ -332,7 +382,7 @@ mod tests {
 
     use tape_core::types::EpochNumber;
     use tape_store::ops::{MetaOps, SliceOps, TrackOps};
-    use tape_store::types::TrackInfo;
+    use tape_store::types::{SnapshotCertResult, TrackInfo};
 
     use crate::test_util::test_context;
 
@@ -938,47 +988,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_chains_certify() {
+    async fn built_epoch_schedules_certify() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        let target = EpochNumber(2);
+        ctx.store
+            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .unwrap();
+
         let mut reconciler = Reconciler::new(ctx);
+        reconciler.schedule_lifecycle(EpochNumber(3));
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotCertify));
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(!reconciler.desired.contains(&TaskKey::RegisterSnapshot));
+    }
 
-        reconciler.desired.insert(TaskKey::SnapshotBuild);
-        reconciler.scheduled.insert(TaskKey::SnapshotBuild);
+    #[tokio::test]
+    async fn certified_epoch_schedules_onchain() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        let target = EpochNumber(2);
+        ctx.store
+            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .unwrap();
+        ctx.store
+            .set_snapshot_certification(
+                target,
+                ChunkIndex(0),
+                SnapshotCertResult {
+                    member_indices: vec![0, 1, 2],
+                    signature: [7u8; 32],
+                    epoch: target.0,
+                },
+            )
+            .unwrap();
 
-        reconciler.handle_result(&TaskResult::Success(TaskKey::SnapshotBuild));
-
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.schedule_lifecycle(EpochNumber(3));
+        assert!(reconciler.desired.contains(&TaskKey::CertifySnapshot));
         assert!(reconciler.desired.contains(&TaskKey::RegisterSnapshot));
+        assert!(!reconciler.desired.contains(&TaskKey::SnapshotCertify));
+    }
+
+    #[tokio::test]
+    async fn partial_cert_schedules_onchain_and_certify() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        ctx.store.set_spool_status(25, SpoolStatus::Active).unwrap();
+        let target = EpochNumber(2);
+        ctx.store
+            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .unwrap();
+        ctx.store
+            .set_snapshot_certification(
+                target,
+                ChunkIndex(0),
+                SnapshotCertResult {
+                    member_indices: vec![0, 1, 2],
+                    signature: [7u8; 32],
+                    epoch: target.0,
+                },
+            )
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        reconciler.schedule_lifecycle(EpochNumber(3));
+        assert!(reconciler.desired.contains(&TaskKey::RegisterSnapshot));
+        assert!(reconciler.desired.contains(&TaskKey::CertifySnapshot));
         assert!(reconciler.desired.contains(&TaskKey::SnapshotCertify));
     }
 
     #[tokio::test]
-    async fn certify_chains_onchain() {
+    async fn refresh_rebuilds_snapshot_plan_from_stage() {
         let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_spool_status(5, SpoolStatus::Active).unwrap();
+        let target = EpochNumber(2);
+        ctx.store
+            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .unwrap();
+
         let mut reconciler = Reconciler::new(ctx);
-
-        reconciler.desired.insert(TaskKey::SnapshotCertify);
-        reconciler.scheduled.insert(TaskKey::SnapshotCertify);
-
-        reconciler.handle_result(&TaskResult::Success(TaskKey::SnapshotCertify));
-
-        assert!(reconciler.desired.contains(&TaskKey::CertifySnapshot));
-    }
-
-    #[tokio::test]
-    async fn onchain_clears_pipeline() {
-        let ctx = test_context();
-        let mut reconciler = Reconciler::new(ctx);
-
-        reconciler.desired.insert(TaskKey::SnapshotBuild);
-        reconciler.desired.insert(TaskKey::SnapshotCertify);
-        reconciler.desired.insert(TaskKey::CertifySnapshot);
-        reconciler.scheduled.insert(TaskKey::CertifySnapshot);
-
-        reconciler.handle_result(&TaskResult::Success(TaskKey::CertifySnapshot));
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
 
         assert!(!reconciler.desired.contains(&TaskKey::SnapshotBuild));
-        assert!(!reconciler.desired.contains(&TaskKey::SnapshotCertify));
-        assert!(!reconciler.desired.contains(&TaskKey::CertifySnapshot));
+        assert!(reconciler.desired.contains(&TaskKey::SnapshotCertify));
     }
 
     #[tokio::test]
