@@ -1,0 +1,29 @@
+[package]
+name = "tape-e2e-simnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+description = "LiteSVM + in-memory multi-node simnet harness for Tapedrive e2e testing"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+rpc-litesvm.workspace = true
+rpc-client.workspace = true
+tape-api.workspace = true
+tape-node.workspace = true
+tape-store.workspace = true
+rpc.workspace = true
+tape-core.workspace = true
+tokio-util = "0.7"
+solana-sdk.workspace = true
+tracing-subscriber = "0.3"
+rcgen = "0.13"
+rustls-pki-types = "1.10"
+tokio-rustls = "0.26"
+
+[dev-dependencies]
+tokio.workspace = true

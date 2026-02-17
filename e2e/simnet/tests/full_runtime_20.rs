@@ -1,0 +1,76 @@
+use std::time::Duration;
+
+use tape_core::types::{BasisPoints, EpochNumber};
+use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, SimnetBuilder};
+use tape_store::ops::MetaOps;
+use tape_store::types::NodeStatus;
+
+#[tokio::test]
+async fn full_runtime_20_nodes_register_and_refresh_state() {
+    let mut harness = SimnetBuilder::new()
+        .node_count(20)
+        .runtime_mode(NodeRuntimeMode::Full)
+        .base_port(23_000)
+        .slot_advance_per_tx(1)
+        .build()
+        .expect("build harness");
+
+    {
+        let scenario = harness.scenario();
+        let workspace = scenario.workspace_root().expect("workspace root");
+        let required = [
+            ChainFixture::deploy_path(&workspace, "tapedrive"),
+            ChainFixture::deploy_path(&workspace, "token"),
+            ChainFixture::deploy_path(&workspace, "exchange"),
+            ChainFixture::deploy_path(&workspace, "staking"),
+            ChainFixture::external_program_path(&workspace, "mpl_token_metadata"),
+        ];
+        if required.iter().any(|p| !p.exists()) {
+            eprintln!(
+                "skipping full-runtime simnet test: missing program artifacts in target/deploy"
+            );
+            return;
+        }
+    }
+
+    harness.start_all().await.expect("start all runtimes");
+    assert!(harness.nodes().iter().all(|n| n.is_running()));
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system(0).await.expect("init system");
+        let signatures = scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        assert_eq!(signatures.len(), 20);
+
+        // Join is expected to fail in this baseline fixture because no node has active stake yet.
+        let join_results = scenario.join_network().await;
+        assert_eq!(join_results.len(), 20);
+        assert!(join_results.iter().all(|r| r.result.is_err()));
+
+        scenario
+            .wait_for_all_nodes_epoch(Some(EpochNumber(0)), Duration::from_secs(20))
+            .await
+            .expect("nodes should refresh on-chain epoch into memory store");
+    }
+
+    for node in harness.nodes() {
+        let epoch = node
+            .context()
+            .store
+            .get_current_epoch()
+            .expect("read current epoch");
+        assert_eq!(epoch, Some(EpochNumber(0)));
+
+        let status = node
+            .context()
+            .store
+            .get_node_status()
+            .expect("read node status");
+        assert_eq!(status, Some(NodeStatus::Standby));
+    }
+
+    harness.stop_all().await.expect("stop all runtimes");
+}

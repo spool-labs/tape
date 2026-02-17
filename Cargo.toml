@@ -25,6 +25,7 @@ members = [
   "network/api",
   "network/client",
   "network/node",
+  "e2e/simnet",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
