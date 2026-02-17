@@ -266,12 +266,10 @@ impl NodeStateMachine {
             }
         }
 
-        // Check if we can advance the epoch
-        // Add 1 second buffer to account for clock skew between local time and Solana cluster time.
-        // The on-chain program uses `last_epoch + EPOCH_DURATION > now` which can fail if the
-        // cluster clock is slightly behind local time.
+        // Check if we can advance the epoch.
+        // Match on-chain gate exactly: allow when now >= last_epoch + EPOCH_DURATION.
         let time_elapsed = current_time.saturating_sub(epoch.last_epoch);
-        let required_elapsed = EPOCH_DURATION + 1;
+        let required_elapsed = EPOCH_DURATION;
 
         if time_elapsed < required_elapsed {
             return NodeAction::WaitForEpochDuration {

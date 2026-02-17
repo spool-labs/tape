@@ -8468,6 +8468,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "rcgen",
+ "reqwest",
  "rpc",
  "rpc-client",
  "rpc-litesvm",

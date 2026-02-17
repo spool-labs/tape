@@ -7,6 +7,7 @@ use tape_store::types::NodeStatus;
 
 #[tokio::test]
 async fn full_runtime_20_nodes_bootstrap_and_advance_epoch() {
+    let target_epoch;
     let mut harness = SimnetBuilder::new()
         .node_count(20)
         .runtime_mode(NodeRuntimeMode::Full)
@@ -41,6 +42,7 @@ async fn full_runtime_20_nodes_bootstrap_and_advance_epoch() {
 
     {
         let scenario = harness.scenario();
+        let initial_epoch = scenario.read_epoch().await.expect("read initial epoch").id;
         scenario
             .wait_next_quorum(20, Duration::from_secs(20))
             .await
@@ -56,25 +58,22 @@ async fn full_runtime_20_nodes_bootstrap_and_advance_epoch() {
             .advance_epoch_any()
             .await
             .expect("advance epoch from any eligible node");
+        target_epoch = EpochNumber(initial_epoch.as_u64().saturating_add(1));
         scenario
-            .refresh_all_nodes()
+            .wait_active_epoch(target_epoch, Duration::from_secs(20))
             .await
-            .expect("refresh node state after epoch advance");
+            .expect("target epoch active");
         scenario
-            .wait_active_epoch(EpochNumber(1), Duration::from_secs(20))
+            .wait_for_all_nodes_epoch(Some(target_epoch), Duration::from_secs(20))
             .await
-            .expect("epoch 1 active");
-        scenario
-            .wait_for_all_nodes_epoch(Some(EpochNumber(1)), Duration::from_secs(20))
-            .await
-            .expect("all nodes should converge to epoch 1");
+            .expect("all nodes should converge to target epoch");
     }
 
     // Wait for each node to publish committee data for epoch 1 in MemoryStore.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let ready = harness.nodes().iter().all(|node| {
-            let committee = node.context().store.get_committee(EpochNumber(1)).ok().flatten();
+            let committee = node.context().store.get_committee(target_epoch).ok().flatten();
             matches!(committee, Some(members) if members.len() == 20)
         });
         if ready {
@@ -82,7 +81,7 @@ async fn full_runtime_20_nodes_bootstrap_and_advance_epoch() {
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for epoch 1 committee in MemoryStore"
+            "timed out waiting for target epoch committee in MemoryStore"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

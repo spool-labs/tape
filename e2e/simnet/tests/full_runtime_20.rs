@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, SimnetBuilder};
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
 #[tokio::test]
 async fn full_runtime_20_nodes_register_and_refresh_state() {
+    let expected_epoch;
     let mut harness = SimnetBuilder::new()
         .node_count(20)
         .runtime_mode(NodeRuntimeMode::Full)
@@ -39,6 +40,9 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
     {
         let scenario = harness.scenario();
         scenario.init_system(0).await.expect("init system");
+        let chain_epoch = scenario.read_epoch().await.expect("read epoch").id;
+        expected_epoch = chain_epoch;
+
         let signatures = scenario
             .register_nodes(BasisPoints(100))
             .await
@@ -60,7 +64,7 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         assert_eq!(system.committee_next.size(), 0);
 
         scenario
-            .wait_for_all_nodes_epoch(Some(EpochNumber(0)), Duration::from_secs(20))
+            .wait_for_all_nodes_epoch(Some(chain_epoch), Duration::from_secs(20))
             .await
             .expect("nodes should refresh on-chain epoch into memory store");
     }
@@ -71,7 +75,7 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
             .store
             .get_current_epoch()
             .expect("read current epoch");
-        assert_eq!(epoch, Some(EpochNumber(0)));
+        assert_eq!(epoch, Some(expected_epoch));
 
         let status = node
             .context()

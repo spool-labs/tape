@@ -302,7 +302,7 @@ mod tests {
         let mut epoch = Epoch::zeroed();
         let mut node = Node::zeroed();
 
-        // Low-quorum mode: committee_next has < 25 nodes
+        // Low-quorum mode: committee_next has < MIN_COMMITTEE_SIZE (20) nodes
         let members: Vec<CommitteeMember> = (1..=10)
             .map(|i| member(i, 1_000))
             .collect();

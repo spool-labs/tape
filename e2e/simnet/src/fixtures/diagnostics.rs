@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use reqwest::Client;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
@@ -9,11 +10,26 @@ use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
     pub async fn is_node_healthy(&self, index: usize) -> bool {
-        let client = match self.build_client_https_pinned(index) {
+        let node = match self.harness.node(index) {
+            Some(node) => node,
+            None => return false,
+        };
+
+        let url = format!(
+            "http://{}:{}/v1/health",
+            node.context().config.public_host,
+            node.context().config.public_port
+        );
+
+        let client = match Client::builder().timeout(Duration::from_secs(2)).build() {
             Ok(client) => client,
             Err(_) => return false,
         };
-        client.health_check().await.unwrap_or(false)
+
+        match client.get(url).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
     }
 
     pub async fn wait_node_healthy(&self, index: usize, timeout: Duration) -> Result<()> {

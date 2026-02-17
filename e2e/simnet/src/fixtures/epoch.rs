@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use tape_api::instruction::build_advance_epoch_ix;
 use tape_api::program::EPOCH_DURATION;
 use tape_core::types::EpochNumber;
@@ -8,6 +9,8 @@ use tape_core::types::EpochNumber;
 use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
+    const ADV_CU: u32 = 1_400_000;
+
     pub async fn current_epoch_number(&self) -> Result<u64> {
         Ok(self.read_epoch().await?.id.as_u64())
     }
@@ -29,13 +32,14 @@ impl SimnetScenario<'_> {
     pub async fn advance_epoch_any(&self) -> Result<()> {
         let mut last_error = None;
         for node in self.harness.nodes() {
+            let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::ADV_CU);
             let ix = build_advance_epoch_ix(node.authority(), node.authority());
             match self
                 .harness
                 .chain()
                 .send_instructions_and_advance(
                     node.keypair(),
-                    vec![ix],
+                    vec![cu_ix, ix],
                     self.harness.config().slot_advance_per_tx,
                 )
                 .await
