@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_store::ops::TrackOps;
 use tape_store::types::TrackInfo;
@@ -12,8 +13,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/metadata
-pub async fn get_metadata<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn get_metadata<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let track_address = super::status::parse_track_address(&track_id)?;
@@ -39,8 +40,8 @@ pub async fn get_metadata<S: Store>(
 }
 
 /// PUT /v1/tracks/:track_id/metadata — public upload.
-pub async fn put_metadata<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn put_metadata<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
@@ -59,8 +60,8 @@ pub async fn put_metadata<S: Store>(
 }
 
 /// PUT /v1/internal/tracks/:track_id/metadata — internal (peer) upload.
-pub async fn put_metadata_internal<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn put_metadata_internal<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {

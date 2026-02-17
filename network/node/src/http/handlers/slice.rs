@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
@@ -18,8 +19,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/slices/:slice_index
-pub async fn get_slice<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn get_slice<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let track_address = super::status::parse_track_address(&track_id)?;
@@ -49,8 +50,8 @@ pub async fn get_slice<S: Store>(
 }
 
 /// PUT /v1/tracks/:track_id/slices/:slice_index — public (authority-signed) upload.
-pub async fn put_slice<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn put_slice<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -149,8 +150,8 @@ pub async fn put_slice<S: Store>(
 }
 
 /// PUT /v1/internal/tracks/:track_id/slices/:slice_index — internal (peer) upload.
-pub async fn put_slice_internal<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn put_slice_internal<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -238,8 +239,8 @@ pub async fn put_slice_internal<S: Store>(
 }
 
 /// Verify the node owns the given spool.
-fn verify_spool_ownership<S: Store>(
-    state: &AppState<S>,
+fn verify_spool_ownership<S: Store, R: Rpc>(
+    state: &AppState<S, R>,
     spool_id: u16,
 ) -> Result<(), ApiError> {
     let spools = state

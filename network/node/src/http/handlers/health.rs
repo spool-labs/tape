@@ -3,19 +3,20 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/health — liveness check.
-pub async fn health<S: Store>() -> StatusCode {
+pub async fn health<S: Store, R: Rpc>() -> StatusCode {
     StatusCode::OK
 }
 
 /// GET /v1/info — node identification.
-pub async fn info<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn info<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
 ) -> impl IntoResponse {
     let config = &state.context.config;
     let body = serde_json::json!({
@@ -28,8 +29,8 @@ pub async fn info<S: Store>(
 }
 
 /// GET /v1/stats — node statistics.
-pub async fn stats<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn stats<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
 ) -> Result<impl IntoResponse, ApiError> {
     use std::sync::atomic::Ordering::Relaxed;
     use tape_node_api::NodeStats;

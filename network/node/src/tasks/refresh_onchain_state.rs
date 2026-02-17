@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use bytemuck::Zeroable;
+use rpc::Rpc;
 use store::Store;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::types::NodeId;
@@ -17,30 +18,25 @@ use tokio_util::sync::CancellationToken;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 
-pub async fn run<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let rpc = match context.rpc.as_ref() {
-        Some(r) => r,
-        None => return TaskOutcome::Permanent("no rpc client".into()),
-    };
-
-    let system = match rpc.get_system().await {
+    let system = match context.rpc.get_system().await {
         Ok(s) => s,
         Err(e) => return TaskOutcome::Retryable(format!("get_system: {e}")),
     };
 
     if cancel.is_cancelled() { return TaskOutcome::Success; }
 
-    let epoch_account = match rpc.get_epoch().await {
+    let epoch_account = match context.rpc.get_epoch().await {
         Ok(e) => e,
         Err(e) => return TaskOutcome::Retryable(format!("get_epoch: {e}")),
     };
 
     if cancel.is_cancelled() { return TaskOutcome::Success; }
 
-    let all_nodes = match rpc.get_all_nodes().await {
+    let all_nodes = match context.rpc.get_all_nodes().await {
         Ok(n) => n,
         Err(e) => return TaskOutcome::Retryable(format!("get_all_nodes: {e}")),
     };
@@ -49,8 +45,8 @@ pub async fn run<S: Store>(
 }
 
 /// Pure store logic — testable without RPC.
-pub fn apply_refreshed_state<S: Store>(
-    context: &NodeContext<S>,
+pub fn apply_refreshed_state<S: Store, R: Rpc>(
+    context: &NodeContext<S, R>,
     system: &System,
     epoch_account: &Epoch,
     all_nodes: &[(solana_sdk::pubkey::Pubkey, Node)],
@@ -185,9 +181,11 @@ fn build_committee_members<const N: usize, const S: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use bytemuck::Zeroable;
+    use rpc_client::RpcClient;
+    use rpc_litesvm::LiteSvmRpc;
+    use solana_sdk::signature::Keypair;
     use tape_api::program::MEMBER_COUNT;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::erasure::SPOOL_COUNT;
@@ -199,29 +197,8 @@ mod tests {
     use tape_core::types::network::NetworkAddress;
     use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
+    use crate::core::NodeContext;
+    use crate::test_util::test_config;
 
     fn make_system(
         members: &[CommitteeMember],
@@ -289,7 +266,7 @@ mod tests {
 
         let bls_key = BlsPrivateKey::from_random();
         let store = TapeStore::new(MemoryStore::new());
-        let ctx = NodeContext::new(test_config(), solana_sdk::signature::Keypair::new(), bls_key, store);
+        let ctx = NodeContext::new(test_config(), Keypair::new(), bls_key, store, RpcClient::from_rpc(LiteSvmRpc::new()));
 
         let outcome = apply_refreshed_state(&ctx, &system, &epoch, &nodes);
         assert!(matches!(outcome, TaskOutcome::Success));
@@ -330,9 +307,10 @@ mod tests {
 
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             our_bls_key,
             store,
+            RpcClient::from_rpc(LiteSvmRpc::new()),
         );
 
         let outcome = apply_refreshed_state(&ctx, &system, &epoch, &nodes);
@@ -377,9 +355,10 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             our_bls_key,
             store,
+            RpcClient::from_rpc(LiteSvmRpc::new()),
         );
 
         let outcome = apply_refreshed_state(&ctx, &system, &epoch, &nodes);
@@ -412,9 +391,10 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             our_bls_key,
             store,
+            RpcClient::from_rpc(LiteSvmRpc::new()),
         );
 
         let outcome = apply_refreshed_state(&ctx, &system, &epoch, &nodes);

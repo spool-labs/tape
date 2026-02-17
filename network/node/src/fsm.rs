@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_api::event::{
@@ -58,12 +59,12 @@ pub enum UserEvent {
 }
 
 /// Single-writer state machine that processes blocks and updates local storage.
-pub struct Fsm<S: Store> {
-    context: Arc<NodeContext<S>>,
+pub struct Fsm<S: Store, R: Rpc> {
+    context: Arc<NodeContext<S, R>>,
 }
 
-impl<S: Store> Fsm<S> {
-    pub fn new(context: Arc<NodeContext<S>>) -> Self {
+impl<S: Store, R: Rpc> Fsm<S, R> {
+    pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
         Self { context }
     }
 
@@ -678,46 +679,14 @@ impl<S: Store> Fsm<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use tape_core::bls::BlsPrivateKey;
+
     use tape_core::encoding::EncodingProfile;
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
     use tape_store::ops::{SliceOps, SpoolOps};
     use tape_store::types::SpoolStatus;
-    use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
+    use crate::test_util::test_context;
 
     fn make_advance_epoch(old: u64, new: u64) -> ParsedInstruction {
         ParsedInstruction::AdvanceEpoch {

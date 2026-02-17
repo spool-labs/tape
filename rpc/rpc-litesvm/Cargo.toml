@@ -15,4 +15,4 @@ litesvm = { version = "0.7", default-features = false }
 [dev-dependencies]
 tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }
 rpc-client = { path = "../rpc-client" }
-tape-blocks = { path = "../../network/blocks" }
+tape-blocks = { path = "../../blocks" }

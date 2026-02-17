@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
+use rpc_client::RpcClient;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
@@ -15,7 +17,6 @@ use tape_store::TapeStore;
 
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
-use super::utils::current_timestamp;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
@@ -41,9 +42,8 @@ pub enum ContextError {
 
 /// Central context holding all shared node state.
 ///
-/// Generic over storage backend `S`. Use [`NodeContext::new`] with a concrete
-/// store type (e.g. `RocksStore` for production, `MemoryStore` for tests).
-pub struct NodeContext<S: Store> {
+/// Generic over storage backend `S` and RPC implementation `R`.
+pub struct NodeContext<S: Store, R: Rpc> {
     /// Node configuration.
     pub config: Arc<NodeConfig>,
     /// This node's authority keypair.
@@ -54,31 +54,18 @@ pub struct NodeContext<S: Store> {
     pub store: Arc<TapeStore<S>>,
     /// Runtime statistics (atomic counters).
     pub stats: RuntimeStats,
-    /// Time source used by FSM/epoch logic.
-    pub now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
-    /// RPC client for on-chain operations (only available with `rpc` feature).
-    #[cfg(feature = "rpc")]
-    pub rpc: Option<Arc<rpc_client::RpcClient<rpc_solana::SolanaRpc>>>,
+    /// RPC client for on-chain operations.
+    pub rpc: Arc<RpcClient<R>>,
 }
 
-impl<S: Store> NodeContext<S> {
-    /// Construct context with a custom storage backend.
+impl<S: Store, R: Rpc> NodeContext<S, R> {
+    /// Construct context with a storage backend and RPC client.
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
         store: TapeStore<S>,
-    ) -> Arc<Self> {
-        Self::new_with_clock(config, keypair, bls_keypair, store, Arc::new(current_timestamp))
-    }
-
-    /// Construct context with a custom time source (for deterministic tests).
-    pub fn new_with_clock(
-        config: NodeConfig,
-        keypair: Keypair,
-        bls_keypair: BlsPrivateKey,
-        store: TapeStore<S>,
-        now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
+        rpc: RpcClient<R>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(config),
@@ -86,40 +73,13 @@ impl<S: Store> NodeContext<S> {
             bls_keypair: Arc::new(bls_keypair),
             store: Arc::new(store),
             stats: RuntimeStats::default(),
-            now_fn,
-            #[cfg(feature = "rpc")]
-            rpc: None,
-        })
-    }
-
-    /// Construct context with an RPC client for on-chain operations.
-    #[cfg(feature = "rpc")]
-    pub fn new_with_rpc(
-        config: NodeConfig,
-        keypair: Keypair,
-        bls_keypair: BlsPrivateKey,
-        store: TapeStore<S>,
-        rpc: rpc_client::RpcClient<rpc_solana::SolanaRpc>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            config: Arc::new(config),
-            keypair: Arc::new(keypair),
-            bls_keypair: Arc::new(bls_keypair),
-            store: Arc::new(store),
-            stats: RuntimeStats::default(),
-            now_fn: Arc::new(current_timestamp),
-            rpc: Some(Arc::new(rpc)),
+            rpc: Arc::new(rpc),
         })
     }
 
     /// Get this node's public key (authority).
     pub fn pubkey(&self) -> Pubkey {
         self.keypair.pubkey()
-    }
-
-    /// Current timestamp for FSM and epoch decisions.
-    pub fn now(&self) -> i64 {
-        (self.now_fn)()
     }
 
     /// Look up our (node_id, member_index) in the current committee.
@@ -155,9 +115,9 @@ impl<S: Store> NodeContext<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use bytemuck::Zeroable;
+    use rpc_litesvm::LiteSvmRpc;
     use tape_core::bls::BlsPubkey;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::{EpochNumber, NodeId};
@@ -165,29 +125,7 @@ mod tests {
     use tape_store::types::NodeInfo;
     use tape_store::MemoryStore;
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
+    use crate::test_util::test_config;
 
     #[test]
     fn committee_identity_lookup() {
@@ -195,11 +133,13 @@ mod tests {
         let our_bls = bls_key.public_key().unwrap();
 
         let store = tape_store::TapeStore::new(MemoryStore::new());
+        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             bls_key,
             store,
+            rpc,
         );
 
         // Set epoch and committee with our key at position 2
@@ -240,11 +180,13 @@ mod tests {
     fn committee_identity_missing() {
         let bls_key = BlsPrivateKey::from_random();
         let store = tape_store::TapeStore::new(MemoryStore::new());
+        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             bls_key,
             store,
+            rpc,
         );
 
         // No epoch, no committee
@@ -259,11 +201,13 @@ mod tests {
         let our_bls = bls_key.public_key().unwrap();
 
         let store = tape_store::TapeStore::new(MemoryStore::new());
+        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
         let ctx = NodeContext::new(
             test_config(),
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             bls_key,
             store,
+            rpc,
         );
 
         let epoch = EpochNumber(1);

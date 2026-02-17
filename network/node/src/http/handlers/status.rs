@@ -2,6 +2,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::spool_for_slice;
 use tape_store::ops::{SliceOps, TrackOps};
@@ -11,8 +12,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/slices/:slice_index/status
-pub async fn slice_status<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn slice_status<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
 ) -> Result<StatusCode, ApiError> {
     let track_address = parse_track_address(&track_id)?;
@@ -40,8 +41,8 @@ pub async fn slice_status<S: Store>(
 }
 
 /// GET /v1/tracks/:track_id/metadata/status
-pub async fn metadata_status<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn metadata_status<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let track_address = parse_track_address(&track_id)?;
@@ -60,8 +61,8 @@ pub async fn metadata_status<S: Store>(
 }
 
 /// GET /v1/tracks/:track_id/status — track lifecycle status.
-pub async fn track_status<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn track_status<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let track_address = parse_track_address(&track_id)?;

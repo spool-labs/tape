@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::ClayParams;
 use tape_core::erasure::{group_for_spool, spool_for_slice, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
@@ -18,16 +19,9 @@ use tokio_util::sync::CancellationToken;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 
-#[cfg(not(feature = "rpc"))]
-pub fn run_stub(key: &crate::supervisor::TaskKey) -> TaskOutcome {
-    tracing::warn!(task = ?key, "snapshot task not yet implemented");
-    TaskOutcome::Permanent("not yet implemented".into())
-}
-
 /// Bootstrap from a snapshot: download slices from peers, decode, replay.
-#[cfg(feature = "rpc")]
-pub async fn run_bootstrap<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run_bootstrap<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let current = match context.store.get_current_epoch() {
@@ -228,8 +222,8 @@ pub async fn run_bootstrap<S: Store>(
 
 /// Build snapshot: serialize event log, outer RS encode into 50 chunks,
 /// inner Clay encode each chunk into 20 slices, store commitments + slices.
-pub async fn run_build<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run_build<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let current = match context.store.get_current_epoch() {
@@ -371,8 +365,8 @@ pub async fn run_build<S: Store>(
 }
 
 /// Collect BLS signatures from committee peers for snapshot chunks we own.
-pub async fn run_certify<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run_certify<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let current = match context.store.get_current_epoch() {
@@ -528,17 +522,11 @@ pub async fn run_certify<S: Store>(
 }
 
 /// Register snapshot commitments on-chain.
-#[cfg(feature = "rpc")]
-pub async fn run_register<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run_register<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     use solana_sdk::signer::Signer;
-
-    let rpc = match context.rpc.as_ref() {
-        Some(r) => r,
-        None => return TaskOutcome::Permanent("no rpc client".into()),
-    };
 
     let current = match context.store.get_current_epoch() {
         Ok(Some(e)) => e,
@@ -608,7 +596,7 @@ pub async fn run_register<S: Store>(
             leaves,
         );
 
-        match rpc.send_instructions(&context.keypair, vec![ix]).await {
+        match context.rpc.send_instructions(&context.keypair, vec![ix]).await {
             Ok(sig) => {
                 tracing::info!(%sig, group, epoch = target.0, "register_snapshot submitted");
             }
@@ -630,17 +618,11 @@ pub async fn run_register<S: Store>(
 }
 
 /// Submit snapshot certifications on-chain with BLS aggregate signatures.
-#[cfg(feature = "rpc")]
-pub async fn run_certify_onchain<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run_certify_onchain<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     use solana_sdk::signer::Signer;
-
-    let rpc = match context.rpc.as_ref() {
-        Some(r) => r,
-        None => return TaskOutcome::Permanent("no rpc client".into()),
-    };
 
     let current = match context.store.get_current_epoch() {
         Ok(Some(e)) => e,
@@ -719,7 +701,7 @@ pub async fn run_certify_onchain<S: Store>(
             sig,
         );
 
-        match rpc.send_instructions(&context.keypair, vec![ix]).await {
+        match context.rpc.send_instructions(&context.keypair, vec![ix]).await {
             Ok(tx_sig) => {
                 tracing::info!(%tx_sig, group, epoch = target.0, "certify_snapshot submitted");
             }
@@ -747,46 +729,13 @@ pub async fn run_certify_onchain<S: Store>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::types::SlotNumber;
     use tape_crypto::Hash;
-    use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
+    use crate::test_util::test_context;
 
     #[tokio::test]
     async fn build_skips_early_epochs() {
@@ -862,7 +811,7 @@ mod tests {
         ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap_stub(ctx, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -872,7 +821,7 @@ mod tests {
         ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap_stub(ctx, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
@@ -884,36 +833,8 @@ mod tests {
         ctx.store.set_sync_cursor(SlotNumber(500)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap_stub(ctx, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
-    }
-
-    /// Minimal stub for testing bootstrap without rpc feature.
-    /// Mirrors the early-exit logic from run_bootstrap.
-    async fn run_bootstrap_stub(
-        context: Arc<NodeContext<MemoryStore>>,
-        _cancel: CancellationToken,
-    ) -> TaskOutcome {
-        let current = match context.store.get_current_epoch() {
-            Ok(Some(e)) => e,
-            Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
-            Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
-        };
-        if current.0 < 2 {
-            return TaskOutcome::Success;
-        }
-        if let Ok(Some(cursor)) = context.store.get_sync_cursor() {
-            if cursor.0 > 0 {
-                return TaskOutcome::Success;
-            }
-        }
-        match context.store.get_committee(current) {
-            Ok(Some(c)) if !c.is_empty() => {}
-            Ok(Some(_)) => return TaskOutcome::Retryable("empty committee".into()),
-            Ok(None) => return TaskOutcome::Retryable("no committee".into()),
-            Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
-        }
-        TaskOutcome::Success
     }
 
     #[tokio::test]

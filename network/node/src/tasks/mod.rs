@@ -1,25 +1,19 @@
 //! Task execution — dispatches each `TaskKey` to its implementation module.
 
+mod advance_epoch;
+mod advance_pool;
+mod invalidate_track;
+mod join_network;
 mod recovery_scan;
+mod refresh_onchain_state;
 mod snapshot;
 mod spool_recovery;
 mod spool_sync;
-
-#[cfg(feature = "rpc")]
-mod advance_epoch;
-#[cfg(feature = "rpc")]
-mod advance_pool;
-#[cfg(feature = "rpc")]
-mod invalidate_track;
-#[cfg(feature = "rpc")]
-mod join_network;
-#[cfg(feature = "rpc")]
-mod refresh_onchain_state;
-#[cfg(feature = "rpc")]
 mod sync_epoch;
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -31,8 +25,8 @@ use crate::supervisor::{TaskKey, TaskOutcome};
 ///
 /// Acquires the concurrency semaphore, checks for cancellation, then
 /// dispatches to the appropriate task module.
-pub async fn execute_task<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn execute_task<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     key: TaskKey,
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
@@ -48,34 +42,19 @@ pub async fn execute_task<S: Store>(
 
     let outcome = match &key {
         TaskKey::RefreshOnchainState => {
-            #[cfg(feature = "rpc")]
-            { refresh_onchain_state::run(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            refresh_onchain_state::run(context, cancel).await
         }
         TaskKey::AdvanceEpoch => {
-            #[cfg(feature = "rpc")]
-            { advance_epoch::run(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            advance_epoch::run(context, cancel).await
         }
         TaskKey::SyncEpoch => {
-            #[cfg(feature = "rpc")]
-            { sync_epoch::run(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            sync_epoch::run(context, cancel).await
         }
         TaskKey::JoinNetwork => {
-            #[cfg(feature = "rpc")]
-            { join_network::run(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            join_network::run(context, cancel).await
         }
         TaskKey::AdvancePool => {
-            #[cfg(feature = "rpc")]
-            { advance_pool::run(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            advance_pool::run(context, cancel).await
         }
         TaskKey::SpoolSync { spool } => {
             spool_sync::run(context, *spool, cancel).await
@@ -87,10 +66,7 @@ pub async fn execute_task<S: Store>(
             recovery_scan::run(context, *spool, cancel).await
         }
         TaskKey::InvalidateTrack { track } => {
-            #[cfg(feature = "rpc")]
-            { invalidate_track::run(context, *track, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { let _ = track; TaskOutcome::Permanent("rpc feature disabled".into()) }
+            invalidate_track::run(context, *track, cancel).await
         }
         TaskKey::SnapshotBuild => {
             snapshot::run_build(context, cancel).await
@@ -99,22 +75,13 @@ pub async fn execute_task<S: Store>(
             snapshot::run_certify(context, cancel).await
         }
         TaskKey::RegisterSnapshot => {
-            #[cfg(feature = "rpc")]
-            { snapshot::run_register(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            snapshot::run_register(context, cancel).await
         }
         TaskKey::CertifySnapshot => {
-            #[cfg(feature = "rpc")]
-            { snapshot::run_certify_onchain(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { TaskOutcome::Permanent("rpc feature disabled".into()) }
+            snapshot::run_certify_onchain(context, cancel).await
         }
         TaskKey::SnapshotBootstrap => {
-            #[cfg(feature = "rpc")]
-            { snapshot::run_bootstrap(context, cancel).await }
-            #[cfg(not(feature = "rpc"))]
-            { snapshot::run_stub(&key) }
+            snapshot::run_bootstrap(context, cancel).await
         }
     };
 

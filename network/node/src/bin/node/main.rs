@@ -1,7 +1,4 @@
-mod block_source;
-
 use std::path::Path;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -14,8 +11,6 @@ use tape_node::pipeline::spawn_runtime;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
-
-use block_source::RpcBlockSource;
 
 #[derive(Parser)]
 #[command(name = "tape-node", about = "Tapedrive storage node")]
@@ -95,10 +90,7 @@ async fn main() -> Result<()> {
     tracing::info!(%rpc_url, "connected to RPC");
 
     // Build context
-    let context = NodeContext::new_with_rpc(config, keypair, bls_keypair, store, rpc);
-
-    // Create block source
-    let block_source = Arc::new(RpcBlockSource::new(context.rpc.clone().unwrap()));
+    let context = NodeContext::new(config, keypair, bls_keypair, store, rpc);
 
     // Cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
@@ -125,7 +117,7 @@ async fn main() -> Result<()> {
     });
 
     // Spawn the runtime
-    let handles = spawn_runtime(context, block_source, cancel).await;
+    let handles = spawn_runtime(context, cancel).await;
 
     // Await all handles
     let _ = tokio::try_join!(

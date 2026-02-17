@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
@@ -16,8 +17,8 @@ use crate::supervisor::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
 
-pub async fn run<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {

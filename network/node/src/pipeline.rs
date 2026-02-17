@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -15,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::core::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
-use crate::ingestor::{BlockIngestor, BlockSource, IngestedBlock};
+use crate::ingestor::{BlockIngestor, IngestedBlock};
 use crate::reconciler::{Directive, Reconciler};
 use crate::supervisor::{Supervisor, TaskResult};
 
@@ -29,9 +30,8 @@ const RESULT_CHANNEL_CAPACITY: usize = 256;
 ///
 /// Creates bounded channels between the ingestor and FSM, spawning both as
 /// tokio tasks. Returns a receiver for state changes and the task handles.
-pub async fn spawn_pipeline<S: Store + 'static>(
-    context: Arc<NodeContext<S>>,
-    source: Arc<dyn BlockSource>,
+pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> (
     mpsc::Receiver<Vec<StateChange>>,
@@ -47,7 +47,7 @@ pub async fn spawn_pipeline<S: Store + 'static>(
     let ingestor_cancel = cancel.clone();
     let ingestor_handle = tokio::spawn(async move {
         if let Err(e) =
-            BlockIngestor::run(ingestor_context, source, block_tx, ingestor_cancel).await
+            BlockIngestor::run(ingestor_context, block_tx, ingestor_cancel).await
         {
             tracing::error!("Ingestor error: {e}");
         }
@@ -105,13 +105,12 @@ pub struct RuntimeHandles {
 }
 
 /// Spawn the full runtime: ingestor, FSM, reconciler, and supervisor.
-pub async fn spawn_runtime<S: Store + 'static>(
-    context: Arc<NodeContext<S>>,
-    source: Arc<dyn BlockSource>,
+pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
-        spawn_pipeline(context.clone(), source, cancel.clone()).await;
+        spawn_pipeline(context.clone(), cancel.clone()).await;
 
     let (directive_tx, directive_rx) = mpsc::channel::<Directive>(DIRECTIVE_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
@@ -151,47 +150,14 @@ pub async fn spawn_runtime<S: Store + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use tape_api::event::EpochAdvanced;
     use tape_blocks::ParsedInstruction;
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
     use tape_store::ops::{MetaOps, SpoolOps};
     use tape_store::types::{NodeStatus, SpoolStatus};
-    use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
+    use crate::test_util::test_context;
 
     #[tokio::test]
     async fn fsm_processes_blocks_from_channel() {
@@ -269,39 +235,6 @@ mod tests {
         fsm_handle.await.unwrap();
     }
 
-    struct MockBlockSource {
-        blocks: tokio::sync::Mutex<Vec<(SlotNumber, Vec<ParsedInstruction>)>>,
-    }
-
-    impl MockBlockSource {
-        fn new(blocks: Vec<(SlotNumber, Vec<ParsedInstruction>)>) -> Self {
-            Self {
-                blocks: tokio::sync::Mutex::new(blocks),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl BlockSource for MockBlockSource {
-        async fn get_slot(&self) -> Result<SlotNumber, anyhow::Error> {
-            let blocks = self.blocks.lock().await;
-            Ok(blocks
-                .last()
-                .map(|(slot, _)| *slot)
-                .unwrap_or(SlotNumber(0)))
-        }
-
-        async fn get_block(
-            &self,
-            slot: SlotNumber,
-        ) -> Result<Option<solana_transaction_status::UiConfirmedBlock>, anyhow::Error> {
-            // The mock source doesn't produce real UiConfirmedBlocks.
-            // The integration test below uses the pipeline's channel interface directly.
-            let _ = slot;
-            Ok(None)
-        }
-    }
-
     #[tokio::test]
     async fn runtime_end_to_end() {
         let ctx = test_context();
@@ -312,10 +245,10 @@ mod tests {
             .set_spool_status(5, SpoolStatus::ActiveSync)
             .unwrap();
 
-        // We use spawn_pipeline + manual block injection since MockBlockSource
-        // can't produce real UiConfirmedBlocks. Wire reconciler + supervisor manually.
+        // We use spawn_pipeline + manual wiring since LiteSvmRpc
+        // doesn't produce real blocks with Tapedrive instructions.
         let (change_rx, _user_event_tx, _ingestor_handle, _fsm_handle) =
-            spawn_pipeline(ctx.clone(), Arc::new(MockBlockSource::new(vec![])), cancel.clone())
+            spawn_pipeline(ctx.clone(), cancel.clone())
                 .await;
 
         let (directive_tx, directive_rx) =
@@ -355,14 +288,13 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_current_epoch(EpochNumber(5)).unwrap();
 
-        let source = Arc::new(MockBlockSource::new(vec![]));
         let (block_tx, _block_rx) =
             mpsc::channel::<crate::ingestor::IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 
         let ingestor_ctx = ctx.clone();
         let ingestor_cancel = cancel.clone();
         let handle = tokio::spawn(async move {
-            BlockIngestor::run(ingestor_ctx, source, block_tx, ingestor_cancel)
+            BlockIngestor::run(ingestor_ctx, block_tx, ingestor_cancel)
                 .await
                 .unwrap();
         });

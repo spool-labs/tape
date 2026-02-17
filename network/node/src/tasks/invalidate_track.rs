@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use store::Store;
@@ -16,16 +17,11 @@ use tokio_util::sync::CancellationToken;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 
-pub async fn run<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     track: Pubkey,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let rpc = match context.rpc.as_ref() {
-        Some(r) => r,
-        None => return TaskOutcome::Permanent("no rpc client".into()),
-    };
-
     let store_track: tape_store::types::Pubkey = track.into();
 
     // Read proof from store
@@ -71,7 +67,7 @@ pub async fn run<S: Store>(
     );
 
     let result = tokio::select! {
-        r = rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        r = context.rpc.send_instructions(&context.keypair, vec![ix]) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
     match result {

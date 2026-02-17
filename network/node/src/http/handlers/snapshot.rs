@@ -3,6 +3,7 @@
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::types::{ChunkIndex, EpochNumber};
@@ -13,8 +14,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/snapshots/:epoch/commitments — return snapshot chunk commitments.
-pub async fn get_commitments<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn get_commitments<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(epoch): Path<u64>,
 ) -> Result<impl IntoResponse, ApiError> {
     let epoch = EpochNumber(epoch);

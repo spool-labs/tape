@@ -3,6 +3,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::cert::track::CertifyMessage;
@@ -13,8 +14,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/sign — BLS sign track certification.
-pub async fn get_signature<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn get_signature<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let track_address = super::status::parse_track_address(&track_id)?;
@@ -60,8 +61,8 @@ pub async fn get_signature<S: Store>(
 }
 
 /// GET /v1/snapshots/:epoch/:chunk_index/sign — BLS sign snapshot chunk.
-pub async fn get_snapshot_signature<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn get_snapshot_signature<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let epoch = EpochNumber(epoch);

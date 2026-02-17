@@ -20,7 +20,7 @@ members = [
   "rpc/rpc",
   "rpc/rpc-solana",
   "rpc/rpc-client",
-  # "rpc/rpc-litesvm",
+  "rpc/rpc-litesvm",
   "metrics",
   "network/api",
   "network/client",
@@ -69,6 +69,7 @@ tape-solana = { version = "0.3.0", path = "./solana" }
 rpc = { version = "0.3.0", path = "./rpc/rpc" }
 rpc-solana = { version = "0.3.0", path = "./rpc/rpc-solana" }
 rpc-client = { version = "0.3.0", path = "./rpc/rpc-client" }
+rpc-litesvm = { version = "0.1.0", path = "./rpc/rpc-litesvm" }
 
 tape-store = { version = "0.3.0", path = "./store/tape-store" }
 tape-slicer = { version = "0.3.0", path = "./slicer" }

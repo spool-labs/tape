@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
 use tape_core::erasure::spool_for_slice;
@@ -15,8 +16,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// POST /v1/tracks/:track_id/repair — extract sub-chunks for repair.
-pub async fn post_repair<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn post_repair<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {

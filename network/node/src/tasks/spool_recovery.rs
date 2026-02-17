@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tape_node_api::RepairRequest;
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
@@ -14,8 +15,8 @@ use crate::supervisor::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 
-pub async fn run<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -162,46 +163,13 @@ pub async fn run<S: Store>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::types::EpochNumber;
     use tape_store::ops::MetaOps;
     use tape_store::types::TrackInfo;
-    use tape_store::{MemoryStore, TapeStore};
     use tokio_util::sync::CancellationToken;
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
+    use crate::test_util::test_context;
 
     #[tokio::test]
     async fn recovery_empty_queue() {

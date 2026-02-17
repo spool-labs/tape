@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_node_api::{SyncSpoolEntry, SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT};
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -13,8 +14,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// POST /v1/sync/spool — exchange spool data for sync.
-pub async fn sync_spool<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn sync_spool<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let request: SyncSpoolRequest = wincode::deserialize(&body)

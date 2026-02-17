@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rpc::Rpc;
 use store::Store;
 use tape_core::types::EpochNumber;
 use tape_node_api::{InconsistencyRequest, BlsInconsistencyResponse, BINARY_CONTENT};
@@ -14,8 +15,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// POST /v1/tracks/:track_id/inconsistency — attest data inconsistency.
-pub async fn post_inconsistency<S: Store>(
-    State(state): State<AppState<S>>,
+pub async fn post_inconsistency<S: Store, R: Rpc>(
+    State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {

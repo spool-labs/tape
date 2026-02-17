@@ -12,6 +12,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use axum::Router;
+use rpc::Rpc;
 use store::Store;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -22,13 +23,13 @@ use crate::fsm::UserEvent;
 use state::AppState;
 
 /// The HTTP server serving the node API.
-pub struct HttpServer<S: Store> {
-    context: Arc<NodeContext<S>>,
+pub struct HttpServer<S: Store, R: Rpc> {
+    context: Arc<NodeContext<S, R>>,
     user_event_tx: Option<mpsc::Sender<UserEvent>>,
 }
 
-impl<S: Store + 'static> HttpServer<S> {
-    pub fn new(context: Arc<NodeContext<S>>, user_event_tx: Option<mpsc::Sender<UserEvent>>) -> Self {
+impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
+    pub fn new(context: Arc<NodeContext<S, R>>, user_event_tx: Option<mpsc::Sender<UserEvent>>) -> Self {
         Self { context, user_event_tx }
     }
 
@@ -42,65 +43,65 @@ impl<S: Store + 'static> HttpServer<S> {
 
         // Observability routes (no body limits needed)
         let observability = Router::new()
-            .route("/v1/health", get(handlers::health::health::<S>))
-            .route("/v1/info", get(handlers::health::info::<S>))
-            .route("/v1/stats", get(handlers::health::stats::<S>))
+            .route("/v1/health", get(handlers::health::health::<S, R>))
+            .route("/v1/info", get(handlers::health::info::<S, R>))
+            .route("/v1/stats", get(handlers::health::stats::<S, R>))
             .route("/v1/metrics", get(handlers::metrics::get_metrics))
             .route(
                 "/v1/snapshots/{epoch}/commitments",
-                get(handlers::snapshot::get_commitments::<S>),
+                get(handlers::snapshot::get_commitments::<S, R>),
             );
 
         // Status routes (lightweight checks)
         let status = Router::new()
             .route(
                 "/v1/tracks/{track_id}/slices/{slice_index}/status",
-                get(handlers::status::slice_status::<S>),
+                get(handlers::status::slice_status::<S, R>),
             )
             .route(
                 "/v1/tracks/{track_id}/metadata/status",
-                get(handlers::status::metadata_status::<S>),
+                get(handlers::status::metadata_status::<S, R>),
             )
             .route(
                 "/v1/tracks/{track_id}/status",
-                get(handlers::status::track_status::<S>),
+                get(handlers::status::track_status::<S, R>),
             );
 
         // Slice read
         let slice_read = Router::new().route(
             "/v1/tracks/{track_id}/slices/{slice_index}",
-            get(handlers::slice::get_slice::<S>),
+            get(handlers::slice::get_slice::<S, R>),
         );
 
         // Sign routes (read-only BLS signing)
         let sign = Router::new()
             .route(
                 "/v1/tracks/{track_id}/sign",
-                get(handlers::sign::get_signature::<S>),
+                get(handlers::sign::get_signature::<S, R>),
             )
             .route(
                 "/v1/snapshots/{epoch}/{chunk_index}/sign",
-                get(handlers::sign::get_snapshot_signature::<S>),
+                get(handlers::sign::get_snapshot_signature::<S, R>),
             );
 
         // Metadata read
         let metadata_read = Router::new().route(
             "/v1/tracks/{track_id}/metadata",
-            get(handlers::metadata::get_metadata::<S>),
+            get(handlers::metadata::get_metadata::<S, R>),
         );
 
         // Public data ingestion (PUT slice + PUT metadata)
         let mut public_data = Router::new()
             .route(
                 "/v1/tracks/{track_id}/slices/{slice_index}",
-                put(handlers::slice::put_slice::<S>),
+                put(handlers::slice::put_slice::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.slice_body_max))
             .merge(
                 Router::new()
                     .route(
                         "/v1/tracks/{track_id}/metadata",
-                        put(handlers::metadata::put_metadata::<S>),
+                        put(handlers::metadata::put_metadata::<S, R>),
                     )
                     .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
             );
@@ -113,21 +114,21 @@ impl<S: Store + 'static> HttpServer<S> {
         let internal_data = Router::new()
             .route(
                 "/v1/internal/tracks/{track_id}/slices/{slice_index}",
-                put(handlers::slice::put_slice_internal::<S>),
+                put(handlers::slice::put_slice_internal::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.slice_body_max))
             .merge(
                 Router::new()
                     .route(
                         "/v1/internal/tracks/{track_id}/metadata",
-                        put(handlers::metadata::put_metadata_internal::<S>),
+                        put(handlers::metadata::put_metadata_internal::<S, R>),
                     )
                     .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
             );
 
         // Sync spool
         let mut sync = Router::new()
-            .route("/v1/sync/spool", post(handlers::sync::sync_spool::<S>))
+            .route("/v1/sync/spool", post(handlers::sync::sync_spool::<S, R>))
             .layer(DefaultBodyLimit::max(limits.sync_body_max));
 
         if let Some(limit) = limits.sync_spool_limit {
@@ -138,7 +139,7 @@ impl<S: Store + 'static> HttpServer<S> {
         let mut repair = Router::new()
             .route(
                 "/v1/tracks/{track_id}/repair",
-                post(handlers::repair::post_repair::<S>),
+                post(handlers::repair::post_repair::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.repair_body_max));
 
@@ -150,7 +151,7 @@ impl<S: Store + 'static> HttpServer<S> {
         let mut inconsistency = Router::new()
             .route(
                 "/v1/tracks/{track_id}/inconsistency",
-                post(handlers::inconsistency::post_inconsistency::<S>),
+                post(handlers::inconsistency::post_inconsistency::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.inconsistency_body_max));
 
@@ -197,10 +198,12 @@ impl<S: Store + 'static> HttpServer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use rpc_client::RpcClient;
+    use rpc_litesvm::LiteSvmRpc;
+    use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
     use tape_core::types::EpochNumber;
@@ -214,39 +217,10 @@ mod tests {
     use tape_store::{MemoryStore, TapeStore};
     use tower::ServiceExt;
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
+    use crate::core::NodeContext;
+    use crate::test_util::{test_config, test_context};
 
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
-
-    fn test_router(ctx: Arc<NodeContext<MemoryStore>>) -> Router {
+    fn test_router(ctx: Arc<NodeContext<MemoryStore, LiteSvmRpc>>) -> Router {
         HttpServer::new(ctx, None).build_router()
     }
 
@@ -794,9 +768,10 @@ mod tests {
         config.node_api.ingress_limits.metadata_body_max = 10;
         let ctx = NodeContext::new(
             config,
-            solana_sdk::signature::Keypair::new(),
+            Keypair::new(),
             BlsPrivateKey::from_random(),
             TapeStore::new(MemoryStore::new()),
+            RpcClient::from_rpc(LiteSvmRpc::new()),
         );
         let track_address = Pubkey::new_unique();
         let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();

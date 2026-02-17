@@ -28,4 +28,4 @@ pub use context::{ContextError, NodeContext};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
 pub use stats::RuntimeStats;
-pub use utils::{current_timestamp, default_config_path, expand_path};
+pub use utils::{default_config_path, expand_path};

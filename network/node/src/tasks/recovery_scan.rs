@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::spool_in_group;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
@@ -12,8 +13,8 @@ use crate::supervisor::TaskOutcome;
 
 const SCAN_BATCH_SIZE: usize = 100;
 
-pub async fn run<S: Store>(
-    context: Arc<NodeContext<S>>,
+pub async fn run<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {

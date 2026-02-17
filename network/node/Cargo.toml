@@ -7,7 +7,6 @@ description = "Tapedrive storage node runtime"
 [[bin]]
 name = "tape-node"
 path = "src/bin/node/main.rs"
-required-features = ["rpc"]
 
 [dependencies]
 # Workspace crates
@@ -18,10 +17,13 @@ tape-store = { workspace = true }
 tape-blocks = { workspace = true }
 tape-slicer = { workspace = true }
 tape-spooler = { workspace = true }
-store = { workspace = true }
+store = { workspace = true, features = ["metrics"] }
 store-rocks = { workspace = true }
 tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
+rpc = { workspace = true }
+rpc-client = { workspace = true }
+rpc-solana = { workspace = true }
 
 # External
 tokio = { workspace = true }
@@ -43,15 +45,8 @@ tower = { version = "0.5", features = ["limit"] }
 wincode = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Optional RPC support (not needed for tests)
-rpc-client = { workspace = true, optional = true }
-rpc-solana = { workspace = true, optional = true }
-
-# Binary-only deps (pulled in via rpc feature)
-clap = { version = "4", features = ["derive"], optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-
-[features]
-default = []
-rpc = ["dep:rpc-client", "dep:rpc-solana", "dep:clap", "dep:tracing-subscriber", "store/metrics"]
+[dev-dependencies]
+rpc-litesvm = { workspace = true }

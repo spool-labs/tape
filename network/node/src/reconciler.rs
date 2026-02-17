@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rpc::Rpc;
 use solana_sdk::signer::Signer;
 use store::Store;
 use tokio::sync::mpsc;
@@ -31,16 +32,16 @@ pub enum Directive {
 }
 
 /// Diffs desired state against running tasks to produce scheduling directives.
-pub struct Reconciler<S: Store> {
-    context: Arc<NodeContext<S>>,
+pub struct Reconciler<S: Store, R: Rpc> {
+    context: Arc<NodeContext<S, R>>,
     /// Tasks that SHOULD be running given current state.
     desired: HashSet<TaskKey>,
     /// Tasks we've told the supervisor to schedule (and haven't completed/cancelled).
     scheduled: HashSet<TaskKey>,
 }
 
-impl<S: Store> Reconciler<S> {
-    pub fn new(context: Arc<NodeContext<S>>) -> Self {
+impl<S: Store, R: Rpc> Reconciler<S, R> {
+    pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
         Self {
             context,
             desired: HashSet::new(),
@@ -313,45 +314,12 @@ impl<S: Store> Reconciler<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::types::EpochNumber;
     use tape_store::ops::{MetaOps, SliceOps, TrackOps};
     use tape_store::types::TrackInfo;
-    use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::config::RecoveryConfig;
-    use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
-
-    fn test_config() -> NodeConfig {
-        NodeConfig {
-            version: 1,
-            name: "test-node".to_string(),
-            tls_keypair: PathBuf::from("/dev/null"),
-            bls_keypair: PathBuf::from("/dev/null"),
-            node_keypair: String::new(),
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            public_host: "localhost".to_string(),
-            public_port: 0,
-            tls: TlsConfig::default(),
-            storage_path: "/tmp".to_string(),
-            poll_interval_ms: None,
-            sync_concurrency: None,
-            sync_batch_size: None,
-            commission: None,
-            recovery: RecoveryConfig::default(),
-            node_api: NodeApiConfig::default(),
-        }
-    }
-
-    fn test_context() -> Arc<NodeContext<MemoryStore>> {
-        let config = test_config();
-        let keypair = solana_sdk::signature::Keypair::new();
-        let bls_keypair = BlsPrivateKey::from_random();
-        let store = TapeStore::new(MemoryStore::new());
-        NodeContext::new(config, keypair, bls_keypair, store)
-    }
+    use crate::test_util::test_context;
 
     #[tokio::test]
     async fn epoch_advance() {
