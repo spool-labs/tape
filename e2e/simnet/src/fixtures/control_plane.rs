@@ -315,38 +315,58 @@ impl SimnetScenario<'_> {
     }
 
     pub async fn stake_all(&self, payer_index: usize, amount_tape: u64) -> Result<()> {
+        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+        self.stake_many(payer_index, &all, amount_tape).await
+    }
+
+    pub async fn join_all(&self, payer_index: usize) -> Result<()> {
+        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+        self.join_many(payer_index, &all).await
+    }
+
+    pub async fn pool_all(&self, payer_index: usize) -> Result<()> {
+        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+        self.pool_many(payer_index, &all).await
+    }
+
+    pub async fn stake_many(
+        &self,
+        payer_index: usize,
+        node_indices: &[usize],
+        amount_tape: u64,
+    ) -> Result<()> {
         append_log(&format!(
-            "stake all start count={} amount={amount_tape}",
-            self.harness.nodes().len()
+            "stake many start count={} amount={amount_tape}",
+            node_indices.len()
         ));
-        for i in 0..self.harness.nodes().len() {
+        for &i in node_indices {
             self.stake_node(payer_index, i, amount_tape)
                 .await
                 .with_context(|| format!("stake node {i}"))?;
         }
-        append_log("stake all done");
+        append_log("stake many done");
         Ok(())
     }
 
-    pub async fn join_all(&self, payer_index: usize) -> Result<()> {
-        append_log(&format!("join all start count={}", self.harness.nodes().len()));
-        for i in 0..self.harness.nodes().len() {
+    pub async fn join_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
+        append_log(&format!("join many start count={}", node_indices.len()));
+        for &i in node_indices {
             self.join_node_ok(payer_index, i)
                 .await
                 .with_context(|| format!("join node {i}"))?;
         }
-        append_log("join all done");
+        append_log("join many done");
         Ok(())
     }
 
-    pub async fn pool_all(&self, payer_index: usize) -> Result<()> {
-        append_log(&format!("pool all start count={}", self.harness.nodes().len()));
-        for i in 0..self.harness.nodes().len() {
+    pub async fn pool_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
+        append_log(&format!("pool many start count={}", node_indices.len()));
+        for &i in node_indices {
             self.advance_pool_ok(payer_index, i)
                 .await
                 .with_context(|| format!("advance pool for node {i}"))?;
         }
-        append_log("pool all done");
+        append_log("pool many done");
         Ok(())
     }
 }

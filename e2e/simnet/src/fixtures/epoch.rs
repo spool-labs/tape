@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use tape_api::errors::ProgramError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use tape_api::instruction::build_advance_epoch_ix;
 use tape_api::program::EPOCH_DURATION;
@@ -127,4 +128,58 @@ impl SimnetScenario<'_> {
     pub fn warp_epoch(&self) -> Result<()> {
         self.warp_seconds(EPOCH_DURATION + 1)
     }
+
+    /// Drive epoch transitions with a participating node subset.
+    pub async fn advance_to_epoch(
+        &self,
+        target_epoch: u64,
+        payer_index: usize,
+        participants: &[usize],
+        timeout: Duration,
+    ) -> Result<()> {
+        if participants.is_empty() {
+            bail!("advance_to_epoch requires non-empty participants");
+        }
+
+        loop {
+            let current = self.current_epoch_number().await?;
+            if current >= target_epoch {
+                return Ok(());
+            }
+
+            self.wait_phase("Active", timeout).await?;
+            self.pool_many(payer_index, participants).await?;
+            self.join_many(payer_index, participants).await?;
+            self.wait_next_quorum(participants.len(), timeout).await?;
+
+            self.warp_epoch()?;
+            self.advance_epoch_with_retry(timeout).await?;
+            let next = self.wait_epoch_change(current, timeout).await?;
+            self.wait_phase("Active", timeout).await?;
+            self.wait_for_nodes_epoch(participants, Some(EpochNumber(next)), timeout)
+                .await?;
+        }
+    }
+
+    async fn advance_epoch_with_retry(&self, timeout: Duration) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            match self.advance_epoch_any().await {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    if start.elapsed() >= timeout || !is_retryable_advance_error(&error) {
+                        return Err(error).context("advance_epoch_with_retry");
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+}
+
+fn is_retryable_advance_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    ProgramError::from_error_string(&text)
+        .map(|err| err.is_retriable())
+        .unwrap_or(false)
 }

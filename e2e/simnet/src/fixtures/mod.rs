@@ -1,3 +1,4 @@
+pub mod bft;
 pub mod client;
 pub mod cluster;
 pub mod control_plane;

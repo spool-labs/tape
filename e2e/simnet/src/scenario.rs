@@ -222,18 +222,32 @@ impl<'a> SimnetScenario<'a> {
         expected: Option<EpochNumber>,
         timeout: Duration,
     ) -> Result<()> {
+        let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
+        self.wait_for_nodes_epoch(&all, expected, timeout).await
+    }
+
+    pub async fn wait_for_nodes_epoch(
+        &self,
+        indices: &[usize],
+        expected: Option<EpochNumber>,
+        timeout: Duration,
+    ) -> Result<()> {
         let deadline = Instant::now() + timeout;
         let mut last_seen: Vec<Option<EpochNumber>> = Vec::new();
 
         loop {
             let mut ready = true;
             last_seen.clear();
-            for node in self.harness.nodes() {
+            for &i in indices {
+                let node = self
+                    .harness
+                    .node(i)
+                    .with_context(|| format!("node {i} missing"))?;
                 let got = node
                     .context()
                     .store
                     .get_current_epoch()
-                    .with_context(|| format!("node {} get_current_epoch", node.id()))?;
+                    .with_context(|| format!("node {i} get_current_epoch"))?;
                 last_seen.push(got);
 
                 match expected {
