@@ -5,6 +5,13 @@ use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, SimnetBuilder};
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
+fn env_timeout_secs(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 #[tokio::test]
 async fn full_runtime_bft_epoch3() {
     let mut harness = SimnetBuilder::new()
@@ -73,6 +80,8 @@ async fn full_runtime_bft_epoch3() {
     let final_epoch;
     {
         let scenario = harness.scenario();
+        let advance_timeout = Duration::from_secs(env_timeout_secs("SIMNET_ADVANCE_TIMEOUT_SECS", 90));
+        let active_timeout = Duration::from_secs(env_timeout_secs("SIMNET_ACTIVE_TIMEOUT_SECS", 20));
         scenario
             .wait_nodes_healthy(Duration::from_secs(30))
             .await
@@ -82,11 +91,11 @@ async fn full_runtime_bft_epoch3() {
             .await
             .expect("bft next quorum");
         scenario
-            .advance_to_epoch(3, 0, &honest, Duration::from_secs(90))
+            .advance_to_epoch(3, 0, &honest, advance_timeout)
             .await
             .expect("advance to epoch 3");
         scenario
-            .wait_active_epoch(EpochNumber(3), Duration::from_secs(20))
+            .wait_active_epoch(EpochNumber(3), active_timeout)
             .await
             .expect("epoch 3 active");
 
@@ -131,4 +140,3 @@ async fn full_runtime_bft_epoch3() {
 
     harness.stop_all().await.expect("stop runtimes");
 }
-

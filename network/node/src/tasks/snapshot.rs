@@ -1,7 +1,7 @@
 //! Snapshot tasks — build, certify, register, certify on-chain.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rpc::Rpc;
@@ -28,6 +28,43 @@ use crate::tasks::parse_tape_error;
 const SNAPSHOT_REGISTER_CU: u32 = 700_000;
 const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
 const SNAPSHOT_SIGN_TIMEOUT: Duration = Duration::from_secs(6);
+const SNAPSHOT_TAKEOVER_WINDOW_SECS: u64 = 15;
+
+fn certifier_for_group(
+    committee: &[NodeInfo],
+    target: EpochNumber,
+    group: u64,
+    windows_elapsed: usize,
+) -> Option<(usize, bool)> {
+    let owners: Vec<usize> = committee
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, member)| {
+            let has_group_spool = member
+                .spools
+                .iter()
+                .any(|&spool| group_for_spool(spool) == group);
+            if has_group_spool { Some(idx) } else { None }
+        })
+        .collect();
+
+    if owners.is_empty() {
+        return None;
+    }
+
+    let primary_offset = ((target.0 as usize) + (group as usize)) % owners.len();
+    let active_offset = (primary_offset + windows_elapsed) % owners.len();
+    let active_owner = owners[active_offset];
+    let taken_over = windows_elapsed > 0;
+    Some((active_owner, taken_over))
+}
+
+fn takeover_windows_elapsed() -> usize {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    let window = Duration::from_secs(SNAPSHOT_TAKEOVER_WINDOW_SECS.max(1));
+    (start.elapsed().as_secs() / window.as_secs()) as usize
+}
 
 /// Bootstrap from a snapshot: download slices from peers, decode, replay.
 pub async fn run_bootstrap<S: Store, R: Rpc>(
@@ -433,14 +470,36 @@ pub async fn run_certify<S: Store, R: Rpc>(
         let offset = our_member_index % groups.len();
         groups.rotate_left(offset);
     }
+    let windows_elapsed = takeover_windows_elapsed();
     let mut certified_groups = 0usize;
     let mut pending_quorum = 0usize;
     let mut failed: Vec<String> = Vec::new();
+    let mut groups_attempted = 0usize;
+    let mut groups_skipped_not_owner = 0usize;
+    let mut groups_taken_over = 0usize;
 
     for group in groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
+
+        let Some((active_owner, taken_over)) = certifier_for_group(
+            &committee,
+            target,
+            group,
+            windows_elapsed,
+        ) else {
+            continue;
+        };
+        if our_member_index != active_owner {
+            groups_skipped_not_owner += 1;
+            continue;
+        }
+        if taken_over {
+            groups_taken_over += 1;
+        }
+        groups_attempted += 1;
+
         let group_start = Instant::now();
 
         let chunk_index = ChunkIndex(group);
@@ -656,10 +715,13 @@ pub async fn run_certify<S: Store, R: Rpc>(
 
     if !failed.is_empty() {
         return TaskOutcome::Retryable(format!(
-            "snapshot certify progress epoch={} certified={} pending_quorum={} failed={} {}",
+            "snapshot certify progress epoch={} certified={} pending_quorum={} attempted={} skipped_not_owner={} taken_over={} failed={} {}",
             target.0,
             certified_groups,
             pending_quorum,
+            groups_attempted,
+            groups_skipped_not_owner,
+            groups_taken_over,
             failed.len(),
             failed.first().cloned().unwrap_or_default()
         ));
@@ -670,12 +732,22 @@ pub async fn run_certify<S: Store, R: Rpc>(
             epoch = target.0,
             certified_groups,
             pending_quorum,
+            groups_attempted,
+            groups_skipped_not_owner,
+            groups_taken_over,
             "snapshot certify waiting for more partial signatures"
         );
         return TaskOutcome::Success;
     }
 
-    tracing::info!(epoch = target.0, "snapshot certification collected");
+    tracing::info!(
+        epoch = target.0,
+        certified_groups,
+        groups_attempted,
+        groups_skipped_not_owner,
+        groups_taken_over,
+        "snapshot certification collected"
+    );
     TaskOutcome::Success
 }
 
@@ -806,7 +878,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     );
     let pubkey = context.keypair.pubkey();
 
-    // Get committee for bitmap reconstruction
+    // Need committee for bitmap reconstruction.
     let committee: Vec<NodeInfo> = match context.store.get_committee(current) {
         Ok(Some(c)) => c,
         Ok(None) => {
@@ -818,40 +890,24 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
         }
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
-
-    // Derive owned groups from committee-assigned (global) spool IDs.
-    let our_groups: HashSet<u64> = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
-        Ok(groups) => groups,
-        Err(e) => return TaskOutcome::Retryable(e.into()),
-    };
-    let our_member_index = match our_member_index(&committee, context.keypair.pubkey()) {
-        Ok(index) => index,
-        Err(e) => return TaskOutcome::Retryable(e.into()),
-    };
+    // Keep on-chain certify permissionless: submit any local certs we have.
     let owned_spools = match our_member(&committee, context.keypair.pubkey()) {
         Ok(member) => member.spools.len(),
-        Err(e) => return TaskOutcome::Retryable(e.into()),
+        Err(_) => 0,
     };
     tracing::debug!(
         target_epoch = target.0,
         committee_size = committee.len(),
         owned_spools,
-        groups = our_groups.len(),
+        groups = SPOOL_GROUP_COUNT,
         "run_certify_onchain inputs"
     );
-
-    let mut groups: Vec<u64> = our_groups.into_iter().collect();
-    groups.sort_unstable();
-    if !groups.is_empty() {
-        let offset = our_member_index % groups.len();
-        groups.rotate_left(offset);
-    }
     let mut submitted = 0usize;
     let mut missing_local = 0usize;
     let mut pending_register = 0usize;
     let mut failed: Vec<String> = Vec::new();
 
-    for group in groups {
+    for group in 0..SPOOL_GROUP_COUNT as u64 {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
