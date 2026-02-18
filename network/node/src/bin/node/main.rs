@@ -1,15 +1,13 @@
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use rpc_client::RpcClient;
 use rpc_solana::RpcConfig;
-use tape_core::bls::BlsPrivateKey;
 use tape_node::core::config::NodeConfig;
-use tape_node::core::NodeContext;
+use tape_node::core::NodeContextBuilder;
 use tape_node::pipeline::spawn_runtime;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -22,19 +20,6 @@ struct Cli {
     /// RPC endpoint URL (overrides config)
     #[arg(long)]
     rpc_url: Option<String>,
-}
-
-fn load_bls_keypair(path: &Path) -> Result<BlsPrivateKey> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read BLS keypair from {}", path.display()))?;
-    if bytes.len() != std::mem::size_of::<BlsPrivateKey>() {
-        anyhow::bail!(
-            "BLS keypair file wrong size: {} bytes (expected {})",
-            bytes.len(),
-            std::mem::size_of::<BlsPrivateKey>()
-        );
-    }
-    Ok(*bytemuck::from_bytes::<BlsPrivateKey>(&bytes))
 }
 
 fn expand_path(path: &str) -> std::path::PathBuf {
@@ -57,15 +42,11 @@ async fn main() -> Result<()> {
     let config = NodeConfig::from_yaml_file(&config_path)
         .with_context(|| format!("failed to load config from {}", config_path.display()))?;
 
-    tracing::info!(name = %config.name, "starting node");
-
     // Load Solana keypair
     let keypair_path = &config.node_keypair;
     let keypair = solana_sdk::signature::read_keypair_file(keypair_path)
         .map_err(|e| anyhow::anyhow!("failed to read keypair from {keypair_path}: {e}"))?;
-
-    // Load BLS keypair
-    let bls_keypair = load_bls_keypair(&config.bls_keypair)?;
+    tracing::info!(name = %config.name, "starting node");
 
     // Open RocksDB
     let db_path = expand_path(&config.storage_path);
@@ -89,14 +70,25 @@ async fn main() -> Result<()> {
 
     tracing::info!(%rpc_url, "connected to RPC");
 
-    // Build context
-    let context = NodeContext::new(config, keypair, bls_keypair, store, rpc);
+    // Build context (includes startup node-id resolution from on-chain node account)
+    let context = NodeContextBuilder::new(
+        config,
+        keypair,
+        store,
+        rpc,
+    )
+    .build()
+    .await
+    .context("build node context")?;
+    let node_id = context.node_id();
 
     // Cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
 
     // Signal handler
     let shutdown_cancel = cancel.clone();
+    let shutdown_span =
+        tracing::info_span!("tape_node_runtime", component = "shutdown", node_id = node_id);
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
@@ -114,7 +106,7 @@ async fn main() -> Result<()> {
 
         tracing::info!("shutdown signal received");
         shutdown_cancel.cancel();
-    });
+    }.instrument(shutdown_span));
 
     // Spawn the runtime
     let handles = spawn_runtime(context, cancel).await;
@@ -128,6 +120,6 @@ async fn main() -> Result<()> {
         handles.http,
     );
 
-    tracing::info!("node stopped");
+    tracing::info!(node_id = node_id, "node stopped");
     Ok(())
 }

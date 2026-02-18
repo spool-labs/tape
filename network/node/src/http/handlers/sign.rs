@@ -42,11 +42,10 @@ pub async fn get_signature<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let (node_id, member_index) = state.context.committee_identity();
+    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
         node_id,
-        member_index,
         epoch: epoch.0,
     };
 
@@ -82,11 +81,10 @@ pub async fn get_snapshot_signature<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let (node_id, member_index) = state.context.committee_identity();
+    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
         node_id,
-        member_index,
         epoch: epoch.0,
     };
 

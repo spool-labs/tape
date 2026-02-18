@@ -13,6 +13,7 @@ use tape_core::encoding::ClayParams;
 use tape_core::erasure::{group_for_spool, spool_for_slice, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::snapshot::SnapshotLog;
 use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
+use tape_crypto::hash::hashv;
 use tape_crypto::merkle::hash_leaf;
 use tape_slicer::{blob_merkle_root, ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::ops::{CommitteeOps, EventLogOps, MetaOps, SliceOps, SpoolOps};
@@ -21,7 +22,7 @@ use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
-use crate::committee::{our_member, our_member_index, our_snapshot_groups};
+use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
@@ -293,6 +294,7 @@ pub async fn run_build<S: Store, R: Rpc>(
         Ok(e) => e,
         Err(e) => return TaskOutcome::Retryable(format!("read events: {e}")),
     };
+    let event_count: usize = entries.iter().map(|entry| entry.events.len()).sum();
 
     // Build snapshot log
     let (start_slot, end_slot) = match (entries.first(), entries.last()) {
@@ -311,6 +313,15 @@ pub async fn run_build<S: Store, R: Rpc>(
         Ok(b) => b,
         Err(e) => return TaskOutcome::Retryable(format!("serialize log: {e}")),
     };
+    let pre_erasure_hash = hashv(&[serialized.as_slice()]);
+    tracing::warn!(
+        epoch = target.0,
+        ?pre_erasure_hash,
+        event_count,
+        entry_count = log.entries.len(),
+        snapshot_bytes = serialized.len(),
+        "snapshot pre-erasure payload"
+    );
 
     // Outer RS encode into 50 chunks
     let mut outer = OuterCoder::new(DEFAULT_K_OUTER);

@@ -106,8 +106,13 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     /// determine what tasks to schedule or cancel.
     pub fn apply(&self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
         let mut changes = Vec::new();
+        let mut current_epoch = self
+            .context
+            .store
+            .get_current_epoch()?
+            .unwrap_or(EpochNumber(0));
         for instruction in &block.instructions {
-            self.apply_instruction(instruction, block.slot, &mut changes)?;
+            self.apply_instruction(instruction, block.slot, &mut changes, &mut current_epoch)?;
         }
         // Update sync cursor LAST — crash recovery re-processes from cursor
         self.context.store.set_sync_cursor(block.slot)?;
@@ -119,35 +124,36 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         instruction: &ParsedInstruction,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: &mut EpochNumber,
     ) -> Result<(), FsmError> {
         match instruction {
             ParsedInstruction::AdvanceEpoch { event } => {
-                self.handle_advance_epoch(event, slot, changes)
+                self.handle_advance_epoch(event, slot, changes, current_epoch)
             }
             ParsedInstruction::SyncEpoch { event } => {
-                self.handle_sync_epoch(event, slot, changes)
+                self.handle_sync_epoch(event, slot, changes, *current_epoch)
             }
             ParsedInstruction::RegisterTrack { track, event, .. } => match event {
-                Some(event) => self.handle_register_track(*track, event, slot, changes),
+                Some(event) => self.handle_register_track(*track, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
             ParsedInstruction::CertifyTrack { track, event } => {
-                self.handle_certify_track(*track, event, slot, changes)
+                self.handle_certify_track(*track, event, slot, changes, *current_epoch)
             }
             ParsedInstruction::DeleteTrack { track, event, .. } => match event {
-                Some(event) => self.handle_delete_track(*track, event, slot, changes),
+                Some(event) => self.handle_delete_track(*track, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
             ParsedInstruction::InvalidateTrack { track, event } => match event {
-                Some(event) => self.handle_invalidate_track(*track, event, slot, changes),
+                Some(event) => self.handle_invalidate_track(*track, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
             ParsedInstruction::ReserveTape { tape, event, .. } => match event {
-                Some(event) => self.handle_reserve_tape(*tape, event, slot, changes),
+                Some(event) => self.handle_reserve_tape(*tape, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
             ParsedInstruction::DestroyTape { tape, event, .. } => match event {
-                Some(event) => self.handle_destroy_tape(*tape, event, slot, changes),
+                Some(event) => self.handle_destroy_tape(*tape, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
             ParsedInstruction::RegisterNode {
@@ -156,12 +162,12 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 event,
             } => match event {
                 Some(event) => {
-                    self.handle_register_node(*authority, *node, event, slot, changes)
+                    self.handle_register_node(*authority, *node, event, slot, changes, *current_epoch)
                 }
                 None => Ok(()),
             },
             ParsedInstruction::JoinNetwork { node, event } => match event {
-                Some(event) => self.handle_join_network(*node, event, slot, changes),
+                Some(event) => self.handle_join_network(*node, event, slot, changes, *current_epoch),
                 None => Ok(()),
             },
         }
@@ -172,13 +178,11 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &EpochAdvanced,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: &mut EpochNumber,
     ) -> Result<(), FsmError> {
-        let old_epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
+        let old_epoch = *current_epoch;
         self.context.store.set_current_epoch(event.new_epoch)?;
+        *current_epoch = event.new_epoch;
 
         // GC expired tapes (end_epoch <= new_epoch)
         self.gc_expired_tapes(event.new_epoch)?;
@@ -204,15 +208,10 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &NodeSynced,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
-
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::SyncEpoch {
                 node: event.node.to_bytes(),
@@ -232,6 +231,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &TrackRegistered,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         let mut track_info = TrackInfo {
             tape_address: event.tape.into(),
@@ -259,13 +259,8 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
             .put_object_info(track.into(), object_info)?;
 
         let event_data = bytemuck::bytes_of(event).to_vec();
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::RegisterTrack {
                 track: track.to_bytes(),
@@ -283,6 +278,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &TrackCertified,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         // Read existing ObjectInfo — if missing, skip (idempotent)
         let Some(object_info) = self.context.store.get_object_info(track.into())? else {
@@ -309,13 +305,8 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 .put_object_info(track.into(), updated)?;
         }
 
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::CertifyTrack {
                 track: track.to_bytes(),
@@ -333,6 +324,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         _event: &TrackDeleted,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         let store_track: tape_store::types::Pubkey = track.into();
 
@@ -344,17 +336,12 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         self.context.store.delete_track(store_track)?;
         self.context.store.delete_object_info(store_track)?;
 
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::DeleteTrack {
                 track: track.to_bytes(),
-                epoch,
+                epoch: current_epoch,
             },
         )?;
 
@@ -415,6 +402,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &TrackInvalidated,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         let store_track: tape_store::types::Pubkey = track.into();
 
@@ -429,13 +417,8 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         };
         self.context.store.put_object_info(store_track, invalid)?;
 
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::InvalidateTrack {
                 track: track.to_bytes(),
@@ -453,19 +436,15 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         event: &TapeReserved,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         let tape_info = TapeInfo {
             end_epoch: event.expiry_epoch,
         };
         self.context.store.put_tape(tape.into(), tape_info)?;
 
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::ReserveTape {
                 tape: tape.to_bytes(),
@@ -485,6 +464,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         _event: &TapeDestroyed,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
         let store_tape: tape_store::types::Pubkey = tape.into();
 
@@ -493,17 +473,12 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
 
         self.context.store.delete_tape(store_tape)?;
 
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::DestroyTape {
                 tape: tape.to_bytes(),
-                epoch,
+                epoch: current_epoch,
             },
         )?;
 
@@ -518,14 +493,10 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         _event: &NodeRegistered,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::RegisterNode {
                 authority: authority.to_bytes(),
@@ -543,14 +514,10 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         _event: &NodeJoinedCommittee,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
+        current_epoch: EpochNumber,
     ) -> Result<(), FsmError> {
-        let epoch = self
-            .context
-            .store
-            .get_current_epoch()?
-            .unwrap_or(EpochNumber(0));
         self.context.store.append_event(
-            epoch,
+            current_epoch,
             slot,
             &ReplayableEvent::JoinNetwork {
                 node: node.to_bytes(),

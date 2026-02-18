@@ -10,6 +10,7 @@
 //! - `utils`: Common helper functions (path expansion, timestamps)
 
 pub mod backoff;
+pub mod committee;
 pub mod cleanup_map;
 pub mod config;
 pub mod context;
@@ -24,7 +25,7 @@ pub use config::{
     ConfigError, IngressLimitsConfig, NodeApiConfig, NodeConfig, TlsConfig,
     TransportSecurityConfig, default_config_content,
 };
-pub use context::{ContextError, NodeContext};
+pub use context::{ContextError, NodeContext, NodeContextBuilder};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
 pub use stats::RuntimeStats;

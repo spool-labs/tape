@@ -3,14 +3,11 @@
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::MERKLE_HEIGHT;
-
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct BlsSignResponse {
     pub signature: [u8; 32],
     pub node_id: u64,
-    pub member_index: u8,
     pub epoch: u64,
 }
 
@@ -25,7 +22,6 @@ pub struct InconsistencyRequest {
 pub struct BlsInconsistencyResponse {
     pub signature: [u8; 32],
     pub node_id: u64,
-    pub member_index: u8,
     pub epoch: u64,
 }
 
@@ -132,7 +128,6 @@ mod tests {
         let resp = BlsSignResponse {
             signature: [0xAA; 32],
             node_id: 42,
-            member_index: 7,
             epoch: 100,
         };
         let bytes = wincode::serialize(&resp).unwrap();
@@ -152,7 +147,6 @@ mod tests {
         let resp = BlsInconsistencyResponse {
             signature: [0xCC; 32],
             node_id: 1,
-            member_index: 0,
             epoch: 50,
         };
         let bytes = wincode::serialize(&resp).unwrap();

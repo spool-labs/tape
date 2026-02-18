@@ -131,11 +131,10 @@ pub async fn put_slice<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let (node_id, member_index) = state.context.committee_identity();
+    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
         node_id,
-        member_index,
         epoch: epoch.0,
     };
 
@@ -220,11 +219,10 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let (node_id, member_index) = state.context.committee_identity();
+    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
         signature: sig.0 .0,
         node_id,
-        member_index,
         epoch: epoch.0,
     };
 

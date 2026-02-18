@@ -22,6 +22,7 @@ use tape_core::spooler::SpoolIndex;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use rand::Rng;
 
@@ -431,12 +432,16 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         let token = CancellationToken::new();
         let sem = self.semaphore_for(key.category());
         let ctx = self.context.clone();
+        let node_id = ctx.node_id();
         let token_clone = token.clone();
         let category = key.category();
         let k = key.clone();
+        let task_span =
+            tracing::info_span!("tape_node_runtime", component = "task", node_id = node_id, task = ?key);
 
-        self.join_set
-            .spawn(crate::tasks::execute_task(ctx, k, token_clone, sem));
+        self.join_set.spawn(
+            crate::tasks::execute_task(ctx, k, token_clone, sem).instrument(task_span),
+        );
 
         self.running.insert(
             key.clone(),

@@ -12,6 +12,7 @@ use store::Store;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::core::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
@@ -39,58 +40,67 @@ pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
     tokio::task::JoinHandle<()>,
     tokio::task::JoinHandle<()>,
 ) {
+    let node_id = context.node_id();
     let (block_tx, mut block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
     let (change_tx, change_rx) = mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
     let (user_event_tx, mut user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
 
     let ingestor_context = context.clone();
     let ingestor_cancel = cancel.clone();
-    let ingestor_handle = tokio::spawn(async move {
-        if let Err(e) =
-            BlockIngestor::run(ingestor_context, block_tx, ingestor_cancel).await
-        {
-            tracing::error!("Ingestor error: {e}");
+    let ingestor_span = tracing::info_span!("tape_node_runtime", component = "ingestor", node_id = node_id);
+    let ingestor_handle = tokio::spawn(
+        async move {
+            if let Err(e) =
+                BlockIngestor::run(ingestor_context, block_tx, ingestor_cancel).await
+            {
+                tracing::error!("Ingestor error: {e}");
+            }
         }
-    });
+        .instrument(ingestor_span),
+    );
 
     let fsm_cancel = cancel.clone();
     let fsm_context = context.clone();
-    let fsm_handle = tokio::spawn(async move {
-        let fsm = Fsm::new(fsm_context.clone());
-        loop {
-            tokio::select! {
-                block = block_rx.recv() => {
-                    match block {
-                        Some(block) => {
-                            match fsm.apply(&block) {
-                                Ok(changes) => {
-                                    fsm_context.stats.inc_blocks();
-                                    if !changes.is_empty() {
-                                        if change_tx.send(changes).await.is_err() {
-                                            break;
+    let fsm_span = tracing::info_span!("tape_node_runtime", component = "fsm", node_id = node_id);
+    let fsm_handle = tokio::spawn(
+        async move {
+            let fsm = Fsm::new(fsm_context.clone());
+            loop {
+                tokio::select! {
+                    block = block_rx.recv() => {
+                        match block {
+                            Some(block) => {
+                                match fsm.apply(&block) {
+                                    Ok(changes) => {
+                                        fsm_context.stats.inc_blocks();
+                                        if !changes.is_empty() {
+                                            if change_tx.send(changes).await.is_err() {
+                                                break;
+                                            }
                                         }
                                     }
+                                    Err(e) => tracing::error!("FSM error: {e}"),
                                 }
-                                Err(e) => tracing::error!("FSM error: {e}"),
                             }
+                            None => break,
                         }
-                        None => break,
                     }
-                }
-                event = user_event_rx.recv() => {
-                    match event {
-                        Some(event) => {
-                            if let Err(e) = fsm.apply_user_event(&event) {
-                                tracing::error!("FSM user event error: {e}");
+                    event = user_event_rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                if let Err(e) = fsm.apply_user_event(&event) {
+                                    tracing::error!("FSM user event error: {e}");
+                                }
                             }
+                            None => break,
                         }
-                        None => break,
                     }
+                    _ = fsm_cancel.cancelled() => break,
                 }
-                _ = fsm_cancel.cancelled() => break,
             }
         }
-    });
+        .instrument(fsm_span),
+    );
 
     (change_rx, user_event_tx, ingestor_handle, fsm_handle)
 }
@@ -117,26 +127,39 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
 
     let reconciler = Reconciler::new(context.clone());
     let reconciler_cancel = cancel.clone();
-    let reconciler_handle = tokio::spawn(async move {
-        reconciler
-            .run(change_rx, result_rx, directive_tx, reconciler_cancel)
-            .await;
-    });
+    let node_id = context.node_id();
+    let reconciler_span = tracing::info_span!("tape_node_runtime", component = "reconciler", node_id = node_id);
+    let reconciler_handle = tokio::spawn(
+        async move {
+            reconciler
+                .run(change_rx, result_rx, directive_tx, reconciler_cancel)
+                .await;
+        }
+        .instrument(reconciler_span),
+    );
 
     let supervisor = Supervisor::new(context.clone(), result_tx);
     let supervisor_cancel = cancel.clone();
-    let supervisor_handle = tokio::spawn(async move {
-        supervisor.run(directive_rx, supervisor_cancel).await;
-    });
+    let supervisor_span = tracing::info_span!("tape_node_runtime", component = "supervisor", node_id = node_id);
+    let supervisor_handle = tokio::spawn(
+        async move {
+            supervisor.run(directive_rx, supervisor_cancel).await;
+        }
+        .instrument(supervisor_span),
+    );
 
     let http_ctx = context;
     let http_cancel = cancel;
-    let http_handle = tokio::spawn(async move {
-        let server = HttpServer::new(http_ctx, Some(user_event_tx));
-        if let Err(e) = server.serve(http_cancel).await {
-            tracing::error!("HTTP server error: {e}");
+    let http_span = tracing::info_span!("tape_node_runtime", component = "http", node_id = node_id);
+    let http_handle = tokio::spawn(
+        async move {
+            let server = HttpServer::new(http_ctx, Some(user_event_tx));
+            if let Err(e) = server.serve(http_cancel).await {
+                tracing::error!("HTTP server error: {e}");
+            }
         }
-    });
+        .instrument(http_span),
+    );
 
     RuntimeHandles {
         ingestor: ingestor_handle,

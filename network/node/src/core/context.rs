@@ -12,11 +12,12 @@ use solana_sdk::signer::Signer;
 use store::Store;
 use tape_core::bls::BlsPrivateKey;
 use tape_crypto::Pubkey;
-use tape_store::ops::{CommitteeOps, MetaOps};
+use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
+use super::utils::expand_path;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
@@ -56,16 +57,32 @@ pub struct NodeContext<S: Store, R: Rpc> {
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<R>>,
+    /// Onchain unique id for this node after registration
+    pub node_id: u64,
 }
 
 impl<S: Store, R: Rpc> NodeContext<S, R> {
-    /// Construct context with a storage backend and RPC client.
+    /// Construct context without startup on-chain node-id resolution.
+    ///
+    /// Intended for tests/local fixtures. Runtime startup should use
+    /// `NodeContextBuilder::build()`.
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
         store: TapeStore<S>,
         rpc: RpcClient<R>,
+    ) -> Arc<Self> {
+        Self::from_parts(config, keypair, bls_keypair, store, rpc, 0)
+    }
+    
+    fn from_parts(
+        config: NodeConfig,
+        keypair: Keypair,
+        bls_keypair: BlsPrivateKey,
+        store: TapeStore<S>,
+        rpc: RpcClient<R>,
+        node_id: u64,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(config),
@@ -74,6 +91,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
             store: Arc::new(store),
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
+            node_id,
         })
     }
 
@@ -82,149 +100,75 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         self.keypair.pubkey()
     }
 
-    /// Look up our (node_id, member_index) in the current committee.
-    /// Returns (0, 0) if committee not loaded or node not found.
-    pub fn committee_identity(&self) -> (u64, u8) {
-        let epoch = match self.store.get_current_epoch() {
-            Ok(Some(e)) => e,
-            _ => return (0, 0),
-        };
-        let committee = match self.store.get_committee(epoch) {
-            Ok(Some(c)) => c,
-            _ => return (0, 0),
-        };
-        let our_bls = match self.bls_keypair.public_key() {
-            Ok(pk) => pk,
-            Err(_) => return (0, 0),
-        };
-        let member_index = committee
-            .iter()
-            .position(|m| m.bls_pubkey == our_bls)
-            .unwrap_or(0) as u8;
-        let node_id = self
-            .store
-            .get_node_id()
-            .ok()
-            .flatten()
-            .map(|id| id.0)
-            .unwrap_or(0);
-        (node_id, member_index)
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+
+}
+
+pub struct NodeContextBuilder<S: Store, R: Rpc> {
+    config: NodeConfig,
+    keypair: Keypair,
+    store: TapeStore<S>,
+    rpc: RpcClient<R>,
+}
+
+impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
+    pub fn new(
+        config: NodeConfig,
+        keypair: Keypair,
+        store: TapeStore<S>,
+        rpc: RpcClient<R>,
+    ) -> Self {
+        Self {
+            config,
+            keypair,
+            store,
+            rpc,
+        }
+    }
+
+    fn load_bls_keypair(config: &NodeConfig) -> Result<BlsPrivateKey, ContextError> {
+        let path = expand_path(config.bls_keypair.to_string_lossy().as_ref());
+        let bytes = std::fs::read(&path)
+            .map_err(|e| ContextError::BlsKeypair(format!("read {}: {e}", path.display())))?;
+        if bytes.len() != std::mem::size_of::<BlsPrivateKey>() {
+            return Err(ContextError::BlsKeypair(format!(
+                "wrong size: {} bytes (expected {}) at {}",
+                bytes.len(),
+                std::mem::size_of::<BlsPrivateKey>(),
+                path.display()
+            )));
+        }
+        Ok(*bytemuck::from_bytes::<BlsPrivateKey>(&bytes))
+    }
+
+    pub async fn build(self) -> Result<Arc<NodeContext<S, R>>, ContextError> {
+        let authority = self.keypair.pubkey();
+        let node = self
+            .rpc
+            .get_node(&authority)
+            .await
+            .map_err(|e| ContextError::ChainState(format!("get_node({authority}): {e}")))?;
+        self.store
+            .set_node_id(node.id)
+            .map_err(|e| ContextError::Storage(format!("set_node_id: {e}")))?;
+        let bls_keypair = Self::load_bls_keypair(&self.config)?;
+
+        Ok(NodeContext::from_parts(
+            self.config,
+            self.keypair,
+            bls_keypair,
+            self.store,
+            self.rpc,
+            node.id.0,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use bytemuck::Zeroable;
-    use rpc_litesvm::LiteSvmRpc;
-    use tape_core::bls::BlsPubkey;
-    use tape_core::types::network::NetworkAddress;
-    use tape_core::types::{EpochNumber, NodeId};
-    use tape_store::ops::CommitteeOps;
-    use tape_store::types::NodeInfo;
-    use tape_store::MemoryStore;
-
-    use crate::test_util::test_config;
-
     #[test]
-    fn committee_identity_lookup() {
-        let bls_key = BlsPrivateKey::from_random();
-        let our_bls = bls_key.public_key().unwrap();
-
-        let store = tape_store::TapeStore::new(MemoryStore::new());
-        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
-        let ctx = NodeContext::new(
-            test_config(),
-            Keypair::new(),
-            bls_key,
-            store,
-            rpc,
-        );
-
-        // Set epoch and committee with our key at position 2
-        let epoch = EpochNumber(5);
-        ctx.store.set_current_epoch(epoch).unwrap();
-
-        let committee = vec![
-            NodeInfo {
-                node_address: tape_store::types::Pubkey::new([1u8; 32]),
-                bls_pubkey: BlsPubkey::zeroed(),
-                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
-                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-                spools: vec![],
-            },
-            NodeInfo {
-                node_address: tape_store::types::Pubkey::new([2u8; 32]),
-                bls_pubkey: BlsPubkey::zeroed(),
-                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
-                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8001),
-                spools: vec![],
-            },
-            NodeInfo {
-                node_address: tape_store::types::Pubkey::new([3u8; 32]),
-                bls_pubkey: our_bls,
-                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
-                network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8002),
-                spools: vec![],
-            },
-        ];
-        ctx.store.put_committee(epoch, committee).unwrap();
-
-        let (node_id, member_index) = ctx.committee_identity();
-        assert_eq!(member_index, 2);
-        assert_eq!(node_id, 0); // no node_id stored yet
-    }
-
-    #[test]
-    fn committee_identity_missing() {
-        let bls_key = BlsPrivateKey::from_random();
-        let store = tape_store::TapeStore::new(MemoryStore::new());
-        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
-        let ctx = NodeContext::new(
-            test_config(),
-            Keypair::new(),
-            bls_key,
-            store,
-            rpc,
-        );
-
-        // No epoch, no committee
-        let (node_id, member_index) = ctx.committee_identity();
-        assert_eq!(node_id, 0);
-        assert_eq!(member_index, 0);
-    }
-
-    #[test]
-    fn committee_identity_with_node_id() {
-        let bls_key = BlsPrivateKey::from_random();
-        let our_bls = bls_key.public_key().unwrap();
-
-        let store = tape_store::TapeStore::new(MemoryStore::new());
-        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
-        let ctx = NodeContext::new(
-            test_config(),
-            Keypair::new(),
-            bls_key,
-            store,
-            rpc,
-        );
-
-        let epoch = EpochNumber(1);
-        ctx.store.set_current_epoch(epoch).unwrap();
-        ctx.store.set_node_id(NodeId(42)).unwrap();
-
-        let committee = vec![NodeInfo {
-            node_address: tape_store::types::Pubkey::new([1u8; 32]),
-            bls_pubkey: our_bls,
-            tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-            spools: vec![],
-        }];
-        ctx.store.put_committee(epoch, committee).unwrap();
-
-        let (node_id, member_index) = ctx.committee_identity();
-        assert_eq!(node_id, 42);
-        assert_eq!(member_index, 0);
-    }
+    fn context_builder_compiles() {}
 }

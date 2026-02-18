@@ -5,7 +5,7 @@ use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::group_for_spool;
 use tape_store::types::{NodeInfo, Pubkey};
 
-pub(crate) fn our_member<'a>(
+pub fn our_member<'a>(
     committee: &'a [NodeInfo],
     authority: SolanaPubkey,
 ) -> Result<&'a NodeInfo, &'static str> {
@@ -17,7 +17,7 @@ pub(crate) fn our_member<'a>(
         .ok_or("our node not present in committee")
 }
 
-pub(crate) fn our_member_index(
+pub fn our_member_index(
     committee: &[NodeInfo],
     authority: SolanaPubkey,
 ) -> Result<usize, &'static str> {
@@ -29,7 +29,7 @@ pub(crate) fn our_member_index(
         .ok_or("our node not present in committee")
 }
 
-pub(crate) fn our_snapshot_groups(
+pub fn our_snapshot_groups(
     committee: &[NodeInfo],
     authority: SolanaPubkey,
 ) -> Result<HashSet<u64>, &'static str> {

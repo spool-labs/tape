@@ -19,8 +19,8 @@ use tape_core::erasure::spool_in_group;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{ChunkIndex, NodeStatus, SpoolStatus};
 
-use crate::committee::our_snapshot_groups;
 use crate::core::NodeContext;
+use crate::core::committee::our_snapshot_groups;
 use crate::fsm::StateChange;
 use crate::supervisor::{TaskKey, TaskResult};
 
