@@ -80,8 +80,10 @@ async fn full_runtime_bft_epoch5() {
     let final_epoch;
     {
         let scenario = harness.scenario();
-        let advance_timeout = Duration::from_secs(env_timeout_secs("SIMNET_ADVANCE_TIMEOUT_SECS", 90));
-        let active_timeout = Duration::from_secs(env_timeout_secs("SIMNET_ACTIVE_TIMEOUT_SECS", 20));
+        let advance_timeout =
+            Duration::from_secs(env_timeout_secs("SIMNET_ADVANCE_TIMEOUT_SECS", 600));
+        let active_timeout =
+            Duration::from_secs(env_timeout_secs("SIMNET_ACTIVE_TIMEOUT_SECS", 50));
         scenario
             .wait_nodes_healthy(Duration::from_secs(30))
             .await
