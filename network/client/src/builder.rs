@@ -11,8 +11,7 @@ use crate::client::NodeClient;
 use crate::error::NodeError;
 use crate::metrics::NodeClientMetrics;
 use crate::tls::PinnedServerCertVerifier;
-
-type Pubkey = [u8; 32];
+use crate::Pubkey;
 
 /// Builder for creating `NodeClient` instances.
 pub struct NodeClientBuilder {

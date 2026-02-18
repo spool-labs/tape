@@ -8,9 +8,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
-
-/// 32-byte Ed25519 public key used for pinning.
-type Pubkey = [u8; 32];
+use crate::Pubkey;
 
 /// Server certificate verifier that pins the leaf cert's public key bytes.
 pub struct PinnedServerCertVerifier {
@@ -39,14 +37,14 @@ impl PinnedServerCertVerifier {
         if spki.len() == 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(spki);
-            return Ok(key);
+            return Ok(Pubkey::new(key));
         }
 
         // Some encodings wrap the key in ASN.1; try the last 32 bytes
         if spki.len() > 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(&spki[spki.len() - 32..]);
-            return Ok(key);
+            return Ok(Pubkey::new(key));
         }
 
         Err(RustlsError::InvalidCertificate(

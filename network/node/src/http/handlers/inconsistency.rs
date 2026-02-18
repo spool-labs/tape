@@ -58,11 +58,10 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let node_id = state.context.node_id();
     let resp = BlsInconsistencyResponse {
-        signature: sig.0 .0,
-        node_id,
-        epoch: epoch.0,
+        signature: sig,
+        node_id: state.context.node_id(),
+        epoch,
     };
 
     let bytes =

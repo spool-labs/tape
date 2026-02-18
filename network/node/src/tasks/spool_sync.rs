@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
+use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::types::EpochNumber;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps};
-use tape_store::types::Pubkey;
+use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
 
@@ -107,7 +107,7 @@ pub async fn run<S: Store, R: Rpc>(
         };
 
         for entry in &response.entries {
-            let track_address = Pubkey(entry.track_address);
+            let track_address = StorePubkey::new(entry.track_address);
             if let Err(e) =
                 context
                     .store
@@ -119,7 +119,7 @@ pub async fn run<S: Store, R: Rpc>(
 
         // Update cursor for resume
         if let Some(last) = response.entries.last() {
-            let last_addr = Pubkey(last.track_address);
+            let last_addr = StorePubkey::new(last.track_address);
             if let Err(e) = context.store.set_spool_sync_cursor(spool, last_addr) {
                 return TaskOutcome::Retryable(format!("set cursor: {e}"));
             }

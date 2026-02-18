@@ -11,6 +11,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
 use tape_core::bls::BlsPrivateKey;
+use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
 use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
@@ -58,7 +59,7 @@ pub struct NodeContext<S: Store, R: Rpc> {
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<R>>,
     /// Onchain unique id for this node after registration
-    pub node_id: u64,
+    node_id: NodeId,
 }
 
 impl<S: Store, R: Rpc> NodeContext<S, R> {
@@ -73,7 +74,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         store: TapeStore<S>,
         rpc: RpcClient<R>,
     ) -> Arc<Self> {
-        Self::from_parts(config, keypair, bls_keypair, store, rpc, 0)
+        Self::from_parts(config, keypair, bls_keypair, store, rpc, NodeId(0))
     }
     
     fn from_parts(
@@ -82,7 +83,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         bls_keypair: BlsPrivateKey,
         store: TapeStore<S>,
         rpc: RpcClient<R>,
-        node_id: u64,
+        node_id: NodeId,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(config),
@@ -100,7 +101,8 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         self.keypair.pubkey()
     }
 
-    pub fn node_id(&self) -> u64 {
+    /// Globally unique node id for this node (derived onchain after register)
+    pub fn node_id(&self) -> NodeId {
         self.node_id
     }
 
@@ -143,15 +145,22 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
         Ok(*bytemuck::from_bytes::<BlsPrivateKey>(&bytes))
     }
 
-    pub async fn build(self) -> Result<Arc<NodeContext<S, R>>, ContextError> {
-        let authority = self.keypair.pubkey();
-        let node = self
-            .rpc
+    pub async fn resolve_node_id(
+        rpc: &RpcClient<R>,
+        keypair: &Keypair,
+    ) -> Result<NodeId, ContextError> {
+        let authority = keypair.pubkey();
+        let node = rpc
             .get_node(&authority)
             .await
             .map_err(|e| ContextError::ChainState(format!("get_node({authority}): {e}")))?;
+        Ok(node.id)
+    }
+
+    pub async fn build(self) -> Result<Arc<NodeContext<S, R>>, ContextError> {
+        let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         self.store
-            .set_node_id(node.id)
+            .set_node_id(node_id)
             .map_err(|e| ContextError::Storage(format!("set_node_id: {e}")))?;
         let bls_keypair = Self::load_bls_keypair(&self.config)?;
 
@@ -161,7 +170,7 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
             bls_keypair,
             self.store,
             self.rpc,
-            node.id.0,
+            node_id,
         ))
     }
 }

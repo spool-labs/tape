@@ -1,14 +1,17 @@
 //! Protocol request/response types for the node API.
 
 use tape_crypto::Hash;
+use tape_core::bls::BlsSignature;
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::{EpochNumber, NodeId};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct BlsSignResponse {
-    pub signature: [u8; 32],
-    pub node_id: u64,
-    pub epoch: u64,
+    pub signature: BlsSignature,
+    pub node_id: NodeId,
+    pub epoch: EpochNumber,
 }
 
 /// Request for inconsistency attestation.
@@ -20,16 +23,15 @@ pub struct InconsistencyRequest {
 /// Response from the inconsistency attestation endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct BlsInconsistencyResponse {
-    pub signature: [u8; 32],
-    pub node_id: u64,
-    pub epoch: u64,
+    pub signature: BlsSignature,
+    pub node_id: NodeId,
+    pub epoch: EpochNumber,
 }
 
 /// Request for sub-chunk extraction (bandwidth-optimal repair).
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct RepairRequest {
-    pub lost_slice: u16,
-    pub helper_spool: u16,
+    pub helper_spool: SpoolIndex,
     pub stripes: Vec<StripeSubChunkRequest>,
 }
 
@@ -101,6 +103,8 @@ pub struct SyncSpoolEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MERKLE_HEIGHT;
+    use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     #[test]
     fn payload_roundtrip() {
@@ -126,9 +130,9 @@ mod tests {
     #[test]
     fn sign_response() {
         let resp = BlsSignResponse {
-            signature: [0xAA; 32],
-            node_id: 42,
-            epoch: 100,
+            signature: BlsSignature(G1CompressedPoint([0xAA; 32])),
+            node_id: NodeId(42),
+            epoch: EpochNumber(100),
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: BlsSignResponse = wincode::deserialize(&bytes).unwrap();
@@ -145,9 +149,9 @@ mod tests {
         assert_eq!(req, decoded);
 
         let resp = BlsInconsistencyResponse {
-            signature: [0xCC; 32],
-            node_id: 1,
-            epoch: 50,
+            signature: BlsSignature(G1CompressedPoint([0xCC; 32])),
+            node_id: NodeId(1),
+            epoch: EpochNumber(50),
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: BlsInconsistencyResponse = wincode::deserialize(&bytes).unwrap();
@@ -157,7 +161,6 @@ mod tests {
     #[test]
     fn repair() {
         let req = RepairRequest {
-            lost_slice: 3,
             helper_spool: 42,
             stripes: vec![
                 StripeSubChunkRequest {

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use crate::chain::ChainFixture;
 use crate::config::{NodeRuntimeMode, SimnetConfig};
 use crate::log;
-use crate::node::NodeFixture;
+use crate::node::TestNode;
 use crate::scenario::SimnetScenario;
 use crate::tls;
 
@@ -79,7 +79,7 @@ impl SimnetBuilder {
             };
             let port = bind_addr.port();
 
-            nodes.push(NodeFixture::new(
+            nodes.push(TestNode::new(
                 i,
                 chain.rpc().clone(),
                 self.config.runtime_mode,
@@ -107,7 +107,7 @@ impl Default for SimnetBuilder {
 pub struct SimnetHarness {
     config: SimnetConfig,
     chain: ChainFixture,
-    nodes: Vec<NodeFixture>,
+    nodes: Vec<TestNode>,
 }
 
 impl SimnetHarness {
@@ -119,19 +119,19 @@ impl SimnetHarness {
         &self.chain
     }
 
-    pub fn nodes(&self) -> &[NodeFixture] {
+    pub fn nodes(&self) -> &[TestNode] {
         &self.nodes
     }
 
-    pub fn nodes_mut(&mut self) -> &mut [NodeFixture] {
+    pub fn nodes_mut(&mut self) -> &mut [TestNode] {
         &mut self.nodes
     }
 
-    pub fn node(&self, index: usize) -> Option<&NodeFixture> {
+    pub fn node(&self, index: usize) -> Option<&TestNode> {
         self.nodes.get(index)
     }
 
-    pub fn node_mut(&mut self, index: usize) -> Option<&mut NodeFixture> {
+    pub fn node_mut(&mut self, index: usize) -> Option<&mut TestNode> {
         self.nodes.get_mut(index)
     }
 

@@ -637,15 +637,13 @@ pub async fn run_certify<S: Store, R: Rpc>(
                 }
             };
 
-            if resp.epoch != target.0 {
+            if resp.epoch != target {
                 epoch_mismatch += 1;
                 tracing::warn!(member = idx, "epoch mismatch in sign response");
                 continue;
             }
 
-            let sig = tape_core::bls::BlsSignature(
-                tape_crypto::bls12254::min_sig::G1CompressedPoint(resp.signature),
-            );
+            let sig = resp.signature;
             let msg = SnapshotMessage::new(target, commitment.0).to_bytes();
             if sig.verify_aggregate(msg, &[member.bls_pubkey]).is_err() {
                 sig_invalid += 1;
@@ -709,7 +707,7 @@ pub async fn run_certify<S: Store, R: Rpc>(
         // Store result
         let cert = tape_store::types::SnapshotCertResult {
             member_indices: member_indices.to_vec(),
-            signature: (aggregated.0).0,
+            signature: aggregated,
             epoch: target.0,
         };
 
@@ -968,9 +966,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
                 .collect::<Vec<_>>(),
             committee.len(),
         );
-        let sig = tape_core::bls::BlsSignature(
-            tape_crypto::bls12254::min_sig::G1CompressedPoint(cert.signature),
-        );
+        let sig = cert.signature;
 
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_CERTIFY_CU);
         let ix = tape_api::prelude::build_certify_snapshot_ix(

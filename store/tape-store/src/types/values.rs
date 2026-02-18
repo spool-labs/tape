@@ -2,7 +2,7 @@
 
 use crate::types::Pubkey;
 use serde::{Deserialize, Serialize};
-use tape_core::bls::BlsPubkey;
+use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::encoding::EncodingProfile;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
@@ -88,7 +88,7 @@ mod network_address_serde {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct InvalidationProof {
     pub bitmap: u128,
-    pub signature: [u8; 32],
+    pub signature: BlsSignature,
     pub computed_root: [u8; 32],
 }
 
@@ -118,7 +118,7 @@ pub struct SnapshotCertResult {
     /// Committee member indices that signed
     pub member_indices: Vec<u8>,
     /// Aggregated BLS signature bytes
-    pub signature: [u8; 32],
+    pub signature: BlsSignature,
     /// Epoch of the certification
     pub epoch: u64,
 }

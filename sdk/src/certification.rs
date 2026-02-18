@@ -41,7 +41,7 @@ use tape_core::bft::is_supermajority;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::NodeId;
+use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 use tape_node_client::{with_retry, NodeClient, NodeError, RetryConfig, BlsSignResponse};
 
@@ -353,7 +353,7 @@ impl CertificationCollector {
         let mut failures: Vec<(NodeId, NodeSignError)> = Vec::new();
         let mut received = 0;
         let mut early_exit_triggered = false;
-        let mut expected_epoch: Option<u64> = None;
+        let mut expected_epoch: Option<EpochNumber> = None;
 
         while let Some(node_result) = rx.recv().await {
             received += 1;
@@ -364,21 +364,21 @@ impl CertificationCollector {
                     match expected_epoch {
                         None => {
                             expected_epoch = Some(response.epoch);
-                            tracing::debug!(epoch = response.epoch, "First signature epoch");
+                            tracing::debug!(epoch = response.epoch.0, "First signature epoch");
                         }
                         Some(expected) if response.epoch != expected => {
                             // Epoch mismatch - this could happen during epoch transitions
                             tracing::warn!(
                                 node_id = node_result.node_id.as_u64(),
-                                expected_epoch = expected,
-                                got_epoch = response.epoch,
+                                expected_epoch = expected.0,
+                                got_epoch = response.epoch.0,
                                 "Node returned signature for different epoch, skipping"
                             );
                             failures.push((
                                 node_result.node_id,
                                 NodeSignError::Other(format!(
                                     "epoch mismatch: expected {}, got {}",
-                                    expected, response.epoch
+                                    expected.0, response.epoch.0
                                 )),
                             ));
                             continue;
@@ -389,7 +389,7 @@ impl CertificationCollector {
                     tracing::debug!(
                         node_id = node_result.node_id.as_u64(),
                         member_idx = node_result.member_idx,
-                        epoch = response.epoch,
+                        epoch = response.epoch.0,
                         "Got signature from node"
                     );
                     successful.push((node_result.member_idx, node_result.pubkey, response));
@@ -453,11 +453,7 @@ impl CertificationCollector {
         // Extract signatures and aggregate
         let signatures: Vec<BlsSignature> = successful
             .iter()
-            .map(|(_, _, resp)| {
-                BlsSignature(tape_crypto::bls12254::min_sig::G1CompressedPoint(
-                    resp.signature,
-                ))
-            })
+            .map(|(_, _, resp)| resp.signature)
             .collect();
 
         let aggregated_signature = BlsSignature::aggregate(&signatures)
@@ -475,7 +471,7 @@ impl CertificationCollector {
             bitmap,
             signature_count,
             committee_size,
-            epoch,
+            epoch: epoch.0,
             responses,
             failures,
             early_exit: early_exit_triggered,

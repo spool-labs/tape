@@ -87,8 +87,7 @@ async fn main() -> Result<()> {
 
     // Signal handler
     let shutdown_cancel = cancel.clone();
-    let shutdown_span =
-        tracing::info_span!("tape_node_runtime", component = "shutdown", node_id = node_id);
+    let shutdown_span = tracing::info_span!("", node_id = node_id.0);
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
@@ -120,6 +119,6 @@ async fn main() -> Result<()> {
         handles.http,
     );
 
-    tracing::info!(node_id = node_id, "node stopped");
+    tracing::info!(node_id = node_id.0, "node stopped");
     Ok(())
 }

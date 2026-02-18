@@ -36,7 +36,6 @@ pub async fn run<S: Store, R: Rpc>(
     }
 
     let pubkey = context.keypair.pubkey();
-    let node_id = context.node_id();
     let (node_address, _) = node_pda(pubkey);
 
     let ix = build_epoch_sync_ix(pubkey, pubkey, node_address, epoch, &owned_spools);
@@ -47,16 +46,16 @@ pub async fn run<S: Store, R: Rpc>(
     };
     match result {
         Ok(sig) => {
-            tracing::info!(%sig, ?epoch, node_id = node_id, "sync_epoch submitted");
+            tracing::info!(%sig, epoch = epoch.as_u64(), "sync_epoch submitted");
             TaskOutcome::Success
         }
         Err(ref e) => match parse_tape_error(e) {
             Some(TapeError::AlreadySynced) => {
-                tracing::info!(node_id = node_id, "sync_epoch already completed");
+                tracing::info!("sync_epoch already completed");
                 TaskOutcome::Success
             }
             _ => {
-                tracing::warn!(node_id = node_id, error = %e, "sync_epoch submission failed");
+                tracing::warn!(error = %e, "sync_epoch submission failed");
                 TaskOutcome::Retryable(format!("sync_epoch: {e}"))
             }
         },

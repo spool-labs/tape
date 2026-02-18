@@ -34,9 +34,6 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         );
     }
 
-    harness.start_all().await.expect("start all runtimes");
-    assert!(harness.nodes().iter().all(|n| n.is_running()));
-
     {
         let scenario = harness.scenario();
         scenario.init_system(0).await.expect("init system");
@@ -53,7 +50,13 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         let join_results = scenario.join_network().await;
         assert_eq!(join_results.len(), 20);
         assert!(join_results.iter().all(|r| r.result.is_err()));
+    }
 
+    harness.start_all().await.expect("start all runtimes");
+    assert!(harness.nodes().iter().all(|n| n.is_running()));
+
+    {
+        let scenario = harness.scenario();
         scenario
             .wait_nodes_healthy(Duration::from_secs(20))
             .await
@@ -64,7 +67,7 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         assert_eq!(system.committee_next.size(), 0);
 
         scenario
-            .wait_for_all_nodes_epoch(Some(chain_epoch), Duration::from_secs(20))
+            .wait_for_all_nodes_epoch(Some(expected_epoch), Duration::from_secs(20))
             .await
             .expect("nodes should refresh on-chain epoch into memory store");
     }

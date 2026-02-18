@@ -47,7 +47,7 @@ pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
 
     let ingestor_context = context.clone();
     let ingestor_cancel = cancel.clone();
-    let ingestor_span = tracing::info_span!("tape_node_runtime", component = "ingestor", node_id = node_id);
+    let ingestor_span = tracing::info_span!("", node_id = node_id.0);
     let ingestor_handle = tokio::spawn(
         async move {
             if let Err(e) =
@@ -61,7 +61,7 @@ pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
 
     let fsm_cancel = cancel.clone();
     let fsm_context = context.clone();
-    let fsm_span = tracing::info_span!("tape_node_runtime", component = "fsm", node_id = node_id);
+    let fsm_span = tracing::info_span!("", node_id = node_id.0);
     let fsm_handle = tokio::spawn(
         async move {
             let fsm = Fsm::new(fsm_context.clone());
@@ -128,7 +128,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     let reconciler = Reconciler::new(context.clone());
     let reconciler_cancel = cancel.clone();
     let node_id = context.node_id();
-    let reconciler_span = tracing::info_span!("tape_node_runtime", component = "reconciler", node_id = node_id);
+    let reconciler_span = tracing::info_span!("", node_id = node_id.0);
     let reconciler_handle = tokio::spawn(
         async move {
             reconciler
@@ -140,7 +140,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
 
     let supervisor = Supervisor::new(context.clone(), result_tx);
     let supervisor_cancel = cancel.clone();
-    let supervisor_span = tracing::info_span!("tape_node_runtime", component = "supervisor", node_id = node_id);
+    let supervisor_span = tracing::info_span!("", node_id = node_id.0);
     let supervisor_handle = tokio::spawn(
         async move {
             supervisor.run(directive_rx, supervisor_cancel).await;
@@ -150,7 +150,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
 
     let http_ctx = context;
     let http_cancel = cancel;
-    let http_span = tracing::info_span!("tape_node_runtime", component = "http", node_id = node_id);
+    let http_span = tracing::info_span!("", node_id = node_id.0);
     let http_handle = tokio::spawn(
         async move {
             let server = HttpServer::new(http_ctx, Some(user_event_tx));

@@ -10,7 +10,6 @@ use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
 use tape_core::types::EpochNumber;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
-use tape_crypto::ed25519::{PublicKey, Signature};
 use tape_node_api::{BlsSignResponse, SignedMessage, SlicePayload, BINARY_CONTENT};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
@@ -89,11 +88,8 @@ pub async fn put_slice<S: Store, R: Rpc>(
     }
 
     // Verify Ed25519 signature over the message bytes
-    let pubkey = PublicKey::from_bytes(signed.pubkey)
-        .map_err(|_| ApiError::InvalidSignature)?;
-    let sig = Signature::from_bytes(signed.signature)
-        .map_err(|_| ApiError::InvalidSignature)?;
-    sig.verify(&signed.message, &pubkey)
+    signed.signature
+        .verify(&signed.message, &signed.pubkey)
         .map_err(|_| ApiError::InvalidSignature)?;
 
     // Check spool ownership
@@ -131,11 +127,10 @@ pub async fn put_slice<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
-        signature: sig.0 .0,
-        node_id,
-        epoch: epoch.0,
+        signature: sig,
+        node_id: state.context.node_id(),
+        epoch,
     };
 
     let resp_bytes =
@@ -219,11 +214,10 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
         .sign(&msg.to_bytes())
         .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
 
-    let node_id = state.context.node_id();
     let resp = BlsSignResponse {
-        signature: sig.0 .0,
-        node_id,
-        epoch: epoch.0,
+        signature: sig,
+        node_id: state.context.node_id(),
+        epoch,
     };
 
     let resp_bytes =

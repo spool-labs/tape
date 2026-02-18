@@ -135,7 +135,7 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
         }
     }
 
-    tracing::info!(?epoch, "refreshed on-chain state");
+    tracing::info!(epoch = epoch.as_u64(), "refreshed on-chain state");
     TaskOutcome::Success
 }
 

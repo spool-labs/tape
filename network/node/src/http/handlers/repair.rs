@@ -7,7 +7,6 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
-use tape_core::erasure::spool_for_slice;
 use tape_node_api::{RepairRequest, BINARY_CONTENT};
 use tape_slicer::ClayCoder;
 use tape_store::ops::{SliceOps, TrackOps};
@@ -49,12 +48,11 @@ pub async fn post_repair<S: Store, R: Rpc>(
 
     // Load the helper slice
     let helper_spool = request.helper_spool;
-    let helper_global = spool_for_slice(track_info.spool_group, helper_spool as usize);
 
     let slice_data = state
         .context
         .store
-        .get_slice(helper_global, track_address)
+        .get_slice(helper_spool, track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 

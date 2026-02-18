@@ -109,7 +109,6 @@ pub async fn run<S: Store, R: Rpc>(
                 };
 
                 let request = RepairRequest {
-                    lost_slice: spool,
                     helper_spool,
                     stripes: (0..track_info.stripe_count as u32)
                         .map(|s| tape_node_api::StripeSubChunkRequest {

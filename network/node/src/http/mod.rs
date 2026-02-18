@@ -497,8 +497,7 @@ mod tests {
 
         // Request sub-chunks 0 and 1 from stripe 0
         let request = RepairRequest {
-            lost_slice: 0,
-            helper_spool: helper_slice_index,
+            helper_spool,
             stripes: vec![StripeSubChunkRequest {
                 stripe: 0,
                 sub_chunks: vec![0, 1],
@@ -535,7 +534,6 @@ mod tests {
         let ctx = test_context();
 
         let request = RepairRequest {
-            lost_slice: 0,
             helper_spool: 1,
             stripes: vec![],
         };

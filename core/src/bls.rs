@@ -49,6 +49,26 @@ impl BlsPrivateKey {
 #[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
 pub struct BlsSignature(pub G1CompressedPoint);
+impl Eq for BlsSignature {}
+
+impl Serialize for BlsSignature {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0 .0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BlsSignature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = <[u8; 32]>::deserialize(deserializer)?;
+        Ok(Self(G1CompressedPoint(bytes)))
+    }
+}
 
 impl BlsSignature {
 

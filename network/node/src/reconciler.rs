@@ -392,9 +392,10 @@ mod tests {
 
     use bytemuck::Zeroable;
     use tape_api::program::tapedrive::node_pda;
-    use tape_core::bls::BlsPubkey;
+    use tape_core::bls::{BlsPubkey, BlsSignature};
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
+    use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, TrackOps};
     use tape_store::types::{NodeInfo, SnapshotCertResult, TrackInfo};
 
@@ -1049,7 +1050,7 @@ mod tests {
                 ChunkIndex(0),
                 SnapshotCertResult {
                     member_indices: vec![0, 1, 2],
-                    signature: [7u8; 32],
+                    signature: BlsSignature(G1CompressedPoint([7u8; 32])),
                     epoch: target.0,
                 },
             )
@@ -1077,7 +1078,7 @@ mod tests {
                 ChunkIndex(0),
                 SnapshotCertResult {
                     member_indices: vec![0, 1, 2],
-                    signature: [7u8; 32],
+                    signature: BlsSignature(G1CompressedPoint([7u8; 32])),
                     epoch: target.0,
                 },
             )

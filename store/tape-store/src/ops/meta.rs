@@ -359,6 +359,8 @@ impl<S: Store> MetaOps for TapeStore<S> {
 mod tests {
     use super::*;
     use store_memory::MemoryStore;
+    use tape_core::bls::BlsSignature;
+    use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -517,7 +519,7 @@ mod tests {
 
         let cert = SnapshotCertResult {
             member_indices: vec![0, 2, 5, 7],
-            signature: [0xAB; 32],
+            signature: BlsSignature(G1CompressedPoint([0xAB; 32])),
             epoch: 10,
         };
 
@@ -534,7 +536,7 @@ mod tests {
         let track = Pubkey::new_unique();
         let proof = InvalidationProof {
             bitmap: 0xFF,
-            signature: [1u8; 32],
+            signature: BlsSignature(G1CompressedPoint([1u8; 32])),
             computed_root: [2u8; 32],
         };
 

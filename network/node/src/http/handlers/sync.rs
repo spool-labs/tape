@@ -36,7 +36,7 @@ pub async fn sync_spool<S: Store, R: Rpc>(
         return Err(ApiError::NotResponsible);
     }
 
-    let cursor = request.cursor.map(Pubkey);
+    let cursor = request.cursor.map(Pubkey::new);
     let limit = (request.limit as usize).min(1000);
 
     let slices = state
