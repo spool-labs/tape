@@ -302,7 +302,7 @@ mod tests {
             .put_track(track_address, track_info.clone())
             .unwrap();
         ctx.store
-            .set_current_epoch(EpochNumber(1))
+            .set_chain_epoch(EpochNumber(1))
             .unwrap();
 
         // Create a valid SlicePayload with merkle proof

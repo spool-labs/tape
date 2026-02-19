@@ -21,7 +21,7 @@ pub async fn run<S: Store, R: Rpc>(
     cancel: CancellationToken,
 ) -> TaskOutcome {
     // Get current committee for finding helper nodes
-    let epoch = match context.store.get_current_epoch() {
+    let epoch = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("get epoch: {e}")),
@@ -180,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_empty_queue() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
         ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
 
         let cancel = CancellationToken::new();
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_partial_failure() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
         // Empty committee → no helpers available
         ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
 

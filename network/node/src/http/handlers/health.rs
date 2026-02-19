@@ -38,7 +38,7 @@ pub async fn stats<S: Store, R: Rpc>(
 
     let store = &state.context.store;
     let current_epoch = store
-        .get_current_epoch()
+        .get_chain_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .map(|e| e.0)
         .unwrap_or(0);

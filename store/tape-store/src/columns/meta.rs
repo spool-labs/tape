@@ -3,14 +3,14 @@
 //! Stores key-value pairs for node configuration and state:
 //! - node_status: NodeStatus (wincode-serialized)
 //! - cluster_hash: Hash (32 bytes)
-//! - current_epoch: EpochNumber
+//! - chain_epoch: EpochNumber
 //! - node_address: Pubkey
 
 use store::Column;
 
 /// Column family for node metadata
 ///
-/// Key: String (e.g., "node_status", "cluster_hash", "current_epoch", "node_address")
+/// Key: String (e.g., "node_status", "cluster_hash", "chain_epoch", "node_address")
 /// Value: Vec<u8> (serialized data, format depends on key)
 pub struct MetaCol;
 

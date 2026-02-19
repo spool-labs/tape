@@ -70,7 +70,7 @@ fn all_column_families() {
 
     // Meta - test via MetaOps
     store.set_node_status(NodeStatus::Active).unwrap();
-    store.set_current_epoch(EpochNumber(100)).unwrap();
+    store.set_chain_epoch(EpochNumber(100)).unwrap();
 
     // Tracks
     let track_address = Pubkey::new_unique();
@@ -148,7 +148,7 @@ fn all_column_families() {
         Some(NodeStatus::Active)
     );
     assert_eq!(
-        store.get_current_epoch().unwrap(),
+        store.get_chain_epoch().unwrap(),
         Some(EpochNumber(100))
     );
     assert!(store.get_track(track_address).unwrap().is_some());

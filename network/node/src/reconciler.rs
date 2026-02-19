@@ -49,6 +49,8 @@ pub struct Reconciler<S: Store, R: Rpc> {
     scheduled_epochs: HashMap<TaskKey, EpochNumber>,
     /// Tracks which one-shot lifecycle tasks completed for the current epoch.
     lifecycle: LifecycleEpochState,
+    /// Tasks that must be explicitly canceled to clear supervisor retry state.
+    force_cancel: HashSet<TaskKey>,
 }
 
 impl<S: Store, R: Rpc> Reconciler<S, R> {
@@ -59,6 +61,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             scheduled: HashSet::new(),
             scheduled_epochs: HashMap::new(),
             lifecycle: LifecycleEpochState::new(EpochNumber(0)),
+            force_cancel: HashSet::new(),
         }
     }
 
@@ -194,6 +197,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         self.desired.insert(TaskKey::RefreshOnchainState);
         if matches!(self.node_status(), NodeStatus::Active)
             && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch)
+            && self.chain_phase_is_active()
             && self.leader_allows_advance_epoch()
         {
             self.desired.insert(TaskKey::AdvanceEpoch);
@@ -205,7 +209,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     fn leader_allows_advance_epoch(&self) -> bool {
         const TAKEOVER_WINDOW_SECS: u64 = 15;
 
-        let epoch = match self.context.store.get_current_epoch() {
+        let epoch = match self.context.store.get_chain_epoch() {
             Ok(Some(e)) => e,
             _ => return true, // fallback: allow
         };
@@ -229,7 +233,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     fn epoch_elapsed(&self) -> Duration {
-        let epoch = match self.context.store.get_current_epoch().ok().flatten() {
+        let epoch = match self.context.store.get_chain_epoch().ok().flatten() {
             Some(e) => e,
             None => return Duration::from_secs(0),
         };
@@ -244,11 +248,18 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby)
     }
 
+    fn chain_phase_is_active(&self) -> bool {
+        matches!(
+            self.context.store.get_chain_epoch_phase().ok().flatten(),
+            Some(EpochPhase::Active)
+        )
+    }
+
     fn needs_snapshot_bootstrap(&self) -> bool {
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
         }
-        let current_epoch = self.context.store.get_current_epoch().ok().flatten();
+        let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
         let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
         matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
     }
@@ -303,12 +314,21 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             return;
         }
 
+        // Keep local lifecycle epoch (reconciler-owned) aligned to chain epoch,
+        // even when epoch changes arrive via refresh/replay without EpochAdvanced state changes.
+        if self.lifecycle.epoch() != epoch {
+            self.force_cancel_epoch_scoped_tasks();
+            self.lifecycle.reset(epoch);
+            self.context.snapshot_progress.lock().unwrap().reset(epoch);
+            self.context.epoch_clock.lock().unwrap().reset(epoch);
+        }
+
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
         self.desired.remove(&TaskKey::SyncEpoch);
         self.desired.remove(&TaskKey::AdvancePool);
         self.desired.remove(&TaskKey::JoinNetwork);
 
-        let phase = self.context.store.get_current_epoch_phase().ok().flatten();
+        let phase = self.context.store.get_chain_epoch_phase().ok().flatten();
         match phase {
             Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
                 if !self.lifecycle.is_done(&TaskKey::SyncEpoch) {
@@ -430,7 +450,10 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         if all_onchain {
             self.scheduled.remove(&TaskKey::AdvanceEpoch);
             self.scheduled_epochs.remove(&TaskKey::AdvanceEpoch);
-            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) && self.leader_allows_advance_epoch() {
+            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch)
+                && self.chain_phase_is_active()
+                && self.leader_allows_advance_epoch()
+            {
                 self.desired.insert(TaskKey::AdvanceEpoch);
             }
         }
@@ -458,7 +481,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 // After state refresh, reconcile spools (committee may have changed)
                 if matches!(key, TaskKey::RefreshOnchainState) {
                     self.reconcile_spools();
-                    if let Ok(Some(epoch)) = self.context.store.get_current_epoch() {
+                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                         self.context.epoch_clock.lock().unwrap().elapsed_or_reset(epoch);
                         self.schedule_lifecycle(epoch);
                     }
@@ -468,7 +491,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 }
                 // After SyncEpoch, unlock AdvancePool/JoinNetwork
                 if matches!(key, TaskKey::SyncEpoch) {
-                    if let Ok(Some(epoch)) = self.context.store.get_current_epoch() {
+                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                         self.schedule_lifecycle(epoch);
                     }
                 }
@@ -483,7 +506,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                         | TaskKey::RegisterSnapshot
                         | TaskKey::CertifySnapshot
                 ) && !stale_epoch_result {
-                    if let Ok(Some(epoch)) = self.context.store.get_current_epoch() {
+                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                         self.schedule_snapshot_pipeline(epoch);
                     }
                 }
@@ -512,6 +535,21 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         )
     }
 
+    fn force_cancel_epoch_scoped_tasks(&mut self) {
+        let keys: Vec<TaskKey> = self
+            .scheduled
+            .iter()
+            .filter(|k| Self::is_epoch_scoped_task(k))
+            .cloned()
+            .collect();
+        for key in keys {
+            self.desired.remove(&key);
+            self.scheduled.remove(&key);
+            self.scheduled_epochs.remove(&key);
+            self.force_cancel.insert(key);
+        }
+    }
+
     fn is_stale_epoch_result(&self, key: &TaskKey) -> bool {
         if !Self::is_epoch_scoped_task(key) {
             return false;
@@ -519,7 +557,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         let Some(task_epoch) = self.scheduled_epochs.get(key).copied() else {
             return false;
         };
-        let current = self.context.store.get_current_epoch().ok().flatten();
+        let current = self.context.store.get_chain_epoch().ok().flatten();
         match current {
             Some(current_epoch) => task_epoch != current_epoch,
             None => true,
@@ -527,6 +565,14 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     async fn emit_directives(&mut self, tx: &mpsc::Sender<Directive>) {
+        // Force-cancel first so epoch-scoped retries/running tasks are reset before any reschedule.
+        let forced: Vec<_> = self.force_cancel.drain().collect();
+        for key in forced {
+            if tx.send(Directive::Cancel(key)).await.is_err() {
+                return;
+            }
+        }
+
         // Schedule: in desired but not yet scheduled
         let to_schedule: Vec<_> = self.desired.difference(&self.scheduled).cloned().collect();
         for key in to_schedule {
@@ -535,7 +581,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             }
             self.scheduled.insert(key.clone());
             if Self::is_epoch_scoped_task(&key) {
-                if let Ok(Some(epoch)) = self.context.store.get_current_epoch() {
+                if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                     self.scheduled_epochs.insert(key.clone(), epoch);
                 }
             }
@@ -946,7 +992,7 @@ mod tests {
     async fn bootstrap_trigger() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         // No sync cursor → needs bootstrap
 
         let mut reconciler = Reconciler::new(ctx);
@@ -961,7 +1007,7 @@ mod tests {
     async fn bootstrap_not_needed() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
             .set_sync_cursor(tape_core::types::SlotNumber(500))
             .unwrap();
@@ -1016,9 +1062,9 @@ mod tests {
     async fn schedules_pool() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(2)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(2)).unwrap();
         ctx.store
-            .set_current_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx.clone());
@@ -1032,7 +1078,7 @@ mod tests {
 
         // Complete SyncEpoch — AdvancePool unlocks
         ctx.store
-            .set_current_epoch_phase(tape_core::system::EpochPhase::Settling)
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Settling)
             .unwrap();
         reconciler.desired.insert(TaskKey::SyncEpoch);
         reconciler.scheduled.insert(TaskKey::SyncEpoch);
@@ -1075,6 +1121,10 @@ mod tests {
     async fn periodic_refresh() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        ctx.store
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Active)
+            .unwrap();
         let mut reconciler = Reconciler::new(ctx);
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
@@ -1090,6 +1140,91 @@ mod tests {
 
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
         assert!(scheduled.contains(&TaskKey::AdvanceEpoch));
+    }
+
+    #[tokio::test]
+    async fn periodic_active_requires_active_phase_for_advance() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        ctx.store
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+
+        reconciler.periodic_tasks();
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut scheduled = HashSet::new();
+        while let Ok(d) = directive_rx.try_recv() {
+            if let Directive::Schedule(key) = d {
+                scheduled.insert(key);
+            }
+        }
+
+        assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
+        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_resets_on_chain_epoch_mismatch_without_event() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx.clone());
+        reconciler.lifecycle.reset(EpochNumber(3));
+        reconciler.lifecycle.mark_done(&TaskKey::SyncEpoch);
+        assert!(reconciler.lifecycle.is_done(&TaskKey::SyncEpoch));
+
+        ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
+        ctx.store
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .unwrap();
+
+        reconciler.schedule_lifecycle(EpochNumber(4));
+
+        assert_eq!(reconciler.lifecycle.epoch(), EpochNumber(4));
+        assert!(!reconciler.lifecycle.is_done(&TaskKey::SyncEpoch));
+        assert!(reconciler.desired.contains(&TaskKey::SyncEpoch));
+    }
+
+    #[tokio::test]
+    async fn mismatch_forces_cancel_then_reschedule_epoch_tasks() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
+        ctx.store
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Active)
+            .unwrap();
+
+        let mut reconciler = Reconciler::new(ctx);
+        // Simulate an in-flight epoch-scoped task carrying old retry state.
+        reconciler.lifecycle.reset(EpochNumber(3));
+        reconciler.scheduled.insert(TaskKey::AdvanceEpoch);
+        reconciler.desired.insert(TaskKey::AdvanceEpoch);
+        reconciler
+            .scheduled_epochs
+            .insert(TaskKey::AdvanceEpoch, EpochNumber(3));
+
+        reconciler.schedule_lifecycle(EpochNumber(4));
+
+        let (directive_tx, mut directive_rx) = mpsc::channel(16);
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut saw_cancel = false;
+        let mut saw_schedule = false;
+        while let Ok(d) = directive_rx.try_recv() {
+            match d {
+                Directive::Cancel(TaskKey::AdvanceEpoch) => saw_cancel = true,
+                Directive::Schedule(TaskKey::AdvanceEpoch) => saw_schedule = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_cancel, "expected forced cancel for epoch-scoped task");
+        assert!(saw_schedule, "expected fresh schedule after forced cancel");
     }
 
     #[tokio::test]
@@ -1130,9 +1265,9 @@ mod tests {
     async fn stale_lifecycle_success_does_not_mark_done() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
-            .set_current_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1198,7 +1333,7 @@ mod tests {
     async fn refresh_lifecycle() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
         reconciler.desired.insert(TaskKey::RefreshOnchainState);
@@ -1334,7 +1469,7 @@ mod tests {
     async fn refresh_rebuilds_snapshot_plan_from_stage() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store

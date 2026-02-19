@@ -23,7 +23,7 @@ pub async fn run<S: Store, R: Rpc>(
     cancel: CancellationToken,
 ) -> TaskOutcome {
     // Read current epoch
-    let epoch = match context.store.get_current_epoch() {
+    let epoch = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),

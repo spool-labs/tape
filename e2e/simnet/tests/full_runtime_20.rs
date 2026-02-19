@@ -76,7 +76,7 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
         let epoch = node
             .context()
             .store
-            .get_current_epoch()
+            .get_chain_epoch()
             .expect("read current epoch");
         assert_eq!(epoch, Some(expected_epoch));
 

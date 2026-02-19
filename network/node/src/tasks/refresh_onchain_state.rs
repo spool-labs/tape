@@ -31,7 +31,7 @@ pub async fn run<S: Store, R: Rpc>(
     {
         let in_committee = context
             .store
-            .get_current_epoch()
+            .get_chain_epoch()
             .ok()
             .flatten()
             .and_then(|epoch| context.store.get_committee(epoch).ok().flatten())
@@ -42,8 +42,8 @@ pub async fn run<S: Store, R: Rpc>(
         let min_interval = Duration::from_secs(if in_committee { COMMITTEE_REFRESH_SECS } else { STANDBY_REFRESH_SECS });
         let throttle = context.refresh_throttle.lock().unwrap();
         if throttle.should_skip(min_interval) {
-            let local_epoch = context.store.get_current_epoch().ok().flatten();
-            let epoch_stable = local_epoch
+            let chain_epoch = context.store.get_chain_epoch().ok().flatten();
+            let epoch_stable = chain_epoch
                 .map(|e| !throttle.epoch_changed(e))
                 .unwrap_or(false);
             if epoch_stable {
@@ -87,12 +87,12 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
 ) -> TaskOutcome {
     let epoch = epoch_account.id;
 
-    if let Err(e) = context.store.set_current_epoch(epoch) {
-        return TaskOutcome::Retryable(format!("set_current_epoch: {e}"));
+    if let Err(e) = context.store.set_chain_epoch(epoch) {
+        return TaskOutcome::Retryable(format!("set_chain_epoch: {e}"));
     }
     let phase = EpochPhase::try_from(epoch_account.state.phase).unwrap_or(EpochPhase::Unknown);
-    if let Err(e) = context.store.set_current_epoch_phase(phase) {
-        return TaskOutcome::Retryable(format!("set_current_epoch_phase: {e}"));
+    if let Err(e) = context.store.set_chain_epoch_phase(phase) {
+        return TaskOutcome::Retryable(format!("set_chain_epoch_phase: {e}"));
     }
 
     if let Err(e) = context.store.set_epoch_nonce(epoch, epoch_account.nonce) {

@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Metadata via MetaOps
     store.set_node_status(NodeStatus::Active)?;
-    store.set_current_epoch(EpochNumber(100))?;
+    store.set_chain_epoch(EpochNumber(100))?;
     let status = store.get_node_status()?;
     println!("Node status: {:?}", status);
 
@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify storage
     println!("\nFinal state:");
     println!("  Node status: {:?}", store.get_node_status()?);
-    println!("  Current epoch: {:?}", store.get_current_epoch()?);
+    println!("  Current epoch: {:?}", store.get_chain_epoch()?);
     println!(
         "  Has tape info: {}",
         store.get_tape(tape_address)?.is_some()

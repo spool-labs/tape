@@ -69,13 +69,13 @@ fn main() -> Result<()> {
 
     // MetaOps - node state
     store.set_node_status(NodeStatus::Active)?;
-    store.set_current_epoch(EpochNumber(100))?;
+    store.set_chain_epoch(EpochNumber(100))?;
     store.set_sync_cursor(SlotNumber(12345))?;
     println!("Set node to Active, epoch 100, sync cursor 12345");
 
     // Verify meta state
     let status = store.get_node_status()?.unwrap();
-    let current_epoch = store.get_current_epoch()?.unwrap();
+    let current_epoch = store.get_chain_epoch()?.unwrap();
     let cursor = store.get_sync_cursor()?.unwrap();
     println!(
         "Node status: {:?}, epoch: {:?}, cursor: {:?}",

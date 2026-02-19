@@ -247,8 +247,8 @@ impl<'a> SimnetScenario<'a> {
                 let got = node
                     .context()
                     .store
-                    .get_current_epoch()
-                    .with_context(|| format!("node {i} get_current_epoch"))?;
+                    .get_chain_epoch()
+                    .with_context(|| format!("node {i} get_chain_epoch"))?;
                 last_seen.push(got);
 
                 match expected {

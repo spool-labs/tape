@@ -247,7 +247,7 @@ mod tests {
 
         // Verify store state
         assert_eq!(
-            ctx.store.get_current_epoch().unwrap(),
+            ctx.store.get_chain_epoch().unwrap(),
             Some(EpochNumber(1))
         );
         assert_eq!(
@@ -311,7 +311,7 @@ mod tests {
 
         // Active at epoch 5, no cursor → bootstrap needed
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(5)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(5)).unwrap();
 
         let (block_tx, _block_rx) =
             mpsc::channel::<crate::ingestor::IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);

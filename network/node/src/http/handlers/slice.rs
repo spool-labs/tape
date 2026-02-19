@@ -116,7 +116,7 @@ pub async fn put_slice<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.store.get_current_epoch()
+    let epoch = state.context.store.get_chain_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .unwrap_or(EpochNumber(0));
 
@@ -203,7 +203,7 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.store.get_current_epoch()
+    let epoch = state.context.store.get_chain_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .unwrap_or(EpochNumber(0));
 

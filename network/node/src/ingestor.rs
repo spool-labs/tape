@@ -53,7 +53,7 @@ impl BlockIngestor {
                 .ok()
                 .flatten()
                 .unwrap_or(NodeStatus::Standby);
-            let epoch = context.store.get_current_epoch().ok().flatten();
+            let epoch = context.store.get_chain_epoch().ok().flatten();
 
             if let Some(slot) = cursor {
                 next_slot = SlotNumber(slot.0 + 1);
@@ -168,7 +168,7 @@ mod tests {
 
         // Active at epoch 5 with no cursor → needs bootstrap
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_current_epoch(EpochNumber(5)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(5)).unwrap();
 
         let (tx, _rx) = mpsc::channel(4);
 

@@ -249,9 +249,9 @@ mod tests {
         );
 
         // Current epoch
-        store.set_current_epoch(EpochNumber(100)).unwrap();
+        store.set_chain_epoch(EpochNumber(100)).unwrap();
         assert_eq!(
-            store.get_current_epoch().unwrap(),
+            store.get_chain_epoch().unwrap(),
             Some(EpochNumber(100))
         );
 

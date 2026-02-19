@@ -19,7 +19,7 @@ pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match context.store.get_current_epoch() {
+    let epoch = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("get epoch: {e}")),

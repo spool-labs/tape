@@ -30,7 +30,7 @@ pub async fn get_signature<S: Store, R: Rpc>(
     let epoch = state
         .context
         .store
-        .get_current_epoch()
+        .get_chain_epoch()
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .unwrap_or(EpochNumber(0));
 

@@ -3,7 +3,7 @@
 //! Provides storage for:
 //! - Node status (wincode-serialized)
 //! - Cluster genesis hash
-//! - Current epoch number
+//! - Chain epoch number
 //! - Node address
 //! - Sync cursor (last processed slot)
 //! - GC progress (started/completed epochs)
@@ -23,8 +23,8 @@ use tape_core::types::NodeId;
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
-const CURRENT_EPOCH_KEY: &str = "current_epoch";
-const CURRENT_EPOCH_PHASE_KEY: &str = "current_epoch_phase";
+const CHAIN_EPOCH_KEY: &str = "chain_epoch";
+const CHAIN_EPOCH_PHASE_KEY: &str = "chain_epoch_phase";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
 
@@ -42,11 +42,11 @@ pub trait MetaOps {
     fn get_cluster_hash(&self) -> Result<Option<Hash>>;
     fn set_cluster_hash(&self, hash: Hash) -> Result<()>;
 
-    // Current epoch
-    fn get_current_epoch(&self) -> Result<Option<EpochNumber>>;
-    fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()>;
-    fn get_current_epoch_phase(&self) -> Result<Option<EpochPhase>>;
-    fn set_current_epoch_phase(&self, phase: EpochPhase) -> Result<()>;
+    // Chain epoch
+    fn get_chain_epoch(&self) -> Result<Option<EpochNumber>>;
+    fn set_chain_epoch(&self, epoch: EpochNumber) -> Result<()>;
+    fn get_chain_epoch_phase(&self) -> Result<Option<EpochPhase>>;
+    fn set_chain_epoch_phase(&self, phase: EpochPhase) -> Result<()>;
 
     // Node address
     fn get_node_address(&self) -> Result<Option<Pubkey>>;
@@ -142,8 +142,8 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_current_epoch(&self) -> Result<Option<EpochNumber>> {
-        let key = CURRENT_EPOCH_KEY.to_string();
+    fn get_chain_epoch(&self) -> Result<Option<EpochNumber>> {
+        let key = CHAIN_EPOCH_KEY.to_string();
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 8 {
@@ -161,15 +161,15 @@ impl<S: Store> MetaOps for TapeStore<S> {
         }
     }
 
-    fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()> {
-        let key = CURRENT_EPOCH_KEY.to_string();
+    fn set_chain_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let key = CHAIN_EPOCH_KEY.to_string();
         let bytes = epoch.as_u64().to_le_bytes().to_vec();
         self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
-    fn get_current_epoch_phase(&self) -> Result<Option<EpochPhase>> {
-        let key = CURRENT_EPOCH_PHASE_KEY.to_string();
+    fn get_chain_epoch_phase(&self) -> Result<Option<EpochPhase>> {
+        let key = CHAIN_EPOCH_PHASE_KEY.to_string();
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 if bytes.len() != 8 {
@@ -189,8 +189,8 @@ impl<S: Store> MetaOps for TapeStore<S> {
         }
     }
 
-    fn set_current_epoch_phase(&self, phase: EpochPhase) -> Result<()> {
-        let key = CURRENT_EPOCH_PHASE_KEY.to_string();
+    fn set_chain_epoch_phase(&self, phase: EpochPhase) -> Result<()> {
+        let key = CHAIN_EPOCH_PHASE_KEY.to_string();
         let bytes = u64::from(phase).to_le_bytes().to_vec();
         self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
@@ -487,24 +487,24 @@ mod tests {
     }
 
     #[test]
-    fn test_current_epoch_roundtrip() {
+    fn test_chain_epoch_roundtrip() {
         let store = test_store();
         let epoch = EpochNumber(12345);
 
-        assert!(store.get_current_epoch().unwrap().is_none());
+        assert!(store.get_chain_epoch().unwrap().is_none());
 
-        store.set_current_epoch(epoch).unwrap();
-        assert_eq!(store.get_current_epoch().unwrap(), Some(epoch));
+        store.set_chain_epoch(epoch).unwrap();
+        assert_eq!(store.get_chain_epoch().unwrap(), Some(epoch));
     }
 
     #[test]
-    fn test_current_epoch_phase_roundtrip() {
+    fn test_chain_epoch_phase_roundtrip() {
         let store = test_store();
 
-        assert!(store.get_current_epoch_phase().unwrap().is_none());
+        assert!(store.get_chain_epoch_phase().unwrap().is_none());
 
-        store.set_current_epoch_phase(EpochPhase::Syncing).unwrap();
-        assert_eq!(store.get_current_epoch_phase().unwrap(), Some(EpochPhase::Syncing));
+        store.set_chain_epoch_phase(EpochPhase::Syncing).unwrap();
+        assert_eq!(store.get_chain_epoch_phase().unwrap(), Some(EpochPhase::Syncing));
     }
 
     #[test]

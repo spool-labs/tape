@@ -96,7 +96,7 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let current = match context.store.get_current_epoch() {
+    let current = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
@@ -310,7 +310,7 @@ pub async fn run_build<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let current = match context.store.get_current_epoch() {
+    let current = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
@@ -461,7 +461,7 @@ pub async fn run_certify<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let current = match context.store.get_current_epoch() {
+    let current = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
@@ -841,7 +841,7 @@ pub async fn run_register<S: Store, R: Rpc>(
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::signer::Signer;
 
-    let current = match context.store.get_current_epoch() {
+    let current = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
@@ -974,7 +974,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::signer::Signer;
 
-    let current = match context.store.get_current_epoch() {
+    let current = match context.store.get_chain_epoch() {
         Ok(Some(e)) => e,
         Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
         Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
@@ -1176,7 +1176,7 @@ mod tests {
     #[tokio::test]
     async fn build_waits_epoch2() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run_build(ctx, cancel).await;
@@ -1187,7 +1187,7 @@ mod tests {
     async fn build_empty_epoch() {
         let ctx = test_context();
         let target = EpochNumber(2);
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run_build(ctx.clone(), cancel).await;
@@ -1204,7 +1204,7 @@ mod tests {
     async fn build_stores_commitments() {
         let ctx = test_context();
         let target = EpochNumber(2);
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         // Populate event log
         ctx.store
@@ -1251,7 +1251,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_early_epoch() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(1)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run_bootstrap(ctx, cancel).await;
@@ -1261,7 +1261,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_no_committee() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run_bootstrap(ctx, cancel).await;
@@ -1271,7 +1271,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_idempotent() {
         let ctx = test_context();
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         // Simulate an already-synced node
         ctx.store.set_sync_cursor(SlotNumber(500)).unwrap();
 
@@ -1284,7 +1284,7 @@ mod tests {
     async fn build_idempotent() {
         let ctx = test_context();
         let target = EpochNumber(2);
-        ctx.store.set_current_epoch(EpochNumber(3)).unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         // Pre-set commitment for chunk 0
         ctx.store
@@ -1338,7 +1338,7 @@ mod tests {
         let ctx = test_context();
         let current = EpochNumber(3);
         let target = EpochNumber(2);
-        ctx.store.set_current_epoch(current).unwrap();
+        ctx.store.set_chain_epoch(current).unwrap();
 
         let (node_address, _) = node_pda(ctx.keypair.pubkey());
         ctx.store

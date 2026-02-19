@@ -118,7 +118,7 @@ async fn full_runtime_bft_epoch3() {
         let current = node
             .context()
             .store
-            .get_current_epoch()
+            .get_chain_epoch()
             .expect("read node epoch");
         assert_eq!(current, Some(final_epoch), "honest node {index} epoch mismatch");
 

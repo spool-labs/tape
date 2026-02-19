@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set some metadata
     primary.set_node_status(NodeStatus::Active)?;
-    primary.set_current_epoch(EpochNumber(100))?;
+    primary.set_chain_epoch(EpochNumber(100))?;
     println!("Primary: created 3 tracks");
 
     // Read-only replica (static snapshot)

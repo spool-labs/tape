@@ -110,7 +110,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         let mut current_epoch = self
             .context
             .store
-            .get_current_epoch()?
+            .get_chain_epoch()?
             .unwrap_or(EpochNumber(0));
         for instruction in &block.instructions {
             self.apply_instruction(instruction, block.slot, &mut changes, &mut current_epoch)?;
@@ -182,8 +182,8 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         current_epoch: &mut EpochNumber,
     ) -> Result<(), FsmError> {
         let old_epoch = *current_epoch;
-        self.context.store.set_current_epoch(event.new_epoch)?;
-        self.context.store.set_current_epoch_phase(EpochPhase::Syncing)?;
+        self.context.store.set_chain_epoch(event.new_epoch)?;
+        self.context.store.set_chain_epoch_phase(EpochPhase::Syncing)?;
         self.context.store.set_epoch_nonce(event.new_epoch, event.nonce)?;
         self.context
             .store
@@ -556,7 +556,10 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     ) -> Result<(), FsmError> {
         match event {
             ReplayableEvent::AdvanceEpoch { new_epoch, .. } => {
-                self.context.store.set_current_epoch(*new_epoch)?;
+                self.context.store.set_chain_epoch(*new_epoch)?;
+                self.context
+                    .store
+                    .set_chain_epoch_phase(EpochPhase::Unknown)?;
             }
             ReplayableEvent::RegisterTrack { track, event_data } => {
                 let track_key: tape_store::types::Pubkey =
@@ -835,7 +838,7 @@ mod tests {
             StateChange::EpochAdvanced { epoch } if *epoch == EpochNumber(1)
         ));
         assert_eq!(
-            ctx.store.get_current_epoch().unwrap(),
+            ctx.store.get_chain_epoch().unwrap(),
             Some(EpochNumber(1))
         );
     }
@@ -1076,7 +1079,7 @@ mod tests {
         fsm.replay_snapshot(&log).unwrap();
 
         assert_eq!(
-            ctx.store.get_current_epoch().unwrap(),
+            ctx.store.get_chain_epoch().unwrap(),
             Some(EpochNumber(5))
         );
     }
