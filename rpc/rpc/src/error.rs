@@ -87,6 +87,14 @@ impl RpcError {
             RpcError::Internal(_) => "internal",
         }
     }
+
+    /// Check if this error indicates a skipped slot.
+    pub fn is_skipped_slot(&self) -> bool {
+        match self {
+            RpcError::Request(msg) => is_skipped_slot_message(msg),
+            _ => false,
+        }
+    }
 }
 
 /// Check if error message indicates a retriable condition
@@ -114,6 +122,13 @@ fn is_endpoint_error_message(msg: &str) -> bool {
         || msg.contains("503")
         || msg.contains("504")
         || msg.contains("429")
+}
+
+fn is_skipped_slot_message(msg: &str) -> bool {
+    let msg = msg.to_lowercase();
+    msg.contains("slotskipped")
+        || msg.contains("slot was skipped")
+        || msg.contains("skipped")
 }
 
 #[cfg(test)]
@@ -153,5 +168,13 @@ mod tests {
         assert!(RpcError::Request("connection reset".to_string()).is_retriable());
         assert!(RpcError::Request("rate limit exceeded".to_string()).is_retriable());
         assert!(!RpcError::Request("invalid account".to_string()).is_retriable());
+    }
+
+    #[test]
+    fn test_skipped_slot() {
+        assert!(RpcError::Request("SlotSkipped: slot 10 was skipped or not produced".to_string()).is_skipped_slot());
+        assert!(RpcError::Request("slot was skipped".to_string()).is_skipped_slot());
+        assert!(!RpcError::Request("connection reset".to_string()).is_skipped_slot());
+        assert!(!RpcError::Timeout(Duration::from_secs(1)).is_skipped_slot());
     }
 }

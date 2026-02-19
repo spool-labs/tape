@@ -4,14 +4,13 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signer::Signer;
 use store::Store;
-use tape_api::instruction::build_invalidate_track_ix;
-use tape_api::program::tapedrive::{epoch_pda, system_pda, CommitteeBitmap};
+use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_crypto::Hash;
 use tape_store::ops::{MetaOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
+use crate::chain::submit_invalidate_track;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 
@@ -45,27 +44,20 @@ pub async fn run<S: Store, R: Rpc>(
     }
 
     let tape_address: Pubkey = track_info.tape_address.into();
-    let (system_address, _) = system_pda();
-    let (epoch_address, _) = epoch_pda();
-    let fee_payer = context.keypair.pubkey();
 
     let bitmap: CommitteeBitmap = bytemuck::cast(proof.bitmap);
     let signature = proof.signature;
     let computed_root = Hash(proof.computed_root);
 
-    let ix = build_invalidate_track_ix(
-        fee_payer,
-        system_address,
-        epoch_address,
-        tape_address,
-        track,
-        bitmap,
-        signature,
-        computed_root,
-    );
-
     let result = tokio::select! {
-        r = context.rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        r = submit_invalidate_track(
+            &context,
+            tape_address,
+            track,
+            bitmap,
+            signature,
+            computed_root,
+        ) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
     match result {

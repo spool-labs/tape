@@ -10,12 +10,14 @@
 //! - **`http`**: Axum-based HTTP server for node-to-node and public APIs
 
 pub mod core;
+pub mod chain;
 pub mod fsm;
 pub mod http;
 pub mod ingestor;
 pub mod peers;
 pub mod pipeline;
 pub mod reconciler;
+pub mod snapshot;
 pub mod state;
 pub mod supervisor;
 pub mod tasks;

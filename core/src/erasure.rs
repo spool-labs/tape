@@ -52,6 +52,15 @@ pub fn spool_for_slice(group: SpoolGroup, slice_in_group: usize) -> SpoolIndex {
     (group as usize * SPOOL_GROUP_SIZE + slice_in_group) as SpoolIndex
 }
 
+/// Get the slice index within a group for a spool, if the spool belongs to the group.
+#[inline]
+pub fn slice_for_spool(group: SpoolGroup, spool: SpoolIndex) -> Option<usize> {
+    if group_for_spool(spool) != group {
+        return None;
+    }
+    Some(spool as usize % SPOOL_GROUP_SIZE)
+}
+
 /// Check if a spool belongs to a given group.
 #[inline]
 pub fn spool_in_group(spool: SpoolIndex, group: SpoolGroup) -> bool {
@@ -114,5 +123,14 @@ mod tests {
         assert!(!spool_in_group(20, 0));
         assert!(spool_in_group(20, 1));
         assert!(spool_in_group(999, 49));
+    }
+
+    #[test]
+    fn test_slice_for_spool() {
+        assert_eq!(slice_for_spool(0, 0), Some(0));
+        assert_eq!(slice_for_spool(0, 19), Some(19));
+        assert_eq!(slice_for_spool(1, 20), Some(0));
+        assert_eq!(slice_for_spool(1, 39), Some(19));
+        assert_eq!(slice_for_spool(0, 20), None);
     }
 }

@@ -10,7 +10,7 @@
 //! the appropriate semaphore, and dispatches to workers. On retryable failure,
 //! `BackoffConfig` computes the next delay and the item is pushed back to the heap.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,16 +21,20 @@ use store::Store;
 use tape_core::spooler::SpoolIndex;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
+use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use rand::Rng;
-
-use crate::core::{BackoffConfig, NodeContext};
+use crate::core::{NodeContext, backoff_for, compute_delay};
 use crate::peers::PeerHandle;
 use crate::reconciler::Directive;
+use crate::tasks::execute_task;
 
-/// Identifies a scheduled or running task.
+const FAR_FUTURE_SECS: u64 = 365 * 24 * 3600;
+const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
+
+pub use crate::core::TaskCategory;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TaskKey {
     /// Advance the on-chain epoch.
@@ -64,7 +68,7 @@ pub enum TaskKey {
 }
 
 impl TaskKey {
-    fn category(&self) -> TaskCategory {
+    pub fn category(&self) -> TaskCategory {
         match self {
             TaskKey::AdvanceEpoch
             | TaskKey::SyncEpoch
@@ -73,20 +77,15 @@ impl TaskKey {
             | TaskKey::RegisterSnapshot
             | TaskKey::CertifySnapshot
             | TaskKey::InvalidateTrack { .. } => TaskCategory::SolanaTx,
-
-            TaskKey::SpoolSync { .. }
-            | TaskKey::SpoolRecovery { .. }
-            | TaskKey::RecoveryScan { .. } => TaskCategory::PeerHttp,
-
+            TaskKey::SpoolSync { .. } | TaskKey::SpoolRecovery { .. } | TaskKey::RecoveryScan { .. } => {
+                TaskCategory::PeerHttp
+            }
             TaskKey::SnapshotBuild | TaskKey::SnapshotCertify => TaskCategory::CpuHeavy,
-
             TaskKey::SnapshotBootstrap => TaskCategory::PeerHttp,
             TaskKey::RefreshOnchainState => TaskCategory::Internal,
         }
     }
 
-    /// One-shot tasks complete once and are removed from desired.
-    /// Continuous tasks remain desired until state changes remove them.
     pub fn is_one_shot(&self) -> bool {
         matches!(
             self,
@@ -106,19 +105,6 @@ impl TaskKey {
                 | TaskKey::SpoolSync { .. }
         )
     }
-}
-
-/// Classifies tasks for concurrency limiting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCategory {
-    /// Solana transaction submission (semaphore: 5)
-    SolanaTx,
-    /// HTTP calls to peer nodes (semaphore: 50)
-    PeerHttp,
-    /// CPU-heavy work like erasure coding (semaphore: num_cpus)
-    CpuHeavy,
-    /// Internal bookkeeping with no concurrency limit
-    Internal,
 }
 
 /// Outcome of a single task execution attempt.
@@ -141,89 +127,6 @@ pub enum TaskResult {
     RetryableError(TaskKey, String),
     /// Task failed permanently.
     PermanentError(TaskKey, String),
-}
-
-/// Entry in the retry heap.
-struct RetryEntry {
-    due: tokio::time::Instant,
-    key: TaskKey,
-    attempt: u32,
-}
-
-impl PartialEq for RetryEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.due == other.due
-    }
-}
-
-impl Eq for RetryEntry {}
-
-impl PartialOrd for RetryEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for RetryEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.due.cmp(&other.due)
-    }
-}
-
-/// Tracking state for a running task.
-struct RunningTask {
-    #[allow(dead_code)]
-    category: TaskCategory,
-    #[allow(dead_code)]
-    started_at: tokio::time::Instant,
-    attempt: u32,
-}
-
-fn backoff_for(category: TaskCategory) -> BackoffConfig {
-    match category {
-        TaskCategory::SolanaTx => BackoffConfig {
-            min_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            max_retries: Some(20),
-        },
-        TaskCategory::PeerHttp => BackoffConfig {
-            min_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(300),
-            max_retries: Some(50),
-        },
-        TaskCategory::CpuHeavy => BackoffConfig {
-            min_delay: Duration::from_secs(30),
-            max_delay: Duration::from_secs(300),
-            max_retries: None,
-        },
-        TaskCategory::Internal => BackoffConfig {
-            min_delay: Duration::from_secs(5),
-            max_delay: Duration::from_secs(60),
-            max_retries: Some(10),
-        },
-    }
-}
-
-/// Compute the delay for a given attempt using exponential backoff with half-jitter.
-fn compute_delay(config: &BackoffConfig, attempt: u32) -> Option<Duration> {
-    if let Some(max) = config.max_retries {
-        if attempt >= max {
-            return None;
-        }
-    }
-    let base = config.min_delay * 2u32.saturating_pow(attempt);
-    let base = base.min(config.max_delay);
-
-    // Half-jitter: uniform(base/2, base) to break thundering herd
-    let half = base / 2;
-    let jitter = Duration::from_millis(
-        rand::thread_rng().gen_range(0..=half.as_millis() as u64)
-    );
-    Some(half + jitter)
-}
-
-fn far_future() -> tokio::time::Instant {
-    tokio::time::Instant::now() + Duration::from_secs(365 * 24 * 3600)
 }
 
 /// Centralized task scheduler.
@@ -290,7 +193,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_retry) => {
+                _ = sleep_until(next_retry) => {
                     self.process_retries();
                 }
 
@@ -326,87 +229,74 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.tokens.remove(&key);
 
         match outcome {
-            TaskOutcome::Success => {
-                if self.result_tx.send(TaskResult::Success(key)).await.is_err() {
-                    tracing::debug!("result channel closed");
-                }
-            }
-            TaskOutcome::Pending(delay) => {
-                let due = tokio::time::Instant::now() + delay;
-                tracing::debug!(
+            TaskOutcome::Success => self.complete_success(key).await,
+            TaskOutcome::Pending(delay) => self.complete_pending(key, attempt, delay),
+            TaskOutcome::Retryable(err) => self.complete_retry(key, attempt, err).await,
+            TaskOutcome::Permanent(err) => self.complete_permanent(key, err).await,
+        }
+    }
+
+    async fn complete_success(&self, key: TaskKey) {
+        self.send_result(TaskResult::Success(key)).await;
+    }
+
+    fn complete_pending(&mut self, key: TaskKey, attempt: u32, delay: Duration) {
+        tracing::debug!(
+            task = ?key,
+            attempt,
+            delay_secs = delay.as_secs(),
+            "scheduling pending retry"
+        );
+        self.enqueue_retry(key, attempt, delay);
+    }
+
+    async fn complete_retry(&mut self, key: TaskKey, attempt: u32, err: String) {
+        let config = backoff_for(key.category());
+        match compute_delay(&config, attempt) {
+            Some(delay) => {
+                tracing::warn!(
                     task = ?key,
                     attempt,
                     delay_secs = delay.as_secs(),
-                    "scheduling pending retry"
+                    error = %err,
+                    "scheduling retry"
                 );
-                // Keep attempt unchanged for Pending: this is expected wait, not failure.
-                self.retry_queue.push(Reverse(RetryEntry {
-                    due,
-                    key: key.clone(),
+                self.enqueue_retry(key.clone(), attempt + 1, delay);
+                self.send_result(TaskResult::RetryableError(key, err)).await;
+            }
+            None => {
+                tracing::error!(
+                    task = ?key,
                     attempt,
-                }));
-                self.pending_retry.insert(key);
-            }
-            TaskOutcome::Retryable(err) => {
-                let category = key.category();
-                let config = backoff_for(category);
-                match compute_delay(&config, attempt) {
-                    Some(delay) => {
-                        let due = tokio::time::Instant::now() + delay;
-                        tracing::warn!(
-                            task = ?key,
-                            attempt,
-                            delay_secs = delay.as_secs(),
-                            error = %err,
-                            "scheduling retry"
-                        );
-                        self.retry_queue.push(Reverse(RetryEntry {
-                            due,
-                            key: key.clone(),
-                            attempt: attempt + 1,
-                        }));
-                        self.pending_retry.insert(key.clone());
-                        if self
-                            .result_tx
-                            .send(TaskResult::RetryableError(key, err))
-                            .await
-                            .is_err()
-                        {
-                            tracing::debug!("result channel closed");
-                        }
-                    }
-                    None => {
-                        tracing::error!(
-                            task = ?key,
-                            attempt,
-                            "max retries exceeded, treating as permanent failure"
-                        );
-                        if self
-                            .result_tx
-                            .send(TaskResult::PermanentError(key, err))
-                            .await
-                            .is_err()
-                        {
-                            tracing::debug!("result channel closed");
-                        }
-                    }
-                }
-            }
-            TaskOutcome::Permanent(err) => {
-                if self
-                    .result_tx
-                    .send(TaskResult::PermanentError(key, err))
-                    .await
-                    .is_err()
-                {
-                    tracing::debug!("result channel closed");
-                }
+                    "max retries exceeded, treating as permanent failure"
+                );
+                self.complete_permanent(key, err).await;
             }
         }
     }
 
+    async fn complete_permanent(&self, key: TaskKey, err: String) {
+        self.send_result(TaskResult::PermanentError(key, err)).await;
+    }
+
+    fn enqueue_retry(&mut self, key: TaskKey, attempt: u32, delay: Duration) {
+        let due = Instant::now() + delay;
+        self.retry_queue.push(Reverse(RetryEntry {
+            due,
+            key: key.clone(),
+            attempt,
+        }));
+        self.pending_retry.insert(key);
+    }
+
+    async fn send_result(&self, result: TaskResult) {
+        if self.result_tx.send(result).await.is_err() {
+            tracing::debug!("result channel closed");
+        }
+    }
+
     fn process_retries(&mut self) {
-        let now = tokio::time::Instant::now();
+        let now = Instant::now();
         while let Some(entry) = self.retry_queue.peek() {
             if entry.0.due > now {
                 break;
@@ -423,7 +313,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             token.cancel();
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_TIMEOUT_SECS);
         loop {
             tokio::select! {
                 result = self.join_set.join_next() => {
@@ -437,7 +327,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                         None => break,
                     }
                 }
-                _ = tokio::time::sleep_until(deadline) => {
+                _ = sleep_until(deadline) => {
                     let remaining = self.running.len();
                     if remaining > 0 {
                         tracing::warn!(
@@ -462,14 +352,13 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         let token_clone = token.clone();
         let category = key.category();
         let k = key.clone();
-        self.join_set
-            .spawn(crate::tasks::execute_task(ctx, peer_handle, k, token_clone, sem).in_current_span());
+        self.join_set.spawn(execute_task(ctx, peer_handle, k, token_clone, sem).in_current_span());
 
         self.running.insert(
             key.clone(),
             RunningTask {
                 category,
-                started_at: tokio::time::Instant::now(),
+                started_at: Instant::now(),
                 attempt,
             },
         );
@@ -486,7 +375,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
-    fn next_retry_instant(&self) -> tokio::time::Instant {
+    fn next_retry_instant(&self) -> Instant {
         self.retry_queue
             .peek()
             .map(|e| e.0.due)
@@ -494,19 +383,60 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     }
 }
 
+struct RetryEntry {
+    due: Instant,
+    key: TaskKey,
+    attempt: u32,
+}
+
+impl PartialEq for RetryEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.due == other.due
+    }
+}
+
+impl Eq for RetryEntry {}
+
+impl PartialOrd for RetryEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RetryEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.due.cmp(&other.due)
+    }
+}
+
+struct RunningTask {
+    #[allow(dead_code)]
+    category: TaskCategory,
+    #[allow(dead_code)]
+    started_at: Instant,
+    attempt: u32,
+}
+
+fn far_future() -> Instant {
+    Instant::now() + Duration::from_secs(FAR_FUTURE_SECS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::core::BackoffConfig;
+    use crate::peers::PeerService;
     use crate::test_util::test_context;
+    use tokio::time::sleep;
 
     #[tokio::test]
-    async fn schedule_and_complete() {
+    async fn schedule_complete() {
         let ctx = test_context();
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
 
         let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
@@ -533,7 +463,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
 
         let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
@@ -554,7 +484,7 @@ mod tests {
             .unwrap();
 
         // Give the supervisor time to process
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
 
         // The task may have completed before cancel was processed (stub is instant),
         // so we drain whatever results arrived. The key point is that the supervisor
@@ -567,10 +497,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_on_failure() {
+    async fn retry_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::RefreshOnchainState;
@@ -580,7 +510,7 @@ mod tests {
             key.clone(),
             RunningTask {
                 category: TaskCategory::Internal,
-                started_at: tokio::time::Instant::now(),
+                started_at: Instant::now(),
                 attempt: 0,
             },
         );
@@ -603,10 +533,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_is_quiet_and_requeued() {
+    async fn pending_retry() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::CertifySnapshot;
@@ -614,7 +544,7 @@ mod tests {
             key.clone(),
             RunningTask {
                 category: TaskCategory::SolanaTx,
-                started_at: tokio::time::Instant::now(),
+                started_at: Instant::now(),
                 attempt: 3,
             },
         );
@@ -638,7 +568,7 @@ mod tests {
     async fn permanent_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::AdvanceEpoch;
@@ -647,7 +577,7 @@ mod tests {
             key.clone(),
             RunningTask {
                 category: TaskCategory::SolanaTx,
-                started_at: tokio::time::Instant::now(),
+                started_at: Instant::now(),
                 attempt: 0,
             },
         );
@@ -672,7 +602,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
 
         let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
@@ -697,7 +627,7 @@ mod tests {
         assert!(matches!(result, TaskResult::Success(..)));
 
         // Give time for any duplicate to arrive (should not)
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         assert!(result_rx.try_recv().is_err());
 
         cancel.cancel();
@@ -710,7 +640,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, _result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
 
         let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
@@ -725,7 +655,7 @@ mod tests {
             .unwrap();
 
         // Small delay to let it be processed
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
 
         // Cancel everything
         cancel.cancel();
@@ -819,10 +749,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_retries_exhausted() {
+    async fn retries_exhausted() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::RefreshOnchainState;
@@ -833,7 +763,7 @@ mod tests {
             key.clone(),
             RunningTask {
                 category: TaskCategory::Internal,
-                started_at: tokio::time::Instant::now(),
+                started_at: Instant::now(),
                 attempt: 10,
             },
         );

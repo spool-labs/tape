@@ -7,6 +7,8 @@
 //! - `context`: Central shared state for the storage node
 //! - `gauge_guard`: RAII metric guards for active-count gauges
 //! - `managed_task`: Exclusive background task lifecycle management
+//! - `retry`: Task retry policy helpers
+//! - `task`: Shared task categories
 //! - `utils`: Common helper functions (path expansion, timestamps)
 
 pub mod backoff;
@@ -16,7 +18,9 @@ pub mod config;
 pub mod context;
 pub mod gauge_guard;
 pub mod managed_task;
+pub mod retry;
 pub mod stats;
+pub mod task;
 pub mod utils;
 
 pub use backoff::{Backoff, BackoffConfig, retry_with_backoff};
@@ -28,5 +32,7 @@ pub use config::{
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
 pub use gauge_guard::GaugeGuard;
 pub use managed_task::ManagedTask;
+pub use retry::{backoff_for, compute_delay};
 pub use stats::RuntimeStats;
+pub use task::TaskCategory;
 pub use utils::{default_config_path, expand_path};

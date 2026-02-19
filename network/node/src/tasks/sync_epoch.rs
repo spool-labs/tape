@@ -3,14 +3,12 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
-use solana_sdk::signer::Signer;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_api::instruction::build_epoch_sync_ix;
-use tape_api::program::tapedrive::node_pda;
 use tape_store::ops::{MetaOps, SpoolOps};
 use tokio_util::sync::CancellationToken;
 
+use crate::chain::submit_sync_epoch;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
@@ -35,13 +33,8 @@ pub async fn run<S: Store, R: Rpc>(
         return TaskOutcome::Success;
     }
 
-    let pubkey = context.keypair.pubkey();
-    let (node_address, _) = node_pda(pubkey);
-
-    let ix = build_epoch_sync_ix(pubkey, pubkey, node_address, epoch, &owned_spools);
-
     let result = tokio::select! {
-        r = context.rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        r = submit_sync_epoch(&context, epoch, &owned_spools) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
     match result {

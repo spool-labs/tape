@@ -3,13 +3,12 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
-use solana_sdk::signer::Signer;
+use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_api::instruction::build_join_network_ix;
-use tape_api::program::tapedrive::node_pda;
 use tokio_util::sync::CancellationToken;
 
+use crate::chain::submit_join_network;
 use crate::core::NodeContext;
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
@@ -33,13 +32,8 @@ pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let pubkey = context.keypair.pubkey();
-    let (node_address, _) = node_pda(pubkey);
-
-    let ix = build_join_network_ix(pubkey, pubkey, node_address);
-
     let result = tokio::select! {
-        r = context.rpc.send_instructions(&context.keypair, vec![ix]) => r,
+        r = submit_join_network(&context) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
     match result {

@@ -15,9 +15,15 @@ use tape_core::types::SlotNumber;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{Backoff, BackoffConfig, NodeContext};
+
+const BOOTSTRAP_POLL_SECS: u64 = 2;
+const TIP_POLL_MS: u64 = 400;
+const BACKOFF_MIN_MS: u64 = 100;
+const BACKOFF_MAX_SECS: u64 = 30;
 
 /// A batch of parsed instructions from a single block.
 pub struct IngestedBlock {
@@ -41,43 +47,13 @@ impl BlockIngestor {
         sender: mpsc::Sender<IngestedBlock>,
         cancel: CancellationToken,
     ) -> Result<(), anyhow::Error> {
-        // Wait for bootstrap to complete before ingesting.
-        // If the node is Active at epoch >= 2 with no sync cursor, snapshot
-        // bootstrap is needed — poll until the cursor appears.
-        let mut next_slot;
-        loop {
-            let cursor = context.store.get_sync_cursor()?;
-            let status = context
-                .store
-                .get_node_status()
-                .ok()
-                .flatten()
-                .unwrap_or(NodeStatus::Standby);
-            let epoch = context.store.get_chain_epoch().ok().flatten();
-
-            if let Some(slot) = cursor {
-                next_slot = SlotNumber(slot.0 + 1);
-                break;
-            }
-
-            let needs_bootstrap =
-                matches!(status, NodeStatus::Active) && matches!(epoch, Some(e) if e.0 >= 2);
-
-            if !needs_bootstrap {
-                next_slot = SlotNumber(0);
-                break;
-            }
-
-            tracing::info!("waiting for snapshot bootstrap to complete");
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(2)) => continue,
-                _ = cancel.cancelled() => return Ok(()),
-            }
-        }
-
+        let mut next_slot = match wait_bootstrap(&context, &cancel).await? {
+            Some(slot) => slot,
+            None => return Ok(()),
+        };
         let mut backoff = Backoff::new(BackoffConfig {
-            min_delay: Duration::from_millis(100),
-            max_delay: Duration::from_secs(30),
+            min_delay: Duration::from_millis(BACKOFF_MIN_MS),
+            max_delay: Duration::from_secs(BACKOFF_MAX_SECS),
             max_retries: None,
         });
 
@@ -86,70 +62,127 @@ impl BlockIngestor {
                 return Ok(());
             }
 
-            // Poll chain tip
-            let tip = match context.rpc.get_slot().await {
-                Ok(tip) => SlotNumber(tip),
-                Err(e) => {
-                    tracing::warn!("Failed to get chain tip: {e}");
-                    if let Some(delay) = backoff.next_delay() {
-                        tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
-                            _ = cancel.cancelled() => return Ok(()),
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            // Wait for new blocks if caught up
-            if next_slot.0 > tip.0 {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(400)) => {}
-                    _ = cancel.cancelled() => return Ok(()),
-                }
-                continue;
+            match ingest_slot(&context, &sender, &cancel, next_slot, &mut backoff).await? {
+                IngestStep::Continue(slot) => next_slot = slot,
+                IngestStep::Wait => continue,
+                IngestStep::Stop => return Ok(()),
             }
-
-            // Fetch block
-            let block = match context.rpc.get_block(next_slot.0).await {
-                Ok(block) => {
-                    backoff.reset();
-                    block
-                }
-                Err(e) if e.to_string().contains("skipped") => {
-                    // Skipped slot
-                    next_slot = SlotNumber(next_slot.0 + 1);
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(slot = next_slot.0, "Failed to fetch block: {e}");
-                    if let Some(delay) = backoff.next_delay() {
-                        tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
-                            _ = cancel.cancelled() => return Ok(()),
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            // Parse and merge
-            let parsed = tape_blocks::parse(&block)?;
-            let instructions = tape_blocks::merge(parsed.raw_instructions, parsed.events)?;
-
-            let ingested = IngestedBlock {
-                slot: next_slot,
-                instructions,
-            };
-
-            // Send to FSM — bounded channel provides backpressure.
-            // If the receiver is dropped, exit cleanly.
-            if sender.send(ingested).await.is_err() {
-                return Ok(());
-            }
-
-            next_slot = SlotNumber(next_slot.0 + 1);
         }
+    }
+}
+
+enum IngestStep {
+    Continue(SlotNumber),
+    Wait,
+    Stop,
+}
+
+async fn wait_bootstrap<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    cancel: &CancellationToken,
+) -> Result<Option<SlotNumber>, anyhow::Error> {
+    loop {
+        let cursor = context.store.get_sync_cursor()?;
+        let status = context
+            .store
+            .get_node_status()
+            .ok()
+            .flatten()
+            .unwrap_or(NodeStatus::Standby);
+        let epoch = context.store.get_chain_epoch().ok().flatten();
+
+        if let Some(slot) = cursor {
+            return Ok(Some(SlotNumber(slot.0 + 1)));
+        }
+
+        let needs_bootstrap = matches!(status, NodeStatus::Active) && matches!(epoch, Some(e) if e.0 >= 2);
+        if !needs_bootstrap {
+            return Ok(Some(SlotNumber(0)));
+        }
+
+        tracing::info!("waiting for snapshot bootstrap to complete");
+        if !sleep_or_active(Duration::from_secs(BOOTSTRAP_POLL_SECS), cancel).await {
+            return Ok(None);
+        }
+    }
+}
+
+async fn ingest_slot<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    sender: &mpsc::Sender<IngestedBlock>,
+    cancel: &CancellationToken,
+    next_slot: SlotNumber,
+    backoff: &mut Backoff,
+) -> Result<IngestStep, anyhow::Error> {
+    let tip = match context.rpc.get_slot().await {
+        Ok(tip) => SlotNumber(tip),
+        Err(e) => {
+            tracing::warn!("Failed to get chain tip: {e}");
+            if let Some(delay) = backoff.next_delay() {
+                if !sleep_or_active(delay, cancel).await {
+                    return Ok(IngestStep::Stop);
+                }
+            }
+            return Ok(IngestStep::Wait);
+        }
+    };
+
+    if next_slot.0 > tip.0 {
+        if !sleep_or_active(Duration::from_millis(TIP_POLL_MS), cancel).await {
+            return Ok(IngestStep::Stop);
+        }
+        return Ok(IngestStep::Wait);
+    }
+
+    let block = match context.rpc.get_block(next_slot.0).await {
+        Ok(block) => {
+            backoff.reset();
+            block
+        }
+        Err(e) if e.is_skipped_slot() => {
+            return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
+        }
+        Err(e) => {
+            tracing::warn!(slot = next_slot.0, "Failed to fetch block: {e}");
+            if let Some(delay) = backoff.next_delay() {
+                if !sleep_or_active(delay, cancel).await {
+                    return Ok(IngestStep::Stop);
+                }
+            }
+            return Ok(IngestStep::Wait);
+        }
+    };
+
+    let parsed = match tape_blocks::parse(&block) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!(slot = next_slot.0, "Failed to parse block: {e}");
+            return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
+        }
+    };
+    let instructions = match tape_blocks::merge(parsed.raw_instructions, parsed.events) {
+        Ok(instructions) => instructions,
+        Err(e) => {
+            tracing::warn!(slot = next_slot.0, "Failed to merge block: {e}");
+            return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
+        }
+    };
+
+    let ingested = IngestedBlock {
+        slot: next_slot,
+        instructions,
+    };
+    if sender.send(ingested).await.is_err() {
+        return Ok(IngestStep::Stop);
+    }
+
+    Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)))
+}
+
+async fn sleep_or_active(delay: Duration, cancel: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = sleep(delay) => true,
+        _ = cancel.cancelled() => false,
     }
 }
 
@@ -158,11 +191,12 @@ mod tests {
     use super::*;
 
     use tape_core::types::EpochNumber;
+    use tokio::time::sleep;
 
     use crate::test_util::test_context;
 
     #[tokio::test]
-    async fn waits_for_bootstrap() {
+    async fn waits_bootstrap() {
         let ctx = test_context();
         let cancel = CancellationToken::new();
 
@@ -181,20 +215,20 @@ mod tests {
         });
 
         // Let the ingestor enter the wait loop
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
 
         // Simulate bootstrap completing
         ctx.store.set_sync_cursor(SlotNumber(1000)).unwrap();
 
         // Wait for the ingestor to notice the cursor (poll interval is 2s)
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        sleep(Duration::from_secs(3)).await;
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn starts_immediately_no_bootstrap() {
+    async fn starts_no_bootstrap() {
         let ctx = test_context();
         let cancel = CancellationToken::new();
 
@@ -212,14 +246,14 @@ mod tests {
         });
 
         // Give ingestor time to start polling
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(500)).await;
 
         cancel.cancel();
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    async fn resumes_from_cursor() {
+    async fn resumes_cursor() {
         let ctx = test_context();
         let cancel = CancellationToken::new();
 
@@ -237,7 +271,7 @@ mod tests {
         });
 
         // Give ingestor time to start polling
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(500)).await;
 
         cancel.cancel();
         handle.await.unwrap();

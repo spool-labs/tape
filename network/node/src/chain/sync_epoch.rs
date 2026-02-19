@@ -1,0 +1,22 @@
+use std::sync::Arc;
+
+use rpc::Rpc;
+use rpc_client::RpcError;
+use solana_sdk::signature::{Signature, Signer};
+use store::Store;
+use tape_api::instruction::build_epoch_sync_ix;
+use tape_api::program::tapedrive::node_pda;
+use tape_core::types::EpochNumber;
+
+use crate::core::NodeContext;
+
+pub async fn submit_sync_epoch<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    epoch: EpochNumber,
+    owned_spools: &[u16],
+) -> Result<Signature, RpcError> {
+    let pubkey = context.keypair.pubkey();
+    let (node_address, _) = node_pda(pubkey);
+    let ix = build_epoch_sync_ix(pubkey, pubkey, node_address, epoch, owned_spools);
+    context.rpc.send_instructions(&context.keypair, vec![ix]).await
+}

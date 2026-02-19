@@ -9,21 +9,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
-use solana_sdk::signer::Signer;
+use solana_sdk::{pubkey::Pubkey, signer::Signer};
 use store::Store;
 use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_core::system::EpochPhase;
 use tokio::sync::mpsc;
+use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
 use tape_core::erasure::spool_in_group;
 use tape_core::types::EpochNumber;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{ChunkIndex, NodeStatus, SpoolStatus};
+use tape_store::types::{ChunkIndex, NodeStatus, Pubkey as StorePubkey, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::core::committee::{our_member_index, our_snapshot_groups};
 use crate::fsm::StateChange;
+use crate::snapshot::snapshot_target;
 use crate::state::{GroupState, LifecycleEpochState, RefreshThrottle, SnapshotProgress};
 use crate::supervisor::{TaskKey, TaskResult};
 
@@ -84,8 +86,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         // Refresh often enough to observe committee/epoch transitions in local/test
         // while capping cadence for production.
         let refresh_secs = (EPOCH_DURATION / 2).clamp(1, 30) as u64;
-        let mut ticker = tokio::time::interval(Duration::from_secs(refresh_secs));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut ticker = interval(Duration::from_secs(refresh_secs));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -135,7 +137,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                     self.reconcile_spools();
                 }
                 StateChange::TrackCertified { track } => {
-                    self.check_track_slices(track);
+                    self.check_slices(track);
                 }
                 StateChange::NodeJoinedCommittee { node } => {
                     // If this is our node, refresh on-chain state
@@ -151,7 +153,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 }
                 StateChange::TrackDeleted { track }
                 | StateChange::TrackInvalidated { track } => {
-                    self.remove_track_recoveries(track);
+                    self.remove_recoveries(track);
                 }
                 // No reconciler action needed for these events
                 StateChange::TrackRegistered { .. }
@@ -162,12 +164,12 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         }
     }
 
-    fn check_track_slices(&mut self, track: &solana_sdk::pubkey::Pubkey) {
+    fn check_slices(&mut self, track: &Pubkey) {
         if matches!(self.node_status(), NodeStatus::Standby) {
             return;
         }
 
-        let store_track: tape_store::types::Pubkey = track.into();
+        let store_track: StorePubkey = track.into();
 
         let track_info = match self.context.store.get_track(store_track) {
             Ok(Some(t)) => t,
@@ -208,20 +210,21 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     fn refresh_interval(&self) -> Duration {
-        let in_committee = self
-            .context
-            .store
-            .get_chain_epoch()
-            .ok()
-            .flatten()
-            .and_then(|epoch| self.context.store.get_committee(epoch).ok().flatten())
-            .map(|committee| our_member_index(&committee, self.context.keypair.pubkey()).is_ok())
-            .unwrap_or(false);
-        if in_committee {
+        if self.in_committee() {
             Duration::from_secs(3)
         } else {
             Duration::from_secs(30)
         }
+    }
+
+    fn in_committee(&self) -> bool {
+        let Some(epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
+            return false;
+        };
+        let Some(committee) = self.context.store.get_committee(epoch).ok().flatten() else {
+            return false;
+        };
+        our_member_index(&committee, self.context.keypair.pubkey()).is_ok()
     }
 
     fn request_refresh(&mut self, force: bool) {
@@ -256,7 +259,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         )
     }
 
-    fn needs_snapshot_bootstrap(&self) -> bool {
+    fn needs_bootstrap(&self) -> bool {
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
         }
@@ -265,8 +268,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
     }
 
-    fn remove_track_recoveries(&self, track: &solana_sdk::pubkey::Pubkey) {
-        let store_track: tape_store::types::Pubkey = track.into();
+    fn remove_recoveries(&self, track: &Pubkey) {
+        let store_track: StorePubkey = track.into();
         let owned_spools = match self.context.store.iter_all_spools() {
             Ok(s) => s,
             Err(_) => return,
@@ -318,7 +321,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         // Keep local lifecycle epoch (reconciler-owned) aligned to chain epoch,
         // even when epoch changes arrive via refresh/replay without EpochAdvanced state changes.
         if self.lifecycle.epoch() != epoch {
-            self.force_cancel_epoch_scoped_tasks();
+            self.force_cancel_epoch();
             self.lifecycle.reset(epoch);
             self.snapshot_progress.reset(epoch);
         }
@@ -348,23 +351,21 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         if self.chain_phase_is_active() && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) {
             self.desired.insert(TaskKey::AdvanceEpoch);
         }
-        self.schedule_snapshot_pipeline(epoch);
+        self.schedule_snapshot(epoch);
     }
 
-    fn schedule_snapshot_pipeline(&mut self, epoch: EpochNumber) {
-        if epoch.0 < 2 {
+    fn schedule_snapshot(&mut self, epoch: EpochNumber) {
+        let Some(target) = snapshot_target(epoch) else {
             self.desired.remove(&TaskKey::SnapshotBuild);
             self.desired.remove(&TaskKey::SnapshotCertify);
             self.desired.remove(&TaskKey::RegisterSnapshot);
             self.desired.remove(&TaskKey::CertifySnapshot);
             return;
-        }
+        };
 
         if self.snapshot_progress.epoch() != epoch {
             self.snapshot_progress.reset(epoch);
         }
-
-        let target = EpochNumber(epoch.0 - 1);
         let built = self
             .context
             .store
@@ -465,80 +466,138 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             TaskResult::PermanentError(k, _) => k,
         };
 
-        let stale_epoch_result = self.is_stale_epoch_result(key);
+        let stale_epoch = self.is_stale_epoch(key);
 
         match result {
-            TaskResult::Success(_) => {
-                self.scheduled.remove(key);
-                self.scheduled_epochs.remove(key);
-                if !stale_epoch_result {
-                    self.lifecycle.mark_done(key);
-                }
-                if key.is_one_shot() && !stale_epoch_result {
-                    self.desired.remove(key);
-                }
-                // After state refresh, reconcile spools (committee may have changed)
-                if matches!(key, TaskKey::RefreshOnchainState) {
-                    self.refresh_throttle
-                        .record(self.context.store.get_chain_epoch().ok().flatten());
-                    self.reconcile_spools();
-                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                        self.schedule_lifecycle(epoch);
-                    }
-                    if self.needs_snapshot_bootstrap() {
-                        self.desired.insert(TaskKey::SnapshotBootstrap);
-                    }
-                }
-                // After SyncEpoch, unlock AdvancePool/JoinNetwork
-                if matches!(key, TaskKey::SyncEpoch) {
-                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                        self.schedule_lifecycle(epoch);
-                    }
-                }
-                // After bootstrap, refresh on-chain state to reconcile spools
-                if matches!(key, TaskKey::SnapshotBootstrap) {
-                    self.desired.insert(TaskKey::RefreshOnchainState);
-                }
-                // Re-evaluate snapshot pipeline after progress changes.
-                if matches!(
-                    key,
-                    TaskKey::SnapshotCertify
-                        | TaskKey::RegisterSnapshot
-                        | TaskKey::CertifySnapshot
-                ) && !stale_epoch_result {
-                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                        if self.snapshot_progress.epoch() == epoch {
-                            match key {
-                                TaskKey::SnapshotCertify => {
-                                    self.mark_groups_from_store(epoch, GroupState::Certified);
-                                }
-                                TaskKey::RegisterSnapshot => {
-                                    self.mark_owned_groups(epoch, GroupState::Registered);
-                                }
-                                TaskKey::CertifySnapshot => {
-                                    self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                        self.schedule_snapshot_pipeline(epoch);
-                    }
+            TaskResult::Success(_) => self.handle_success(key, stale_epoch),
+            TaskResult::RetryableError(_, _) => self.handle_retry(),
+            TaskResult::PermanentError(_, _) => self.handle_permanent(key),
+        }
+    }
+
+    fn handle_success(&mut self, key: &TaskKey, stale_epoch: bool) {
+        self.scheduled.remove(key);
+        self.scheduled_epochs.remove(key);
+        if !stale_epoch {
+            self.lifecycle.mark_done(key);
+        }
+        if key.is_one_shot() && !stale_epoch {
+            self.desired.remove(key);
+        }
+        self.handle_refresh_success(key);
+        self.handle_sync_success(key);
+        self.handle_bootstrap_success(key);
+        self.handle_snapshot_success(key, stale_epoch);
+    }
+
+    fn handle_refresh_success(&mut self, key: &TaskKey) {
+        if !matches!(key, TaskKey::RefreshOnchainState) {
+            return;
+        }
+        self.refresh_throttle
+            .record(self.context.store.get_chain_epoch().ok().flatten());
+        self.prune_recoveries();
+        self.reconcile_spools();
+        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+            self.schedule_lifecycle(epoch);
+        }
+        if self.needs_bootstrap() {
+            self.desired.insert(TaskKey::SnapshotBootstrap);
+        }
+    }
+
+    fn prune_recoveries(&mut self) {
+        let spools = match self.context.store.iter_all_spools() {
+            Ok(spools) => spools,
+            Err(_) => return,
+        };
+
+        for (spool, status) in &spools {
+            let pending = match self.context.store.iter_pending_recoveries(*spool, 1024) {
+                Ok(pending) => pending,
+                Err(_) => continue,
+            };
+
+            for track in &pending {
+                let missing = match self.context.store.get_track(*track) {
+                    Ok(track_info) => track_info.is_none(),
+                    Err(_) => false,
+                };
+                if missing {
+                    let _ = self.context.store.remove_pending_recovery(*spool, *track);
                 }
             }
-            TaskResult::RetryableError(_, _) => {
-                // Supervisor handles retry internally — keep in scheduled.
-            }
-            TaskResult::PermanentError(_, _) => {
-                self.scheduled.remove(key);
-                self.scheduled_epochs.remove(key);
-                self.desired.remove(key);
+
+            let has_pending = self
+                .context
+                .store
+                .iter_pending_recoveries(*spool, 1)
+                .ok()
+                .map(|pending| !pending.is_empty())
+                .unwrap_or(false);
+
+            if !has_pending && !matches!(status, SpoolStatus::ActiveRecover) {
+                self.desired.remove(&TaskKey::SpoolRecovery { spool: *spool });
             }
         }
     }
 
-    fn is_epoch_scoped_task(key: &TaskKey) -> bool {
+    fn handle_sync_success(&mut self, key: &TaskKey) {
+        if !matches!(key, TaskKey::SyncEpoch) {
+            return;
+        }
+        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+            self.schedule_lifecycle(epoch);
+        }
+    }
+
+    fn handle_bootstrap_success(&mut self, key: &TaskKey) {
+        if matches!(key, TaskKey::SnapshotBootstrap) {
+            self.desired.insert(TaskKey::RefreshOnchainState);
+        }
+    }
+
+    fn handle_snapshot_success(&mut self, key: &TaskKey, stale_epoch: bool) {
+        if !matches!(
+            key,
+            TaskKey::SnapshotCertify
+                | TaskKey::RegisterSnapshot
+                | TaskKey::CertifySnapshot
+        ) || stale_epoch {
+            return;
+        }
+        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+            if self.snapshot_progress.epoch() == epoch {
+                match key {
+                    TaskKey::SnapshotCertify => {
+                        self.mark_groups_store(epoch, GroupState::Certified);
+                    }
+                    TaskKey::RegisterSnapshot => {
+                        self.mark_owned_groups(epoch, GroupState::Registered);
+                    }
+                    TaskKey::CertifySnapshot => {
+                        self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+            self.schedule_snapshot(epoch);
+        }
+    }
+
+    fn handle_retry(&self) {
+        // Supervisor handles retry internally — keep in scheduled.
+    }
+
+    fn handle_permanent(&mut self, key: &TaskKey) {
+        self.scheduled.remove(key);
+        self.scheduled_epochs.remove(key);
+        self.desired.remove(key);
+    }
+
+    fn is_epoch_task(key: &TaskKey) -> bool {
         matches!(
             key,
             TaskKey::SyncEpoch
@@ -551,7 +610,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         )
     }
 
-    fn owned_groups_for_epoch(&self, epoch: EpochNumber) -> HashSet<u64> {
+    fn groups_for_epoch(&self, epoch: EpochNumber) -> HashSet<u64> {
         match self.context.store.get_committee(epoch) {
             Ok(Some(committee)) => {
                 our_snapshot_groups(&committee, self.context.keypair.pubkey()).unwrap_or_default()
@@ -561,14 +620,14 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     fn mark_owned_groups(&mut self, epoch: EpochNumber, state: GroupState) {
-        for group in self.owned_groups_for_epoch(epoch) {
+        for group in self.groups_for_epoch(epoch) {
             self.snapshot_progress.advance(group as usize, state);
         }
     }
 
-    fn mark_groups_from_store(&mut self, epoch: EpochNumber, state: GroupState) {
+    fn mark_groups_store(&mut self, epoch: EpochNumber, state: GroupState) {
         let target = EpochNumber(epoch.0.saturating_sub(1));
-        for group in self.owned_groups_for_epoch(epoch) {
+        for group in self.groups_for_epoch(epoch) {
             if self
                 .context
                 .store
@@ -582,11 +641,11 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         }
     }
 
-    fn force_cancel_epoch_scoped_tasks(&mut self) {
+    fn force_cancel_epoch(&mut self) {
         let keys: Vec<TaskKey> = self
             .scheduled
             .iter()
-            .filter(|k| Self::is_epoch_scoped_task(k))
+            .filter(|k| Self::is_epoch_task(k))
             .cloned()
             .collect();
         for key in keys {
@@ -597,8 +656,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         }
     }
 
-    fn is_stale_epoch_result(&self, key: &TaskKey) -> bool {
-        if !Self::is_epoch_scoped_task(key) {
+    fn is_stale_epoch(&self, key: &TaskKey) -> bool {
+        if !Self::is_epoch_task(key) {
             return false;
         }
         let Some(task_epoch) = self.scheduled_epochs.get(key).copied() else {
@@ -627,7 +686,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 return;
             }
             self.scheduled.insert(key.clone());
-            if Self::is_epoch_scoped_task(&key) {
+            if Self::is_epoch_task(&key) {
                 if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                     self.scheduled_epochs.insert(key.clone(), epoch);
                 }
@@ -653,11 +712,16 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::program::tapedrive::node_pda;
     use tape_core::bls::{BlsPubkey, BlsSignature};
+    use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
+    use tape_core::system::EpochPhase;
+    use tape_core::types::SlotNumber;
     use tape_core::types::network::NetworkAddress;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
-    use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, TrackOps};
-    use tape_store::types::{NodeInfo, SnapshotCertResult, TrackInfo};
+    use tape_crypto::Hash as CryptoHash;
+    use tape_store::ops::{CommitteeOps, MetaOps, ObjectInfoOps, SliceOps, TrackOps};
+    use tape_store::types::{NodeInfo, ObjectInfo, Pubkey as StorePubkey, SnapshotCertResult, TrackInfo};
 
+    use crate::fsm::Fsm;
     use crate::test_util::test_context;
 
     fn put_our_committee<S: Store, R: Rpc>(
@@ -667,9 +731,9 @@ mod tests {
     ) {
         let (node_address, _) = node_pda(ctx.keypair.pubkey());
         let members = vec![NodeInfo {
-            node_address: tape_store::types::Pubkey::new(node_address.to_bytes()),
+            node_address: StorePubkey::new(node_address.to_bytes()),
             bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+            tls_pubkey: StorePubkey::new([0u8; 32]),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
             spools,
         }];
@@ -682,9 +746,9 @@ mod tests {
         spools: Vec<u16>,
     ) {
         let members = vec![NodeInfo {
-            node_address: tape_store::types::Pubkey::new([9u8; 32]),
+            node_address: StorePubkey::new([9u8; 32]),
             bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
+            tls_pubkey: StorePubkey::new([0u8; 32]),
             network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
             spools,
         }];
@@ -845,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spool_assignment_changed() {
+    async fn spool_changed() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -871,7 +935,7 @@ mod tests {
 
     fn make_track_info(spool_group: u64) -> TrackInfo {
         TrackInfo {
-            tape_address: tape_store::types::Pubkey([0u8; 32]),
+            tape_address: StorePubkey([0u8; 32]),
             spool_group,
             original_size: 1024,
             stripe_size: 512,
@@ -883,7 +947,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn certified_missing_slice() {
+    async fn cert_missing() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -892,8 +956,8 @@ mod tests {
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
 
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let store_track: tape_store::types::Pubkey = (&track).into();
+        let track = Pubkey::new_unique();
+        let store_track: StorePubkey = (&track).into();
         ctx.store.put_track(store_track, make_track_info(0)).unwrap();
         // No slice stored → missing
 
@@ -914,7 +978,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn certified_have_slice() {
+    async fn cert_present() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -922,8 +986,8 @@ mod tests {
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
 
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let store_track: tape_store::types::Pubkey = (&track).into();
+        let track = Pubkey::new_unique();
+        let store_track: StorePubkey = (&track).into();
         ctx.store.put_track(store_track, make_track_info(0)).unwrap();
         ctx.store.put_slice(5, store_track, vec![1, 2, 3]).unwrap();
 
@@ -938,7 +1002,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn certified_wrong_group() {
+    async fn cert_group() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -947,8 +1011,8 @@ mod tests {
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
 
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let store_track: tape_store::types::Pubkey = (&track).into();
+        let track = Pubkey::new_unique();
+        let store_track: StorePubkey = (&track).into();
         ctx.store.put_track(store_track, make_track_info(1)).unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -962,7 +1026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn our_node_joined() {
+    async fn joined_ours() {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
 
@@ -983,14 +1047,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn other_node_joined() {
+    async fn joined_other() {
         let ctx = test_context();
 
         let mut reconciler = Reconciler::new(ctx);
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         reconciler.update_desired(&[StateChange::NodeJoinedCommittee {
-            node: solana_sdk::pubkey::Pubkey::new_unique(),
+            node: Pubkey::new_unique(),
         }]);
         reconciler.emit_directives(&directive_tx).await;
 
@@ -999,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_synced_clears_task() {
+    async fn sync_clears() {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
 
@@ -1013,7 +1077,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_directive_channel() {
+    async fn closed_directive() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store
@@ -1051,12 +1115,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_not_needed() {
+    async fn bootstrap_skip() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
-            .set_sync_cursor(tape_core::types::SlotNumber(500))
+            .set_sync_cursor(SlotNumber(500))
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1068,7 +1132,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_schedules_refresh() {
+    async fn bootstrap_refresh() {
         let ctx = test_context();
         let mut reconciler = Reconciler::new(ctx);
 
@@ -1084,7 +1148,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epoch_advance_derivation() {
+    async fn epoch_derive() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -1111,7 +1175,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(2)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx.clone());
@@ -1125,7 +1189,7 @@ mod tests {
 
         // Complete SyncEpoch — AdvancePool unlocks
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Settling)
+            .set_chain_epoch_phase(EpochPhase::Settling)
             .unwrap();
         reconciler.desired.insert(TaskKey::SyncEpoch);
         reconciler.scheduled.insert(TaskKey::SyncEpoch);
@@ -1135,7 +1199,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn standby_blocks_tasks() {
+    async fn standby_blocks() {
         let ctx = test_context();
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
@@ -1170,7 +1234,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Active)
+            .set_chain_epoch_phase(EpochPhase::Active)
             .unwrap();
         let mut reconciler = Reconciler::new(ctx);
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
@@ -1190,12 +1254,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn periodic_active_requires_active_phase_for_advance() {
+    async fn periodic_phase() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1216,7 +1280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_resets_on_chain_epoch_mismatch_without_event() {
+    async fn lifecycle_reset() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -1227,7 +1291,7 @@ mod tests {
 
         ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
         reconciler.schedule_lifecycle(EpochNumber(4));
@@ -1238,12 +1302,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mismatch_forces_cancel_then_reschedule_epoch_tasks() {
+    async fn mismatch_resets() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Active)
+            .set_chain_epoch_phase(EpochPhase::Active)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1297,7 +1361,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_schedules_refresh() {
+    async fn startup_refresh() {
         let ctx = test_context();
         let reconciler = Reconciler::new(ctx);
 
@@ -1309,12 +1373,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_lifecycle_success_does_not_mark_done() {
+    async fn stale_success() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         ctx.store
-            .set_chain_epoch_phase(tape_core::system::EpochPhase::Syncing)
+            .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1351,7 +1415,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_triggers_reconcile() {
+    async fn refresh_reconcile() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
@@ -1395,7 +1459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epoch_schedules_build() {
+    async fn epoch_build() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -1409,7 +1473,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epoch_skips_build_early() {
+    async fn epoch_skip() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
@@ -1423,13 +1487,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn built_epoch_schedules_certify() {
+    async fn built_certify() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1440,13 +1504,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn built_epoch_with_no_owned_groups_skips_snapshot_tasks() {
+    async fn built_no_groups() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_non_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1457,13 +1521,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn certified_epoch_schedules_onchain() {
+    async fn cert_onchain() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
             .unwrap();
         ctx.store
             .set_snapshot_certification(
@@ -1485,13 +1549,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partial_cert_schedules_onchain_and_certify() {
+    async fn partial_onchain() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
         let target = EpochNumber(2);
         ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
             .unwrap();
         ctx.store
             .set_snapshot_certification(
@@ -1513,14 +1577,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_rebuilds_snapshot_plan_from_stage() {
+    async fn refresh_rebuild() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), tape_crypto::Hash::new_unique())
+            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
             .unwrap();
 
         let mut reconciler = Reconciler::new(ctx);
@@ -1533,15 +1597,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_cancels_recovery() {
+    async fn delete_recovery() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
 
-        let track = solana_sdk::pubkey::Pubkey::new_unique();
-        let store_track: tape_store::types::Pubkey = (&track).into();
+        let track = Pubkey::new_unique();
+        let store_track: StorePubkey = (&track).into();
 
         // Add pending recovery for this track
         ctx.store.add_pending_recovery(5, store_track).unwrap();
@@ -1554,5 +1618,75 @@ mod tests {
         // Verify pending recovery was removed
         let pending = ctx.store.iter_pending_recoveries(5, 100).unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_cancel_recovery() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.store
+            .set_spool_status(5, SpoolStatus::Active)
+            .unwrap();
+        ctx.store.set_chain_epoch(EpochNumber(2)).unwrap();
+        ctx.store
+            .set_chain_epoch_phase(EpochPhase::Syncing)
+            .unwrap();
+
+        let track = Pubkey::new_unique();
+        let store_track: StorePubkey = (&track).into();
+        ctx.store.put_track(store_track, make_track_info(0)).unwrap();
+        ctx.store.put_object_info(
+            store_track,
+            ObjectInfo::Valid {
+                is_stored: false,
+                track_address: store_track,
+                registered_epoch: EpochNumber(1),
+                certified_epoch: None,
+                slot: SlotNumber(1),
+            },
+        ).unwrap();
+        ctx.store.add_pending_recovery(5, store_track).unwrap();
+
+        let mut reconciler = Reconciler::new(ctx.clone());
+        reconciler.desired.insert(TaskKey::SpoolRecovery { spool: 5 });
+        reconciler.scheduled.insert(TaskKey::SpoolRecovery { spool: 5 });
+
+        let fsm = Fsm::new(ctx.clone());
+        let log = SnapshotLog {
+            version: 1,
+            epoch: EpochNumber(2),
+            start_slot: SlotNumber(10),
+            end_slot: SlotNumber(10),
+            entries: vec![SnapshotEntry {
+                slot: SlotNumber(10),
+                events: vec![ReplayableEvent::DeleteTrack {
+                    track: track.to_bytes(),
+                    epoch: EpochNumber(2),
+                }],
+            }],
+        };
+        fsm.replay_snapshot(&log).unwrap();
+
+        reconciler.desired.insert(TaskKey::RefreshOnchainState);
+        reconciler.scheduled.insert(TaskKey::RefreshOnchainState);
+        reconciler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+
+        let (directive_tx, mut directive_rx) = mpsc::channel(32);
+        reconciler.emit_directives(&directive_tx).await;
+
+        let mut saw_cancel = false;
+        let mut saw_schedule = false;
+        while let Ok(dir) = directive_rx.try_recv() {
+            match dir {
+                Directive::Cancel(TaskKey::SpoolRecovery { spool }) if spool == 5 => saw_cancel = true,
+                Directive::Schedule(TaskKey::SpoolRecovery { spool }) if spool == 5 => {
+                    saw_schedule = true
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_cancel);
+        assert!(!saw_schedule);
     }
 }
