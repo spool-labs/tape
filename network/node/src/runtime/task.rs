@@ -24,8 +24,8 @@ pub enum TaskKey {
     AdvancePool { epoch: EpochNumber },
     /// Register a snapshot commitment on-chain.
     RegisterSnapshot { epoch: EpochNumber },
-    /// Certify a snapshot with BLS aggregate on-chain.
-    CertifySnapshot { epoch: EpochNumber },
+    /// Submit a snapshot certification transaction on-chain.
+    SnapshotSubmit { epoch: EpochNumber },
     /// Invalidate a track on-chain.
     InvalidateTrack { track: Pubkey },
     /// Sync a spool from a peer.
@@ -36,8 +36,8 @@ pub enum TaskKey {
     SpoolRecovery { spool: SpoolIndex },
     /// Build a snapshot for the current epoch.
     SnapshotBuild { epoch: EpochNumber },
-    /// Certify a snapshot by collecting BLS signatures.
-    SnapshotCertify { epoch: EpochNumber },
+    /// Collect snapshot signatures for certification.
+    SnapshotCollect { epoch: EpochNumber },
     /// Bootstrap from a snapshot (new node joining).
     SnapshotBootstrap,
     /// Refresh cached on-chain state.
@@ -52,12 +52,12 @@ impl TaskKey {
             | TaskKey::JoinNetwork { .. }
             | TaskKey::AdvancePool { .. }
             | TaskKey::RegisterSnapshot { .. }
-            | TaskKey::CertifySnapshot { .. }
+            | TaskKey::SnapshotSubmit { .. }
             | TaskKey::InvalidateTrack { .. } => TaskCategory::SolanaTx,
             TaskKey::SpoolSync { .. } | TaskKey::SpoolRecovery { .. } | TaskKey::RecoveryScan { .. } => {
                 TaskCategory::PeerHttp
             }
-            TaskKey::SnapshotBuild { .. } | TaskKey::SnapshotCertify { .. } => TaskCategory::CpuHeavy,
+            TaskKey::SnapshotBuild { .. } | TaskKey::SnapshotCollect { .. } => TaskCategory::CpuHeavy,
             TaskKey::SnapshotBootstrap => TaskCategory::PeerHttp,
             TaskKey::RefreshOnchainState => TaskCategory::Internal,
         }
@@ -70,9 +70,9 @@ impl TaskKey {
             | TaskKey::JoinNetwork { epoch }
             | TaskKey::AdvancePool { epoch }
             | TaskKey::RegisterSnapshot { epoch }
-            | TaskKey::CertifySnapshot { epoch }
+            | TaskKey::SnapshotSubmit { epoch }
             | TaskKey::SnapshotBuild { epoch }
-            | TaskKey::SnapshotCertify { epoch } => Some(*epoch),
+            | TaskKey::SnapshotCollect { epoch } => Some(*epoch),
             _ => None,
         }
     }
@@ -89,13 +89,13 @@ impl TaskKey {
                 | TaskKey::JoinNetwork { .. }
                 | TaskKey::AdvancePool { .. }
                 | TaskKey::RegisterSnapshot { .. }
-                | TaskKey::CertifySnapshot { .. }
+                | TaskKey::SnapshotSubmit { .. }
                 | TaskKey::InvalidateTrack { .. }
                 | TaskKey::RefreshOnchainState
                 | TaskKey::RecoveryScan { .. }
                 | TaskKey::SpoolRecovery { .. }
                 | TaskKey::SnapshotBuild { .. }
-                | TaskKey::SnapshotCertify { .. }
+                | TaskKey::SnapshotCollect { .. }
                 | TaskKey::SnapshotBootstrap
                 | TaskKey::SpoolSync { .. }
         )

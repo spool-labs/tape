@@ -29,25 +29,45 @@ use crate::runtime::PeerHandle;
 use crate::scheduler::Directive;
 use crate::tasks::execute_task;
 
+/// Fallback sleep target when no retries are pending.
 const FAR_FUTURE_SECS: u64 = 365 * 24 * 3600;
+/// How long to wait for in-flight tasks during shutdown before giving up.
 const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
 pub use crate::runtime::{TaskCategory, TaskKey, TaskOutcome, TaskResult};
 
-/// Centralized task runner.
+/// Centralized task runner with retry, cancellation, and per-category concurrency limits.
+///
+/// All background work is spawned through the supervisor. The scheduler sends
+/// `Directive::Schedule` / `Directive::Cancel` commands; the supervisor manages
+/// the full lifecycle: spawn, track, retry on failure, cancel on request, and
+/// report outcomes back via `result_tx`.
 pub struct Supervisor<S: Store, R: Rpc> {
+    /// Shared node state (store, RPC client, identity, config).
     context: Arc<NodeContext<S, R>>,
+    /// Handle for making peer HTTP requests.
     peer_handle: PeerHandle,
+    /// Currently executing tasks, keyed for dedup and attempt tracking.
     running: HashMap<TaskKey, RunningTask>,
+    /// Cancellation token for each running task.
     tokens: HashMap<TaskKey, CancellationToken>,
+    /// Collects completions from all spawned task futures.
     join_set: JoinSet<(TaskKey, TaskOutcome)>,
+    /// Min-heap of tasks waiting to be retried, ordered by due time.
     retry_queue: BinaryHeap<Reverse<RetryEntry>>,
+    /// Keys present in `retry_queue`. Used to skip stale entries after cancel.
     pending_retry: HashSet<TaskKey>,
+    /// Keys whose cancel was processed while the future was still in-flight.
+    /// When the JoinSet yields these, their completion is silently dropped.
     canceled_running: HashSet<TaskKey>,
+    /// Channel to send task outcomes back to the scheduler/FSM.
     result_tx: mpsc::Sender<TaskResult>,
 
+    /// Limits concurrent Solana transaction submissions (capacity: 5).
     sem_solana_tx: Arc<Semaphore>,
+    /// Limits concurrent peer HTTP requests (capacity: 50).
     sem_peer_http: Arc<Semaphore>,
+    /// Limits concurrent CPU-heavy work like snapshot builds (capacity: num_cpus).
     sem_cpu_heavy: Arc<Semaphore>,
 }
 
@@ -76,6 +96,13 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Main event loop. Selects over four sources:
+    /// 1. Directives from the scheduler (schedule / cancel)
+    /// 2. Completions from the JoinSet (task finished)
+    /// 3. Retry timer (re-spawn a failed task after backoff)
+    /// 4. Global cancellation token (graceful shutdown)
+    ///
+    /// Exits when the directive channel closes or the cancel token fires.
     pub async fn run(
         mut self,
         mut directive_rx: mpsc::Receiver<Directive>,
@@ -121,6 +148,8 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Schedule a task for execution. Silently deduplicates: if the key is
+    /// already running or awaiting retry, the request is dropped.
     fn handle_schedule(&mut self, key: TaskKey, attempt: u32) {
         if self.running.contains_key(&key) || self.pending_retry.contains(&key) {
             return;
@@ -128,6 +157,10 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.spawn_task(key, attempt);
     }
 
+    /// Cancel a task. Fires the cancellation token, removes from running/retry
+    /// tracking, and sends `TaskResult::Canceled` back if the task was known.
+    /// If the task's future is still in-flight on the JoinSet, its key is added
+    /// to `canceled_running` so the eventual completion is silently dropped.
     async fn handle_cancel(&mut self, key: &TaskKey) {
         let had_running = self.running.remove(key).is_some();
         if had_running {
@@ -142,6 +175,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Route a completed task to the appropriate handler based on its outcome.
     async fn handle_completion(&mut self, key: TaskKey, outcome: TaskOutcome) {
         let attempt = self
             .running
@@ -162,6 +196,10 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.send_result(TaskResult::Success(key)).await;
     }
 
+    /// Re-enqueue with the same attempt number and a task-specified delay.
+    /// Unlike `Retryable`, `Pending` is a normal polling state (e.g. waiting
+    /// for on-chain confirmation) so no result is sent and the attempt counter
+    /// is not incremented.
     fn complete_pending(&mut self, key: TaskKey, attempt: u32, delay: Duration) {
         tracing::debug!(
             task = ?key,
@@ -172,6 +210,8 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.enqueue_retry(key, attempt, delay);
     }
 
+    /// Compute backoff delay and re-enqueue, or escalate to permanent failure
+    /// if max retries for this category have been exhausted.
     async fn complete_retry(&mut self, key: TaskKey, attempt: u32, err: String) {
         let config = backoff_for(key.category());
         match compute_delay(&config, attempt) {
@@ -197,10 +237,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Report an unrecoverable failure. The task will not be retried.
     async fn complete_permanent(&self, key: TaskKey, err: String) {
         self.send_result(TaskResult::PermanentError(key, err)).await;
     }
 
+    /// Push a task onto the retry heap with a computed due time.
     fn enqueue_retry(&mut self, key: TaskKey, attempt: u32, delay: Duration) {
         let due = Instant::now() + delay;
         self.retry_queue.push(Reverse(RetryEntry {
@@ -211,12 +253,17 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.pending_retry.insert(key);
     }
 
+    /// Forward a task result to the scheduler/FSM. Silently drops if the
+    /// channel is closed (happens during shutdown).
     async fn send_result(&self, result: TaskResult) {
         if self.result_tx.send(result).await.is_err() {
             tracing::debug!("result channel closed");
         }
     }
 
+    /// Drain all retry entries whose due time has passed and re-spawn them.
+    /// Entries whose key was removed from `pending_retry` (by a cancel) are
+    /// silently skipped.
     fn process_retries(&mut self) {
         let now = Instant::now();
         while let Some(entry) = self.retry_queue.peek() {
@@ -230,6 +277,8 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Cancel all tasks and drain the JoinSet, giving in-flight futures up to
+    /// `SHUTDOWN_TIMEOUT_SECS` to finish before abandoning them.
     async fn shutdown(&mut self) {
         for token in self.tokens.values() {
             token.cancel();
@@ -267,6 +316,8 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.canceled_running.clear();
     }
 
+    /// Spawn a task future onto the JoinSet. Acquires the category semaphore
+    /// inside the future so the permit is held for the task's lifetime.
     fn spawn_task(&mut self, key: TaskKey, attempt: u32) {
         let token = CancellationToken::new();
         let sem = self.semaphore_for(key.category());
@@ -288,6 +339,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         self.tokens.insert(key, token);
     }
 
+    /// Return the concurrency-limiting semaphore for a task category.
     fn semaphore_for(&self, category: TaskCategory) -> Arc<Semaphore> {
         match category {
             TaskCategory::SolanaTx => self.sem_solana_tx.clone(),
@@ -298,6 +350,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
     }
 
+    /// Earliest due time in the retry heap, or far-future if empty.
     fn next_retry_instant(&self) -> Instant {
         self.retry_queue
             .peek()
@@ -306,6 +359,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     }
 }
 
+/// Return the backoff configuration for a task category.
 pub fn backoff_for(category: TaskCategory) -> BackoffConfig {
     match category {
         TaskCategory::SolanaTx => BackoffConfig {
@@ -331,9 +385,13 @@ pub fn backoff_for(category: TaskCategory) -> BackoffConfig {
     }
 }
 
+/// Entry in the retry min-heap. Ordered by `due` time only.
 struct RetryEntry {
+    /// When this retry becomes eligible to run.
     due: Instant,
+    /// Which task to re-spawn.
     key: TaskKey,
+    /// Attempt number to pass to the next spawn.
     attempt: u32,
 }
 
@@ -357,14 +415,19 @@ impl Ord for RetryEntry {
     }
 }
 
+/// Metadata for a task that is currently executing on the JoinSet.
 struct RunningTask {
+    /// Task category (for future observability/metrics).
     #[allow(dead_code)]
     category: TaskCategory,
+    /// When this attempt was spawned (for future duration metrics).
     #[allow(dead_code)]
     started_at: Instant,
+    /// Current attempt number (0-based). Incremented on retryable failure.
     attempt: u32,
 }
 
+/// Returns an `Instant` ~1 year in the future, used as a no-op sleep target.
 fn far_future() -> Instant {
     Instant::now() + Duration::from_secs(FAR_FUTURE_SECS)
 }
@@ -517,7 +580,7 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
-        let key = TaskKey::CertifySnapshot { epoch: EpochNumber(0) };
+        let key = TaskKey::SnapshotSubmit { epoch: EpochNumber(0) };
         supervisor.running.insert(
             key.clone(),
             RunningTask {
@@ -713,7 +776,7 @@ mod tests {
         assert!(TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
         assert!(TaskKey::SpoolSync { spool: 0 }.is_one_shot());
         assert!(TaskKey::SnapshotBuild { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(TaskKey::SnapshotCertify { epoch: EpochNumber(0) }.is_one_shot());
+        assert!(TaskKey::SnapshotCollect { epoch: EpochNumber(0) }.is_one_shot());
     }
 
     #[test]

@@ -85,13 +85,13 @@ pub async fn execute_task<S: Store, R: Rpc>(
         TaskKey::SnapshotBuild { .. } => {
             snapshot::run_build(context, peer_handle, cancel).await
         }
-        TaskKey::SnapshotCertify { .. } => {
+        TaskKey::SnapshotCollect { .. } => {
             snapshot::run_certify(context, peer_handle, cancel).await
         }
         TaskKey::RegisterSnapshot { .. } => {
             snapshot::run_register(context, peer_handle, cancel).await
         }
-        TaskKey::CertifySnapshot { .. } => {
+        TaskKey::SnapshotSubmit { .. } => {
             snapshot::run_certify_onchain(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotBootstrap => {

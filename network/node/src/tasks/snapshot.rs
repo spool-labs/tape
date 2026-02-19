@@ -39,6 +39,33 @@ use crate::snapshot::{
 use crate::supervisor::TaskOutcome;
 
 const SNAPSHOT_PENDING_DELAY: Duration = Duration::from_secs(2);
+const SNAPSHOT_BOOTSTRAP_TARGET_KEY: &str = "__snapshot_bootstrap_target_epoch__";
+
+fn read_bootstrap_target_epoch<S: Store>(store: &S) -> Result<Option<EpochNumber>, String> {
+    match store
+        .get("meta", SNAPSHOT_BOOTSTRAP_TARGET_KEY.as_bytes())
+        .map_err(|e| format!("read bootstrap marker: {e}"))?
+    {
+        Some(bytes) => {
+            let epoch: EpochNumber =
+                wincode::deserialize(&bytes).map_err(|e| format!("decode bootstrap marker: {e}"))?;
+            Ok(Some(epoch))
+        }
+        None => Ok(None),
+    }
+}
+
+fn set_bootstrap_target_epoch<S: Store>(
+    store: &S,
+    epoch: EpochNumber,
+) -> Result<(), String> {
+    let bytes =
+        wincode::serialize(&epoch).map_err(|e| format!("serialize bootstrap marker: {e}"))?;
+    store
+        .put("meta", SNAPSHOT_BOOTSTRAP_TARGET_KEY.as_bytes(), &bytes)
+        .map_err(|e| format!("write bootstrap marker: {e}"))?;
+    Ok(())
+}
 
 /// Bootstrap from a snapshot: download slices from peers, decode, replay.
 pub async fn run_bootstrap<S: Store, R: Rpc>(
@@ -51,10 +78,39 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
         Err(outcome) => return outcome,
     };
 
-    // Idempotent: skip if we already have synced past this snapshot
+    // Idempotent: skip only when we have already bootstrapped this target epoch.
     if let Ok(Some(cursor)) = context.store.get_sync_cursor() {
         if cursor.0 > 0 {
-            return TaskOutcome::Success;
+            let should_skip = match read_bootstrap_target_epoch(&context.store) {
+                Ok(Some(marked_epoch)) if marked_epoch == target => true,
+                Ok(Some(marked_epoch)) => {
+                    tracing::info!(
+                        current_target = target.0,
+                        bootstrapped_target = marked_epoch.0,
+                        "sync cursor exists but marker is for a different snapshot target; re-running bootstrap"
+                    );
+                    false
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        current_target = target.0,
+                        "sync cursor is set but bootstrap target marker is missing; using legacy cursor-only skip"
+                    );
+                    true
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        current_target = target.0,
+                        error = %err,
+                        "failed to read bootstrap target marker; using legacy cursor-only skip"
+                    );
+                    true
+                }
+            };
+
+            if should_skip {
+                return TaskOutcome::Success;
+            }
         }
     }
 
@@ -149,6 +205,9 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
         entries = log.entries.len(),
         "snapshot bootstrap complete"
     );
+    if let Err(err) = set_bootstrap_target_epoch(&context.store, target) {
+        tracing::warn!(epoch = target.0, error = %err, "failed to persist bootstrap target marker");
+    }
     TaskOutcome::Success
 }
 
@@ -429,7 +488,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
     };
     let current = snapshot.current;
     let target = snapshot.target;
-    tracing::debug!(current_epoch = current.0, target_epoch = target.0, "run_certify start");
 
     tracing::trace!(current_epoch = current.0, target_epoch = target.0, "run_certify ready");
 
@@ -440,8 +498,10 @@ pub async fn run_certify<S: Store, R: Rpc>(
         owned_spools,
         ..
     } = snapshot;
+
     let our_member_index = member_index.unwrap_or(0);
     let owned_spools = owned_spools.unwrap_or(0);
+
     tracing::debug!(
         target_epoch = target.0,
         committee_size = committee.len(),
@@ -459,18 +519,15 @@ pub async fn run_certify<S: Store, R: Rpc>(
 
     let mut certified_groups = 0usize;
     let mut pending_quorum = 0usize;
-    let mut failed: Vec<String> = Vec::new();
     let mut groups_attempted = 0usize;
+    let mut failed: Vec<String> = Vec::new();
 
     for group in groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
 
-        match context
-            .store
-            .get_snapshot_certification(target, ChunkIndex(group))
-        {
+        match context.store.get_snapshot_cert(target, ChunkIndex(group)) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
             Err(e) => return TaskOutcome::Retryable(format!("check cert: {e}")),
@@ -484,12 +541,11 @@ pub async fn run_certify<S: Store, R: Rpc>(
             target,
             group,
             &cancel,
-        )
-        .await
-        {
+        ).await {
             Ok(result) => result,
             Err(outcome) => return outcome,
         };
+
         match result {
             GroupResult::Skip => pending_quorum += 1,
             GroupResult::Pending => pending_quorum += 1,
@@ -525,7 +581,7 @@ pub async fn run_certify<S: Store, R: Rpc>(
         epoch = target.0,
         certified_groups,
         groups_attempted,
-        "snapshot certification collected"
+        "snapshot cert collected"
     );
     TaskOutcome::Success
 }
@@ -579,7 +635,12 @@ pub async fn run_register<S: Store, R: Rpc>(
             .get_snapshot_metadata(target, chunk_index)
         {
             Ok(Some(m)) => m,
-            Ok(None) => continue,
+            Ok(None) => {
+                return TaskOutcome::Retryable(format!(
+                    "snapshot chunk metadata missing for epoch={} group={group}",
+                    target.0
+                ));
+            }
             Err(e) => return TaskOutcome::Retryable(format!("read metadata: {e}")),
         };
 
@@ -602,7 +663,7 @@ pub async fn run_register<S: Store, R: Rpc>(
     TaskOutcome::Success
 }
 
-/// Submit snapshot certifications on-chain with BLS aggregate signatures.
+/// Submit snapshot cert on-chain with BLS aggregate signatures.
 pub async fn run_certify_onchain<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     _peer_handle: PeerHandle,
@@ -641,7 +702,7 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
 
         let cert = match context
             .store
-            .get_snapshot_certification(target, chunk_index)
+            .get_snapshot_cert(target, chunk_index)
         {
             Ok(Some(c)) => {
                 tracing::debug!(
@@ -669,7 +730,12 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
             .get_snapshot_commitment(target, chunk_index)
         {
             Ok(Some(c)) => c,
-            Ok(None) => continue,
+            Ok(None) => {
+                return TaskOutcome::Retryable(format!(
+                    "snapshot commitment missing for epoch={} group={group}",
+                    target.0
+                ));
+            }
             Err(e) => return TaskOutcome::Retryable(format!("read commitment: {e}")),
         };
 
@@ -716,10 +782,10 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
 
     // GC: delete stored snapshot data (keep commitments — needed by bootstrap peers)
     let _ = context.store.delete_snapshot_metadata(target);
-    let _ = context.store.delete_snapshot_certifications(target);
+    let _ = context.store.delete_snapshot_cert(target);
     let _ = context.store.delete_snapshot_partial_signatures_for_epoch(target);
 
-    tracing::info!(epoch = target.0, "snapshot certification submitted");
+    tracing::info!(epoch = target.0, "snapshot cert submitted");
     TaskOutcome::Success
 }
 
@@ -900,7 +966,7 @@ fn store_group_cert<S: Store, R: Rpc>(
 
     context
         .store
-        .set_snapshot_certification(target, chunk_index, cert)
+        .set_snapshot_cert(target, chunk_index, cert)
         .map_err(|e| e.to_string())
 }
 
@@ -1142,7 +1208,7 @@ use tape_core::erasure::{SPOOL_GROUP_COUNT, group_for_spool};
         let group = group_for_spool(5);
         let chunk = ChunkIndex(group);
         ctx.store
-            .set_snapshot_certification(
+            .set_snapshot_cert(
                 target,
                 chunk,
                 SnapshotCertResult {
@@ -1210,7 +1276,7 @@ use tape_core::erasure::{SPOOL_GROUP_COUNT, group_for_spool};
 
         let cert = ctx
             .store
-            .get_snapshot_certification(target, ChunkIndex(group))
+            .get_snapshot_cert(target, ChunkIndex(group))
             .unwrap();
         assert!(cert.is_some());
         let cert = cert.unwrap();

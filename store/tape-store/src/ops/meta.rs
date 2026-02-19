@@ -99,10 +99,10 @@ pub trait MetaOps {
     fn set_snapshot_metadata(&self, epoch: EpochNumber, chunk: ChunkIndex, meta: SnapshotChunkMeta) -> Result<()>;
     fn delete_snapshot_metadata(&self, epoch: EpochNumber) -> Result<()>;
 
-    // Snapshot certification results
-    fn get_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>>;
-    fn set_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()>;
-    fn delete_snapshot_certifications(&self, epoch: EpochNumber) -> Result<()>;
+    // Snapshot cert results
+    fn get_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>>;
+    fn set_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()>;
+    fn delete_snapshot_cert(&self, epoch: EpochNumber) -> Result<()>;
 
     /// Partial snapshot signatures (peer-pushed) for each group.
     fn set_snapshot_partial_signature(
@@ -386,27 +386,27 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>> {
+    fn get_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>> {
         let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
         match self.get::<MetaCol>(&key)? {
             Some(bytes) => {
                 let result: SnapshotCertResult = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot certification: {}", e)))?;
+                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot cert: {}", e)))?;
                 Ok(Some(result))
             }
             None => Ok(None),
         }
     }
 
-    fn set_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()> {
+    fn set_snapshot_cert(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()> {
         let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), chunk.as_u64());
         let bytes = wincode::serialize(&result)
-            .map_err(|e| TapeStoreError::Serialization(format!("snapshot certification: {}", e)))?;
+            .map_err(|e| TapeStoreError::Serialization(format!("snapshot cert: {}", e)))?;
         self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
-    fn delete_snapshot_certifications(&self, epoch: EpochNumber) -> Result<()> {
+    fn delete_snapshot_cert(&self, epoch: EpochNumber) -> Result<()> {
         for i in 0..SPOOL_GROUP_COUNT {
             let key = format!("snapshot_cert:{}:{}", epoch.as_u64(), i);
             self.delete::<MetaCol>(&key)?;
@@ -752,12 +752,12 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_certification_roundtrip() {
+    fn snapshot_cert_roundtrip() {
         let store = test_store();
         let epoch = EpochNumber(10);
         let chunk = ChunkIndex(5);
 
-        assert!(store.get_snapshot_certification(epoch, chunk).unwrap().is_none());
+        assert!(store.get_snapshot_cert(epoch, chunk).unwrap().is_none());
 
         let cert = SnapshotCertResult {
             member_indices: vec![0, 2, 5, 7],
@@ -765,11 +765,11 @@ mod tests {
             epoch: 10,
         };
 
-        store.set_snapshot_certification(epoch, chunk, cert.clone()).unwrap();
-        assert_eq!(store.get_snapshot_certification(epoch, chunk).unwrap(), Some(cert));
+        store.set_snapshot_cert(epoch, chunk, cert.clone()).unwrap();
+        assert_eq!(store.get_snapshot_cert(epoch, chunk).unwrap(), Some(cert));
 
-        store.delete_snapshot_certifications(epoch).unwrap();
-        assert!(store.get_snapshot_certification(epoch, chunk).unwrap().is_none());
+        store.delete_snapshot_cert(epoch).unwrap();
+        assert!(store.get_snapshot_cert(epoch, chunk).unwrap().is_none());
     }
 
     #[test]

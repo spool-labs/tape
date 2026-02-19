@@ -354,15 +354,15 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     fn schedule_snapshot(&mut self, epoch: EpochNumber) {
         let snapshot_build = TaskKey::SnapshotBuild { epoch };
-        let snapshot_certify = TaskKey::SnapshotCertify { epoch };
+        let snapshot_collect = TaskKey::SnapshotCollect { epoch };
         let register_snapshot = TaskKey::RegisterSnapshot { epoch };
-        let certify_snapshot = TaskKey::CertifySnapshot { epoch };
+        let snapshot_submit = TaskKey::SnapshotSubmit { epoch };
 
         let Some(target) = snapshot_target(epoch) else {
             self.desired.remove(&snapshot_build);
-            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&snapshot_collect);
             self.desired.remove(&register_snapshot);
-            self.desired.remove(&certify_snapshot);
+            self.desired.remove(&snapshot_submit);
             return;
         };
 
@@ -403,9 +403,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         };
 
         if owned_groups.is_empty() {
-            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&snapshot_collect);
             self.desired.remove(&register_snapshot);
-            self.desired.remove(&certify_snapshot);
+            self.desired.remove(&snapshot_submit);
             if !all_built {
                 // Cannot yet determine owned groups; keep build running until committee is known.
             } else {
@@ -452,7 +452,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         if all_onchain {
             self.desired.remove(&register_snapshot);
-            self.desired.remove(&certify_snapshot);
+            self.desired.remove(&snapshot_submit);
         } else {
             if !ready_groups.is_empty() {
                 self.desired.insert(register_snapshot);
@@ -460,18 +460,18 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 self.desired.remove(&register_snapshot);
             }
             if !ready_groups.is_empty() && self.snapshot_progress.any_local_cert(&owned_vec) {
-                self.desired.insert(certify_snapshot);
+                self.desired.insert(snapshot_submit);
             } else {
-                self.desired.remove(&certify_snapshot);
+                self.desired.remove(&snapshot_submit);
             }
         }
 
         if all_certified {
-            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&snapshot_collect);
         } else if !ready_groups.is_empty() {
-            self.desired.insert(snapshot_certify);
+            self.desired.insert(snapshot_collect);
         } else {
-            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&snapshot_collect);
         }
 
         // Advance-wait gap fix: when all owned groups have completed on-chain,
@@ -591,22 +591,22 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     fn handle_snapshot_success(&mut self, key: &TaskKey) {
         if !matches!(
             key,
-            TaskKey::SnapshotCertify { .. }
+            TaskKey::SnapshotCollect { .. }
                 | TaskKey::RegisterSnapshot { .. }
-                | TaskKey::CertifySnapshot { .. }
+                | TaskKey::SnapshotSubmit { .. }
         ) {
             return;
         }
         if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
             if self.snapshot_progress.epoch() == epoch {
                 match key {
-                    TaskKey::SnapshotCertify { .. } => {
+                    TaskKey::SnapshotCollect { .. } => {
                         self.mark_groups_store(epoch, GroupState::Certified);
                     }
                     TaskKey::RegisterSnapshot { .. } => {
                         self.mark_owned_groups(epoch, GroupState::Registered);
                     }
-                    TaskKey::CertifySnapshot { .. } => {
+                    TaskKey::SnapshotSubmit { .. } => {
                         self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
                     }
                     _ => {}
@@ -1584,7 +1584,7 @@ mod tests {
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(epoch);
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
         assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
         assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
     }
@@ -1600,9 +1600,9 @@ mod tests {
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(epoch);
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
         assert!(!scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
-        assert!(!scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotSubmit { epoch }));
     }
 
     #[tokio::test]
@@ -1627,9 +1627,9 @@ mod tests {
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(epoch);
-        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotSubmit { epoch }));
         assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
     }
 
     #[tokio::test]
@@ -1655,8 +1655,8 @@ mod tests {
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(epoch);
         assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
-        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotSubmit { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
     }
 
     #[tokio::test]
@@ -1675,7 +1675,7 @@ mod tests {
         let epoch = EpochNumber(3);
 
         assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
         assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
     }
 
@@ -1695,7 +1695,7 @@ mod tests {
 
         assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
         assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCollect { epoch }));
     }
 
     #[tokio::test]
