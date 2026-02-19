@@ -189,6 +189,7 @@ mod tests {
 
         let epoch = Epoch {
             id: EpochNumber(42),
+            nonce: Hash::default(),
             ..Epoch::zeroed()
         };
 

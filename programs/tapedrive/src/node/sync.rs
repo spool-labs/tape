@@ -169,6 +169,7 @@ mod tests {
                             phase: EpochPhase::Syncing.into(),
                             weight: 250,
                         },
+                        nonce: Hash::default(),
                         ..epoch
                     }.pack().as_ref()
                 ).build(),
@@ -239,6 +240,7 @@ mod tests {
                             phase: EpochPhase::Settling.into(),
                             weight: 0,
                         },
+                        nonce: Hash::default(),
                         ..epoch
                     }.pack().as_ref()
                 ).build(),

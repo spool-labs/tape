@@ -67,6 +67,11 @@ pub async fn run<S: Store, R: Rpc>(
         Ok(a) => a,
         Err(e) => return TaskOutcome::Retryable(format!("parse network address: {e}")),
     };
+
+    if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
+        return TaskOutcome::Retryable("peer cooling down".into());
+    }
+
     let client = match NodeClientBuilder::new().build(&addr.to_string()) {
         Ok(c) => c,
         Err(e) => return TaskOutcome::Retryable(format!("build client: {e}")),
@@ -97,8 +102,14 @@ pub async fn run<S: Store, R: Rpc>(
         };
 
         let response_bytes = match with_retry(&RetryConfig::fast(), || client.sync_spool(request_bytes.clone())).await {
-            Ok(b) => b,
-            Err(e) => return TaskOutcome::Retryable(format!("sync_spool rpc: {e}")),
+            Ok(b) => {
+                context.peer_health.lock().unwrap().record_success(&addr);
+                b
+            }
+            Err(e) => {
+                context.peer_health.lock().unwrap().record_failure(&addr);
+                return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
+            }
         };
 
         let response: SyncSpoolResponse = match wincode::deserialize(&response_bytes) {

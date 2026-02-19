@@ -19,6 +19,7 @@ use tape_api::event::{
 };
 use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
+use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::error::TapeStoreError;
 use tape_core::erasure::spool_in_group;
@@ -182,6 +183,11 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     ) -> Result<(), FsmError> {
         let old_epoch = *current_epoch;
         self.context.store.set_current_epoch(event.new_epoch)?;
+        self.context.store.set_current_epoch_phase(EpochPhase::Syncing)?;
+        self.context.store.set_epoch_nonce(event.new_epoch, event.nonce)?;
+        self.context
+            .store
+            .set_epoch_start_ts(event.new_epoch, i64::from_le_bytes(event.timestamp))?;
         *current_epoch = event.new_epoch;
 
         // GC expired tapes (end_epoch <= new_epoch)
@@ -665,6 +671,7 @@ mod tests {
                 total_stake: [0; 8],
                 storage_price: [0; 8],
                 storage_capacity: StorageUnits(0),
+                nonce: Hash::default(),
             },
         }
     }

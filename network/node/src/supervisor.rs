@@ -125,6 +125,9 @@ pub enum TaskCategory {
 pub enum TaskOutcome {
     Success,
     Retryable(String),
+    /// Expected wait state with explicit retry delay.
+    /// Used to avoid warning/error noise for non-failure polling.
+    Pending(Duration),
     Permanent(String),
 }
 
@@ -320,6 +323,22 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 if self.result_tx.send(TaskResult::Success(key)).await.is_err() {
                     tracing::debug!("result channel closed");
                 }
+            }
+            TaskOutcome::Pending(delay) => {
+                let due = tokio::time::Instant::now() + delay;
+                tracing::debug!(
+                    task = ?key,
+                    attempt,
+                    delay_secs = delay.as_secs(),
+                    "scheduling pending retry"
+                );
+                // Keep attempt unchanged for Pending: this is expected wait, not failure.
+                self.retry_queue.push(Reverse(RetryEntry {
+                    due,
+                    key: key.clone(),
+                    attempt,
+                }));
+                self.pending_retry.insert(key);
             }
             TaskOutcome::Retryable(err) => {
                 let category = key.category();
@@ -570,6 +589,37 @@ mod tests {
         // Result should have been sent
         let result = result_rx.try_recv().unwrap();
         assert!(matches!(result, TaskResult::RetryableError(..)));
+    }
+
+    #[tokio::test]
+    async fn pending_is_quiet_and_requeued() {
+        let ctx = test_context();
+        let (result_tx, mut result_rx) = mpsc::channel(16);
+        let mut supervisor = Supervisor::new(ctx, result_tx);
+
+        let key = TaskKey::CertifySnapshot;
+        supervisor.running.insert(
+            key.clone(),
+            RunningTask {
+                category: TaskCategory::SolanaTx,
+                started_at: tokio::time::Instant::now(),
+                attempt: 3,
+            },
+        );
+        supervisor
+            .tokens
+            .insert(key.clone(), CancellationToken::new());
+
+        supervisor
+            .handle_completion(key.clone(), TaskOutcome::Pending(Duration::from_secs(2)))
+            .await;
+
+        assert!(supervisor.pending_retry.contains(&key));
+        assert_eq!(supervisor.retry_queue.len(), 1);
+        let queued = &supervisor.retry_queue.peek().unwrap().0;
+        assert_eq!(queued.key, key);
+        assert_eq!(queued.attempt, 3);
+        assert!(result_rx.try_recv().is_err());
     }
 
     #[tokio::test]

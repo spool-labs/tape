@@ -100,6 +100,7 @@ impl SimnetScenario<'_> {
 
         match outcome {
             TaskOutcome::Success => Ok(()),
+            TaskOutcome::Pending(_) => Ok(()),
             TaskOutcome::Retryable(reason) => {
                 bail!("refresh_node_state({index}) retryable failure: {reason}")
             }

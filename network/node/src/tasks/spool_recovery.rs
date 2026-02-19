@@ -100,6 +100,10 @@ pub async fn run<S: Store, R: Rpc>(
                     }
                 };
 
+                if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
+                    continue;
+                }
+
                 let client = match NodeClientBuilder::new().build(&addr.to_string()) {
                     Ok(c) => c,
                     Err(e) => {
@@ -120,6 +124,7 @@ pub async fn run<S: Store, R: Rpc>(
 
                 match with_retry(&RetryConfig::fast(), || client.request_repair(track_addr, &request)).await {
                     Ok(data) if !data.is_empty() => {
+                        context.peer_health.lock().unwrap().record_success(&addr);
                         if let Err(e) = context.store.put_slice(spool, track_addr, data) {
                             tracing::warn!(?track_addr, "put_slice error: {e}");
                             continue;
@@ -131,9 +136,11 @@ pub async fn run<S: Store, R: Rpc>(
                         break;
                     }
                     Ok(_) => {
+                        context.peer_health.lock().unwrap().record_success(&addr);
                         tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "empty repair response");
                     }
                     Err(e) => {
+                        context.peer_health.lock().unwrap().record_failure(&addr);
                         tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "repair error: {e}");
                     }
                 }

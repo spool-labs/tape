@@ -177,6 +177,7 @@ mod tests {
     use tape_api::event::EpochAdvanced;
     use tape_blocks::ParsedInstruction;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
+    use tape_crypto::Hash;
     use tape_store::ops::{MetaOps, SpoolOps};
     use tape_store::types::{NodeStatus, SpoolStatus};
 
@@ -229,6 +230,7 @@ mod tests {
                     total_stake: [0; 8],
                     storage_price: [0; 8],
                     storage_capacity: StorageUnits(0),
+                    nonce: Hash::default(),
                 },
             }],
         };
@@ -390,6 +392,7 @@ mod tests {
                     total_stake: [0; 8],
                     storage_price: [0; 8],
                     storage_capacity: StorageUnits(0),
+                    nonce: Hash::default(),
                 },
             }],
         };

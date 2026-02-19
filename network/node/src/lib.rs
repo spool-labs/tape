@@ -13,8 +13,10 @@ pub mod core;
 pub mod fsm;
 pub mod http;
 pub mod ingestor;
+pub mod leader;
 pub mod pipeline;
 pub mod reconciler;
+pub mod state;
 pub mod supervisor;
 pub mod tasks;
 

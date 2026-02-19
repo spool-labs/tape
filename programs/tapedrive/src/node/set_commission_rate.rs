@@ -71,6 +71,7 @@ mod tests {
             id: EpochNumber(42),
             state: EpochState::new(),
             last_epoch: 0,
+            nonce: Hash::default(),
         };
 
         let node = Node {
@@ -115,6 +116,7 @@ mod tests {
             id: EpochNumber(42),
             state: EpochState::new(),
             last_epoch: 0,
+            nonce: Hash::default(),
         };
 
         let mut node = Node {

@@ -212,6 +212,8 @@ pub struct EpochAdvanced {
     pub storage_price: [u8; 8],
     /// Total network capacity
     pub storage_capacity: StorageUnits,
+    /// Randomness seed for leader schedule
+    pub nonce: Hash,
 }
 
 tape_solana::event!(EventType, EpochAdvanced);

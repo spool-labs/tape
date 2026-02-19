@@ -13,6 +13,9 @@ pub struct Epoch {
 
     /// The timestamp (in seconds) of the last epoch.
     pub last_epoch: i64,
+
+    /// Randomness seed captured from SlotHashes at epoch advance.
+    pub nonce: Hash,
 }
 
 tape_solana::state!(AccountType, Epoch);

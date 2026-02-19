@@ -364,6 +364,7 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::types::{NodeId, VersionId};
     use tape_core::erasure::SPOOL_COUNT;
+    use tape_core::prelude::Hash;
     use crate::program::MEMBER_COUNT;
 
     fn make_member(id: u64, stake: u64) -> CommitteeMember {
@@ -389,6 +390,7 @@ mod tests {
             id: EpochNumber(id),
             state,
             last_epoch,
+            nonce: Hash::default(),
         }
     }
 

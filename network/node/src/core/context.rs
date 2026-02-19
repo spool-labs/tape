@@ -3,7 +3,7 @@
 //! `NodeContext` holds all shared dependencies that runtime components need.
 //! Every component receives `Arc<NodeContext>` instead of individual dependencies.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rpc::Rpc;
 use rpc_client::RpcClient;
@@ -19,6 +19,7 @@ use tape_store::TapeStore;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
 use super::utils::expand_path;
+use crate::state::{EpochClock, PeerHealth, RefreshThrottle, SnapshotProgress};
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +59,14 @@ pub struct NodeContext<S: Store, R: Rpc> {
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<R>>,
+    /// Per-peer exponential cooldown tracker.
+    pub peer_health: Arc<Mutex<PeerHealth>>,
+    /// Suppresses redundant RPC refresh calls.
+    pub refresh_throttle: Arc<Mutex<RefreshThrottle>>,
+    /// Per-group snapshot pipeline progress for the current epoch.
+    pub snapshot_progress: Arc<Mutex<SnapshotProgress>>,
+    /// Monotonic local epoch timing anchor for leader/takeover windows.
+    pub epoch_clock: Arc<Mutex<EpochClock>>,
     /// Onchain unique id for this node after registration
     node_id: NodeId,
 }
@@ -92,6 +101,10 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
             store: Arc::new(store),
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
+            peer_health: Arc::new(Mutex::new(PeerHealth::new())),
+            refresh_throttle: Arc::new(Mutex::new(RefreshThrottle::new())),
+            snapshot_progress: Arc::new(Mutex::new(SnapshotProgress::new(tape_core::types::EpochNumber(0)))),
+            epoch_clock: Arc::new(Mutex::new(EpochClock::new(tape_core::types::EpochNumber(0)))),
             node_id,
         })
     }
@@ -177,7 +190,6 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
     fn context_builder_compiles() {}
 }

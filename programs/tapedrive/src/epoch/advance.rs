@@ -112,6 +112,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.id = next_epoch(epoch);
     epoch.last_epoch = now;
     epoch.state = EpochState::syncing();
+    epoch.nonce = seed;
 
     // Update storage price/capacity from committee preferences
     update_storage_params(archive, &system.committee);
@@ -130,6 +131,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         total_stake: total_stake.to_le_bytes(),
         storage_price: archive.storage_price.as_u64().to_le_bytes(),
         storage_capacity: archive.storage_capacity,
+        nonce: seed,
     }.log();
 
     solana_program::msg!(
@@ -348,6 +350,7 @@ mod tests {
                         id: e1,
                         state: EpochState::syncing(),
                         last_epoch: env.now(),
+                        nonce: Hash::default(),
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&archive_address).data({
@@ -627,6 +630,7 @@ mod tests {
             id: e1,
             state: EpochState::syncing(),
             last_epoch: env.now(),
+            nonce: Hash::default(),
         };
 
         // Should succeed since committee_next == 20
@@ -705,6 +709,7 @@ mod tests {
             id: e1,
             state: EpochState::syncing(),
             last_epoch: env.now(),
+            nonce: Hash::default(),
         };
 
         // Should succeed due to bootstrap exception (empty committee)

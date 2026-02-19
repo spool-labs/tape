@@ -129,6 +129,7 @@ mod tests {
             total_stake: [0; 8],
             storage_price: [0; 8],
             storage_capacity: StorageUnits(1000),
+            nonce: Hash::default(),
         };
 
         let log = encode_event(EventType::EpochAdvanced, &event);

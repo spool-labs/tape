@@ -17,12 +17,14 @@ use crate::types::{
 use crate::TapeStore;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const CURRENT_EPOCH_KEY: &str = "current_epoch";
+const CURRENT_EPOCH_PHASE_KEY: &str = "current_epoch_phase";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
 
@@ -43,6 +45,8 @@ pub trait MetaOps {
     // Current epoch
     fn get_current_epoch(&self) -> Result<Option<EpochNumber>>;
     fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()>;
+    fn get_current_epoch_phase(&self) -> Result<Option<EpochPhase>>;
+    fn set_current_epoch_phase(&self, phase: EpochPhase) -> Result<()>;
 
     // Node address
     fn get_node_address(&self) -> Result<Option<Pubkey>>;
@@ -81,6 +85,12 @@ pub trait MetaOps {
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
     fn set_invalidation_proof(&self, track: Pubkey, proof: InvalidationProof) -> Result<()>;
     fn delete_invalidation_proof(&self, track: Pubkey) -> Result<()>;
+
+    // Epoch nonce (randomness seed for leader schedule)
+    fn get_epoch_nonce(&self, epoch: EpochNumber) -> Result<Option<Hash>>;
+    fn set_epoch_nonce(&self, epoch: EpochNumber, nonce: Hash) -> Result<()>;
+    fn get_epoch_start_ts(&self, epoch: EpochNumber) -> Result<Option<i64>>;
+    fn set_epoch_start_ts(&self, epoch: EpochNumber, ts: i64) -> Result<()>;
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
@@ -154,6 +164,34 @@ impl<S: Store> MetaOps for TapeStore<S> {
     fn set_current_epoch(&self, epoch: EpochNumber) -> Result<()> {
         let key = CURRENT_EPOCH_KEY.to_string();
         let bytes = epoch.as_u64().to_le_bytes().to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn get_current_epoch_phase(&self) -> Result<Option<EpochPhase>> {
+        let key = CURRENT_EPOCH_PHASE_KEY.to_string();
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut phase_bytes = [0u8; 8];
+                phase_bytes.copy_from_slice(&bytes);
+                let phase_u64 = u64::from_le_bytes(phase_bytes);
+                let phase = EpochPhase::try_from(phase_u64)
+                    .map_err(|_| TapeStoreError::Serialization(format!("invalid epoch phase: {phase_u64}")))?;
+                Ok(Some(phase))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_current_epoch_phase(&self, phase: EpochPhase) -> Result<()> {
+        let key = CURRENT_EPOCH_PHASE_KEY.to_string();
+        let bytes = u64::from(phase).to_le_bytes().to_vec();
         self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
@@ -353,6 +391,55 @@ impl<S: Store> MetaOps for TapeStore<S> {
         self.delete::<MetaCol>(&key)?;
         Ok(())
     }
+
+    fn get_epoch_nonce(&self, epoch: EpochNumber) -> Result<Option<Hash>> {
+        let key = format!("epoch_nonce:{}", epoch.as_u64());
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 32 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 32,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes.copy_from_slice(&bytes);
+                Ok(Some(Hash(hash_bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_epoch_nonce(&self, epoch: EpochNumber, nonce: Hash) -> Result<()> {
+        let key = format!("epoch_nonce:{}", epoch.as_u64());
+        let bytes = nonce.0.to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn get_epoch_start_ts(&self, epoch: EpochNumber) -> Result<Option<i64>> {
+        let key = format!("epoch_start_ts:{}", epoch.as_u64());
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut ts_bytes = [0u8; 8];
+                ts_bytes.copy_from_slice(&bytes);
+                Ok(Some(i64::from_le_bytes(ts_bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_epoch_start_ts(&self, epoch: EpochNumber, ts: i64) -> Result<()> {
+        let key = format!("epoch_start_ts:{}", epoch.as_u64());
+        self.put::<MetaCol>(&key, &ts.to_le_bytes().to_vec())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +495,16 @@ mod tests {
 
         store.set_current_epoch(epoch).unwrap();
         assert_eq!(store.get_current_epoch().unwrap(), Some(epoch));
+    }
+
+    #[test]
+    fn test_current_epoch_phase_roundtrip() {
+        let store = test_store();
+
+        assert!(store.get_current_epoch_phase().unwrap().is_none());
+
+        store.set_current_epoch_phase(EpochPhase::Syncing).unwrap();
+        assert_eq!(store.get_current_epoch_phase().unwrap(), Some(EpochPhase::Syncing));
     }
 
     #[test]
@@ -528,6 +625,31 @@ mod tests {
 
         store.delete_snapshot_certifications(epoch).unwrap();
         assert!(store.get_snapshot_certification(epoch, chunk).unwrap().is_none());
+    }
+
+    #[test]
+    fn epoch_nonce_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(42);
+        let nonce = Hash::new_unique();
+
+        assert!(store.get_epoch_nonce(epoch).unwrap().is_none());
+
+        store.set_epoch_nonce(epoch, nonce).unwrap();
+        assert_eq!(store.get_epoch_nonce(epoch).unwrap(), Some(nonce));
+
+        // Different epoch returns None
+        assert!(store.get_epoch_nonce(EpochNumber(43)).unwrap().is_none());
+    }
+
+    #[test]
+    fn epoch_start_ts_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(7);
+
+        assert!(store.get_epoch_start_ts(epoch).unwrap().is_none());
+        store.set_epoch_start_ts(epoch, 1_700_000_000).unwrap();
+        assert_eq!(store.get_epoch_start_ts(epoch).unwrap(), Some(1_700_000_000));
     }
 
     #[test]

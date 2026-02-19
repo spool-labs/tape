@@ -200,6 +200,7 @@ mod tests {
             total_stake: [0; 8],
             storage_price: [0; 8],
             storage_capacity: StorageUnits(0),
+            nonce: Hash::default(),
         };
 
         let instructions = vec![RawInstruction::AdvanceEpoch];
@@ -284,6 +285,7 @@ mod tests {
             total_stake: [0; 8],
             storage_price: [0; 8],
             storage_capacity: StorageUnits(0),
+            nonce: Hash::default(),
         };
 
         let register_event = TrackRegistered {

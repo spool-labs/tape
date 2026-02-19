@@ -173,6 +173,7 @@ mod tests {
                         id: EpochNumber(1),
                         state: EpochState::active(),
                         last_epoch: 0,
+                        nonce: Hash::default(),
                     }.pack().as_ref()
                 ).build(),
 

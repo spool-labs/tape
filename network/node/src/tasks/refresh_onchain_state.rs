@@ -5,23 +5,53 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytemuck::Zeroable;
 use rpc::Rpc;
+use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::state::{Epoch, Node, System};
+use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_store::ops::{CommitteeOps, MetaOps, SpoolOps};
 use tape_store::types::{NodeInfo, NodeStatus, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
+use crate::core::committee::our_member_index;
 use crate::supervisor::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+    // Throttle: skip if we refreshed recently and epoch hasn't changed locally.
+    // Non-committee nodes use a longer interval since they have no time-sensitive work.
+    {
+        let in_committee = context
+            .store
+            .get_current_epoch()
+            .ok()
+            .flatten()
+            .and_then(|epoch| context.store.get_committee(epoch).ok().flatten())
+            .map(|committee| our_member_index(&committee, context.keypair.pubkey()).is_ok())
+            .unwrap_or(false);
+        const COMMITTEE_REFRESH_SECS: u64 = 3;
+        const STANDBY_REFRESH_SECS: u64 = 30;
+        let min_interval = Duration::from_secs(if in_committee { COMMITTEE_REFRESH_SECS } else { STANDBY_REFRESH_SECS });
+        let throttle = context.refresh_throttle.lock().unwrap();
+        if throttle.should_skip(min_interval) {
+            let local_epoch = context.store.get_current_epoch().ok().flatten();
+            let epoch_stable = local_epoch
+                .map(|e| !throttle.epoch_changed(e))
+                .unwrap_or(false);
+            if epoch_stable {
+                return TaskOutcome::Success;
+            }
+        }
+    }
+
     let system = match context.rpc.get_system().await {
         Ok(s) => s,
         Err(e) => return TaskOutcome::Retryable(format!("get_system: {e}")),
@@ -41,7 +71,11 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("get_all_nodes: {e}")),
     };
 
-    apply_refreshed_state(&context, &system, &epoch_account, &all_nodes)
+    let outcome = apply_refreshed_state(&context, &system, &epoch_account, &all_nodes);
+    if matches!(outcome, TaskOutcome::Success) {
+        context.refresh_throttle.lock().unwrap().record(epoch_account.id);
+    }
+    outcome
 }
 
 /// Pure store logic — testable without RPC.
@@ -56,6 +90,17 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
     if let Err(e) = context.store.set_current_epoch(epoch) {
         return TaskOutcome::Retryable(format!("set_current_epoch: {e}"));
     }
+    let phase = EpochPhase::try_from(epoch_account.state.phase).unwrap_or(EpochPhase::Unknown);
+    if let Err(e) = context.store.set_current_epoch_phase(phase) {
+        return TaskOutcome::Retryable(format!("set_current_epoch_phase: {e}"));
+    }
+
+    if let Err(e) = context.store.set_epoch_nonce(epoch, epoch_account.nonce) {
+        return TaskOutcome::Retryable(format!("set_epoch_nonce: {e}"));
+    }
+    if let Err(e) = context.store.set_epoch_start_ts(epoch, epoch_account.last_epoch) {
+        return TaskOutcome::Retryable(format!("set_epoch_start_ts: {e}"));
+    }
 
     // Build node lookup: NodeId → (on-chain pubkey, Node)
     let node_map: std::collections::HashMap<NodeId, &(solana_sdk::pubkey::Pubkey, Node)> =
@@ -67,8 +112,16 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
         &system.spools,
         &node_map,
     );
+    let committee_changed = match context.store.get_committee(epoch) {
+        Ok(Some(previous)) => previous != current_members,
+        Ok(None) => true,
+        Err(_) => true,
+    };
     if let Err(e) = context.store.put_committee(epoch, current_members) {
         return TaskOutcome::Retryable(format!("put_committee(current): {e}"));
+    }
+    if committee_changed {
+        context.peer_health.lock().unwrap().reset();
     }
 
     // Build previous committee (if epoch > 0 and prev committee is non-empty)
@@ -193,6 +246,7 @@ mod tests {
     use tape_core::spooler::SpoolAssignment;
     use tape_core::system::EpochState;
     use tape_core::types::{EpochNumber, NodeId, VersionId};
+    use tape_crypto::Hash;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::network::NetworkAddress;
     use tape_store::{MemoryStore, TapeStore};
@@ -224,6 +278,7 @@ mod tests {
             id: EpochNumber(id),
             state: EpochState::zeroed(),
             last_epoch: 0,
+            nonce: Hash::default(),
         }
     }
 
