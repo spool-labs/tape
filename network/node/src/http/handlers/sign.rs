@@ -1,5 +1,6 @@
 //! BLS signature handlers.
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -7,9 +8,12 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::cert::track::CertifyMessage;
+use tape_core::erasure::group_for_spool;
 use tape_core::types::{ChunkIndex, EpochNumber};
-use tape_node_api::{BlsSignResponse, BINARY_CONTENT};
-use tape_store::ops::{MetaOps, TrackOps};
+use tape_node_api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
+use tape_store::ops::{CommitteeOps, MetaOps, TrackOps};
+use tape_store::types::SnapshotPartialSignature;
+
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
@@ -58,13 +62,44 @@ pub async fn get_signature<S: Store, R: Rpc>(
     ))
 }
 
-/// GET /v1/snapshots/:epoch/:chunk_index/sign — BLS sign snapshot chunk.
-pub async fn get_snapshot_signature<S: Store, R: Rpc>(
+/// POST /v1/snapshots/:epoch/:chunk_index/partial_signature — accept partial BLS signatures.
+pub async fn post_snapshot_signature<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    let request: SnapshotSignatureSubmission =
+        wincode::deserialize(&body).map_err(|e| ApiError::BadRequest(format!("signature request: {e}")))?;
+
     let epoch = EpochNumber(epoch);
+    if request.epoch != epoch {
+        return Err(ApiError::BadRequest("epoch mismatch".into()));
+    }
+
+    let group = chunk_index;
     let chunk_idx = ChunkIndex(chunk_index);
+
+    let committee = state
+        .context
+        .store
+        .get_committee(epoch)
+        .map_err(|e| ApiError::InternalError(format!("read committee: {e}")))?
+        .ok_or(ApiError::NotFound)?;
+
+    let member_index = request.member_index as usize;
+    if member_index >= committee.len() {
+        return Err(ApiError::BadRequest("unknown member index".into()));
+    }
+
+    let member = &committee[member_index];
+
+    if !member
+        .spools
+        .iter()
+        .any(|&spool| group_for_spool(spool) == group)
+    {
+        return Err(ApiError::NotInCommittee);
+    }
 
     let commitment = state
         .context
@@ -73,25 +108,28 @@ pub async fn get_snapshot_signature<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let msg = SnapshotMessage::new(epoch, commitment.into());
-    let sig = state
+    let message = SnapshotMessage::new(epoch, commitment.into()).to_bytes();
+    if request
+        .signature
+        .verify_aggregate(message, &[member.bls_pubkey])
+        .is_err()
+    {
+        return Err(ApiError::InvalidSignature);
+    }
+
+    state
         .context
-        .bls_keypair
-        .sign(&msg.to_bytes())
-        .map_err(|e| ApiError::InternalError(format!("bls sign: {e:?}")))?;
+        .store
+        .set_snapshot_partial_signature(
+            epoch,
+            group,
+            SnapshotPartialSignature {
+                member_index: request.member_index,
+                signature: request.signature,
+                epoch: epoch.0,
+            },
+        )
+        .map_err(|e| ApiError::InternalError(format!("store signature: {e}")))?;
 
-    let resp = BlsSignResponse {
-        signature: sig,
-        node_id: state.context.node_id(),
-        epoch,
-    };
-
-    let bytes =
-        wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
-
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, BINARY_CONTENT)],
-        bytes,
-    ))
+    Ok((StatusCode::OK, [(axum::http::header::CONTENT_TYPE, BINARY_CONTENT)]))
 }

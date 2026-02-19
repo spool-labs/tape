@@ -80,8 +80,8 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
                 get(handlers::sign::get_signature::<S, R>),
             )
             .route(
-                "/v1/snapshots/{epoch}/{chunk_index}/sign",
-                get(handlers::sign::get_snapshot_signature::<S, R>),
+                "/v1/snapshots/{epoch}/{chunk_index}/partial_signature",
+                post(handlers::sign::post_snapshot_signature::<S, R>),
             );
 
         // Metadata read
@@ -204,16 +204,19 @@ mod tests {
     use rpc_client::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
-    use tape_core::bls::BlsPrivateKey;
+    use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+    use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
     use tape_node_api::{
-        RepairRequest, SlicePayload, StripeSubChunkRequest, SyncSpoolRequest, SyncSpoolResponse,
+        RepairRequest, SnapshotSignatureSubmission, SlicePayload, StripeSubChunkRequest,
+        SyncSpoolRequest, SyncSpoolResponse,
     };
-    use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
-    use tape_store::types::{Pubkey, SpoolStatus, TrackInfo};
+    use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
+    use tape_store::types::{ChunkIndex, NodeInfo, Pubkey, SpoolStatus, TrackInfo};
+    use tape_core::cert::snapshot::SnapshotMessage;
     use tape_store::{MemoryStore, TapeStore};
     use tower::ServiceExt;
 
@@ -758,6 +761,103 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn signature_submission() {
+        let ctx = test_context();
+        let epoch = 12;
+        let chunk = 0u64;
+        let committee_epoch = EpochNumber(epoch);
+        let committee = [NodeInfo {
+            node_address: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::new_unique(),
+            tls_pubkey: Pubkey::new_unique(),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
+            spools: vec![0],
+        }];
+
+        let signer = BlsPrivateKey::from_random();
+        let signer_pk = signer.public_key().unwrap();
+        let mut committee_for_epoch = committee.to_vec();
+        committee_for_epoch[0].bls_pubkey = signer_pk;
+
+        let commitment = Hash::new_unique();
+        ctx.store
+            .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
+            .unwrap();
+        ctx.store
+            .put_committee(committee_epoch, committee_for_epoch)
+            .unwrap();
+
+        let msg = SnapshotMessage::new(committee_epoch, commitment.0).to_bytes();
+        let signature = signer.sign(msg).unwrap();
+
+        let payload = SnapshotSignatureSubmission {
+            signature,
+            member_index: 0,
+            epoch: EpochNumber(epoch),
+        };
+
+        let app = test_router(ctx.clone());
+        let resp = app
+            .oneshot(
+                Request::post(format!("/v1/snapshots/{epoch}/{chunk}/partial_signature"))
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            ctx.store
+                .get_snapshot_partial_signature(committee_epoch, chunk, 0)
+                .unwrap()
+                .unwrap()
+                .member_index,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn signature_wrong_member() {
+        let ctx = test_context();
+        let epoch = 12;
+        let chunk = 1u64;
+        let committee_epoch = EpochNumber(epoch);
+        let commitment = Hash::new_unique();
+
+        ctx.store
+            .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
+            .unwrap();
+        ctx.store
+            .put_committee(committee_epoch, vec![])
+            .unwrap();
+
+        let signer = BlsPrivateKey::from_random();
+        let msg = SnapshotMessage::new(committee_epoch, commitment.0).to_bytes();
+        let signature = signer.sign(msg).unwrap();
+
+        let payload = SnapshotSignatureSubmission {
+            signature,
+            member_index: 0,
+            epoch: EpochNumber(epoch),
+        };
+
+        let app = test_router(ctx);
+        let resp = app
+            .oneshot(
+                Request::post(format!("/v1/snapshots/{epoch}/{chunk}/partial_signature"))
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(wincode::serialize(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

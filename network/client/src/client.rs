@@ -8,8 +8,9 @@ use tape_store::types::Pubkey;
 use url::Url;
 
 use tape_node_api::{
-    InconsistencyRequest, BlsInconsistencyResponse, NodeStats, RepairRequest, BlsSignResponse,
-    SignedMessage, SlicePayload, CONTENT_TYPE_JSON, BINARY_CONTENT,
+    InconsistencyRequest, BlsInconsistencyResponse, NodeStats, RepairRequest,
+    SnapshotSignatureSubmission, BlsSignResponse, SignedMessage, SlicePayload, CONTENT_TYPE_JSON,
+    BINARY_CONTENT,
 };
 
 use crate::error::NodeError;
@@ -320,30 +321,34 @@ impl NodeClient {
         wincode::deserialize(&bytes).map_err(|e| NodeError::InvalidResponse(e.to_string()))
     }
 
-    /// GET snapshot chunk BLS signature.
-    pub async fn get_snapshot_signature(
+    /// POST snapshot partial signature.
+    pub async fn post_snapshot_signature(
         &self,
-        epoch: u64,
+        target_epoch: u64,
         chunk_index: u64,
-    ) -> Result<BlsSignResponse, NodeError> {
-        let url = self.url(&tape_node_api::snapshot_sign_url(epoch, chunk_index))?;
+        request: &SnapshotSignatureSubmission,
+    ) -> Result<(), NodeError> {
+        let url = self.url(&tape_node_api::snapshot_signature_url(
+            target_epoch,
+            chunk_index,
+        ))?;
+        let body =
+            wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
+        let len = body.len() as u64;
         let start = Instant::now();
 
         let resp = self
             .inner
-            .get(url)
+            .post(url)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
             .send()
             .await
             .map_err(|e| self.map_reqwest_error(e))?;
 
-        self.record("get_snapshot_signature", &resp, start, 0, 0);
-        let resp = self.check_status_return(resp).await?;
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| self.map_reqwest_error(e))?;
-        self.record_rx("get_snapshot_signature", bytes.len() as u64);
-        wincode::deserialize(&bytes).map_err(|e| NodeError::InvalidResponse(e.to_string()))
+        self.record("post_snapshot_signature", &resp, start, len, 0);
+        self.check_status(resp).await?;
+        Ok(())
     }
 
     /// GET /v1/snapshots/:epoch/commitments — fetch snapshot chunk commitments.

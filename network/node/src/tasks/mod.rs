@@ -73,7 +73,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
             invalidate_track::run(context, *track, cancel).await
         }
         TaskKey::SnapshotBuild => {
-            snapshot::run_build(context, cancel).await
+            snapshot::run_build(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotCertify => {
             snapshot::run_certify(context, peer_handle, cancel).await

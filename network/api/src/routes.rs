@@ -27,8 +27,8 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/:track_id/status";
 /// GET endpoint for track signature (BLS certification).
 pub const SIGN_PATH: &str = "/v1/tracks/:track_id/sign";
 
-/// GET endpoint for snapshot chunk BLS signature.
-pub const SNAPSHOT_SIGN_PATH: &str = "/v1/snapshots/:epoch/:chunk_index/sign";
+/// POST endpoint for snapshot partial BLS signature submission.
+pub const SNAPSHOT_SIGNATURE_PATH: &str = "/v1/snapshots/:epoch/:chunk_index/partial_signature";
 
 /// POST endpoint for bandwidth-optimal repair (sub-chunk extraction).
 pub const REPAIR_PATH: &str = "/v1/tracks/:track_id/repair";
@@ -99,8 +99,8 @@ pub fn inconsistency_url(track_id: &str) -> String {
 }
 
 /// Build a snapshot sign endpoint URL.
-pub fn snapshot_sign_url(epoch: u64, chunk_index: u64) -> String {
-    format!("/v1/snapshots/{epoch}/{chunk_index}/sign")
+pub fn snapshot_signature_url(epoch: u64, chunk_index: u64) -> String {
+    format!("/v1/snapshots/{epoch}/{chunk_index}/partial_signature")
 }
 
 /// Build a snapshot commitments endpoint URL.
@@ -120,7 +120,10 @@ mod tests {
         assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
         assert_eq!(inconsistency_url("abc"), "/v1/tracks/abc/inconsistency");
-        assert_eq!(snapshot_sign_url(10, 3), "/v1/snapshots/10/3/sign");
+        assert_eq!(
+            snapshot_signature_url(10, 3),
+            "/v1/snapshots/10/3/partial_signature"
+        );
         assert_eq!(
             slice_status_url("abc", 5),
             "/v1/tracks/abc/slices/5/status"

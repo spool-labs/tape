@@ -23,7 +23,8 @@ pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, UnitKey};
 
 // Re-export value types
 pub use values::{
-    InvalidationProof, NodeInfo, SnapshotCertResult, SnapshotChunkMeta, TapeInfo, TrackInfo,
+    InvalidationProof, NodeInfo, SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature,
+    TapeInfo, TrackInfo,
 };
 
 // Re-export wrapper types

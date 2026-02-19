@@ -12,13 +12,36 @@ use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{
     ChunkIndex, EpochNumber, Hash, InvalidationProof, NodeStatus, Pubkey, SlotNumber,
-    SnapshotCertResult, SnapshotChunkMeta, UnitKey,
+    SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature, UnitKey,
 };
 use crate::TapeStore;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
+
+const SNAPSHOT_PARTIAL_SIG_PREFIX: &str = "snapshot_partial_sig";
+
+fn partial_sig_group_prefix(epoch: EpochNumber, group: u64) -> String {
+    format!("{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:", epoch.as_u64(), group)
+}
+
+fn parse_partial_sig_key(key: &[u8]) -> Option<(EpochNumber, u64, u8)> {
+    let key = std::str::from_utf8(key).ok()?;
+    let parts = key.split(':').collect::<Vec<_>>();
+    if parts.len() != 4 || parts[0] != SNAPSHOT_PARTIAL_SIG_PREFIX {
+        return None;
+    }
+
+    let epoch = parts
+        .get(1)
+        .and_then(|p| p.parse::<u64>().ok())
+        .map(EpochNumber)?;
+    let group = parts.get(2).and_then(|p| p.parse::<u64>().ok())?;
+    let member_index = parts.get(3).and_then(|p| p.parse::<u8>().ok())?;
+
+    Some((epoch, group, member_index))
+}
 
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
@@ -80,6 +103,31 @@ pub trait MetaOps {
     fn get_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex) -> Result<Option<SnapshotCertResult>>;
     fn set_snapshot_certification(&self, epoch: EpochNumber, chunk: ChunkIndex, result: SnapshotCertResult) -> Result<()>;
     fn delete_snapshot_certifications(&self, epoch: EpochNumber) -> Result<()>;
+
+    /// Partial snapshot signatures (peer-pushed) for each group.
+    fn set_snapshot_partial_signature(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+        partial: SnapshotPartialSignature,
+    ) -> Result<()>;
+    fn get_snapshot_partial_signature(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+        member_index: u8,
+    ) -> Result<Option<SnapshotPartialSignature>>;
+    fn get_snapshot_partial_signatures(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+    ) -> Result<Vec<SnapshotPartialSignature>>;
+    fn delete_snapshot_partial_signatures(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+    ) -> Result<()>;
+    fn delete_snapshot_partial_signatures_for_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
     // Invalidation proofs
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>>;
@@ -366,6 +414,103 @@ impl<S: Store> MetaOps for TapeStore<S> {
         Ok(())
     }
 
+    fn set_snapshot_partial_signature(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+        partial: SnapshotPartialSignature,
+    ) -> Result<()> {
+        let key = format!(
+            "{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:{}",
+            epoch.as_u64(),
+            group,
+            partial.member_index,
+        );
+        let bytes = wincode::serialize(&partial)
+            .map_err(|e| TapeStoreError::Serialization(format!("snapshot partial signature: {e}")))?;
+        self.put::<MetaCol>(&key, &bytes)?;
+        Ok(())
+    }
+
+    fn get_snapshot_partial_signature(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+        member_index: u8,
+    ) -> Result<Option<SnapshotPartialSignature>> {
+        let key = format!(
+            "{SNAPSHOT_PARTIAL_SIG_PREFIX}:{}:{}:{}",
+            epoch.as_u64(),
+            group,
+            member_index
+        );
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                let partial: SnapshotPartialSignature = wincode::deserialize(&bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!("snapshot partial signature: {e}")))?;
+                Ok(Some(partial))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn get_snapshot_partial_signatures(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+    ) -> Result<Vec<SnapshotPartialSignature>> {
+        let prefix = partial_sig_group_prefix(epoch, group);
+        let mut partials = Vec::new();
+
+        for (key, value_bytes) in self.inner().iter::<MetaCol>()? {
+            if key.starts_with(&prefix) {
+                let partial: SnapshotPartialSignature = wincode::deserialize(&value_bytes)
+                    .map_err(|e| TapeStoreError::Serialization(format!(
+                        "snapshot partial signature: {e}"
+                    )))?;
+                partials.push(partial);
+            }
+        }
+        Ok(partials)
+    }
+
+    fn delete_snapshot_partial_signatures(
+        &self,
+        epoch: EpochNumber,
+        group: u64,
+    ) -> Result<()> {
+        let prefix = partial_sig_group_prefix(epoch, group);
+        let keys: Vec<String> = self
+            .inner()
+            .iter::<MetaCol>()?
+            .into_iter()
+            .filter_map(|(key, _)| key.starts_with(&prefix).then_some(key))
+            .collect();
+
+        for key in keys {
+            self.delete::<MetaCol>(&key)?;
+        }
+        Ok(())
+    }
+
+    fn delete_snapshot_partial_signatures_for_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let keys: Vec<String> = self
+            .inner()
+            .iter::<MetaCol>()?
+            .into_iter()
+            .filter_map(|(key, _)| {
+                parse_partial_sig_key(key.as_bytes())
+                    .filter(|(sig_epoch, _, _)| *sig_epoch == epoch)
+                    .map(|_| key)
+            })
+            .collect();
+
+        for key in keys {
+            self.delete::<MetaCol>(&key)?;
+        }
+        Ok(())
+    }
+
     fn get_invalidation_proof(&self, track: Pubkey) -> Result<Option<InvalidationProof>> {
         let key = format!("invalidation:{}", track);
         match self.get::<MetaCol>(&key)? {
@@ -445,8 +590,8 @@ impl<S: Store> MetaOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
     use tape_core::bls::BlsSignature;
+    use store_memory::MemoryStore;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -669,5 +814,62 @@ mod tests {
 
         store.delete_invalidation_proof(track).unwrap();
         assert!(store.get_invalidation_proof(track).unwrap().is_none());
+    }
+
+    #[test]
+    fn partial_signature_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(7);
+        let group = 3;
+
+        assert!(store
+            .get_snapshot_partial_signature(epoch, group, 0)
+            .unwrap()
+            .is_none());
+
+        let sig_a = SnapshotPartialSignature {
+            member_index: 2,
+            signature: BlsSignature(G1CompressedPoint([0x11; 32])),
+            epoch: epoch.0,
+        };
+
+        let sig_b = SnapshotPartialSignature {
+            member_index: 5,
+            signature: BlsSignature(G1CompressedPoint([0x22; 32])),
+            epoch: epoch.0,
+        };
+
+        store
+            .set_snapshot_partial_signature(epoch, group, sig_a.clone())
+            .unwrap();
+        store
+            .set_snapshot_partial_signature(epoch, group, sig_b.clone())
+            .unwrap();
+
+        let mut sigs = store
+            .get_snapshot_partial_signatures(epoch, group)
+            .unwrap();
+        sigs.sort_by_key(|partial| partial.member_index);
+
+        assert_eq!(sigs, vec![sig_a.clone(), sig_b.clone()]);
+        assert_eq!(
+            store
+                .get_snapshot_partial_signature(epoch, group, 2)
+                .unwrap()
+                .unwrap(),
+            sig_a
+        );
+
+        assert!(store
+            .delete_snapshot_partial_signatures(epoch, group)
+            .is_ok());
+        assert!(store
+            .get_snapshot_partial_signature(epoch, group, 2)
+            .unwrap()
+            .is_none());
+
+        assert!(store
+            .delete_snapshot_partial_signatures_for_epoch(epoch)
+            .is_ok());
     }
 }

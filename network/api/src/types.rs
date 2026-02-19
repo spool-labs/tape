@@ -35,6 +35,14 @@ pub struct RepairRequest {
     pub stripes: Vec<StripeSubChunkRequest>,
 }
 
+/// Snapshot partial signature submitted by peers.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SnapshotSignatureSubmission {
+    pub signature: BlsSignature,
+    pub member_index: u8,
+    pub epoch: EpochNumber,
+}
+
 /// Per-stripe sub-chunk extraction instructions.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct StripeSubChunkRequest {
@@ -219,5 +227,19 @@ mod tests {
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncSpoolResponse = wincode::deserialize(&bytes).unwrap();
         assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn signature_submission_roundtrip() {
+        use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+
+        let req = SnapshotSignatureSubmission {
+            signature: BlsSignature(G1CompressedPoint([0x33; 32])),
+            member_index: 5,
+            epoch: EpochNumber(99),
+        };
+        let bytes = wincode::serialize(&req).unwrap();
+        let decoded: SnapshotSignatureSubmission = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(req, decoded);
     }
 }

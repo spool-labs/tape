@@ -25,7 +25,7 @@ use tape_store::types::{ChunkIndex, NodeStatus, Pubkey as StorePubkey, SpoolStat
 use crate::runtime::NodeContext;
 use crate::runtime::committee::{our_member_index, our_snapshot_groups};
 use crate::fsm::StateChange;
-use crate::snapshot::snapshot_target;
+use crate::snapshot::{is_snapshot_build_complete, is_snapshot_chunk_ready, snapshot_target};
 use crate::state::{GroupState, LifecycleEpochState, RefreshThrottle, SnapshotProgress};
 use crate::supervisor::{TaskKey, TaskResult};
 
@@ -366,20 +366,17 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if self.snapshot_progress.epoch() != epoch {
             self.snapshot_progress.reset(epoch);
         }
-        let built = self
-            .context
-            .store
-            .get_snapshot_commitment(target, ChunkIndex(0))
-            .ok()
-            .flatten()
-            .is_some();
 
-        if !built {
+        let all_built = match is_snapshot_build_complete(&self.context, target) {
+            Ok(built) => built,
+            Err(e) => {
+                tracing::warn!("snapshot pipeline: failed to read build state: {e}");
+                false
+            }
+        };
+
+        if !all_built {
             self.desired.insert(TaskKey::SnapshotBuild);
-            self.desired.remove(&TaskKey::SnapshotCertify);
-            self.desired.remove(&TaskKey::RegisterSnapshot);
-            self.desired.remove(&TaskKey::CertifySnapshot);
-            return;
         }
 
         let owned_groups: HashSet<u64> = match self.context.store.get_committee(epoch) {
@@ -406,11 +403,32 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             self.desired.remove(&TaskKey::SnapshotCertify);
             self.desired.remove(&TaskKey::RegisterSnapshot);
             self.desired.remove(&TaskKey::CertifySnapshot);
+            if !all_built {
+                // Cannot yet determine owned groups; keep build running until committee is known.
+            } else {
+                self.desired.remove(&TaskKey::SnapshotBuild);
+            }
             return;
         }
 
+        let mut ready_groups: Vec<usize> = Vec::new();
+
         // Rebuild per-group progress from store state.
         for &group in &owned_groups {
+            let ready = match is_snapshot_chunk_ready(&self.context, target, group) {
+                Ok(ready) => ready,
+                Err(e) => {
+                    tracing::warn!("snapshot pipeline: failed to read group readiness: {e}");
+                    false
+                }
+            };
+            if ready {
+                ready_groups.push(group as usize);
+            }
+            if !ready {
+                continue;
+            }
+
             let ci = ChunkIndex(group);
             let has_cert = self
                 .context
@@ -428,24 +446,29 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         let owned_vec: Vec<usize> = owned_groups.iter().map(|&g| g as usize).collect();
         let all_certified = self.snapshot_progress.all_local_cert(&owned_vec);
         let all_onchain = self.snapshot_progress.all_done_onchain(&owned_vec);
-        let any_certified = self.snapshot_progress.any_local_cert(&owned_vec);
 
-        self.desired.remove(&TaskKey::SnapshotBuild);
         if all_onchain {
             self.desired.remove(&TaskKey::RegisterSnapshot);
             self.desired.remove(&TaskKey::CertifySnapshot);
-        } else if any_certified {
-            self.desired.insert(TaskKey::RegisterSnapshot);
-            self.desired.insert(TaskKey::CertifySnapshot);
         } else {
-            self.desired.remove(&TaskKey::RegisterSnapshot);
-            self.desired.remove(&TaskKey::CertifySnapshot);
+            if !ready_groups.is_empty() {
+                self.desired.insert(TaskKey::RegisterSnapshot);
+            } else {
+                self.desired.remove(&TaskKey::RegisterSnapshot);
+            }
+            if !ready_groups.is_empty() && self.snapshot_progress.any_local_cert(&owned_vec) {
+                self.desired.insert(TaskKey::CertifySnapshot);
+            } else {
+                self.desired.remove(&TaskKey::CertifySnapshot);
+            }
         }
 
         if all_certified {
             self.desired.remove(&TaskKey::SnapshotCertify);
-        } else {
+        } else if !ready_groups.is_empty() {
             self.desired.insert(TaskKey::SnapshotCertify);
+        } else {
+            self.desired.remove(&TaskKey::SnapshotCertify);
         }
 
         // Advance-wait gap fix: when all owned groups have completed on-chain,
@@ -715,9 +738,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use bytemuck::Zeroable;
     use tape_api::program::tapedrive::node_pda;
+    use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::bls::{BlsPubkey, BlsSignature};
     use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
     use tape_core::system::EpochPhase;
@@ -726,10 +749,66 @@ mod tests {
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_crypto::Hash as CryptoHash;
     use tape_store::ops::{CommitteeOps, MetaOps, ObjectInfoOps, SliceOps, TrackOps};
-    use tape_store::types::{NodeInfo, ObjectInfo, Pubkey as StorePubkey, SnapshotCertResult, TrackInfo};
+    use tape_store::types::{
+        NodeInfo,
+        ObjectInfo,
+        Pubkey as StorePubkey,
+        SnapshotCertResult,
+        SnapshotChunkMeta,
+        TrackInfo,
+    };
 
     use crate::fsm::Fsm;
     use crate::runtime::test_utils::test_context;
+
+    fn mark_snapshot_build_complete<S: Store, R: Rpc>(
+        ctx: &Arc<NodeContext<S, R>>,
+        target: EpochNumber,
+    ) {
+        for group in 0..SPOOL_GROUP_COUNT {
+            let chunk_index = ChunkIndex(group as u64);
+            ctx.store
+                .set_snapshot_commitment(target, chunk_index, CryptoHash::new_unique())
+                .unwrap();
+            ctx.store
+                .set_snapshot_metadata(
+                    target,
+                    chunk_index,
+                    SnapshotChunkMeta {
+                        leaves: Vec::new(),
+                        stripe_size: 0,
+                        stripe_count: 0,
+                        encoding_type: 0,
+                        encoding_params: 0,
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    fn mark_snapshot_group_ready<S: Store, R: Rpc>(
+        ctx: &Arc<NodeContext<S, R>>,
+        target: EpochNumber,
+        group: u64,
+    ) {
+        let chunk_index = ChunkIndex(group);
+        ctx.store
+            .set_snapshot_commitment(target, chunk_index, CryptoHash::new_unique())
+            .unwrap();
+        ctx.store
+            .set_snapshot_metadata(
+                target,
+                chunk_index,
+                SnapshotChunkMeta {
+                    leaves: Vec::new(),
+                    stripe_size: 0,
+                    stripe_count: 0,
+                    encoding_type: 0,
+                    encoding_params: 0,
+                },
+            )
+            .unwrap();
+    }
 
     fn put_our_committee<S: Store, R: Rpc>(
         ctx: &Arc<NodeContext<S, R>>,
@@ -1499,15 +1578,13 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
-        ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
-            .unwrap();
+        mark_snapshot_build_complete(&ctx, target);
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(EpochNumber(3));
         assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
         assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild));
-        assert!(!scheduler.desired.contains(&TaskKey::RegisterSnapshot));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
     }
 
     #[tokio::test]
@@ -1516,9 +1593,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_non_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
-        ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
-            .unwrap();
+        mark_snapshot_build_complete(&ctx, target);
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.schedule_lifecycle(EpochNumber(3));
@@ -1533,9 +1608,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
-        ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
-            .unwrap();
+        mark_snapshot_build_complete(&ctx, target);
         ctx.store
             .set_snapshot_certification(
                 target,
@@ -1561,9 +1634,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
         let target = EpochNumber(2);
-        ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
-            .unwrap();
+        mark_snapshot_build_complete(&ctx, target);
         ctx.store
             .set_snapshot_certification(
                 target,
@@ -1590,9 +1661,7 @@ mod tests {
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
-        ctx.store
-            .set_snapshot_commitment(target, ChunkIndex(0), CryptoHash::new_unique())
-            .unwrap();
+        mark_snapshot_build_complete(&ctx, target);
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.desired.insert(TaskKey::RefreshOnchainState);
@@ -1600,6 +1669,25 @@ mod tests {
         scheduler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
 
         assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
+    }
+
+    #[tokio::test]
+    async fn partial_build_register() {
+        let ctx = test_context();
+        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        put_our_committee(&ctx, EpochNumber(3), vec![5]);
+
+        let target = EpochNumber(2);
+        let group = 0u64;
+        mark_snapshot_group_ready(&ctx, target, group);
+
+        let mut scheduler = Scheduler::new(ctx);
+        scheduler.schedule_lifecycle(EpochNumber(3));
+
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
         assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
     }
 

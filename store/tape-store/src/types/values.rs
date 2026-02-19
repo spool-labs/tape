@@ -123,6 +123,17 @@ pub struct SnapshotCertResult {
     pub epoch: u64,
 }
 
+/// Single partial BLS signature for a snapshot chunk.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SnapshotPartialSignature {
+    /// Committee member index that produced this signature.
+    pub member_index: u8,
+    /// Partial BLS signature bytes.
+    pub signature: BlsSignature,
+    /// Snapshot target epoch for this signature.
+    pub epoch: u64,
+}
+
 /// Information about a single committee member
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodeInfo {
@@ -231,5 +242,20 @@ mod tests {
         let bytes = wincode::serialize(&info).unwrap();
         let decoded: NodeInfo = wincode::deserialize(&bytes).unwrap();
         assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn partial_signature_roundtrip() {
+        use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+
+        let sig = SnapshotPartialSignature {
+            member_index: 3,
+            signature: BlsSignature(G1CompressedPoint([0x55; 32])),
+            epoch: 42,
+        };
+
+        let bytes = wincode::serialize(&sig).unwrap();
+        let decoded: SnapshotPartialSignature = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(sig, decoded);
     }
 }
