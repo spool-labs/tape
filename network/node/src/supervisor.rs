@@ -376,6 +376,7 @@ mod tests {
     use crate::core::BackoffConfig;
     use crate::runtime::PeerService;
     use crate::runtime::test_utils::test_context;
+    use tape_core::types::EpochNumber;
     use tokio::time::sleep;
 
     #[tokio::test]
@@ -451,7 +452,7 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
-        let key = TaskKey::SnapshotBuild;
+        let key = TaskKey::SnapshotBuild { epoch: EpochNumber(0) };
         supervisor.running.insert(
             key.clone(),
             RunningTask {
@@ -516,7 +517,7 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
-        let key = TaskKey::CertifySnapshot;
+        let key = TaskKey::CertifySnapshot { epoch: EpochNumber(0) };
         supervisor.running.insert(
             key.clone(),
             RunningTask {
@@ -548,7 +549,7 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
-        let key = TaskKey::AdvanceEpoch;
+        let key = TaskKey::AdvanceEpoch { epoch: EpochNumber(0) };
 
         supervisor.running.insert(
             key.clone(),
@@ -681,13 +682,22 @@ mod tests {
 
     #[test]
     fn categories() {
-        assert_eq!(TaskKey::AdvanceEpoch.category(), TaskCategory::SolanaTx);
-        assert_eq!(TaskKey::SyncEpoch.category(), TaskCategory::SolanaTx);
+        assert_eq!(
+            TaskKey::AdvanceEpoch { epoch: EpochNumber(0) }.category(),
+            TaskCategory::SolanaTx
+        );
+        assert_eq!(
+            TaskKey::SyncEpoch { epoch: EpochNumber(0) }.category(),
+            TaskCategory::SolanaTx
+        );
         assert_eq!(
             TaskKey::SpoolSync { spool: 0 }.category(),
             TaskCategory::PeerHttp
         );
-        assert_eq!(TaskKey::SnapshotBuild.category(), TaskCategory::CpuHeavy);
+        assert_eq!(
+            TaskKey::SnapshotBuild { epoch: EpochNumber(0) }.category(),
+            TaskCategory::CpuHeavy
+        );
         assert_eq!(
             TaskKey::RefreshOnchainState.category(),
             TaskCategory::Internal
@@ -696,14 +706,14 @@ mod tests {
 
     #[test]
     fn one_shot() {
-        assert!(TaskKey::AdvanceEpoch.is_one_shot());
-        assert!(TaskKey::SyncEpoch.is_one_shot());
+        assert!(TaskKey::AdvanceEpoch { epoch: EpochNumber(0) }.is_one_shot());
+        assert!(TaskKey::SyncEpoch { epoch: EpochNumber(0) }.is_one_shot());
         assert!(TaskKey::RefreshOnchainState.is_one_shot());
         assert!(TaskKey::RecoveryScan { spool: 0 }.is_one_shot());
         assert!(TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
         assert!(TaskKey::SpoolSync { spool: 0 }.is_one_shot());
-        assert!(TaskKey::SnapshotBuild.is_one_shot());
-        assert!(TaskKey::SnapshotCertify.is_one_shot());
+        assert!(TaskKey::SnapshotBuild { epoch: EpochNumber(0) }.is_one_shot());
+        assert!(TaskKey::SnapshotCertify { epoch: EpochNumber(0) }.is_one_shot());
     }
 
     #[test]

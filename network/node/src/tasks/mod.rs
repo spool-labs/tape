@@ -44,20 +44,30 @@ pub async fn execute_task<S: Store, R: Rpc>(
         return (key, TaskOutcome::Success);
     }
 
+    // Each epoch-scoped key is pinned to the target on-chain epoch.
+    // If the node has already advanced/lagged, skip stale tx/submission.
+    if let Some(task_epoch) = key.scheduled_epoch() {
+        if let Ok(Some(chain_epoch)) = context.store.get_chain_epoch() {
+            if task_epoch != chain_epoch {
+                return (key, TaskOutcome::Success);
+            }
+        }
+    }
+
     let outcome = match &key {
         TaskKey::RefreshOnchainState => {
             refresh_onchain_state::run(context, peer_handle, cancel).await
         }
-        TaskKey::AdvanceEpoch => {
+        TaskKey::AdvanceEpoch { .. } => {
             advance_epoch::run(context, cancel).await
         }
-        TaskKey::SyncEpoch => {
+        TaskKey::SyncEpoch { .. } => {
             sync_epoch::run(context, cancel).await
         }
-        TaskKey::JoinNetwork => {
+        TaskKey::JoinNetwork { .. } => {
             join_network::run(context, cancel).await
         }
-        TaskKey::AdvancePool => {
+        TaskKey::AdvancePool { .. } => {
             advance_pool::run(context, cancel).await
         }
         TaskKey::SpoolSync { spool } => {
@@ -72,16 +82,16 @@ pub async fn execute_task<S: Store, R: Rpc>(
         TaskKey::InvalidateTrack { track } => {
             invalidate_track::run(context, *track, cancel).await
         }
-        TaskKey::SnapshotBuild => {
+        TaskKey::SnapshotBuild { .. } => {
             snapshot::run_build(context, peer_handle, cancel).await
         }
-        TaskKey::SnapshotCertify => {
+        TaskKey::SnapshotCertify { .. } => {
             snapshot::run_certify(context, peer_handle, cancel).await
         }
-        TaskKey::RegisterSnapshot => {
+        TaskKey::RegisterSnapshot { .. } => {
             snapshot::run_register(context, peer_handle, cancel).await
         }
-        TaskKey::CertifySnapshot => {
+        TaskKey::CertifySnapshot { .. } => {
             snapshot::run_certify_onchain(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotBootstrap => {

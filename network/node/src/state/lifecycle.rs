@@ -35,20 +35,20 @@ impl LifecycleEpochState {
 
     pub fn is_done(&self, key: &TaskKey) -> bool {
         match key {
-            TaskKey::SyncEpoch => self.sync_epoch,
-            TaskKey::AdvancePool => self.advance_pool,
-            TaskKey::JoinNetwork => self.join_network,
-            TaskKey::AdvanceEpoch => self.advance_epoch,
+            TaskKey::SyncEpoch { .. } => self.sync_epoch,
+            TaskKey::AdvancePool { .. } => self.advance_pool,
+            TaskKey::JoinNetwork { .. } => self.join_network,
+            TaskKey::AdvanceEpoch { .. } => self.advance_epoch,
             _ => false,
         }
     }
 
     pub fn mark_done(&mut self, key: &TaskKey) {
         match key {
-            TaskKey::SyncEpoch => self.sync_epoch = true,
-            TaskKey::AdvancePool => self.advance_pool = true,
-            TaskKey::JoinNetwork => self.join_network = true,
-            TaskKey::AdvanceEpoch => self.advance_epoch = true,
+            TaskKey::SyncEpoch { .. } => self.sync_epoch = true,
+            TaskKey::AdvancePool { .. } => self.advance_pool = true,
+            TaskKey::JoinNetwork { .. } => self.join_network = true,
+            TaskKey::AdvanceEpoch { .. } => self.advance_epoch = true,
             _ => {}
         }
     }
@@ -61,29 +61,29 @@ mod tests {
     #[test]
     fn new_not_done() {
         let state = LifecycleEpochState::new(EpochNumber(1));
-        assert!(!state.is_done(&TaskKey::SyncEpoch));
-        assert!(!state.is_done(&TaskKey::AdvancePool));
-        assert!(!state.is_done(&TaskKey::JoinNetwork));
-        assert!(!state.is_done(&TaskKey::AdvanceEpoch));
+        assert!(!state.is_done(&TaskKey::SyncEpoch { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&TaskKey::AdvancePool { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&TaskKey::JoinNetwork { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&TaskKey::AdvanceEpoch { epoch: EpochNumber(1) }));
     }
 
     #[test]
     fn mark_done() {
         let mut state = LifecycleEpochState::new(EpochNumber(1));
-        state.mark_done(&TaskKey::SyncEpoch);
-        assert!(state.is_done(&TaskKey::SyncEpoch));
-        assert!(!state.is_done(&TaskKey::AdvancePool));
+        state.mark_done(&TaskKey::SyncEpoch { epoch: EpochNumber(1) });
+        assert!(state.is_done(&TaskKey::SyncEpoch { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&TaskKey::AdvancePool { epoch: EpochNumber(1) }));
     }
 
     #[test]
     fn reset_clears() {
         let mut state = LifecycleEpochState::new(EpochNumber(1));
-        state.mark_done(&TaskKey::SyncEpoch);
-        state.mark_done(&TaskKey::AdvancePool);
+        state.mark_done(&TaskKey::SyncEpoch { epoch: EpochNumber(1) });
+        state.mark_done(&TaskKey::AdvancePool { epoch: EpochNumber(1) });
         state.reset(EpochNumber(2));
         assert_eq!(state.epoch(), EpochNumber(2));
-        assert!(!state.is_done(&TaskKey::SyncEpoch));
-        assert!(!state.is_done(&TaskKey::AdvancePool));
+        assert!(!state.is_done(&TaskKey::SyncEpoch { epoch: EpochNumber(2) }));
+        assert!(!state.is_done(&TaskKey::AdvancePool { epoch: EpochNumber(2) }));
     }
 
     #[test]

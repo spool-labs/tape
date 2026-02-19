@@ -4,7 +4,7 @@
 //! completions from the supervisor. It maintains a view of what tasks *should*
 //! be running and tells the supervisor to schedule or cancel tasks accordingly.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,17 +45,12 @@ pub struct Scheduler<S: Store, R: Rpc> {
     desired: HashSet<TaskKey>,
     /// Tasks we've told the supervisor to schedule (and haven't completed/cancelled).
     scheduled: HashSet<TaskKey>,
-    /// Epoch at which an epoch-scoped task key was first scheduled.
-    /// Used to drop stale completions after epoch transitions.
-    scheduled_epochs: HashMap<TaskKey, EpochNumber>,
     /// Tracks which one-shot lifecycle tasks completed for the current epoch.
     lifecycle: LifecycleEpochState,
     /// In-memory snapshot pipeline state for the current epoch.
     snapshot_progress: SnapshotProgress,
     /// Scheduler-owned refresh scheduling throttle.
     refresh_throttle: RefreshThrottle,
-    /// Tasks that must be explicitly canceled to clear supervisor retry state.
-    force_cancel: HashSet<TaskKey>,
 }
 
 impl<S: Store, R: Rpc> Scheduler<S, R> {
@@ -64,11 +59,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             context,
             desired: HashSet::new(),
             scheduled: HashSet::new(),
-            scheduled_epochs: HashMap::new(),
             lifecycle: LifecycleEpochState::new(EpochNumber(0)),
             snapshot_progress: SnapshotProgress::new(EpochNumber(0)),
             refresh_throttle: RefreshThrottle::new(),
-            force_cancel: HashSet::new(),
         }
     }
 
@@ -148,7 +141,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 StateChange::NodeSynced { node } => {
                     // If this is our node, SyncEpoch completed on-chain
                     if *node == self.context.keypair.pubkey() {
-                        self.desired.remove(&TaskKey::SyncEpoch);
+                        let epoch = self.scheduling_epoch();
+                        self.desired.remove(&TaskKey::SyncEpoch { epoch });
                     }
                 }
                 StateChange::TrackDeleted { track }
@@ -201,11 +195,12 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     fn periodic_tasks(&mut self) {
         self.request_refresh(false);
+        let epoch = self.scheduling_epoch();
         if matches!(self.node_status(), NodeStatus::Active)
-            && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch)
+            && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch })
             && self.chain_phase_is_active()
         {
-            self.desired.insert(TaskKey::AdvanceEpoch);
+            self.desired.insert(TaskKey::AdvanceEpoch { epoch });
         }
     }
 
@@ -321,45 +316,53 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         // Keep local lifecycle epoch (scheduler-owned) aligned to chain epoch,
         // even when epoch changes arrive via refresh/replay without EpochAdvanced state changes.
         if self.lifecycle.epoch() != epoch {
-            self.force_cancel_epoch();
+            self.scheduled
+                .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
             self.lifecycle.reset(epoch);
             self.snapshot_progress.reset(epoch);
         }
+        self.desired
+            .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
 
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
-        self.desired.remove(&TaskKey::SyncEpoch);
-        self.desired.remove(&TaskKey::AdvancePool);
-        self.desired.remove(&TaskKey::JoinNetwork);
+        self.desired.remove(&TaskKey::SyncEpoch { epoch });
+        self.desired.remove(&TaskKey::AdvancePool { epoch });
+        self.desired.remove(&TaskKey::JoinNetwork { epoch });
 
         let phase = self.context.store.get_chain_epoch_phase().ok().flatten();
         match phase {
             Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
-                if !self.lifecycle.is_done(&TaskKey::SyncEpoch) {
-                    self.desired.insert(TaskKey::SyncEpoch);
+                if !self.lifecycle.is_done(&TaskKey::SyncEpoch { epoch }) {
+                    self.desired.insert(TaskKey::SyncEpoch { epoch });
                 }
             }
             Some(EpochPhase::Settling) => {
-                if !self.lifecycle.is_done(&TaskKey::AdvancePool) {
-                    self.desired.insert(TaskKey::AdvancePool);
+                if !self.lifecycle.is_done(&TaskKey::AdvancePool { epoch }) {
+                    self.desired.insert(TaskKey::AdvancePool { epoch });
                 }
-                if !self.lifecycle.is_done(&TaskKey::JoinNetwork) {
-                    self.desired.insert(TaskKey::JoinNetwork);
+                if !self.lifecycle.is_done(&TaskKey::JoinNetwork { epoch }) {
+                    self.desired.insert(TaskKey::JoinNetwork { epoch });
                 }
             }
             Some(EpochPhase::Active) => {}
         }
-        if self.chain_phase_is_active() && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) {
-            self.desired.insert(TaskKey::AdvanceEpoch);
+        if self.chain_phase_is_active() && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+            self.desired.insert(TaskKey::AdvanceEpoch { epoch });
         }
         self.schedule_snapshot(epoch);
     }
 
     fn schedule_snapshot(&mut self, epoch: EpochNumber) {
+        let snapshot_build = TaskKey::SnapshotBuild { epoch };
+        let snapshot_certify = TaskKey::SnapshotCertify { epoch };
+        let register_snapshot = TaskKey::RegisterSnapshot { epoch };
+        let certify_snapshot = TaskKey::CertifySnapshot { epoch };
+
         let Some(target) = snapshot_target(epoch) else {
-            self.desired.remove(&TaskKey::SnapshotBuild);
-            self.desired.remove(&TaskKey::SnapshotCertify);
-            self.desired.remove(&TaskKey::RegisterSnapshot);
-            self.desired.remove(&TaskKey::CertifySnapshot);
+            self.desired.remove(&snapshot_build);
+            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&register_snapshot);
+            self.desired.remove(&certify_snapshot);
             return;
         };
 
@@ -376,7 +379,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         };
 
         if !all_built {
-            self.desired.insert(TaskKey::SnapshotBuild);
+            self.desired.insert(snapshot_build);
         }
 
         let owned_groups: HashSet<u64> = match self.context.store.get_committee(epoch) {
@@ -400,13 +403,13 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         };
 
         if owned_groups.is_empty() {
-            self.desired.remove(&TaskKey::SnapshotCertify);
-            self.desired.remove(&TaskKey::RegisterSnapshot);
-            self.desired.remove(&TaskKey::CertifySnapshot);
+            self.desired.remove(&snapshot_certify);
+            self.desired.remove(&register_snapshot);
+            self.desired.remove(&certify_snapshot);
             if !all_built {
                 // Cannot yet determine owned groups; keep build running until committee is known.
             } else {
-                self.desired.remove(&TaskKey::SnapshotBuild);
+                self.desired.remove(&snapshot_build);
             }
             return;
         }
@@ -448,36 +451,35 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         let all_onchain = self.snapshot_progress.all_done_onchain(&owned_vec);
 
         if all_onchain {
-            self.desired.remove(&TaskKey::RegisterSnapshot);
-            self.desired.remove(&TaskKey::CertifySnapshot);
+            self.desired.remove(&register_snapshot);
+            self.desired.remove(&certify_snapshot);
         } else {
             if !ready_groups.is_empty() {
-                self.desired.insert(TaskKey::RegisterSnapshot);
+                self.desired.insert(register_snapshot);
             } else {
-                self.desired.remove(&TaskKey::RegisterSnapshot);
+                self.desired.remove(&register_snapshot);
             }
             if !ready_groups.is_empty() && self.snapshot_progress.any_local_cert(&owned_vec) {
-                self.desired.insert(TaskKey::CertifySnapshot);
+                self.desired.insert(certify_snapshot);
             } else {
-                self.desired.remove(&TaskKey::CertifySnapshot);
+                self.desired.remove(&certify_snapshot);
             }
         }
 
         if all_certified {
-            self.desired.remove(&TaskKey::SnapshotCertify);
+            self.desired.remove(&snapshot_certify);
         } else if !ready_groups.is_empty() {
-            self.desired.insert(TaskKey::SnapshotCertify);
+            self.desired.insert(snapshot_certify);
         } else {
-            self.desired.remove(&TaskKey::SnapshotCertify);
+            self.desired.remove(&snapshot_certify);
         }
 
         // Advance-wait gap fix: when all owned groups have completed on-chain,
         // force-reschedule AdvanceEpoch so we don't wait for the next tick.
         if all_onchain {
-            self.scheduled.remove(&TaskKey::AdvanceEpoch);
-            self.scheduled_epochs.remove(&TaskKey::AdvanceEpoch);
-            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) && self.chain_phase_is_active() {
-                self.desired.insert(TaskKey::AdvanceEpoch);
+            self.scheduled.remove(&TaskKey::AdvanceEpoch { epoch });
+            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) && self.chain_phase_is_active() {
+                self.desired.insert(TaskKey::AdvanceEpoch { epoch });
             }
         }
     }
@@ -490,10 +492,13 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             TaskResult::PermanentError(k, _) => k,
         };
 
-        let stale_epoch = self.is_stale_epoch(key);
+        if self.is_stale_epoch(key) {
+            self.scheduled.remove(key);
+            return;
+        }
 
         match result {
-            TaskResult::Success(_) => self.handle_success(key, stale_epoch),
+            TaskResult::Success(_) => self.handle_success(key),
             TaskResult::Canceled(_) => self.handle_cancelled(key),
             TaskResult::RetryableError(_, _) => self.handle_retry(),
             TaskResult::PermanentError(_, _) => self.handle_permanent(key),
@@ -502,22 +507,18 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     fn handle_cancelled(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
-        self.scheduled_epochs.remove(key);
     }
 
-    fn handle_success(&mut self, key: &TaskKey, stale_epoch: bool) {
+    fn handle_success(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
-        self.scheduled_epochs.remove(key);
-        if !stale_epoch {
-            self.lifecycle.mark_done(key);
-        }
-        if key.is_one_shot() && !stale_epoch {
+        self.lifecycle.mark_done(key);
+        if key.is_one_shot() {
             self.desired.remove(key);
         }
         self.handle_refresh_success(key);
         self.handle_sync_success(key);
         self.handle_bootstrap_success(key);
-        self.handle_snapshot_success(key, stale_epoch);
+        self.handle_snapshot_success(key);
     }
 
     fn handle_refresh_success(&mut self, key: &TaskKey) {
@@ -573,7 +574,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     }
 
     fn handle_sync_success(&mut self, key: &TaskKey) {
-        if !matches!(key, TaskKey::SyncEpoch) {
+        if !matches!(key, TaskKey::SyncEpoch { .. }) {
             return;
         }
         if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
@@ -587,25 +588,25 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
-    fn handle_snapshot_success(&mut self, key: &TaskKey, stale_epoch: bool) {
+    fn handle_snapshot_success(&mut self, key: &TaskKey) {
         if !matches!(
             key,
-            TaskKey::SnapshotCertify
-                | TaskKey::RegisterSnapshot
-                | TaskKey::CertifySnapshot
-        ) || stale_epoch {
+            TaskKey::SnapshotCertify { .. }
+                | TaskKey::RegisterSnapshot { .. }
+                | TaskKey::CertifySnapshot { .. }
+        ) {
             return;
         }
         if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
             if self.snapshot_progress.epoch() == epoch {
                 match key {
-                    TaskKey::SnapshotCertify => {
+                    TaskKey::SnapshotCertify { .. } => {
                         self.mark_groups_store(epoch, GroupState::Certified);
                     }
-                    TaskKey::RegisterSnapshot => {
+                    TaskKey::RegisterSnapshot { .. } => {
                         self.mark_owned_groups(epoch, GroupState::Registered);
                     }
-                    TaskKey::CertifySnapshot => {
+                    TaskKey::CertifySnapshot { .. } => {
                         self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
                     }
                     _ => {}
@@ -623,21 +624,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     fn handle_permanent(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
-        self.scheduled_epochs.remove(key);
         self.desired.remove(key);
-    }
-
-    fn is_epoch_task(key: &TaskKey) -> bool {
-        matches!(
-            key,
-            TaskKey::SyncEpoch
-                | TaskKey::AdvancePool
-                | TaskKey::JoinNetwork
-                | TaskKey::AdvanceEpoch
-                | TaskKey::SnapshotCertify
-                | TaskKey::RegisterSnapshot
-                | TaskKey::CertifySnapshot
-        )
     }
 
     fn groups_for_epoch(&self, epoch: EpochNumber) -> HashSet<u64> {
@@ -671,42 +658,35 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
-    fn force_cancel_epoch(&mut self) {
-        let keys: Vec<TaskKey> = self
-            .scheduled
-            .iter()
-            .filter(|k| Self::is_epoch_task(k))
-            .cloned()
-            .collect();
-        for key in keys {
-            self.desired.remove(&key);
-            self.scheduled.remove(&key);
-            self.scheduled_epochs.remove(&key);
-            self.force_cancel.insert(key);
-        }
-    }
-
     fn is_stale_epoch(&self, key: &TaskKey) -> bool {
-        if !Self::is_epoch_task(key) {
-            return false;
-        }
-        let Some(task_epoch) = self.scheduled_epochs.get(key).copied() else {
+        let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
         };
-        let current = self.context.store.get_chain_epoch().ok().flatten();
-        match current {
+        match self.context.store.get_chain_epoch().ok().flatten() {
             Some(current_epoch) => task_epoch != current_epoch,
             None => true,
         }
     }
 
+    fn scheduling_epoch(&self) -> EpochNumber {
+        // Use the chain epoch for task payloads when available, with a local
+        // lifecycle fallback when chain state is unavailable during bootstrap
+        // or when we're temporarily behind on epoch visibility.
+        self.context
+            .store
+            .get_chain_epoch()
+            .ok()
+            .flatten()
+            .unwrap_or(self.lifecycle.epoch())
+    }
+
     async fn emit_directives(&mut self, tx: &mpsc::Sender<Directive>) {
-        // Force-cancel first so epoch-scoped retries/running tasks are reset before any reschedule.
-        let forced: Vec<_> = self.force_cancel.drain().collect();
-        for key in forced {
-            if tx.send(Directive::Cancel(key)).await.is_err() {
-                return;
-            }
+        // Stale epoch-scoped keys can remain after epoch transitions; trim them
+        // before scheduling/canceling to keep one key per active epoch.
+        if let Ok(Some(current_epoch)) = self.context.store.get_chain_epoch() {
+            self.desired.retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != current_epoch));
+            self.scheduled
+                .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != current_epoch));
         }
 
         // Schedule: in desired but not yet scheduled
@@ -716,11 +696,6 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 return;
             }
             self.scheduled.insert(key.clone());
-            if Self::is_epoch_task(&key) {
-                if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                    self.scheduled_epochs.insert(key.clone(), epoch);
-                }
-            }
         }
 
         // Cancel: scheduled but no longer desired
@@ -730,7 +705,6 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 return;
             }
             self.scheduled.remove(&key);
-            self.scheduled_epochs.remove(&key);
         }
     }
 }
@@ -873,10 +847,10 @@ mod tests {
         assert!(scheduled.contains(&TaskKey::SpoolSync { spool: 20 }));
         // Epoch advance also schedules one-shot on-chain tasks
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
-        assert!(scheduled.contains(&TaskKey::SyncEpoch));
+        assert!(scheduled.contains(&TaskKey::SyncEpoch { epoch: EpochNumber(1) }));
         // AdvancePool/JoinNetwork wait for SyncEpoch to complete
-        assert!(!scheduled.contains(&TaskKey::AdvancePool));
-        assert!(!scheduled.contains(&TaskKey::JoinNetwork));
+        assert!(!scheduled.contains(&TaskKey::AdvancePool { epoch: EpochNumber(1) }));
+        assert!(!scheduled.contains(&TaskKey::JoinNetwork { epoch: EpochNumber(1) }));
     }
 
     #[tokio::test]
@@ -925,7 +899,7 @@ mod tests {
         let ctx = test_context();
         let mut scheduler = Scheduler::new(ctx.clone());
 
-        let key = TaskKey::AdvanceEpoch;
+        let key = TaskKey::AdvanceEpoch { epoch: EpochNumber(0) };
         scheduler.desired.insert(key.clone());
         scheduler.scheduled.insert(key.clone());
 
@@ -940,7 +914,7 @@ mod tests {
         let ctx = test_context();
         let mut scheduler = Scheduler::new(ctx.clone());
 
-        let key = TaskKey::AdvanceEpoch;
+        let key = TaskKey::AdvanceEpoch { epoch: EpochNumber(0) };
         scheduler.desired.insert(key.clone());
         scheduler.scheduled.insert(key.clone());
 
@@ -1154,12 +1128,13 @@ mod tests {
         let our_pubkey = ctx.keypair.pubkey();
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.desired.insert(TaskKey::SyncEpoch);
-        scheduler.scheduled.insert(TaskKey::SyncEpoch);
+        let epoch = EpochNumber(0);
+        scheduler.desired.insert(TaskKey::SyncEpoch { epoch });
+        scheduler.scheduled.insert(TaskKey::SyncEpoch { epoch });
 
         scheduler.update_desired(&[StateChange::NodeSynced { node: our_pubkey }]);
 
-        assert!(!scheduler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(!scheduler.desired.contains(&TaskKey::SyncEpoch { epoch }));
     }
 
     #[tokio::test]
@@ -1263,25 +1238,26 @@ mod tests {
         ctx.store
             .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
+        let epoch = EpochNumber(2);
 
         let mut scheduler = Scheduler::new(ctx.clone());
         scheduler.update_desired(&[StateChange::EpochAdvanced {
-            epoch: EpochNumber(2),
+            epoch,
         }]);
 
         // SyncEpoch must complete before AdvancePool is scheduled
-        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch));
-        assert!(!scheduler.desired.contains(&TaskKey::AdvancePool));
+        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::AdvancePool { epoch }));
 
         // Complete SyncEpoch — AdvancePool unlocks
         ctx.store
             .set_chain_epoch_phase(EpochPhase::Settling)
             .unwrap();
-        scheduler.desired.insert(TaskKey::SyncEpoch);
-        scheduler.scheduled.insert(TaskKey::SyncEpoch);
-        scheduler.handle_result(&TaskResult::Success(TaskKey::SyncEpoch));
+        scheduler.desired.insert(TaskKey::SyncEpoch { epoch });
+        scheduler.scheduled.insert(TaskKey::SyncEpoch { epoch });
+        scheduler.handle_result(&TaskResult::Success(TaskKey::SyncEpoch { epoch }));
 
-        assert!(scheduler.desired.contains(&TaskKey::AdvancePool));
+        assert!(scheduler.desired.contains(&TaskKey::AdvancePool { epoch }));
     }
 
     #[tokio::test]
@@ -1309,9 +1285,9 @@ mod tests {
 
         // Standby still refreshes on epoch transitions, but does not schedule lifecycle tasks.
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
-        assert!(!scheduled.contains(&TaskKey::SyncEpoch));
-        assert!(!scheduled.contains(&TaskKey::AdvancePool));
-        assert!(!scheduled.contains(&TaskKey::JoinNetwork));
+        assert!(!scheduled.contains(&TaskKey::SyncEpoch { epoch: EpochNumber(1) }));
+        assert!(!scheduled.contains(&TaskKey::AdvancePool { epoch: EpochNumber(1) }));
+        assert!(!scheduled.contains(&TaskKey::JoinNetwork { epoch: EpochNumber(1) }));
     }
 
     #[tokio::test]
@@ -1336,7 +1312,7 @@ mod tests {
         }
 
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
-        assert!(scheduled.contains(&TaskKey::AdvanceEpoch));
+        assert!(scheduled.contains(&TaskKey::AdvanceEpoch { epoch: EpochNumber(3) }));
     }
 
     #[tokio::test]
@@ -1362,7 +1338,7 @@ mod tests {
         }
 
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
-        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch));
+        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch { epoch: EpochNumber(3) }));
     }
 
     #[tokio::test]
@@ -1372,8 +1348,10 @@ mod tests {
 
         let mut scheduler = Scheduler::new(ctx.clone());
         scheduler.lifecycle.reset(EpochNumber(3));
-        scheduler.lifecycle.mark_done(&TaskKey::SyncEpoch);
-        assert!(scheduler.lifecycle.is_done(&TaskKey::SyncEpoch));
+        scheduler
+            .lifecycle
+            .mark_done(&TaskKey::SyncEpoch { epoch: EpochNumber(3) });
+        assert!(scheduler.lifecycle.is_done(&TaskKey::SyncEpoch { epoch: EpochNumber(3) }));
 
         ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
         ctx.store
@@ -1383,8 +1361,8 @@ mod tests {
         scheduler.schedule_lifecycle(EpochNumber(4));
 
         assert_eq!(scheduler.lifecycle.epoch(), EpochNumber(4));
-        assert!(!scheduler.lifecycle.is_done(&TaskKey::SyncEpoch));
-        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(!scheduler.lifecycle.is_done(&TaskKey::SyncEpoch { epoch: EpochNumber(4) }));
+        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch { epoch: EpochNumber(4) }));
     }
 
     #[tokio::test]
@@ -1399,13 +1377,16 @@ mod tests {
         let mut scheduler = Scheduler::new(ctx);
         // Simulate an in-flight epoch-scoped task carrying old retry state.
         scheduler.lifecycle.reset(EpochNumber(3));
-        scheduler.scheduled.insert(TaskKey::AdvanceEpoch);
-        scheduler.desired.insert(TaskKey::AdvanceEpoch);
+        let old_epoch = EpochNumber(3);
+        let new_epoch = EpochNumber(4);
         scheduler
-            .scheduled_epochs
-            .insert(TaskKey::AdvanceEpoch, EpochNumber(3));
+            .scheduled
+            .insert(TaskKey::AdvanceEpoch { epoch: old_epoch });
+        scheduler
+            .desired
+            .insert(TaskKey::AdvanceEpoch { epoch: old_epoch });
 
-        scheduler.schedule_lifecycle(EpochNumber(4));
+        scheduler.schedule_lifecycle(new_epoch);
 
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
         scheduler.emit_directives(&directive_tx).await;
@@ -1414,14 +1395,21 @@ mod tests {
         let mut saw_schedule = false;
         while let Ok(d) = directive_rx.try_recv() {
             match d {
-                Directive::Cancel(TaskKey::AdvanceEpoch) => saw_cancel = true,
-                Directive::Schedule(TaskKey::AdvanceEpoch) => saw_schedule = true,
+                Directive::Cancel(TaskKey::AdvanceEpoch { epoch }) if epoch == old_epoch => {
+                    saw_cancel = true
+                }
+                Directive::Schedule(TaskKey::AdvanceEpoch { epoch }) if epoch == new_epoch => {
+                    saw_schedule = true
+                }
                 _ => {}
             }
         }
 
-        assert!(saw_cancel, "expected forced cancel for epoch-scoped task");
-        assert!(saw_schedule, "expected fresh schedule after forced cancel");
+        assert!(
+            !saw_cancel,
+            "stale epoch-scoped tasks should be pruned before diffing"
+        );
+        assert!(saw_schedule, "expected fresh schedule for current epoch");
     }
 
     #[tokio::test]
@@ -1443,7 +1431,7 @@ mod tests {
         }
 
         assert!(scheduled.contains(&TaskKey::RefreshOnchainState));
-        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch));
+        assert!(!scheduled.contains(&TaskKey::AdvanceEpoch { epoch: EpochNumber(3) }));
     }
 
     #[tokio::test]
@@ -1469,16 +1457,23 @@ mod tests {
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.lifecycle.reset(EpochNumber(3));
-        scheduler.desired.insert(TaskKey::SyncEpoch);
-        scheduler.scheduled.insert(TaskKey::SyncEpoch);
+        let stale_epoch = EpochNumber(2);
+        let current_epoch = EpochNumber(3);
         scheduler
-            .scheduled_epochs
-            .insert(TaskKey::SyncEpoch, EpochNumber(2));
+            .desired
+            .insert(TaskKey::SyncEpoch { epoch: stale_epoch });
+        scheduler
+            .scheduled
+            .insert(TaskKey::SyncEpoch { epoch: stale_epoch });
 
-        scheduler.handle_result(&TaskResult::Success(TaskKey::SyncEpoch));
+        scheduler.handle_result(&TaskResult::Success(TaskKey::SyncEpoch {
+            epoch: stale_epoch,
+        }));
 
-        assert!(!scheduler.lifecycle.is_done(&TaskKey::SyncEpoch));
-        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(!scheduler.lifecycle.is_done(&TaskKey::SyncEpoch { epoch: current_epoch }));
+        assert!(scheduler
+            .desired
+            .contains(&TaskKey::SyncEpoch { epoch: stale_epoch }));
     }
 
     #[tokio::test]
@@ -1497,7 +1492,7 @@ mod tests {
         // No spool tasks should be scheduled in Standby
         assert!(!scheduler.desired.contains(&TaskKey::SpoolSync { spool: 10 }));
         // No on-chain tasks either
-        assert!(!scheduler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(!scheduler.desired.contains(&TaskKey::SyncEpoch { epoch: EpochNumber(1) }));
     }
 
     #[tokio::test]
@@ -1537,39 +1532,45 @@ mod tests {
         scheduler.scheduled.insert(TaskKey::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
 
-        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch));
+        assert!(scheduler.desired.contains(&TaskKey::SyncEpoch { epoch: EpochNumber(3) }));
         // AdvancePool/JoinNetwork gated on SyncEpoch completion
-        assert!(!scheduler.desired.contains(&TaskKey::AdvancePool));
-        assert!(!scheduler.desired.contains(&TaskKey::JoinNetwork));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(!scheduler
+            .desired
+            .contains(&TaskKey::AdvancePool { epoch: EpochNumber(3) }));
+        assert!(!scheduler
+            .desired
+            .contains(&TaskKey::JoinNetwork { epoch: EpochNumber(3) }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch: EpochNumber(3) }));
     }
 
     #[tokio::test]
     async fn epoch_build() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
-            epoch: EpochNumber(3),
+            epoch,
         }]);
 
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
     }
 
     #[tokio::test]
     async fn epoch_skip() {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        let epoch = EpochNumber(1);
 
         let mut scheduler = Scheduler::new(ctx);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
-            epoch: EpochNumber(1),
+            epoch,
         }]);
 
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
     }
 
     #[tokio::test]
@@ -1579,12 +1580,13 @@ mod tests {
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, target);
+        let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.schedule_lifecycle(EpochNumber(3));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild));
-        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
+        scheduler.schedule_lifecycle(epoch);
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
     }
 
     #[tokio::test]
@@ -1594,12 +1596,13 @@ mod tests {
         put_non_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, target);
+        let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.schedule_lifecycle(EpochNumber(3));
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify));
-        assert!(!scheduler.desired.contains(&TaskKey::RegisterSnapshot));
-        assert!(!scheduler.desired.contains(&TaskKey::CertifySnapshot));
+        scheduler.schedule_lifecycle(epoch);
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
     }
 
     #[tokio::test]
@@ -1609,6 +1612,7 @@ mod tests {
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let target = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, target);
+        let epoch = EpochNumber(3);
         ctx.store
             .set_snapshot_certification(
                 target,
@@ -1622,10 +1626,10 @@ mod tests {
             .unwrap();
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.schedule_lifecycle(EpochNumber(3));
-        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot));
-        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify));
+        scheduler.schedule_lifecycle(epoch);
+        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
     }
 
     #[tokio::test]
@@ -1635,6 +1639,7 @@ mod tests {
         put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
         let target = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, target);
+        let epoch = EpochNumber(3);
         ctx.store
             .set_snapshot_certification(
                 target,
@@ -1648,10 +1653,10 @@ mod tests {
             .unwrap();
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.schedule_lifecycle(EpochNumber(3));
-        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
-        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
+        scheduler.schedule_lifecycle(epoch);
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::CertifySnapshot { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
     }
 
     #[tokio::test]
@@ -1667,10 +1672,11 @@ mod tests {
         scheduler.desired.insert(TaskKey::RefreshOnchainState);
         scheduler.scheduled.insert(TaskKey::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
+        let epoch = EpochNumber(3);
 
-        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
-        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
+        assert!(!scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
     }
 
     #[tokio::test]
@@ -1682,13 +1688,14 @@ mod tests {
         let target = EpochNumber(2);
         let group = 0u64;
         mark_snapshot_group_ready(&ctx, target, group);
+        let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
-        scheduler.schedule_lifecycle(EpochNumber(3));
+        scheduler.schedule_lifecycle(epoch);
 
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild));
-        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot));
-        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotBuild { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::RegisterSnapshot { epoch }));
+        assert!(scheduler.desired.contains(&TaskKey::SnapshotCertify { epoch }));
     }
 
     #[tokio::test]
