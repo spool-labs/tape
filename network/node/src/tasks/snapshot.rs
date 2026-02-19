@@ -23,77 +23,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
-use crate::leader::LeaderSchedule;
-use crate::state::GroupState;
+use crate::peers::PeerHandle;
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
 const SNAPSHOT_REGISTER_CU: u32 = 700_000;
 const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
 const SNAPSHOT_SIGN_TIMEOUT: Duration = Duration::from_secs(6);
-const SNAPSHOT_TAKEOVER_WINDOW_SECS: u64 = 15;
 const SNAPSHOT_PENDING_DELAY: Duration = Duration::from_secs(2);
-
-fn takeover_windows_elapsed<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    epoch: EpochNumber,
-) -> usize {
-    let elapsed = context
-        .epoch_clock
-        .lock()
-        .unwrap()
-        .elapsed_or_reset(epoch)
-        .as_secs();
-    let window = Duration::from_secs(SNAPSHOT_TAKEOVER_WINDOW_SECS.max(1));
-    (elapsed / window.as_secs()) as usize
-}
-
-fn snapshot_progress_reset_if_needed<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    epoch: EpochNumber,
-) {
-    let mut progress = context.snapshot_progress.lock().unwrap();
-    if progress.epoch() != epoch {
-        progress.reset(epoch);
-    }
-}
-
-fn snapshot_progress_has_local_cert<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    group: usize,
-) -> bool {
-    context.snapshot_progress.lock().unwrap().has_local_cert(group)
-}
-
-fn snapshot_progress_is_registered<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    group: usize,
-) -> bool {
-    context.snapshot_progress.lock().unwrap().is_registered(group)
-}
-
-fn snapshot_progress_is_done_onchain<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    group: usize,
-) -> bool {
-    context.snapshot_progress.lock().unwrap().is_done_onchain(group)
-}
-
-fn snapshot_progress_advance<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
-    epoch: EpochNumber,
-    group: usize,
-    state: GroupState,
-) {
-    let mut progress = context.snapshot_progress.lock().unwrap();
-    if progress.epoch() == epoch {
-        progress.advance(group, state);
-    }
-}
 
 /// Bootstrap from a snapshot: download slices from peers, decode, replay.
 pub async fn run_bootstrap<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let current = match context.store.get_chain_epoch() {
@@ -134,8 +76,10 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
-                continue;
+            match peer_handle.is_cooling_down(addr).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
             }
             let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
                 Ok(c) => c,
@@ -145,13 +89,17 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 .await
             {
                 Ok(c) if c.len() == SPOOL_GROUP_COUNT => {
-                    context.peer_health.lock().unwrap().record_success(&addr);
+                    if let Err(e) = peer_handle.record_success(addr).await {
+                        tracing::warn!("failed to record peer success for {addr}: {e}");
+                    }
                     fetched = Some(c);
                     break;
                 }
                 Ok(_) => continue,
                 Err(_) => {
-                    context.peer_health.lock().unwrap().record_failure(&addr);
+                    if let Err(e) = peer_handle.record_failure(addr).await {
+                        tracing::warn!("failed to record peer failure for {addr}: {e}");
+                    }
                     continue;
                 }
             }
@@ -199,8 +147,10 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
-                continue;
+            match peer_handle.is_cooling_down(addr).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
             }
             let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
                 Ok(c) => c,
@@ -223,12 +173,16 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
                 .await
                 {
                     Ok(data) if !data.is_empty() => {
-                        context.peer_health.lock().unwrap().record_success(&addr);
+                        if let Err(e) = peer_handle.record_success(addr).await {
+                            tracing::warn!("failed to record peer success for {addr}: {e}");
+                        }
                         slices.push((slice_in_group, data));
                     }
                     Ok(_) => continue,
                     Err(_) => {
-                        context.peer_health.lock().unwrap().record_failure(&addr);
+                        if let Err(e) = peer_handle.record_failure(addr).await {
+                            tracing::warn!("failed to record peer failure for {addr}: {e}");
+                        }
                         continue;
                     }
                 }
@@ -459,6 +413,7 @@ pub async fn run_build<S: Store, R: Rpc>(
 /// Collect BLS signatures from committee peers for snapshot chunks we own.
 pub async fn run_certify<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let current = match context.store.get_chain_epoch() {
@@ -472,7 +427,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
     }
 
     let target = EpochNumber(current.0 - 1);
-    snapshot_progress_reset_if_needed(&context, current);
     tracing::debug!(current_epoch = current.0, target_epoch = target.0, "run_certify start");
 
     // Guard: commitments must exist (build completed)
@@ -516,13 +470,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
         "run_certify inputs"
     );
 
-    // Build leader schedule from epoch nonce for deterministic ordering.
-    let schedule = match context.store.get_epoch_nonce(current) {
-        Ok(Some(n)) => Some(LeaderSchedule::new(committee.len(), n)),
-        Ok(None) => None, // fallback: allow all nodes
-        Err(e) => return TaskOutcome::Retryable(format!("get_epoch_nonce: {e}")),
-    };
-
     let mut groups: Vec<u64> = our_groups.into_iter().collect();
     groups.sort_unstable();
     if !groups.is_empty() {
@@ -530,52 +477,25 @@ pub async fn run_certify<S: Store, R: Rpc>(
         groups.rotate_left(offset);
     }
 
-    // Rebuild progress from durable cert state once per run so subsequent
-    // retries can skip already-completed groups via the in-memory cache.
-    for &group in &groups {
-        if snapshot_progress_has_local_cert(&context, group as usize) {
-            continue;
-        }
-        match context
-            .store
-            .get_snapshot_certification(target, ChunkIndex(group))
-        {
-            Ok(Some(_)) => {
-                snapshot_progress_advance(&context, current, group as usize, GroupState::Certified);
-            }
-            Ok(None) => {}
-            Err(e) => return TaskOutcome::Retryable(format!("check cert: {e}")),
-        }
-    }
-
-    let windows_elapsed = takeover_windows_elapsed(&context, current);
     let mut certified_groups = 0usize;
     let mut pending_quorum = 0usize;
     let mut failed: Vec<String> = Vec::new();
     let mut groups_attempted = 0usize;
-    let mut groups_skipped_not_owner = 0usize;
-    let mut groups_taken_over = 0usize;
 
     for group in groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
         }
 
-        if snapshot_progress_has_local_cert(&context, group as usize) {
-            continue;
+        match context
+            .store
+            .get_snapshot_certification(target, ChunkIndex(group))
+        {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(e) => return TaskOutcome::Retryable(format!("check cert: {e}")),
         }
 
-        let position = schedule
-            .as_ref()
-            .map(|s| s.position_for(our_member_index, group as usize))
-            .unwrap_or(0);
-        if position > windows_elapsed {
-            groups_skipped_not_owner += 1;
-            continue;
-        }
-        if position > 0 {
-            groups_taken_over += 1;
-        }
         groups_attempted += 1;
 
         let group_start = Instant::now();
@@ -641,9 +561,13 @@ pub async fn run_certify<S: Store, R: Rpc>(
             };
 
             // Skip peers in cooldown
-            if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
-                peer_rpc_fail += 1;
-                continue;
+            match peer_handle.is_cooling_down(addr).await {
+                Ok(true) => {
+                    peer_rpc_fail += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
             }
 
             let client = match tape_node_client::NodeClientBuilder::new().build(&addr.to_string()) {
@@ -671,7 +595,9 @@ pub async fn run_certify<S: Store, R: Rpc>(
             {
                 Ok(Ok(r)) => {
                     peer_rpc_success += 1;
-                    context.peer_health.lock().unwrap().record_success(&addr);
+                    if let Err(e) = peer_handle.record_success(addr).await {
+                        tracing::warn!("failed to record peer success for {addr}: {e}");
+                    }
                     tracing::debug!(
                         epoch = target.0,
                         group,
@@ -683,7 +609,9 @@ pub async fn run_certify<S: Store, R: Rpc>(
                 }
                 Ok(Err(e)) => {
                     peer_rpc_fail += 1;
-                    context.peer_health.lock().unwrap().record_failure(&addr);
+                    if let Err(err) = peer_handle.record_failure(addr).await {
+                        tracing::warn!("failed to record peer failure for {addr}: {err}");
+                    }
                     tracing::debug!(
                         epoch = target.0,
                         group,
@@ -695,7 +623,9 @@ pub async fn run_certify<S: Store, R: Rpc>(
                 }
                 Err(_) => {
                     peer_rpc_fail += 1;
-                    context.peer_health.lock().unwrap().record_failure(&addr);
+                    if let Err(e) = peer_handle.record_failure(addr).await {
+                        tracing::warn!("failed to record peer failure for {addr}: {e}");
+                    }
                     tracing::warn!(
                         epoch = target.0,
                         group,
@@ -792,18 +722,15 @@ pub async fn run_certify<S: Store, R: Rpc>(
         }
 
         certified_groups += 1;
-        snapshot_progress_advance(&context, current, group as usize, GroupState::Certified);
     }
 
     if !failed.is_empty() {
         return TaskOutcome::Retryable(format!(
-            "snapshot certify progress epoch={} certified={} pending_quorum={} attempted={} skipped_not_owner={} taken_over={} failed={} {}",
+            "snapshot certify progress epoch={} certified={} pending_quorum={} attempted={} failed={} {}",
             target.0,
             certified_groups,
             pending_quorum,
             groups_attempted,
-            groups_skipped_not_owner,
-            groups_taken_over,
             failed.len(),
             failed.first().cloned().unwrap_or_default()
         ));
@@ -815,8 +742,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
             certified_groups,
             pending_quorum,
             groups_attempted,
-            groups_skipped_not_owner,
-            groups_taken_over,
             "snapshot certify waiting for more partial signatures"
         );
         return TaskOutcome::Success;
@@ -826,8 +751,6 @@ pub async fn run_certify<S: Store, R: Rpc>(
         epoch = target.0,
         certified_groups,
         groups_attempted,
-        groups_skipped_not_owner,
-        groups_taken_over,
         "snapshot certification collected"
     );
     TaskOutcome::Success
@@ -836,6 +759,7 @@ pub async fn run_certify<S: Store, R: Rpc>(
 /// Register snapshot commitments on-chain.
 pub async fn run_register<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -852,8 +776,6 @@ pub async fn run_register<S: Store, R: Rpc>(
     }
 
     let target = EpochNumber(current.0 - 1);
-    snapshot_progress_reset_if_needed(&context, current);
-
     // Guard: build must have completed
     match context.store.get_snapshot_commitment(target, ChunkIndex(0)) {
         Ok(Some(_)) => {}
@@ -863,38 +785,9 @@ pub async fn run_register<S: Store, R: Rpc>(
 
     let pubkey = context.keypair.pubkey();
 
-    // Leader schedule gating: stagger RegisterSnapshot across committee members.
-    let committee: Vec<NodeInfo> = match context.store.get_committee(current) {
-        Ok(Some(c)) => c,
-        Ok(None) => return TaskOutcome::Retryable("no committee".into()),
-        Err(e) => return TaskOutcome::Retryable(format!("get committee: {e}")),
-    };
-    let our_idx = match our_member_index(&committee, pubkey) {
-        Ok(i) => i,
-        Err(e) => return TaskOutcome::Retryable(e.into()),
-    };
-    let schedule = match context.store.get_epoch_nonce(current) {
-        Ok(Some(n)) => Some(LeaderSchedule::new(committee.len(), n)),
-        Ok(None) => None, // fallback: allow all nodes
-        Err(e) => return TaskOutcome::Retryable(format!("get_epoch_nonce: {e}")),
-    };
-    let windows_elapsed = takeover_windows_elapsed(&context, current);
-
     for group in 0..SPOOL_GROUP_COUNT {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
-        }
-
-        if snapshot_progress_is_registered(&context, group) {
-            continue;
-        }
-
-        let position = schedule
-            .as_ref()
-            .map(|s| s.position_for(our_idx, group))
-            .unwrap_or(0);
-        if position > windows_elapsed {
-            continue;
         }
 
         let chunk_index = ChunkIndex(group as u64);
@@ -947,14 +840,12 @@ pub async fn run_register<S: Store, R: Rpc>(
         {
             Ok(sig) => {
                 tracing::info!(%sig, group, epoch = target.0, "register_snapshot submitted");
-                snapshot_progress_advance(&context, current, group, GroupState::Registered);
             }
             Err(ref e) => {
                 if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false)
                     || is_account_state_pending_error(&e.to_string())
                 {
                     tracing::debug!(group, "snapshot chunk already registered");
-                    snapshot_progress_advance(&context, current, group, GroupState::Registered);
                 } else {
                     return TaskOutcome::Retryable(format!("register_snapshot group {group}: {e}"));
                 }
@@ -969,6 +860,7 @@ pub async fn run_register<S: Store, R: Rpc>(
 /// Submit snapshot certifications on-chain with BLS aggregate signatures.
 pub async fn run_certify_onchain<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -985,7 +877,6 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     }
 
     let target = EpochNumber(current.0 - 1);
-    snapshot_progress_reset_if_needed(&context, current);
     tracing::debug!(
         current_epoch = current.0,
         target_epoch = target.0,
@@ -1024,14 +915,6 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
     for &group in &our_groups {
         if cancel.is_cancelled() {
             return TaskOutcome::Success;
-        }
-
-        let group_usize = group as usize;
-        if !snapshot_progress_has_local_cert(&context, group_usize) {
-            continue;
-        }
-        if snapshot_progress_is_done_onchain(&context, group_usize) {
-            continue;
         }
 
         let chunk_index = ChunkIndex(group);
@@ -1098,24 +981,12 @@ pub async fn run_certify_onchain<S: Store, R: Rpc>(
             Ok(tx_sig) => {
                 tracing::info!(%tx_sig, group, epoch = target.0, "certify_snapshot submitted");
                 submitted += 1;
-                snapshot_progress_advance(
-                    &context,
-                    current,
-                    group_usize,
-                    GroupState::CertifiedOnchain,
-                );
             }
             Err(ref e) => {
                 let err_text = e.to_string();
                 if parse_tape_error(e).map(|err| err.is_already_done()).unwrap_or(false) {
                     tracing::debug!(group, "snapshot chunk already certified");
                     submitted += 1;
-                    snapshot_progress_advance(
-                        &context,
-                        current,
-                        group_usize,
-                        GroupState::CertifiedOnchain,
-                    );
                 } else if is_account_state_pending_error(&err_text) {
                     // RegisterSnapshot for this chunk has not landed yet.
                     pending_register += 1;
@@ -1254,7 +1125,8 @@ mod tests {
         ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap(ctx, cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run_bootstrap(ctx, peer_handle, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -1264,7 +1136,8 @@ mod tests {
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap(ctx, cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run_bootstrap(ctx, peer_handle, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
@@ -1276,7 +1149,8 @@ mod tests {
         ctx.store.set_sync_cursor(SlotNumber(500)).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_bootstrap(ctx, cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run_bootstrap(ctx, peer_handle, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -1316,21 +1190,6 @@ mod tests {
 
         // Event log should NOT have been deleted (build was skipped)
         assert!(ctx.store.has_epoch_events(target).unwrap());
-    }
-
-    #[test]
-    fn progress_advance_ignores_stale_epoch() {
-        let ctx = test_context();
-        ctx.snapshot_progress
-            .lock()
-            .unwrap()
-            .reset(EpochNumber(4));
-
-        snapshot_progress_advance(&ctx, EpochNumber(3), 0, GroupState::CertifiedOnchain);
-        assert_eq!(
-            ctx.snapshot_progress.lock().unwrap().get(0),
-            GroupState::Pending
-        );
     }
 
     #[tokio::test]
@@ -1375,11 +1234,8 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run_certify(ctx.clone(), cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run_certify(ctx.clone(), peer_handle, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
-        assert_eq!(
-            ctx.snapshot_progress.lock().unwrap().get(group as usize),
-            GroupState::Certified
-        );
     }
 }

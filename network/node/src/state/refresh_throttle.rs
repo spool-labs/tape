@@ -22,15 +22,17 @@ impl RefreshThrottle {
         }
     }
 
-    pub fn record(&mut self, epoch: EpochNumber) {
-        self.last_refresh = Some(Instant::now());
-        self.last_epoch = Some(epoch);
-    }
-
     pub fn epoch_changed(&self, epoch: EpochNumber) -> bool {
         match self.last_epoch {
             Some(last) => last != epoch,
             None => true,
+        }
+    }
+
+    pub fn record(&mut self, epoch: Option<EpochNumber>) {
+        self.last_refresh = Some(Instant::now());
+        if let Some(epoch) = epoch {
+            self.last_epoch = Some(epoch);
         }
     }
 }
@@ -48,7 +50,7 @@ mod tests {
     #[test]
     fn skip_after_record() {
         let mut throttle = RefreshThrottle::new();
-        throttle.record(EpochNumber(1));
+        throttle.record(Some(EpochNumber(1)));
         assert!(throttle.should_skip(Duration::from_secs(30)));
     }
 
@@ -56,7 +58,7 @@ mod tests {
     fn epoch_changed() {
         let mut throttle = RefreshThrottle::new();
         assert!(throttle.epoch_changed(EpochNumber(1)));
-        throttle.record(EpochNumber(1));
+        throttle.record(Some(EpochNumber(1)));
         assert!(!throttle.epoch_changed(EpochNumber(1)));
         assert!(throttle.epoch_changed(EpochNumber(2)));
     }

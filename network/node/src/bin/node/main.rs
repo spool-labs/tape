@@ -26,6 +26,13 @@ fn expand_path(path: &str) -> std::path::PathBuf {
     shellexpand::tilde(path).to_string().into()
 }
 
+async fn watch_handle(
+    name: &'static str,
+    handle: tokio::task::JoinHandle<()>,
+) -> (&'static str, std::result::Result<(), tokio::task::JoinError>) {
+    (name, handle.await)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Init tracing
@@ -108,16 +115,44 @@ async fn main() -> Result<()> {
     }.instrument(shutdown_span));
 
     // Spawn the runtime
-    let handles = spawn_runtime(context, cancel).await;
+    let handles = spawn_runtime(context, cancel.clone()).await;
 
-    // Await all handles
-    let _ = tokio::try_join!(
-        handles.ingestor,
-        handles.fsm,
-        handles.reconciler,
-        handles.supervisor,
-        handles.http,
-    );
+    // Await all runtime handles. If any task fails, trigger cancellation and
+    // continue awaiting all remaining handles so none are dropped/detached.
+    let mut join_set = tokio::task::JoinSet::new();
+    join_set.spawn(watch_handle("ingestor", handles.ingestor));
+    join_set.spawn(watch_handle("fsm", handles.fsm));
+    join_set.spawn(watch_handle("reconciler", handles.reconciler));
+    join_set.spawn(watch_handle("supervisor", handles.supervisor));
+    join_set.spawn(watch_handle("peer_service", handles.peer_service));
+    join_set.spawn(watch_handle("http", handles.http));
+
+    let mut first_failure = None;
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok((name, Ok(()))) => {
+                tracing::info!(task = name, "runtime task exited");
+            }
+            Ok((name, Err(error))) => {
+                tracing::error!(task = name, %error, "runtime task failed");
+                if first_failure.is_none() {
+                    first_failure = Some(format!("{name}: {error}"));
+                    cancel.cancel();
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "task watcher failed");
+                if first_failure.is_none() {
+                    first_failure = Some(format!("task watcher failed: {error}"));
+                    cancel.cancel();
+                }
+            }
+        }
+    }
+
+    if let Some(error) = first_failure {
+        return Err(anyhow::anyhow!("runtime shutdown after failure: {error}"));
+    }
 
     tracing::info!(node_id = node_id.0, "node stopped");
     Ok(())

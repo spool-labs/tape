@@ -27,6 +27,7 @@ use tracing::Instrument;
 use rand::Rng;
 
 use crate::core::{BackoffConfig, NodeContext};
+use crate::peers::PeerHandle;
 use crate::reconciler::Directive;
 
 /// Identifies a scheduled or running task.
@@ -228,6 +229,7 @@ fn far_future() -> tokio::time::Instant {
 /// Centralized task scheduler.
 pub struct Supervisor<S: Store, R: Rpc> {
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     running: HashMap<TaskKey, RunningTask>,
     tokens: HashMap<TaskKey, CancellationToken>,
     join_set: JoinSet<(TaskKey, TaskOutcome)>,
@@ -241,12 +243,17 @@ pub struct Supervisor<S: Store, R: Rpc> {
 }
 
 impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
-    pub fn new(context: Arc<NodeContext<S, R>>, result_tx: mpsc::Sender<TaskResult>) -> Self {
+    pub fn new(
+        context: Arc<NodeContext<S, R>>,
+        peer_handle: PeerHandle,
+        result_tx: mpsc::Sender<TaskResult>,
+    ) -> Self {
         let cpu_count = std::thread::available_parallelism()
             .map_or(4, |n| n.get());
 
         Self {
             context,
+            peer_handle,
             running: HashMap::new(),
             tokens: HashMap::new(),
             join_set: JoinSet::new(),
@@ -451,11 +458,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         let token = CancellationToken::new();
         let sem = self.semaphore_for(key.category());
         let ctx = self.context.clone();
+        let peer_handle = self.peer_handle.clone();
         let token_clone = token.clone();
         let category = key.category();
         let k = key.clone();
         self.join_set
-            .spawn(crate::tasks::execute_task(ctx, k, token_clone, sem).in_current_span());
+            .spawn(crate::tasks::execute_task(ctx, peer_handle, k, token_clone, sem).in_current_span());
 
         self.running.insert(
             key.clone(),
@@ -498,8 +506,9 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, result_tx);
+        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             supervisor.run(directive_rx, cancel_clone).await;
@@ -524,8 +533,9 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, result_tx);
+        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             supervisor.run(directive_rx, cancel_clone).await;
@@ -560,7 +570,8 @@ mod tests {
     async fn retry_on_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let mut supervisor = Supervisor::new(ctx, result_tx);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::RefreshOnchainState;
 
@@ -595,7 +606,8 @@ mod tests {
     async fn pending_is_quiet_and_requeued() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let mut supervisor = Supervisor::new(ctx, result_tx);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::CertifySnapshot;
         supervisor.running.insert(
@@ -626,7 +638,8 @@ mod tests {
     async fn permanent_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let mut supervisor = Supervisor::new(ctx, result_tx);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::AdvanceEpoch;
 
@@ -659,8 +672,9 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, result_tx);
+        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             supervisor.run(directive_rx, cancel_clone).await;
@@ -696,8 +710,9 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, _result_rx) = mpsc::channel(16);
         let (directive_tx, directive_rx) = mpsc::channel(16);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, result_tx);
+        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             supervisor.run(directive_rx, cancel_clone).await;
@@ -807,7 +822,8 @@ mod tests {
     async fn max_retries_exhausted() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let mut supervisor = Supervisor::new(ctx, result_tx);
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
 
         let key = TaskKey::RefreshOnchainState;
 

@@ -18,6 +18,7 @@ use crate::core::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
+use crate::peers::PeerService;
 use crate::reconciler::{Directive, Reconciler};
 use crate::supervisor::{Supervisor, TaskResult};
 
@@ -111,6 +112,7 @@ pub struct RuntimeHandles {
     pub fsm: JoinHandle<()>,
     pub reconciler: JoinHandle<()>,
     pub supervisor: JoinHandle<()>,
+    pub peer_service: JoinHandle<()>,
     pub http: JoinHandle<()>,
 }
 
@@ -124,6 +126,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
 
     let (directive_tx, directive_rx) = mpsc::channel::<Directive>(DIRECTIVE_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
+    let (peer_service, peer_handle) = PeerService::new();
 
     let reconciler = Reconciler::new(context.clone());
     let reconciler_cancel = cancel.clone();
@@ -138,7 +141,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
         .instrument(reconciler_span),
     );
 
-    let supervisor = Supervisor::new(context.clone(), result_tx);
+    let supervisor = Supervisor::new(context.clone(), peer_handle, result_tx);
     let supervisor_cancel = cancel.clone();
     let supervisor_span = tracing::info_span!("", node_id = node_id.0);
     let supervisor_handle = tokio::spawn(
@@ -146,6 +149,15 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
             supervisor.run(directive_rx, supervisor_cancel).await;
         }
         .instrument(supervisor_span),
+    );
+
+    let peer_service_cancel = cancel.clone();
+    let peer_service_span = tracing::info_span!("", node_id = node_id.0);
+    let peer_service_handle = tokio::spawn(
+        async move {
+            peer_service.run(peer_service_cancel).await;
+        }
+        .instrument(peer_service_span),
     );
 
     let http_ctx = context;
@@ -166,6 +178,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
         fsm: fsm_handle,
         reconciler: reconciler_handle,
         supervisor: supervisor_handle,
+        peer_service: peer_service_handle,
         http: http_handle,
     }
 }
@@ -289,7 +302,12 @@ mod tests {
                 .await;
         });
 
-        let supervisor = Supervisor::new(ctx.clone(), result_tx);
+        let (peer_service, peer_handle) = crate::peers::PeerService::new();
+        let peer_cancel = cancel.clone();
+        let peer_service_handle = tokio::spawn(async move {
+            peer_service.run(peer_cancel).await;
+        });
+        let supervisor = Supervisor::new(ctx.clone(), peer_handle, result_tx);
         let supervisor_cancel = cancel.clone();
         let supervisor_handle = tokio::spawn(async move {
             supervisor.run(directive_rx, supervisor_cancel).await;
@@ -302,6 +320,7 @@ mod tests {
         cancel.cancel();
         reconciler_handle.await.unwrap();
         supervisor_handle.await.unwrap();
+        peer_service_handle.await.unwrap();
     }
 
     #[tokio::test]

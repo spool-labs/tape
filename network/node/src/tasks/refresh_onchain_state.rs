@@ -5,11 +5,9 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytemuck::Zeroable;
 use rpc::Rpc;
-use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::state::{Epoch, Node, System};
 use tape_core::system::EpochPhase;
@@ -19,39 +17,14 @@ use tape_store::types::{NodeInfo, NodeStatus, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
-use crate::core::committee::our_member_index;
+use crate::peers::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    // Throttle: skip if we refreshed recently and epoch hasn't changed locally.
-    // Non-committee nodes use a longer interval since they have no time-sensitive work.
-    {
-        let in_committee = context
-            .store
-            .get_chain_epoch()
-            .ok()
-            .flatten()
-            .and_then(|epoch| context.store.get_committee(epoch).ok().flatten())
-            .map(|committee| our_member_index(&committee, context.keypair.pubkey()).is_ok())
-            .unwrap_or(false);
-        const COMMITTEE_REFRESH_SECS: u64 = 3;
-        const STANDBY_REFRESH_SECS: u64 = 30;
-        let min_interval = Duration::from_secs(if in_committee { COMMITTEE_REFRESH_SECS } else { STANDBY_REFRESH_SECS });
-        let throttle = context.refresh_throttle.lock().unwrap();
-        if throttle.should_skip(min_interval) {
-            let chain_epoch = context.store.get_chain_epoch().ok().flatten();
-            let epoch_stable = chain_epoch
-                .map(|e| !throttle.epoch_changed(e))
-                .unwrap_or(false);
-            if epoch_stable {
-                return TaskOutcome::Success;
-            }
-        }
-    }
-
     let system = match context.rpc.get_system().await {
         Ok(s) => s,
         Err(e) => return TaskOutcome::Retryable(format!("get_system: {e}")),
@@ -71,11 +44,31 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("get_all_nodes: {e}")),
     };
 
+    let committee_changed =
+        committee_changed(&context, &system, &epoch_account, &all_nodes).unwrap_or(false);
     let outcome = apply_refreshed_state(&context, &system, &epoch_account, &all_nodes);
-    if matches!(outcome, TaskOutcome::Success) {
-        context.refresh_throttle.lock().unwrap().record(epoch_account.id);
+    if matches!(outcome, TaskOutcome::Success) && committee_changed {
+        if let Err(e) = peer_handle.reset().await {
+            return TaskOutcome::Retryable(format!("peer tracker reset failed: {e}"));
+        }
     }
     outcome
+}
+
+fn committee_changed<S: Store, R: Rpc>(
+    context: &NodeContext<S, R>,
+    system: &System,
+    epoch_account: &Epoch,
+    all_nodes: &[(solana_sdk::pubkey::Pubkey, Node)],
+) -> Result<bool, String> {
+    let node_map: std::collections::HashMap<NodeId, &(solana_sdk::pubkey::Pubkey, Node)> =
+        all_nodes.iter().map(|entry| (entry.1.id, entry)).collect();
+    let members = build_committee_members(&system.committee, &system.spools, &node_map);
+    match context.store.get_committee(epoch_account.id) {
+        Ok(Some(previous)) => Ok(previous != members),
+        Ok(None) => Ok(true),
+        Err(e) => Err(format!("get committee before refresh: {e}")),
+    }
 }
 
 /// Pure store logic — testable without RPC.
@@ -112,18 +105,9 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
         &system.spools,
         &node_map,
     );
-    let committee_changed = match context.store.get_committee(epoch) {
-        Ok(Some(previous)) => previous != current_members,
-        Ok(None) => true,
-        Err(_) => true,
-    };
     if let Err(e) = context.store.put_committee(epoch, current_members) {
         return TaskOutcome::Retryable(format!("put_committee(current): {e}"));
     }
-    if committee_changed {
-        context.peer_health.lock().unwrap().reset();
-    }
-
     // Build previous committee (if epoch > 0 and prev committee is non-empty)
     if epoch.0 > 0 && system.committee_prev.size() > 0 {
         let prev_members = build_committee_members(

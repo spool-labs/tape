@@ -11,12 +11,14 @@ use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
+use crate::peers::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -100,8 +102,14 @@ pub async fn run<S: Store, R: Rpc>(
                     }
                 };
 
-                if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
-                    continue;
+                match peer_handle.is_cooling_down(addr).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(?track_addr, spool, "peer tracker unavailable: {e}");
+                        any_failed = true;
+                        continue;
+                    }
                 }
 
                 let client = match NodeClientBuilder::new().build(&addr.to_string()) {
@@ -124,7 +132,9 @@ pub async fn run<S: Store, R: Rpc>(
 
                 match with_retry(&RetryConfig::fast(), || client.request_repair(track_addr, &request)).await {
                     Ok(data) if !data.is_empty() => {
-                        context.peer_health.lock().unwrap().record_success(&addr);
+                        if let Err(e) = peer_handle.record_success(addr).await {
+                            tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
+                        }
                         if let Err(e) = context.store.put_slice(spool, track_addr, data) {
                             tracing::warn!(?track_addr, "put_slice error: {e}");
                             continue;
@@ -136,11 +146,15 @@ pub async fn run<S: Store, R: Rpc>(
                         break;
                     }
                     Ok(_) => {
-                        context.peer_health.lock().unwrap().record_success(&addr);
+                        if let Err(e) = peer_handle.record_success(addr).await {
+                            tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
+                        }
                         tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "empty repair response");
                     }
                     Err(e) => {
-                        context.peer_health.lock().unwrap().record_failure(&addr);
+                        if let Err(err) = peer_handle.record_failure(addr).await {
+                            tracing::warn!(?track_addr, spool, "failed to record peer failure for {addr}: {err}");
+                        }
                         tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "repair error: {e}");
                     }
                 }
@@ -184,7 +198,8 @@ mod tests {
         ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx, 5, cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -209,7 +224,8 @@ mod tests {
         ctx.store.add_pending_recovery(5, track).unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx, 5, cancel).await;
+        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 }

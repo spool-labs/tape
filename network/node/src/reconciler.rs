@@ -24,8 +24,7 @@ use tape_store::types::{ChunkIndex, NodeStatus, SpoolStatus};
 use crate::core::NodeContext;
 use crate::core::committee::{our_member_index, our_snapshot_groups};
 use crate::fsm::StateChange;
-use crate::leader::LeaderSchedule;
-use crate::state::{GroupState, LifecycleEpochState};
+use crate::state::{GroupState, LifecycleEpochState, RefreshThrottle, SnapshotProgress};
 use crate::supervisor::{TaskKey, TaskResult};
 
 /// A directive from the reconciler to the supervisor.
@@ -49,6 +48,10 @@ pub struct Reconciler<S: Store, R: Rpc> {
     scheduled_epochs: HashMap<TaskKey, EpochNumber>,
     /// Tracks which one-shot lifecycle tasks completed for the current epoch.
     lifecycle: LifecycleEpochState,
+    /// In-memory snapshot pipeline state for the current epoch.
+    snapshot_progress: SnapshotProgress,
+    /// Reconciler-owned refresh scheduling throttle.
+    refresh_throttle: RefreshThrottle,
     /// Tasks that must be explicitly canceled to clear supervisor retry state.
     force_cancel: HashSet<TaskKey>,
 }
@@ -61,6 +64,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             scheduled: HashSet::new(),
             scheduled_epochs: HashMap::new(),
             lifecycle: LifecycleEpochState::new(EpochNumber(0)),
+            snapshot_progress: SnapshotProgress::new(EpochNumber(0)),
+            refresh_throttle: RefreshThrottle::new(),
             force_cancel: HashSet::new(),
         }
     }
@@ -73,7 +78,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         cancel: CancellationToken,
     ) {
         // Bootstrap: schedule RefreshOnchainState immediately on startup
-        self.desired.insert(TaskKey::RefreshOnchainState);
+        self.request_refresh(true);
         self.emit_directives(&directive_tx).await;
 
         // Refresh often enough to observe committee/epoch transitions in local/test
@@ -119,12 +124,11 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             match change {
                 StateChange::EpochAdvanced { epoch } => {
                     self.lifecycle.reset(*epoch);
-                    self.context.snapshot_progress.lock().unwrap().reset(*epoch);
-                    self.context.epoch_clock.lock().unwrap().reset(*epoch);
+                    self.snapshot_progress.reset(*epoch);
                     self.reconcile_spools();
                     // Always refresh after epoch transitions so Standby nodes can
                     // observe new committee membership before lifecycle scheduling.
-                    self.desired.insert(TaskKey::RefreshOnchainState);
+                    self.request_refresh(true);
                     self.schedule_lifecycle(*epoch);
                 }
                 StateChange::SpoolAssignmentChanged => {
@@ -136,7 +140,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 StateChange::NodeJoinedCommittee { node } => {
                     // If this is our node, refresh on-chain state
                     if *node == self.context.keypair.pubkey() {
-                        self.desired.insert(TaskKey::RefreshOnchainState);
+                        self.request_refresh(true);
                     }
                 }
                 StateChange::NodeSynced { node } => {
@@ -194,54 +198,51 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
     }
 
     fn periodic_tasks(&mut self) {
-        self.desired.insert(TaskKey::RefreshOnchainState);
+        self.request_refresh(false);
         if matches!(self.node_status(), NodeStatus::Active)
             && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch)
             && self.chain_phase_is_active()
-            && self.leader_allows_advance_epoch()
         {
             self.desired.insert(TaskKey::AdvanceEpoch);
         }
     }
 
-    /// Gate AdvanceEpoch on leader position — primary attempts immediately,
-    /// backups wait `position * TAKEOVER_WINDOW` seconds.
-    fn leader_allows_advance_epoch(&self) -> bool {
-        const TAKEOVER_WINDOW_SECS: u64 = 15;
-
-        let epoch = match self.context.store.get_chain_epoch() {
-            Ok(Some(e)) => e,
-            _ => return true, // fallback: allow
-        };
-        let nonce = match self.context.store.get_epoch_nonce(epoch) {
-            Ok(Some(n)) => n,
-            _ => return true, // no nonce yet: allow all
-        };
-        let committee = match self.context.store.get_committee(epoch) {
-            Ok(Some(c)) => c,
-            _ => return true,
-        };
-        let our_index = match our_member_index(&committee, self.context.keypair.pubkey()) {
-            Ok(idx) => idx,
-            _ => return true,
-        };
-
-        let schedule = LeaderSchedule::new(committee.len(), nonce);
-        let position = schedule.position_for(our_index, 0);
-        let wait = Duration::from_secs(position as u64 * TAKEOVER_WINDOW_SECS);
-        self.epoch_elapsed() >= wait
+    fn refresh_interval(&self) -> Duration {
+        let in_committee = self
+            .context
+            .store
+            .get_chain_epoch()
+            .ok()
+            .flatten()
+            .and_then(|epoch| self.context.store.get_committee(epoch).ok().flatten())
+            .map(|committee| our_member_index(&committee, self.context.keypair.pubkey()).is_ok())
+            .unwrap_or(false);
+        if in_committee {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_secs(30)
+        }
     }
 
-    fn epoch_elapsed(&self) -> Duration {
-        let epoch = match self.context.store.get_chain_epoch().ok().flatten() {
-            Some(e) => e,
-            None => return Duration::from_secs(0),
-        };
-        self.context
-            .epoch_clock
-            .lock()
-            .unwrap()
-            .elapsed_or_reset(epoch)
+    fn request_refresh(&mut self, force: bool) {
+        if self.desired.contains(&TaskKey::RefreshOnchainState)
+            || self.scheduled.contains(&TaskKey::RefreshOnchainState)
+        {
+            return;
+        }
+
+        let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
+        let interval = self.refresh_interval();
+        let should_schedule = force
+            || !self.refresh_throttle.should_skip(interval)
+            || current_epoch
+                .map(|epoch| self.refresh_throttle.epoch_changed(epoch))
+                .unwrap_or(false);
+
+        if should_schedule {
+            self.desired.insert(TaskKey::RefreshOnchainState);
+            self.refresh_throttle.record(current_epoch);
+        }
     }
 
     fn node_status(&self) -> NodeStatus {
@@ -319,8 +320,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         if self.lifecycle.epoch() != epoch {
             self.force_cancel_epoch_scoped_tasks();
             self.lifecycle.reset(epoch);
-            self.context.snapshot_progress.lock().unwrap().reset(epoch);
-            self.context.epoch_clock.lock().unwrap().reset(epoch);
+            self.snapshot_progress.reset(epoch);
         }
 
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
@@ -345,6 +345,9 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             }
             Some(EpochPhase::Active) => {}
         }
+        if self.chain_phase_is_active() && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) {
+            self.desired.insert(TaskKey::AdvanceEpoch);
+        }
         self.schedule_snapshot_pipeline(epoch);
     }
 
@@ -357,9 +360,8 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
             return;
         }
 
-        let mut snapshot_progress = self.context.snapshot_progress.lock().unwrap();
-        if snapshot_progress.epoch() != epoch {
-            snapshot_progress.reset(epoch);
+        if self.snapshot_progress.epoch() != epoch {
+            self.snapshot_progress.reset(epoch);
         }
 
         let target = EpochNumber(epoch.0 - 1);
@@ -417,15 +419,15 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 .flatten()
                 .is_some();
             if has_cert {
-                snapshot_progress.advance(group as usize, GroupState::Certified);
+                self.snapshot_progress
+                    .advance(group as usize, GroupState::Certified);
             }
         }
 
         let owned_vec: Vec<usize> = owned_groups.iter().map(|&g| g as usize).collect();
-        let all_certified = snapshot_progress.all_local_cert(&owned_vec);
-        let all_onchain = snapshot_progress.all_done_onchain(&owned_vec);
-        let any_certified = snapshot_progress.any_local_cert(&owned_vec);
-        drop(snapshot_progress);
+        let all_certified = self.snapshot_progress.all_local_cert(&owned_vec);
+        let all_onchain = self.snapshot_progress.all_done_onchain(&owned_vec);
+        let any_certified = self.snapshot_progress.any_local_cert(&owned_vec);
 
         self.desired.remove(&TaskKey::SnapshotBuild);
         if all_onchain {
@@ -450,10 +452,7 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
         if all_onchain {
             self.scheduled.remove(&TaskKey::AdvanceEpoch);
             self.scheduled_epochs.remove(&TaskKey::AdvanceEpoch);
-            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch)
-                && self.chain_phase_is_active()
-                && self.leader_allows_advance_epoch()
-            {
+            if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch) && self.chain_phase_is_active() {
                 self.desired.insert(TaskKey::AdvanceEpoch);
             }
         }
@@ -480,9 +479,10 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 }
                 // After state refresh, reconcile spools (committee may have changed)
                 if matches!(key, TaskKey::RefreshOnchainState) {
+                    self.refresh_throttle
+                        .record(self.context.store.get_chain_epoch().ok().flatten());
                     self.reconcile_spools();
                     if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-                        self.context.epoch_clock.lock().unwrap().elapsed_or_reset(epoch);
                         self.schedule_lifecycle(epoch);
                     }
                     if self.needs_snapshot_bootstrap() {
@@ -506,6 +506,22 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                         | TaskKey::RegisterSnapshot
                         | TaskKey::CertifySnapshot
                 ) && !stale_epoch_result {
+                    if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+                        if self.snapshot_progress.epoch() == epoch {
+                            match key {
+                                TaskKey::SnapshotCertify => {
+                                    self.mark_groups_from_store(epoch, GroupState::Certified);
+                                }
+                                TaskKey::RegisterSnapshot => {
+                                    self.mark_owned_groups(epoch, GroupState::Registered);
+                                }
+                                TaskKey::CertifySnapshot => {
+                                    self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
                         self.schedule_snapshot_pipeline(epoch);
                     }
@@ -533,6 +549,37 @@ impl<S: Store, R: Rpc> Reconciler<S, R> {
                 | TaskKey::RegisterSnapshot
                 | TaskKey::CertifySnapshot
         )
+    }
+
+    fn owned_groups_for_epoch(&self, epoch: EpochNumber) -> HashSet<u64> {
+        match self.context.store.get_committee(epoch) {
+            Ok(Some(committee)) => {
+                our_snapshot_groups(&committee, self.context.keypair.pubkey()).unwrap_or_default()
+            }
+            _ => HashSet::new(),
+        }
+    }
+
+    fn mark_owned_groups(&mut self, epoch: EpochNumber, state: GroupState) {
+        for group in self.owned_groups_for_epoch(epoch) {
+            self.snapshot_progress.advance(group as usize, state);
+        }
+    }
+
+    fn mark_groups_from_store(&mut self, epoch: EpochNumber, state: GroupState) {
+        let target = EpochNumber(epoch.0.saturating_sub(1));
+        for group in self.owned_groups_for_epoch(epoch) {
+            if self
+                .context
+                .store
+                .get_snapshot_certification(target, ChunkIndex(group))
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                self.snapshot_progress.advance(group as usize, state);
+            }
+        }
     }
 
     fn force_cancel_epoch_scoped_tasks(&mut self) {

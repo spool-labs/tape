@@ -13,12 +13,14 @@ use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
+use crate::peers::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -68,8 +70,10 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("parse network address: {e}")),
     };
 
-    if context.peer_health.lock().unwrap().is_cooling_down(&addr) {
-        return TaskOutcome::Retryable("peer cooling down".into());
+    match peer_handle.is_cooling_down(addr).await {
+        Ok(true) => return TaskOutcome::Retryable("peer cooling down".into()),
+        Ok(false) => {}
+        Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
     }
 
     let client = match NodeClientBuilder::new().build(&addr.to_string()) {
@@ -103,11 +107,15 @@ pub async fn run<S: Store, R: Rpc>(
 
         let response_bytes = match with_retry(&RetryConfig::fast(), || client.sync_spool(request_bytes.clone())).await {
             Ok(b) => {
-                context.peer_health.lock().unwrap().record_success(&addr);
+                if let Err(e) = peer_handle.record_success(addr).await {
+                    tracing::warn!("failed to record peer success for {addr}: {e}");
+                }
                 b
             }
             Err(e) => {
-                context.peer_health.lock().unwrap().record_failure(&addr);
+                if let Err(err) = peer_handle.record_failure(addr).await {
+                    tracing::warn!("failed to record peer failure for {addr}: {err}");
+                }
                 return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
             }
         };

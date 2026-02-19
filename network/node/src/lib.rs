@@ -13,7 +13,7 @@ pub mod core;
 pub mod fsm;
 pub mod http;
 pub mod ingestor;
-pub mod leader;
+pub mod peers;
 pub mod pipeline;
 pub mod reconciler;
 pub mod state;
