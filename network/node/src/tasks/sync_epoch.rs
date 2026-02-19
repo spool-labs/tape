@@ -9,7 +9,7 @@ use tape_store::ops::{MetaOps, SpoolOps};
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_sync_epoch;
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
 

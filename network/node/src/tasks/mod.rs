@@ -20,8 +20,8 @@ use tape_api::errors::{ProgramError, TapeError};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::NodeContext;
-use crate::peers::PeerHandle;
+use crate::runtime::NodeContext;
+use crate::runtime::PeerHandle;
 use crate::supervisor::{TaskKey, TaskOutcome};
 
 /// Execute a single task to completion.

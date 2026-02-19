@@ -4,13 +4,6 @@
 
 use std::path::PathBuf;
 
-/// Default node config file path (~/.tape/node.yaml).
-pub fn default_config_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".tape").join("node.yaml"))
-        .unwrap_or_else(|| PathBuf::from(".tape/node.yaml"))
-}
-
 /// Expand ~ and environment variables in a path.
 pub fn expand_path(path: &str) -> PathBuf {
     shellexpand::full(path)
@@ -41,12 +34,6 @@ mod tests {
         let expanded = expand_path("~/test");
         // Should not start with ~ after expansion
         assert!(!expanded.to_string_lossy().starts_with('~'));
-    }
-
-    #[test]
-    fn test_default_config_path() {
-        let path = default_config_path();
-        assert!(path.to_string_lossy().contains("node.yaml"));
     }
 
     #[test]

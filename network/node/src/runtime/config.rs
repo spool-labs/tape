@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tape_core::types::BasisPoints;
 
-use super::utils::expand_path;
+use crate::core::expand_path;
 
 /// Recovery subsystem configuration parameters.
 #[derive(Debug, Clone)]
@@ -140,6 +140,13 @@ impl NodeConfig {
     pub fn network_address(&self) -> String {
         format!("{}:{}", self.public_host, self.public_port)
     }
+}
+
+/// Default node config file path (~/.tape/node.yaml).
+pub fn default_config_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".tape").join("node.yaml"))
+        .unwrap_or_else(|| PathBuf::from(".tape/node.yaml"))
 }
 
 /// Default node config content for initialization.
@@ -557,5 +564,11 @@ storage_path: "/test"
         let result = NodeConfig::from_yaml_str(yaml);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidBindAddress(_)));
+    }
+
+    #[test]
+    fn test_default_config_path() {
+        let path = default_config_path();
+        assert!(path.to_string_lossy().contains("node.yaml"));
     }
 }

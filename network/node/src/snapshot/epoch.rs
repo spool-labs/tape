@@ -5,7 +5,7 @@ use store::Store;
 use tape_core::types::EpochNumber;
 use tape_store::ops::MetaOps;
 
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::supervisor::TaskOutcome;
 
 pub enum SnapshotNeed {

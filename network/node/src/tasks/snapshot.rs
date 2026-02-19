@@ -24,9 +24,9 @@ use tape_store::types::{NodeInfo, Pubkey, SnapshotCertResult, SnapshotChunkMeta}
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::{submit_certify, submit_register};
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::fsm::Fsm;
-use crate::peers::PeerHandle;
+use crate::runtime::PeerHandle;
 use crate::snapshot::{
     GroupPartials, SnapshotContext, SnapshotNeed, SubmitClass, classify_submit_error,
     collect_group_partials, collect_group_slices, fetch_commitments, load_snapshot_context,
@@ -741,8 +741,8 @@ mod tests {
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SnapshotCertResult};
 
-    use crate::peers::PeerService;
-    use crate::test_util::test_context;
+    use crate::runtime::PeerService;
+    use crate::runtime::test_utils::test_context;
 
     #[tokio::test]
     async fn build_waits_epoch2() {

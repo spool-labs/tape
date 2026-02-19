@@ -9,7 +9,7 @@ use tape_api::errors::TapeError;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_join_network;
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::supervisor::TaskOutcome;
 use crate::tasks::parse_tape_error;
 

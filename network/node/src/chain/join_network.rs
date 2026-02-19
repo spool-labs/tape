@@ -7,7 +7,7 @@ use store::Store;
 use tape_api::instruction::build_join_network_ix;
 use tape_api::program::tapedrive::node_pda;
 
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 
 pub async fn submit_join_network<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

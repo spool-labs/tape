@@ -11,7 +11,7 @@ use tape_store::ops::{MetaOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_invalidate_track;
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::supervisor::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(

@@ -12,8 +12,8 @@ use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::NodeContext;
-use crate::peers::PeerHandle;
+use crate::runtime::NodeContext;
+use crate::runtime::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;

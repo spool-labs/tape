@@ -2,7 +2,7 @@
 //!
 //! The FSM is the single writer to the local store. It receives `IngestedBlock`
 //! batches from the ingestor, applies each instruction using the ops traits,
-//! and emits `Vec<StateChange>` to the reconciler.
+//! and emits `Vec<StateChange>` to the scheduler.
 //!
 //! Crash consistency: the sync cursor is updated LAST after all instructions in
 //! a block are applied. If we crash mid-block, the cursor hasn't advanced, so
@@ -26,7 +26,7 @@ use tape_store::error::TapeStoreError;
 use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
 
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::ingestor::IngestedBlock;
 
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +37,7 @@ pub enum FsmError {
 
 /// A state change emitted by the FSM after applying instructions.
 ///
-/// The reconciler consumes these to determine which tasks to schedule.
+/// The scheduler consumes these to determine which tasks to schedule.
 #[derive(Debug, Clone)]
 pub enum StateChange {
     EpochAdvanced { epoch: EpochNumber },
@@ -103,7 +103,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
 
     /// Apply a single ingested block to local state.
     ///
-    /// Returns the state changes produced, which the reconciler uses to
+    /// Returns the state changes produced, which the scheduler uses to
     /// determine what tasks to schedule or cancel.
     pub fn apply(&self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
         let mut changes = Vec::new();
@@ -640,7 +640,7 @@ mod tests {
     use tape_store::ops::{SliceOps, SpoolOps};
     use tape_store::types::SpoolStatus;
 
-    use crate::test_util::test_context;
+    use crate::runtime::test_utils::test_context;
 
     fn make_advance_epoch(old: u64, new: u64) -> ParsedInstruction {
         ParsedInstruction::AdvanceEpoch {

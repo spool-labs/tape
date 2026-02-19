@@ -9,8 +9,8 @@ use tape_core::types::EpochNumber;
 use tape_store::ops::CommitteeOps;
 use tape_store::types::NodeInfo;
 
-use crate::core::NodeContext;
-use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
+use crate::runtime::NodeContext;
+use crate::runtime::committee::{our_member, our_member_index, our_snapshot_groups};
 use crate::snapshot::epoch::{SnapshotNeed, snapshot_epochs};
 use crate::supervisor::TaskOutcome;
 

@@ -16,9 +16,9 @@ use tape_crypto::Pubkey;
 use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
+use crate::core::expand_path;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
-use super::utils::expand_path;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]

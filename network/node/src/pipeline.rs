@@ -1,8 +1,8 @@
-//! Pipeline — wires the ingestor, FSM, reconciler, and supervisor together.
+//! Pipeline — wires the ingestor, FSM, scheduler, and supervisor together.
 //!
 //! The ingestor fetches and parses blocks, sending them over a bounded channel
 //! to the FSM. The FSM applies each block and forwards state changes to the
-//! reconciler. The reconciler diffs desired vs running tasks and sends directives
+//! scheduler. The scheduler diffs desired vs running tasks and sends directives
 //! to the supervisor. Channel backpressure ensures no component outpaces another.
 
 use std::sync::Arc;
@@ -14,12 +14,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
-use crate::peers::PeerService;
-use crate::reconciler::{Directive, Reconciler};
+use crate::runtime::PeerService;
+use crate::scheduler::{Directive, Scheduler};
 use crate::supervisor::{Supervisor, TaskResult};
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
@@ -32,7 +32,7 @@ const RESULT_CHANNEL_CAPACITY: usize = 256;
 pub struct RuntimeHandles {
     pub ingestor: JoinHandle<()>,
     pub fsm: JoinHandle<()>,
-    pub reconciler: JoinHandle<()>,
+    pub scheduler: JoinHandle<()>,
     pub supervisor: JoinHandle<()>,
     pub peer_service: JoinHandle<()>,
     pub http: JoinHandle<()>,
@@ -81,7 +81,7 @@ pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
     (change_rx, user_event_tx, ingestor_handle, fsm_handle)
 }
 
-/// Spawn the full runtime: ingestor, FSM, reconciler, and supervisor.
+/// Spawn the full runtime: ingestor, FSM, scheduler, and supervisor.
 pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
@@ -93,17 +93,17 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
     let (peer_service, peer_handle) = PeerService::new();
 
-    let reconciler = Reconciler::new(context.clone());
-    let reconciler_cancel = cancel.clone();
+    let scheduler = Scheduler::new(context.clone());
+    let scheduler_cancel = cancel.clone();
     let node_id = context.node_id();
-    let reconciler_span = tracing::info_span!("", node_id = node_id.0);
-    let reconciler_handle = tokio::spawn(
+    let scheduler_span = tracing::info_span!("", node_id = node_id.0);
+    let scheduler_handle = tokio::spawn(
         async move {
-            reconciler
-                .run(change_rx, result_rx, directive_tx, reconciler_cancel)
+            scheduler
+                .run(change_rx, result_rx, directive_tx, scheduler_cancel)
                 .await;
         }
-        .instrument(reconciler_span),
+        .instrument(scheduler_span),
     );
 
     let supervisor = Supervisor::new(context.clone(), peer_handle, result_tx);
@@ -141,7 +141,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     RuntimeHandles {
         ingestor: ingestor_handle,
         fsm: fsm_handle,
-        reconciler: reconciler_handle,
+        scheduler: scheduler_handle,
         supervisor: supervisor_handle,
         peer_service: peer_service_handle,
         http: http_handle,
@@ -211,8 +211,8 @@ mod tests {
     use tape_store::types::{NodeStatus, SpoolStatus};
 
     use crate::ingestor::IngestedBlock;
-    use crate::peers::PeerService;
-    use crate::test_util::test_context;
+    use crate::runtime::PeerService;
+    use crate::runtime::test_utils::test_context;
 
     async fn spawn_test_fsm<S: Store + 'static, R: Rpc + 'static>(
         context: Arc<NodeContext<S, R>>,
@@ -285,7 +285,7 @@ mod tests {
         let ctx = test_context();
         let cancel = CancellationToken::new();
 
-        // Pre-populate spool state so reconciler has work to do
+        // Pre-populate spool state so scheduler has work to do
         ctx.store
             .set_spool_status(5, SpoolStatus::ActiveSync)
             .unwrap();
@@ -301,11 +301,11 @@ mod tests {
         let (result_tx, result_rx) =
             mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
 
-        let reconciler = Reconciler::new(ctx.clone());
-        let reconciler_cancel = cancel.clone();
-        let reconciler_handle = tokio::spawn(async move {
-            reconciler
-                .run(change_rx, result_rx, directive_tx, reconciler_cancel)
+        let scheduler = Scheduler::new(ctx.clone());
+        let scheduler_cancel = cancel.clone();
+        let scheduler_handle = tokio::spawn(async move {
+            scheduler
+                .run(change_rx, result_rx, directive_tx, scheduler_cancel)
                 .await;
         });
 
@@ -325,7 +325,7 @@ mod tests {
 
         // Clean shutdown
         cancel.cancel();
-        reconciler_handle.await.unwrap();
+        scheduler_handle.await.unwrap();
         supervisor_handle.await.unwrap();
         peer_service_handle.await.unwrap();
     }

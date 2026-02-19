@@ -8,7 +8,7 @@ use tape_api::instruction::build_epoch_sync_ix;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::EpochNumber;
 
-use crate::core::NodeContext;
+use crate::runtime::NodeContext;
 
 pub async fn submit_sync_epoch<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

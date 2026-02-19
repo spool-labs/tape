@@ -10,8 +10,8 @@ use tape_core::erasure::spool_in_group;
 use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::NodeContext;
-use crate::peers::PeerHandle;
+use crate::runtime::NodeContext;
+use crate::runtime::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
@@ -189,7 +189,7 @@ mod tests {
     use tape_store::types::TrackInfo;
     use tokio_util::sync::CancellationToken;
 
-    use crate::test_util::test_context;
+    use crate::runtime::test_utils::test_context;
 
     #[tokio::test]
     async fn recovery_empty_queue() {
@@ -198,7 +198,7 @@ mod tests {
         ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = crate::runtime::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
@@ -224,7 +224,7 @@ mod tests {
         ctx.store.add_pending_recovery(5, track).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::peers::PeerService::new();
+        let (_peer_service, peer_handle) = crate::runtime::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }

@@ -9,8 +9,9 @@ use solana_sdk::signature::Keypair;
 use tape_core::bls::BlsPrivateKey;
 use tape_store::{MemoryStore, TapeStore};
 
-use crate::core::config::RecoveryConfig;
-use crate::core::{NodeApiConfig, NodeConfig, NodeContext, TlsConfig};
+use crate::runtime::RecoveryConfig;
+use crate::runtime::{NodeApiConfig, NodeConfig, TlsConfig};
+use crate::runtime::NodeContext;
 
 pub fn test_config() -> NodeConfig {
     NodeConfig {

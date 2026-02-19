@@ -16,8 +16,8 @@ use tape_store::ops::{CommitteeOps, MetaOps, SpoolOps};
 use tape_store::types::{NodeInfo, NodeStatus, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::NodeContext;
-use crate::peers::PeerHandle;
+use crate::runtime::NodeContext;
+use crate::runtime::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
@@ -235,8 +235,8 @@ mod tests {
     use tape_core::types::network::NetworkAddress;
     use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::NodeContext;
-    use crate::test_util::test_config;
+    use crate::runtime::NodeContext;
+    use crate::runtime::test_utils::test_config;
 
     fn make_system(
         members: &[CommitteeMember],

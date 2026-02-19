@@ -12,7 +12,7 @@ use tape_store::types::{NodeInfo, Pubkey};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use crate::peers::PeerHandle;
+use crate::runtime::PeerHandle;
 use crate::supervisor::TaskOutcome;
 
 #[derive(Default)]
