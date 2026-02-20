@@ -78,7 +78,14 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
         return missing_state("snapshot bootstrap committee not available");
     }
 
-    let commitments = match fetch_commitments(&peer_handle, &snapshot.committee, local_epoch).await {
+    let commitments = match fetch_commitments(
+        &context,
+        &peer_handle,
+        &snapshot.committee,
+        local_epoch,
+    )
+    .await
+    {
         Ok(commitments) => commitments,
         Err(outcome) => return outcome,
     };
