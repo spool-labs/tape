@@ -11,8 +11,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
-use tape_node::core::config::RecoveryConfig;
-use tape_node::core::{NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, TlsConfig};
+use tape_node::runtime::{NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig};
 use tape_node::pipeline::{spawn_runtime, RuntimeHandles};
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};
@@ -244,7 +243,7 @@ impl TestNode {
                         .take()
                         .ok_or_else(|| anyhow!("node rpc missing"))?;
 
-                    let context = NodeContextBuilder::new(config, keypair, store, rpc)
+                    let context = NodeContextBuilder::<MemoryStore, LiteSvmRpc>::new(config, keypair, store, rpc)
                         .build()
                         .await
                         .context("build node context")?;
@@ -269,7 +268,7 @@ impl TestNode {
             let wait = async move {
                 let _ = handles.ingestor.await;
                 let _ = handles.fsm.await;
-                let _ = handles.reconciler.await;
+                let _ = handles.scheduler.await;
                 let _ = handles.supervisor.await;
                 let _ = handles.http.await;
             };

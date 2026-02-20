@@ -47,6 +47,7 @@ pub async fn run_build<S: Store, R: Rpc>(
 
     let current_chain_epoch = snapshot.current_chain_epoch;
     let local_epoch = snapshot.local_epoch;
+    let our_member_index = snapshot.member_index.unwrap_or(0);
 
     tracing::debug!(
         current_chain_epoch = current_chain_epoch.0,
@@ -84,13 +85,14 @@ pub async fn run_build<S: Store, R: Rpc>(
     };
 
     let pre_erasure_hash = hashv(&[serialized.as_slice()]);
-    tracing::warn!(
+    tracing::info!(
         epoch = local_epoch.0,
+        member_index = our_member_index,
         ?pre_erasure_hash,
         event_count,
         entry_count = log.entries.len(),
         snapshot_bytes = serialized.len(),
-        "snapshot build pre-erasure payload"
+        "snapshot build pre-encoded payload hash"
     );
 
     let mut outer = OuterCoder::new(DEFAULT_K_OUTER);
@@ -105,7 +107,6 @@ pub async fn run_build<S: Store, R: Rpc>(
     };
 
     let committee = snapshot.committee;
-    let our_member_index = snapshot.member_index.unwrap_or(0);
     let our_groups: HashSet<SpoolGroup> = snapshot.owned_groups;
 
     for group in 0..SPOOL_GROUP_COUNT {

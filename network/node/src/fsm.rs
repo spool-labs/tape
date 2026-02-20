@@ -27,6 +27,7 @@ use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, T
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
 
 use crate::runtime::NodeContext;
+use crate::runtime::committee::our_member_index;
 use crate::ingestor::IngestedBlock;
 
 #[derive(Debug, thiserror::Error)]
@@ -265,10 +266,45 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         )?;
 
         self.context.stats.inc_epochs();
+        self.log_member_index_for_epoch(event.new_epoch, "ingest");
         changes.push(StateChange::EpochAdvanced {
             epoch: event.new_epoch,
         });
         Ok(())
+    }
+
+    fn log_member_index_for_epoch(&self, epoch: EpochNumber, source: &str) {
+        let committee = match self.context.store.get_committee(epoch).ok().flatten() {
+            Some(committee) => committee,
+            None => {
+                tracing::warn!(
+                    source = source,
+                    epoch = epoch.0,
+                    "cannot resolve committee when logging member index"
+                );
+                return;
+            }
+        };
+
+        match our_member_index(&committee, self.context.keypair.pubkey()) {
+            Ok(member_index) => {
+                tracing::info!(
+                    source = source,
+                    epoch = epoch.0,
+                    member_index,
+                    committee_size = committee.len(),
+                    "node member index for epoch"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    source = source,
+                    epoch = epoch.0,
+                    error = %error,
+                    "node not found in committee for epoch"
+                );
+            }
+        }
     }
 
     fn handle_sync_epoch(
@@ -576,6 +612,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 self.context
                     .store
                     .set_chain_epoch_phase(EpochPhase::Unknown)?;
+                self.log_member_index_for_epoch(*new_epoch, "bootstrap-replay");
             }
             ReplayableEvent::RegisterTrack { track, event_data } => {
                 let track_key: StorePubkey = Pubkey::new_from_array(*track).into();

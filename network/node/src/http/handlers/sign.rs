@@ -79,19 +79,33 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
     let group = chunk_index;
     let chunk_idx = ChunkIndex(chunk_index);
 
-    let committee = state
+    let member_index = request.member_index as usize;
+    let validating_epoch = state
         .context
         .store
-        .get_committee(epoch)
+        .get_chain_epoch()
+        .map_err(|e| ApiError::InternalError(format!("read chain epoch: {e}")))?;
+    let validating_epoch = validating_epoch.unwrap_or(epoch);
+    let validating_committee = state
+        .context
+        .store
+        .get_committee(validating_epoch)
         .map_err(|e| ApiError::InternalError(format!("read committee: {e}")))?
+        .or_else(|| {
+            state
+                .context
+                .store
+                .get_committee(epoch)
+                .ok()
+                .flatten()
+        })
         .ok_or(ApiError::NotFound)?;
 
-    let member_index = request.member_index as usize;
-    if member_index >= committee.len() {
+    if member_index >= validating_committee.len() {
         return Err(ApiError::BadRequest("unknown member index".into()));
     }
 
-    let member = &committee[member_index];
+    let member = &validating_committee[member_index];
 
     if !member
         .spools

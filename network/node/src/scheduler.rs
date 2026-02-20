@@ -128,6 +128,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         for change in changes {
             match change {
                 StateChange::EpochAdvanced { epoch } => {
+                    self.log_member_index_for_epoch(*epoch);
                     self.lifecycle.reset(*epoch);
                     self.snapshot_progress.reset(*epoch);
                     self.reconcile_spools();
@@ -215,6 +216,38 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             && self.chain_phase_is_active()
         {
             self.desired.insert(TaskKey::AdvanceEpoch { epoch });
+        }
+    }
+
+    /// Log this node's committee index for the epoch when available.
+    fn log_member_index_for_epoch(&self, epoch: EpochNumber) {
+        let committee = match self.context.store.get_committee(epoch).ok().flatten() {
+            Some(committee) => committee,
+            None => {
+                tracing::warn!(
+                    epoch = epoch.0,
+                    "cannot resolve committee when logging member index"
+                );
+                return;
+            }
+        };
+
+        match our_member_index(&committee, self.context.keypair.pubkey()) {
+            Ok(member_index) => {
+                tracing::info!(
+                    epoch = epoch.0,
+                    member_index,
+                    committee_size = committee.len(),
+                    "node member index for epoch"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    epoch = epoch.0,
+                    error = %error,
+                    "node not found in committee for epoch"
+                );
+            }
         }
     }
 

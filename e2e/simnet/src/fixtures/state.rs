@@ -82,16 +82,18 @@ impl SimnetScenario<'_> {
     }
 
     /// Run node `RefreshOnchainState` task once for a single node.
-    pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
+pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
         let node = self
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
         let semaphore = Arc::new(Semaphore::new(1));
+        let (_peer_service, peer_handle) = tape_node::runtime::PeerService::new();
         let cancel = CancellationToken::new();
 
         let (_key, outcome) = tape_node::tasks::execute_task(
             node.context(),
+            peer_handle,
             TaskKey::RefreshOnchainState,
             cancel,
             semaphore,
