@@ -39,7 +39,13 @@ pub enum Directive {
 }
 
 /// Diffs desired state against running tasks to produce scheduling directives.
+///
+/// Maintains two core sets — `desired` (what SHOULD run) and `scheduled`
+/// (what we've told the supervisor to run). Each tick, the diff between them
+/// produces Schedule and Cancel directives. State changes from the FSM mutate
+/// `desired`; task results from the supervisor remove keys from `scheduled`.
 pub struct Scheduler<S: Store, R: Rpc> {
+    /// Shared node state (store, RPC client, identity, config).
     context: Arc<NodeContext<S, R>>,
     /// Tasks that SHOULD be running given current state.
     desired: HashSet<TaskKey>,
@@ -49,7 +55,7 @@ pub struct Scheduler<S: Store, R: Rpc> {
     lifecycle: LifecycleEpochState,
     /// In-memory snapshot pipeline state for the current epoch.
     snapshot_progress: SnapshotProgress,
-    /// Scheduler-owned refresh scheduling throttle.
+    /// Rate-limits RefreshOnchainState scheduling to avoid RPC spam.
     refresh_throttle: RefreshThrottle,
 }
 
@@ -65,6 +71,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Main event loop. Selects over FSM state changes, supervisor task results,
+    /// and a periodic timer. Each event recomputes `desired` and emits the diff
+    /// as Schedule/Cancel directives to the supervisor.
     pub async fn run(
         mut self,
         mut change_rx: mpsc::Receiver<Vec<StateChange>>,
@@ -114,6 +123,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Translate FSM state changes into additions/removals in the `desired` set.
     fn update_desired(&mut self, changes: &[StateChange]) {
         for change in changes {
             match change {
@@ -141,8 +151,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 StateChange::NodeSynced { node } => {
                     // If this is our node, SyncEpoch completed on-chain
                     if *node == self.context.keypair.pubkey() {
-                        let epoch = self.scheduling_epoch();
-                        self.desired.remove(&TaskKey::SyncEpoch { epoch });
+                        self.desired
+                            .retain(|key| !matches!(key, TaskKey::SyncEpoch { .. }));
                     }
                 }
                 StateChange::TrackDeleted { track }
@@ -158,6 +168,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// After a track is certified, check owned spools for missing slices and
+    /// enqueue SpoolRecovery tasks for any gaps.
     fn check_slices(&mut self, track: &Pubkey) {
         if matches!(self.node_status(), NodeStatus::Standby) {
             return;
@@ -193,6 +205,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Called on the timer tick. Schedules RefreshOnchainState (throttled) and
+    /// AdvanceEpoch if the chain is in the Active phase.
     fn periodic_tasks(&mut self) {
         self.request_refresh(false);
         let epoch = self.scheduling_epoch();
@@ -204,6 +218,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// How often to poll on-chain state. Committee members poll more aggressively
+    /// (3s) since they need to observe phase transitions promptly.
     fn refresh_interval(&self) -> Duration {
         if self.in_committee() {
             Duration::from_secs(3)
@@ -212,6 +228,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Whether this node is a member of the current epoch's committee.
     fn in_committee(&self) -> bool {
         let Some(epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
             return false;
@@ -222,6 +239,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         our_member_index(&committee, self.context.keypair.pubkey()).is_ok()
     }
 
+    /// Add RefreshOnchainState to `desired` if the throttle allows it.
+    /// `force` bypasses the throttle (used after epoch transitions and startup).
     fn request_refresh(&mut self, force: bool) {
         if self.desired.contains(&TaskKey::RefreshOnchainState)
             || self.scheduled.contains(&TaskKey::RefreshOnchainState)
@@ -243,10 +262,12 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Read the node's current status from the store. Defaults to Standby if unset.
     fn node_status(&self) -> NodeStatus {
         self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby)
     }
 
+    /// Whether the on-chain epoch phase is Active (all nodes synced/settled).
     fn chain_phase_is_active(&self) -> bool {
         matches!(
             self.context.store.get_chain_epoch_phase().ok().flatten(),
@@ -254,6 +275,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         )
     }
 
+    /// True if this node is Active, at epoch >= 2, and has no sync cursor yet
+    /// (meaning it needs to bootstrap state from a snapshot before syncing).
     fn needs_bootstrap(&self) -> bool {
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
@@ -263,6 +286,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
     }
 
+    /// Remove pending recovery entries for a track that was deleted or invalidated.
     fn remove_recoveries(&self, track: &Pubkey) {
         let store_track: StorePubkey = track.into();
         let owned_spools = match self.context.store.iter_all_spools() {
@@ -274,6 +298,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Sync the desired set with current spool ownership. Removes tasks for
+    /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
     fn reconcile_spools(&mut self) {
         if matches!(self.node_status(), NodeStatus::Standby) {
             return;
@@ -308,6 +334,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Recompute the desired set for epoch-scoped lifecycle tasks based on the
+    /// current chain phase. Syncing → SyncEpoch, Settling → AdvancePool + JoinNetwork,
+    /// Active → AdvanceEpoch. Also drives the snapshot pipeline via `schedule_snapshot`.
     fn schedule_lifecycle(&mut self, epoch: EpochNumber) {
         if !matches!(self.node_status(), NodeStatus::Active) {
             return;
@@ -316,8 +345,6 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         // Keep local lifecycle epoch (scheduler-owned) aligned to chain epoch,
         // even when epoch changes arrive via refresh/replay without EpochAdvanced state changes.
         if self.lifecycle.epoch() != epoch {
-            self.scheduled
-                .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
             self.lifecycle.reset(epoch);
             self.snapshot_progress.reset(epoch);
         }
@@ -352,6 +379,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         self.schedule_snapshot(epoch);
     }
 
+    /// Drive the snapshot pipeline: Build → Collect → Register → Submit.
+    /// Reads per-group readiness from the store and advances tasks through the
+    /// pipeline stages. Only schedules tasks for spool groups this node owns.
     fn schedule_snapshot(&mut self, epoch: EpochNumber) {
         let snapshot_build = TaskKey::SnapshotBuild { epoch };
         let snapshot_collect = TaskKey::SnapshotCollect { epoch };
@@ -484,6 +514,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Process a task completion from the supervisor. Stale epoch results are
+    /// silently dropped. Otherwise delegates to type-specific handlers.
     fn handle_result(&mut self, result: &TaskResult) {
         let key = match result {
             TaskResult::Success(k) => k,
@@ -505,10 +537,14 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Task was canceled — remove from scheduled so it can be re-added if needed.
     fn handle_cancelled(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
     }
 
+    /// Task succeeded. Marks lifecycle state, removes one-shot tasks from desired,
+    /// and triggers follow-up scheduling (refresh → lifecycle, sync → lifecycle,
+    /// bootstrap → refresh, snapshot stages).
     fn handle_success(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
         self.lifecycle.mark_done(key);
@@ -521,6 +557,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         self.handle_snapshot_success(key);
     }
 
+    /// After RefreshOnchainState succeeds, re-evaluate spool ownership, prune
+    /// stale recoveries, reschedule lifecycle tasks, and check if bootstrap is needed.
     fn handle_refresh_success(&mut self, key: &TaskKey) {
         if !matches!(key, TaskKey::RefreshOnchainState) {
             return;
@@ -537,6 +575,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Remove pending recovery entries whose tracks no longer exist in the store
+    /// (e.g. deleted or invalidated). Clears SpoolRecovery from desired when a
+    /// spool has no remaining pending recoveries.
     fn prune_recoveries(&mut self) {
         let spools = match self.context.store.iter_all_spools() {
             Ok(spools) => spools,
@@ -559,13 +600,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 }
             }
 
-            let has_pending = self
-                .context
-                .store
-                .iter_pending_recoveries(*spool, 1)
-                .ok()
-                .map(|pending| !pending.is_empty())
-                .unwrap_or(false);
+            let has_pending = !pending.is_empty();
 
             if !has_pending && !matches!(status, SpoolStatus::ActiveRecover) {
                 self.desired.remove(&TaskKey::SpoolRecovery { spool: *spool });
@@ -573,6 +608,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// After SyncEpoch succeeds, re-run lifecycle scheduling to unlock the
+    /// Settling-phase tasks (AdvancePool, JoinNetwork).
     fn handle_sync_success(&mut self, key: &TaskKey) {
         if !matches!(key, TaskKey::SyncEpoch { .. }) {
             return;
@@ -582,12 +619,15 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// After bootstrap completes, trigger a refresh to pick up the replayed state.
     fn handle_bootstrap_success(&mut self, key: &TaskKey) {
         if matches!(key, TaskKey::SnapshotBootstrap) {
             self.desired.insert(TaskKey::RefreshOnchainState);
         }
     }
 
+    /// Advance snapshot pipeline progress when a snapshot stage completes, then
+    /// re-run `schedule_snapshot` to unlock the next stage.
     fn handle_snapshot_success(&mut self, key: &TaskKey) {
         if !matches!(
             key,
@@ -597,36 +637,37 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         ) {
             return;
         }
-        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-            if self.snapshot_progress.epoch() == epoch {
-                match key {
-                    TaskKey::SnapshotCollect { .. } => {
-                        self.mark_groups_store(epoch, GroupState::Certified);
-                    }
-                    TaskKey::RegisterSnapshot { .. } => {
-                        self.mark_owned_groups(epoch, GroupState::Registered);
-                    }
-                    TaskKey::SnapshotSubmit { .. } => {
-                        self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
-                    }
-                    _ => {}
+        let Some(epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
+            return;
+        };
+        if self.snapshot_progress.epoch() == epoch {
+            match key {
+                TaskKey::SnapshotCollect { .. } => {
+                    self.mark_groups_store(epoch, GroupState::Certified);
                 }
+                TaskKey::RegisterSnapshot { .. } => {
+                    self.mark_owned_groups(epoch, GroupState::Registered);
+                }
+                TaskKey::SnapshotSubmit { .. } => {
+                    self.mark_owned_groups(epoch, GroupState::CertifiedOnchain);
+                }
+                _ => {}
             }
         }
-        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
-            self.schedule_snapshot(epoch);
-        }
+        self.schedule_snapshot(epoch);
     }
 
-    fn handle_retry(&self) {
-        // Supervisor handles retry internally — keep in scheduled.
-    }
+    /// No-op: the supervisor handles retries internally. The key stays in
+    /// `scheduled` so the scheduler doesn't re-issue a duplicate Schedule directive.
+    fn handle_retry(&self) {}
 
+    /// Task failed permanently — remove from both sets so it is never retried.
     fn handle_permanent(&mut self, key: &TaskKey) {
         self.scheduled.remove(key);
         self.desired.remove(key);
     }
 
+    /// Snapshot spool groups this node owns for the given epoch's committee.
     fn groups_for_epoch(&self, epoch: EpochNumber) -> HashSet<u64> {
         match self.context.store.get_committee(epoch) {
             Ok(Some(committee)) => {
@@ -636,14 +677,19 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// Advance snapshot progress for all groups this node owns.
     fn mark_owned_groups(&mut self, epoch: EpochNumber, state: GroupState) {
         for group in self.groups_for_epoch(epoch) {
             self.snapshot_progress.advance(group as usize, state);
         }
     }
 
+    /// Advance snapshot progress for owned groups that have a cert in the store.
     fn mark_groups_store(&mut self, epoch: EpochNumber, state: GroupState) {
-        let local_epoch = EpochNumber(epoch.0.saturating_sub(1));
+        let Some(local_epoch) = derive_snapshot_local_epoch(epoch) else {
+            return;
+        };
+
         for group in self.groups_for_epoch(epoch) {
             if self
                 .context
@@ -658,6 +704,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    /// True if the task's epoch doesn't match the current chain epoch (the task
+    /// was for a previous epoch that has since advanced).
     fn is_stale_epoch(&self, key: &TaskKey) -> bool {
         let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
@@ -668,10 +716,20 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
+    fn should_drop_epoch_task(&self, current_epoch: EpochNumber, task_epoch: EpochNumber) -> bool {
+        task_epoch.0.saturating_add(2) < current_epoch.0
+    }
+
+    fn task_below_retention(&self, current_epoch: EpochNumber, key: &TaskKey) -> bool {
+        match key.scheduled_epoch() {
+            Some(task_epoch) => self.should_drop_epoch_task(current_epoch, task_epoch),
+            None => false,
+        }
+    }
+
+    /// The epoch to use for new task keys. Prefers the on-chain epoch, falling
+    /// back to the lifecycle epoch during bootstrap or when chain state is stale.
     fn scheduling_epoch(&self) -> EpochNumber {
-        // Use the chain epoch for task payloads when available, with a local
-        // lifecycle fallback when chain state is unavailable during bootstrap
-        // or when we're temporarily behind on epoch visibility.
         self.context
             .store
             .get_chain_epoch()
@@ -680,13 +738,43 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             .unwrap_or(self.lifecycle.epoch())
     }
 
+    /// Diff `desired` vs `scheduled` and send Schedule/Cancel directives.
+    /// Prunes stale epoch-scoped keys from both sets (older than current-2) first.
+    /// Sends Cancel for stale scheduled tasks before dropping them.
+    /// If the directive channel is full or closed, returns early without updating
+    /// `scheduled`.
     async fn emit_directives(&mut self, tx: &mpsc::Sender<Directive>) {
-        // Stale epoch-scoped keys can remain after epoch transitions; trim them
-        // before scheduling/canceling to keep one key per active epoch.
-        if let Ok(Some(current_epoch)) = self.context.store.get_chain_epoch() {
-            self.desired.retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != current_epoch));
-            self.scheduled
-                .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != current_epoch));
+        let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
+
+        // Cancel and drop epoch-scoped tasks for epochs older than the retention
+        // window (older than current_epoch - 2). This avoids stale epoch tasks
+        // lingering in running/scheduled state after committee changes.
+        if let Some(current_epoch) = current_epoch {
+            let stale_scheduled: Vec<_> = self
+                .scheduled
+                .iter()
+                .filter(|key| self.task_below_retention(current_epoch, key))
+                .cloned()
+                .collect();
+            for key in stale_scheduled {
+                if tx.send(Directive::Cancel(key.clone())).await.is_err() {
+                    return;
+                }
+                self.scheduled.remove(&key);
+                self.desired.remove(&key);
+            }
+
+            // Remaining non-stale epoch-scoped keys can be kept around for retries
+            // and lifecycle reconciliation.
+            let stale_desired: Vec<_> = self
+                .desired
+                .iter()
+                .filter(|key| self.task_below_retention(current_epoch, key))
+                .cloned()
+                .collect();
+            for key in stale_desired {
+                self.desired.remove(&key);
+            }
         }
 
         // Schedule: in desired but not yet scheduled

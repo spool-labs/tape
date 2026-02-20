@@ -17,7 +17,7 @@ pub async fn submit_invalidate_track<S: Store, R: Rpc>(
     track: Pubkey,
     bitmap: CommitteeBitmap,
     signature: tape_core::bls::BlsSignature,
-    computed_root: Hash,
+    observed_root: Hash,
 ) -> Result<Signature, RpcError> {
     let fee_payer = context.keypair.pubkey();
     let (system_address, _) = system_pda();
@@ -31,7 +31,7 @@ pub async fn submit_invalidate_track<S: Store, R: Rpc>(
         track,
         bitmap,
         signature,
-        computed_root,
+        observed_root,
     );
 
     context.rpc.send_instructions(&context.keypair, vec![ix]).await

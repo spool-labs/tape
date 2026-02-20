@@ -334,7 +334,7 @@ fn build_repair_request(track_info: &TrackInfo) -> Result<RepairRequest, String>
 
     let stripe_count = usize::try_from(track_info.stripe_count)
         .map_err(|_| "stripe count overflow".to_string())?;
-    let sub_chunks: Vec<u32> = (0..alpha).map(u32::from).collect();
+    let sub_chunks: Vec<u32> = (0..alpha).map(|value| value as u32).collect();
     let stripes = (0..stripe_count)
         .map(|stripe| StripeSubChunkRequest {
             stripe: stripe as u32,

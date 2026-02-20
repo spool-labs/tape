@@ -47,7 +47,7 @@ pub async fn run<S: Store, R: Rpc>(
 
     let bitmap: CommitteeBitmap = bytemuck::cast(proof.bitmap);
     let signature = proof.signature;
-    let computed_root = Hash(proof.computed_root);
+    let observed_root = Hash(proof.observed_root);
 
     let result = tokio::select! {
         r = submit_invalidate_track(
@@ -56,7 +56,7 @@ pub async fn run<S: Store, R: Rpc>(
             track,
             bitmap,
             signature,
-            computed_root,
+            observed_root,
         ) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };

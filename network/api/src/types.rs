@@ -1,10 +1,16 @@
 //! Protocol request/response types for the node API.
 
 use tape_crypto::Hash;
-use tape_core::bls::BlsSignature;
+use tape_core::{
+    bls::BlsSignature,
+    erasure::MEMBER_COUNT,
+};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{EpochNumber, NodeId};
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+/// Bitmap bytes needed to represent `MEMBER_COUNT` committee members.
+pub const COMMITTEE_BITMAP_BYTES: usize = (MEMBER_COUNT + 7) / 8;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -17,7 +23,19 @@ pub struct BlsSignResponse {
 /// Request for inconsistency attestation.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InconsistencyRequest {
-    pub computed_root: Hash,
+    /// Signed proof from committee members that a node should trust.
+    pub proof: InconsistencyProof,
+}
+
+/// Committee proof data for inconsistency reporting.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct InconsistencyProof {
+    /// Bitmap of committee members that produced the proof signature.
+    pub committee_bitmap: [u8; COMMITTEE_BITMAP_BYTES],
+    /// Aggregated BLS signature over an invalidation message.
+    pub signature: BlsSignature,
+    /// Merkle root computed from re-encoded recovery material.
+    pub observed_root: Hash,
 }
 
 /// Response from the inconsistency attestation endpoint.
@@ -150,7 +168,11 @@ mod tests {
     #[test]
     fn inconsistency() {
         let req = InconsistencyRequest {
-            computed_root: Hash::from([0xBB; 32]),
+            proof: InconsistencyProof {
+                committee_bitmap: [0xFF; COMMITTEE_BITMAP_BYTES],
+                signature: BlsSignature(G1CompressedPoint([0xAA; 32])),
+                observed_root: Hash::from([0xBB; 32]),
+            },
         };
         let bytes = wincode::serialize(&req).unwrap();
         let decoded: InconsistencyRequest = wincode::deserialize(&bytes).unwrap();

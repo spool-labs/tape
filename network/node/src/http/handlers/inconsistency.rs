@@ -1,15 +1,19 @@
 //! Inconsistency attestation handler.
 
+use bytemuck::cast;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
+use tape_api::program::tapedrive::CommitteeBitmap;
+use tape_core::bft::is_supermajority;
+use tape_core::cert::InvalidateMessage;
+use tape_core::erasure::{group_for_spool, SPOOL_GROUP_SIZE};
 use tape_core::types::EpochNumber;
-use tape_node_api::{InconsistencyRequest, BlsInconsistencyResponse, BINARY_CONTENT};
-use tape_core::cert::track::CertifyMessage;
-use tape_store::ops::{MetaOps, TrackOps};
+use tape_node_api::{BlsInconsistencyResponse, InconsistencyRequest, BINARY_CONTENT};
+use tape_store::ops::{CommitteeOps, MetaOps, TrackOps};
 
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
@@ -25,7 +29,6 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
     let request: InconsistencyRequest = wincode::deserialize(&body)
         .map_err(|e| ApiError::BadRequest(format!("inconsistency request: {e}")))?;
 
-    // Verify the track exists and the computed root mismatches
     let track_info = state
         .context
         .store
@@ -33,24 +36,20 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let local_root = track_info.commitment_root();
-    if <[u8; 32]>::from(local_root) == <[u8; 32]>::from(request.computed_root) {
-        return Err(ApiError::BadRequest("roots match, no inconsistency".into()));
-    }
+    verify_local_root_mismatch(&track_info.commitment_root(), request.proof.observed_root)?;
+    let epoch = current_chain_epoch(&state)?;
+    verify_inconsistency_proof(
+        &state.context,
+        &request.proof,
+        &track_info,
+        track_address.0,
+        epoch,
+    )?;
 
-    let epoch = state
-        .context
-        .store
-        .get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(EpochNumber(0));
-
-    // BLS sign the inconsistency attestation
-    // Use the certify message format with the requester's root
-    let msg = CertifyMessage::new(
+    let msg = InvalidateMessage::new(
         epoch,
         track_address.0,
-        request.computed_root.into(),
+        request.proof.observed_root.into(),
     );
     let sig = state
         .context
@@ -63,7 +62,6 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
         node_id: state.context.node_id(),
         epoch,
     };
-
     let bytes =
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
 
@@ -72,4 +70,83 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
         [(axum::http::header::CONTENT_TYPE, BINARY_CONTENT)],
         bytes,
     ))
+}
+
+fn verify_local_root_mismatch(
+    local_root: &tape_crypto::Hash,
+    observed_root: tape_crypto::Hash,
+) -> Result<(), ApiError> {
+    if *local_root == observed_root {
+        return Err(ApiError::BadRequest("roots match, no inconsistency".into()));
+    }
+    Ok(())
+}
+
+fn current_chain_epoch<S: Store, R: Rpc>(state: &AppState<S, R>) -> Result<EpochNumber, ApiError> {
+    state
+        .context
+        .store
+        .get_chain_epoch()
+        .map_err(|e| ApiError::InternalError(e.to_string()))?
+        .ok_or(ApiError::BadRequest("chain epoch missing".into()))
+}
+
+fn verify_inconsistency_proof<S: Store, R: Rpc>(
+    context: &crate::runtime::NodeContext<S, R>,
+    proof: &tape_node_api::InconsistencyProof,
+    track_info: &tape_store::types::TrackInfo,
+    track_address: [u8; 32],
+    epoch: EpochNumber,
+) -> Result<(), ApiError> {
+    let committee = context
+        .store
+        .get_committee(epoch)
+        .map_err(|e| ApiError::InternalError(e.to_string()))?
+        .ok_or(ApiError::BadRequest("committee missing".into()))?;
+
+    if committee.is_empty() {
+        return Err(ApiError::BadRequest("committee has no members".into()));
+    }
+
+    let max_bitmap_bits = tape_node_api::COMMITTEE_BITMAP_BYTES * 8;
+    if committee.len() > max_bitmap_bits {
+        return Err(ApiError::BadRequest("committee exceeds supported bitmap size".into()));
+    }
+
+    let bitmap: CommitteeBitmap = cast(proof.committee_bitmap);
+    let signer_indices = bitmap.indices(committee.len());
+    if signer_indices.is_empty() {
+        return Err(ApiError::BadRequest("inconsistency proof has no signers".into()));
+    }
+
+    let mut signer_weight = 0u64;
+    let mut signer_pubkeys = Vec::with_capacity(signer_indices.len());
+    for signer_index in signer_indices {
+        let member = committee
+            .get(signer_index)
+            .ok_or(ApiError::BadRequest(
+                "inconsistency bitmap has unknown signer".to_string(),
+            ))?;
+
+        signer_weight += member
+            .spools
+            .iter()
+            .filter(|&&spool| group_for_spool(spool) == track_info.spool_group)
+            .count() as u64;
+        signer_pubkeys.push(member.bls_pubkey);
+    }
+
+    if !is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64) {
+        return Err(ApiError::BadRequest(
+            "inconsistency proof lacks quorum for spool group".into(),
+        ));
+    }
+
+    let msg = InvalidateMessage::new(epoch, track_address, proof.observed_root.into());
+    proof
+        .signature
+        .verify_aggregate(msg.to_bytes(), &signer_pubkeys)
+        .map_err(|_| ApiError::InvalidSignature)?;
+
+    Ok(())
 }
