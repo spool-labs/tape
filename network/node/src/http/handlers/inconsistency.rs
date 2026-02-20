@@ -24,6 +24,7 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(track_id = %track_id, payload_bytes = body.len(), "http post_inconsistency start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let request: InconsistencyRequest = wincode::deserialize(&body)
@@ -64,6 +65,7 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
     };
     let bytes =
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(track_id = %track_id, epoch = epoch.0, "http post_inconsistency success");
 
     Ok((
         StatusCode::OK,

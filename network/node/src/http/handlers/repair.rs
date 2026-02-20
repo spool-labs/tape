@@ -20,6 +20,7 @@ pub async fn post_repair<S: Store, R: Rpc>(
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(track_id = %track_id, payload_bytes = body.len(), "http post_repair start");
     let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|e| ApiError::BadRequest(format!("repair request: {e}")))?;
 
@@ -80,6 +81,13 @@ pub async fn post_repair<S: Store, R: Rpc>(
             out.extend_from_slice(sc);
         }
     }
+
+    tracing::trace!(
+        track_id = %track_id,
+        output_bytes = out.len(),
+        stripes = request.stripes.len(),
+        "http post_repair success"
+    );
 
     Ok((
         StatusCode::OK,

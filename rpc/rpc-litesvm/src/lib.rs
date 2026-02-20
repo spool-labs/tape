@@ -121,6 +121,43 @@ impl LiteSvmRpc {
             .map_err(|e| RpcError::Internal(format!("add_program failed: {e:?}")))
     }
 
+    /// Stores/overwrites a full account in the in-memory VM.
+    pub fn set_account(
+        &self,
+        pubkey: impl Into<Pubkey>,
+        account: Account,
+    ) -> Result<(), RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        inner
+            .svm
+            .set_account(pubkey.into(), account)
+            .map_err(|e| RpcError::Request(format!("set_account failed: {e:?}")))
+    }
+
+    /// Store an account with the minimum rent-exempt lamport balance.
+    pub fn set_account_data(
+        &self,
+        pubkey: impl Into<Pubkey>,
+        owner: impl Into<Pubkey>,
+        data: &[u8],
+    ) -> Result<(), RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+
+        let lamports = inner.svm.minimum_balance_for_rent_exemption(data.len());
+        let account = Account::new(lamports, data.to_vec(), &owner.into());
+
+        inner
+            .svm
+            .set_account(pubkey.into(), account)
+            .map_err(|e| RpcError::Request(format!("set_account_data failed: {e:?}")))
+    }
+
     fn current_slot_locked(inner: &Inner) -> Slot {
         inner.svm.get_sysvar::<Clock>().slot
     }

@@ -9,6 +9,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
+use tracing::trace;
 
 /// Shared chain fixture backed by LiteSVM.
 #[derive(Clone)]
@@ -100,6 +101,18 @@ impl ChainFixture {
         self.rpc.airdrop(pubkey, lamports).context("airdrop")
     }
 
+    pub fn seed_account(
+        &self,
+        address: &Pubkey,
+        owner: &Pubkey,
+        data: &[u8],
+    ) -> Result<()> {
+        self.rpc
+            .set_account_data(address, owner, data)
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("seed_account")
+    }
+
     pub async fn current_slot(&self) -> Result<u64> {
         self.rpc.get_slot().await.context("get_slot")
     }
@@ -107,6 +120,12 @@ impl ChainFixture {
     pub async fn advance_slots(&self, delta: u64) -> Result<u64> {
         let current = self.current_slot().await?;
         let target = current.saturating_add(delta);
+        trace!(
+            from_slot = current,
+            to_slot = target,
+            delta = delta,
+            "advancing litesvm slot cursor"
+        );
         self.rpc.warp_to_slot(target).context("warp_to_slot")?;
         Ok(target)
     }
@@ -123,14 +142,35 @@ impl ChainFixture {
         instructions: Vec<Instruction>,
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
+        let payer_pubkey = payer.pubkey();
+        let instruction_count = instructions.len();
+        trace!(
+            payer = %payer_pubkey,
+            instruction_count,
+            "submitting instructions to litesvm"
+        );
+
         let client = RpcClient::from_rpc(self.rpc.clone());
         let sig = client
             .send_instructions(payer, instructions)
             .await
             .context("send_instructions")?;
+        trace!(
+            signature = %sig,
+            payer = %payer_pubkey,
+            "submitted instruction batch"
+        );
 
         if slot_advance_per_tx > 0 {
-            self.advance_slots(slot_advance_per_tx).await?;
+            let tip_slot = self.advance_slots(slot_advance_per_tx).await?;
+            trace!(
+                signature = %sig,
+                new_slot = tip_slot,
+                "advanced litesvm slots after submit"
+            );
+        } else {
+            let slot = self.current_slot().await?;
+            trace!(signature = %sig, slot = slot, "slot advancement disabled for this tx");
         }
 
         Ok(sig)
@@ -143,14 +183,38 @@ impl ChainFixture {
         signers: &[&Keypair],
         slot_advance_per_tx: u64,
     ) -> Result<Signature> {
+        let payer_pubkey = payer.pubkey();
+        let instruction_count = instructions.len();
+        let signer_count = signers.len();
+        let signer_pubkeys: Vec<String> = signers.iter().map(|s| s.pubkey().to_string()).collect();
+        trace!(
+            payer = %payer_pubkey,
+            instruction_count,
+            signer_count,
+            signers = ?signer_pubkeys,
+            "submitting signed instructions to litesvm"
+        );
         let client = RpcClient::from_rpc(self.rpc.clone());
         let sig = client
             .send_instructions_with_signers(payer, instructions, signers)
             .await
             .context("send_instructions_with_signers")?;
+        trace!(
+            signature = %sig,
+            payer = %payer_pubkey,
+            "submitted signed instruction batch"
+        );
 
         if slot_advance_per_tx > 0 {
-            self.advance_slots(slot_advance_per_tx).await?;
+            let tip_slot = self.advance_slots(slot_advance_per_tx).await?;
+            trace!(
+                signature = %sig,
+                new_slot = tip_slot,
+                "advanced litesvm slots after submit"
+            );
+        } else {
+            let slot = self.current_slot().await?;
+            trace!(signature = %sig, slot = slot, "slot advancement disabled for this tx");
         }
 
         Ok(sig)

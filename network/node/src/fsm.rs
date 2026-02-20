@@ -107,6 +107,11 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     /// Returns the state changes produced, which the scheduler uses to
     /// determine what tasks to schedule or cancel.
     pub fn apply(&self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
+        tracing::trace!(
+            slot = %block.slot,
+            instruction_count = block.instructions.len(),
+            "fsm applying block"
+        );
         let mut changes = Vec::new();
         let mut current_epoch = self
             .context
@@ -114,10 +119,31 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
             .get_chain_epoch()?
             .unwrap_or(EpochNumber(0));
         for instruction in &block.instructions {
+            tracing::trace!(
+                slot = %block.slot,
+                epoch = current_epoch.0,
+                instruction = ?instruction,
+                "fsm applying instruction"
+            );
+            let before_len = changes.len();
             self.apply_instruction(instruction, block.slot, &mut changes, &mut current_epoch)?;
+            let added = changes.len() - before_len;
+            if added > 0 {
+                tracing::trace!(
+                    slot = %block.slot,
+                    epoch = current_epoch.0,
+                    added,
+                    "fsm emitted state change"
+                );
+            }
         }
         // Update sync cursor LAST — crash recovery re-processes from cursor
         self.context.store.set_sync_cursor(block.slot)?;
+        tracing::trace!(
+            slot = %block.slot,
+            change_count = changes.len(),
+            "fsm finished block apply"
+        );
         Ok(changes)
     }
 

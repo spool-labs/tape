@@ -16,6 +16,7 @@ pub async fn slice_status<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
 ) -> Result<StatusCode, ApiError> {
+    tracing::trace!(track_id = %track_id, slice_index, "http slice_status start");
     let track_address = parse_track_address(&track_id)?;
 
     let track_info = state
@@ -32,6 +33,7 @@ pub async fn slice_status<S: Store, R: Rpc>(
         .store
         .has_slice(spool_id, track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(track_id = %track_id, slice_index, exists, "http slice_status result");
 
     if exists {
         Ok(StatusCode::OK)
@@ -45,6 +47,7 @@ pub async fn metadata_status<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    tracing::trace!(track_id = %track_id, "http metadata_status start");
     let track_address = parse_track_address(&track_id)?;
 
     let exists = state
@@ -52,6 +55,7 @@ pub async fn metadata_status<S: Store, R: Rpc>(
         .store
         .has_track(track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(track_id = %track_id, exists, "http metadata_status result");
 
     if exists {
         Ok(StatusCode::OK)
@@ -65,6 +69,7 @@ pub async fn track_status<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    tracing::trace!(track_id = %track_id, "http track_status start");
     let track_address = parse_track_address(&track_id)?;
 
     let exists = state
@@ -72,6 +77,7 @@ pub async fn track_status<S: Store, R: Rpc>(
         .store
         .has_track(track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(track_id = %track_id, exists, "http track_status result");
 
     if exists {
         Ok(StatusCode::OK)
@@ -87,4 +93,3 @@ pub(crate) fn parse_track_address(track_id: &str) -> Result<Pubkey, ApiError> {
         .map_err(|_| ApiError::BadRequest(format!("invalid track address: {track_id}")))?;
     Ok(Pubkey(sol_pubkey.to_bytes()))
 }
-

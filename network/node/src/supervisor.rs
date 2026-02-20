@@ -117,9 +117,16 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             tokio::select! {
                 directive = directive_rx.recv() => {
                     match directive {
-                        Some(Directive::Schedule(key)) => self.handle_schedule(key, 0),
-                        Some(Directive::Cancel(key)) => self.handle_cancel(&key).await,
+                        Some(Directive::Schedule(key)) => {
+                            tracing::trace!(task = ?key, attempt = 0, "supervisor received schedule directive");
+                            self.handle_schedule(key, 0)
+                        }
+                        Some(Directive::Cancel(key)) => {
+                            tracing::trace!(task = ?key, "supervisor received cancel directive");
+                            self.handle_cancel(&key).await;
+                        }
                         None => {
+                            tracing::trace!("supervisor directive channel closed");
                             self.shutdown().await;
                             break;
                         }
@@ -129,6 +136,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 Some(result) = self.join_set.join_next() => {
                     match result {
                         Ok((key, outcome)) => {
+                            tracing::trace!(task = ?key, outcome = ?outcome, "supervisor task completed");
                             if self.canceled_running.remove(&key) {
                                 tracing::debug!(task = ?key, "dropped completion for canceled task");
                                 continue;
@@ -140,10 +148,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 }
 
                 _ = sleep_until(next_retry) => {
+                    tracing::trace!("supervisor processing retry queue");
                     self.process_retries();
                 }
 
                 _ = cancel.cancelled() => {
+                    tracing::trace!("supervisor received cancellation signal");
                     self.shutdown().await;
                     break;
                 }
@@ -155,8 +165,14 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// already running or awaiting retry, the request is dropped.
     fn handle_schedule(&mut self, key: TaskKey, attempt: u32) {
         if self.running.contains_key(&key) || self.pending_retry.contains(&key) {
+            tracing::trace!(
+                task = ?key,
+                attempt,
+                "supervisor skipping schedule due to dedupe"
+            );
             return;
         }
+        tracing::trace!(task = ?key, attempt, "supervisor spawning task");
         self.spawn_task(key, attempt);
     }
 
@@ -165,6 +181,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// If the task's future is still in-flight on the JoinSet, its key is added
     /// to `canceled_running` so the eventual completion is silently dropped.
     async fn handle_cancel(&mut self, key: &TaskKey) {
+        tracing::trace!(task = ?key, "supervisor canceling task");
         let had_running = self.running.remove(key).is_some();
         if had_running {
             self.canceled_running.insert(key.clone());
@@ -174,6 +191,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         }
         let had_pending = self.pending_retry.remove(key);
         self.purge_retry_queue(key);
+        tracing::trace!(
+            task = ?key,
+            had_running,
+            had_pending,
+            "supervisor cancel state"
+        );
         if had_running || had_pending {
             self.send_result(TaskResult::Canceled(key.clone())).await;
         }
@@ -181,6 +204,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
 
     /// Route a completed task to the appropriate handler based on its outcome.
     async fn handle_completion(&mut self, key: TaskKey, outcome: TaskOutcome) {
+        tracing::trace!(task = ?key, outcome = ?outcome, "supervisor handling completion");
         let attempt = self
             .running
             .remove(&key)
@@ -197,6 +221,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     }
 
     async fn complete_success(&self, key: TaskKey) {
+        tracing::trace!(task = ?key, "supervisor completed successfully");
         self.send_result(TaskResult::Success(key)).await;
     }
 
@@ -210,6 +235,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             attempt,
             delay_secs = delay.as_secs(),
             "scheduling pending retry"
+        );
+        tracing::trace!(
+            task = ?key,
+            attempt,
+            delay_secs = delay.as_secs(),
+            "supervisor pending retry"
         );
         self.enqueue_retry(key, attempt, delay);
     }
@@ -243,11 +274,18 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
 
     /// Report an unrecoverable failure. The task will not be retried.
     async fn complete_permanent(&self, key: TaskKey, err: String) {
+        tracing::error!(task = ?key, error = %err, "supervisor permanent failure");
         self.send_result(TaskResult::PermanentError(key, err)).await;
     }
 
     /// Push a task onto the retry heap with a computed due time.
     fn enqueue_retry(&mut self, key: TaskKey, attempt: u32, delay: Duration) {
+        tracing::trace!(
+            task = ?key,
+            attempt,
+            delay_secs = delay.as_secs(),
+            "supervisor queued retry"
+        );
         let due = Instant::now() + delay;
         self.retry_queue.push(Reverse(RetryEntry {
             due,
@@ -262,6 +300,8 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     async fn send_result(&self, result: TaskResult) {
         if self.result_tx.send(result).await.is_err() {
             tracing::debug!("result channel closed");
+        } else {
+            tracing::trace!(result = ?result, "supervisor sent result");
         }
     }
 
@@ -275,6 +315,11 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 break;
             }
             let entry = self.retry_queue.pop().unwrap().0;
+            tracing::trace!(
+                task = ?entry.key,
+                attempt = entry.attempt,
+                "supervisor retry due"
+            );
             if self.pending_retry.remove(&entry.key) {
                 self.spawn_task(entry.key, entry.attempt);
             }
@@ -284,6 +329,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// Cancel all tasks and drain the JoinSet, giving in-flight futures up to
     /// `SHUTDOWN_TIMEOUT_SECS` to finish before abandoning them.
     async fn shutdown(&mut self) {
+        tracing::trace!("supervisor shutdown start");
         for token in self.tokens.values() {
             token.cancel();
         }
@@ -339,6 +385,11 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             duration_ms = tracing::field::Empty,
         );
 
+        tracing::trace!(
+            task = ?key_to_run,
+            attempt,
+            "supervisor spawning background task"
+        );
         self.join_set.spawn(
             execute_task(ctx, peer_handle, key_to_run.clone(), token_clone, sem).instrument(span),
         );

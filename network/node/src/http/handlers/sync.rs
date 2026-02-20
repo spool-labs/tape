@@ -18,8 +18,15 @@ pub async fn sync_spool<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(payload_bytes = body.len(), "http sync_spool start");
     let request: SyncSpoolRequest = wincode::deserialize(&body)
         .map_err(|e| ApiError::BadRequest(format!("sync request: {e}")))?;
+    tracing::trace!(
+        spool = request.spool_index,
+        cursor = ?request.cursor,
+        limit = request.limit,
+        "http sync_spool request parsed"
+    );
 
     // Verify we own this spool
     let owned_spools = state
@@ -63,6 +70,12 @@ pub async fn sync_spool<S: Store, R: Rpc>(
         entries,
         next_cursor,
     };
+    tracing::trace!(
+        spool = request.spool_index,
+        response_entries = response.entries.len(),
+        has_more = response.next_cursor.is_some(),
+        "http sync_spool success"
+    );
 
     let bytes = wincode::serialize(&response)
         .map_err(|e| ApiError::InternalError(format!("serialize response: {e}")))?;

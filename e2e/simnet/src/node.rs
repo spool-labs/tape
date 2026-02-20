@@ -97,7 +97,10 @@ struct TestConfig {
 
 impl TestConfig {
     fn new(mode: NodeRuntimeMode, stop_timeout: Duration) -> Self {
-        Self { mode, stop_timeout }
+        Self {
+            mode,
+            stop_timeout,
+        }
     }
 }
 
@@ -136,7 +139,14 @@ impl TestNode {
 ) -> Result<Self> {
         let keypair = Keypair::new();
         let tls_config = TestTlsConfig::new(id, &keypair)?;
-        let node_ctx = TestNodeCtx::new(id, keypair, rpc, bind_addr, public_port, &tls_config)?;
+        let node_ctx = TestNodeCtx::new(
+            id,
+            keypair,
+            rpc,
+            bind_addr,
+            public_port,
+            &tls_config,
+        )?;
         let node_store = TestNodeStore::new();
         let test_config = TestConfig::new(mode, stop_timeout);
         let test_context = TestContext::new();

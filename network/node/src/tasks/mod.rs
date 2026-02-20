@@ -38,12 +38,17 @@ pub async fn execute_task<S: Store, R: Rpc>(
     semaphore: Arc<Semaphore>,
 ) -> (TaskKey, TaskOutcome) {
     let started_at = Instant::now();
+    tracing::trace!(task = ?key, "task execution started");
     let _permit = match semaphore.acquire().await {
         Ok(p) => p,
-        Err(_) => return (key, TaskOutcome::Permanent("semaphore closed".into())),
+        Err(_) => {
+            tracing::trace!(task = ?key, "task execution aborted: semaphore closed");
+            return (key, TaskOutcome::Permanent("semaphore closed".into()));
+        }
     };
 
     if cancel.is_cancelled() {
+        tracing::trace!(task = ?key, "task execution skipped: already canceled");
         return (key, TaskOutcome::Success);
     }
 
@@ -52,6 +57,12 @@ pub async fn execute_task<S: Store, R: Rpc>(
     if let Some(task_epoch) = key.scheduled_epoch() {
         if let Ok(Some(chain_epoch)) = context.store.get_chain_epoch() {
             if task_epoch != chain_epoch {
+                tracing::trace!(
+                    task = ?key,
+                    scheduled_epoch = task_epoch.0,
+                    chain_epoch = chain_epoch.0,
+                    "task execution skipped: stale epoch"
+                );
                 return (key, TaskOutcome::Success);
             }
         }
@@ -103,6 +114,12 @@ pub async fn execute_task<S: Store, R: Rpc>(
     };
 
     let duration_ms = started_at.elapsed().as_millis() as u64;
+    tracing::trace!(
+        task = ?key,
+        outcome = ?outcome,
+        duration_ms,
+        "task execution completed"
+    );
     tracing::Span::current().record("duration_ms", duration_ms);
     (key, outcome)
 }

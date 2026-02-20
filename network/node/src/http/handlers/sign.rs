@@ -22,6 +22,7 @@ pub async fn get_signature<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(track_id = %track_id, "http get_signature start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let track_info = state
@@ -54,6 +55,11 @@ pub async fn get_signature<S: Store, R: Rpc>(
 
     let bytes =
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(
+        track_id = %track_id,
+        epoch = epoch.0,
+        "http get_signature success"
+    );
 
     Ok((
         StatusCode::OK,
@@ -68,6 +74,12 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
     Path((epoch, chunk_index)): Path<(u64, u64)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(
+        epoch,
+        chunk_index,
+        payload_bytes = body.len(),
+        "http post_snapshot_signature start"
+    );
     let request: SnapshotSignatureSubmission =
         wincode::deserialize(&body).map_err(|e| ApiError::BadRequest(format!("signature request: {e}")))?;
 
@@ -144,6 +156,12 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
             },
         )
         .map_err(|e| ApiError::InternalError(format!("store signature: {e}")))?;
+    tracing::trace!(
+        epoch = epoch.0,
+        chunk_index,
+        member_index = request.member_index,
+        "http post_snapshot_signature success"
+    );
 
     Ok((StatusCode::OK, [(axum::http::header::CONTENT_TYPE, BINARY_CONTENT)]))
 }

@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use anyhow::{anyhow, Result};
+use solana_sdk::pubkey::Pubkey;
 
 use crate::chain::ChainFixture;
-use crate::config::{NodeRuntimeMode, SimnetConfig};
+use crate::config::{NodeRuntimeMode, SeededAccount, SimnetConfig};
 use crate::log;
 use crate::node::TestNode;
 use crate::scenario::SimnetScenario;
@@ -52,6 +53,16 @@ impl SimnetBuilder {
         self
     }
 
+    pub fn seed_account(
+        mut self,
+        address: impl Into<Pubkey>,
+        owner: impl Into<Pubkey>,
+        data: Vec<u8>,
+    ) -> Self {
+        self.config.seed_accounts.push(SeededAccount::new(address, owner, data));
+        self
+    }
+
     pub fn build(self) -> Result<SimnetHarness> {
         if self.config.node_count == 0 {
             return Err(anyhow!("node_count must be > 0"));
@@ -65,6 +76,14 @@ impl SimnetBuilder {
         }
 
         let chain = ChainFixture::new();
+        for seed in &self.config.seed_accounts {
+            chain
+                .seed_account(&seed.address, &seed.owner, &seed.data)
+                .with_context(|| {
+                    format!("seed_account address={} owner={}", seed.address, seed.owner)
+                })?;
+        }
+
         let mut nodes = Vec::with_capacity(self.config.node_count);
 
         for i in 0..self.config.node_count {

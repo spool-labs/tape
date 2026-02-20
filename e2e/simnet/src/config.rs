@@ -1,4 +1,27 @@
 use std::time::Duration;
+use solana_sdk::pubkey::Pubkey;
+
+/// A serialized account payload to seed into the simulated on-chain state.
+#[derive(Debug, Clone)]
+pub struct SeededAccount {
+    pub address: Pubkey,
+    pub owner: Pubkey,
+    pub data: Vec<u8>,
+}
+
+impl SeededAccount {
+    pub fn new(
+        address: impl Into<Pubkey>,
+        owner: impl Into<Pubkey>,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            address: address.into(),
+            owner: owner.into(),
+            data,
+        }
+    }
+}
 
 /// Runtime mode for spawned node fixtures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +53,8 @@ pub struct SimnetConfig {
     pub slot_advance_per_tx: u64,
     /// Enable writing simnet logs to `target/sim-e2e/sim.log`.
     pub file_log: bool,
+    /// Arbitrary serialized accounts to inject into LiteSVM before nodes start.
+    pub seed_accounts: Vec<SeededAccount>,
 }
 
 impl Default for SimnetConfig {
@@ -41,6 +66,7 @@ impl Default for SimnetConfig {
             stop_timeout: Duration::from_secs(5),
             slot_advance_per_tx: 1,
             file_log: false,
+            seed_accounts: Vec::new(),
         }
     }
 }

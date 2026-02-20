@@ -11,6 +11,7 @@ use crate::http::state::AppState;
 
 /// GET /v1/health — liveness check.
 pub async fn health<S: Store, R: Rpc>() -> StatusCode {
+    tracing::trace!("http health check");
     StatusCode::OK
 }
 
@@ -18,6 +19,7 @@ pub async fn health<S: Store, R: Rpc>() -> StatusCode {
 pub async fn info<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
 ) -> impl IntoResponse {
+    tracing::trace!(name = %state.context.config.name, "http node info");
     let config = &state.context.config;
     let body = serde_json::json!({
         "name": config.name,
@@ -32,6 +34,7 @@ pub async fn info<S: Store, R: Rpc>(
 pub async fn stats<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!("http stats start");
     use std::sync::atomic::Ordering::Relaxed;
     use tape_node_api::NodeStats;
     use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
@@ -72,6 +75,12 @@ pub async fn stats<S: Store, R: Rpc>(
         bytes_downloaded: rs.bytes_downloaded.load(Relaxed),
         requests_total: 0,
     };
+    tracing::trace!(
+        current_epoch = stats.current_epoch,
+        owned_spools = stats.owned_spools,
+        tracks_stored = stats.tracks_stored,
+        "http stats success"
+    );
 
     Ok(axum::Json(stats))
 }

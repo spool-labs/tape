@@ -52,6 +52,7 @@ impl BlockIngestor {
             Some(slot) => slot,
             None => return Ok(()),
         };
+        tracing::trace!(next_slot = next_slot.0, "ingestor run started");
         let mut backoff = Backoff::new(BackoffConfig {
             min_delay: Duration::from_millis(BACKOFF_MIN_MS),
             max_delay: Duration::from_secs(BACKOFF_MAX_SECS),
@@ -98,10 +99,20 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
 
         let needs_bootstrap = matches!(status, NodeStatus::Active) && matches!(epoch, Some(e) if e.0 >= 2);
         if !needs_bootstrap {
+            tracing::trace!(
+                cursor = cursor.map(|slot| slot.0),
+                status = ?status,
+                epoch = epoch.map(|e| e.0),
+                "ingestor bootstrap completed"
+            );
             return Ok(Some(SlotNumber(0)));
         }
 
-        tracing::info!("waiting for snapshot bootstrap to complete");
+        tracing::trace!(
+            status = ?status,
+            epoch = epoch.map(|e| e.0),
+            "waiting for snapshot bootstrap to complete"
+        );
         if !sleep_or_active(Duration::from_secs(BOOTSTRAP_POLL_SECS), cancel).await {
             return Ok(None);
         }
@@ -127,8 +138,18 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Wait);
         }
     };
+    tracing::trace!(
+        next_slot = next_slot.0,
+        tip_slot = tip.0,
+        "ingestor checking next slot"
+    );
 
     if next_slot.0 > tip.0 {
+        tracing::trace!(
+            next_slot = next_slot.0,
+            tip_slot = tip.0,
+            "ingestor waiting for next produced slot"
+        );
         if !sleep_or_active(Duration::from_millis(TIP_POLL_MS), cancel).await {
             return Ok(IngestStep::Stop);
         }
@@ -141,6 +162,7 @@ async fn ingest_slot<S: Store, R: Rpc>(
             block
         }
         Err(e) if e.is_skipped_slot() => {
+            tracing::trace!(slot = next_slot.0, "block skipped");
             return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
         }
         Err(e) => {
@@ -153,6 +175,23 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Wait);
         }
     };
+    let block_height = block.block_height.unwrap_or_default();
+    tracing::trace!(
+        slot = next_slot.0,
+        block_height,
+        blockhash = %block.blockhash,
+        "fetched block from rpc"
+    );
+    if let Some(signatures) = &block.signatures {
+        tracing::trace!(
+            slot = next_slot.0,
+            signatures = signatures.len(),
+            "block signatures observed"
+        );
+        for signature in signatures {
+            tracing::trace!(slot = next_slot.0, tx_signature = %signature, "ingestor saw transaction signature");
+        }
+    }
 
     let parsed = match tape_blocks::parse(&block) {
         Ok(parsed) => parsed,
@@ -161,6 +200,14 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
         }
     };
+    tracing::trace!(
+        slot = next_slot.0,
+        tx_count = parsed.tx_count,
+        failed_tx_count = parsed.failed_tx_count,
+        raw_instructions = parsed.raw_instructions.len(),
+        events = parsed.events.len(),
+        "parsed block from rpc"
+    );
     let instructions = match tape_blocks::merge(parsed.raw_instructions, parsed.events) {
         Ok(instructions) => instructions,
         Err(e) => {
@@ -168,12 +215,19 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
         }
     };
+    tracing::trace!(
+        slot = next_slot.0,
+        merged_instructions = instructions.len(),
+        "merged ingested block instructions"
+    );
 
     let ingested = IngestedBlock {
         slot: next_slot,
         instructions,
     };
+    tracing::trace!(slot = ingested.slot.0, "sending ingested block to fsm");
     if sender.send(ingested).await.is_err() {
+        tracing::trace!(slot = next_slot.0, "fsm receiver closed while ingesting block");
         return Ok(IngestStep::Stop);
     }
 

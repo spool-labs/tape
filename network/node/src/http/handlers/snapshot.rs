@@ -18,6 +18,7 @@ pub async fn get_commitments<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path(epoch): Path<u64>,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(epoch, "http get_commitments start");
     let epoch = EpochNumber(epoch);
     let mut commitments = Vec::with_capacity(SPOOL_GROUP_COUNT);
     for group in 0..SPOOL_GROUP_COUNT {
@@ -33,6 +34,11 @@ pub async fn get_commitments<S: Store, R: Rpc>(
     }
     let body =
         wincode::serialize(&commitments).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(
+        epoch = epoch.0,
+        commitments = commitments.len(),
+        "http get_commitments success"
+    );
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, BINARY_CONTENT)],

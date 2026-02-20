@@ -16,7 +16,7 @@ pub mod simnet;
 pub mod tls;
 
 pub use chain::ChainFixture;
-pub use config::{NodeRuntimeMode, SimnetConfig};
+pub use config::{NodeRuntimeMode, SeededAccount, SimnetConfig};
 pub use node::TestNode;
 pub use scenario::{JoinResult, SimnetScenario};
 pub use simnet::{SimnetBuilder, SimnetHarness};

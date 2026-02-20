@@ -21,6 +21,7 @@ pub async fn get_metadata<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(track_id = %track_id, "http get_metadata start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let track_info = state
@@ -32,6 +33,7 @@ pub async fn get_metadata<S: Store, R: Rpc>(
 
     let data =
         wincode::serialize(&track_info).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(track_id = %track_id, size = data.len(), "http get_metadata success");
 
     Ok((
         StatusCode::OK,
@@ -49,7 +51,8 @@ pub async fn put_metadata<S: Store, R: Rpc>(
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    put_metadata_inner(&state, track_id, body).await
+    tracing::trace!(track_id = %track_id, "http put_metadata public start");
+    put_metadata_inner(&state, track_id, body, "public").await
 }
 
 /// PUT /v1/internal/tracks/:track_id/metadata — internal (peer) upload.
@@ -58,14 +61,17 @@ pub async fn put_metadata_internal<S: Store, R: Rpc>(
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    put_metadata_inner(&state, track_id, body).await
+    tracing::trace!(track_id = %track_id, "http put_metadata_internal start");
+    put_metadata_inner(&state, track_id, body, "internal").await
 }
 
 async fn put_metadata_inner<S: Store, R: Rpc>(
     state: &AppState<S, R>,
     track_id: String,
     body: Bytes,
+    source: &'static str,
 ) -> Result<StatusCode, ApiError> {
+    tracing::trace!(track_id = %track_id, source, size = body.len(), "http put_metadata_inner start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let track_info: TrackInfo = wincode::deserialize(&body)
@@ -85,6 +91,11 @@ async fn put_metadata_inner<S: Store, R: Rpc>(
         .store
         .put_track(track_address, track_info)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(
+        track_id = %track_id,
+        source,
+        "http put_metadata_inner success"
+    );
 
     Ok(StatusCode::OK)
 }

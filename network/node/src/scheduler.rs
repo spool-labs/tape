@@ -84,6 +84,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         // Bootstrap: schedule RefreshOnchainState immediately on startup
         self.request_refresh(true);
         self.emit_directives(&directive_tx).await;
+        tracing::trace!("scheduler bootstrapped");
 
         // Refresh often enough to observe committee/epoch transitions in local/test
         // while capping cadence for production.
@@ -96,6 +97,10 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 changes = change_rx.recv() => {
                     match changes {
                         Some(changes) => {
+                            tracing::trace!(
+                                change_count = changes.len(),
+                                "scheduler received state changes"
+                            );
                             self.update_desired(&changes);
                             self.emit_directives(&directive_tx).await;
                         }
@@ -106,6 +111,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 result = result_rx.recv() => {
                     match result {
                         Some(result) => {
+                            tracing::trace!(result = ?result, "scheduler received task result");
                             self.handle_result(&result);
                             self.emit_directives(&directive_tx).await;
                         }
@@ -114,11 +120,15 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 }
 
                 _ = ticker.tick() => {
+                    tracing::trace!("scheduler periodic tick");
                     self.periodic_tasks();
                     self.emit_directives(&directive_tx).await;
                 }
 
-                _ = cancel.cancelled() => break,
+                _ = cancel.cancelled() => {
+                    tracing::trace!("scheduler received cancel signal");
+                    break;
+                }
             }
         }
     }
@@ -126,38 +136,48 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// Translate FSM state changes into additions/removals in the `desired` set.
     fn update_desired(&mut self, changes: &[StateChange]) {
         for change in changes {
+            tracing::trace!(change = ?change, "scheduler applying state change");
             match change {
                 StateChange::EpochAdvanced { epoch } => {
+                    tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
                     self.log_member_index_for_epoch(*epoch);
                     self.lifecycle.reset(*epoch);
                     self.snapshot_progress.reset(*epoch);
+                    tracing::trace!(epoch = epoch.0, "scheduler reconciling spools after epoch advance");
                     self.reconcile_spools();
                     // Always refresh after epoch transitions so Standby nodes can
                     // observe new committee membership before lifecycle scheduling.
+                    tracing::trace!(epoch = epoch.0, "scheduler requesting refresh after epoch advance");
                     self.request_refresh(true);
+                    tracing::trace!(epoch = epoch.0, "scheduler scheduling lifecycle for new epoch");
                     self.schedule_lifecycle(*epoch);
                 }
                 StateChange::SpoolAssignmentChanged => {
+                    tracing::trace!("scheduler reconciling spools after spool assignment change");
                     self.reconcile_spools();
                 }
                 StateChange::TrackCertified { track } => {
+                    tracing::trace!(track = %track, "scheduler checking slices after track certified");
                     self.check_slices(track);
                 }
                 StateChange::NodeJoinedCommittee { node } => {
                     // If this is our node, refresh on-chain state
                     if *node == self.context.keypair.pubkey() {
+                        tracing::trace!(node = %node, "scheduler refreshing after join event for local node");
                         self.request_refresh(true);
                     }
                 }
                 StateChange::NodeSynced { node } => {
                     // If this is our node, SyncEpoch completed on-chain
                     if *node == self.context.keypair.pubkey() {
+                        tracing::trace!(node = %node, "scheduler dropping local sync task after local node synced");
                         self.desired
                             .retain(|key| !matches!(key, TaskKey::SyncEpoch { .. }));
                     }
                 }
                 StateChange::TrackDeleted { track }
                 | StateChange::TrackInvalidated { track } => {
+                    tracing::trace!(track = %track, "scheduler removing recoveries for deleted/invalidated track");
                     self.remove_recoveries(track);
                 }
                 // No scheduler action needed for these events
@@ -172,7 +192,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// After a track is certified, check owned spools for missing slices and
     /// enqueue SpoolRecovery tasks for any gaps.
     fn check_slices(&mut self, track: &Pubkey) {
+        tracing::trace!(track = %track, "checking slices for track");
         if matches!(self.node_status(), NodeStatus::Standby) {
+            tracing::trace!(track = %track, "check_slices skipped for standby node");
             return;
         }
 
@@ -180,15 +202,39 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         let track_info = match self.context.store.get_track(store_track) {
             Ok(Some(t)) => t,
-            _ => return,
+            Ok(None) => {
+                tracing::trace!(track = %track, "check_slices skipped: track not found");
+                return;
+            }
+            Err(error) => {
+                tracing::trace!(
+                    track = %track,
+                    error = ?error,
+                    "check_slices skipped: failed to read track"
+                );
+                return;
+            }
         };
 
         let owned_spools = match self.context.store.iter_all_spools() {
             Ok(s) => s,
-            Err(_) => return,
+            Err(error) => {
+                tracing::trace!(
+                    track = %track,
+                    error = ?error,
+                    "check_slices skipped: failed to read owned spools"
+                );
+                return;
+            }
         };
 
         for (spool_id, status) in &owned_spools {
+            tracing::trace!(
+                track = %track,
+                spool_id,
+                spool_status = ?status,
+                "evaluating spool recovery scheduling"
+            );
             if !matches!(status, SpoolStatus::Active | SpoolStatus::ActiveRecover) {
                 continue;
             }
@@ -198,6 +244,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             match self.context.store.has_slice(*spool_id, store_track) {
                 Ok(true) => {}
                 Ok(false) => {
+                    tracing::trace!(spool_id, track = %track, "scheduling spool recovery for missing slice");
                     let _ = self.context.store.add_pending_recovery(*spool_id, store_track);
                     self.desired.insert(TaskKey::SpoolRecovery { spool: *spool_id });
                 }
@@ -209,12 +256,48 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// Called on the timer tick. Schedules RefreshOnchainState (throttled) and
     /// AdvanceEpoch if the chain is in the Active phase.
     fn periodic_tasks(&mut self) {
+        tracing::trace!("scheduler periodic task pass");
         self.request_refresh(false);
         let epoch = self.scheduling_epoch();
-        if matches!(self.node_status(), NodeStatus::Active)
-            && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch })
-            && self.chain_phase_is_active()
-        {
+        let node_status = self.node_status();
+        let chain_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
+        let lifecycle_done = self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch });
+        tracing::trace!(
+            epoch = epoch.0,
+            node_status = ?node_status,
+            chain_phase = ?chain_phase,
+            lifecycle_done,
+            "periodic lifecycle scheduling check"
+        );
+
+        if !matches!(node_status, NodeStatus::Active) {
+            tracing::trace!(
+                epoch = epoch.0,
+                node_status = ?node_status,
+                "periodic lifecycle scheduling skipped: node not active"
+            );
+            return;
+        }
+
+        if lifecycle_done {
+            tracing::trace!(
+                epoch = epoch.0,
+                "periodic lifecycle scheduling skipped: AdvanceEpoch already done for epoch"
+            );
+            return;
+        }
+
+        if !matches!(chain_phase, Some(EpochPhase::Active)) {
+            tracing::trace!(
+                epoch = epoch.0,
+                chain_phase = ?chain_phase,
+                "periodic lifecycle scheduling skipped: chain phase not active"
+            );
+            return;
+        }
+
+        if self.chain_phase_is_active() {
+            tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
             self.desired.insert(TaskKey::AdvanceEpoch { epoch });
         }
     }
@@ -278,6 +361,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if self.desired.contains(&TaskKey::RefreshOnchainState)
             || self.scheduled.contains(&TaskKey::RefreshOnchainState)
         {
+            tracing::trace!("refresh already scheduled");
             return;
         }
 
@@ -290,8 +374,21 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 .unwrap_or(false);
 
         if should_schedule {
+            tracing::trace!(
+                force,
+                epoch = ?current_epoch,
+                interval_secs = interval.as_secs(),
+                "scheduling refresh onchain state"
+            );
             self.desired.insert(TaskKey::RefreshOnchainState);
             self.refresh_throttle.record(current_epoch);
+        } else {
+            tracing::trace!(
+                force,
+                epoch = ?current_epoch,
+                interval_secs = interval.as_secs(),
+                "skipping refresh due to throttle"
+            );
         }
     }
 
@@ -335,8 +432,10 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
     fn reconcile_spools(&mut self) {
         if matches!(self.node_status(), NodeStatus::Standby) {
+            tracing::trace!("reconcile_spools skipped for standby node");
             return;
         }
+        tracing::trace!("reconciling spools in active execution path");
 
         let owned_spools = match self.context.store.iter_all_spools() {
             Ok(spools) => spools,
@@ -345,6 +444,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 return;
             }
         };
+        tracing::trace!(owned_spools = owned_spools.len(), "reconciling spool tasks");
 
         // Remove SpoolSync/SpoolRecovery/RecoveryScan for spools we no longer own
         self.desired.retain(|key| match key {
@@ -357,10 +457,12 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         // Add tasks for owned spools based on their status
         for (spool_id, status) in &owned_spools {
             if matches!(status, SpoolStatus::ActiveSync) {
+                tracing::trace!(spool_id, status = ?status, "scheduling spool sync");
                 self.desired
                     .insert(TaskKey::SpoolSync { spool: *spool_id });
             }
             if matches!(status, SpoolStatus::ActiveRecover) {
+                tracing::trace!(spool_id, status = ?status, "scheduling spool recovery");
                 self.desired
                     .insert(TaskKey::SpoolRecovery { spool: *spool_id });
             }
@@ -371,7 +473,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// current chain phase. Syncing → SyncEpoch, Settling → AdvancePool + JoinNetwork,
     /// Active → AdvanceEpoch. Also drives the snapshot pipeline via `schedule_snapshot`.
     fn schedule_lifecycle(&mut self, epoch: EpochNumber) {
+        tracing::trace!(epoch = epoch.0, "executing lifecycle scheduling");
         if !matches!(self.node_status(), NodeStatus::Active) {
+            tracing::trace!(epoch = epoch.0, "schedule_lifecycle skipped for non-active node");
             return;
         }
 
@@ -393,21 +497,41 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         match phase {
             Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
                 if !self.lifecycle.is_done(&TaskKey::SyncEpoch { epoch }) {
+                    tracing::trace!(epoch = epoch.0, "scheduling SyncEpoch in lifecycle");
                     self.desired.insert(TaskKey::SyncEpoch { epoch });
+                } else {
+                    tracing::trace!(epoch = epoch.0, "schedule_lifecycle: SyncEpoch already done for epoch");
                 }
             }
             Some(EpochPhase::Settling) => {
                 if !self.lifecycle.is_done(&TaskKey::AdvancePool { epoch }) {
+                    tracing::trace!(epoch = epoch.0, "scheduling AdvancePool in lifecycle");
                     self.desired.insert(TaskKey::AdvancePool { epoch });
                 }
                 if !self.lifecycle.is_done(&TaskKey::JoinNetwork { epoch }) {
+                    tracing::trace!(epoch = epoch.0, "scheduling JoinNetwork in lifecycle");
                     self.desired.insert(TaskKey::JoinNetwork { epoch });
+                } else {
+                    tracing::trace!(epoch = epoch.0, "schedule_lifecycle: JoinNetwork already done for epoch");
                 }
             }
-            Some(EpochPhase::Active) => {}
+            Some(EpochPhase::Active) => {
+                tracing::trace!(epoch = epoch.0, "schedule_lifecycle: chain phase active, waiting for Refresh/AdvanceEpoch loop");
+            }
         }
         if self.chain_phase_is_active() && !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+            tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle");
             self.desired.insert(TaskKey::AdvanceEpoch { epoch });
+        } else if self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+            tracing::trace!(
+                epoch = epoch.0,
+                "schedule_lifecycle: AdvanceEpoch already done for epoch"
+            );
+        } else {
+            tracing::trace!(
+                epoch = epoch.0,
+                "schedule_lifecycle: chain not active for AdvanceEpoch schedule"
+            );
         }
         self.schedule_snapshot(epoch);
     }
@@ -416,12 +540,14 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// Reads per-group readiness from the store and advances tasks through the
     /// pipeline stages. Only schedules tasks for spool groups this node owns.
     fn schedule_snapshot(&mut self, epoch: EpochNumber) {
+        tracing::trace!(epoch = epoch.0, "scheduling snapshot pipeline");
         let snapshot_build = TaskKey::SnapshotBuild { epoch };
         let snapshot_collect = TaskKey::SnapshotCollect { epoch };
         let register_snapshot = TaskKey::RegisterSnapshot { epoch };
         let snapshot_submit = TaskKey::SnapshotSubmit { epoch };
 
         let Some(local_epoch) = derive_snapshot_local_epoch(epoch) else {
+            tracing::trace!(epoch = epoch.0, "snapshot scheduling skipped: no local epoch");
             self.desired.remove(&snapshot_build);
             self.desired.remove(&snapshot_collect);
             self.desired.remove(&register_snapshot);
@@ -440,27 +566,37 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 false
             }
         };
+        tracing::trace!(
+            epoch = epoch.0,
+            local_epoch = local_epoch.0,
+            all_built,
+            "snapshot build state checked"
+        );
 
         if !all_built {
+            tracing::trace!(epoch = epoch.0, "scheduling snapshot build");
             self.desired.insert(snapshot_build.clone());
         }
 
         let owned_groups: HashSet<u64> = match self.context.store.get_committee(epoch) {
-            Ok(Some(committee)) => {
+                Ok(Some(committee)) => {
                 match our_snapshot_groups(&committee, self.context.keypair.pubkey()) {
                     Ok(groups) => groups,
                     Err(e) => {
                         tracing::warn!("snapshot pipeline: {e}");
+                        tracing::trace!(epoch = epoch.0, "no snapshot groups due to committee resolution error");
                         HashSet::new()
                     }
                 }
             }
             Ok(None) => {
                 tracing::warn!("snapshot pipeline: missing committee for epoch {}", epoch.0);
+                tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
                 HashSet::new()
             }
             Err(e) => {
                 tracing::warn!("snapshot pipeline: failed to read committee: {e}");
+                tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: committee read failed");
                 HashSet::new()
             }
         };
@@ -469,6 +605,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             self.desired.remove(&snapshot_collect);
             self.desired.remove(&register_snapshot);
             self.desired.remove(&snapshot_submit);
+            tracing::trace!(epoch = epoch.0, owned_groups = 0, "snapshot collect/register/submit unschedulable");
             if !all_built {
                 // Cannot yet determine owned groups; keep build running until committee is known.
             } else {
@@ -488,6 +625,12 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                     false
                 }
             };
+            tracing::trace!(
+                epoch = epoch.0,
+                group = group,
+                ready,
+                "snapshot group readiness"
+            );
             if ready {
                 ready_groups.push(group as usize);
             }
@@ -540,6 +683,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         // Advance-wait gap fix: when all owned groups have completed on-chain,
         // force-reschedule AdvanceEpoch so we don't wait for the next tick.
         if all_onchain {
+            tracing::trace!(epoch = epoch.0, "snapshot all groups onchain -> forcing advance epoch reschedule");
             self.scheduled.remove(&TaskKey::AdvanceEpoch { epoch });
             if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) && self.chain_phase_is_active() {
                 self.desired.insert(TaskKey::AdvanceEpoch { epoch });
@@ -550,6 +694,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// Process a task completion from the supervisor. Stale epoch results are
     /// silently dropped. Otherwise delegates to type-specific handlers.
     fn handle_result(&mut self, result: &TaskResult) {
+        tracing::trace!(result = ?result, "processing scheduler task result");
         let key = match result {
             TaskResult::Success(k) => k,
             TaskResult::Canceled(k) => k,
@@ -558,6 +703,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         };
 
         if self.is_stale_epoch(key) {
+            tracing::trace!(task = ?key, "dropping stale task result");
             self.scheduled.remove(key);
             return;
         }
@@ -572,6 +718,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// Task was canceled — remove from scheduled so it can be re-added if needed.
     fn handle_cancelled(&mut self, key: &TaskKey) {
+        tracing::trace!(task = ?key, "scheduler removing canceled task from scheduled set");
         self.scheduled.remove(key);
     }
 
@@ -579,6 +726,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// and triggers follow-up scheduling (refresh → lifecycle, sync → lifecycle,
     /// bootstrap → refresh, snapshot stages).
     fn handle_success(&mut self, key: &TaskKey) {
+        tracing::trace!(task = ?key, "scheduler handling task success");
         self.scheduled.remove(key);
         self.lifecycle.mark_done(key);
         if key.is_one_shot() {
@@ -596,14 +744,23 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if !matches!(key, TaskKey::RefreshOnchainState) {
             return;
         }
+        tracing::trace!("scheduler handling refresh success");
+        let epoch = self.context.store.get_chain_epoch().ok().flatten();
+        tracing::trace!(epoch = ?epoch, "refresh success: recorded epoch for throttle");
         self.refresh_throttle
-            .record(self.context.store.get_chain_epoch().ok().flatten());
+            .record(epoch);
+        tracing::trace!("refresh success: pruning stale recoveries");
         self.prune_recoveries();
+        tracing::trace!("refresh success: reconciling spools");
         self.reconcile_spools();
-        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+        if let Some(epoch) = epoch {
+            tracing::trace!(epoch = epoch.0, "refresh success: scheduling lifecycle for chain epoch");
             self.schedule_lifecycle(epoch);
+        } else {
+            tracing::trace!("refresh success: unable to read chain epoch for lifecycle scheduling");
         }
         if self.needs_bootstrap() {
+            tracing::trace!("refresh success: bootstrap required, scheduling snapshot bootstrap");
             self.desired.insert(TaskKey::SnapshotBootstrap);
         }
     }
@@ -647,6 +804,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if !matches!(key, TaskKey::SyncEpoch { .. }) {
             return;
         }
+        tracing::trace!(task = ?key, "scheduler handling sync success");
         if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
             self.schedule_lifecycle(epoch);
         }
@@ -655,6 +813,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     /// After bootstrap completes, trigger a refresh to pick up the replayed state.
     fn handle_bootstrap_success(&mut self, key: &TaskKey) {
         if matches!(key, TaskKey::SnapshotBootstrap) {
+            tracing::trace!("scheduler handling snapshot bootstrap success");
             self.desired.insert(TaskKey::RefreshOnchainState);
         }
     }
@@ -670,6 +829,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         ) {
             return;
         }
+        tracing::trace!(task = ?key, "scheduler handling snapshot stage success");
         let Some(epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
             return;
         };
@@ -692,10 +852,13 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// No-op: the supervisor handles retries internally. The key stays in
     /// `scheduled` so the scheduler doesn't re-issue a duplicate Schedule directive.
-    fn handle_retry(&self) {}
+    fn handle_retry(&self) {
+        tracing::trace!("scheduler received retryable result");
+    }
 
     /// Task failed permanently — remove from both sets so it is never retried.
     fn handle_permanent(&mut self, key: &TaskKey) {
+        tracing::trace!(task = ?key, "scheduler dropping permanent failure task");
         self.scheduled.remove(key);
         self.desired.remove(key);
     }
@@ -790,6 +953,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 .cloned()
                 .collect();
             for key in stale_scheduled {
+                tracing::trace!(task = ?key, "cancelling stale scheduled task");
                 if tx.send(Directive::Cancel(key.clone())).await.is_err() {
                     return;
                 }
@@ -812,7 +976,14 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         // Schedule: in desired but not yet scheduled
         let to_schedule: Vec<_> = self.desired.difference(&self.scheduled).cloned().collect();
+        tracing::trace!(
+            desired = self.desired.len(),
+            scheduled = self.scheduled.len(),
+            to_schedule,
+            "scheduler diff scheduling batch"
+        );
         for key in to_schedule {
+            tracing::trace!(task = ?key, "sending schedule directive");
             if tx.send(Directive::Schedule(key.clone())).await.is_err() {
                 return;
             }
@@ -821,7 +992,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         // Cancel: scheduled but no longer desired
         let to_cancel: Vec<_> = self.scheduled.difference(&self.desired).cloned().collect();
+        tracing::trace!(to_cancel = to_cancel.len(), "scheduler diff cancellation batch");
         for key in to_cancel {
+            tracing::trace!(task = ?key, "sending cancel directive");
             if tx.send(Directive::Cancel(key.clone())).await.is_err() {
                 return;
             }

@@ -22,6 +22,7 @@ pub async fn get_slice<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
     Path((track_id, slice_index)): Path<(String, u16)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(track_id = %track_id, slice_index, "http get_slice start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let track_info = state
@@ -40,6 +41,13 @@ pub async fn get_slice<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
     state.context.stats.add_downloaded(data.len() as u64);
+    tracing::trace!(
+        track_id = %track_id,
+        slice_index,
+        spool_id,
+        size = data.len(),
+        "http get_slice success"
+    );
 
     Ok((
         StatusCode::OK,
@@ -54,6 +62,12 @@ pub async fn put_slice<S: Store, R: Rpc>(
     Path((track_id, slice_index)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(
+        track_id = %track_id,
+        slice_index,
+        payload_bytes = body.len(),
+        "http put_slice start"
+    );
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let signed: SignedMessage = wincode::deserialize(&body)
@@ -135,6 +149,13 @@ pub async fn put_slice<S: Store, R: Rpc>(
 
     let resp_bytes =
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(
+        track_id = %track_id,
+        slice_index,
+        spool_id,
+        size = data_len,
+        "http put_slice success"
+    );
 
     Ok((
         StatusCode::OK,
@@ -149,6 +170,12 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
     Path((track_id, slice_index)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    tracing::trace!(
+        track_id = %track_id,
+        slice_index,
+        payload_bytes = body.len(),
+        "http put_slice_internal start"
+    );
     let track_address = super::status::parse_track_address(&track_id)?;
 
     let payload: SlicePayload = wincode::deserialize(&body)
@@ -222,6 +249,13 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
 
     let resp_bytes =
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
+    tracing::trace!(
+        track_id = %track_id,
+        slice_index,
+        spool_id,
+        size = data_len,
+        "http put_slice_internal success"
+    );
 
     Ok((
         StatusCode::OK,
@@ -235,6 +269,7 @@ fn verify_spool_ownership<S: Store, R: Rpc>(
     state: &AppState<S, R>,
     spool_id: u16,
 ) -> Result<(), ApiError> {
+    tracing::trace!(spool_id, "http slice ownership check");
     let spools = state
         .context
         .store
