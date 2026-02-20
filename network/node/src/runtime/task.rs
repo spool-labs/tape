@@ -92,13 +92,21 @@ impl TaskKey {
                 | TaskKey::SnapshotSubmit { .. }
                 | TaskKey::InvalidateTrack { .. }
                 | TaskKey::RefreshOnchainState
-                | TaskKey::RecoveryScan { .. }
-                | TaskKey::SpoolRecovery { .. }
                 | TaskKey::SnapshotBuild { .. }
                 | TaskKey::SnapshotCollect { .. }
                 | TaskKey::SnapshotBootstrap
-                | TaskKey::SpoolSync { .. }
         )
+    }
+
+    /// Spool-oriented tasks are rerunnable while their owning spool remains in
+    /// active work, so keep them as continuous tasks.
+    pub fn spool_id(&self) -> Option<SpoolIndex> {
+        match self {
+            TaskKey::SpoolSync { spool }
+            | TaskKey::RecoveryScan { spool }
+            | TaskKey::SpoolRecovery { spool } => Some(*spool),
+            _ => None,
+        }
     }
 }
 

@@ -25,7 +25,7 @@ use tape_store::types::{ChunkIndex, NodeStatus, Pubkey as StorePubkey, SpoolStat
 use crate::runtime::NodeContext;
 use crate::runtime::committee::{our_member_index, our_snapshot_groups};
 use crate::fsm::StateChange;
-use crate::snapshot::{is_snapshot_build_complete, is_snapshot_chunk_ready, snapshot_target};
+use crate::snapshot::{derive_snapshot_local_epoch, is_snapshot_build_complete, is_snapshot_chunk_ready};
 use crate::state::{GroupState, LifecycleEpochState, RefreshThrottle, SnapshotProgress};
 use crate::supervisor::{TaskKey, TaskResult};
 
@@ -358,7 +358,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         let register_snapshot = TaskKey::RegisterSnapshot { epoch };
         let snapshot_submit = TaskKey::SnapshotSubmit { epoch };
 
-        let Some(target) = snapshot_target(epoch) else {
+        let Some(local_epoch) = derive_snapshot_local_epoch(epoch) else {
             self.desired.remove(&snapshot_build);
             self.desired.remove(&snapshot_collect);
             self.desired.remove(&register_snapshot);
@@ -370,7 +370,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             self.snapshot_progress.reset(epoch);
         }
 
-        let all_built = match is_snapshot_build_complete(&self.context, target) {
+        let all_built = match is_snapshot_build_complete(&self.context, local_epoch) {
             Ok(built) => built,
             Err(e) => {
                 tracing::warn!("snapshot pipeline: failed to read build state: {e}");
@@ -379,7 +379,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         };
 
         if !all_built {
-            self.desired.insert(snapshot_build);
+            self.desired.insert(snapshot_build.clone());
         }
 
         let owned_groups: HashSet<u64> = match self.context.store.get_committee(epoch) {
@@ -418,7 +418,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         // Rebuild per-group progress from store state.
         for &group in &owned_groups {
-            let ready = match is_snapshot_chunk_ready(&self.context, target, group) {
+            let ready = match is_snapshot_chunk_ready(&self.context, local_epoch, group) {
                 Ok(ready) => ready,
                 Err(e) => {
                     tracing::warn!("snapshot pipeline: failed to read group readiness: {e}");
@@ -436,7 +436,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             let has_cert = self
                 .context
                 .store
-                .get_snapshot_certification(target, ci)
+                .get_snapshot_cert(local_epoch, ci)
                 .ok()
                 .flatten()
                 .is_some();
@@ -643,12 +643,12 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     }
 
     fn mark_groups_store(&mut self, epoch: EpochNumber, state: GroupState) {
-        let target = EpochNumber(epoch.0.saturating_sub(1));
+        let local_epoch = EpochNumber(epoch.0.saturating_sub(1));
         for group in self.groups_for_epoch(epoch) {
             if self
                 .context
                 .store
-                .get_snapshot_certification(target, ChunkIndex(group))
+                .get_snapshot_cert(local_epoch, ChunkIndex(group))
                 .ok()
                 .flatten()
                 .is_some()
@@ -737,16 +737,16 @@ mod tests {
 
     fn mark_snapshot_build_complete<S: Store, R: Rpc>(
         ctx: &Arc<NodeContext<S, R>>,
-        target: EpochNumber,
+        local_epoch: EpochNumber,
     ) {
         for group in 0..SPOOL_GROUP_COUNT {
             let chunk_index = ChunkIndex(group as u64);
             ctx.store
-                .set_snapshot_commitment(target, chunk_index, CryptoHash::new_unique())
+                .set_snapshot_commitment(local_epoch, chunk_index, CryptoHash::new_unique())
                 .unwrap();
             ctx.store
                 .set_snapshot_metadata(
-                    target,
+                    local_epoch,
                     chunk_index,
                     SnapshotChunkMeta {
                         leaves: Vec::new(),
@@ -762,16 +762,16 @@ mod tests {
 
     fn mark_snapshot_group_ready<S: Store, R: Rpc>(
         ctx: &Arc<NodeContext<S, R>>,
-        target: EpochNumber,
+        local_epoch: EpochNumber,
         group: u64,
     ) {
         let chunk_index = ChunkIndex(group);
         ctx.store
-            .set_snapshot_commitment(target, chunk_index, CryptoHash::new_unique())
+            .set_snapshot_commitment(local_epoch, chunk_index, CryptoHash::new_unique())
             .unwrap();
         ctx.store
             .set_snapshot_metadata(
-                target,
+                local_epoch,
                 chunk_index,
                 SnapshotChunkMeta {
                     leaves: Vec::new(),
@@ -1578,8 +1578,8 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
-        let target = EpochNumber(2);
-        mark_snapshot_build_complete(&ctx, target);
+        let local_epoch = EpochNumber(2);
+        mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
@@ -1594,8 +1594,8 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_non_our_committee(&ctx, EpochNumber(3), vec![5]);
-        let target = EpochNumber(2);
-        mark_snapshot_build_complete(&ctx, target);
+        let local_epoch = EpochNumber(2);
+        mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);
@@ -1610,17 +1610,17 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
-        let target = EpochNumber(2);
-        mark_snapshot_build_complete(&ctx, target);
+        let local_epoch = EpochNumber(2);
+        mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
         ctx.store
-            .set_snapshot_certification(
-                target,
+            .set_snapshot_cert(
+                local_epoch,
                 ChunkIndex(0),
                 SnapshotCertResult {
                     member_indices: vec![0, 1, 2],
                     signature: BlsSignature(G1CompressedPoint([7u8; 32])),
-                    epoch: target.0,
+                    epoch: local_epoch.0,
                 },
             )
             .unwrap();
@@ -1637,17 +1637,17 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
-        let target = EpochNumber(2);
-        mark_snapshot_build_complete(&ctx, target);
+        let local_epoch = EpochNumber(2);
+        mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
         ctx.store
-            .set_snapshot_certification(
-                target,
+            .set_snapshot_cert(
+                local_epoch,
                 ChunkIndex(0),
                 SnapshotCertResult {
                     member_indices: vec![0, 1, 2],
                     signature: BlsSignature(G1CompressedPoint([7u8; 32])),
-                    epoch: target.0,
+                    epoch: local_epoch.0,
                 },
             )
             .unwrap();
@@ -1665,8 +1665,8 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
-        let target = EpochNumber(2);
-        mark_snapshot_build_complete(&ctx, target);
+        let local_epoch = EpochNumber(2);
+        mark_snapshot_build_complete(&ctx, local_epoch);
 
         let mut scheduler = Scheduler::new(ctx);
         scheduler.desired.insert(TaskKey::RefreshOnchainState);
@@ -1685,9 +1685,9 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
 
-        let target = EpochNumber(2);
+        let local_epoch = EpochNumber(2);
         let group = 0u64;
-        mark_snapshot_group_ready(&ctx, target, group);
+        mark_snapshot_group_ready(&ctx, local_epoch, group);
         let epoch = EpochNumber(3);
 
         let mut scheduler = Scheduler::new(ctx);

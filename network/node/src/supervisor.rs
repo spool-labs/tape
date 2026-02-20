@@ -69,6 +69,8 @@ pub struct Supervisor<S: Store, R: Rpc> {
     sem_peer_http: Arc<Semaphore>,
     /// Limits concurrent CPU-heavy work like snapshot builds (capacity: num_cpus).
     sem_cpu_heavy: Arc<Semaphore>,
+    /// Separate semaphore for internal tasks.
+    sem_internal: Arc<Semaphore>,
 }
 
 impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
@@ -93,6 +95,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             sem_solana_tx: Arc::new(Semaphore::new(5)),
             sem_peer_http: Arc::new(Semaphore::new(50)),
             sem_cpu_heavy: Arc::new(Semaphore::new(cpu_count)),
+            sem_internal: Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
         }
     }
 
@@ -170,6 +173,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             token.cancel();
         }
         let had_pending = self.pending_retry.remove(key);
+        self.purge_retry_queue(key);
         if had_running || had_pending {
             self.send_result(TaskResult::Canceled(key.clone())).await;
         }
@@ -325,8 +329,19 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         let peer_handle = self.peer_handle.clone();
         let token_clone = token.clone();
         let category = key.category();
-        let k = key.clone();
-        self.join_set.spawn(execute_task(ctx, peer_handle, k, token_clone, sem).in_current_span());
+        let key_to_run = key.clone();
+        let span = tracing::info_span!(
+            "task",
+            task_key = ?key_to_run,
+            task_type = ?key_to_run.category(),
+            spool_id = ?key_to_run.spool_id(),
+            attempt,
+            duration_ms = tracing::field::Empty,
+        );
+
+        self.join_set.spawn(
+            execute_task(ctx, peer_handle, key_to_run.clone(), token_clone, sem).instrument(span),
+        );
 
         self.running.insert(
             key.clone(),
@@ -345,9 +360,18 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             TaskCategory::SolanaTx => self.sem_solana_tx.clone(),
             TaskCategory::PeerHttp => self.sem_peer_http.clone(),
             TaskCategory::CpuHeavy => self.sem_cpu_heavy.clone(),
-            // Internal tasks have no concurrency limit — use a large semaphore
-            TaskCategory::Internal => Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
+            // Internal tasks have a dedicated high-capacity semaphore.
+            TaskCategory::Internal => self.sem_internal.clone(),
         }
+    }
+
+    /// Remove stale retry entries for a canceled key to avoid heap growth.
+    fn purge_retry_queue(&mut self, key: &TaskKey) {
+        self.retry_queue = self
+            .retry_queue
+            .drain()
+            .filter(|entry| entry.0.key != *key)
+            .collect();
     }
 
     /// Earliest due time in the retry heap, or far-future if empty.
@@ -772,11 +796,11 @@ mod tests {
         assert!(TaskKey::AdvanceEpoch { epoch: EpochNumber(0) }.is_one_shot());
         assert!(TaskKey::SyncEpoch { epoch: EpochNumber(0) }.is_one_shot());
         assert!(TaskKey::RefreshOnchainState.is_one_shot());
-        assert!(TaskKey::RecoveryScan { spool: 0 }.is_one_shot());
-        assert!(TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
-        assert!(TaskKey::SpoolSync { spool: 0 }.is_one_shot());
         assert!(TaskKey::SnapshotBuild { epoch: EpochNumber(0) }.is_one_shot());
         assert!(TaskKey::SnapshotCollect { epoch: EpochNumber(0) }.is_one_shot());
+        assert!(!TaskKey::RecoveryScan { spool: 0 }.is_one_shot());
+        assert!(!TaskKey::SpoolRecovery { spool: 0 }.is_one_shot());
+        assert!(!TaskKey::SpoolSync { spool: 0 }.is_one_shot());
     }
 
     #[test]

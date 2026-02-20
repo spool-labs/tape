@@ -50,6 +50,7 @@ const CHAIN_EPOCH_KEY: &str = "chain_epoch";
 const CHAIN_EPOCH_PHASE_KEY: &str = "chain_epoch_phase";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
+const SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY: &str = "snapshot_bootstrap_target_epoch";
 
 // GC keys
 const GC_STARTED_KEY: &str = "started";
@@ -82,6 +83,10 @@ pub trait MetaOps {
     // Sync cursor
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>>;
     fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()>;
+
+    // Snapshot bootstrap marker
+    fn get_bootstrap_target_epoch(&self) -> Result<Option<EpochNumber>>;
+    fn set_bootstrap_target_epoch(&self, epoch: EpochNumber) -> Result<()>;
 
     // GC epochs
     fn get_gc_started_epoch(&self) -> Result<Option<EpochNumber>>;
@@ -300,6 +305,31 @@ impl<S: Store> MetaOps for TapeStore<S> {
 
     fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()> {
         self.put::<SyncCursorCol>(&UnitKey, &slot)?;
+        Ok(())
+    }
+
+    fn get_bootstrap_target_epoch(&self) -> Result<Option<EpochNumber>> {
+        let key = SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY.to_string();
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut epoch_bytes = [0u8; 8];
+                epoch_bytes.copy_from_slice(&bytes);
+                Ok(Some(EpochNumber(u64::from_le_bytes(epoch_bytes))))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_bootstrap_target_epoch(&self, epoch: EpochNumber) -> Result<()> {
+        let key = SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY.to_string();
+        let bytes = epoch.as_u64().to_le_bytes().to_vec();
+        self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
 
@@ -683,6 +713,17 @@ mod tests {
 
         store.set_sync_cursor(slot).unwrap();
         assert_eq!(store.get_sync_cursor().unwrap(), Some(slot));
+    }
+
+    #[test]
+    fn test_bootstrap_target_roundtrip() {
+        let store = test_store();
+        let epoch = EpochNumber(55);
+
+        assert!(store.get_bootstrap_target_epoch().unwrap().is_none());
+
+        store.set_bootstrap_target_epoch(epoch).unwrap();
+        assert_eq!(store.get_bootstrap_target_epoch().unwrap(), Some(epoch));
     }
 
     #[test]

@@ -21,7 +21,7 @@ const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
 
 pub async fn submit_register<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
-    target: EpochNumber,
+    local_epoch: EpochNumber,
     group: SpoolGroup,
     commitment: Hash,
     meta: &SnapshotChunkMeta,
@@ -40,7 +40,7 @@ pub async fn submit_register<S: Store, R: Rpc>(
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_REGISTER_CU);
     let ix = build_register_snapshot_ix(
         pubkey,
-        target,
+        local_epoch,
         group,
         commitment,
         profile,
@@ -58,7 +58,7 @@ pub async fn submit_register<S: Store, R: Rpc>(
 pub async fn submit_certify<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
     committee_len: usize,
-    target: EpochNumber,
+    local_epoch: EpochNumber,
     commitment: Hash,
     cert: &SnapshotCertResult,
 ) -> Result<Signature, RpcError> {
@@ -71,7 +71,7 @@ pub async fn submit_certify<S: Store, R: Rpc>(
 
     let pubkey = context.keypair.pubkey();
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_CERTIFY_CU);
-    let ix = build_certify_snapshot_ix(pubkey, target, commitment, bitmap, cert.signature);
+    let ix = build_certify_snapshot_ix(pubkey, local_epoch, commitment, bitmap, cert.signature);
 
     context
         .rpc

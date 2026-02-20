@@ -12,10 +12,12 @@ mod spool_sync;
 mod sync_epoch;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use rpc::Rpc;
 use rpc::RpcError;
 use store::Store;
+use tape_store::ops::MetaOps;
 use tape_api::errors::{ProgramError, TapeError};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -35,6 +37,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
 ) -> (TaskKey, TaskOutcome) {
+    let started_at = Instant::now();
     let _permit = match semaphore.acquire().await {
         Ok(p) => p,
         Err(_) => return (key, TaskOutcome::Permanent("semaphore closed".into())),
@@ -44,7 +47,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
         return (key, TaskOutcome::Success);
     }
 
-    // Each epoch-scoped key is pinned to the target on-chain epoch.
+    // Each epoch-scoped key is pinned to its scheduled chain epoch.
     // If the node has already advanced/lagged, skip stale tx/submission.
     if let Some(task_epoch) = key.scheduled_epoch() {
         if let Ok(Some(chain_epoch)) = context.store.get_chain_epoch() {
@@ -86,19 +89,21 @@ pub async fn execute_task<S: Store, R: Rpc>(
             snapshot::run_build(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotCollect { .. } => {
-            snapshot::run_certify(context, peer_handle, cancel).await
+            snapshot::run_collect(context, peer_handle, cancel).await
         }
         TaskKey::RegisterSnapshot { .. } => {
             snapshot::run_register(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotSubmit { .. } => {
-            snapshot::run_certify_onchain(context, peer_handle, cancel).await
+            snapshot::run_submit(context, peer_handle, cancel).await
         }
         TaskKey::SnapshotBootstrap => {
             snapshot::run_bootstrap(context, peer_handle, cancel).await
         }
     };
 
+    let duration_ms = started_at.elapsed().as_millis() as u64;
+    tracing::Span::current().record("duration_ms", duration_ms);
     (key, outcome)
 }
 

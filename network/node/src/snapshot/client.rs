@@ -14,7 +14,7 @@ use crate::supervisor::TaskOutcome;
 pub async fn fetch_commitments(
     peer_handle: &PeerHandle,
     committee: &[NodeInfo],
-    target: EpochNumber,
+    local_epoch: EpochNumber,
 ) -> Result<Vec<Hash>, TaskOutcome> {
     let config = RetryConfig::fast();
 
@@ -23,7 +23,7 @@ pub async fn fetch_commitments(
             continue;
         };
 
-        let result = with_retry(&config, || client.get_snapshot_commitments(target.0)).await;
+        let result = with_retry(&config, || client.get_snapshot_commitments(local_epoch.0)).await;
         match result {
             Ok(commitments) if commitments.len() == SPOOL_GROUP_COUNT => {
                 if let Err(e) = peer_handle.record_success(addr).await {
