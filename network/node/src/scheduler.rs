@@ -83,7 +83,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     ) {
         // Bootstrap: schedule RefreshOnchainState immediately on startup
         self.request_refresh(true);
-        self.emit_directives(&directive_tx).await;
+        self.flush(&directive_tx);
         tracing::trace!("scheduler bootstrapped");
 
         // Refresh often enough to observe committee/epoch transitions in local/test
@@ -92,17 +92,22 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         let mut ticker = interval(Duration::from_secs(refresh_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut received_changes: usize = 0;
+        let mut handled_results: usize = 0;
+
         loop {
             tokio::select! {
                 changes = change_rx.recv() => {
                     match changes {
                         Some(changes) => {
+                            received_changes += 1;
                             tracing::trace!(
                                 change_count = changes.len(),
+                                received_changes,
                                 "scheduler received state changes"
                             );
                             self.update_desired(&changes);
-                            self.emit_directives(&directive_tx).await;
+                            self.flush(&directive_tx);
                         }
                         None => break,
                     }
@@ -111,18 +116,29 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 result = result_rx.recv() => {
                     match result {
                         Some(result) => {
-                            tracing::trace!(result = ?result, "scheduler received task result");
+                            handled_results += 1;
+                            tracing::trace!(
+                                result = ?result,
+                                handled_results,
+                                "scheduler received task result"
+                            );
                             self.handle_result(&result);
-                            self.emit_directives(&directive_tx).await;
+                            self.flush(&directive_tx);
                         }
                         None => break,
                     }
                 }
 
                 _ = ticker.tick() => {
-                    tracing::trace!("scheduler periodic tick");
+                    tracing::trace!(
+                        received_changes,
+                        handled_results,
+                        desired = self.desired.len(),
+                        scheduled = self.scheduled.len(),
+                        "scheduler periodic tick"
+                    );
                     self.periodic_tasks();
-                    self.emit_directives(&directive_tx).await;
+                    self.flush(&directive_tx);
                 }
 
                 _ = cancel.cancelled() => {
@@ -996,71 +1012,130 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
     }
 
     /// Diff `desired` vs `scheduled` and send Schedule/Cancel directives.
-    /// Prunes stale epoch-scoped keys from both sets (older than current-2) first.
-    /// Sends Cancel for stale scheduled tasks before dropping them.
-    /// If the directive channel is full or closed, returns early without updating
-    /// `scheduled`.
-    async fn emit_directives(&mut self, tx: &mpsc::Sender<Directive>) {
-        let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
+    ///
+    /// Uses `try_send` so we never block waiting for the supervisor to drain
+    /// directives — if the channel is full we break and let the unsent items
+    /// be picked up on the next pass (they remain in `desired \ scheduled`).
+    /// This prevents a bidirectional deadlock where the scheduler blocks on
+    /// directive sends while the supervisor blocks on result sends.
+    fn flush(&mut self, tx: &mpsc::Sender<Directive>) {
+        self.prune_stale(tx);
 
-        // Cancel and drop epoch-scoped tasks for epochs older than the retention
-        // window (older than current_epoch - 2). This avoids stale epoch tasks
-        // lingering in running/scheduled state after committee changes.
-        if let Some(current_epoch) = current_epoch {
-            let stale_scheduled: Vec<_> = self
-                .scheduled
-                .iter()
-                .filter(|key| self.task_below_retention(current_epoch, key))
-                .cloned()
-                .collect();
-            for key in stale_scheduled {
-                tracing::trace!(task = ?key, "cancelling stale scheduled task");
-                if tx.send(Directive::Cancel(key.clone())).await.is_err() {
-                    return;
-                }
-                self.scheduled.remove(&key);
-                self.desired.remove(&key);
-            }
+        let desired_count = self.desired.len();
+        let scheduled_count = self.scheduled.len();
 
-            // Remaining non-stale epoch-scoped keys can be kept around for retries
-            // and lifecycle reconciliation.
-            let stale_desired: Vec<_> = self
-                .desired
-                .iter()
-                .filter(|key| self.task_below_retention(current_epoch, key))
-                .cloned()
-                .collect();
-            for key in stale_desired {
-                self.desired.remove(&key);
-            }
-        }
+        let (sent, send_fail) = self.send_schedules(tx);
+        let (cancel_sent, cancel_fail) = self.send_cancels(tx);
 
-        // Schedule: in desired but not yet scheduled
-        let to_schedule: Vec<_> = self.desired.difference(&self.scheduled).cloned().collect();
         tracing::trace!(
-            desired = self.desired.len(),
-            scheduled = self.scheduled.len(),
-            to_schedule = to_schedule.len(),
-            "scheduler diff scheduling batch"
+            desired = desired_count,
+            scheduled = scheduled_count,
+            sent,
+            send_fail,
+            cancel_sent,
+            cancel_fail,
+            "flush summary"
         );
-        for key in to_schedule {
-            tracing::trace!(task = ?key, "sending schedule directive");
-            if tx.send(Directive::Schedule(key.clone())).await.is_err() {
-                return;
+    }
+
+    /// Remove epoch-scoped tasks older than the retention window from both
+    /// `desired` and `scheduled`. Sends Cancel directives for scheduled ones.
+    fn prune_stale(&mut self, tx: &mpsc::Sender<Directive>) {
+        let Some(current_epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
+            return;
+        };
+
+        let stale_scheduled: Vec<_> = self
+            .scheduled
+            .iter()
+            .filter(|key| self.task_below_retention(current_epoch, key))
+            .cloned()
+            .collect();
+        for key in stale_scheduled {
+            tracing::trace!(task = ?key, "cancelling stale scheduled task");
+            match tx.try_send(Directive::Cancel(key.clone())) {
+                Ok(()) => {
+                    self.scheduled.remove(&key);
+                    self.desired.remove(&key);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        task = ?key,
+                        "directive channel full, deferring stale cancel"
+                    );
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => return,
             }
-            self.scheduled.insert(key.clone());
         }
 
-        // Cancel: scheduled but no longer desired
-        let to_cancel: Vec<_> = self.scheduled.difference(&self.desired).cloned().collect();
-        tracing::trace!(to_cancel = to_cancel.len(), "scheduler diff cancellation batch");
-        for key in to_cancel {
-            tracing::trace!(task = ?key, "sending cancel directive");
-            if tx.send(Directive::Cancel(key.clone())).await.is_err() {
-                return;
-            }
-            self.scheduled.remove(&key);
+        let stale_desired: Vec<_> = self
+            .desired
+            .iter()
+            .filter(|key| self.task_below_retention(current_epoch, key))
+            .cloned()
+            .collect();
+        for key in stale_desired {
+            self.desired.remove(&key);
         }
+    }
+
+    /// Send Schedule directives for tasks in `desired` but not `scheduled`.
+    /// Returns `(sent, deferred)`.
+    fn send_schedules(&mut self, tx: &mpsc::Sender<Directive>) -> (usize, usize) {
+        let to_schedule: Vec<_> = self.desired.difference(&self.scheduled).cloned().collect();
+        let total = to_schedule.len();
+        let mut sent: usize = 0;
+
+        for key in &to_schedule {
+            match tx.try_send(Directive::Schedule(key.clone())) {
+                Ok(()) => {
+                    sent += 1;
+                    self.scheduled.insert(key.clone());
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        task = ?key,
+                        sent,
+                        remaining = total - sent,
+                        "directive channel full, deferring remaining schedules"
+                    );
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
+
+        (sent, total - sent)
+    }
+
+    /// Send Cancel directives for tasks in `scheduled` but not `desired`.
+    /// Returns `(sent, deferred)`.
+    fn send_cancels(&mut self, tx: &mpsc::Sender<Directive>) -> (usize, usize) {
+        let to_cancel: Vec<_> = self.scheduled.difference(&self.desired).cloned().collect();
+        let total = to_cancel.len();
+        let mut sent: usize = 0;
+
+        for key in &to_cancel {
+            match tx.try_send(Directive::Cancel(key.clone())) {
+                Ok(()) => {
+                    sent += 1;
+                    self.scheduled.remove(key);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        task = ?key,
+                        sent,
+                        remaining = total - sent,
+                        "directive channel full, deferring remaining cancels"
+                    );
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
+
+        (sent, total - sent)
     }
 }
 
@@ -1189,7 +1264,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1225,7 +1300,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         // Drain directives
         while directive_rx.try_recv().is_ok() {}
@@ -1237,7 +1312,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(2),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut cancelled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1311,7 +1386,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1336,7 +1411,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::SpoolAssignmentChanged]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1380,7 +1455,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1410,7 +1485,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         // No recovery needed — we have the slice
         assert!(directive_rx.try_recv().is_err());
@@ -1434,7 +1509,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         // No action — spool not in this track's group
         assert!(directive_rx.try_recv().is_err());
@@ -1449,7 +1524,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::NodeJoinedCommittee { node: our_pubkey }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1471,7 +1546,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::NodeJoinedCommittee {
             node: Pubkey::new_unique(),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         // No directives expected for another node joining
         assert!(directive_rx.try_recv().is_err());
@@ -1509,7 +1584,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         // scheduled must stay empty — sends failed, no mutation
         assert!(scheduler.scheduled.is_empty());
@@ -1629,7 +1704,7 @@ mod tests {
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
         }]);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1657,7 +1732,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1683,7 +1758,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1744,7 +1819,7 @@ mod tests {
         scheduler.schedule_lifecycle(new_epoch);
 
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut saw_cancel = false;
         let mut saw_schedule = false;
@@ -1776,7 +1851,7 @@ mod tests {
         let (directive_tx, mut directive_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -1863,7 +1938,7 @@ mod tests {
         scheduler.desired.insert(TaskKey::RefreshOnchainState);
         scheduler.scheduled.insert(TaskKey::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut scheduled = HashSet::new();
         while let Ok(d) = directive_rx.try_recv() {
@@ -2129,7 +2204,7 @@ mod tests {
         scheduler.handle_result(&TaskResult::Success(TaskKey::RefreshOnchainState));
 
         let (directive_tx, mut directive_rx) = mpsc::channel(32);
-        scheduler.emit_directives(&directive_tx).await;
+        scheduler.flush(&directive_tx);
 
         let mut saw_cancel = false;
         let mut saw_schedule = false;
