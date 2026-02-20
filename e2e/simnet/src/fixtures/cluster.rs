@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tape_core::types::BasisPoints;
+use tracing::trace;
 
 use crate::simnet::SimnetHarness;
 
@@ -37,6 +38,13 @@ impl SimnetHarness {
         stake_amount_tape: u64,
         health_timeout: Duration,
     ) -> Result<()> {
+        trace!(
+            payer_index,
+            nodes = self.config().node_count,
+            stake_amount_tape,
+            commission = ?commission,
+            "bootstrap_nodes start"
+        );
         {
             let scenario = self.scenario();
             scenario.init_system(payer_index).await.context("init_system")?;
@@ -61,6 +69,7 @@ impl SimnetHarness {
             .await
             .context("wait_nodes_healthy")?;
 
+        trace!(payer_index, "bootstrap_nodes complete");
         Ok(())
     }
 }

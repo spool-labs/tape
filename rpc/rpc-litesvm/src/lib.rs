@@ -5,6 +5,7 @@ mod convert;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use block::{RecordedTransaction, SlotData};
@@ -22,18 +23,30 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::Transaction;
 use solana_transaction_status::UiConfirmedBlock;
+use tokio::task::JoinHandle;
 
-#[derive(Default)]
 struct Inner {
     svm: LiteSVM,
     slots: HashMap<Slot, SlotData>,
     tx_slot_index: HashMap<Signature, Slot>,
     current_block_height: u64,
     last_recorded_slot: Option<Slot>,
+    /// Highest slot visible via `get_slot()` / `get_block()`.
+    confirmed_tip: u64,
+    /// Next SVM slot where a submitted transaction will be recorded.
+    pending_slot: u64,
 }
 
-/// LiteSVM-backed Rpc implementation.
-#[derive(Clone, Default)]
+/// LiteSVM-backed Rpc implementation with simulated block production.
+///
+/// Transactions execute immediately (state changes visible via
+/// `get_account`), but resulting blocks only become queryable through
+/// `get_slot` / `get_block` once `confirmed_tip` advances past the
+/// slot they were recorded in.
+///
+/// Call [`LiteSvmRpc::start_block_producer`] to spawn a background
+/// task that advances `confirmed_tip` at a steady cadence.
+#[derive(Clone)]
 pub struct LiteSvmRpc {
     inner: Arc<Mutex<Inner>>,
 }
@@ -47,6 +60,8 @@ impl LiteSvmRpc {
                 tx_slot_index: HashMap::new(),
                 current_block_height: 0,
                 last_recorded_slot: None,
+                confirmed_tip: 0,
+                pending_slot: 1,
             })),
         }
     }
@@ -63,13 +78,40 @@ impl LiteSvmRpc {
             .map_err(|e| RpcError::Request(format!("{e:?}")))
     }
 
+    /// Advance the SVM slot **and** `confirmed_tip` to `slot`.
+    ///
+    /// This is the explicit "harness drives time" path — blocks recorded
+    /// at slots <= `slot` become immediately visible via `get_block`.
     pub fn warp_to_slot(&self, slot: u64) -> Result<(), RpcError> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
         inner.svm.warp_to_slot(slot);
+        if slot > inner.confirmed_tip {
+            inner.confirmed_tip = slot;
+        }
+        if inner.pending_slot <= slot {
+            inner.pending_slot = slot + 1;
+        }
         Ok(())
+    }
+
+    /// Spawn a background task that advances `confirmed_tip` by one slot
+    /// every `interval`.  Returns a handle the caller can `abort()` to
+    /// stop the producer.
+    pub fn start_block_producer(&self, interval: Duration) -> JoinHandle<()> {
+        let rpc = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let mut inner = rpc.inner.lock().expect("mutex poisoned");
+                inner.confirmed_tip += 1;
+                if inner.pending_slot <= inner.confirmed_tip {
+                    inner.pending_slot = inner.confirmed_tip + 1;
+                }
+            }
+        })
     }
 
     pub fn advance_time(&self, seconds: i64) -> Result<(), RpcError> {
@@ -150,7 +192,8 @@ impl LiteSvmRpc {
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
         let lamports = inner.svm.minimum_balance_for_rent_exemption(data.len());
-        let account = Account::new(lamports, data.to_vec(), &owner.into());
+        let mut account = Account::new(lamports, data.len(), &owner.into());
+        account.data = data.to_vec();
 
         inner
             .svm
@@ -224,7 +267,7 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        Ok(Self::current_slot_locked(&inner))
+        Ok(inner.confirmed_tip)
     }
 
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError> {
@@ -240,6 +283,13 @@ impl Rpc for LiteSvmRpc {
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+
+        if slot > inner.confirmed_tip {
+            return Err(RpcError::Request(format!(
+                "SlotSkipped: slot {slot} not yet confirmed (tip: {})",
+                inner.confirmed_tip
+            )));
+        }
 
         let data = inner.slots.get(&slot).ok_or_else(|| {
             RpcError::Request(format!("SlotSkipped: slot {slot} was skipped or not produced"))
@@ -324,6 +374,11 @@ impl Rpc for LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
+        // Warp SVM to the pending slot so the on-chain program sees the
+        // correct Clock::slot value and the block is recorded there.
+        let tx_slot = inner.pending_slot;
+        inner.svm.warp_to_slot(tx_slot);
+
         let vtx: solana_sdk::transaction::VersionedTransaction = transaction.clone().into();
         let pre_balances = Self::balances_for_transaction(&inner, &vtx);
 
@@ -331,7 +386,11 @@ impl Rpc for LiteSvmRpc {
 
         let post_balances = Self::balances_for_transaction(&inner, &vtx);
         Self::record_transaction_locked(&mut inner, vtx, &result, pre_balances, post_balances);
-        // Move to a fresh blockhash so repeated identical messages don't hit
+
+        // Advance to the next pending slot for the next transaction.
+        inner.pending_slot += 1;
+
+        // Fresh blockhash so repeated identical messages don't hit
         // "already processed" in tight test loops.
         inner.svm.expire_blockhash();
 
@@ -371,5 +430,11 @@ impl Rpc for LiteSvmRpc {
         };
 
         Ok(Some(status))
+    }
+}
+
+impl Default for LiteSvmRpc {
+    fn default() -> Self {
+        Self::new()
     }
 }

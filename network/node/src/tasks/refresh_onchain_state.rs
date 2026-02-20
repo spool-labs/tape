@@ -14,6 +14,7 @@ use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_store::ops::{CommitteeOps, MetaOps, SpoolOps};
 use tape_store::types::{NodeInfo, NodeStatus, SpoolStatus};
+use solana_sdk::signature::Signer;
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
@@ -25,6 +26,7 @@ pub async fn run<S: Store, R: Rpc>(
     peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+    tracing::trace!(node = %context.keypair.pubkey(), "refresh_onchain_state starting");
     let system = match context.rpc.get_system().await {
         Ok(s) => s,
         Err(e) => return TaskOutcome::Retryable(format!("get_system: {e}")),
@@ -44,9 +46,25 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("get_all_nodes: {e}")),
     };
 
+    let onchain_phase = EpochPhase::try_from(epoch_account.state.phase).unwrap_or(EpochPhase::Unknown);
+    tracing::trace!(
+        epoch = epoch_account.id.0,
+        phase = ?onchain_phase,
+        system_committee = system.committee.size(),
+        system_committee_next = system.committee_next.size(),
+        "refresh_onchain_state fetched chain state"
+    );
+
     let committee_changed =
         committee_changed(&context, &system, &epoch_account, &all_nodes).unwrap_or(false);
     let outcome = apply_refreshed_state(&context, &system, &epoch_account, &all_nodes);
+    tracing::trace!(
+        epoch = epoch_account.id.0,
+        phase = ?onchain_phase,
+        committee_changed,
+        outcome = ?outcome,
+        "refresh_onchain_state result"
+    );
     if matches!(outcome, TaskOutcome::Success) && committee_changed {
         if let Err(e) = peer_handle.reset().await {
             return TaskOutcome::Retryable(format!("peer tracker reset failed: {e}"));
@@ -78,6 +96,23 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
     epoch_account: &Epoch,
     all_nodes: &[(solana_sdk::pubkey::Pubkey, Node)],
 ) -> TaskOutcome {
+    let before_epoch = context.store.get_chain_epoch().ok().flatten();
+    let before_phase = context.store.get_chain_epoch_phase().ok().flatten();
+    let before_status = context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby);
+    let before_committee_size = context
+        .store
+        .get_committee(epoch_account.id)
+        .ok()
+        .and_then(|o| o.map(|c| c.len()))
+        .unwrap_or(0);
+
+    let our_bls = match context.bls_keypair.public_key() {
+        Ok(pk) => pk,
+        Err(e) => return TaskOutcome::Retryable(format!("bls public_key: {e:?}")),
+    };
+    let our_membership = system.committee.iter().enumerate().find(|(_, cm)| cm.key == our_bls);
+    let our_member_index = our_membership.as_ref().map(|(index, _)| *index);
+
     let epoch = epoch_account.id;
 
     if let Err(e) = context.store.set_chain_epoch(epoch) {
@@ -120,14 +155,6 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
             return TaskOutcome::Retryable(format!("put_committee(prev): {e}"));
         }
     }
-
-    // Find ourselves in the current committee
-    let our_bls = match context.bls_keypair.public_key() {
-        Ok(pk) => pk,
-        Err(e) => return TaskOutcome::Retryable(format!("bls public_key: {e:?}")),
-    };
-
-    let our_membership = system.committee.iter().enumerate().find(|(_, cm)| cm.key == our_bls);
 
     if let Some((member_index, cm)) = our_membership {
         if let Err(e) = context.store.set_node_id(cm.id) {
@@ -172,7 +199,34 @@ pub fn apply_refreshed_state<S: Store, R: Rpc>(
         }
     }
 
-    tracing::info!(epoch = epoch.as_u64(), "refreshed on-chain state");
+    let after_epoch = context.store.get_chain_epoch().ok().flatten();
+    let after_phase = context.store.get_chain_epoch_phase().ok().flatten();
+    let after_status = context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby);
+    let after_committee_size = context
+        .store
+        .get_committee(epoch)
+        .ok()
+        .and_then(|o| o.map(|c| c.len()))
+        .unwrap_or(0);
+    let membership_status = if our_member_index.is_some() {
+        "in_committee"
+    } else {
+        "not_in_committee"
+    };
+    tracing::info!(
+        from_epoch = before_epoch.map(|e| e.0),
+        to_epoch = after_epoch.map(|e| e.0),
+        from_phase = ?before_phase,
+        to_phase = ?after_phase,
+        from_status = ?before_status,
+        to_status = ?after_status,
+        before_committee_size,
+        after_committee_size,
+        our_member_index,
+        membership_status,
+        chain_epoch = epoch.as_u64(),
+        "refreshed on-chain state"
+    );
     TaskOutcome::Success
 }
 

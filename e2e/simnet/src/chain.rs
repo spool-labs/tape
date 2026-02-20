@@ -8,7 +8,7 @@ use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Keypair, Signature};
+use solana_sdk::signature::{Keypair, Signature, Signer};
 use tracing::trace;
 
 /// Shared chain fixture backed by LiteSVM.

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use tape_api::errors::ProgramError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use tracing::trace;
 use tape_api::instruction::build_advance_epoch_ix;
 use tape_api::program::EPOCH_DURATION;
 use tape_core::types::EpochNumber;
@@ -33,21 +34,38 @@ impl SimnetScenario<'_> {
     /// Attempt advance-epoch with each node authority until one succeeds.
     pub async fn advance_epoch_any(&self) -> Result<()> {
         let mut last_error = None;
+        let total_nodes = self.harness.nodes().len();
         for node in self.harness.nodes() {
+            trace!(
+                node_id = node.id(),
+                authority = %node.authority(),
+                total_nodes,
+                "attempting external advance_epoch in phase1 bootstrap"
+            );
             let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::ADV_CU);
             let ix = build_advance_epoch_ix(node.authority(), node.authority());
             match self
                 .harness
                 .chain()
-                .send_instructions_and_advance(
-                    node.keypair(),
-                    vec![cu_ix, ix],
-                    self.harness.config().slot_advance_per_tx,
-                )
-                .await
+                    .send_instructions_and_advance(
+                        node.keypair(),
+                        vec![cu_ix, ix],
+                        self.harness.config().slot_advance_per_tx,
+                    )
+                    .await
             {
-                Ok(_) => return Ok(()),
-                Err(e) => last_error = Some(e),
+                Ok(sig) => {
+                    trace!(node_id = node.id(), signature = %sig, "external advance_epoch succeeded");
+                    return Ok(());
+                }
+                Err(e) => {
+                    trace!(
+                        node_id = node.id(),
+                        error = %e,
+                        "external advance_epoch attempt failed"
+                    );
+                    last_error = Some(e);
+                }
             }
         }
 
@@ -59,9 +77,11 @@ impl SimnetScenario<'_> {
 
     pub async fn wait_epoch(&self, target_epoch: u64, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        trace!(target_epoch, timeout_secs = timeout.as_secs(), "waiting for target epoch");
         loop {
             let epoch = self.current_epoch_number().await?;
             if epoch >= target_epoch {
+                trace!(target_epoch, observed_epoch = epoch, "epoch target reached");
                 return Ok(());
             }
             if start.elapsed() >= timeout {
@@ -73,9 +93,11 @@ impl SimnetScenario<'_> {
 
     pub async fn wait_phase(&self, target_phase: &str, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        trace!(target_phase, timeout_secs = timeout.as_secs(), "waiting for target phase");
         loop {
             let phase = self.current_epoch_phase().await?;
             if phase == target_phase {
+                trace!(phase = target_phase, "phase target reached");
                 return Ok(());
             }
             if start.elapsed() >= timeout {
@@ -92,9 +114,11 @@ impl SimnetScenario<'_> {
 
     pub async fn wait_epoch_change(&self, previous: u64, timeout: Duration) -> Result<u64> {
         let start = Instant::now();
+        trace!(previous, timeout_secs = timeout.as_secs(), "waiting for epoch change");
         loop {
             let now = self.current_epoch_number().await?;
             if now > previous {
+                trace!(previous, next = now, "epoch change observed");
                 return Ok(now);
             }
             if start.elapsed() >= timeout {
@@ -120,6 +144,7 @@ impl SimnetScenario<'_> {
     }
 
     pub fn warp_seconds(&self, seconds: i64) -> Result<()> {
+        trace!(seconds, "advancing chain time for phase1");
         self.harness
             .chain()
             .advance_time_seconds(seconds)
@@ -147,6 +172,12 @@ impl SimnetScenario<'_> {
             if current >= target_epoch {
                 return Ok(());
             }
+            trace!(
+                current,
+                target = target_epoch,
+                participants = participants.len(),
+                "advance_to_epoch step begin"
+            );
 
             self.wait_phase("Active", timeout).await?;
             self.pool_many(payer_index, participants).await?;
@@ -165,11 +196,20 @@ impl SimnetScenario<'_> {
 
     async fn advance_epoch_with_retry(&self, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        let mut attempt = 0usize;
         loop {
+            attempt += 1;
+            trace!(attempt, "attempting advance_epoch_with_retry");
             match self.advance_epoch_any().await {
                 Ok(_) => return Ok(()),
                 Err(error) => {
                     let diag = self.snapshot_diag().await;
+                    trace!(
+                        attempt,
+                        error = %error,
+                        snapshot = %diag,
+                        "advance_epoch_with_retry retryable attempt failed"
+                    );
                     append_log(&format!("advance_epoch retryable={:?} snapshot={diag}", error));
                     if start.elapsed() >= timeout || !is_retryable_advance_error(&error) {
                         return Err(error)

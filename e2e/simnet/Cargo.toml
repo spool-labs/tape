@@ -22,6 +22,7 @@ tape-core.workspace = true
 tokio-util = "0.7"
 solana-sdk.workspace = true
 tracing-subscriber = "0.3"
+tracing = "0.1"
 rcgen = "0.13"
 rustls-pki-types = "1.10"
 tokio-rustls = "0.26"

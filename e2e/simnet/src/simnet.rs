@@ -1,7 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use solana_sdk::pubkey::Pubkey;
+use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
 use crate::config::{NodeRuntimeMode, SeededAccount, SimnetConfig};
@@ -112,6 +114,7 @@ impl SimnetBuilder {
             config: self.config,
             chain,
             nodes,
+            block_producer: None,
         })
     }
 }
@@ -122,11 +125,15 @@ impl Default for SimnetBuilder {
     }
 }
 
+/// Block production cadence for the simulated chain (1 slot per second).
+const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
+
 /// In-memory multi-node simulation harness.
 pub struct SimnetHarness {
     config: SimnetConfig,
     chain: ChainFixture,
     nodes: Vec<TestNode>,
+    block_producer: Option<JoinHandle<()>>,
 }
 
 impl SimnetHarness {
@@ -162,10 +169,18 @@ impl SimnetHarness {
         for node in &mut self.nodes {
             node.start().await?;
         }
+        if self.block_producer.is_none() {
+            self.block_producer = Some(
+                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL),
+            );
+        }
         Ok(())
     }
 
     pub async fn stop_all(&mut self) -> Result<()> {
+        if let Some(handle) = self.block_producer.take() {
+            handle.abort();
+        }
         for node in &mut self.nodes {
             node.stop().await?;
         }

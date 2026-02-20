@@ -287,6 +287,8 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             return;
         }
 
+        /*
+        PHASE1:DISABLED — chain phase gate for periodic tasks
         if !matches!(chain_phase, Some(EpochPhase::Active)) {
             tracing::trace!(
                 epoch = epoch.0,
@@ -295,11 +297,10 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             );
             return;
         }
+        */
 
-        if self.chain_phase_is_active() {
-            tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
-            self.desired.insert(TaskKey::AdvanceEpoch { epoch });
-        }
+        tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
+        self.desired.insert(TaskKey::AdvanceEpoch { epoch });
     }
 
     /// Log this node's committee index for the epoch when available.
@@ -367,6 +368,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
         let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
         let interval = self.refresh_interval();
+        let status = self.node_status();
         let should_schedule = force
             || !self.refresh_throttle.should_skip(interval)
             || current_epoch
@@ -377,6 +379,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             tracing::trace!(
                 force,
                 epoch = ?current_epoch,
+                node_status = ?status,
                 interval_secs = interval.as_secs(),
                 "scheduling refresh onchain state"
             );
@@ -386,6 +389,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             tracing::trace!(
                 force,
                 epoch = ?current_epoch,
+                node_status = ?status,
                 interval_secs = interval.as_secs(),
                 "skipping refresh due to throttle"
             );
@@ -487,7 +491,16 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
         self.desired
             .retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
+        let chain_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
+        tracing::trace!(
+            epoch = epoch.0,
+            chain_phase = ?chain_phase,
+            in_standby_lifecycle_epoch = self.lifecycle.epoch().0,
+            "schedule_lifecycle phase snapshot"
+        );
 
+        /*
+        PHASE1:DISABLED — phase-based lifecycle selection
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
         self.desired.remove(&TaskKey::SyncEpoch { epoch });
         self.desired.remove(&TaskKey::AdvancePool { epoch });
@@ -533,7 +546,18 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 "schedule_lifecycle: chain not active for AdvanceEpoch schedule"
             );
         }
+        */
+
+        // PHASE1: unconditionally schedule AdvanceEpoch in lifecycle
+        if !self.lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+            tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle (phase1)");
+            self.desired.insert(TaskKey::AdvanceEpoch { epoch });
+        }
+
+        /*
+        PHASE1:DISABLED — snapshot scheduling
         self.schedule_snapshot(epoch);
+        */
     }
 
     /// Drive the snapshot pipeline: Build → Collect → Register → Submit.
@@ -744,7 +768,16 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if !matches!(key, TaskKey::RefreshOnchainState) {
             return;
         }
+        let before_status = self.node_status();
+        let before_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
+        let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
         tracing::trace!("scheduler handling refresh success");
+        tracing::trace!(
+            before_status = ?before_status,
+            before_phase = ?before_phase,
+            sync_cursor = sync_cursor.map(|cursor| cursor.0),
+            "refresh success: bootstrap state snapshot"
+        );
         let epoch = self.context.store.get_chain_epoch().ok().flatten();
         tracing::trace!(epoch = ?epoch, "refresh success: recorded epoch for throttle");
         self.refresh_throttle
@@ -755,13 +788,35 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         self.reconcile_spools();
         if let Some(epoch) = epoch {
             tracing::trace!(epoch = epoch.0, "refresh success: scheduling lifecycle for chain epoch");
+            tracing::trace!(
+                before_status = ?before_status,
+                before_phase = ?before_phase,
+                node_status = ?self.node_status(),
+                chain_phase = ?self.context
+                    .store
+                    .get_chain_epoch_phase()
+                    .ok()
+                    .flatten(),
+                "refresh success: refreshed status and lifecycle scheduling"
+            );
             self.schedule_lifecycle(epoch);
         } else {
             tracing::trace!("refresh success: unable to read chain epoch for lifecycle scheduling");
         }
-        if self.needs_bootstrap() {
+        let needs_bootstrap = self.needs_bootstrap();
+        if needs_bootstrap {
+            tracing::trace!(
+                epoch = ?self.context.store.get_chain_epoch().ok().flatten(),
+                sync_cursor = sync_cursor.map(|cursor| cursor.0),
+                "refresh success: bootstrap required, scheduling snapshot bootstrap"
+            );
             tracing::trace!("refresh success: bootstrap required, scheduling snapshot bootstrap");
             self.desired.insert(TaskKey::SnapshotBootstrap);
+        } else {
+            tracing::trace!(
+                sync_cursor = sync_cursor.map(|cursor| cursor.0),
+                "refresh success: bootstrap not required"
+            );
         }
     }
 
@@ -800,7 +855,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// After SyncEpoch succeeds, re-run lifecycle scheduling to unlock the
     /// Settling-phase tasks (AdvancePool, JoinNetwork).
-    fn handle_sync_success(&mut self, key: &TaskKey) {
+    fn handle_sync_success(&mut self, _key: &TaskKey) {
+        /*
+        PHASE1:DISABLED — no SyncEpoch scheduling
         if !matches!(key, TaskKey::SyncEpoch { .. }) {
             return;
         }
@@ -808,6 +865,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
             self.schedule_lifecycle(epoch);
         }
+        */
     }
 
     /// After bootstrap completes, trigger a refresh to pick up the replayed state.
@@ -820,7 +878,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// Advance snapshot pipeline progress when a snapshot stage completes, then
     /// re-run `schedule_snapshot` to unlock the next stage.
-    fn handle_snapshot_success(&mut self, key: &TaskKey) {
+    fn handle_snapshot_success(&mut self, _key: &TaskKey) {
+        /*
+        PHASE1:DISABLED — no snapshot scheduling
         if !matches!(
             key,
             TaskKey::SnapshotCollect { .. }
@@ -848,6 +908,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             }
         }
         self.schedule_snapshot(epoch);
+        */
     }
 
     /// No-op: the supervisor handles retries internally. The key stays in
@@ -979,7 +1040,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         tracing::trace!(
             desired = self.desired.len(),
             scheduled = self.scheduled.len(),
-            to_schedule,
+            to_schedule = to_schedule.len(),
             "scheduler diff scheduling batch"
         );
         for key in to_schedule {

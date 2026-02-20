@@ -92,12 +92,26 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
             .flatten()
             .unwrap_or(NodeStatus::Standby);
         let epoch = context.store.get_chain_epoch().ok().flatten();
+        let cursor_slot = cursor.map(|slot| slot.0);
+        tracing::trace!(
+            cursor = cursor_slot,
+            status = ?status,
+            epoch = epoch.map(|e| e.0),
+            "ingestor wait_bootstrap observed state"
+        );
 
         if let Some(slot) = cursor {
             return Ok(Some(SlotNumber(slot.0 + 1)));
         }
 
         let needs_bootstrap = matches!(status, NodeStatus::Active) && matches!(epoch, Some(e) if e.0 >= 2);
+        tracing::trace!(
+            needs_bootstrap,
+            status = ?status,
+            epoch = epoch.map(|e| e.0),
+            cursor = cursor.map(|slot| slot.0),
+            "ingestor bootstrap gate"
+        );
         if !needs_bootstrap {
             tracing::trace!(
                 cursor = cursor.map(|slot| slot.0),

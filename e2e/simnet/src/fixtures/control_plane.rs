@@ -13,6 +13,7 @@ use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_store::ops::{MetaOps, SpoolOps};
 use tape_store::types::NodeStatus;
+use tracing::trace;
 
 use crate::fixtures::err::{adv_done, join_done, sync_done};
 use crate::log::append_log;
@@ -48,6 +49,12 @@ impl SimnetScenario<'_> {
         node_index: usize,
         amount_tape: u64,
     ) -> Result<Pubkey> {
+        trace!(
+            payer_index,
+            node_index,
+            amount_tape,
+            "submitting stake_node instruction"
+        );
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -86,10 +93,12 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("stake node {node_index}"))?;
 
+        trace!(payer_index, node_index, "stake_node completed");
         Ok(self.stake_address(node_index))
     }
 
     pub async fn unlock_stake(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting unlock_stake instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -111,10 +120,12 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("unlock stake for node {node_index}"))?;
 
+        trace!(payer_index, node_index, "unlock_stake completed");
         Ok(())
     }
 
     pub async fn withdraw_stake(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting withdraw_stake instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -136,10 +147,12 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("withdraw stake for node {node_index}"))?;
 
+        trace!(payer_index, node_index, "withdraw_stake completed");
         Ok(())
     }
 
     pub async fn join_node(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting join_network instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -161,6 +174,7 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("join node {node_index}"))?;
 
+        trace!(payer_index, node_index, "join_node completed");
         Ok(())
     }
 
@@ -169,11 +183,14 @@ impl SimnetScenario<'_> {
             if !join_done(&error) {
                 return Err(error);
             }
+            trace!(payer_index, node_index, "join_node idempotent completion");
         }
+        trace!(payer_index, node_index, "join_node_ok complete");
         Ok(())
     }
 
     pub async fn advance_pool(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting advance_pool instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let authority = self.harness.nodes()[node_index].authority();
         let ix = build_advance_pool_ix(payer.pubkey(), authority, self.node_address(node_index));
@@ -189,6 +206,7 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("advance pool for node {node_index}"))?;
 
+        trace!(payer_index, node_index, "advance_pool completed");
         Ok(())
     }
 
@@ -197,11 +215,14 @@ impl SimnetScenario<'_> {
             if !adv_done(&error) {
                 return Err(error);
             }
+            trace!(payer_index, node_index, "advance_pool idempotent completion");
         }
+        trace!(payer_index, node_index, "advance_pool_ok complete");
         Ok(())
     }
 
     pub async fn sync_node(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting sync_network instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -237,6 +258,7 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("sync node {node_index}"))?;
 
+        trace!(payer_index, node_index, "sync_node completed");
         Ok(())
     }
 
@@ -245,7 +267,9 @@ impl SimnetScenario<'_> {
             if !sync_done(&error) {
                 return Err(error);
             }
+            trace!(payer_index, node_index, "sync_node idempotent completion");
         }
+        trace!(payer_index, node_index, "sync_node_ok complete");
         Ok(())
     }
 
@@ -277,10 +301,17 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("set commission for node {node_index}"))?;
 
+        trace!(
+            payer_index,
+            node_index,
+            basis_points,
+            "set_commission completed"
+        );
         Ok(())
     }
 
     pub async fn claim_commission(&self, payer_index: usize, node_index: usize) -> Result<()> {
+        trace!(payer_index, node_index, "submitting claim_commission instruction");
         let payer = self.harness.nodes()[payer_index].keypair();
         let node = &self.harness.nodes()[node_index];
 
@@ -302,6 +333,7 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("claim commission for node {node_index}"))?;
 
+        trace!(payer_index, node_index, "claim_commission completed");
         Ok(())
     }
 
@@ -335,6 +367,12 @@ impl SimnetScenario<'_> {
         node_indices: &[usize],
         amount_tape: u64,
     ) -> Result<()> {
+        trace!(
+            payer_index,
+            count = node_indices.len(),
+            amount_tape,
+            "stake_many start"
+        );
         append_log(&format!(
             "stake many start count={} amount={amount_tape}",
             node_indices.len()
@@ -344,28 +382,37 @@ impl SimnetScenario<'_> {
                 .await
                 .with_context(|| format!("stake node {i}"))?;
         }
+        trace!(
+            payer_index,
+            count = node_indices.len(),
+            "stake_many complete"
+        );
         append_log("stake many done");
         Ok(())
     }
 
     pub async fn join_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
+        trace!(payer_index, count = node_indices.len(), "join_many start");
         append_log(&format!("join many start count={}", node_indices.len()));
         for &i in node_indices {
             self.join_node_ok(payer_index, i)
                 .await
                 .with_context(|| format!("join node {i}"))?;
         }
+        trace!(payer_index, count = node_indices.len(), "join_many complete");
         append_log("join many done");
         Ok(())
     }
 
     pub async fn pool_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
+        trace!(payer_index, count = node_indices.len(), "pool_many start");
         append_log(&format!("pool many start count={}", node_indices.len()));
         for &i in node_indices {
             self.advance_pool_ok(payer_index, i)
                 .await
                 .with_context(|| format!("advance pool for node {i}"))?;
         }
+        trace!(payer_index, count = node_indices.len(), "pool_many complete");
         append_log("pool many done");
         Ok(())
     }

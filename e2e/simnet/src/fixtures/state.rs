@@ -6,6 +6,7 @@ use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
 use tape_node::supervisor::{TaskKey, TaskOutcome};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use tracing::trace;
 
 use crate::scenario::SimnetScenario;
 
@@ -87,6 +88,7 @@ pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
+        trace!(index, "running manual refresh_node_state");
         let semaphore = Arc::new(Semaphore::new(1));
         let (_peer_service, peer_handle) = tape_node::runtime::PeerService::new();
         let cancel = CancellationToken::new();
@@ -101,12 +103,17 @@ pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
         .await;
 
         match outcome {
-            TaskOutcome::Success => Ok(()),
+            TaskOutcome::Success => {
+                trace!(index, outcome = "success", "manual refresh_node_state complete");
+                Ok(())
+            }
             TaskOutcome::Pending(_) => Ok(()),
             TaskOutcome::Retryable(reason) => {
+                trace!(index, %reason, "manual refresh_node_state retryable");
                 bail!("refresh_node_state({index}) retryable failure: {reason}")
             }
             TaskOutcome::Permanent(reason) => {
+                trace!(index, %reason, "manual refresh_node_state permanent");
                 bail!("refresh_node_state({index}) permanent failure: {reason}")
             }
         }

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::event::{
     EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
@@ -23,7 +24,9 @@ use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_core::erasure::spool_in_group;
 use tape_store::error::TapeStoreError;
-use tape_store::ops::{EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+use tape_store::ops::{
+    CommitteeOps, EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
+};
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
 
 use crate::runtime::NodeContext;

@@ -298,10 +298,14 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// Forward a task result to the scheduler/FSM. Silently drops if the
     /// channel is closed (happens during shutdown).
     async fn send_result(&self, result: TaskResult) {
+        let task = match &result {
+            TaskResult::Success(key) | TaskResult::Canceled(key) => key.clone(),
+            TaskResult::RetryableError(key, _) | TaskResult::PermanentError(key, _) => key.clone(),
+        };
         if self.result_tx.send(result).await.is_err() {
             tracing::debug!("result channel closed");
         } else {
-            tracing::trace!(result = ?result, "supervisor sent result");
+            tracing::trace!(task = ?task, "supervisor sent result");
         }
     }
 

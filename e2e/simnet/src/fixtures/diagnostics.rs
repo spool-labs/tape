@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
+use tracing::trace;
 
 use crate::log::{log_path, read_log};
 use crate::scenario::SimnetScenario;
@@ -34,8 +35,10 @@ impl SimnetScenario<'_> {
 
     pub async fn wait_node_healthy(&self, index: usize, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        trace!(index, timeout_secs = timeout.as_secs(), "wait_node_healthy start");
         while start.elapsed() < timeout {
             if self.is_node_healthy(index).await {
+                trace!(index, elapsed_ms = start.elapsed().as_millis(), "wait_node_healthy success");
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -44,9 +47,18 @@ impl SimnetScenario<'_> {
     }
 
     pub async fn wait_nodes_healthy(&self, timeout: Duration) -> Result<()> {
+        trace!(
+            node_count = self.harness.nodes().len(),
+            timeout_secs = timeout.as_secs(),
+            "wait_nodes_healthy start"
+        );
         for i in 0..self.harness.nodes().len() {
             self.wait_node_healthy(i, timeout).await?;
         }
+        trace!(
+            node_count = self.harness.nodes().len(),
+            "wait_nodes_healthy complete"
+        );
         Ok(())
     }
 
