@@ -50,7 +50,7 @@ pub async fn run<S: Store, R: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
     };
 
-    // Find the node that owned this spool in the previous epoch
+    // Find the peer that owned this spool in the previous epoch
     let prev_owner = prev_committee
         .iter()
         .find(|node| node.spools.contains(&spool));
@@ -65,6 +65,16 @@ pub async fn run<S: Store, R: Rpc>(
             return TaskOutcome::Success;
         }
     };
+
+    // We already have the data — no need to HTTP-sync from ourselves.
+    let our_address: StorePubkey = context.node_address().into();
+    if prev_owner.node_address == our_address {
+        tracing::info!(spool, "we owned this spool last epoch, marking active");
+        if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+            return TaskOutcome::Retryable(format!("set spool active: {e}"));
+        }
+        return TaskOutcome::Success;
+    }
 
     // Build client for previous owner
     let addr = match prev_owner.network_address.to_socket_addr() {

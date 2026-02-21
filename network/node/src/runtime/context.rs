@@ -10,6 +10,7 @@ use rpc_client::RpcClient;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use store::Store;
+use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
@@ -60,6 +61,8 @@ pub struct NodeContext<S: Store, R: Rpc> {
     pub rpc: Arc<RpcClient<R>>,
     /// Onchain unique id for this node after registration
     node_id: NodeId,
+    /// PDA-derived node account address (cached from authority keypair).
+    node_address: Pubkey,
 }
 
 impl<S: Store, R: Rpc> NodeContext<S, R> {
@@ -77,6 +80,12 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         Self::from_parts(config, keypair, bls_keypair, store, rpc, NodeId(0))
     }
     
+    /// This node's PDA-derived on-chain account address. Use this to compare
+    /// against `NodeInfo.node_address` in committee lookups.
+    pub fn node_address(&self) -> Pubkey {
+        self.node_address
+    }
+
     fn from_parts(
         config: NodeConfig,
         keypair: Keypair,
@@ -85,6 +94,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         rpc: RpcClient<R>,
         node_id: NodeId,
     ) -> Arc<Self> {
+        let (node_address, _) = node_pda(keypair.pubkey());
         Arc::new(Self {
             config: Arc::new(config),
             keypair: Arc::new(keypair),
@@ -93,6 +103,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
             node_id,
+            node_address,
         })
     }
 
