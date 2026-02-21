@@ -13,7 +13,7 @@ use crate::snapshot::{
     classify_submit_error, load_group_artifacts, load_snapshot_task_context, missing_state,
     skip_if_cancelled, SNAPSHOT_PENDING_DELAY, SnapshotNeed, SubmitClass,
 };
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 /// Submit completed snapshot certifications on-chain.
 pub async fn run_submit<S: Store, R: Rpc>(

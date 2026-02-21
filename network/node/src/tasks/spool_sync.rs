@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
 use crate::runtime::PeerHandle;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
 

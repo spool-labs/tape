@@ -1,4 +1,4 @@
-//! Task execution — dispatches each `TaskKey` to its implementation module.
+//! Task execution — dispatches each `Task` to its implementation module.
 
 mod advance_epoch;
 mod advance_pool;
@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
 use crate::runtime::PeerHandle;
-use crate::supervisor::{TaskKey, TaskOutcome};
+use crate::runtime::{Task, TaskOutcome};
 
 /// Execute a single task to completion.
 ///
@@ -33,10 +33,10 @@ use crate::supervisor::{TaskKey, TaskOutcome};
 pub async fn execute_task<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     peer_handle: PeerHandle,
-    key: TaskKey,
+    key: Task,
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
-) -> (TaskKey, TaskOutcome) {
+) -> (Task, TaskOutcome) {
     let started_at = Instant::now();
     tracing::trace!(task = ?key, "task execution started");
     let _permit = match semaphore.acquire().await {
@@ -69,46 +69,46 @@ pub async fn execute_task<S: Store, R: Rpc>(
     }
 
     let outcome = match &key {
-        TaskKey::RefreshOnchainState => {
+        Task::RefreshOnchainState => {
             refresh_onchain_state::run(context, peer_handle, cancel).await
         }
-        TaskKey::AdvanceEpoch { .. } => {
+        Task::AdvanceEpoch { .. } => {
             advance_epoch::run(context, cancel).await
         }
-        TaskKey::SyncEpoch { .. } => {
+        Task::SyncEpoch { .. } => {
             sync_epoch::run(context, cancel).await
         }
-        TaskKey::JoinNetwork { .. } => {
+        Task::JoinNetwork { .. } => {
             join_network::run(context, cancel).await
         }
-        TaskKey::AdvancePool { .. } => {
+        Task::AdvancePool { .. } => {
             advance_pool::run(context, cancel).await
         }
-        TaskKey::SpoolSync { spool } => {
+        Task::SpoolSync { spool } => {
             spool_sync::run(context, peer_handle, *spool, cancel).await
         }
-        TaskKey::SpoolRecovery { spool } => {
+        Task::SpoolRecovery { spool } => {
             spool_recovery::run(context, peer_handle, *spool, cancel).await
         }
-        TaskKey::RecoveryScan { spool } => {
+        Task::RecoveryScan { spool } => {
             recovery_scan::run(context, *spool, cancel).await
         }
-        TaskKey::InvalidateTrack { track } => {
+        Task::InvalidateTrack { track } => {
             invalidate_track::run(context, *track, cancel).await
         }
-        TaskKey::SnapshotBuild { .. } => {
+        Task::SnapshotBuild { .. } => {
             snapshot::run_build(context, peer_handle, cancel).await
         }
-        TaskKey::SnapshotCollect { .. } => {
+        Task::SnapshotCollect { .. } => {
             snapshot::run_collect(context, peer_handle, cancel).await
         }
-        TaskKey::RegisterSnapshot { .. } => {
+        Task::RegisterSnapshot { .. } => {
             snapshot::run_register(context, peer_handle, cancel).await
         }
-        TaskKey::SnapshotSubmit { .. } => {
+        Task::SnapshotSubmit { .. } => {
             snapshot::run_submit(context, peer_handle, cancel).await
         }
-        TaskKey::SnapshotBootstrap => {
+        Task::SnapshotBootstrap => {
             snapshot::run_bootstrap(context, peer_handle, cancel).await
         }
     };

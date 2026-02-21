@@ -20,7 +20,7 @@ use crate::snapshot::{
     collect_group_slices, decode_group, decode_outer, fetch_commitments, load_snapshot_task_context,
     missing_state, skip_if_cancelled, SnapshotNeed,
 };
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 pub async fn run_bootstrap<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,

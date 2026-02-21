@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_join_network;
 use crate::runtime::NodeContext;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
 async fn already_joined<S: Store, R: Rpc>(context: &NodeContext<S, R>) -> Result<bool, String> {

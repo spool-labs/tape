@@ -13,7 +13,7 @@ pub enum TaskCategory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TaskKey {
+pub enum Task {
     /// Advance the on-chain epoch.
     AdvanceEpoch { epoch: EpochNumber },
     /// Sync this node's epoch state on-chain.
@@ -44,35 +44,35 @@ pub enum TaskKey {
     RefreshOnchainState,
 }
 
-impl TaskKey {
+impl Task {
     pub fn category(&self) -> TaskCategory {
         match self {
-            TaskKey::AdvanceEpoch { .. }
-            | TaskKey::SyncEpoch { .. }
-            | TaskKey::JoinNetwork { .. }
-            | TaskKey::AdvancePool { .. }
-            | TaskKey::RegisterSnapshot { .. }
-            | TaskKey::SnapshotSubmit { .. }
-            | TaskKey::InvalidateTrack { .. } => TaskCategory::SolanaTx,
-            TaskKey::SpoolSync { .. } | TaskKey::SpoolRecovery { .. } | TaskKey::RecoveryScan { .. } => {
+            Task::AdvanceEpoch { .. }
+            | Task::SyncEpoch { .. }
+            | Task::JoinNetwork { .. }
+            | Task::AdvancePool { .. }
+            | Task::RegisterSnapshot { .. }
+            | Task::SnapshotSubmit { .. }
+            | Task::InvalidateTrack { .. } => TaskCategory::SolanaTx,
+            Task::SpoolSync { .. } | Task::SpoolRecovery { .. } | Task::RecoveryScan { .. } => {
                 TaskCategory::PeerHttp
             }
-            TaskKey::SnapshotBuild { .. } | TaskKey::SnapshotCollect { .. } => TaskCategory::CpuHeavy,
-            TaskKey::SnapshotBootstrap => TaskCategory::PeerHttp,
-            TaskKey::RefreshOnchainState => TaskCategory::Internal,
+            Task::SnapshotBuild { .. } | Task::SnapshotCollect { .. } => TaskCategory::CpuHeavy,
+            Task::SnapshotBootstrap => TaskCategory::PeerHttp,
+            Task::RefreshOnchainState => TaskCategory::Internal,
         }
     }
 
     pub fn scheduled_epoch(&self) -> Option<EpochNumber> {
         match self {
-            TaskKey::AdvanceEpoch { epoch }
-            | TaskKey::SyncEpoch { epoch }
-            | TaskKey::JoinNetwork { epoch }
-            | TaskKey::AdvancePool { epoch }
-            | TaskKey::RegisterSnapshot { epoch }
-            | TaskKey::SnapshotSubmit { epoch }
-            | TaskKey::SnapshotBuild { epoch }
-            | TaskKey::SnapshotCollect { epoch } => Some(*epoch),
+            Task::AdvanceEpoch { epoch }
+            | Task::SyncEpoch { epoch }
+            | Task::JoinNetwork { epoch }
+            | Task::AdvancePool { epoch }
+            | Task::RegisterSnapshot { epoch }
+            | Task::SnapshotSubmit { epoch }
+            | Task::SnapshotBuild { epoch }
+            | Task::SnapshotCollect { epoch } => Some(*epoch),
             _ => None,
         }
     }
@@ -84,17 +84,17 @@ impl TaskKey {
     pub fn is_one_shot(&self) -> bool {
         matches!(
             self,
-            TaskKey::AdvanceEpoch { .. }
-                | TaskKey::SyncEpoch { .. }
-                | TaskKey::JoinNetwork { .. }
-                | TaskKey::AdvancePool { .. }
-                | TaskKey::RegisterSnapshot { .. }
-                | TaskKey::SnapshotSubmit { .. }
-                | TaskKey::InvalidateTrack { .. }
-                | TaskKey::RefreshOnchainState
-                | TaskKey::SnapshotBuild { .. }
-                | TaskKey::SnapshotCollect { .. }
-                | TaskKey::SnapshotBootstrap
+            Task::AdvanceEpoch { .. }
+                | Task::SyncEpoch { .. }
+                | Task::JoinNetwork { .. }
+                | Task::AdvancePool { .. }
+                | Task::RegisterSnapshot { .. }
+                | Task::SnapshotSubmit { .. }
+                | Task::InvalidateTrack { .. }
+                | Task::RefreshOnchainState
+                | Task::SnapshotBuild { .. }
+                | Task::SnapshotCollect { .. }
+                | Task::SnapshotBootstrap
         )
     }
 
@@ -102,9 +102,9 @@ impl TaskKey {
     /// active work, so keep them as continuous tasks.
     pub fn spool_id(&self) -> Option<SpoolIndex> {
         match self {
-            TaskKey::SpoolSync { spool }
-            | TaskKey::RecoveryScan { spool }
-            | TaskKey::SpoolRecovery { spool } => Some(*spool),
+            Task::SpoolSync { spool }
+            | Task::RecoveryScan { spool }
+            | Task::SpoolRecovery { spool } => Some(*spool),
             _ => None,
         }
     }
@@ -125,11 +125,11 @@ pub enum TaskOutcome {
 #[derive(Debug)]
 pub enum TaskResult {
     /// Task completed successfully.
-    Success(TaskKey),
+    Success(Task),
     /// Task was explicitly canceled.
-    Canceled(TaskKey),
+    Canceled(Task),
     /// Task failed with a retryable error.
-    RetryableError(TaskKey, String),
+    RetryableError(Task, String),
     /// Task failed permanently.
-    PermanentError(TaskKey, String),
+    PermanentError(Task, String),
 }

@@ -17,7 +17,7 @@ use crate::runtime::{NodeContext, PeerHandle};
 use crate::snapshot::{
     load_snapshot_task_context, missing_state, skip_if_cancelled, SnapshotNeed, SNAPSHOT_PENDING_DELAY,
 };
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 /// Collect snapshot certifications from peer-submitted partial signatures.
 pub async fn run_collect<S: Store, R: Rpc>(

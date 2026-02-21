@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
 use crate::runtime::committee::{our_member, our_member_index, our_snapshot_groups};
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
 /// Shared retry delay for snapshot collect and submit polling loops.

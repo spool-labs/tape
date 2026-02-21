@@ -15,4 +15,4 @@ pub use config::{
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
 pub use peers::{PeerHandle, PeerService, PeerServiceError};
 pub use stats::RuntimeStats;
-pub use task::{TaskCategory, TaskKey, TaskOutcome, TaskResult};
+pub use task::{TaskCategory, Task, TaskOutcome, TaskResult};

@@ -16,7 +16,7 @@ use tape_store::types::{NodeInfo, Pubkey};
 
 use crate::runtime::NodeContext;
 use crate::runtime::PeerHandle;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 pub async fn fetch_commitments<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

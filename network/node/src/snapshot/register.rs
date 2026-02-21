@@ -12,7 +12,7 @@ use crate::snapshot::{
     classify_submit_error, load_group_artifacts, load_snapshot_task_context, skip_if_cancelled,
     SnapshotNeed, SubmitClass,
 };
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 /// Register built snapshot chunks on-chain once local artifacts are ready.
 pub async fn run_register<S: Store, R: Rpc>(

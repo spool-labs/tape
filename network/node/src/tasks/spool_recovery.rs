@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
 use crate::runtime::PeerHandle;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 

@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
 use crate::runtime::PeerHandle;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,

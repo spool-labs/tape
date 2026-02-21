@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
-use tape_node::supervisor::{TaskKey, TaskOutcome};
+use tape_node::supervisor::{Task, TaskOutcome};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::trace;
@@ -96,7 +96,7 @@ pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
         let (_key, outcome) = tape_node::tasks::execute_task(
             node.context(),
             peer_handle,
-            TaskKey::RefreshOnchainState,
+            Task::RefreshOnchainState,
             cancel,
             semaphore,
         )

@@ -8,7 +8,7 @@ use tape_core::erasure::spool_in_group;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolStatus};
 
-use crate::supervisor::TaskKey;
+use crate::runtime::Task;
 
 pub struct SpoolPlanner;
 
@@ -18,7 +18,7 @@ impl SpoolPlanner {
     pub fn reconcile<S: Store>(
         store: &TapeStore<S>,
         node_status: NodeStatus,
-        desired: &mut HashSet<TaskKey>,
+        desired: &mut HashSet<Task>,
     ) {
         if matches!(node_status, NodeStatus::Standby) {
             tracing::trace!("reconcile_spools skipped for standby node");
@@ -37,9 +37,9 @@ impl SpoolPlanner {
 
         // Remove SpoolSync/SpoolRecovery/RecoveryScan for spools we no longer own
         desired.retain(|key| match key {
-            TaskKey::SpoolSync { spool }
-            | TaskKey::SpoolRecovery { spool }
-            | TaskKey::RecoveryScan { spool } => owned_spools.iter().any(|(id, _)| *id == *spool),
+            Task::SpoolSync { spool }
+            | Task::SpoolRecovery { spool }
+            | Task::RecoveryScan { spool } => owned_spools.iter().any(|(id, _)| *id == *spool),
             _ => true,
         });
 
@@ -47,11 +47,11 @@ impl SpoolPlanner {
         for (spool_id, status) in &owned_spools {
             if matches!(status, SpoolStatus::ActiveSync) {
                 tracing::trace!(spool_id, status = ?status, "scheduling spool sync");
-                desired.insert(TaskKey::SpoolSync { spool: *spool_id });
+                desired.insert(Task::SpoolSync { spool: *spool_id });
             }
             if matches!(status, SpoolStatus::ActiveRecover) {
                 tracing::trace!(spool_id, status = ?status, "scheduling spool recovery");
-                desired.insert(TaskKey::SpoolRecovery { spool: *spool_id });
+                desired.insert(Task::SpoolRecovery { spool: *spool_id });
             }
         }
     }
@@ -62,7 +62,7 @@ impl SpoolPlanner {
         store: &TapeStore<S>,
         node_status: NodeStatus,
         track: &Pubkey,
-        desired: &mut HashSet<TaskKey>,
+        desired: &mut HashSet<Task>,
     ) {
         tracing::trace!(track = %track, "checking slices for track");
         if matches!(node_status, NodeStatus::Standby) {
@@ -118,7 +118,7 @@ impl SpoolPlanner {
                 Ok(false) => {
                     tracing::trace!(spool_id, track = %track, "scheduling spool recovery for missing slice");
                     let _ = store.add_pending_recovery(*spool_id, store_track);
-                    desired.insert(TaskKey::SpoolRecovery { spool: *spool_id });
+                    desired.insert(Task::SpoolRecovery { spool: *spool_id });
                 }
                 Err(_) => {}
             }
@@ -140,7 +140,7 @@ impl SpoolPlanner {
     /// Remove pending recovery entries whose tracks no longer exist in the store
     /// (e.g. deleted or invalidated). Clears SpoolRecovery from desired when a
     /// spool has no remaining pending recoveries.
-    pub fn prune_recoveries<S: Store>(store: &TapeStore<S>, desired: &mut HashSet<TaskKey>) {
+    pub fn prune_recoveries<S: Store>(store: &TapeStore<S>, desired: &mut HashSet<Task>) {
         let spools = match store.iter_all_spools() {
             Ok(spools) => spools,
             Err(_) => return,
@@ -165,7 +165,7 @@ impl SpoolPlanner {
             let has_pending = !pending.is_empty();
 
             if !has_pending && !matches!(status, SpoolStatus::ActiveRecover) {
-                desired.remove(&TaskKey::SpoolRecovery { spool: *spool });
+                desired.remove(&Task::SpoolRecovery { spool: *spool });
             }
         }
     }

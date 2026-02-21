@@ -27,7 +27,7 @@ use crate::snapshot::{
     is_snapshot_build_complete, load_snapshot_task_context, peer_client, skip_if_cancelled,
     SnapshotNeed,
 };
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 /// Build snapshot: serialize event log, outer RS encode into 50 chunks,
 /// inner Clay encode each chunk into 20 slices, store commitments + slices.

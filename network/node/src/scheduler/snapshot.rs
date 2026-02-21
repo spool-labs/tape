@@ -13,7 +13,7 @@ use crate::runtime::NodeContext;
 use crate::runtime::committee::our_snapshot_groups;
 use crate::snapshot::{derive_snapshot_local_epoch, is_snapshot_build_complete, is_snapshot_chunk_ready};
 use crate::state::{GroupState, SnapshotProgress};
-use crate::supervisor::TaskKey;
+use crate::runtime::Task;
 
 pub struct SnapshotPlanner {
     pub progress: SnapshotProgress,
@@ -38,16 +38,16 @@ impl SnapshotPlanner {
         &mut self,
         context: &Arc<NodeContext<S, R>>,
         epoch: EpochNumber,
-        desired: &mut HashSet<TaskKey>,
-        scheduled: &mut HashSet<TaskKey>,
+        desired: &mut HashSet<Task>,
+        scheduled: &mut HashSet<Task>,
         lifecycle: &crate::state::LifecycleEpochState,
         chain_phase_is_active: bool,
     ) {
         tracing::trace!(epoch = epoch.0, "scheduling snapshot pipeline");
-        let snapshot_build = TaskKey::SnapshotBuild { epoch };
-        let snapshot_collect = TaskKey::SnapshotCollect { epoch };
-        let register_snapshot = TaskKey::RegisterSnapshot { epoch };
-        let snapshot_submit = TaskKey::SnapshotSubmit { epoch };
+        let snapshot_build = Task::SnapshotBuild { epoch };
+        let snapshot_collect = Task::SnapshotCollect { epoch };
+        let register_snapshot = Task::RegisterSnapshot { epoch };
+        let snapshot_submit = Task::SnapshotSubmit { epoch };
 
         let Some(local_epoch) = derive_snapshot_local_epoch(epoch) else {
             tracing::trace!(epoch = epoch.0, "snapshot scheduling skipped: no local epoch");
@@ -186,9 +186,9 @@ impl SnapshotPlanner {
         // force-reschedule AdvanceEpoch so we don't wait for the next tick.
         if all_onchain {
             tracing::trace!(epoch = epoch.0, "snapshot all groups onchain -> forcing advance epoch reschedule");
-            scheduled.remove(&TaskKey::AdvanceEpoch { epoch });
-            if !lifecycle.is_done(&TaskKey::AdvanceEpoch { epoch }) && chain_phase_is_active {
-                desired.insert(TaskKey::AdvanceEpoch { epoch });
+            scheduled.remove(&Task::AdvanceEpoch { epoch });
+            if !lifecycle.is_done(&Task::AdvanceEpoch { epoch }) && chain_phase_is_active {
+                desired.insert(Task::AdvanceEpoch { epoch });
             }
         }
     }
@@ -198,9 +198,9 @@ impl SnapshotPlanner {
     pub fn on_success<S: Store, R: Rpc>(
         &mut self,
         context: &Arc<NodeContext<S, R>>,
-        key: &TaskKey,
-        desired: &mut HashSet<TaskKey>,
-        scheduled: &mut HashSet<TaskKey>,
+        key: &Task,
+        desired: &mut HashSet<Task>,
+        scheduled: &mut HashSet<Task>,
         lifecycle: &crate::state::LifecycleEpochState,
         chain_phase_is_active: bool,
     ) {
@@ -208,9 +208,9 @@ impl SnapshotPlanner {
         PHASE1:DISABLED — no snapshot scheduling
         if !matches!(
             key,
-            TaskKey::SnapshotCollect { .. }
-                | TaskKey::RegisterSnapshot { .. }
-                | TaskKey::SnapshotSubmit { .. }
+            Task::SnapshotCollect { .. }
+                | Task::RegisterSnapshot { .. }
+                | Task::SnapshotSubmit { .. }
         ) {
             return;
         }
@@ -220,13 +220,13 @@ impl SnapshotPlanner {
         };
         if self.progress.epoch() == epoch {
             match key {
-                TaskKey::SnapshotCollect { .. } => {
+                Task::SnapshotCollect { .. } => {
                     self.mark_groups_store(context, epoch, GroupState::Certified);
                 }
-                TaskKey::RegisterSnapshot { .. } => {
+                Task::RegisterSnapshot { .. } => {
                     self.mark_owned_groups(context, epoch, GroupState::Registered);
                 }
-                TaskKey::SnapshotSubmit { .. } => {
+                Task::SnapshotSubmit { .. } => {
                     self.mark_owned_groups(context, epoch, GroupState::CertifiedOnchain);
                 }
                 _ => {}

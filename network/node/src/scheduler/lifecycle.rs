@@ -10,7 +10,7 @@ use tape_store::types::NodeStatus;
 
 use crate::runtime::committee::our_member_index;
 use crate::state::LifecycleEpochState;
-use crate::supervisor::TaskKey;
+use crate::runtime::Task;
 
 pub struct LifecyclePlanner {
     pub state: LifecycleEpochState,
@@ -38,7 +38,7 @@ impl LifecyclePlanner {
         store: &TapeStore<S>,
         node_status: NodeStatus,
         epoch: EpochNumber,
-        desired: &mut HashSet<TaskKey>,
+        desired: &mut HashSet<Task>,
     ) {
         tracing::trace!(epoch = epoch.0, "executing lifecycle scheduling");
         if !matches!(node_status, NodeStatus::Active) {
@@ -63,28 +63,28 @@ impl LifecyclePlanner {
         /*
         PHASE1:DISABLED — phase-based lifecycle selection
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
-        desired.remove(&TaskKey::SyncEpoch { epoch });
-        desired.remove(&TaskKey::AdvancePool { epoch });
-        desired.remove(&TaskKey::JoinNetwork { epoch });
+        desired.remove(&Task::SyncEpoch { epoch });
+        desired.remove(&Task::AdvancePool { epoch });
+        desired.remove(&Task::JoinNetwork { epoch });
 
         let phase = store.get_chain_epoch_phase().ok().flatten();
         match phase {
             Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
-                if !self.state.is_done(&TaskKey::SyncEpoch { epoch }) {
+                if !self.state.is_done(&Task::SyncEpoch { epoch }) {
                     tracing::trace!(epoch = epoch.0, "scheduling SyncEpoch in lifecycle");
-                    desired.insert(TaskKey::SyncEpoch { epoch });
+                    desired.insert(Task::SyncEpoch { epoch });
                 } else {
                     tracing::trace!(epoch = epoch.0, "schedule_lifecycle: SyncEpoch already done for epoch");
                 }
             }
             Some(EpochPhase::Settling) => {
-                if !self.state.is_done(&TaskKey::AdvancePool { epoch }) {
+                if !self.state.is_done(&Task::AdvancePool { epoch }) {
                     tracing::trace!(epoch = epoch.0, "scheduling AdvancePool in lifecycle");
-                    desired.insert(TaskKey::AdvancePool { epoch });
+                    desired.insert(Task::AdvancePool { epoch });
                 }
-                if !self.state.is_done(&TaskKey::JoinNetwork { epoch }) {
+                if !self.state.is_done(&Task::JoinNetwork { epoch }) {
                     tracing::trace!(epoch = epoch.0, "scheduling JoinNetwork in lifecycle");
-                    desired.insert(TaskKey::JoinNetwork { epoch });
+                    desired.insert(Task::JoinNetwork { epoch });
                 } else {
                     tracing::trace!(epoch = epoch.0, "schedule_lifecycle: JoinNetwork already done for epoch");
                 }
@@ -93,10 +93,10 @@ impl LifecyclePlanner {
                 tracing::trace!(epoch = epoch.0, "schedule_lifecycle: chain phase active, waiting for Refresh/AdvanceEpoch loop");
             }
         }
-        if chain_phase_is_active && !self.state.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+        if chain_phase_is_active && !self.state.is_done(&Task::AdvanceEpoch { epoch }) {
             tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle");
-            desired.insert(TaskKey::AdvanceEpoch { epoch });
-        } else if self.state.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+            desired.insert(Task::AdvanceEpoch { epoch });
+        } else if self.state.is_done(&Task::AdvanceEpoch { epoch }) {
             tracing::trace!(
                 epoch = epoch.0,
                 "schedule_lifecycle: AdvanceEpoch already done for epoch"
@@ -110,9 +110,9 @@ impl LifecyclePlanner {
         */
 
         // PHASE1: unconditionally schedule AdvanceEpoch in lifecycle
-        if !self.state.is_done(&TaskKey::AdvanceEpoch { epoch }) {
+        if !self.state.is_done(&Task::AdvanceEpoch { epoch }) {
             tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle (phase1)");
-            desired.insert(TaskKey::AdvanceEpoch { epoch });
+            desired.insert(Task::AdvanceEpoch { epoch });
         }
     }
 
@@ -158,9 +158,9 @@ impl LifecyclePlanner {
         &self,
         node_status: NodeStatus,
         epoch: EpochNumber,
-        desired: &mut HashSet<TaskKey>,
+        desired: &mut HashSet<Task>,
     ) {
-        let lifecycle_done = self.state.is_done(&TaskKey::AdvanceEpoch { epoch });
+        let lifecycle_done = self.state.is_done(&Task::AdvanceEpoch { epoch });
         tracing::trace!(
             epoch = epoch.0,
             node_status = ?node_status,
@@ -198,6 +198,6 @@ impl LifecyclePlanner {
         */
 
         tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
-        desired.insert(TaskKey::AdvanceEpoch { epoch });
+        desired.insert(Task::AdvanceEpoch { epoch });
     }
 }

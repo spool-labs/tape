@@ -9,7 +9,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::NodeContext;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 
 const SCAN_BATCH_SIZE: usize = 100;
 

@@ -30,7 +30,7 @@ mod tests {
 
     use crate::runtime::PeerService;
     use crate::runtime::test_utils::test_context;
-    use crate::supervisor::TaskOutcome;
+    use crate::runtime::TaskOutcome;
 
     fn mark_snapshot_build_complete<S: crate::store::Store, R: crate::rpc::Rpc>(
         ctx: &std::sync::Arc<crate::runtime::NodeContext<S, R>>,

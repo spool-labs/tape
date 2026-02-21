@@ -9,7 +9,7 @@ use tape_store::ops::{CommitteeOps, MetaOps};
 
 use crate::runtime::committee::our_member_index;
 use crate::state::RefreshThrottle;
-use crate::supervisor::TaskKey;
+use crate::runtime::Task;
 
 pub struct RefreshPlanner {
     throttle: RefreshThrottle,
@@ -55,11 +55,11 @@ impl RefreshPlanner {
         store: &TapeStore<S>,
         keypair_pubkey: Pubkey,
         force: bool,
-        desired: &HashSet<TaskKey>,
-        scheduled: &HashSet<TaskKey>,
+        desired: &HashSet<Task>,
+        scheduled: &HashSet<Task>,
     ) -> bool {
-        if desired.contains(&TaskKey::RefreshOnchainState)
-            || scheduled.contains(&TaskKey::RefreshOnchainState)
+        if desired.contains(&Task::RefreshOnchainState)
+            || scheduled.contains(&Task::RefreshOnchainState)
         {
             tracing::trace!("refresh already scheduled");
             return false;

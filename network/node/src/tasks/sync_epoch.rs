@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_sync_epoch;
 use crate::runtime::NodeContext;
-use crate::supervisor::TaskOutcome;
+use crate::runtime::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
 pub async fn run<S: Store, R: Rpc>(
