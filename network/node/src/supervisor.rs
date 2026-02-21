@@ -24,9 +24,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::core::{BackoffConfig, compute_delay};
-use crate::runtime::{NodeContext, PeerHandle, TaskCategory, Task, TaskOutcome, TaskResult};
+use crate::runtime::{NodeContext, PeerHandle, TaskCategory, TaskResult};
 use crate::scheduler::Action;
 use crate::tasks::execute_task;
+
+pub use crate::runtime::{Task, TaskOutcome};
 
 /// Fallback sleep target when no retries are pending.
 const FAR_FUTURE_SECS: u64 = 365 * 24 * 3600;

@@ -4,6 +4,7 @@ use tape_api::prelude::*;
 use tape_api::event::EpochAdvanced;
 use tape_crypto::hash::Hash;
 use sysvar::slot_hashes::SlotHashes;
+use tape_spooler::{dhondt_allocate, migrate_dhondt};
 
 /* PHASE1:DISABLED — real advance_epoch logic
 pub fn process_advance_epoch_real(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -184,6 +185,25 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.rotate_committees();
     // PHASE1: self-sustain for phase1; no JoinNetwork means reuse committee as next committee
     system.committee_next = system.committee;
+    system.spools_prev = system.spools;
+
+    if system.committee.size() >= SPOOL_GROUP_SIZE {
+        migrate_dhondt(
+            &mut system.spools,
+            &system.committee,
+            &system.committee_next,
+            &seed,
+        )
+        .map_err(|_| TapeError::UnexpectedState)?;
+    } else {
+        let stake_counts = dhondt_allocate(
+            &system.committee_next.active_stakes(),
+            SPOOL_COUNT as u16,
+        )
+        .map_err(|_| TapeError::UnexpectedState)?;
+        system.spools = SpoolAssignment::try_from_counts(&stake_counts)
+            .map_err(|_| TapeError::UnexpectedState)?;
+    }
     let committee_size = system.committee.size() as u64;
 
     epoch.id = next_epoch(epoch);
