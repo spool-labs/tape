@@ -3,11 +3,8 @@ use crate::error::*;
 use tape_api::prelude::*;
 use tape_api::event::EpochAdvanced;
 use tape_crypto::hash::Hash;
-use sysvar::slot_hashes::SlotHashes;
-use tape_spooler::{dhondt_allocate, migrate_dhondt};
 
-/* PHASE1:DISABLED — real advance_epoch logic
-pub fn process_advance_epoch_real(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let now = Clock::get()?.unix_timestamp;
     let _args = AdvanceEpoch::try_from_bytes(data)?;
     let [
@@ -144,86 +141,6 @@ pub fn process_advance_epoch_real(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         archive.storage_price,
     );
 
-    Ok(())
-}
-*/
-
-pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = AdvanceEpoch::try_from_bytes(data)?;
-    let [
-        _fee_payer_info,
-        authority_info,
-        system_info,
-        _archive_info,
-        epoch_info,
-        _snapshot_state_info,
-        slot_hashes_info,
-    ] = accounts else {
-        return Err(ProgramError::NotEnoughAccountKeys);
-    };
-
-    authority_info.is_signer()?;
-    let system = system_info
-        .is_writable()?
-        .is_system()?
-        .as_account_mut::<System>(&tapedrive::ID)?;
-    let epoch = epoch_info
-        .is_writable()?
-        .is_epoch()?
-        .as_account_mut::<Epoch>(&tapedrive::ID)?;
-
-    // PHASE1: only enforce timing, plus committee rotation for activation
-    let now = Clock::get()?.unix_timestamp;
-    if epoch.last_epoch + EPOCH_DURATION > now {
-        return Err(TapeError::TooSoon.into());
-    }
-
-    let old_epoch = epoch.id;
-    let seed = slot_hash_seed(slot_hashes_info)?;
-
-    // PHASE1: rotate committees so active nodes are discoverable after bootstrap
-    system.rotate_committees();
-    // PHASE1: self-sustain for phase1; no JoinNetwork means reuse committee as next committee
-    system.committee_next = system.committee;
-    system.spools_prev = system.spools;
-
-    if system.committee.size() >= SPOOL_GROUP_SIZE {
-        migrate_dhondt(
-            &mut system.spools,
-            &system.committee,
-            &system.committee_next,
-            &seed,
-        )
-        .map_err(|_| TapeError::UnexpectedState)?;
-    } else {
-        let stake_counts = dhondt_allocate(
-            &system.committee_next.active_stakes(),
-            SPOOL_COUNT as u16,
-        )
-        .map_err(|_| TapeError::UnexpectedState)?;
-        system.spools = SpoolAssignment::try_from_counts(&stake_counts)
-            .map_err(|_| TapeError::UnexpectedState)?;
-    }
-    let committee_size = system.committee.size() as u64;
-
-    epoch.id = next_epoch(epoch);
-    epoch.last_epoch = now;
-    epoch.state = EpochState::active(); // PHASE1: skip Syncing→Settling→Active dance
-    epoch.nonce = seed;
-
-    EpochAdvanced {
-        old_epoch,
-        new_epoch: epoch.id,
-        timestamp: (now as u64).to_le_bytes(),
-        committee_size: committee_size.to_le_bytes(),
-        total_stake: 0u64.to_le_bytes(),
-        storage_price: 0u64.to_le_bytes(),
-        storage_capacity: StorageUnits(0),
-        nonce: seed,
-    }
-    .log();
-
-    solana_program::msg!("AdvanceEpoch (phase1): {} -> {}", old_epoch, epoch.id);
     Ok(())
 }
 

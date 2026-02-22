@@ -207,8 +207,8 @@ async fn ingest_slot<S: Store, R: Rpc>(
         }
     }
 
-    let parsed = match tape_blocks::parse(&block) {
-        Ok(parsed) => parsed,
+    let instructions = match tape_blocks::parse_and_merge(&block) {
+        Ok(instructions) => instructions,
         Err(e) => {
             tracing::warn!(slot = next_slot.0, "Failed to parse block: {e}");
             return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
@@ -216,19 +216,8 @@ async fn ingest_slot<S: Store, R: Rpc>(
     };
     tracing::trace!(
         slot = next_slot.0,
-        tx_count = parsed.tx_count,
-        failed_tx_count = parsed.failed_tx_count,
-        raw_instructions = parsed.raw_instructions.len(),
-        events = parsed.events.len(),
-        "parsed block from rpc"
+        "parsed and merged block instructions"
     );
-    let instructions = match tape_blocks::merge(parsed.raw_instructions, parsed.events) {
-        Ok(instructions) => instructions,
-        Err(e) => {
-            tracing::warn!(slot = next_slot.0, "Failed to merge block: {e}");
-            return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
-        }
-    };
     tracing::trace!(
         slot = next_slot.0,
         merged_instructions = instructions.len(),

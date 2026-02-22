@@ -18,7 +18,7 @@ async fn full_runtime_bft_epoch3() {
         .node_count(31)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .slot_advance_per_tx(1)
+        //.slot_advance_per_tx(1)
         .build()
         .expect("build harness");
 

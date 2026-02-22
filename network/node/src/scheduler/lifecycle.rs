@@ -5,6 +5,7 @@ use store::Store;
 use tape_store::TapeStore;
 
 use tape_core::types::EpochNumber;
+use tape_core::system::EpochPhase;
 use tape_store::ops::{CommitteeOps, MetaOps};
 use tape_store::types::NodeStatus;
 
@@ -60,15 +61,13 @@ impl LifecyclePlanner {
             "schedule_lifecycle phase snapshot"
         );
 
-        /*
-        PHASE1:DISABLED — phase-based lifecycle selection
         // Recompute lifecycle desired-set from phase each time to avoid stale keys.
         desired.remove(&Task::SyncEpoch { epoch });
         desired.remove(&Task::AdvancePool { epoch });
         desired.remove(&Task::JoinNetwork { epoch });
 
-        let phase = store.get_chain_epoch_phase().ok().flatten();
-        match phase {
+        let chain_phase_is_active = matches!(chain_phase, Some(EpochPhase::Active));
+        match chain_phase {
             Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
                 if !self.state.is_done(&Task::SyncEpoch { epoch }) {
                     tracing::trace!(epoch = epoch.0, "scheduling SyncEpoch in lifecycle");
@@ -106,13 +105,6 @@ impl LifecyclePlanner {
                 epoch = epoch.0,
                 "schedule_lifecycle: chain not active for AdvanceEpoch schedule"
             );
-        }
-        */
-
-        // PHASE1: unconditionally schedule AdvanceEpoch in lifecycle
-        if !self.state.is_done(&Task::AdvanceEpoch { epoch }) {
-            tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle (phase1)");
-            desired.insert(Task::AdvanceEpoch { epoch });
         }
     }
 
@@ -158,6 +150,7 @@ impl LifecyclePlanner {
         &self,
         node_status: NodeStatus,
         epoch: EpochNumber,
+        chain_phase: Option<EpochPhase>,
         desired: &mut HashSet<Task>,
     ) {
         let lifecycle_done = self.state.is_done(&Task::AdvanceEpoch { epoch });
@@ -185,8 +178,6 @@ impl LifecyclePlanner {
             return;
         }
 
-        /*
-        PHASE1:DISABLED — chain phase gate for periodic tasks
         if !matches!(chain_phase, Some(EpochPhase::Active)) {
             tracing::trace!(
                 epoch = epoch.0,
@@ -195,7 +186,6 @@ impl LifecyclePlanner {
             );
             return;
         }
-        */
 
         tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
         desired.insert(Task::AdvanceEpoch { epoch });

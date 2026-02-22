@@ -30,9 +30,9 @@ impl RefreshPlanner {
     /// (3s) since they need to observe phase transitions promptly.
     pub fn interval<S: Store>(&self, store: &TapeStore<S>, keypair_pubkey: Pubkey) -> Duration {
         if Self::in_committee(store, keypair_pubkey) {
-            Duration::from_secs(3)
+            Duration::from_secs(3000)
         } else {
-            Duration::from_secs(30)
+            Duration::from_secs(3000)
         }
     }
 

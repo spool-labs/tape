@@ -11,7 +11,8 @@ use crate::event::{parse_event_data, TapedriveEvent};
 use crate::helpers::{
     get_program_id, is_program_data, is_program_failure, is_program_invoke, is_program_success,
 };
-use crate::instruction::{parse_raw_instruction, RawInstruction};
+use crate::instruction::{parse_raw_instruction, ParsedInstruction, RawInstruction};
+use crate::merge::merge;
 
 /// Result of parsing a single block.
 ///
@@ -45,9 +46,9 @@ pub struct ParsedBlock {
 /// Parse a confirmed block for tapedrive instructions and events.
 ///
 /// Returns instructions and events separately. Consumers can:
-/// - Use `parsed.events` directly for event-only processing (monitor)
-/// - Call `merge(parsed.raw_instructions, parsed.events)` to get merged
-///   instructions (node)
+/// - Use `parsed.events` directly for event-only processing (monitoring)
+/// - Use `parse_and_merge(block)` for node-safe, per-transaction merged
+///   instructions
 ///
 /// # Example
 /// ```ignore
@@ -87,6 +88,26 @@ pub fn parse(block: &UiConfirmedBlock) -> Result<ParsedBlock, ParseError> {
     }
 
     Ok(result)
+}
+
+/// Parse a confirmed block and merge parsed instructions for each transaction.
+///
+/// Instruction/event alignment is performed on a per-transaction basis so
+/// same-type instructions or events in one block cannot cross-map across
+/// different transactions.
+pub fn parse_and_merge(block: &UiConfirmedBlock) -> Result<Vec<ParsedInstruction>, ParseError> {
+    let parsed = parse(block)?;
+    merge_transactions(&parsed.transactions)
+}
+
+fn merge_transactions(
+    transactions: &[ParsedTransaction],
+) -> Result<Vec<ParsedInstruction>, ParseError> {
+    let mut instructions = Vec::new();
+    for tx in transactions {
+        instructions.extend(merge(tx.raw_instructions.clone(), tx.events.clone())?);
+    }
+    Ok(instructions)
 }
 
 /// Parse a single transaction for tapedrive instructions and events.
@@ -196,7 +217,9 @@ fn is_failed_transaction(tx: &EncodedTransactionWithStatusMeta) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::pubkey::Pubkey;
     use solana_transaction_status::UiConfirmedBlock;
+    use tape_api::event::{EpochAdvanced, NodeSynced};
 
     #[test]
     fn test_parse_empty_block() {
@@ -216,5 +239,133 @@ mod tests {
         assert!(result.raw_instructions.is_empty());
         assert!(result.events.is_empty());
         assert_eq!(result.tx_count, 0);
+    }
+
+    #[test]
+    fn test_merge_transactions_keeps_transaction_boundaries_for_optional_events() {
+        use tape_core::erasure::SPOOL_GROUP_SIZE;
+        use crate::event::TapedriveEvent;
+        use tape_api::event::TrackRegistered;
+
+        let tx1_track = Pubkey::new_unique();
+        let tx2_track = Pubkey::new_unique();
+
+        let tx1 = ParsedTransaction {
+            raw_instructions: vec![RawInstruction::RegisterTrack {
+                owner: Pubkey::new_unique(),
+                track: tx1_track,
+                key: tape_crypto::Hash::default(),
+                root: tape_crypto::Hash::default(),
+                commitment: tape_crypto::Hash::default(),
+                size: 1_024u64.into(),
+            }],
+            events: vec![],
+        };
+
+        let track_event = TrackRegistered {
+            track: tx2_track,
+            tape: Pubkey::new_unique(),
+            key: tape_crypto::Hash::default(),
+            size: 1_024u64.into(),
+            commitment: tape_crypto::Hash::default(),
+            epoch: 2.into(),
+            profile: tape_core::encoding::EncodingProfile::clay_default(),
+            spool_group: 0u64.to_le_bytes(),
+            stripe_size: 0u64.to_le_bytes(),
+            stripe_count: 0u64.to_le_bytes(),
+            leaves: [tape_crypto::Hash::default(); SPOOL_GROUP_SIZE],
+        };
+
+        let tx2 = ParsedTransaction {
+            raw_instructions: vec![RawInstruction::RegisterTrack {
+                owner: Pubkey::new_unique(),
+                track: tx2_track,
+                key: tape_crypto::Hash::default(),
+                root: tape_crypto::Hash::default(),
+                commitment: tape_crypto::Hash::default(),
+                size: 1_024u64.into(),
+            }],
+            events: vec![TapedriveEvent::TrackRegistered(track_event)],
+        };
+
+        let parsed = ParsedBlock {
+            transactions: vec![tx1, tx2],
+            ..ParsedBlock::default()
+        };
+
+        let merged = merge_transactions(&parsed.transactions).unwrap();
+        assert_eq!(merged.len(), 2);
+        match &merged[0] {
+            ParsedInstruction::RegisterTrack {
+                event: first_event,
+                ..
+            } => assert!(first_event.is_none()),
+            _ => panic!("expected first instruction to be register track"),
+        }
+        match &merged[1] {
+            ParsedInstruction::RegisterTrack {
+                event: second_event,
+                ..
+            } => {
+                assert!(second_event.is_some());
+                assert_eq!(second_event.as_ref().unwrap().track, tx2_track);
+            }
+            _ => panic!("expected second instruction to be register track"),
+        }
+    }
+
+    #[test]
+    fn test_merge_transactions_preserves_instruction_order() {
+        let tx1 = ParsedTransaction {
+            raw_instructions: vec![
+                RawInstruction::AdvanceEpoch,
+                RawInstruction::SyncEpoch,
+            ],
+            events: vec![
+                TapedriveEvent::EpochAdvanced(EpochAdvanced {
+                    old_epoch: 1u64.into(),
+                    new_epoch: 2u64.into(),
+                    timestamp: [0; 8],
+                    committee_size: [0; 8],
+                    total_stake: [0; 8],
+                    storage_price: [0; 8],
+                    storage_capacity: 1.into(),
+                    nonce: tape_crypto::Hash::default(),
+                }),
+                TapedriveEvent::NodeSynced(NodeSynced {
+                    node: Pubkey::new_unique(),
+                    id: tape_core::types::NodeId::new(1),
+                    epoch: 1u64.into(),
+                    spools_hash: tape_crypto::Hash::default(),
+                }),
+            ],
+        };
+        let tx2 = ParsedTransaction {
+            raw_instructions: vec![RawInstruction::AdvanceEpoch],
+            events: vec![TapedriveEvent::EpochAdvanced(EpochAdvanced {
+                old_epoch: 2u64.into(),
+                new_epoch: 3u64.into(),
+                timestamp: [0; 8],
+                committee_size: [0; 8],
+                total_stake: [0; 8],
+                storage_price: [0; 8],
+                storage_capacity: 1.into(),
+                nonce: tape_crypto::Hash::default(),
+            })],
+        };
+
+        let parsed = ParsedBlock {
+            transactions: vec![tx1, tx2],
+            ..ParsedBlock::default()
+        };
+
+        let merged = merge_transactions(&parsed.transactions).unwrap();
+        assert_eq!(merged.len(), 3);
+        assert!(matches!(
+            &merged[0],
+            ParsedInstruction::AdvanceEpoch { .. }
+        ));
+        assert!(matches!(&merged[1], ParsedInstruction::SyncEpoch { .. }));
+        assert!(matches!(&merged[2], ParsedInstruction::AdvanceEpoch { .. }));
     }
 }

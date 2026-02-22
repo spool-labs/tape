@@ -136,17 +136,17 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                     }
                 }
 
-                _ = ticker.tick() => {
-                    tracing::trace!(
-                        received_changes,
-                        handled_results,
-                        desired = self.desired.len(),
-                        scheduled = self.scheduled.len(),
-                        "scheduler periodic tick"
-                    );
-                    self.periodic_tasks();
-                    self.flush(&action_tx);
-                }
+                // _ = ticker.tick() => {
+                //     tracing::trace!(
+                //         received_changes,
+                //         handled_results,
+                //         desired = self.desired.len(),
+                //         scheduled = self.scheduled.len(),
+                //         "scheduler periodic tick"
+                //     );
+                //     self.periodic_tasks();
+                //     self.flush(&action_tx);
+                // }
 
                 _ = cancel.cancelled() => {
                     tracing::trace!("scheduler received cancel signal");
@@ -254,7 +254,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         self.request_refresh(false);
         let epoch = self.scheduling_epoch();
         let node_status = self.node_status();
-        self.lifecycle.periodic(node_status, epoch, &mut self.desired);
+        let chain_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
+        self.lifecycle
+            .periodic(node_status, epoch, chain_phase, &mut self.desired);
     }
 
     /// Process a task completion from the supervisor. Stale epoch results are
@@ -377,9 +379,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// After SyncEpoch succeeds, re-run lifecycle scheduling to unlock the
     /// Settling-phase tasks (AdvancePool, JoinNetwork).
-    fn handle_sync_success(&mut self, _key: &Task) {
-        /*
-        PHASE1:DISABLED — no SyncEpoch scheduling
+    fn handle_sync_success(&mut self, key: &Task) {
         if !matches!(key, Task::SyncEpoch { .. }) {
             return;
         }
@@ -392,7 +392,6 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
                 &mut self.desired,
             );
         }
-        */
     }
 
     /// After bootstrap completes, trigger a refresh to pick up the replayed state.

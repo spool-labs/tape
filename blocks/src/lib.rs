@@ -21,6 +21,11 @@
 //!     // Process instructions with embedded events
 //! }
 //! ```
+//!
+//! Or call the transaction-safe helper:
+//! ```ignore
+//! let merged = tape_blocks::parse_and_merge(&block)?;
+//! ```
 
 mod block;
 mod error;
@@ -30,7 +35,7 @@ mod instruction;
 mod merge;
 
 // Re-export main types and functions
-pub use block::{parse, ParsedBlock, ParsedTransaction};
+pub use block::{parse, parse_and_merge, ParsedBlock, ParsedTransaction};
 pub use error::ParseError;
 pub use event::TapedriveEvent;
 pub use instruction::{ParsedInstruction, RawInstruction};
