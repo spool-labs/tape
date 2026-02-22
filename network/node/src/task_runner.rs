@@ -23,11 +23,13 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use tape_store::ops::MetaOps;
+
 use crate::core::{BackoffConfig, compute_delay};
 use crate::core::{NodeContext, PeerHandle};
 use crate::{TaskCategory, TaskResult};
 use crate::task_scheduler::Action;
-use crate::tasks::execute_task;
+use crate::tasks;
 
 pub use crate::{Task, TaskOutcome};
 
@@ -45,16 +47,20 @@ const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 pub struct TaskRunner<S: Store, R: Rpc> {
     /// Shared node state (store, RPC client, identity, config).
     context: Arc<NodeContext<S, R>>,
+
     /// Currently executing tasks, keyed for dedup and attempt tracking.
     running: HashMap<Task, RunningTask>,
     /// Keys whose cancel was processed while the future was still in-flight.
     canceled: HashSet<Task>,
-    /// Tasks waiting to be retried after backoff.
-    retries: RetryQueue,
+
     /// Per-category concurrency semaphores.
     limits: ConcurrencyLimits,
     /// Handle for making peer HTTP requests.
     peers: PeerHandle,
+
+    /// Tasks waiting to be retried after backoff.
+    retry: RetryQueue,
+
     /// Cancellation token for each running task.
     cancel_tokens: HashMap<Task, CancellationToken>,
     /// Collects completions from all spawned task futures.
@@ -74,7 +80,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
             peers: peer_handle,
             running: HashMap::new(),
             canceled: HashSet::new(),
-            retries: RetryQueue::new(),
+            retry: RetryQueue::new(),
             limits: ConcurrencyLimits::new(),
             cancel_tokens: HashMap::new(),
             futures: JoinSet::new(),
@@ -95,7 +101,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         cancel: CancellationToken,
     ) {
         loop {
-            let next_retry = self.retries.next_due_instant();
+            let next_retry = self.retry.next_due_instant();
 
             tokio::select! {
                 action = action_rx.recv() => {
@@ -147,7 +153,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     /// Schedule a task for execution. Silently deduplicates: if the key is
     /// already running or awaiting retry, the request is dropped.
     fn handle_schedule(&mut self, key: Task, attempt: u32) {
-        if self.running.contains_key(&key) || self.retries.contains(&key) {
+        if self.running.contains_key(&key) || self.retry.contains(&key) {
             tracing::trace!(
                 task = ?key,
                 attempt,
@@ -172,7 +178,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         if let Some(token) = self.cancel_tokens.remove(key) {
             token.cancel();
         }
-        let had_pending = self.retries.cancel(key);
+        let had_pending = self.retry.cancel(key);
         tracing::trace!(
             task = ?key,
             had_running,
@@ -224,7 +230,8 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
             delay_secs = delay.as_secs(),
             "task_runner pending retry"
         );
-        self.retries.enqueue(key, attempt, delay);
+
+        self.retry.enqueue(key, attempt, delay);
     }
 
     /// Compute backoff delay and re-enqueue, or escalate to permanent failure
@@ -241,14 +248,14 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
                     error = %err,
                     "scheduling retry"
                 );
-                self.retries.enqueue(key.clone(), attempt + 1, delay);
+                self.retry.enqueue(key.clone(), attempt + 1, delay);
                 self.send_result(TaskResult::RetryableError(key, err)).await;
             }
             None => {
                 tracing::error!(
                     task = ?key,
                     attempt,
-                    "max retries exceeded, treating as permanent failure"
+                    "max retry exceeded, treating as permanent failure"
                 );
                 self.complete_permanent(key, err).await;
             }
@@ -277,7 +284,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
 
     /// Drain all retry entries whose due time has passed and re-spawn them.
     fn process_retries(&mut self) {
-        for (key, attempt) in self.retries.drain_due() {
+        for (key, attempt) in self.retry.drain_due() {
             tracing::trace!(task = ?key, attempt, "task_runner retry due");
             self.spawn_task(key, attempt);
         }
@@ -292,6 +299,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         }
 
         let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_TIMEOUT_SECS);
+
         loop {
             tokio::select! {
                 result = self.futures.join_next() => {
@@ -350,7 +358,13 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         );
 
         self.futures.spawn(
-            execute_task(ctx, peers, key_to_run.clone(), token_clone, sem).instrument(span),
+            execute_task(
+                ctx, 
+                peers, 
+                key_to_run.clone(), 
+                token_clone, 
+                sem
+            ).instrument(span),
         );
 
         self.running.insert(
@@ -364,6 +378,114 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
 
         self.cancel_tokens.insert(key, token);
     }
+}
+
+/// Execute a single task to completion.
+///
+/// Acquires the concurrency semaphore, checks for cancellation, then
+/// dispatches to the appropriate task module.
+pub async fn execute_task<S: Store, R: Rpc>(
+    context: Arc<NodeContext<S, R>>,
+    peer_handle: PeerHandle,
+    key: Task,
+    cancel: CancellationToken,
+    semaphore: Arc<Semaphore>,
+) -> (Task, TaskOutcome) {
+
+    let started_at = std::time::Instant::now();
+    tracing::trace!(task = ?key, "task execution started");
+
+    let _permit = match semaphore.acquire().await {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::trace!(task = ?key, "task execution aborted: semaphore closed");
+            return (key, TaskOutcome::Permanent("semaphore closed".into()));
+        }
+    };
+
+    if cancel.is_cancelled() {
+        tracing::trace!(task = ?key, "task execution skipped: already canceled");
+        return (key, TaskOutcome::Success);
+    }
+
+    // Each epoch-scoped key is pinned to its scheduled chain epoch.
+    // If the node has already advanced/lagged, skip stale tx/submission.
+    if let Some(task_epoch) = key.scheduled_epoch() {
+
+        // TODO: this feels broken, using what is potentially a future epoch to decide if a task
+        // should be skipped. I'm not sure this belongs here. Definitely needs to be reviewed.
+
+        if let Ok(Some(chain_epoch)) = context.store.get_chain_epoch() {
+            if task_epoch != chain_epoch {
+                tracing::trace!(
+                    task = ?key,
+                    scheduled_epoch = task_epoch.0,
+                    chain_epoch = chain_epoch.0,
+                    "task execution skipped: stale epoch"
+                );
+                return (key, TaskOutcome::Success);
+            }
+        }
+    }
+
+    let outcome = match &key {
+        Task::RefreshOnchainState => {
+            tasks::refresh_onchain_state::run(context, peer_handle, cancel).await
+        }
+        Task::AdvanceEpoch { .. } => {
+            tasks::advance_epoch::run(context, cancel).await
+        }
+        Task::SyncEpoch { .. } => {
+            tasks::sync_epoch::run(context, cancel).await
+        }
+        Task::JoinNetwork { .. } => {
+            tasks::join_network::run(context, cancel).await
+        }
+        Task::AdvancePool { .. } => {
+            tasks::advance_pool::run(context, cancel).await
+        }
+        Task::SpoolSync { spool } => {
+            tasks::spool_sync::run(context, peer_handle, *spool, cancel).await
+        }
+        Task::SpoolRecovery { spool } => {
+            tasks::spool_recovery::run(context, peer_handle, *spool, cancel).await
+        }
+        Task::RecoveryScan { spool } => {
+            tasks::recovery_scan::run(context, *spool, cancel).await
+        }
+        Task::InvalidateTrack { track } => {
+            tasks::invalidate_track::run(context, *track, cancel).await
+        }
+        Task::SnapshotBuild { .. } => {
+            tasks::snapshot::run_build(context, peer_handle, cancel).await
+        }
+        Task::SnapshotCollect { .. } => {
+            tasks::snapshot::run_collect(context, peer_handle, cancel).await
+        }
+        Task::RegisterSnapshot { .. } => {
+            tasks::snapshot::run_register(context, peer_handle, cancel).await
+        }
+        Task::SnapshotSubmit { .. } => {
+            tasks::snapshot::run_submit(context, peer_handle, cancel).await
+        }
+        Task::SnapshotBootstrap => {
+            tasks::snapshot::run_bootstrap(context, peer_handle, cancel).await
+        }
+    };
+
+    let duration_ms = started_at
+        .elapsed()
+        .as_millis() as u64;
+
+    tracing::trace!(
+        task = ?key,
+        outcome = ?outcome,
+        duration_ms,
+        "task execution completed"
+    );
+    tracing::Span::current().record("duration_ms", duration_ms);
+
+    (key, outcome)
 }
 
 /// Return the backoff configuration for a task category.
@@ -694,8 +816,8 @@ mod tests {
             .await;
 
         // Should be in retry queue
-        assert!(task_runner.retries.contains(&key));
-        assert!(!task_runner.retries.is_empty());
+        assert!(task_runner.retry.contains(&key));
+        assert!(!task_runner.retry.is_empty());
 
         // Result should have been sent
         let result = result_rx.try_recv().unwrap();
@@ -726,9 +848,9 @@ mod tests {
             .handle_completion(key.clone(), TaskOutcome::Pending(Duration::from_secs(2)))
             .await;
 
-        assert!(task_runner.retries.contains(&key));
-        assert_eq!(task_runner.retries.len(), 1);
-        let queued = &task_runner.retries.peek().unwrap().0;
+        assert!(task_runner.retry.contains(&key));
+        assert_eq!(task_runner.retry.len(), 1);
+        let queued = &task_runner.retry.peek().unwrap().0;
         assert_eq!(queued.key, key);
         assert_eq!(queued.attempt, 3);
         assert!(result_rx.try_recv().is_err());
@@ -972,7 +1094,7 @@ mod tests {
             .await;
 
         // Should NOT be in retry queue — max retries exceeded
-        assert!(!task_runner.retries.contains(&key));
+        assert!(!task_runner.retry.contains(&key));
 
         // Should get PermanentError
         let result = result_rx.try_recv().unwrap();

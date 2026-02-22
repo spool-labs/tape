@@ -115,12 +115,17 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
             instruction_count = block.instructions.len(),
             "fsm applying block"
         );
+
+        // TODO: this feels broken, we probably don't want the latest epoch when processing blocks.
+        // the current epoch value might be in the future relative to this block.
+
         let mut changes = Vec::new();
         let mut current_epoch = self
             .context
             .store
             .get_chain_epoch()?
             .unwrap_or(EpochNumber(0));
+
         for instruction in &block.instructions {
             tracing::trace!(
                 slot = %block.slot,
@@ -128,8 +133,15 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 instruction = ?instruction,
                 "fsm applying instruction"
             );
+
             let before_len = changes.len();
-            self.apply_instruction(instruction, block.slot, &mut changes, &mut current_epoch)?;
+            self.apply_instruction(
+                instruction,
+                block.slot, 
+                &mut changes,
+                &mut current_epoch
+            )?;
+
             let added = changes.len() - before_len;
             if added > 0 {
                 tracing::trace!(
@@ -140,8 +152,10 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 );
             }
         }
+
         // Update sync cursor LAST — crash recovery re-processes from cursor
         self.context.store.set_sync_cursor(block.slot)?;
+
         tracing::trace!(
             slot = %block.slot,
             change_count = changes.len(),

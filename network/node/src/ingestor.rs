@@ -48,11 +48,14 @@ impl BlockIngestor {
         sender: mpsc::Sender<IngestedBlock>,
         cancel: CancellationToken,
     ) -> Result<(), anyhow::Error> {
+
         let mut next_slot = match wait_bootstrap(&context, &cancel).await? {
             Some(slot) => slot,
             None => return Ok(()),
         };
+
         tracing::trace!(next_slot = next_slot.0, "ingestor run started");
+
         let mut backoff = Backoff::new(BackoffConfig {
             min_delay: Duration::from_millis(BACKOFF_MIN_MS),
             max_delay: Duration::from_secs(BACKOFF_MAX_SECS),
@@ -83,35 +86,36 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
     cancel: &CancellationToken,
 ) -> Result<Option<SlotNumber>, anyhow::Error> {
+
     loop {
-        let cursor = context.store.get_sync_cursor()?;
+
+        let cursor = context
+            .store
+            .get_sync_cursor()?;
+
+        let epoch = context
+            .store
+            .get_chain_epoch()
+            .ok()
+            .flatten();
+
         let status = context
             .store
             .get_node_status()
             .ok()
             .flatten()
             .unwrap_or(NodeStatus::Standby);
-        let epoch = context.store.get_chain_epoch().ok().flatten();
+
         let cursor_slot = cursor.map(|slot| slot.0);
-        tracing::trace!(
-            cursor = cursor_slot,
-            status = ?status,
-            epoch = epoch.map(|e| e.0),
-            "ingestor wait_bootstrap observed state"
-        );
 
         if let Some(slot) = cursor {
             return Ok(Some(SlotNumber(slot.0 + 1)));
         }
 
-        let needs_bootstrap = matches!(status, NodeStatus::Active) && matches!(epoch, Some(e) if e.0 >= 2);
-        tracing::trace!(
-            needs_bootstrap,
-            status = ?status,
-            epoch = epoch.map(|e| e.0),
-            cursor = cursor.map(|slot| slot.0),
-            "ingestor bootstrap gate"
-        );
+        let needs_bootstrap = 
+            matches!(status, NodeStatus::Active) && 
+            matches!(epoch, Some(e) if e.0 >= 2);
+
         if !needs_bootstrap {
             tracing::trace!(
                 cursor = cursor.map(|slot| slot.0),
@@ -119,6 +123,8 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
                 epoch = epoch.map(|e| e.0),
                 "ingestor bootstrap completed"
             );
+
+            // TODO: why are we returning slot number 0? feels broken...
             return Ok(Some(SlotNumber(0)));
         }
 
@@ -127,7 +133,10 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
             epoch = epoch.map(|e| e.0),
             "waiting for snapshot bootstrap to complete"
         );
+
+        // TODO: Why is the duration defined here?
         if !sleep_or_active(Duration::from_secs(BOOTSTRAP_POLL_SECS), cancel).await {
+            // TODO: why are we returning None?
             return Ok(None);
         }
     }
@@ -140,6 +149,7 @@ async fn ingest_slot<S: Store, R: Rpc>(
     next_slot: SlotNumber,
     backoff: &mut Backoff,
 ) -> Result<IngestStep, anyhow::Error> {
+
     let tip = match context.rpc.get_slot().await {
         Ok(tip) => SlotNumber(tip),
         Err(e) => {
@@ -152,6 +162,7 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Wait);
         }
     };
+
     tracing::trace!(
         next_slot = next_slot.0,
         tip_slot = tip.0,
@@ -164,9 +175,11 @@ async fn ingest_slot<S: Store, R: Rpc>(
             tip_slot = tip.0,
             "ingestor waiting for next produced slot"
         );
+
         if !sleep_or_active(Duration::from_millis(TIP_POLL_MS), cancel).await {
             return Ok(IngestStep::Stop);
         }
+
         return Ok(IngestStep::Wait);
     }
 
@@ -181,21 +194,28 @@ async fn ingest_slot<S: Store, R: Rpc>(
         }
         Err(e) => {
             tracing::warn!(slot = next_slot.0, "Failed to fetch block: {e}");
+
             if let Some(delay) = backoff.next_delay() {
                 if !sleep_or_active(delay, cancel).await {
                     return Ok(IngestStep::Stop);
                 }
             }
+
             return Ok(IngestStep::Wait);
         }
     };
-    let block_height = block.block_height.unwrap_or_default();
+
+    let block_height = block.
+        block_height
+        .unwrap_or_default();
+
     tracing::trace!(
         slot = next_slot.0,
         block_height,
         blockhash = %block.blockhash,
         "fetched block from rpc"
     );
+
     if let Some(signatures) = &block.signatures {
         tracing::trace!(
             slot = next_slot.0,
@@ -214,10 +234,7 @@ async fn ingest_slot<S: Store, R: Rpc>(
             return Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)));
         }
     };
-    tracing::trace!(
-        slot = next_slot.0,
-        "parsed and merged block instructions"
-    );
+
     tracing::trace!(
         slot = next_slot.0,
         merged_instructions = instructions.len(),
@@ -228,15 +245,20 @@ async fn ingest_slot<S: Store, R: Rpc>(
         slot: next_slot,
         instructions,
     };
+
     tracing::trace!(slot = ingested.slot.0, "sending ingested block to fsm");
+
     if sender.send(ingested).await.is_err() {
         tracing::trace!(slot = next_slot.0, "fsm receiver closed while ingesting block");
+
         return Ok(IngestStep::Stop);
     }
 
     Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)))
 }
 
+// TODO: feels weird that we're doing this. should we maybe consider using retry/backoff. this
+// feels sloppy for some reason.
 async fn sleep_or_active(delay: Duration, cancel: &CancellationToken) -> bool {
     tokio::select! {
         _ = sleep(delay) => true,

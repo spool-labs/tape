@@ -21,7 +21,7 @@ use crate::core::NodeContext;
 use crate::core::require_epoch;
 use crate::TaskOutcome;
 use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
-use crate::tasks::parse_tape_error;
+use rpc_client::parse_tape_error;
 
 /// Shared retry delay for snapshot collect and submit polling loops.
 pub const SNAPSHOT_PENDING_DELAY: Duration = Duration::from_secs(2);

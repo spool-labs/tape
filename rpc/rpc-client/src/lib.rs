@@ -86,6 +86,19 @@ mod accounts;
 mod client;
 mod transactions;
 
+use tape_api::errors::{ProgramError, TapeError};
+
+/// Try to decode a typed `TapeError` from an RPC transaction error.
+pub fn parse_tape_error(err: &rpc::RpcError) -> Option<TapeError> {
+    let rpc::RpcError::Transaction(msg) = err else {
+        return None;
+    };
+    match ProgramError::from_error_string(msg) {
+        Some(ProgramError::Tape(e)) => Some(e),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
@@ -108,4 +121,34 @@ pub mod prelude {
     pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
     pub use tape_api::prelude::*;
     pub use rpc::{CommitmentLevel, Rpc, RpcError};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_api::errors::TapeError;
+
+    #[test]
+    fn parse_hex() {
+        let err = RpcError::Transaction("custom program error: 0x52".to_string());
+        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyAdvanced));
+    }
+
+    #[test]
+    fn parse_decimal() {
+        let err = RpcError::Transaction("TransactionError::InstructionError(0, Custom(81))".to_string());
+        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadySynced));
+    }
+
+    #[test]
+    fn parse_already_certified() {
+        let err = RpcError::Transaction("custom program error: 0x74".to_string());
+        assert_eq!(parse_tape_error(&err), Some(TapeError::AlreadyCertified));
+    }
+
+    #[test]
+    fn skip_non_tx() {
+        let err = RpcError::Request("boom".to_string());
+        assert_eq!(parse_tape_error(&err), None);
+    }
 }

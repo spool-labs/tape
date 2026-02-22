@@ -290,11 +290,13 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     /// bootstrap → refresh, snapshot stages).
     fn handle_success(&mut self, key: &Task) {
         tracing::trace!(task = ?key, "scheduler handling task success");
+
         self.scheduled.remove(key);
         self.lifecycle.state_mut().mark_done(key);
         if key.is_one_shot() {
             self.desired.remove(key);
         }
+
         self.handle_refresh_success(key);
         self.handle_sync_success(key);
         self.handle_bootstrap_success(key);
@@ -304,13 +306,24 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     /// After RefreshOnchainState succeeds, re-evaluate spool ownership, prune
     /// stale recoveries, reschedule lifecycle tasks, and check if bootstrap is needed.
     fn handle_refresh_success(&mut self, key: &Task) {
+
+        // TODO: Evaluate whether we actually want a RefreshOnchainState mechanism
         if !matches!(key, Task::RefreshOnchainState) {
             return;
         }
 
         let before_status = self.node_status();
-        let before_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
-        let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
+        let before_phase = self.context
+            .store
+            .get_chain_epoch_phase()
+            .ok()
+            .flatten();
+
+        let sync_cursor = self.context
+            .store
+            .get_sync_cursor()
+            .ok()
+            .flatten();
 
         tracing::trace!(
             before_status = ?before_status,
@@ -319,7 +332,10 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             "refresh success: bootstrap state snapshot"
         );
 
-        let epoch = self.context.store.get_chain_epoch().ok().flatten();
+        let epoch = self.context.store
+            .get_chain_epoch()
+            .ok()
+            .flatten();
 
         tracing::trace!(epoch = ?epoch, "refresh success: recorded epoch for throttle");
 
@@ -332,6 +348,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         tracing::trace!("refresh success: reconciling spools");
 
         SpoolPlanner::reconcile(&*self.context.store, self.node_status(), &mut self.desired);
+
         if let Some(epoch) = epoch {
             tracing::trace!(epoch = epoch.0, "refresh success: scheduling lifecycle for chain epoch");
             tracing::trace!(
@@ -345,6 +362,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                     .flatten(),
                 "refresh success: refreshed status and lifecycle scheduling"
             );
+
             self.lifecycle.schedule(
                 &*self.context.store,
                 self.node_status(),

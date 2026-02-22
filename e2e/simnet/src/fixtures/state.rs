@@ -93,7 +93,7 @@ pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
         let (_peer_service, peer_handle) = tape_node::runtime::PeerService::new();
         let cancel = CancellationToken::new();
 
-        let (_key, outcome) = tape_node::tasks::execute_task(
+        let (_key, outcome) = tape_node::task_runner::execute_task(
             node.context(),
             peer_handle,
             Task::RefreshOnchainState,
