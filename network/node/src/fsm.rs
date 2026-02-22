@@ -29,8 +29,8 @@ use tape_store::ops::{
 };
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
 
-use crate::runtime::NodeContext;
-use crate::runtime::committee::our_member_index;
+use crate::core::NodeContext;
+use crate::core::committee::our_member_index;
 use crate::ingestor::IngestedBlock;
 
 #[derive(Debug, thiserror::Error)]
@@ -706,7 +706,7 @@ mod tests {
     use tape_store::ops::{SliceOps, SpoolOps};
     use tape_store::types::SpoolStatus;
 
-    use crate::runtime::test_utils::test_context;
+    use crate::core::test_utils::test_context;
 
     fn make_advance_epoch(old: u64, new: u64) -> ParsedInstruction {
         ParsedInstruction::AdvanceEpoch {

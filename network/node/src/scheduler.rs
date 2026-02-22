@@ -26,9 +26,9 @@ use tape_core::types::EpochNumber;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 use crate::fsm::StateChange;
-use crate::runtime::{Task, TaskResult};
+use crate::{Task, TaskResult};
 
 use self::lifecycle::LifecyclePlanner;
 use self::refresh::RefreshPlanner;
@@ -662,9 +662,9 @@ mod tests {
     };
 
     use crate::fsm::{Fsm, StateChange};
-    use crate::runtime::NodeContext;
-    use crate::runtime::test_utils::test_context;
-    use crate::runtime::{Task, TaskResult};
+    use crate::core::NodeContext;
+    use crate::core::test_utils::test_context;
+    use crate::{Task, TaskResult};
 
     fn mark_snapshot_build_complete<S: Store, R: Rpc>(
         ctx: &Arc<NodeContext<S, R>>,

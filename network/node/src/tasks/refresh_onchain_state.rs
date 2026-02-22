@@ -17,9 +17,9 @@ use tape_store::types::{NodeInfo, NodeStatus, SpoolStatus};
 use solana_sdk::signature::Signer;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
-use crate::runtime::TaskOutcome;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
+use crate::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
@@ -289,8 +289,8 @@ mod tests {
     use tape_core::types::network::NetworkAddress;
     use tape_store::{MemoryStore, TapeStore};
 
-    use crate::runtime::NodeContext;
-    use crate::runtime::test_utils::test_config;
+    use crate::core::NodeContext;
+    use crate::core::test_utils::test_config;
 
     fn make_system(
         members: &[CommitteeMember],

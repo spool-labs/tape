@@ -7,7 +7,7 @@ use solana_sdk::signature::{Signature, Signer};
 use store::Store;
 use tape_api::instruction::build_advance_epoch_ix;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 
 const ADVANCE_EPOCH_CU: u32 = 1_400_000;
 

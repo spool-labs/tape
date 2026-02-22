@@ -14,9 +14,9 @@ use tape_crypto::hash::Hash;
 use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
 use tape_store::types::{NodeInfo, Pubkey};
 
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
-use crate::runtime::TaskOutcome;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
+use crate::TaskOutcome;
 
 pub async fn fetch_commitments<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

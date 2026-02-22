@@ -4,10 +4,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
-use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
-use tape_store::ops::{CommitteeOps, EventLogOps, MetaOps, SliceOps, SpoolOps};
+use tape_store::ops::{EventLogOps, MetaOps, SliceOps, SpoolOps};
 use tape_crypto::hash::hashv;
 use tape_crypto::merkle::hash_leaf;
 use tape_core::cert::snapshot::SnapshotMessage;
@@ -22,12 +21,12 @@ use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta, SnapshotPartialSign
 use tokio_util::sync::CancellationToken;
 use wincode;
 
-use crate::runtime::{NodeContext, PeerHandle};
+use crate::core::{NodeContext, PeerHandle};
 use crate::snapshot::{
     is_snapshot_build_complete, load_snapshot_task_context, peer_client, skip_if_cancelled,
     SnapshotNeed,
 };
-use crate::runtime::TaskOutcome;
+use crate::TaskOutcome;
 
 /// Build snapshot: serialize event log, outer RS encode into 50 chunks,
 /// inner Clay encode each chunk into 20 slices, store commitments + slices.

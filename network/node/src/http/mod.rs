@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower::limit::ConcurrencyLimitLayer;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 use crate::fsm::UserEvent;
 use state::AppState;
 
@@ -220,8 +220,8 @@ mod tests {
     use tape_store::{MemoryStore, TapeStore};
     use tower::ServiceExt;
 
-    use crate::runtime::NodeContext;
-    use crate::runtime::test_utils::{test_config, test_context};
+    use crate::core::NodeContext;
+    use crate::core::test_utils::{test_config, test_context};
 
     fn test_router(ctx: Arc<NodeContext<MemoryStore, LiteSvmRpc>>) -> Router {
         HttpServer::new(ctx, None).build_router()

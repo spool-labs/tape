@@ -22,9 +22,9 @@ use tape_api::errors::{ProgramError, TapeError};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
-use crate::runtime::{Task, TaskOutcome};
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
+use crate::{Task, TaskOutcome};
 
 /// Execute a single task to completion.
 ///
@@ -125,7 +125,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
 }
 
 /// Try to decode a typed TapeError from an RPC transaction error.
-pub(crate) fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
+pub fn parse_tape_error(err: &RpcError) -> Option<TapeError> {
     let RpcError::Transaction(msg) = err else {
         return None;
     };

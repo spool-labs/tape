@@ -13,11 +13,11 @@ use tape_store::types::{NodeInfo, SnapshotCertResult};
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::{NodeContext, PeerHandle};
+use crate::core::{NodeContext, PeerHandle};
 use crate::snapshot::{
     load_snapshot_task_context, missing_state, skip_if_cancelled, SnapshotNeed, SNAPSHOT_PENDING_DELAY,
 };
-use crate::runtime::TaskOutcome;
+use crate::TaskOutcome;
 
 /// Collect snapshot certifications from peer-submitted partial signatures.
 pub async fn run_collect<S: Store, R: Rpc>(

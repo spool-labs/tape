@@ -6,17 +6,16 @@ use rpc::Rpc;
 use store::Store;
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
-use tape_core::erasure::slice_for_spool;
 use tape_core::types::EpochNumber;
-use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{CommitteeOps, SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolStatus;
-use tape_store::types::TrackInfo;
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
-use crate::runtime::TaskOutcome;
+use crate::core::validate_slice_entry;
+use crate::core::{NodeContext, PeerHandle};
+use crate::core::require_epoch;
+use crate::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
 
@@ -26,11 +25,9 @@ pub async fn run<S: Store, R: Rpc>(
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    // Read current epoch
-    let epoch = match context.store.get_chain_epoch() {
-        Ok(Some(e)) => e,
-        Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
-        Err(e) => return TaskOutcome::Retryable(format!("read epoch: {e}")),
+    let epoch = match require_epoch(&context.store) {
+        Ok(e) => e,
+        Err(outcome) => return outcome,
     };
 
     if epoch.as_u64() == 0 {
@@ -151,7 +148,7 @@ pub async fn run<S: Store, R: Rpc>(
                 Err(e) => return TaskOutcome::Retryable(format!("read track metadata: {e}")),
             };
 
-            if let Err(err) = validate_sync_entry(spool, &track_info, &entry.slice_data) {
+            if let Err(err) = validate_slice_entry(spool, &track_info, &entry.slice_data) {
                 if let Err(err2) = peer_handle.record_failure(addr).await {
                     tracing::warn!("failed to record peer failure for {addr}: {err2}");
                 }
@@ -190,47 +187,4 @@ pub async fn run<S: Store, R: Rpc>(
 
     tracing::info!(spool, "spool sync complete");
     TaskOutcome::Success
-}
-
-/// Validate one synced slice before local persistence.
-///
-/// Why:
-/// - remote sync source is untrusted in practice
-/// - replay or partial sync can re-process stale/corrupt data
-/// - local state should only accept bytes that match track placement and
-///   commitment
-fn validate_sync_entry(
-    spool: u16,
-    track_info: &TrackInfo,
-    data: &[u8],
-) -> Result<(), String> {
-    let slice_index = slice_for_spool(track_info.spool_group, spool)
-        .ok_or_else(|| "track not mapped to this spool group".to_string())?;
-
-    // A non-empty track cannot reconstruct from zero bytes; this catches silent
-    // truncation and maliciously empty responses early.
-    if track_info.original_size > 0
-        && data.is_empty()
-        && track_info.stripe_size > 0
-        && track_info.stripe_count > 0
-    {
-        return Err("empty slice for non-empty track".to_string());
-    }
-
-    // Protect against malformed oversized payloads before any local write.
-    let expected_max = track_info
-        .stripe_size
-        .checked_mul(track_info.stripe_count)
-        .ok_or_else(|| "invalid stripe dimensions".to_string())?;
-    if expected_max > 0 && data.len() as u64 > expected_max {
-        return Err("slice exceeds expected decoded size".to_string());
-    }
-
-    // Commitment matching ties bytes to the expected slice index and prevents
-    // content substitution against a valid sync transport.
-    if !track_info.verify_slice(slice_index, data) {
-        return Err("slice does not match commitment".to_string());
-    }
-
-    Ok(())
 }

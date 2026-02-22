@@ -6,13 +6,13 @@ use tape_core::spooler::SpoolGroup;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_register;
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
 use crate::snapshot::{
     classify_submit_error, load_group_artifacts, load_snapshot_task_context, skip_if_cancelled,
     SnapshotNeed, SubmitClass,
 };
-use crate::runtime::TaskOutcome;
+use crate::TaskOutcome;
 
 /// Register built snapshot chunks on-chain once local artifacts are ready.
 pub async fn run_register<S: Store, R: Rpc>(

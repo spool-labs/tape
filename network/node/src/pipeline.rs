@@ -14,12 +14,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
-use crate::runtime::{PeerHandle, PeerService};
-use crate::runtime::TaskResult;
+use crate::core::{PeerHandle, PeerService};
+use crate::TaskResult;
 use crate::scheduler::{Action, Scheduler};
 use crate::supervisor::Supervisor;
 
@@ -323,8 +323,8 @@ mod tests {
     use tape_store::types::{NodeStatus, SpoolStatus};
 
     use crate::ingestor::IngestedBlock;
-    use crate::runtime::PeerService;
-    use crate::runtime::test_utils::test_context;
+    use crate::core::PeerService;
+    use crate::core::test_utils::test_context;
 
     async fn spawn_test_fsm<S: Store + 'static, R: Rpc + 'static>(
         context: Arc<NodeContext<S, R>>,

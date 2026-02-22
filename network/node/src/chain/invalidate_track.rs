@@ -9,7 +9,7 @@ use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda};
 use tape_crypto::Hash;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 
 pub async fn submit_invalidate_track<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

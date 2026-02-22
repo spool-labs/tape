@@ -7,9 +7,9 @@ use tape_store::TapeStore;
 
 use tape_store::ops::{CommitteeOps, MetaOps};
 
-use crate::runtime::committee::our_member_index;
-use crate::state::RefreshThrottle;
-use crate::runtime::Task;
+use crate::core::committee::our_member_index;
+use crate::core::RefreshThrottle;
+use crate::Task;
 
 pub struct RefreshPlanner {
     throttle: RefreshThrottle,

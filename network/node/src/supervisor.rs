@@ -24,11 +24,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::core::{BackoffConfig, compute_delay};
-use crate::runtime::{NodeContext, PeerHandle, TaskCategory, TaskResult};
+use crate::core::{NodeContext, PeerHandle};
+use crate::{TaskCategory, TaskResult};
 use crate::scheduler::Action;
 use crate::tasks::execute_task;
 
-pub use crate::runtime::{Task, TaskOutcome};
+pub use crate::{Task, TaskOutcome};
 
 /// Fallback sleep target when no retries are pending.
 const FAR_FUTURE_SECS: u64 = 365 * 24 * 3600;
@@ -527,8 +528,8 @@ mod tests {
     use super::*;
 
     use crate::core::BackoffConfig;
-    use crate::runtime::PeerService;
-    use crate::runtime::test_utils::test_context;
+    use crate::core::PeerService;
+    use crate::core::test_utils::test_context;
     use tape_core::types::EpochNumber;
     use tokio::time::sleep;
 

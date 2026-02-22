@@ -9,26 +9,77 @@ use tape_core::system::EpochPhase;
 use tape_store::ops::{CommitteeOps, MetaOps};
 use tape_store::types::NodeStatus;
 
-use crate::runtime::committee::our_member_index;
-use crate::state::LifecycleEpochState;
-use crate::runtime::Task;
+use crate::core::committee::our_member_index;
+use crate::Task;
+
+pub struct LifecycleState {
+    epoch: EpochNumber,
+    sync_epoch: bool,
+    advance_pool: bool,
+    join_network: bool,
+    advance_epoch: bool,
+}
+
+impl LifecycleState {
+    pub fn new(epoch: EpochNumber) -> Self {
+        Self {
+            epoch,
+            sync_epoch: false,
+            advance_pool: false,
+            join_network: false,
+            advance_epoch: false,
+        }
+    }
+
+    pub fn reset(&mut self, epoch: EpochNumber) {
+        self.epoch = epoch;
+        self.sync_epoch = false;
+        self.advance_pool = false;
+        self.join_network = false;
+        self.advance_epoch = false;
+    }
+
+    pub fn epoch(&self) -> EpochNumber {
+        self.epoch
+    }
+
+    pub fn is_done(&self, key: &Task) -> bool {
+        match key {
+            Task::SyncEpoch { .. } => self.sync_epoch,
+            Task::AdvancePool { .. } => self.advance_pool,
+            Task::JoinNetwork { .. } => self.join_network,
+            Task::AdvanceEpoch { .. } => self.advance_epoch,
+            _ => false,
+        }
+    }
+
+    pub fn mark_done(&mut self, key: &Task) {
+        match key {
+            Task::SyncEpoch { .. } => self.sync_epoch = true,
+            Task::AdvancePool { .. } => self.advance_pool = true,
+            Task::JoinNetwork { .. } => self.join_network = true,
+            Task::AdvanceEpoch { .. } => self.advance_epoch = true,
+            _ => {}
+        }
+    }
+}
 
 pub struct LifecyclePlanner {
-    pub state: LifecycleEpochState,
+    pub state: LifecycleState,
 }
 
 impl LifecyclePlanner {
     pub fn new() -> Self {
         Self {
-            state: LifecycleEpochState::new(EpochNumber(0)),
+            state: LifecycleState::new(EpochNumber(0)),
         }
     }
 
-    pub fn state(&self) -> &LifecycleEpochState {
+    pub fn state(&self) -> &LifecycleState {
         &self.state
     }
 
-    pub fn state_mut(&mut self) -> &mut LifecycleEpochState {
+    pub fn state_mut(&mut self) -> &mut LifecycleState {
         &mut self.state
     }
 
@@ -189,5 +240,44 @@ impl LifecyclePlanner {
 
         tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
         desired.insert(Task::AdvanceEpoch { epoch });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_not_done() {
+        let state = LifecycleState::new(EpochNumber(1));
+        assert!(!state.is_done(&Task::SyncEpoch { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&Task::AdvancePool { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&Task::JoinNetwork { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&Task::AdvanceEpoch { epoch: EpochNumber(1) }));
+    }
+
+    #[test]
+    fn mark_done() {
+        let mut state = LifecycleState::new(EpochNumber(1));
+        state.mark_done(&Task::SyncEpoch { epoch: EpochNumber(1) });
+        assert!(state.is_done(&Task::SyncEpoch { epoch: EpochNumber(1) }));
+        assert!(!state.is_done(&Task::AdvancePool { epoch: EpochNumber(1) }));
+    }
+
+    #[test]
+    fn reset_clears() {
+        let mut state = LifecycleState::new(EpochNumber(1));
+        state.mark_done(&Task::SyncEpoch { epoch: EpochNumber(1) });
+        state.mark_done(&Task::AdvancePool { epoch: EpochNumber(1) });
+        state.reset(EpochNumber(2));
+        assert_eq!(state.epoch(), EpochNumber(2));
+        assert!(!state.is_done(&Task::SyncEpoch { epoch: EpochNumber(2) }));
+        assert!(!state.is_done(&Task::AdvancePool { epoch: EpochNumber(2) }));
+    }
+
+    #[test]
+    fn non_lifecycle_key() {
+        let state = LifecycleState::new(EpochNumber(1));
+        assert!(!state.is_done(&Task::RefreshOnchainState));
     }
 }

@@ -6,7 +6,7 @@ use rpc::Rpc;
 use store::Store;
 use tokio::sync::mpsc;
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 use crate::fsm::UserEvent;
 
 /// Shared state wrapper for axum handlers.

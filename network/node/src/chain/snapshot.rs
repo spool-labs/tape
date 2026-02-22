@@ -14,7 +14,7 @@ use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 
 const SNAPSHOT_REGISTER_CU: u32 = 700_000;
 const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;

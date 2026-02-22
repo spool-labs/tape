@@ -19,7 +19,7 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{Backoff, BackoffConfig};
-use crate::runtime::NodeContext;
+use crate::core::NodeContext;
 
 const BOOTSTRAP_POLL_SECS: u64 = 2;
 const TIP_POLL_MS: u64 = 400;
@@ -251,7 +251,7 @@ mod tests {
     use tape_core::types::EpochNumber;
     use tokio::time::sleep;
 
-    use crate::runtime::test_utils::test_context;
+    use crate::core::test_utils::test_context;
 
     #[tokio::test]
     async fn waits_bootstrap() {

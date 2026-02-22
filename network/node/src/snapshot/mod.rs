@@ -2,6 +2,7 @@ pub mod bootstrap;
 pub mod build;
 pub mod collect;
 pub mod client;
+pub mod progress;
 pub mod register;
 pub mod submit;
 pub mod helpers;
@@ -9,6 +10,7 @@ pub mod helpers;
 pub use build::run_build;
 pub use bootstrap::run_bootstrap;
 pub use collect::run_collect;
+pub use progress::{GroupState, SnapshotProgress};
 pub use client::{
     collect_group_slices,
     fetch_commitments,

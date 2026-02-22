@@ -28,12 +28,12 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    use crate::runtime::PeerService;
-    use crate::runtime::test_utils::test_context;
-    use crate::runtime::TaskOutcome;
+    use crate::core::PeerService;
+    use crate::core::test_utils::test_context;
+    use crate::TaskOutcome;
 
     fn mark_snapshot_build_complete<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::runtime::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
         local_epoch: EpochNumber,
     ) {
         for group in 0..SPOOL_GROUP_COUNT {
@@ -58,7 +58,7 @@ mod tests {
     }
 
     fn set_group_ready<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::runtime::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
         local_epoch: EpochNumber,
         group: u64,
     ) {
@@ -82,7 +82,7 @@ mod tests {
     }
 
     fn set_group_commitment_only<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::runtime::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
         local_epoch: EpochNumber,
         group: u64,
     ) {

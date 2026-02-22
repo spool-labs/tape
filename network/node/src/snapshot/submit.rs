@@ -7,13 +7,13 @@ use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_certify;
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
 use crate::snapshot::{
     classify_submit_error, load_group_artifacts, load_snapshot_task_context, missing_state,
     skip_if_cancelled, SNAPSHOT_PENDING_DELAY, SnapshotNeed, SubmitClass,
 };
-use crate::runtime::TaskOutcome;
+use crate::TaskOutcome;
 
 /// Submit completed snapshot certifications on-chain.
 pub async fn run_submit<S: Store, R: Rpc>(
@@ -53,7 +53,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
             return outcome;
         }
 
-        let chunk_index = ChunkIndex(group);
+        let _chunk_index = ChunkIndex(group);
         let artifacts = match load_group_artifacts::<S, R>(&context, local_epoch, group) {
             Ok(artifacts) => artifacts,
             Err(e) => return missing_state(format!("snapshot submit read artifacts for group {group}: {e}")),

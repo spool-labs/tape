@@ -94,7 +94,7 @@ fn current_chain_epoch<S: Store, R: Rpc>(state: &AppState<S, R>) -> Result<Epoch
 }
 
 fn verify_inconsistency_proof<S: Store, R: Rpc>(
-    context: &crate::runtime::NodeContext<S, R>,
+    context: &crate::core::NodeContext<S, R>,
     proof: &tape_node_api::InconsistencyProof,
     track_info: &tape_store::types::TrackInfo,
     track_address: [u8; 32],

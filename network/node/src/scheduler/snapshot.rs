@@ -9,11 +9,14 @@ use tape_core::types::EpochNumber;
 use tape_store::ops::{CommitteeOps, MetaOps};
 use tape_store::types::ChunkIndex;
 
-use crate::runtime::NodeContext;
-use crate::runtime::committee::our_snapshot_groups;
-use crate::snapshot::{derive_snapshot_local_epoch, is_snapshot_build_complete, is_snapshot_chunk_ready};
-use crate::state::{GroupState, SnapshotProgress};
-use crate::runtime::Task;
+use crate::core::NodeContext;
+use crate::core::committee::our_snapshot_groups;
+use crate::scheduler::lifecycle::LifecycleState;
+use crate::snapshot::{
+    derive_snapshot_local_epoch, is_snapshot_build_complete, is_snapshot_chunk_ready, GroupState,
+    SnapshotProgress,
+};
+use crate::Task;
 
 pub struct SnapshotPlanner {
     pub progress: SnapshotProgress,
@@ -40,7 +43,7 @@ impl SnapshotPlanner {
         epoch: EpochNumber,
         desired: &mut HashSet<Task>,
         scheduled: &mut HashSet<Task>,
-        lifecycle: &crate::state::LifecycleEpochState,
+        lifecycle: &LifecycleState,
         chain_phase_is_active: bool,
     ) {
         tracing::trace!(epoch = epoch.0, "scheduling snapshot pipeline");
@@ -201,7 +204,7 @@ impl SnapshotPlanner {
         key: &Task,
         desired: &mut HashSet<Task>,
         scheduled: &mut HashSet<Task>,
-        lifecycle: &crate::state::LifecycleEpochState,
+        lifecycle: &LifecycleState,
         chain_phase_is_active: bool,
     ) {
         /*

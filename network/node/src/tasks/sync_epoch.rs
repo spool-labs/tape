@@ -5,22 +5,21 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
-use tape_store::ops::{MetaOps, SpoolOps};
+use tape_store::ops::SpoolOps;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_sync_epoch;
-use crate::runtime::NodeContext;
-use crate::runtime::TaskOutcome;
+use crate::core::{NodeContext, require_epoch};
+use crate::TaskOutcome;
 use crate::tasks::parse_tape_error;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match context.store.get_chain_epoch() {
-        Ok(Some(e)) => e,
-        Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
-        Err(e) => return TaskOutcome::Retryable(format!("get epoch: {e}")),
+    let epoch = match require_epoch(&context.store) {
+        Ok(e) => e,
+        Err(outcome) => return outcome,
     };
 
     let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {

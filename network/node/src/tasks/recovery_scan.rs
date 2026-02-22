@@ -8,8 +8,8 @@ use tape_core::erasure::spool_in_group;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::TaskOutcome;
+use crate::core::NodeContext;
+use crate::TaskOutcome;
 
 const SCAN_BATCH_SIZE: usize = 100;
 

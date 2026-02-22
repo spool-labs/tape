@@ -7,8 +7,8 @@ use store::Store;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_advance_epoch;
-use crate::runtime::NodeContext;
-use crate::runtime::TaskOutcome;
+use crate::core::NodeContext;
+use crate::TaskOutcome;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,

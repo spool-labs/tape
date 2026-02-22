@@ -17,9 +17,10 @@ use tape_slicer::{ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::types::{NodeInfo, SnapshotCertResult, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::committee::{our_member, our_member_index, our_snapshot_groups};
-use crate::runtime::TaskOutcome;
+use crate::core::NodeContext;
+use crate::core::require_epoch;
+use crate::TaskOutcome;
+use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
 use crate::tasks::parse_tape_error;
 
 /// Shared retry delay for snapshot collect and submit polling loops.
@@ -219,13 +220,7 @@ pub fn load_group_artifacts<S: Store, R: Rpc>(
 pub fn snapshot_chain_epoch<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
 ) -> Result<EpochNumber, TaskOutcome> {
-    let current = match context.store.get_chain_epoch() {
-        Ok(Some(epoch)) => epoch,
-        Ok(None) => return Err(TaskOutcome::Retryable("missing chain epoch".into())),
-        Err(e) => return Err(TaskOutcome::Retryable(format!("read chain epoch: {e}"))),
-    };
-
-    Ok(current)
+    require_epoch(&context.store)
 }
 
 /// Select local snapshot epoch for snapshot tasks.
@@ -329,7 +324,7 @@ pub fn decode_outer(decoded_chunks: Vec<Option<(usize, Vec<u8>)>>) -> Result<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::test_utils;
+    use crate::core::test_utils;
     use tape_crypto::Hash;
     use tape_store::types::SnapshotChunkMeta;
 

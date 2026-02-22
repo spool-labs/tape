@@ -1,26 +1,25 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
-use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_core::encoding::ClayParams;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::snapshot::SnapshotLog;
 use tape_crypto::hash::hashv;
-use tape_slicer::{ClayCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
+use tape_slicer::DEFAULT_K_OUTER;
 use tape_store::ops::MetaOps;
 use tape_store::types::Pubkey;
 use tokio_util::sync::CancellationToken;
 
 use crate::fsm::Fsm;
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
 use crate::snapshot::{
     collect_group_slices, decode_group, decode_outer, fetch_commitments, load_snapshot_task_context,
     missing_state, skip_if_cancelled, SnapshotNeed,
 };
-use crate::runtime::TaskOutcome;
+use crate::TaskOutcome;
 
 pub async fn run_bootstrap<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,

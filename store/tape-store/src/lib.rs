@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 //! tape-store: Application-specific storage layer for distributed tape storage nodes
 //!
 //! This crate provides typed column families and helper methods for storing:

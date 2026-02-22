@@ -8,7 +8,7 @@ use tape_core::erasure::spool_in_group;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolStatus};
 
-use crate::runtime::Task;
+use crate::Task;
 
 pub struct SpoolPlanner;
 

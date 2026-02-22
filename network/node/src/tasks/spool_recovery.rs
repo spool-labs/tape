@@ -5,17 +5,19 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
-use tape_core::erasure::{spool_in_group, slice_for_spool};
+use tape_core::erasure::spool_in_group;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_slicer::ClayCoder;
-use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{CommitteeOps, SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeInfo, Pubkey as StorePubkey, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
-use crate::runtime::NodeContext;
-use crate::runtime::PeerHandle;
-use crate::runtime::TaskOutcome;
+use crate::core::validate_slice_entry;
+use crate::core::NodeContext;
+use crate::core::PeerHandle;
+use crate::core::require_epoch;
+use crate::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 
@@ -25,12 +27,9 @@ pub async fn run<S: Store, R: Rpc>(
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    // Recovery is local repair for already-assigned spool slices; committee
-    // membership determines who can serve candidate repair data.
-    let epoch = match context.store.get_chain_epoch() {
-        Ok(Some(e)) => e,
-        Ok(None) => return TaskOutcome::Retryable("no current epoch".into()),
-        Err(e) => return TaskOutcome::Retryable(format!("get epoch: {e}")),
+    let epoch = match require_epoch(&context.store) {
+        Ok(e) => e,
+        Err(outcome) => return outcome,
     };
 
     let committee = match context.store.get_committee(epoch) {
@@ -167,7 +166,7 @@ pub async fn run<S: Store, R: Rpc>(
                     Ok(data) if !data.is_empty() => {
                         // Validate before using helper data because peers can be
                         // stale, buggy, or malicious.
-                        if let Err(reason) = validate_recovery_entry(spool, &track_info, &data) {
+                        if let Err(reason) = validate_slice_entry(spool, &track_info, &data) {
                             if let Err(e) = peer_handle.record_failure(addr).await {
                                 tracing::warn!(?track_addr, spool, "failed to record peer failure for {addr}: {e}");
                             }
@@ -273,40 +272,6 @@ pub async fn run<S: Store, R: Rpc>(
     }
 }
 
-/// Validate a recovered slice before persistence.
-///
-/// This is the guardrail between untrusted helper replies and durable local state:
-/// - ensures the slice index is for the current spool assignment
-/// - rejects empty payloads for non-empty tracks
-/// - bounds checks against expected stripe budget
-/// - verifies commitment consistency for exact-byte integrity
-fn validate_recovery_entry(spool: u16, track_info: &TrackInfo, data: &[u8]) -> Result<(), String> {
-    let slice_index = slice_for_spool(track_info.spool_group, spool)
-        .ok_or_else(|| "track not mapped to this spool group".to_string())?;
-
-    // A non-empty track cannot be completed from missing bytes.
-    if track_info.original_size > 0 && data.is_empty() {
-        return Err("empty slice for non-empty track".to_string());
-    }
-
-    // Enforce a bounded payload so corrupted responses cannot expand local storage.
-    let expected_max = track_info
-        .stripe_size
-        .checked_mul(track_info.stripe_count)
-        .ok_or_else(|| "invalid stripe dimensions".to_string())?;
-
-    if expected_max > 0 && data.len() as u64 > expected_max {
-        return Err("slice exceeds expected decoded size".to_string());
-    }
-
-    // Commitment check ties bytes to the expected erasure slice index.
-    if !track_info.verify_slice(slice_index, data) {
-        return Err("slice does not match commitment".to_string());
-    }
-
-    Ok(())
-}
-
 /// Build the repair request from track metadata so recovery uses deterministic
 /// and complete extraction for all stripes/sub-chunks.
 ///
@@ -397,7 +362,7 @@ async fn helpers_match(
         let Ok(data) = response else {
             continue;
         };
-        if data.is_empty() || validate_recovery_entry(spool, track_info, &data).is_err() {
+        if data.is_empty() || validate_slice_entry(spool, track_info, &data).is_err() {
             continue;
         }
         if data == candidate {
@@ -416,7 +381,7 @@ mod tests {
     use tape_store::types::TrackInfo;
     use tokio_util::sync::CancellationToken;
 
-    use crate::runtime::test_utils::test_context;
+    use crate::core::test_utils::test_context;
 
     #[tokio::test]
     async fn recovery_empty_queue() {
@@ -425,7 +390,7 @@ mod tests {
         ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::runtime::PeerService::new();
+        let (_peer_service, peer_handle) = crate::core::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
@@ -456,7 +421,7 @@ mod tests {
         ctx.store.add_pending_recovery(5, track).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::runtime::PeerService::new();
+        let (_peer_service, peer_handle) = crate::core::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
