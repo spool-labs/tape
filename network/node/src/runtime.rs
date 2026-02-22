@@ -1,9 +1,9 @@
-//! Pipeline — wires the ingestor, FSM, scheduler, and supervisor together.
+//! Runtime — wires the ingestor, FSM, scheduler, and task_runner together.
 //!
 //! The ingestor fetches and parses blocks, sending them over a bounded channel
 //! to the FSM. The FSM applies each block and forwards state changes to the
 //! scheduler. The scheduler diffs desired vs running tasks and sends actions
-//! to the supervisor. Channel backpressure ensures no component outpaces another.
+//! to the task_runner. Channel backpressure ensures no component outpaces another.
 
 use std::sync::Arc;
 
@@ -20,8 +20,8 @@ use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
 use crate::core::{PeerHandle, PeerService};
 use crate::TaskResult;
-use crate::scheduler::{Action, Scheduler};
-use crate::supervisor::Supervisor;
+use crate::task_scheduler::{Action, TaskScheduler};
+use crate::task_runner::TaskRunner;
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
 const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
@@ -34,13 +34,13 @@ pub struct RuntimeHandles {
     pub ingestor: JoinHandle<()>,
     pub fsm: JoinHandle<()>,
     pub scheduler: JoinHandle<()>,
-    pub supervisor: JoinHandle<()>,
+    pub task_runner: JoinHandle<()>,
     pub peer_service: JoinHandle<()>,
     pub http: JoinHandle<()>,
 }
 
 /// Channels for all runtime tasks.
-struct PipelineChannels {
+struct RuntimeChannels {
     block_tx: mpsc::Sender<IngestedBlock>,
     block_rx: mpsc::Receiver<IngestedBlock>,
     change_tx: mpsc::Sender<Vec<StateChange>>,
@@ -49,12 +49,12 @@ struct PipelineChannels {
     user_event_rx: mpsc::Receiver<UserEvent>,
 }
 
-fn build_channels() -> PipelineChannels {
+fn build_channels() -> RuntimeChannels {
     let (block_tx, block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
     let (change_tx, change_rx) = mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
     let (user_event_tx, user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
 
-    PipelineChannels {
+    RuntimeChannels {
         block_tx,
         block_rx,
         change_tx,
@@ -109,7 +109,7 @@ fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
     result_rx: mpsc::Receiver<TaskResult>,
     action_tx: mpsc::Sender<Action>,
 ) -> JoinHandle<()> {
-    let scheduler = Scheduler::new(context.clone());
+    let scheduler = TaskScheduler::new(context.clone());
     let scheduler_span = tracing::info_span!("", node_id = context.node_id().0);
 
     tokio::spawn(
@@ -122,21 +122,21 @@ fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-fn spawn_supervisor<S: Store + 'static, R: Rpc + 'static>(
+fn spawn_task_runner<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
     action_rx: mpsc::Receiver<Action>,
     result_tx: mpsc::Sender<TaskResult>,
     peer_handle: PeerHandle,
 ) -> JoinHandle<()> {
-    let supervisor = Supervisor::new(context.clone(), peer_handle, result_tx);
-    let supervisor_span = tracing::info_span!("", node_id = context.node_id().0);
+    let task_runner = TaskRunner::new(context.clone(), peer_handle, result_tx);
+    let task_runner_span = tracing::info_span!("", node_id = context.node_id().0);
 
     tokio::spawn(
         async move {
-            supervisor.run(action_rx, cancel).await;
+            task_runner.run(action_rx, cancel).await;
         }
-        .instrument(supervisor_span),
+        .instrument(task_runner_span),
     )
 }
 
@@ -173,11 +173,11 @@ fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-/// Spawn the block processing pipeline.
+/// Spawn the runtime component channels.
 ///
 /// Creates bounded channels between the ingestor and FSM, spawning both as
 /// tokio tasks. Returns a receiver for state changes and the task handles.
-pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
+pub async fn spawn_runtime_channels<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> (
@@ -209,13 +209,13 @@ pub async fn spawn_pipeline<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-/// Spawn the full runtime: ingestor, FSM, scheduler, and supervisor.
+/// Spawn the full runtime: ingestor, FSM, scheduler, and task_runner.
 pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
-        spawn_pipeline(context.clone(), cancel.clone()).await;
+        spawn_runtime_channels(context.clone(), cancel.clone()).await;
 
     let (action_tx, action_rx) = mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
@@ -229,7 +229,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
         action_tx,
     );
 
-    let supervisor_handle = spawn_supervisor(
+    let task_runner_handle = spawn_task_runner(
         context.clone(),
         cancel.clone(),
         action_rx,
@@ -253,7 +253,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
         ingestor: ingestor_handle,
         fsm: fsm_handle,
         scheduler: scheduler_handle,
-        supervisor: supervisor_handle,
+        task_runner: task_runner_handle,
         peer_service: peer_service_handle,
         http: http_handle,
     }
@@ -402,10 +402,10 @@ mod tests {
             .set_spool_status(5, SpoolStatus::ActiveSync)
             .unwrap();
 
-        // We use spawn_pipeline + manual wiring since LiteSvmRpc
+        // We use spawn_runtime_channels + manual wiring since LiteSvmRpc
         // doesn't produce real blocks with Tapedrive instructions.
         let (change_rx, _user_event_tx, _ingestor_handle, _fsm_handle) =
-            spawn_pipeline(ctx.clone(), cancel.clone())
+            spawn_runtime_channels(ctx.clone(), cancel.clone())
                 .await;
 
         let (action_tx, action_rx) =
@@ -413,7 +413,7 @@ mod tests {
         let (result_tx, result_rx) =
             mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
 
-        let scheduler = Scheduler::new(ctx.clone());
+        let scheduler = TaskScheduler::new(ctx.clone());
         let scheduler_cancel = cancel.clone();
         let scheduler_handle = tokio::spawn(async move {
             scheduler
@@ -426,19 +426,19 @@ mod tests {
         let peer_service_handle = tokio::spawn(async move {
             peer_service.run(peer_cancel).await;
         });
-        let supervisor = Supervisor::new(ctx.clone(), peer_handle, result_tx);
-        let supervisor_cancel = cancel.clone();
-        let supervisor_handle = tokio::spawn(async move {
-            supervisor.run(action_rx, supervisor_cancel).await;
+        let task_runner = TaskRunner::new(ctx.clone(), peer_handle, result_tx);
+        let task_runner_cancel = cancel.clone();
+        let task_runner_handle = tokio::spawn(async move {
+            task_runner.run(action_rx, task_runner_cancel).await;
         });
 
-        // Give the pipeline a moment to start
+        // Give the runtime startup a moment
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Clean shutdown
         cancel.cancel();
         scheduler_handle.await.unwrap();
-        supervisor_handle.await.unwrap();
+        task_runner_handle.await.unwrap();
         peer_service_handle.await.unwrap();
     }
 

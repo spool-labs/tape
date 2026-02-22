@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
-use tape_node::supervisor::{Task, TaskOutcome};
+use tape_node::{Task, TaskOutcome};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::trace;

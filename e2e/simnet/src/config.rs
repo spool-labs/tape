@@ -26,7 +26,7 @@ impl SeededAccount {
 /// Runtime mode for spawned node fixtures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRuntimeMode {
-    /// Spawn full runtime (`ingestor + fsm + reconciler + supervisor + http`).
+    /// Spawn full runtime (`ingestor + fsm + reconciler + task_runner + http`).
     Full,
     /// Do not spawn runtime tasks automatically.
     Disabled,

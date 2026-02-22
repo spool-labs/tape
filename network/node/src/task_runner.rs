@@ -1,6 +1,6 @@
-//! Supervisor — centralized task runner with retry, cancellation, and concurrency limits.
+//! TaskRunner — centralized task runner with retry, cancellation, and concurrency limits.
 //!
-//! The supervisor owns:
+//! The task_runner owns:
 //! - A `BinaryHeap` of due times for retry timing (scales to millions of entries)
 //! - A `JoinSet` tracking all spawned worker futures
 //! - Per-category `Semaphore`s for concurrency limits
@@ -26,7 +26,7 @@ use tracing::Instrument;
 use crate::core::{BackoffConfig, compute_delay};
 use crate::core::{NodeContext, PeerHandle};
 use crate::{TaskCategory, TaskResult};
-use crate::scheduler::Action;
+use crate::task_scheduler::Action;
 use crate::tasks::execute_task;
 
 pub use crate::{Task, TaskOutcome};
@@ -38,11 +38,11 @@ const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
 /// Centralized task runner with retry, cancellation, and per-category concurrency limits.
 ///
-/// All background work is spawned through the supervisor. The scheduler sends
-/// `Action::Schedule` / `Action::Cancel` commands; the supervisor manages
+/// All background work is spawned through the task_runner. The scheduler sends
+/// `Action::Schedule` / `Action::Cancel` commands; the task_runner manages
 /// the full lifecycle: spawn, track, retry on failure, cancel on request, and
 /// report outcomes back via `result_tx`.
-pub struct Supervisor<S: Store, R: Rpc> {
+pub struct TaskRunner<S: Store, R: Rpc> {
 
     /// Shared node state (store, RPC client, identity, config).
     context: Arc<NodeContext<S, R>>,
@@ -85,7 +85,7 @@ pub struct Supervisor<S: Store, R: Rpc> {
     sem_internal: Arc<Semaphore>,
 }
 
-impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
+impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     pub fn new(
         context: Arc<NodeContext<S, R>>,
         peer_handle: PeerHandle,
@@ -130,15 +130,15 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 action = action_rx.recv() => {
                     match action {
                         Some(Action::Schedule(key)) => {
-                            tracing::trace!(task = ?key, attempt = 0, "supervisor received schedule action");
+                            tracing::trace!(task = ?key, attempt = 0, "task_runner received schedule action");
                             self.handle_schedule(key, 0)
                         }
                         Some(Action::Cancel(key)) => {
-                            tracing::trace!(task = ?key, "supervisor received cancel action");
+                            tracing::trace!(task = ?key, "task_runner received cancel action");
                             self.handle_cancel(&key).await;
                         }
                         None => {
-                            tracing::trace!("supervisor action channel closed");
+                            tracing::trace!("task_runner action channel closed");
                             self.shutdown().await;
                             break;
                         }
@@ -148,7 +148,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 Some(result) = self.join_set.join_next() => {
                     match result {
                         Ok((key, outcome)) => {
-                            tracing::trace!(task = ?key, outcome = ?outcome, "supervisor task completed");
+                            tracing::trace!(task = ?key, outcome = ?outcome, "task_runner task completed");
                             if self.canceled_running.remove(&key) {
                                 tracing::debug!(task = ?key, "dropped completion for canceled task");
                                 continue;
@@ -160,12 +160,12 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
                 }
 
                 _ = sleep_until(next_retry) => {
-                    tracing::trace!("supervisor processing retry queue");
+                    tracing::trace!("task_runner processing retry queue");
                     self.process_retries();
                 }
 
                 _ = cancel.cancelled() => {
-                    tracing::trace!("supervisor received cancellation signal");
+                    tracing::trace!("task_runner received cancellation signal");
                     self.shutdown().await;
                     break;
                 }
@@ -180,11 +180,11 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             tracing::trace!(
                 task = ?key,
                 attempt,
-                "supervisor skipping schedule due to dedupe"
+                "task_runner skipping schedule due to dedupe"
             );
             return;
         }
-        tracing::trace!(task = ?key, attempt, "supervisor spawning task");
+        tracing::trace!(task = ?key, attempt, "task_runner spawning task");
         self.spawn_task(key, attempt);
     }
 
@@ -193,7 +193,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// If the task's future is still in-flight on the JoinSet, its key is added
     /// to `canceled_running` so the eventual completion is silently dropped.
     async fn handle_cancel(&mut self, key: &Task) {
-        tracing::trace!(task = ?key, "supervisor canceling task");
+        tracing::trace!(task = ?key, "task_runner canceling task");
         let had_running = self.running.remove(key).is_some();
         if had_running {
             self.canceled_running.insert(key.clone());
@@ -207,7 +207,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             task = ?key,
             had_running,
             had_pending,
-            "supervisor cancel state"
+            "task_runner cancel state"
         );
         if had_running || had_pending {
             self.send_result(TaskResult::Canceled(key.clone())).await;
@@ -216,7 +216,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
 
     /// Route a completed task to the appropriate handler based on its outcome.
     async fn handle_completion(&mut self, key: Task, outcome: TaskOutcome) {
-        tracing::trace!(task = ?key, outcome = ?outcome, "supervisor handling completion");
+        tracing::trace!(task = ?key, outcome = ?outcome, "task_runner handling completion");
         let attempt = self
             .running
             .remove(&key)
@@ -233,7 +233,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     }
 
     async fn complete_success(&self, key: Task) {
-        tracing::trace!(task = ?key, "supervisor completed successfully");
+        tracing::trace!(task = ?key, "task_runner completed successfully");
         self.send_result(TaskResult::Success(key)).await;
     }
 
@@ -252,7 +252,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             task = ?key,
             attempt,
             delay_secs = delay.as_secs(),
-            "supervisor pending retry"
+            "task_runner pending retry"
         );
         self.enqueue_retry(key, attempt, delay);
     }
@@ -286,7 +286,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
 
     /// Report an unrecoverable failure. The task will not be retried.
     async fn complete_permanent(&self, key: Task, err: String) {
-        tracing::error!(task = ?key, error = %err, "supervisor permanent failure");
+        tracing::error!(task = ?key, error = %err, "task_runner permanent failure");
         self.send_result(TaskResult::PermanentError(key, err)).await;
     }
 
@@ -296,7 +296,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             task = ?key,
             attempt,
             delay_secs = delay.as_secs(),
-            "supervisor queued retry"
+            "task_runner queued retry"
         );
         let due = Instant::now() + delay;
         self.retry_queue.push(Reverse(RetryEntry {
@@ -317,7 +317,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         if self.result_tx.send(result).await.is_err() {
             tracing::debug!("result channel closed");
         } else {
-            tracing::trace!(task = ?task, "supervisor sent result");
+            tracing::trace!(task = ?task, "task_runner sent result");
         }
     }
 
@@ -334,7 +334,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
             tracing::trace!(
                 task = ?entry.key,
                 attempt = entry.attempt,
-                "supervisor retry due"
+                "task_runner retry due"
             );
             if self.pending_retry.remove(&entry.key) {
                 self.spawn_task(entry.key, entry.attempt);
@@ -345,7 +345,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
     /// Cancel all tasks and drain the JoinSet, giving in-flight futures up to
     /// `SHUTDOWN_TIMEOUT_SECS` to finish before abandoning them.
     async fn shutdown(&mut self) {
-        tracing::trace!("supervisor shutdown start");
+        tracing::trace!("task_runner shutdown start");
         for token in self.tokens.values() {
             token.cancel();
         }
@@ -404,7 +404,7 @@ impl<S: Store + 'static, R: Rpc + 'static> Supervisor<S, R> {
         tracing::trace!(
             task = ?key_to_run,
             attempt,
-            "supervisor spawning background task"
+            "task_runner spawning background task"
         );
         self.join_set.spawn(
             execute_task(ctx, peer_handle, key_to_run.clone(), token_clone, sem).instrument(span),
@@ -541,10 +541,10 @@ mod tests {
         let (action_tx, action_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            supervisor.run(action_rx, cancel_clone).await;
+            task_runner.run(action_rx, cancel_clone).await;
         });
 
         let key = Task::RecoveryScan { spool: 0 };
@@ -568,10 +568,10 @@ mod tests {
         let (action_tx, action_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            supervisor.run(action_rx, cancel_clone).await;
+            task_runner.run(action_rx, cancel_clone).await;
         });
 
         let key = Task::SpoolSync { spool: 42 };
@@ -586,11 +586,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the supervisor time to process
+        // Give the task_runner time to process
         sleep(Duration::from_millis(50)).await;
 
         // The task may have completed before cancel was processed (stub is instant),
-        // so we drain whatever results arrived. The key point is that the supervisor
+        // so we drain whatever results arrived. The key point is that the task_runner
         // doesn't panic and handles the cancel gracefully.
         result_rx.close();
         while result_rx.recv().await.is_some() {}
@@ -604,10 +604,10 @@ mod tests {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
-        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
         let key = Task::SnapshotBuild { epoch: EpochNumber(0) };
-        supervisor.running.insert(
+        task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::CpuHeavy,
@@ -615,17 +615,17 @@ mod tests {
                 attempt: 0,
             },
         );
-        supervisor
+        task_runner
             .tokens
             .insert(key.clone(), CancellationToken::new());
 
-        supervisor.handle_cancel(&key).await;
+        task_runner.handle_cancel(&key).await;
 
         let result = result_rx.try_recv().unwrap();
         assert!(matches!(result, TaskResult::Canceled(ref k) if *k == key));
-        assert!(supervisor.canceled_running.contains(&key));
-        assert!(!supervisor.running.contains_key(&key));
-        assert!(!supervisor.tokens.contains_key(&key));
+        assert!(task_runner.canceled_running.contains(&key));
+        assert!(!task_runner.running.contains_key(&key));
+        assert!(!task_runner.tokens.contains_key(&key));
     }
 
     #[tokio::test]
@@ -633,12 +633,12 @@ mod tests {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
-        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
         let key = Task::RefreshOnchainState;
 
         // Simulate a running task
-        supervisor.running.insert(
+        task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::Internal,
@@ -646,18 +646,18 @@ mod tests {
                 attempt: 0,
             },
         );
-        supervisor
+        task_runner
             .tokens
             .insert(key.clone(), CancellationToken::new());
 
         // Handle a retryable completion
-        supervisor
+        task_runner
             .handle_completion(key.clone(), TaskOutcome::Retryable("transient".into()))
             .await;
 
         // Should be in retry queue
-        assert!(supervisor.pending_retry.contains(&key));
-        assert!(!supervisor.retry_queue.is_empty());
+        assert!(task_runner.pending_retry.contains(&key));
+        assert!(!task_runner.retry_queue.is_empty());
 
         // Result should have been sent
         let result = result_rx.try_recv().unwrap();
@@ -669,10 +669,10 @@ mod tests {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
-        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
         let key = Task::SnapshotSubmit { epoch: EpochNumber(0) };
-        supervisor.running.insert(
+        task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::SolanaTx,
@@ -680,17 +680,17 @@ mod tests {
                 attempt: 3,
             },
         );
-        supervisor
+        task_runner
             .tokens
             .insert(key.clone(), CancellationToken::new());
 
-        supervisor
+        task_runner
             .handle_completion(key.clone(), TaskOutcome::Pending(Duration::from_secs(2)))
             .await;
 
-        assert!(supervisor.pending_retry.contains(&key));
-        assert_eq!(supervisor.retry_queue.len(), 1);
-        let queued = &supervisor.retry_queue.peek().unwrap().0;
+        assert!(task_runner.pending_retry.contains(&key));
+        assert_eq!(task_runner.retry_queue.len(), 1);
+        let queued = &task_runner.retry_queue.peek().unwrap().0;
         assert_eq!(queued.key, key);
         assert_eq!(queued.attempt, 3);
         assert!(result_rx.try_recv().is_err());
@@ -701,11 +701,11 @@ mod tests {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
-        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
         let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
 
-        supervisor.running.insert(
+        task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::SolanaTx,
@@ -713,16 +713,16 @@ mod tests {
                 attempt: 0,
             },
         );
-        supervisor
+        task_runner
             .tokens
             .insert(key.clone(), CancellationToken::new());
 
-        supervisor
+        task_runner
             .handle_completion(key.clone(), TaskOutcome::Permanent("fatal".into()))
             .await;
 
-        assert!(!supervisor.running.contains_key(&key));
-        assert!(!supervisor.tokens.contains_key(&key));
+        assert!(!task_runner.running.contains_key(&key));
+        assert!(!task_runner.tokens.contains_key(&key));
 
         let result = result_rx.try_recv().unwrap();
         assert!(matches!(result, TaskResult::PermanentError(..)));
@@ -736,10 +736,10 @@ mod tests {
         let (action_tx, action_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            supervisor.run(action_rx, cancel_clone).await;
+            task_runner.run(action_rx, cancel_clone).await;
         });
 
         let key = Task::RecoveryScan { spool: 0 };
@@ -774,10 +774,10 @@ mod tests {
         let (action_tx, action_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
-            supervisor.run(action_rx, cancel_clone).await;
+            task_runner.run(action_rx, cancel_clone).await;
         });
 
         // Schedule a task
@@ -802,9 +802,9 @@ mod tests {
         let (action_tx, action_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
 
-        let supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
         let handle = tokio::spawn(async move {
-            supervisor.run(action_rx, cancel).await;
+            task_runner.run(action_rx, cancel).await;
         });
 
         drop(action_tx);
@@ -911,13 +911,13 @@ mod tests {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (_peer_service, peer_handle) = PeerService::new();
-        let mut supervisor = Supervisor::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
         let key = Task::RefreshOnchainState;
 
         // Internal category has max_retries: Some(10)
         // Simulate attempt 10 (already at max)
-        supervisor.running.insert(
+        task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::Internal,
@@ -925,16 +925,16 @@ mod tests {
                 attempt: 10,
             },
         );
-        supervisor
+        task_runner
             .tokens
             .insert(key.clone(), CancellationToken::new());
 
-        supervisor
+        task_runner
             .handle_completion(key.clone(), TaskOutcome::Retryable("transient".into()))
             .await;
 
         // Should NOT be in retry queue — max retries exceeded
-        assert!(!supervisor.pending_retry.contains(&key));
+        assert!(!task_runner.pending_retry.contains(&key));
 
         // Should get PermanentError
         let result = result_rx.try_recv().unwrap();

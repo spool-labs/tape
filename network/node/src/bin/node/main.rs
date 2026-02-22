@@ -4,7 +4,7 @@ use rpc_client::RpcClient;
 use rpc_solana::RpcConfig;
 use tape_node::core::NodeConfig;
 use tape_node::core::NodeContextBuilder;
-use tape_node::pipeline::spawn_runtime;
+use tape_node::runtime::spawn_runtime;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -123,7 +123,7 @@ async fn main() -> Result<()> {
     join_set.spawn(watch_handle("ingestor", handles.ingestor));
     join_set.spawn(watch_handle("fsm", handles.fsm));
     join_set.spawn(watch_handle("scheduler", handles.scheduler));
-    join_set.spawn(watch_handle("supervisor", handles.supervisor));
+    join_set.spawn(watch_handle("task_runner", handles.task_runner));
     join_set.spawn(watch_handle("peer_service", handles.peer_service));
     join_set.spawn(watch_handle("http", handles.http));
 

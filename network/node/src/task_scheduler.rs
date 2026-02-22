@@ -1,13 +1,8 @@
-//! Scheduler — diffs desired vs running tasks based on FSM state changes.
+//! TaskScheduler — diffs desired vs running tasks based on FSM state changes.
 //!
 //! The scheduler receives `StateChange` events from the FSM and `TaskResult`
-//! completions from the supervisor. It maintains a view of what tasks *should*
-//! be running and tells the supervisor to schedule or cancel tasks accordingly.
-
-mod lifecycle;
-mod refresh;
-mod snapshot;
-mod spool;
+//! completions from the task_runner. It maintains a view of what tasks *should*
+//! be running and tells the task_runner to schedule or cancel tasks accordingly.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -30,12 +25,12 @@ use crate::core::NodeContext;
 use crate::fsm::StateChange;
 use crate::{Task, TaskResult};
 
-use self::lifecycle::LifecyclePlanner;
-use self::refresh::RefreshPlanner;
-use self::snapshot::SnapshotPlanner;
-use self::spool::SpoolPlanner;
+use crate::scheduler::LifecyclePlanner;
+use crate::scheduler::RefreshPlanner;
+use crate::scheduler::SnapshotPlanner;
+use crate::scheduler::SpoolPlanner;
 
-/// An action from the scheduler to the supervisor.
+/// An action from the scheduler to the task_runner.
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Schedule a new task.
@@ -48,15 +43,15 @@ pub enum Action {
 /// Diffs desired state against running tasks to produce scheduling actions.
 ///
 /// Maintains two core sets — `desired` (what SHOULD run) and `scheduled`
-/// (what we've told the supervisor to run). Each tick, the diff between them
+/// (what we've told the task_runner to run). Each tick, the diff between them
 /// produces Schedule and Cancel actions. State changes from the FSM mutate
-/// `desired`; task results from the supervisor remove keys from `scheduled`.
-pub struct Scheduler<S: Store, R: Rpc> {
+/// `desired`; task results from the task_runner remove keys from `scheduled`.
+pub struct TaskScheduler<S: Store, R: Rpc> {
     /// Shared node state (store, RPC client, identity, config).
     pub context: Arc<NodeContext<S, R>>,
     /// Tasks that SHOULD be running given current state.
     pub desired: HashSet<Task>,
-    /// Tasks we've told the supervisor to schedule (and haven't completed/cancelled).
+    /// Tasks we've told the task_runner to schedule (and haven't completed/cancelled).
     pub scheduled: HashSet<Task>,
     /// Epoch-scoped lifecycle task planner.
     pub lifecycle: LifecyclePlanner,
@@ -66,7 +61,7 @@ pub struct Scheduler<S: Store, R: Rpc> {
     pub refresh: RefreshPlanner,
 }
 
-impl<S: Store, R: Rpc> Scheduler<S, R> {
+impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
         Self {
             context,
@@ -78,9 +73,9 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         }
     }
 
-    /// Main event loop. Selects over FSM state changes, supervisor task results,
+    /// Main event loop. Selects over FSM state changes, task_runner task results,
     /// and a periodic timer. Each event recomputes `desired` and emits the diff
-    /// as Schedule/Cancel actions to the supervisor.
+    /// as Schedule/Cancel actions to the task_runner.
     pub async fn run(
         mut self,
         mut change_rx: mpsc::Receiver<Vec<StateChange>>,
@@ -259,7 +254,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
             .periodic(node_status, epoch, chain_phase, &mut self.desired);
     }
 
-    /// Process a task completion from the supervisor. Stale epoch results are
+    /// Process a task completion from the task_runner. Stale epoch results are
     /// silently dropped. Otherwise delegates to type-specific handlers.
     pub fn handle_result(&mut self, result: &TaskResult) {
         tracing::trace!(result = ?result, "processing scheduler task result");
@@ -490,11 +485,11 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
 
     /// Diff `desired` vs `scheduled` and send Schedule/Cancel actions.
     ///
-    /// Uses `try_send` so we never block waiting for the supervisor to drain
+    /// Uses `try_send` so we never block waiting for the task_runner to drain
     /// actions — if the channel is full we break and let the unsent items
     /// be picked up on the next pass (they remain in `desired \ scheduled`).
     /// This prevents a bidirectional deadlock where the scheduler blocks on
-    /// action sends while the supervisor blocks on result sends.
+    /// action sends while the task_runner blocks on result sends.
     pub fn flush(&mut self, tx: &mpsc::Sender<Action>) {
         self.prune_stale(tx);
 
@@ -613,7 +608,7 @@ impl<S: Store, R: Rpc> Scheduler<S, R> {
         (sent, total - sent)
     }
 
-    /// No-op: the supervisor handles retries internally. The key stays in
+    /// No-op: the task_runner handles retries internally. The key stays in
     /// `scheduled` so the scheduler doesn't re-issue a duplicate Schedule action.
     fn handle_retry(&self) {
         tracing::trace!("scheduler received retryable result");
@@ -762,7 +757,7 @@ mod tests {
             .set_spool_status(20, SpoolStatus::ActiveSync)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
@@ -794,7 +789,7 @@ mod tests {
             .set_spool_status(10, SpoolStatus::ActiveSync)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
@@ -824,7 +819,7 @@ mod tests {
     #[tokio::test]
     async fn oneshot_cleared() {
         let ctx = test_context();
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
 
         let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
         scheduler.desired.insert(key.clone());
@@ -839,7 +834,7 @@ mod tests {
     #[tokio::test]
     async fn retryable_kept() {
         let ctx = test_context();
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
 
         let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
         scheduler.desired.insert(key.clone());
@@ -855,7 +850,7 @@ mod tests {
     #[tokio::test]
     async fn permanent_removed() {
         let ctx = test_context();
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         let key = Task::SpoolSync { spool: 42 };
         scheduler.desired.insert(key.clone());
@@ -877,7 +872,7 @@ mod tests {
             .set_spool_status(30, SpoolStatus::ActiveRecover)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
@@ -904,7 +899,7 @@ mod tests {
             .set_spool_status(15, SpoolStatus::ActiveSync)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::SpoolAssignmentChanged]);
@@ -946,7 +941,7 @@ mod tests {
         let store_track: StorePubkey = (&track).into();
         ctx.store.put_track(store_track, make_track_info(0)).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
@@ -976,7 +971,7 @@ mod tests {
         ctx.store.put_track(store_track, make_track_info(0)).unwrap();
         ctx.store.put_slice(5, store_track, vec![1, 2, 3]).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
@@ -998,7 +993,7 @@ mod tests {
         let store_track: StorePubkey = (&track).into();
         ctx.store.put_track(store_track, make_track_info(1)).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::TrackCertified { track }]);
@@ -1012,7 +1007,7 @@ mod tests {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::NodeJoinedCommittee { node: our_pubkey }]);
@@ -1032,7 +1027,7 @@ mod tests {
     async fn joined_other() {
         let ctx = test_context();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::NodeJoinedCommittee {
@@ -1048,7 +1043,7 @@ mod tests {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let epoch = EpochNumber(0);
         scheduler.desired.insert(Task::SyncEpoch { epoch });
         scheduler.scheduled.insert(Task::SyncEpoch { epoch });
@@ -1066,7 +1061,7 @@ mod tests {
             .set_spool_status(10, SpoolStatus::ActiveSync)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, action_rx) = mpsc::channel(16);
 
         drop(action_rx);
@@ -1085,7 +1080,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.desired.insert(Task::RefreshOnchainState);
         scheduler.scheduled.insert(Task::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
@@ -1102,7 +1097,7 @@ mod tests {
             .set_sync_cursor(SlotNumber(500))
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.desired.insert(Task::RefreshOnchainState);
         scheduler.scheduled.insert(Task::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
@@ -1113,7 +1108,7 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_refresh() {
         let ctx = test_context();
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.desired.insert(Task::SnapshotBootstrap);
         scheduler.scheduled.insert(Task::SnapshotBootstrap);
@@ -1136,7 +1131,7 @@ mod tests {
             .set_spool_status(20, SpoolStatus::ActiveSync)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
@@ -1156,7 +1151,7 @@ mod tests {
             .unwrap();
         let epoch = EpochNumber(2);
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch,
         }]);
@@ -1182,7 +1177,7 @@ mod tests {
             .unwrap();
         ctx.store.set_node_status(NodeStatus::Standby).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
@@ -1211,7 +1206,7 @@ mod tests {
         ctx.store
             .set_chain_epoch_phase(EpochPhase::Active)
             .unwrap();
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
@@ -1237,7 +1232,7 @@ mod tests {
             .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
@@ -1259,7 +1254,7 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
         scheduler
             .lifecycle
@@ -1293,7 +1288,7 @@ mod tests {
             .set_chain_epoch_phase(EpochPhase::Active)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
         let old_epoch = EpochNumber(3);
         let new_epoch = EpochNumber(4);
@@ -1340,7 +1335,7 @@ mod tests {
         let ctx = test_context();
         ctx.store.set_node_status(NodeStatus::Standby).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.periodic_tasks();
@@ -1360,7 +1355,7 @@ mod tests {
     #[tokio::test]
     async fn startup_refresh() {
         let ctx = test_context();
-        let scheduler = Scheduler::new(ctx);
+        let scheduler = TaskScheduler::new(ctx);
 
         let mut r = scheduler;
         r.desired.insert(Task::RefreshOnchainState);
@@ -1376,7 +1371,7 @@ mod tests {
             .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
         let stale_epoch = EpochNumber(2);
         let current_epoch = EpochNumber(3);
@@ -1400,7 +1395,7 @@ mod tests {
     #[tokio::test]
     async fn default_standby() {
         let ctx = test_context();
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.context.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
 
@@ -1418,7 +1413,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
         scheduler.desired.insert(Task::RefreshOnchainState);
@@ -1442,7 +1437,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.desired.insert(Task::RefreshOnchainState);
         scheduler.scheduled.insert(Task::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
@@ -1463,7 +1458,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         let epoch = EpochNumber(3);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch,
@@ -1478,7 +1473,7 @@ mod tests {
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
         let epoch = EpochNumber(1);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch,
@@ -1496,7 +1491,7 @@ mod tests {
         mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
             &*scheduler.context.store,
             scheduler.node_status(),
@@ -1517,7 +1512,7 @@ mod tests {
         mark_snapshot_build_complete(&ctx, local_epoch);
         let epoch = EpochNumber(3);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
             &*scheduler.context.store,
             scheduler.node_status(),
@@ -1549,7 +1544,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
             &*scheduler.context.store,
             scheduler.node_status(),
@@ -1581,7 +1576,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
             &*scheduler.context.store,
             scheduler.node_status(),
@@ -1602,7 +1597,7 @@ mod tests {
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.desired.insert(Task::RefreshOnchainState);
         scheduler.scheduled.insert(Task::RefreshOnchainState);
         scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
@@ -1624,7 +1619,7 @@ mod tests {
         mark_snapshot_group_ready(&ctx, local_epoch, group);
         let epoch = EpochNumber(3);
 
-        let mut scheduler = Scheduler::new(ctx);
+        let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
             &*scheduler.context.store,
             scheduler.node_status(),
@@ -1650,7 +1645,7 @@ mod tests {
 
         ctx.store.add_pending_recovery(5, store_track).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
 
         scheduler.update_desired(&[StateChange::TrackDeleted { track }]);
 
@@ -1685,7 +1680,7 @@ mod tests {
         ).unwrap();
         ctx.store.add_pending_recovery(5, store_track).unwrap();
 
-        let mut scheduler = Scheduler::new(ctx.clone());
+        let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.desired.insert(Task::SpoolRecovery { spool: 5 });
         scheduler.scheduled.insert(Task::SpoolRecovery { spool: 5 });
 

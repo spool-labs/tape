@@ -12,7 +12,7 @@ use solana_sdk::signer::Signer;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_node::runtime::{NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig};
-use tape_node::pipeline::{spawn_runtime, RuntimeHandles};
+use tape_node::runtime::{spawn_runtime, RuntimeHandles};
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -279,7 +279,7 @@ impl TestNode {
                 let _ = handles.ingestor.await;
                 let _ = handles.fsm.await;
                 let _ = handles.scheduler.await;
-                let _ = handles.supervisor.await;
+                let _ = handles.task_runner.await;
                 let _ = handles.http.await;
             };
             let _ = timeout(self.test_config.stop_timeout, wait).await;
