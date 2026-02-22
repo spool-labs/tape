@@ -43,46 +43,24 @@ const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 /// the full lifecycle: spawn, track, retry on failure, cancel on request, and
 /// report outcomes back via `result_tx`.
 pub struct TaskRunner<S: Store, R: Rpc> {
-
     /// Shared node state (store, RPC client, identity, config).
     context: Arc<NodeContext<S, R>>,
-
-    /// Handle for making peer HTTP requests.
-    peer_handle: PeerHandle,
-
     /// Currently executing tasks, keyed for dedup and attempt tracking.
     running: HashMap<Task, RunningTask>,
-
-    /// Cancellation token for each running task.
-    tokens: HashMap<Task, CancellationToken>,
-
-    /// Collects completions from all spawned task futures.
-    join_set: JoinSet<(Task, TaskOutcome)>,
-
-    /// Min-heap of tasks waiting to be retried, ordered by due time.
-    retry_queue: BinaryHeap<Reverse<RetryEntry>>,
-
-    /// Keys present in `retry_queue`. Used to skip stale entries after cancel.
-    pending_retry: HashSet<Task>,
-
     /// Keys whose cancel was processed while the future was still in-flight.
-    /// When the JoinSet yields these, their completion is silently dropped.
-    canceled_running: HashSet<Task>,
-
+    canceled: HashSet<Task>,
+    /// Tasks waiting to be retried after backoff.
+    retries: RetryQueue,
+    /// Per-category concurrency semaphores.
+    limits: ConcurrencyLimits,
+    /// Handle for making peer HTTP requests.
+    peers: PeerHandle,
+    /// Cancellation token for each running task.
+    cancel_tokens: HashMap<Task, CancellationToken>,
+    /// Collects completions from all spawned task futures.
+    futures: JoinSet<(Task, TaskOutcome)>,
     /// Channel to send task outcomes back to the scheduler/FSM.
     result_tx: mpsc::Sender<TaskResult>,
-
-    /// Limits concurrent Solana transaction submissions (capacity: 5).
-    sem_solana_tx: Arc<Semaphore>,
-
-    /// Limits concurrent peer HTTP requests (capacity: 50).
-    sem_peer_http: Arc<Semaphore>,
-
-    /// Limits concurrent CPU-heavy work like snapshot builds (capacity: num_cpus).
-    sem_cpu_heavy: Arc<Semaphore>,
-
-    /// Separate semaphore for internal tasks.
-    sem_internal: Arc<Semaphore>,
 }
 
 impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
@@ -91,23 +69,16 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         peer_handle: PeerHandle,
         result_tx: mpsc::Sender<TaskResult>,
     ) -> Self {
-        let cpu_count = std::thread::available_parallelism()
-            .map_or(4, |n| n.get());
-
         Self {
             context,
-            peer_handle,
+            peers: peer_handle,
             running: HashMap::new(),
-            tokens: HashMap::new(),
-            join_set: JoinSet::new(),
-            retry_queue: BinaryHeap::new(),
-            pending_retry: HashSet::new(),
-            canceled_running: HashSet::new(),
+            canceled: HashSet::new(),
+            retries: RetryQueue::new(),
+            limits: ConcurrencyLimits::new(),
+            cancel_tokens: HashMap::new(),
+            futures: JoinSet::new(),
             result_tx,
-            sem_solana_tx: Arc::new(Semaphore::new(5)),
-            sem_peer_http: Arc::new(Semaphore::new(50)),
-            sem_cpu_heavy: Arc::new(Semaphore::new(cpu_count)),
-            sem_internal: Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
         }
     }
 
@@ -124,7 +95,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         cancel: CancellationToken,
     ) {
         loop {
-            let next_retry = self.next_retry_instant();
+            let next_retry = self.retries.next_due_instant();
 
             tokio::select! {
                 action = action_rx.recv() => {
@@ -145,11 +116,11 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
                     }
                 }
 
-                Some(result) = self.join_set.join_next() => {
+                Some(result) = self.futures.join_next() => {
                     match result {
                         Ok((key, outcome)) => {
                             tracing::trace!(task = ?key, outcome = ?outcome, "task_runner task completed");
-                            if self.canceled_running.remove(&key) {
+                            if self.canceled.remove(&key) {
                                 tracing::debug!(task = ?key, "dropped completion for canceled task");
                                 continue;
                             }
@@ -176,7 +147,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     /// Schedule a task for execution. Silently deduplicates: if the key is
     /// already running or awaiting retry, the request is dropped.
     fn handle_schedule(&mut self, key: Task, attempt: u32) {
-        if self.running.contains_key(&key) || self.pending_retry.contains(&key) {
+        if self.running.contains_key(&key) || self.retries.contains(&key) {
             tracing::trace!(
                 task = ?key,
                 attempt,
@@ -196,13 +167,12 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         tracing::trace!(task = ?key, "task_runner canceling task");
         let had_running = self.running.remove(key).is_some();
         if had_running {
-            self.canceled_running.insert(key.clone());
+            self.canceled.insert(key.clone());
         }
-        if let Some(token) = self.tokens.remove(key) {
+        if let Some(token) = self.cancel_tokens.remove(key) {
             token.cancel();
         }
-        let had_pending = self.pending_retry.remove(key);
-        self.purge_retry_queue(key);
+        let had_pending = self.retries.cancel(key);
         tracing::trace!(
             task = ?key,
             had_running,
@@ -222,7 +192,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
             .remove(&key)
             .map(|r| r.attempt)
             .unwrap_or(0);
-        self.tokens.remove(&key);
+        self.cancel_tokens.remove(&key);
 
         match outcome {
             TaskOutcome::Success => self.complete_success(key).await,
@@ -254,12 +224,13 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
             delay_secs = delay.as_secs(),
             "task_runner pending retry"
         );
-        self.enqueue_retry(key, attempt, delay);
+        self.retries.enqueue(key, attempt, delay);
     }
 
     /// Compute backoff delay and re-enqueue, or escalate to permanent failure
     /// if max retries for this category have been exhausted.
     async fn complete_retry(&mut self, key: Task, attempt: u32, err: String) {
+
         let config = backoff_for(key.category());
         match compute_delay(&config, attempt) {
             Some(delay) => {
@@ -270,7 +241,7 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
                     error = %err,
                     "scheduling retry"
                 );
-                self.enqueue_retry(key.clone(), attempt + 1, delay);
+                self.retries.enqueue(key.clone(), attempt + 1, delay);
                 self.send_result(TaskResult::RetryableError(key, err)).await;
             }
             None => {
@@ -290,23 +261,6 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         self.send_result(TaskResult::PermanentError(key, err)).await;
     }
 
-    /// Push a task onto the retry heap with a computed due time.
-    fn enqueue_retry(&mut self, key: Task, attempt: u32, delay: Duration) {
-        tracing::trace!(
-            task = ?key,
-            attempt,
-            delay_secs = delay.as_secs(),
-            "task_runner queued retry"
-        );
-        let due = Instant::now() + delay;
-        self.retry_queue.push(Reverse(RetryEntry {
-            due,
-            key: key.clone(),
-            attempt,
-        }));
-        self.pending_retry.insert(key);
-    }
-
     /// Forward a task result to the scheduler/FSM. Silently drops if the
     /// channel is closed (happens during shutdown).
     async fn send_result(&self, result: TaskResult) {
@@ -322,23 +276,10 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     }
 
     /// Drain all retry entries whose due time has passed and re-spawn them.
-    /// Entries whose key was removed from `pending_retry` (by a cancel) are
-    /// silently skipped.
     fn process_retries(&mut self) {
-        let now = Instant::now();
-        while let Some(entry) = self.retry_queue.peek() {
-            if entry.0.due > now {
-                break;
-            }
-            let entry = self.retry_queue.pop().unwrap().0;
-            tracing::trace!(
-                task = ?entry.key,
-                attempt = entry.attempt,
-                "task_runner retry due"
-            );
-            if self.pending_retry.remove(&entry.key) {
-                self.spawn_task(entry.key, entry.attempt);
-            }
+        for (key, attempt) in self.retries.drain_due() {
+            tracing::trace!(task = ?key, attempt, "task_runner retry due");
+            self.spawn_task(key, attempt);
         }
     }
 
@@ -346,14 +287,14 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     /// `SHUTDOWN_TIMEOUT_SECS` to finish before abandoning them.
     async fn shutdown(&mut self) {
         tracing::trace!("task_runner shutdown start");
-        for token in self.tokens.values() {
+        for token in self.cancel_tokens.values() {
             token.cancel();
         }
 
         let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_TIMEOUT_SECS);
         loop {
             tokio::select! {
-                result = self.join_set.join_next() => {
+                result = self.futures.join_next() => {
                     match result {
                         Some(Ok((key, _))) => {
                             tracing::debug!(task = ?key, "task finished during shutdown");
@@ -378,20 +319,21 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
         }
 
         self.running.clear();
-        self.tokens.clear();
-        self.canceled_running.clear();
+        self.cancel_tokens.clear();
+        self.canceled.clear();
     }
 
     /// Spawn a task future onto the JoinSet. Acquires the category semaphore
     /// inside the future so the permit is held for the task's lifetime.
     fn spawn_task(&mut self, key: Task, attempt: u32) {
         let token = CancellationToken::new();
-        let sem = self.semaphore_for(key.category());
+        let sem = self.limits.get(key.category());
         let ctx = self.context.clone();
-        let peer_handle = self.peer_handle.clone();
+        let peers = self.peers.clone();
         let token_clone = token.clone();
         let category = key.category();
         let key_to_run = key.clone();
+
         let span = tracing::info_span!(
             "task",
             task_key = ?key_to_run,
@@ -406,8 +348,9 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
             attempt,
             "task_runner spawning background task"
         );
-        self.join_set.spawn(
-            execute_task(ctx, peer_handle, key_to_run.clone(), token_clone, sem).instrument(span),
+
+        self.futures.spawn(
+            execute_task(ctx, peers, key_to_run.clone(), token_clone, sem).instrument(span),
         );
 
         self.running.insert(
@@ -418,35 +361,8 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
                 attempt,
             },
         );
-        self.tokens.insert(key, token);
-    }
 
-    /// Return the concurrency-limiting semaphore for a task category.
-    fn semaphore_for(&self, category: TaskCategory) -> Arc<Semaphore> {
-        match category {
-            TaskCategory::SolanaTx => self.sem_solana_tx.clone(),
-            TaskCategory::PeerHttp => self.sem_peer_http.clone(),
-            TaskCategory::CpuHeavy => self.sem_cpu_heavy.clone(),
-            // Internal tasks have a dedicated high-capacity semaphore.
-            TaskCategory::Internal => self.sem_internal.clone(),
-        }
-    }
-
-    /// Remove stale retry entries for a canceled key to avoid heap growth.
-    fn purge_retry_queue(&mut self, key: &Task) {
-        self.retry_queue = self
-            .retry_queue
-            .drain()
-            .filter(|entry| entry.0.key != *key)
-            .collect();
-    }
-
-    /// Earliest due time in the retry heap, or far-future if empty.
-    fn next_retry_instant(&self) -> Instant {
-        self.retry_queue
-            .peek()
-            .map(|e| e.0.due)
-            .unwrap_or_else(far_future)
+        self.cancel_tokens.insert(key, token);
     }
 }
 
@@ -473,6 +389,128 @@ pub fn backoff_for(category: TaskCategory) -> BackoffConfig {
             max_delay: Duration::from_secs(60),
             max_retries: Some(10),
         },
+    }
+}
+
+/// Per-category concurrency limits.
+///
+/// Each task category gets its own `Semaphore` so that, e.g., a burst of
+/// peer HTTP requests cannot starve Solana transaction submissions.
+struct ConcurrencyLimits {
+    solana_tx: Arc<Semaphore>,
+    peer_http: Arc<Semaphore>,
+    cpu_heavy: Arc<Semaphore>,
+    internal: Arc<Semaphore>,
+}
+
+impl ConcurrencyLimits {
+    fn new() -> Self {
+        let cpu_count = std::thread::available_parallelism()
+            .map_or(4, |n| n.get());
+        Self {
+            solana_tx: Arc::new(Semaphore::new(5)),
+            peer_http: Arc::new(Semaphore::new(50)),
+            cpu_heavy: Arc::new(Semaphore::new(cpu_count)),
+            internal: Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
+        }
+    }
+
+    fn get(&self, category: TaskCategory) -> Arc<Semaphore> {
+        match category {
+            TaskCategory::SolanaTx => self.solana_tx.clone(),
+            TaskCategory::PeerHttp => self.peer_http.clone(),
+            TaskCategory::CpuHeavy => self.cpu_heavy.clone(),
+            TaskCategory::Internal => self.internal.clone(),
+        }
+    }
+}
+
+/// Min-heap of tasks waiting to be retried, ordered by due time.
+///
+/// Maintains a parallel `HashSet` of pending keys so that canceled entries
+/// can be skipped without a linear scan of the heap.
+struct RetryQueue {
+    /// Min-heap ordered by due time.
+    heap: BinaryHeap<Reverse<RetryEntry>>,
+    /// Keys present in the heap. Used to skip canceled entries after cancel.
+    pending: HashSet<Task>,
+}
+
+impl RetryQueue {
+    fn new() -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            pending: HashSet::new(),
+        }
+    }
+
+    /// Push a task onto the retry heap with a computed due time.
+    fn enqueue(&mut self, key: Task, attempt: u32, delay: Duration) {
+        let due = Instant::now() + delay;
+        self.heap.push(Reverse(RetryEntry {
+            due,
+            key: key.clone(),
+            attempt,
+        }));
+        self.pending.insert(key);
+    }
+
+    /// Returns true if the key is awaiting retry.
+    fn contains(&self, key: &Task) -> bool {
+        self.pending.contains(key)
+    }
+
+    /// Remove a key from pending and purge its heap entries.
+    fn cancel(&mut self, key: &Task) -> bool {
+        let had = self.pending.remove(key);
+        if had {
+            self.heap = self
+                .heap
+                .drain()
+                .filter(|entry| entry.0.key != *key)
+                .collect();
+        }
+        had
+    }
+
+    /// Drain all entries whose due time has passed. Returns them so the
+    /// caller can re-spawn.
+    fn drain_due(&mut self) -> Vec<(Task, u32)> {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        while let Some(entry) = self.heap.peek() {
+            if entry.0.due > now {
+                break;
+            }
+            let entry = self.heap.pop().unwrap().0;
+            if self.pending.remove(&entry.key) {
+                due.push((entry.key, entry.attempt));
+            }
+        }
+        due
+    }
+
+    /// Earliest due time in the heap, or far-future if empty.
+    fn next_due_instant(&self) -> Instant {
+        self.heap
+            .peek()
+            .map(|e| e.0.due)
+            .unwrap_or_else(far_future)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    #[cfg(test)]
+    fn peek(&self) -> Option<&Reverse<RetryEntry>> {
+        self.heap.peek()
     }
 }
 
@@ -616,16 +654,16 @@ mod tests {
             },
         );
         task_runner
-            .tokens
+            .cancel_tokens
             .insert(key.clone(), CancellationToken::new());
 
         task_runner.handle_cancel(&key).await;
 
         let result = result_rx.try_recv().unwrap();
         assert!(matches!(result, TaskResult::Canceled(ref k) if *k == key));
-        assert!(task_runner.canceled_running.contains(&key));
+        assert!(task_runner.canceled.contains(&key));
         assert!(!task_runner.running.contains_key(&key));
-        assert!(!task_runner.tokens.contains_key(&key));
+        assert!(!task_runner.cancel_tokens.contains_key(&key));
     }
 
     #[tokio::test]
@@ -647,7 +685,7 @@ mod tests {
             },
         );
         task_runner
-            .tokens
+            .cancel_tokens
             .insert(key.clone(), CancellationToken::new());
 
         // Handle a retryable completion
@@ -656,8 +694,8 @@ mod tests {
             .await;
 
         // Should be in retry queue
-        assert!(task_runner.pending_retry.contains(&key));
-        assert!(!task_runner.retry_queue.is_empty());
+        assert!(task_runner.retries.contains(&key));
+        assert!(!task_runner.retries.is_empty());
 
         // Result should have been sent
         let result = result_rx.try_recv().unwrap();
@@ -681,16 +719,16 @@ mod tests {
             },
         );
         task_runner
-            .tokens
+            .cancel_tokens
             .insert(key.clone(), CancellationToken::new());
 
         task_runner
             .handle_completion(key.clone(), TaskOutcome::Pending(Duration::from_secs(2)))
             .await;
 
-        assert!(task_runner.pending_retry.contains(&key));
-        assert_eq!(task_runner.retry_queue.len(), 1);
-        let queued = &task_runner.retry_queue.peek().unwrap().0;
+        assert!(task_runner.retries.contains(&key));
+        assert_eq!(task_runner.retries.len(), 1);
+        let queued = &task_runner.retries.peek().unwrap().0;
         assert_eq!(queued.key, key);
         assert_eq!(queued.attempt, 3);
         assert!(result_rx.try_recv().is_err());
@@ -714,7 +752,7 @@ mod tests {
             },
         );
         task_runner
-            .tokens
+            .cancel_tokens
             .insert(key.clone(), CancellationToken::new());
 
         task_runner
@@ -722,7 +760,7 @@ mod tests {
             .await;
 
         assert!(!task_runner.running.contains_key(&key));
-        assert!(!task_runner.tokens.contains_key(&key));
+        assert!(!task_runner.cancel_tokens.contains_key(&key));
 
         let result = result_rx.try_recv().unwrap();
         assert!(matches!(result, TaskResult::PermanentError(..)));
@@ -926,7 +964,7 @@ mod tests {
             },
         );
         task_runner
-            .tokens
+            .cancel_tokens
             .insert(key.clone(), CancellationToken::new());
 
         task_runner
@@ -934,7 +972,7 @@ mod tests {
             .await;
 
         // Should NOT be in retry queue — max retries exceeded
-        assert!(!task_runner.pending_retry.contains(&key));
+        assert!(!task_runner.retries.contains(&key));
 
         // Should get PermanentError
         let result = result_rx.try_recv().unwrap();
