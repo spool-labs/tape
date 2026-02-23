@@ -11,7 +11,7 @@ use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::group_for_spool;
 use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_node_api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
-use tape_store::ops::{CommitteeOps, MetaOps, TrackOps};
+use tape_store::ops::{MetaOps, TrackOps};
 use tape_store::types::SnapshotPartialSignature;
 
 use crate::http::error::ApiError;
@@ -32,12 +32,7 @@ pub async fn get_signature<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let epoch = state
-        .context
-        .store
-        .get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(EpochNumber(0));
+    let epoch = state.context.chain_state.load().epoch;
 
     let root = track_info.commitment_root();
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
@@ -92,26 +87,12 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
     let chunk_idx = ChunkIndex(chunk_index);
 
     let member_index = request.member_index as usize;
-    let validating_epoch = state
-        .context
-        .store
-        .get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(format!("read chain epoch: {e}")))?;
-    let validating_epoch = validating_epoch.unwrap_or(epoch);
-    let validating_committee = state
-        .context
-        .store
-        .get_committee(validating_epoch)
-        .map_err(|e| ApiError::InternalError(format!("read committee: {e}")))?
-        .or_else(|| {
-            state
-                .context
-                .store
-                .get_committee(epoch)
-                .ok()
-                .flatten()
-        })
+    let cs = state.context.chain_state.load();
+    let validating_committee = cs.committee_for(epoch)
         .ok_or(ApiError::NotFound)?;
+    if validating_committee.is_empty() {
+        return Err(ApiError::NotFound);
+    }
 
     if member_index >= validating_committee.len() {
         return Err(ApiError::BadRequest("unknown member index".into()));

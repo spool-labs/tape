@@ -7,7 +7,7 @@ use store::Store;
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::types::EpochNumber;
-use tape_store::ops::{CommitteeOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
@@ -25,12 +25,12 @@ pub async fn run<S: Store, R: Rpc>(
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match require_epoch(&context.store) {
+    let epoch = match require_epoch(&context.chain_state) {
         Ok(e) => e,
         Err(outcome) => return outcome,
     };
 
-    if epoch.as_u64() == 0 {
+    if epoch.is_zero() {
         if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
             return TaskOutcome::Retryable(format!("set spool active: {e}"));
         }
@@ -38,13 +38,11 @@ pub async fn run<S: Store, R: Rpc>(
     }
 
     // Look up previous epoch committee to find the peer that owned this spool
-    let prev_epoch = EpochNumber(epoch.as_u64() - 1);
-    let prev_committee = match context.store.get_committee(prev_epoch) {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return TaskOutcome::Retryable("no committee for previous epoch".into())
-        }
-        Err(e) => return TaskOutcome::Retryable(format!("read committee: {e}")),
+    let prev_epoch = epoch - EpochNumber(1);
+    let cs = context.chain_state.load();
+    let prev_committee = match cs.committee_for(prev_epoch) {
+        Some(c) => c.clone(),
+        None => return TaskOutcome::Retryable("no committee for previous epoch".into()),
     };
 
     // Find the peer that owned this spool in the previous epoch

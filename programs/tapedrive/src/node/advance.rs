@@ -128,6 +128,13 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         }
     }
 
+    PoolAdvanced {
+        node: *node_info.key,
+        id: node.id,
+        epoch: current_epoch(epoch),
+        phase: epoch.state.phase,
+    }.log();
+
     Ok(())
 }
 

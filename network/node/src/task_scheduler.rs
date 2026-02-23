@@ -6,15 +6,12 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use solana_sdk::signer::Signer;
 use store::Store;
-use tape_api::program::tapedrive::EPOCH_DURATION;
 use tape_core::system::EpochPhase;
 use tokio::sync::mpsc;
-use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
 use tape_core::types::EpochNumber;
@@ -26,7 +23,6 @@ use crate::fsm::StateChange;
 use crate::{Task, TaskResult};
 
 use crate::scheduler::LifecyclePlanner;
-use crate::scheduler::RefreshPlanner;
 use crate::scheduler::SnapshotPlanner;
 use crate::scheduler::SpoolPlanner;
 
@@ -57,8 +53,6 @@ pub struct TaskScheduler<S: Store, R: Rpc> {
     pub lifecycle: LifecyclePlanner,
     /// Snapshot pipeline planner.
     pub snapshot: SnapshotPlanner,
-    /// Refresh throttle planner.
-    pub refresh: RefreshPlanner,
 }
 
 impl<S: Store, R: Rpc> TaskScheduler<S, R> {
@@ -69,7 +63,6 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             scheduled: HashSet::new(),
             lifecycle: LifecyclePlanner::new(),
             snapshot: SnapshotPlanner::new(),
-            refresh: RefreshPlanner::new(),
         }
     }
 
@@ -83,16 +76,29 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         action_tx: mpsc::Sender<Action>,
         cancel: CancellationToken,
     ) {
-        // Bootstrap: schedule RefreshOnchainState immediately on startup
-        self.request_refresh(true);
+        // On startup, reconcile spools and schedule lifecycle from current ChainState
+        // (seeded by runtime before scheduler starts).
+        {
+            let cs = self.context.chain_state.load();
+            if cs.has_epoch() {
+                SpoolPlanner::reconcile(
+                    &*self.context.store,
+                    self.node_status(),
+                    &mut self.desired,
+                );
+                self.lifecycle.schedule(
+                    self.chain_phase(),
+                    self.node_status(),
+                    cs.epoch,
+                    &mut self.desired,
+                );
+                if self.needs_bootstrap() {
+                    self.desired.insert(Task::SnapshotBootstrap);
+                }
+            }
+        }
         self.flush(&action_tx);
         tracing::trace!("scheduler bootstrapped");
-
-        // Refresh often enough to observe committee/epoch transitions in local/test
-        // while capping cadence for production.
-        let refresh_secs = (EPOCH_DURATION / 2).clamp(1, 30) as u64;
-        let mut ticker = interval(Duration::from_secs(refresh_secs));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut received_changes: usize = 0;
         let mut handled_results: usize = 0;
@@ -131,18 +137,6 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                     }
                 }
 
-                // _ = ticker.tick() => {
-                //     tracing::trace!(
-                //         received_changes,
-                //         handled_results,
-                //         desired = self.desired.len(),
-                //         scheduled = self.scheduled.len(),
-                //         "scheduler periodic tick"
-                //     );
-                //     self.periodic_tasks();
-                //     self.flush(&action_tx);
-                // }
-
                 _ = cancel.cancelled() => {
                     tracing::trace!("scheduler received cancel signal");
                     break;
@@ -161,8 +155,9 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                 StateChange::EpochAdvanced { epoch } => {
                     tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
 
+                    let cs = self.context.chain_state.load();
                     LifecyclePlanner::log_member_index(
-                        &*self.context.store,
+                        &cs.committee,
                         self.context.keypair.pubkey(),
                         *epoch,
                     );
@@ -178,16 +173,16 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                         &mut self.desired,
                     );
 
-                    // Always refresh after epoch transitions so Standby nodes can
-                    // observe new committee membership before lifecycle scheduling.
-                    tracing::trace!(epoch = epoch.0, "scheduler requesting refresh after epoch advance");
+                    SpoolPlanner::prune_recoveries(&*self.context.store, &mut self.desired);
 
-                    self.request_refresh(true);
+                    if self.needs_bootstrap() {
+                        self.desired.insert(Task::SnapshotBootstrap);
+                    }
 
                     tracing::trace!(epoch = epoch.0, "scheduler scheduling lifecycle for new epoch");
 
                     self.lifecycle.schedule(
-                        &*self.context.store,
+                        self.chain_phase(),
                         self.node_status(),
                         *epoch,
                         &mut self.desired,
@@ -215,8 +210,12 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
 
                 StateChange::NodeJoinedCommittee { node } => {
                     if *node == self.context.keypair.pubkey() {
-                        tracing::trace!(node = %node, "scheduler refreshing after join event for local node");
-                        self.request_refresh(true);
+                        tracing::trace!(node = %node, "scheduler handling join event for local node");
+                        SpoolPlanner::reconcile(
+                            &*self.context.store,
+                            self.node_status(),
+                            &mut self.desired,
+                        );
                     }
                 }
 
@@ -234,24 +233,34 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                     SpoolPlanner::remove_recoveries(&*self.context.store, track);
                 }
                 
+                StateChange::PhaseAdvanced { phase } => {
+                    tracing::trace!(?phase, "scheduler handling phase advance");
+                    let cs = self.context.chain_state.load();
+                    let epoch = cs.epoch;
+                    if !epoch.is_zero() {
+                        self.lifecycle.schedule(
+                            Some(*phase),
+                            self.node_status(),
+                            epoch,
+                            &mut self.desired,
+                        );
+                    }
+                }
+
+                StateChange::PoolAdvanced { node } => {
+                    if *node == self.context.keypair.pubkey() {
+                        tracing::trace!(node = %node, "scheduler dropping local advance task after local node advanced");
+                        self.desired
+                            .retain(|key| !matches!(key, Task::AdvancePool { .. }));
+                    }
+                }
+
                 StateChange::TrackRegistered { .. }
                 | StateChange::TapeReserved { .. }
                 | StateChange::TapeDestroyed { .. }
                 | StateChange::NodeRegistered { .. } => {}
             }
         }
-    }
-
-    /// Called on the timer tick. Schedules RefreshOnchainState (throttled) and
-    /// AdvanceEpoch if the chain is in the Active phase.
-    pub fn periodic_tasks(&mut self) {
-        tracing::trace!("scheduler periodic task pass");
-        self.request_refresh(false);
-        let epoch = self.scheduling_epoch();
-        let node_status = self.node_status();
-        let chain_phase = self.context.store.get_chain_epoch_phase().ok().flatten();
-        self.lifecycle
-            .periodic(node_status, epoch, chain_phase, &mut self.desired);
     }
 
     /// Process a task completion from the task_runner. Stale epoch results are
@@ -297,97 +306,9 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             self.desired.remove(key);
         }
 
-        self.handle_refresh_success(key);
         self.handle_sync_success(key);
         self.handle_bootstrap_success(key);
         self.handle_snapshot_success(key);
-    }
-
-    /// After RefreshOnchainState succeeds, re-evaluate spool ownership, prune
-    /// stale recoveries, reschedule lifecycle tasks, and check if bootstrap is needed.
-    fn handle_refresh_success(&mut self, key: &Task) {
-
-        // TODO: Evaluate whether we actually want a RefreshOnchainState mechanism
-        if !matches!(key, Task::RefreshOnchainState) {
-            return;
-        }
-
-        let before_status = self.node_status();
-        let before_phase = self.context
-            .store
-            .get_chain_epoch_phase()
-            .ok()
-            .flatten();
-
-        let sync_cursor = self.context
-            .store
-            .get_sync_cursor()
-            .ok()
-            .flatten();
-
-        tracing::trace!(
-            before_status = ?before_status,
-            before_phase = ?before_phase,
-            sync_cursor = sync_cursor.map(|cursor| cursor.0),
-            "refresh success: bootstrap state snapshot"
-        );
-
-        let epoch = self.context.store
-            .get_chain_epoch()
-            .ok()
-            .flatten();
-
-        tracing::trace!(epoch = ?epoch, "refresh success: recorded epoch for throttle");
-
-        self.refresh.throttle_mut().record(epoch);
-
-        tracing::trace!("refresh success: pruning stale recoveries");
-
-        SpoolPlanner::prune_recoveries(&*self.context.store, &mut self.desired);
-
-        tracing::trace!("refresh success: reconciling spools");
-
-        SpoolPlanner::reconcile(&*self.context.store, self.node_status(), &mut self.desired);
-
-        if let Some(epoch) = epoch {
-            tracing::trace!(epoch = epoch.0, "refresh success: scheduling lifecycle for chain epoch");
-            tracing::trace!(
-                before_status = ?before_status,
-                before_phase = ?before_phase,
-                node_status = ?self.node_status(),
-                chain_phase = ?self.context
-                    .store
-                    .get_chain_epoch_phase()
-                    .ok()
-                    .flatten(),
-                "refresh success: refreshed status and lifecycle scheduling"
-            );
-
-            self.lifecycle.schedule(
-                &*self.context.store,
-                self.node_status(),
-                epoch,
-                &mut self.desired,
-            );
-        } else {
-            tracing::trace!("refresh success: unable to read chain epoch for lifecycle scheduling");
-        }
-
-        let needs_bootstrap = self.needs_bootstrap();
-        if needs_bootstrap {
-            tracing::trace!(
-                epoch = ?self.context.store.get_chain_epoch().ok().flatten(),
-                sync_cursor = sync_cursor.map(|cursor| cursor.0),
-                "refresh success: bootstrap required, scheduling snapshot bootstrap"
-            );
-            tracing::trace!("refresh success: bootstrap required, scheduling snapshot bootstrap");
-            self.desired.insert(Task::SnapshotBootstrap);
-        } else {
-            tracing::trace!(
-                sync_cursor = sync_cursor.map(|cursor| cursor.0),
-                "refresh success: bootstrap not required"
-            );
-        }
     }
 
     /// After SyncEpoch succeeds, re-run lifecycle scheduling to unlock the
@@ -397,21 +318,36 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             return;
         }
         tracing::trace!(task = ?key, "scheduler handling sync success");
-        if let Ok(Some(epoch)) = self.context.store.get_chain_epoch() {
+        let cs = self.context.chain_state.load();
+        if cs.has_epoch() {
             self.lifecycle.schedule(
-                &*self.context.store,
+                self.chain_phase(),
                 self.node_status(),
-                epoch,
+                cs.epoch,
                 &mut self.desired,
             );
         }
     }
 
-    /// After bootstrap completes, trigger a refresh to pick up the replayed state.
+    /// After bootstrap completes, reconcile spools and schedule lifecycle.
     fn handle_bootstrap_success(&mut self, key: &Task) {
-        if matches!(key, Task::SnapshotBootstrap) {
-            tracing::trace!("scheduler handling snapshot bootstrap success");
-            self.desired.insert(Task::RefreshOnchainState);
+        if !matches!(key, Task::SnapshotBootstrap) {
+            return;
+        }
+        tracing::trace!("scheduler handling snapshot bootstrap success");
+        SpoolPlanner::reconcile(
+            &*self.context.store,
+            self.node_status(),
+            &mut self.desired,
+        );
+        let cs = self.context.chain_state.load();
+        if cs.has_epoch() {
+            self.lifecycle.schedule(
+                self.chain_phase(),
+                self.node_status(),
+                cs.epoch,
+                &mut self.desired,
+            );
         }
     }
 
@@ -429,31 +365,23 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         );
     }
 
-    /// Add RefreshOnchainState to `desired` if the throttle allows it.
-    fn request_refresh(&mut self, force: bool) {
-        let should = self.refresh.request(
-            &*self.context.store,
-            self.context.keypair.pubkey(),
-            force,
-            &self.desired,
-            &self.scheduled,
-        );
-        if should {
-            self.desired.insert(Task::RefreshOnchainState);
+    /// Current chain phase from in-memory ChainState. Returns None for Unknown.
+    fn chain_phase(&self) -> Option<EpochPhase> {
+        let cs = self.context.chain_state.load();
+        match cs.phase {
+            EpochPhase::Unknown => None,
+            phase => Some(phase),
         }
     }
 
-    /// Read the node's current status from the store. Defaults to Standby if unset.
+    /// Read the node's current status from in-memory ChainState.
     pub fn node_status(&self) -> NodeStatus {
-        self.context.store.get_node_status().ok().flatten().unwrap_or(NodeStatus::Standby)
+        self.context.chain_state.load().node_status.clone()
     }
 
     /// Whether the on-chain epoch phase is Active (all nodes synced/settled).
     fn is_onchain_phase_active(&self) -> bool {
-        matches!(
-            self.context.store.get_chain_epoch_phase().ok().flatten(),
-            Some(EpochPhase::Active)
-        )
+        matches!(self.context.chain_state.load().phase, EpochPhase::Active)
     }
 
     /// True if the task's epoch doesn't match the current chain epoch (the task
@@ -462,10 +390,11 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
         };
-        match self.context.store.get_chain_epoch().ok().flatten() {
-            Some(current_epoch) => task_epoch != current_epoch,
-            None => true,
+        let cs = self.context.chain_state.load();
+        if !cs.has_epoch() {
+            return true;
         }
+        task_epoch != cs.epoch
     }
 
     /// True if this node is Active, at epoch >= 2, and has no sync cursor yet
@@ -474,9 +403,9 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
         }
-        let current_epoch = self.context.store.get_chain_epoch().ok().flatten();
+        let current_epoch = self.context.chain_state.load().epoch;
         let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
-        matches!((current_epoch, sync_cursor), (Some(epoch), None) if epoch.0 >= 2)
+        current_epoch >= EpochNumber(2) && sync_cursor.is_none()
     }
 
     fn should_drop_epoch_task(&self, current_epoch: EpochNumber, task_epoch: EpochNumber) -> bool {
@@ -488,17 +417,6 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             Some(task_epoch) => self.should_drop_epoch_task(current_epoch, task_epoch),
             None => false,
         }
-    }
-
-    /// The epoch to use for new task keys. Prefers the on-chain epoch, falling
-    /// back to the lifecycle epoch during bootstrap or when chain state is stale.
-    fn scheduling_epoch(&self) -> EpochNumber {
-        self.context
-            .store
-            .get_chain_epoch()
-            .ok()
-            .flatten()
-            .unwrap_or(self.lifecycle.state().epoch())
     }
 
     /// Diff `desired` vs `scheduled` and send Schedule/Cancel actions.
@@ -531,9 +449,10 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     /// Remove epoch-scoped tasks older than the retention window from both
     /// `desired` and `scheduled`. Sends Cancel actions for scheduled ones.
     fn prune_stale(&mut self, tx: &mpsc::Sender<Action>) {
-        let Some(current_epoch) = self.context.store.get_chain_epoch().ok().flatten() else {
+        let current_epoch = self.context.chain_state.load().epoch;
+        if current_epoch.is_zero() {
             return;
-        };
+        }
 
         let stale_scheduled: Vec<_> = self
             .scheduled
@@ -674,10 +593,28 @@ mod tests {
         TrackInfo,
     };
 
+    use crate::chain_state::ChainState;
     use crate::fsm::{Fsm, StateChange};
     use crate::core::NodeContext;
     use crate::core::test_utils::test_context;
     use crate::{Task, TaskResult};
+
+    fn seed_state<S: Store, R: Rpc>(
+        ctx: &Arc<NodeContext<S, R>>,
+        epoch: EpochNumber,
+        phase: EpochPhase,
+        status: NodeStatus,
+    ) {
+        ctx.chain_state.store(ChainState {
+            epoch,
+            phase,
+            nonce: tape_crypto::Hash::default(),
+            committee: Vec::new(),
+            committee_prev: Vec::new(),
+            node_status: status,
+            spools: HashSet::new(),
+        });
+    }
 
     fn mark_snapshot_build_complete<S: Store, R: Rpc>(
         ctx: &Arc<NodeContext<S, R>>,
@@ -766,7 +703,7 @@ mod tests {
     #[tokio::test]
     async fn epoch_advance() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
@@ -792,7 +729,6 @@ mod tests {
 
         assert!(scheduled.contains(&Task::SpoolSync { spool: 10 }));
         assert!(scheduled.contains(&Task::SpoolSync { spool: 20 }));
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
         assert!(scheduled.contains(&Task::SyncEpoch { epoch: EpochNumber(1) }));
         assert!(!scheduled.contains(&Task::AdvancePool { epoch: EpochNumber(1) }));
         assert!(!scheduled.contains(&Task::JoinNetwork { epoch: EpochNumber(1) }));
@@ -801,7 +737,7 @@ mod tests {
     #[tokio::test]
     async fn spool_removed() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
@@ -884,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn active_recover() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(30, SpoolStatus::ActiveRecover)
@@ -911,7 +847,7 @@ mod tests {
     #[tokio::test]
     async fn spool_changed() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(15, SpoolStatus::ActiveSync)
@@ -949,7 +885,7 @@ mod tests {
     #[tokio::test]
     async fn cert_missing() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
@@ -978,7 +914,7 @@ mod tests {
     #[tokio::test]
     async fn cert_present() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
@@ -1001,7 +937,7 @@ mod tests {
     #[tokio::test]
     async fn cert_group() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
@@ -1024,6 +960,8 @@ mod tests {
     async fn joined_ours() {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
+        ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1038,7 +976,7 @@ mod tests {
             }
         }
 
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
+        assert!(scheduled.contains(&Task::SpoolSync { spool: 10 }));
     }
 
     #[tokio::test]
@@ -1074,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn closed_action() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
             .unwrap();
@@ -1095,13 +1033,10 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_trigger() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        seed_state(&ctx, EpochNumber(3), EpochPhase::Unknown, NodeStatus::Active);
 
         let mut scheduler = TaskScheduler::new(ctx);
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch: EpochNumber(3) }]);
 
         assert!(scheduler.desired.contains(&Task::SnapshotBootstrap));
     }
@@ -1109,16 +1044,13 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_skip() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        seed_state(&ctx, EpochNumber(3), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
             .set_sync_cursor(SlotNumber(500))
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch: EpochNumber(3) }]);
 
         assert!(!scheduler.desired.contains(&Task::SnapshotBootstrap));
     }
@@ -1126,6 +1058,8 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_refresh() {
         let ctx = test_context();
+        seed_state(&ctx, EpochNumber(3), EpochPhase::Unknown, NodeStatus::Active);
+
         let mut scheduler = TaskScheduler::new(ctx);
 
         scheduler.desired.insert(Task::SnapshotBootstrap);
@@ -1134,13 +1068,13 @@ mod tests {
         scheduler.handle_result(&TaskResult::Success(Task::SnapshotBootstrap));
 
         assert!(!scheduler.desired.contains(&Task::SnapshotBootstrap));
-        assert!(scheduler.desired.contains(&Task::RefreshOnchainState));
+        assert!(scheduler.desired.contains(&Task::SyncEpoch { epoch: EpochNumber(3) }));
     }
 
     #[tokio::test]
     async fn epoch_derive() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
@@ -1155,18 +1089,14 @@ mod tests {
             epoch: EpochNumber(1),
         }]);
 
-        // 2 SpoolSync + RefreshOnchainState + SyncEpoch (AdvancePool/JoinNetwork gated on SyncEpoch)
-        assert_eq!(scheduler.desired.len(), 4);
+        // 2 SpoolSync + SyncEpoch (AdvancePool/JoinNetwork gated on SyncEpoch)
+        assert_eq!(scheduler.desired.len(), 3);
     }
 
     #[tokio::test]
     async fn schedules_pool() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(2)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Syncing)
-            .unwrap();
+        seed_state(&ctx, EpochNumber(2), EpochPhase::Syncing, NodeStatus::Active);
         let epoch = EpochNumber(2);
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -1177,9 +1107,7 @@ mod tests {
         assert!(scheduler.desired.contains(&Task::SyncEpoch { epoch }));
         assert!(!scheduler.desired.contains(&Task::AdvancePool { epoch }));
 
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Settling)
-            .unwrap();
+        ctx.chain_state.update_phase(EpochPhase::Settling);
         scheduler.desired.insert(Task::SyncEpoch { epoch });
         scheduler.scheduled.insert(Task::SyncEpoch { epoch });
         scheduler.handle_result(&TaskResult::Success(Task::SyncEpoch { epoch }));
@@ -1193,7 +1121,7 @@ mod tests {
         ctx.store
             .set_spool_status(10, SpoolStatus::ActiveSync)
             .unwrap();
-        ctx.store.set_node_status(NodeStatus::Standby).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Standby);
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1210,67 +1138,16 @@ mod tests {
             }
         }
 
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
         assert!(!scheduled.contains(&Task::SyncEpoch { epoch: EpochNumber(1) }));
         assert!(!scheduled.contains(&Task::AdvancePool { epoch: EpochNumber(1) }));
         assert!(!scheduled.contains(&Task::JoinNetwork { epoch: EpochNumber(1) }));
     }
 
-    #[tokio::test]
-    async fn periodic_refresh() {
-        let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Active)
-            .unwrap();
-        let mut scheduler = TaskScheduler::new(ctx);
-        let (action_tx, mut action_rx) = mpsc::channel(16);
-
-        scheduler.periodic_tasks();
-        scheduler.flush(&action_tx);
-
-        let mut scheduled = HashSet::new();
-        while let Ok(d) = action_rx.try_recv() {
-            if let Action::Schedule(key) = d {
-                scheduled.insert(key);
-            }
-        }
-
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
-        assert!(scheduled.contains(&Task::AdvanceEpoch { epoch: EpochNumber(3) }));
-    }
-
-    #[tokio::test]
-    async fn periodic_phase() {
-        let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Syncing)
-            .unwrap();
-
-        let mut scheduler = TaskScheduler::new(ctx);
-        let (action_tx, mut action_rx) = mpsc::channel(16);
-
-        scheduler.periodic_tasks();
-        scheduler.flush(&action_tx);
-
-        let mut scheduled = HashSet::new();
-        while let Ok(d) = action_rx.try_recv() {
-            if let Action::Schedule(key) = d {
-                scheduled.insert(key);
-            }
-        }
-
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
-        assert!(!scheduled.contains(&Task::AdvanceEpoch { epoch: EpochNumber(3) }));
-    }
 
     #[tokio::test]
     async fn lifecycle_reset() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
@@ -1280,13 +1157,10 @@ mod tests {
             .mark_done(&Task::SyncEpoch { epoch: EpochNumber(3) });
         assert!(scheduler.lifecycle.state().is_done(&Task::SyncEpoch { epoch: EpochNumber(3) }));
 
-        ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Syncing)
-            .unwrap();
+        seed_state(&ctx, EpochNumber(4), EpochPhase::Syncing, NodeStatus::Active);
 
         scheduler.lifecycle.schedule(
-            &*ctx.store,
+            Some(EpochPhase::Syncing),
             scheduler.node_status(),
             EpochNumber(4),
             &mut scheduler.desired,
@@ -1300,11 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn mismatch_resets() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(4)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Active)
-            .unwrap();
+        seed_state(&ctx, EpochNumber(4), EpochPhase::Active, NodeStatus::Active);
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
@@ -1318,7 +1188,7 @@ mod tests {
             .insert(Task::AdvanceEpoch { epoch: old_epoch });
 
         scheduler.lifecycle.schedule(
-            &*ctx.store,
+            Some(EpochPhase::Active),
             scheduler.node_status(),
             new_epoch,
             &mut scheduler.desired,
@@ -1348,46 +1218,11 @@ mod tests {
         assert!(saw_schedule, "expected fresh schedule for current epoch");
     }
 
-    #[tokio::test]
-    async fn periodic_standby_skip() {
-        let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Standby).unwrap();
-
-        let mut scheduler = TaskScheduler::new(ctx);
-        let (action_tx, mut action_rx) = mpsc::channel(16);
-
-        scheduler.periodic_tasks();
-        scheduler.flush(&action_tx);
-
-        let mut scheduled = HashSet::new();
-        while let Ok(d) = action_rx.try_recv() {
-            if let Action::Schedule(key) = d {
-                scheduled.insert(key);
-            }
-        }
-
-        assert!(scheduled.contains(&Task::RefreshOnchainState));
-        assert!(!scheduled.contains(&Task::AdvanceEpoch { epoch: EpochNumber(3) }));
-    }
-
-    #[tokio::test]
-    async fn startup_refresh() {
-        let ctx = test_context();
-        let scheduler = TaskScheduler::new(ctx);
-
-        let mut r = scheduler;
-        r.desired.insert(Task::RefreshOnchainState);
-        assert!(r.desired.contains(&Task::RefreshOnchainState));
-    }
 
     #[tokio::test]
     async fn stale_success() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Syncing)
-            .unwrap();
+        seed_state(&ctx, EpochNumber(3), EpochPhase::Syncing, NodeStatus::Active);
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.state_mut().reset(EpochNumber(3));
@@ -1426,17 +1261,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_reconcile() {
+    async fn epoch_reconcile() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
 
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch: EpochNumber(1) }]);
         scheduler.flush(&action_tx);
 
         let mut scheduled = HashSet::new();
@@ -1450,15 +1283,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_lifecycle() {
+    async fn epoch_lifecycle() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         let mut scheduler = TaskScheduler::new(ctx);
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch: EpochNumber(3) }]);
 
         assert!(scheduler.desired.contains(&Task::SyncEpoch { epoch: EpochNumber(3) }));
         assert!(!scheduler
@@ -1473,7 +1303,7 @@ mod tests {
     #[tokio::test]
     async fn epoch_build() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         let epoch = EpochNumber(3);
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1488,7 +1318,7 @@ mod tests {
     #[tokio::test]
     async fn epoch_skip() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         let epoch = EpochNumber(1);
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1503,7 +1333,7 @@ mod tests {
     #[tokio::test]
     async fn built_certify() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
@@ -1511,7 +1341,7 @@ mod tests {
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
-            &*scheduler.context.store,
+            None,
             scheduler.node_status(),
             epoch,
             &mut scheduler.desired,
@@ -1524,7 +1354,7 @@ mod tests {
     #[tokio::test]
     async fn built_no_groups() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_non_our_committee(&ctx, EpochNumber(3), vec![5]);
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
@@ -1532,7 +1362,7 @@ mod tests {
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
-            &*scheduler.context.store,
+            None,
             scheduler.node_status(),
             epoch,
             &mut scheduler.desired,
@@ -1545,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn cert_onchain() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
@@ -1564,7 +1394,7 @@ mod tests {
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
-            &*scheduler.context.store,
+            None,
             scheduler.node_status(),
             epoch,
             &mut scheduler.desired,
@@ -1577,7 +1407,7 @@ mod tests {
     #[tokio::test]
     async fn partial_onchain() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_our_committee(&ctx, EpochNumber(3), vec![5, 25]);
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
@@ -1596,7 +1426,7 @@ mod tests {
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
-            &*scheduler.context.store,
+            None,
             scheduler.node_status(),
             epoch,
             &mut scheduler.desired,
@@ -1607,19 +1437,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_rebuild() {
+    async fn epoch_rebuild() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(3)).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
         let local_epoch = EpochNumber(2);
         mark_snapshot_build_complete(&ctx, local_epoch);
 
         let mut scheduler = TaskScheduler::new(ctx);
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
         let epoch = EpochNumber(3);
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch }]);
 
         assert!(!scheduler.desired.contains(&Task::SnapshotBuild { epoch }));
         assert!(scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
@@ -1629,7 +1456,7 @@ mod tests {
     #[tokio::test]
     async fn partial_build_register() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         put_our_committee(&ctx, EpochNumber(3), vec![5]);
 
         let local_epoch = EpochNumber(2);
@@ -1639,7 +1466,7 @@ mod tests {
 
         let mut scheduler = TaskScheduler::new(ctx);
         scheduler.lifecycle.schedule(
-            &*scheduler.context.store,
+            None,
             scheduler.node_status(),
             epoch,
             &mut scheduler.desired,
@@ -1653,7 +1480,7 @@ mod tests {
     #[tokio::test]
     async fn delete_recovery() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
             .unwrap();
@@ -1674,13 +1501,9 @@ mod tests {
     #[tokio::test]
     async fn replay_cancel_recovery() {
         let ctx = test_context();
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        seed_state(&ctx, EpochNumber(2), EpochPhase::Syncing, NodeStatus::Active);
         ctx.store
             .set_spool_status(5, SpoolStatus::Active)
-            .unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(2)).unwrap();
-        ctx.store
-            .set_chain_epoch_phase(EpochPhase::Syncing)
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1718,9 +1541,7 @@ mod tests {
         };
         fsm.replay_snapshot(&log).unwrap();
 
-        scheduler.desired.insert(Task::RefreshOnchainState);
-        scheduler.scheduled.insert(Task::RefreshOnchainState);
-        scheduler.handle_result(&TaskResult::Success(Task::RefreshOnchainState));
+        scheduler.update_desired(&[StateChange::EpochAdvanced { epoch: EpochNumber(2) }]);
 
         let (action_tx, mut action_rx) = mpsc::channel(32);
         scheduler.flush(&action_tx);

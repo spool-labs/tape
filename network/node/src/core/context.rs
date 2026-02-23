@@ -17,6 +17,7 @@ use tape_crypto::Pubkey;
 use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
+use crate::chain_state::ChainStateHandle;
 use crate::core::expand_path;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
@@ -59,6 +60,8 @@ pub struct NodeContext<S: Store, R: Rpc> {
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<R>>,
+    /// In-memory chain state (epoch, phase, committee, spools).
+    pub chain_state: ChainStateHandle,
     /// Onchain unique id for this node after registration
     node_id: NodeId,
     /// PDA-derived node account address (cached from authority keypair).
@@ -102,6 +105,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
             store: Arc::new(store),
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
+            chain_state: ChainStateHandle::new(),
             node_id,
             node_address,
         })

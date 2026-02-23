@@ -9,7 +9,7 @@ use tape_core::erasure::spool_in_group;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_slicer::ClayCoder;
-use tape_store::ops::{CommitteeOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeInfo, Pubkey as StorePubkey, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
@@ -27,15 +27,15 @@ pub async fn run<S: Store, R: Rpc>(
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match require_epoch(&context.store) {
+    let epoch = match require_epoch(&context.chain_state) {
         Ok(e) => e,
         Err(outcome) => return outcome,
     };
 
-    let committee = match context.store.get_committee(epoch) {
-        Ok(Some(c)) => c,
-        Ok(None) => return TaskOutcome::Retryable("no committee for current epoch".into()),
-        Err(e) => return TaskOutcome::Retryable(format!("get committee: {e}")),
+    let cs = context.chain_state.load();
+    let committee = match cs.committee_for(epoch) {
+        Some(c) => c.clone(),
+        None => return TaskOutcome::Retryable("no committee for current epoch".into()),
     };
 
     let mut any_failed = false;
@@ -377,17 +377,22 @@ mod tests {
     use super::*;
 
     use tape_core::types::EpochNumber;
-    use tape_store::ops::MetaOps;
+    use tape_core::system::EpochPhase;
     use tape_store::types::TrackInfo;
     use tokio_util::sync::CancellationToken;
 
+    use crate::chain_state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]
     async fn recovery_empty_queue() {
         let ctx = test_context();
-        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
-        ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(1),
+            phase: EpochPhase::Active,
+            committee: vec![],
+            ..Default::default()
+        });
 
         let cancel = CancellationToken::new();
         let (_peer_service, peer_handle) = crate::core::PeerService::new();
@@ -398,9 +403,13 @@ mod tests {
     #[tokio::test]
     async fn recovery_partial_failure() {
         let ctx = test_context();
-        ctx.store.set_chain_epoch(EpochNumber(1)).unwrap();
         // Empty committee → no helpers available
-        ctx.store.put_committee(EpochNumber(1), vec![]).unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(1),
+            phase: EpochPhase::Active,
+            committee: vec![],
+            ..Default::default()
+        });
 
         let track = tape_store::types::Pubkey([1u8; 32]);
         ctx.store

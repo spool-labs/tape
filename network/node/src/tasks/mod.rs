@@ -5,7 +5,6 @@ pub mod advance_pool;
 pub mod invalidate_track;
 pub mod join_network;
 pub mod recovery_scan;
-pub mod refresh_onchain_state;
 pub mod snapshot;
 pub mod spool_recovery;
 pub mod spool_sync;

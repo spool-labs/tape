@@ -3,8 +3,8 @@
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status::UiCompiledInstruction;
 use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_core::prelude::*;
@@ -21,6 +21,9 @@ use crate::error::ParseError;
 pub enum RawInstruction {
     AdvanceEpoch,
     SyncEpoch,
+    AdvancePool {
+        node: Pubkey,
+    },
     RegisterTrack {
         owner: Pubkey,
         track: Pubkey,
@@ -68,6 +71,10 @@ pub enum ParsedInstruction {
     },
     SyncEpoch {
         event: NodeSynced,
+    },
+    AdvancePool {
+        node: Pubkey,
+        event: PoolAdvanced,
     },
 
     // Track management
@@ -224,6 +231,11 @@ pub fn parse_raw_instruction(
         TapeInstruction::JoinNetwork => {
             let node = get_account(4)?;
             Ok(Some(RawInstruction::JoinNetwork { node }))
+        }
+
+        TapeInstruction::AdvancePool => {
+            let node = get_account(5)?;
+            Ok(Some(RawInstruction::AdvancePool { node }))
         }
 
         // Instructions we don't need to track

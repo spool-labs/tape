@@ -132,6 +132,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         storage_price: archive.storage_price.as_u64().to_le_bytes(),
         storage_capacity: archive.storage_capacity,
         nonce: seed,
+        phase: epoch.state.phase,
     }.log();
 
     solana_program::msg!(

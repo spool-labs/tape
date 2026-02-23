@@ -13,8 +13,9 @@ use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{group_for_spool, SPOOL_GROUP_SIZE};
 use tape_core::types::EpochNumber;
 use tape_node_api::{BlsInconsistencyResponse, InconsistencyRequest, BINARY_CONTENT};
-use tape_store::ops::{CommitteeOps, MetaOps, TrackOps};
+use tape_store::ops::TrackOps;
 
+use crate::core::NodeContext;
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
@@ -85,29 +86,25 @@ fn verify_local_root_mismatch(
 }
 
 fn current_chain_epoch<S: Store, R: Rpc>(state: &AppState<S, R>) -> Result<EpochNumber, ApiError> {
-    state
-        .context
-        .store
-        .get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .ok_or(ApiError::BadRequest("chain epoch missing".into()))
+    let epoch = state.context.chain_state.load().epoch;
+    if epoch.is_zero() {
+        return Err(ApiError::BadRequest("chain epoch missing".into()));
+    }
+    Ok(epoch)
 }
 
 fn verify_inconsistency_proof<S: Store, R: Rpc>(
-    context: &crate::core::NodeContext<S, R>,
+    context: &NodeContext<S, R>,
     proof: &tape_node_api::InconsistencyProof,
     track_info: &tape_store::types::TrackInfo,
     track_address: [u8; 32],
     epoch: EpochNumber,
 ) -> Result<(), ApiError> {
-    let committee = context
-        .store
-        .get_committee(epoch)
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .ok_or(ApiError::BadRequest("committee missing".into()))?;
-
+    let cs = context.chain_state.load();
+    let committee = cs.committee_for(epoch)
+        .ok_or_else(|| ApiError::BadRequest("committee missing".into()))?;
     if committee.is_empty() {
-        return Err(ApiError::BadRequest("committee has no members".into()));
+        return Err(ApiError::BadRequest("committee missing".into()));
     }
 
     let max_bitmap_bits = tape_node_api::COMMITTEE_BITMAP_BYTES * 8;

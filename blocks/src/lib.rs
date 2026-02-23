@@ -43,6 +43,6 @@ pub use merge::merge;
 
 // Re-export event types for convenience
 pub use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };

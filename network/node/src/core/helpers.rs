@@ -2,13 +2,11 @@
 
 use std::path::PathBuf;
 
-use store::Store;
 use tape_core::erasure::slice_for_spool;
 use tape_core::types::EpochNumber;
-use tape_store::ops::MetaOps;
 use tape_store::types::TrackInfo;
-use tape_store::TapeStore;
 
+use crate::chain_state::ChainStateHandle;
 use crate::TaskOutcome;
 
 /// Expand `~` and environment variables in a path.
@@ -47,11 +45,12 @@ pub fn validate_slice_entry(
 }
 
 /// Load the current chain epoch or return a retryable outcome.
-pub fn require_epoch<S: Store>(store: &TapeStore<S>) -> Result<EpochNumber, TaskOutcome> {
-    match store.get_chain_epoch() {
-        Ok(Some(e)) => Ok(e),
-        Ok(None) => Err(TaskOutcome::Retryable("no current epoch".into())),
-        Err(e) => Err(TaskOutcome::Retryable(format!("get epoch: {e}"))),
+pub fn require_epoch(chain_state: &ChainStateHandle) -> Result<EpochNumber, TaskOutcome> {
+    let cs = chain_state.load();
+    if cs.has_epoch() {
+        Ok(cs.epoch)
+    } else {
+        Err(TaskOutcome::Retryable("no current epoch".into()))
     }
 }
 

@@ -6,6 +6,7 @@
 //! to the task_runner. Channel backpressure ensures no component outpaces another.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -14,11 +15,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::core::{BackoffConfig, retry_with_backoff};
+
+use crate::chain_state::fetch_chain_state;
 use crate::core::NodeContext;
+use crate::core::{PeerHandle, PeerService};
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
-use crate::core::{PeerHandle, PeerService};
 use crate::TaskResult;
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
@@ -210,10 +214,17 @@ pub async fn spawn_runtime_channels<S: Store + 'static, R: Rpc + 'static>(
 }
 
 /// Spawn the full runtime: ingestor, FSM, scheduler, and task_runner.
+///
+/// Seeds the in-memory ChainState from RPC before spawning components.
+/// If the seed fetch fails, components start with default (empty) state
+/// and ChainState is populated on the first EpochAdvanced from the FSM.
 pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
+    // Seed ChainState from RPC on startup
+    seed_chain_state(&context).await;
+
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
         spawn_runtime_channels(context.clone(), cancel.clone()).await;
 
@@ -264,20 +275,48 @@ enum LoopControl {
     Break,
 }
 
-async fn run_fsm_loop<S: Store, R: Rpc>(
+/// One-time RPC fetch to seed ChainState on startup.
+///
+/// Called before spawning FSM/scheduler. If it fails, components start with
+/// default state and ChainState is populated on the first EpochAdvanced.
+async fn seed_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>) {
+    let our_bls = match context.bls_keypair.public_key() {
+        Ok(pk) => pk,
+        Err(e) => {
+            tracing::warn!("chain state seed: bls key error: {e:?}");
+            return;
+        }
+    };
+    match fetch_chain_state(&context.rpc, &our_bls).await {
+        Ok(state) => {
+            tracing::info!(
+                epoch = state.epoch.0,
+                phase = ?state.phase,
+                committee_size = state.committee.len(),
+                "chain state: seeded from RPC"
+            );
+            context.chain_state.store(state);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "chain state seed failed, starting with defaults");
+        }
+    }
+}
+
+async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     mut block_rx: mpsc::Receiver<IngestedBlock>,
     mut user_event_rx: mpsc::Receiver<UserEvent>,
     change_tx: mpsc::Sender<Vec<StateChange>>,
     cancel: CancellationToken,
 ) {
-    let fsm = Fsm::new(context.clone());
+    let mut fsm = Fsm::new(context.clone());
 
     loop {
         tokio::select! {
             maybe_block = block_rx.recv() => {
                 let Some(block) = maybe_block else { break };
-                if let LoopControl::Break = handle_block(&fsm, &context, block, &change_tx).await {
+                if let LoopControl::Break = handle_block(&mut fsm, &context, block, &change_tx, &cancel).await {
                     break;
                 }
             }
@@ -292,22 +331,84 @@ async fn run_fsm_loop<S: Store, R: Rpc>(
     }
 }
 
-async fn handle_block<S: Store, R: Rpc>(
-    fsm: &Fsm<S, R>,
+async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
+    fsm: &mut Fsm<S, R>,
     context: &Arc<NodeContext<S, R>>,
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
+    cancel: &CancellationToken,
 ) -> LoopControl {
     match fsm.apply(&block) {
         Ok(changes) => {
             context.stats.inc_blocks();
-            if !changes.is_empty() && change_tx.send(changes).await.is_err() {
-                return LoopControl::Break;
+            if !changes.is_empty() {
+                apply_state(&changes, context, cancel);
+                if change_tx.send(changes).await.is_err() {
+                    return LoopControl::Break;
+                }
             }
         }
         Err(e) => tracing::error!("FSM error: {e}"),
     }
     LoopControl::Continue
+}
+
+/// Process state changes for in-memory ChainState updates.
+///
+/// - `PhaseAdvanced`: immediate in-memory update (no RPC needed).
+/// - `EpochAdvanced`: spawns an async RPC fetch to refresh committee/spools.
+///   Retries with exponential backoff (500ms → 30s cap) until success or
+///   cancellation. ChainState stays at the old epoch until the fetch succeeds,
+///   so consumers never see epoch N+1 with epoch N's committee.
+fn apply_state<S: Store + 'static, R: Rpc + 'static>(
+    changes: &[StateChange],
+    context: &Arc<NodeContext<S, R>>,
+    cancel: &CancellationToken,
+) {
+    for change in changes {
+        match change {
+            StateChange::PhaseAdvanced { phase } => {
+                context.chain_state.update_phase(*phase);
+                tracing::trace!(?phase, "chain state: phase updated");
+            }
+            StateChange::EpochAdvanced { .. } => {
+                let ctx = context.clone();
+                let cancel = cancel.clone();
+                tokio::spawn(async move {
+                    let our_bls = match ctx.bls_keypair.public_key() {
+                        Ok(pk) => pk,
+                        Err(e) => {
+                            tracing::error!("chain state fetch: bls key error: {e:?}");
+                            return;
+                        }
+                    };
+                    let config = BackoffConfig {
+                        min_delay: Duration::from_millis(500),
+                        max_delay: Duration::from_secs(30),
+                        max_retries: None,
+                    };
+                    match retry_with_backoff(config, &cancel, || {
+                        fetch_chain_state(&ctx.rpc, &our_bls)
+                    }).await {
+                        Ok(state) => {
+                            tracing::info!(
+                                epoch = state.epoch.0,
+                                phase = ?state.phase,
+                                committee_size = state.committee.len(),
+                                spools = state.spools.len(),
+                                "chain state: updated from RPC"
+                            );
+                            ctx.chain_state.store(state);
+                        }
+                        Err(_) => {
+                            tracing::debug!("chain state fetch cancelled");
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +464,7 @@ mod tests {
                     storage_price: [0; 8],
                     storage_capacity: StorageUnits(0),
                     nonce: Hash::default(),
+                    phase: 1, // Syncing
                 },
             }],
         };
@@ -378,10 +480,6 @@ mod tests {
         ));
 
         // Verify store state
-        assert_eq!(
-            ctx.store.get_chain_epoch().unwrap(),
-            Some(EpochNumber(1))
-        );
         assert_eq!(
             ctx.store.get_sync_cursor().unwrap(),
             Some(SlotNumber(10))
@@ -504,6 +602,7 @@ mod tests {
                     storage_price: [0; 8],
                     storage_capacity: StorageUnits(0),
                     nonce: Hash::default(),
+                    phase: 1, // Syncing
                 },
             }],
         };

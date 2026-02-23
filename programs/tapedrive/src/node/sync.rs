@@ -93,6 +93,7 @@ pub fn process_sync_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         id: node.id,
         epoch: current_epoch(epoch),
         spools_hash: args.spools,
+        phase: epoch.state.phase,
     }.log();
 
     Ok(())

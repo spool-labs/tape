@@ -1,8 +1,8 @@
 //! Tapedrive event parsing from transaction logs.
 
 use tape_api::event::{
-    EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed,
-    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    EpochAdvanced, EventType, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced,
+    TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };
 
 use crate::error::ParseError;
@@ -24,6 +24,7 @@ pub enum TapedriveEvent {
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
     NodeSynced(NodeSynced),
+    PoolAdvanced(PoolAdvanced),
 }
 
 /// Parse event data from a "Program data:" log line.
@@ -100,6 +101,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::NodeSynced(*event)))
         }
+        EventType::PoolAdvanced => {
+            let event = bytemuck::try_from_bytes::<PoolAdvanced>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::PoolAdvanced(*event)))
+        }
         // Unknown event types are silently skipped
         _ => Ok(None),
     }
@@ -130,6 +136,7 @@ mod tests {
             storage_price: [0; 8],
             storage_capacity: StorageUnits(1000),
             nonce: Hash::default(),
+            phase: 1, // Syncing
         };
 
         let log = encode_event(EventType::EpochAdvanced, &event);

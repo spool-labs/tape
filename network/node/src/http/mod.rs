@@ -206,8 +206,11 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+    use tape_core::system::EpochPhase;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
+
+    use crate::chain_state::ChainState;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
     use tape_node_api::{
@@ -304,9 +307,11 @@ mod tests {
         ctx.store
             .put_track(track_address, track_info.clone())
             .unwrap();
-        ctx.store
-            .set_chain_epoch(EpochNumber(1))
-            .unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(1),
+            phase: EpochPhase::Active,
+            ..Default::default()
+        });
 
         // Create a valid SlicePayload with merkle proof
         let leaf_hash = hash_leaf(&data);

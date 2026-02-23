@@ -26,6 +26,7 @@ rpc-client = { workspace = true }
 rpc-solana = { workspace = true }
 
 # External
+arc-swap = "1"
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"

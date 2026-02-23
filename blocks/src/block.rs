@@ -331,12 +331,14 @@ mod tests {
                     storage_price: [0; 8],
                     storage_capacity: 1.into(),
                     nonce: tape_crypto::Hash::default(),
+                    phase: 1, // Syncing
                 }),
                 TapedriveEvent::NodeSynced(NodeSynced {
                     node: Pubkey::new_unique(),
                     id: tape_core::types::NodeId::new(1),
                     epoch: 1u64.into(),
                     spools_hash: tape_crypto::Hash::default(),
+                    phase: 1, // Syncing
                 }),
             ],
         };
@@ -351,6 +353,7 @@ mod tests {
                 storage_price: [0; 8],
                 storage_capacity: 1.into(),
                 nonce: tape_crypto::Hash::default(),
+                phase: 1, // Syncing
             })],
         };
 

@@ -11,7 +11,7 @@ use tape_core::encoding::ClayParams;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
-use tape_store::ops::{CommitteeOps, MetaOps};
+use tape_store::ops::MetaOps;
 use tape_crypto::hash::Hash;
 use tape_slicer::{ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
 use tape_store::types::{NodeInfo, SnapshotCertResult, SnapshotChunkMeta};
@@ -91,11 +91,13 @@ pub fn load_snapshot_task_context<S: Store, R: Rpc>(
         Err(outcome) => return Err(outcome),
     };
 
-    let committee = match context.store.get_committee(current_chain_epoch) {
-        Ok(Some(committee)) => committee,
-        Ok(None) => return Err(TaskOutcome::Retryable("no committee".into())),
-        Err(e) => return Err(TaskOutcome::Retryable(format!("read committee: {e}"))),
-    };
+    let cs = context.chain_state.load();
+    let committee = cs.committee_for(current_chain_epoch)
+        .ok_or_else(|| TaskOutcome::Retryable("no committee".into()))?;
+    if committee.is_empty() {
+        return Err(TaskOutcome::Retryable("no committee".into()));
+    }
+    let committee = committee.clone();
 
     let owned_groups = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
         Ok(groups) => groups,
@@ -220,7 +222,7 @@ pub fn load_group_artifacts<S: Store, R: Rpc>(
 pub fn snapshot_chain_epoch<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
 ) -> Result<EpochNumber, TaskOutcome> {
-    require_epoch(&context.store)
+    require_epoch(&context.chain_state)
 }
 
 /// Select local snapshot epoch for snapshot tasks.
@@ -267,13 +269,13 @@ pub fn classify_submit_error(err: &RpcError) -> SubmitClass {
 
 /// Return whether the chain is far enough to produce a local snapshot.
 pub fn snapshot_ready(epoch: EpochNumber) -> bool {
-    epoch.0 >= 2
+    epoch >= EpochNumber(2)
 }
 
 /// Compute the local snapshot epoch for the given chain epoch.
 pub fn derive_snapshot_local_epoch(epoch: EpochNumber) -> Option<EpochNumber> {
-    if snapshot_ready(epoch) {
-        Some(EpochNumber(epoch.0 - 1))
+    if epoch >= EpochNumber(2) {
+        Some(epoch - EpochNumber(1))
     } else {
         None
     }
@@ -352,7 +354,6 @@ mod tests {
     fn build_complete() {
         let ctx = test_utils::test_context();
         let local_epoch = EpochNumber(2);
-        let _ = ctx.store.set_chain_epoch(EpochNumber(3));
 
         for i in 0..SPOOL_GROUP_COUNT {
             ctx.store

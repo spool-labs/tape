@@ -174,6 +174,14 @@ pub fn merge(
                     event,
                 }
             }
+
+            RawInstruction::AdvancePool { node } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::PoolAdvanced(e)) => e,
+                    _ => return Err(ParseError::EventMismatch("expected PoolAdvanced event")),
+                };
+                ParsedInstruction::AdvancePool { node, event }
+            }
         };
 
         result.push(parsed);
@@ -201,6 +209,7 @@ mod tests {
             storage_price: [0; 8],
             storage_capacity: StorageUnits(0),
             nonce: Hash::default(),
+            phase: 1, // Syncing
         };
 
         let instructions = vec![RawInstruction::AdvanceEpoch];
@@ -286,6 +295,7 @@ mod tests {
             storage_price: [0; 8],
             storage_capacity: StorageUnits(0),
             nonce: Hash::default(),
+            phase: 1, // Syncing
         };
 
         let register_event = TrackRegistered {
@@ -394,6 +404,7 @@ mod tests {
             id: NodeId::new(1),
             epoch: EpochNumber(5),
             spools_hash: Hash::default(),
+            phase: 1, // Syncing
         })];
 
         let merged = merge(instructions, events).unwrap();

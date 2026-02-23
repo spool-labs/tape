@@ -15,8 +15,8 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
+    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
 };
 use tape_blocks::ParsedInstruction;
 use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
@@ -25,7 +25,7 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use tape_core::erasure::spool_in_group;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::{
-    CommitteeOps, EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
+    EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
 };
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
 
@@ -45,6 +45,7 @@ pub enum FsmError {
 #[derive(Debug, Clone)]
 pub enum StateChange {
     EpochAdvanced { epoch: EpochNumber },
+    PhaseAdvanced { phase: EpochPhase },
     SpoolAssignmentChanged,
     TrackRegistered { track: Pubkey },
     TrackCertified { track: Pubkey },
@@ -55,6 +56,7 @@ pub enum StateChange {
     NodeRegistered { node: Pubkey },
     NodeJoinedCommittee { node: Pubkey },
     NodeSynced { node: Pubkey },
+    PoolAdvanced { node: Pubkey },
 }
 
 /// An event from user-facing HTTP handlers, forwarded to the FSM.
@@ -63,14 +65,27 @@ pub enum UserEvent {
     SliceAccepted { track: Pubkey, spool: u16 },
 }
 
+/// Internal FSM state, seeded from store on startup.
+struct FsmState {
+    epoch: EpochNumber,
+    phase: EpochPhase,
+}
+
 /// Single-writer state machine that processes blocks and updates local storage.
 pub struct Fsm<S: Store, R: Rpc> {
     context: Arc<NodeContext<S, R>>,
+    state: FsmState,
 }
 
 impl<S: Store, R: Rpc> Fsm<S, R> {
     pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
-        Self { context }
+        let cs = context.chain_state.load();
+        let epoch = cs.epoch;
+        let phase = cs.phase;
+        Self {
+            context,
+            state: FsmState { epoch, phase },
+        }
     }
 
     /// Apply a user event (e.g. slice accepted by HTTP handler).
@@ -109,22 +124,15 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     ///
     /// Returns the state changes produced, which the scheduler uses to
     /// determine what tasks to schedule or cancel.
-    pub fn apply(&self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
+    pub fn apply(&mut self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
         tracing::trace!(
             slot = %block.slot,
             instruction_count = block.instructions.len(),
             "fsm applying block"
         );
 
-        // TODO: this feels broken, we probably don't want the latest epoch when processing blocks.
-        // the current epoch value might be in the future relative to this block.
-
         let mut changes = Vec::new();
-        let mut current_epoch = self
-            .context
-            .store
-            .get_chain_epoch()?
-            .unwrap_or(EpochNumber(0));
+        let mut current_epoch = self.state.epoch;
 
         for instruction in &block.instructions {
             tracing::trace!(
@@ -165,7 +173,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     }
 
     fn apply_instruction(
-        &self,
+        &mut self,
         instruction: &ParsedInstruction,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
@@ -205,6 +213,9 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
             }),
             ParsedInstruction::JoinNetwork { node, event } => {
                 self.apply_opt(event, |ev| self.handle_join_network(*node, ev, slot, changes, *current_epoch))
+            }
+            ParsedInstruction::AdvancePool { node, event } => {
+                self.handle_advance_pool(*node, event, changes)
             }
         }
     }
@@ -281,19 +292,18 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     }
 
     fn handle_advance_epoch(
-        &self,
+        &mut self,
         event: &EpochAdvanced,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
         current_epoch: &mut EpochNumber,
     ) -> Result<(), FsmError> {
         let old_epoch = *current_epoch;
-        self.context.store.set_chain_epoch(event.new_epoch)?;
-        self.context.store.set_chain_epoch_phase(EpochPhase::Syncing)?;
-        self.context.store.set_epoch_nonce(event.new_epoch, event.nonce)?;
-        self.context
-            .store
-            .set_epoch_start_ts(event.new_epoch, i64::from_le_bytes(event.timestamp))?;
+        let new_phase = EpochPhase::try_from(event.phase).unwrap_or(EpochPhase::Syncing);
+
+        // Update internal state
+        self.state.epoch = event.new_epoch;
+        self.state.phase = new_phase;
         *current_epoch = event.new_epoch;
 
         // GC expired tapes (end_epoch <= new_epoch)
@@ -317,17 +327,23 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     }
 
     fn log_member_index_for_epoch(&self, epoch: EpochNumber, source: &str) {
-        let committee = match self.context.store.get_committee(epoch).ok().flatten() {
-            Some(committee) => committee,
-            None => {
-                tracing::warn!(
-                    source = source,
-                    epoch = epoch.0,
-                    "cannot resolve committee when logging member index"
-                );
-                return;
-            }
+        let cs = self.context.chain_state.load();
+        let Some(committee) = cs.committee_for(epoch) else {
+            tracing::warn!(
+                source = source,
+                epoch = epoch.0,
+                "cannot resolve committee when logging member index"
+            );
+            return;
         };
+        if committee.is_empty() {
+            tracing::warn!(
+                source = source,
+                epoch = epoch.0,
+                "cannot resolve committee when logging member index"
+            );
+            return;
+        }
 
         match our_member_index(&committee, self.context.keypair.pubkey()) {
             Ok(member_index) => {
@@ -351,7 +367,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     }
 
     fn handle_sync_epoch(
-        &self,
+        &mut self,
         event: &NodeSynced,
         slot: SlotNumber,
         changes: &mut Vec<StateChange>,
@@ -368,8 +384,34 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
             },
         )?;
 
+        // Check for phase transition from event
+        self.emit_phase(event.phase, changes);
+
         changes.push(StateChange::NodeSynced { node: event.node });
         Ok(())
+    }
+
+    fn handle_advance_pool(
+        &mut self,
+        node: Pubkey,
+        event: &PoolAdvanced,
+        changes: &mut Vec<StateChange>,
+    ) -> Result<(), FsmError> {
+        // Check for phase transition from event
+        self.emit_phase(event.phase, changes);
+
+        changes.push(StateChange::PoolAdvanced { node });
+        Ok(())
+    }
+
+    /// If the event's phase differs from our tracked phase, update and emit.
+    fn emit_phase(&mut self, event_phase: u64, changes: &mut Vec<StateChange>) {
+        if let Ok(new_phase) = EpochPhase::try_from(event_phase) {
+            if new_phase != self.state.phase {
+                self.state.phase = new_phase;
+                changes.push(StateChange::PhaseAdvanced { phase: new_phase });
+            }
+        }
     }
 
     fn handle_register_track(
@@ -651,10 +693,6 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     ) -> Result<(), FsmError> {
         match event {
             ReplayableEvent::AdvanceEpoch { new_epoch, .. } => {
-                self.context.store.set_chain_epoch(*new_epoch)?;
-                self.context
-                    .store
-                    .set_chain_epoch_phase(EpochPhase::Unknown)?;
                 self.log_member_index_for_epoch(*new_epoch, "bootstrap-replay");
             }
             ReplayableEvent::RegisterTrack { track, event_data } => {
@@ -733,6 +771,7 @@ mod tests {
                 storage_price: [0; 8],
                 storage_capacity: StorageUnits(0),
                 nonce: Hash::default(),
+                phase: 1, // Syncing
             },
         }
     }
@@ -833,7 +872,7 @@ mod tests {
     #[test]
     fn slice_accepted() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -856,7 +895,7 @@ mod tests {
     #[test]
     fn slice_accepted_idempotent() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -875,7 +914,7 @@ mod tests {
     #[test]
     fn slice_accepted_missing() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx);
+        let mut fsm = Fsm::new(ctx);
 
         let track = Pubkey::new_unique();
         let event = UserEvent::SliceAccepted { track, spool: 0 };
@@ -885,7 +924,7 @@ mod tests {
     #[test]
     fn advance_epoch() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let block = make_block(100, vec![make_advance_epoch(0, 1)]);
         let changes = fsm.apply(&block).unwrap();
@@ -895,16 +934,12 @@ mod tests {
             &changes[0],
             StateChange::EpochAdvanced { epoch } if *epoch == EpochNumber(1)
         ));
-        assert_eq!(
-            ctx.store.get_chain_epoch().unwrap(),
-            Some(EpochNumber(1))
-        );
     }
 
     #[test]
     fn register_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -934,7 +969,7 @@ mod tests {
     #[test]
     fn certify_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -964,7 +999,7 @@ mod tests {
     #[test]
     fn delete_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -987,7 +1022,7 @@ mod tests {
     #[test]
     fn invalidate_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1015,7 +1050,7 @@ mod tests {
     #[test]
     fn reserve_tape() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let block = make_block(100, vec![make_reserve_tape(tape, 50)]);
@@ -1032,7 +1067,7 @@ mod tests {
     #[test]
     fn destroy_tape() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
 
@@ -1052,7 +1087,7 @@ mod tests {
     #[test]
     fn sync_cursor_updated() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let block = make_block(42, vec![]);
         fsm.apply(&block).unwrap();
@@ -1066,7 +1101,7 @@ mod tests {
     #[test]
     fn idempotent_reprocess() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1088,7 +1123,7 @@ mod tests {
     #[test]
     fn event_log_populated() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         // Set epoch first so events are logged under the right epoch
         let block1 = make_block(1, vec![make_advance_epoch(0, 1)]);
@@ -1122,7 +1157,7 @@ mod tests {
     #[test]
     fn replay_advance_epoch() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let log = make_log(
             vec![SnapshotEntry {
@@ -1135,17 +1170,12 @@ mod tests {
             10,
         );
         fsm.replay_snapshot(&log).unwrap();
-
-        assert_eq!(
-            ctx.store.get_chain_epoch().unwrap(),
-            Some(EpochNumber(5))
-        );
     }
 
     #[test]
     fn replay_register_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1195,7 +1225,7 @@ mod tests {
     #[test]
     fn replay_certify_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1245,7 +1275,7 @@ mod tests {
     #[test]
     fn replay_delete_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1289,7 +1319,7 @@ mod tests {
     #[test]
     fn replay_delete_slices() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1338,7 +1368,7 @@ mod tests {
     #[test]
     fn replay_cursor_update() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let log = make_log(vec![], 999);
         fsm.replay_snapshot(&log).unwrap();
@@ -1352,7 +1382,7 @@ mod tests {
     #[test]
     fn replay_no_event_log() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let log = make_log(
             vec![SnapshotEntry {
@@ -1373,7 +1403,7 @@ mod tests {
     #[test]
     fn replay_invalidate_slices() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1426,7 +1456,7 @@ mod tests {
     #[test]
     fn replay_destroy_cascade() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let track = Pubkey::new_unique();
@@ -1487,7 +1517,7 @@ mod tests {
     #[test]
     fn delete_track_cleans_slices() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -1517,7 +1547,7 @@ mod tests {
     #[test]
     fn delete_track_no_track() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         // Delete a track that was never registered — no-op, no error
         let track = Pubkey::new_unique();
@@ -1528,7 +1558,7 @@ mod tests {
     #[test]
     fn epoch_gc_expired() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let track = Pubkey::new_unique();
@@ -1566,7 +1596,7 @@ mod tests {
     #[test]
     fn epoch_gc_keeps_active() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
 
@@ -1585,7 +1615,7 @@ mod tests {
     #[test]
     fn destroy_tape_cascades() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let track1 = Pubkey::new_unique();
@@ -1628,7 +1658,7 @@ mod tests {
     #[test]
     fn destroy_tape_no_tracks() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let block1 = make_block(100, vec![make_reserve_tape(tape, 50)]);
@@ -1645,7 +1675,7 @@ mod tests {
     #[test]
     fn invalidate_track_cleans_slices() {
         let ctx = test_context();
-        let fsm = Fsm::new(ctx.clone());
+        let mut fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();

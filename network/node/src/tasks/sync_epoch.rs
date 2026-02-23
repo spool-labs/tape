@@ -17,7 +17,7 @@ pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match require_epoch(&context.store) {
+    let epoch = match require_epoch(&context.chain_state) {
         Ok(e) => e,
         Err(outcome) => return outcome,
     };

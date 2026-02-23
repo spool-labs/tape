@@ -40,8 +40,6 @@ pub enum Task {
     SnapshotCollect { epoch: EpochNumber },
     /// Bootstrap from a snapshot (new node joining).
     SnapshotBootstrap,
-    /// Refresh cached on-chain state.
-    RefreshOnchainState,
 }
 
 impl Task {
@@ -59,7 +57,6 @@ impl Task {
             }
             Task::SnapshotBuild { .. } | Task::SnapshotCollect { .. } => TaskCategory::CpuHeavy,
             Task::SnapshotBootstrap => TaskCategory::PeerHttp,
-            Task::RefreshOnchainState => TaskCategory::Internal,
         }
     }
 
@@ -91,7 +88,6 @@ impl Task {
                 | Task::RegisterSnapshot { .. }
                 | Task::SnapshotSubmit { .. }
                 | Task::InvalidateTrack { .. }
-                | Task::RefreshOnchainState
                 | Task::SnapshotBuild { .. }
                 | Task::SnapshotCollect { .. }
                 | Task::SnapshotBootstrap

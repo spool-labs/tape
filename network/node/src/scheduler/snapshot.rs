@@ -6,7 +6,7 @@ use solana_sdk::signer::Signer;
 use store::Store;
 
 use tape_core::types::EpochNumber;
-use tape_store::ops::{CommitteeOps, MetaOps};
+use tape_store::ops::MetaOps;
 use tape_store::types::ChunkIndex;
 
 use crate::core::NodeContext;
@@ -84,26 +84,19 @@ impl SnapshotPlanner {
             desired.insert(snapshot_build.clone());
         }
 
-        let owned_groups: HashSet<u64> = match context.store.get_committee(epoch) {
-            Ok(Some(committee)) => {
-                match our_snapshot_groups(&committee, context.keypair.pubkey()) {
-                    Ok(groups) => groups,
-                    Err(e) => {
-                        tracing::warn!("snapshot pipeline: {e}");
-                        tracing::trace!(epoch = epoch.0, "no snapshot groups due to committee resolution error");
-                        HashSet::new()
-                    }
+        let cs = context.chain_state.load();
+        let committee = cs.committee_for(epoch);
+        let owned_groups: HashSet<u64> = if committee.map_or(true, |c| c.is_empty()) {
+            tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
+            HashSet::new()
+        } else {
+            match our_snapshot_groups(committee.unwrap(), context.keypair.pubkey()) {
+                Ok(groups) => groups,
+                Err(e) => {
+                    tracing::warn!("snapshot pipeline: {e}");
+                    tracing::trace!(epoch = epoch.0, "no snapshot groups due to committee resolution error");
+                    HashSet::new()
                 }
-            }
-            Ok(None) => {
-                tracing::warn!("snapshot pipeline: missing committee for epoch {}", epoch.0);
-                tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
-                HashSet::new()
-            }
-            Err(e) => {
-                tracing::warn!("snapshot pipeline: failed to read committee: {e}");
-                tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: committee read failed");
-                HashSet::new()
             }
         };
 
@@ -245,12 +238,14 @@ impl SnapshotPlanner {
         context: &Arc<NodeContext<S, R>>,
         epoch: EpochNumber,
     ) -> HashSet<u64> {
-        match context.store.get_committee(epoch) {
-            Ok(Some(committee)) => {
-                our_snapshot_groups(&committee, context.keypair.pubkey()).unwrap_or_default()
-            }
-            _ => HashSet::new(),
+        let cs = context.chain_state.load();
+        let Some(committee) = cs.committee_for(epoch) else {
+            return HashSet::new();
+        };
+        if committee.is_empty() {
+            return HashSet::new();
         }
+        our_snapshot_groups(committee, context.keypair.pubkey()).unwrap_or_default()
     }
 
     /// Advance snapshot progress for all groups this node owns.

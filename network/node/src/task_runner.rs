@@ -23,7 +23,6 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use tape_store::ops::MetaOps;
 
 use crate::core::{BackoffConfig, compute_delay};
 use crate::core::{NodeContext, PeerHandle};
@@ -415,7 +414,8 @@ pub async fn execute_task<S: Store, R: Rpc>(
         // TODO: this feels broken, using what is potentially a future epoch to decide if a task
         // should be skipped. I'm not sure this belongs here. Definitely needs to be reviewed.
 
-        if let Ok(Some(chain_epoch)) = context.store.get_chain_epoch() {
+        let chain_epoch = context.chain_state.load().epoch;
+        if !chain_epoch.is_zero() {
             if task_epoch != chain_epoch {
                 tracing::trace!(
                     task = ?key,
@@ -429,9 +429,6 @@ pub async fn execute_task<S: Store, R: Rpc>(
     }
 
     let outcome = match &key {
-        Task::RefreshOnchainState => {
-            tasks::refresh_onchain_state::run(context, peer_handle, cancel).await
-        }
         Task::AdvanceEpoch { .. } => {
             tasks::advance_epoch::run(context, cancel).await
         }
@@ -795,13 +792,13 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
-        let key = Task::RefreshOnchainState;
+        let key = Task::SyncEpoch { epoch: EpochNumber(1) };
 
         // Simulate a running task
         task_runner.running.insert(
             key.clone(),
             RunningTask {
-                category: TaskCategory::Internal,
+                category: TaskCategory::SolanaTx,
                 started_at: Instant::now(),
                 attempt: 0,
             },
@@ -942,7 +939,7 @@ mod tests {
 
         // Schedule a task
         action_tx
-            .send(Action::Schedule(Task::RefreshOnchainState))
+            .send(Action::Schedule(Task::SyncEpoch { epoch: EpochNumber(1) }))
             .await
             .unwrap();
 
@@ -1012,17 +1009,12 @@ mod tests {
             Task::SnapshotBuild { epoch: EpochNumber(0) }.category(),
             TaskCategory::CpuHeavy
         );
-        assert_eq!(
-            Task::RefreshOnchainState.category(),
-            TaskCategory::Internal
-        );
     }
 
     #[test]
     fn one_shot() {
         assert!(Task::AdvanceEpoch { epoch: EpochNumber(0) }.is_one_shot());
         assert!(Task::SyncEpoch { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(Task::RefreshOnchainState.is_one_shot());
         assert!(Task::SnapshotBuild { epoch: EpochNumber(0) }.is_one_shot());
         assert!(Task::SnapshotCollect { epoch: EpochNumber(0) }.is_one_shot());
         assert!(!Task::RecoveryScan { spool: 0 }.is_one_shot());
@@ -1073,16 +1065,16 @@ mod tests {
         let (_peer_service, peer_handle) = PeerService::new();
         let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
 
-        let key = Task::RefreshOnchainState;
+        let key = Task::SyncEpoch { epoch: EpochNumber(1) };
 
-        // Internal category has max_retries: Some(10)
-        // Simulate attempt 10 (already at max)
+        // SolanaTx category has max_retries: Some(20)
+        // Simulate attempt 20 (already at max)
         task_runner.running.insert(
             key.clone(),
             RunningTask {
-                category: TaskCategory::Internal,
+                category: TaskCategory::SolanaTx,
                 started_at: Instant::now(),
-                attempt: 10,
+                attempt: 20,
             },
         );
         task_runner

@@ -27,6 +27,7 @@ pub enum EventType {
     NodeRegistered = 0x30,
     NodeJoinedCommittee = 0x31,
     NodeSynced = 0x32,
+    PoolAdvanced = 0x33,
 
     // Epoch events (0x40 range)
     EpochAdvanced = 0x40,
@@ -190,9 +191,27 @@ pub struct NodeSynced {
     pub epoch: EpochNumber,
     /// Hash of spool assignments
     pub spools_hash: Hash,
+    /// Epoch phase after this sync (Syncing, Settling, or Active)
+    pub phase: u64,
 }
 
 tape_solana::event!(EventType, NodeSynced);
+
+/// Emitted when a node advances its staking pool.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct PoolAdvanced {
+    /// Node account address
+    pub node: Pubkey,
+    /// Node ID
+    pub id: NodeId,
+    /// Current epoch
+    pub epoch: EpochNumber,
+    /// Epoch phase after this advance (Settling or Active)
+    pub phase: u64,
+}
+
+tape_solana::event!(EventType, PoolAdvanced);
 
 /// Emitted when the protocol epoch advances.
 #[repr(C)]
@@ -214,6 +233,8 @@ pub struct EpochAdvanced {
     pub storage_capacity: StorageUnits,
     /// Randomness seed for leader schedule
     pub nonce: Hash,
+    /// Epoch phase after advance (always Syncing)
+    pub phase: u64,
 }
 
 tape_solana::event!(EventType, EpochAdvanced);
@@ -309,6 +330,8 @@ mod tests {
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
+        assert!(NodeSynced::size_of() < 1024);
+        assert!(PoolAdvanced::size_of() < 1024);
         assert!(StakeDeposited::size_of() < 1024);
     }
 }

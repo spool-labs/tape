@@ -1,13 +1,8 @@
 use std::collections::HashSet;
 
-use solana_sdk::pubkey::Pubkey;
-use store::Store;
-use tape_store::TapeStore;
-
 use tape_core::types::EpochNumber;
 use tape_core::system::EpochPhase;
-use tape_store::ops::{CommitteeOps, MetaOps};
-use tape_store::types::NodeStatus;
+use tape_store::types::{NodeInfo, NodeStatus};
 
 use crate::core::committee::our_member_index;
 use crate::Task;
@@ -85,9 +80,9 @@ impl LifecyclePlanner {
 
     /// Recompute the desired set for epoch-scoped lifecycle tasks based on the
     /// current chain phase. Also keeps local lifecycle epoch aligned to chain epoch.
-    pub fn schedule<S: Store>(
+    pub fn schedule(
         &mut self,
-        store: &TapeStore<S>,
+        chain_phase: Option<EpochPhase>,
         node_status: NodeStatus,
         epoch: EpochNumber,
         desired: &mut HashSet<Task>,
@@ -104,7 +99,6 @@ impl LifecyclePlanner {
             self.state.reset(epoch);
         }
         desired.retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
-        let chain_phase = store.get_chain_epoch_phase().ok().flatten();
         tracing::trace!(
             epoch = epoch.0,
             chain_phase = ?chain_phase,
@@ -160,23 +154,20 @@ impl LifecyclePlanner {
     }
 
     /// Log this node's committee index for the epoch when available.
-    pub fn log_member_index<S: Store>(
-        store: &TapeStore<S>,
-        keypair_pubkey: Pubkey,
+    pub fn log_member_index(
+        committee: &[NodeInfo],
+        keypair_pubkey: tape_crypto::Pubkey,
         epoch: EpochNumber,
     ) {
-        let committee = match store.get_committee(epoch).ok().flatten() {
-            Some(committee) => committee,
-            None => {
-                tracing::warn!(
-                    epoch = epoch.0,
-                    "cannot resolve committee when logging member index"
-                );
-                return;
-            }
-        };
+        if committee.is_empty() {
+            tracing::warn!(
+                epoch = epoch.0,
+                "cannot resolve committee when logging member index"
+            );
+            return;
+        }
 
-        match our_member_index(&committee, keypair_pubkey) {
+        match our_member_index(committee, keypair_pubkey) {
             Ok(member_index) => {
                 tracing::info!(
                     epoch = epoch.0,
@@ -278,6 +269,6 @@ mod tests {
     #[test]
     fn non_lifecycle_key() {
         let state = LifecycleState::new(EpochNumber(1));
-        assert!(!state.is_done(&Task::RefreshOnchainState));
+        assert!(!state.is_done(&Task::SpoolSync { spool: 1 }));
     }
 }

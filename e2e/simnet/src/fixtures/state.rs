@@ -1,11 +1,7 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
-use tape_node::{Task, TaskOutcome};
-use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
 use tracing::trace;
 
 use crate::scenario::SimnetScenario;
@@ -82,44 +78,27 @@ impl SimnetScenario<'_> {
         }
     }
 
-    /// Run node `RefreshOnchainState` task once for a single node.
-pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
+    /// Fetch on-chain state and update a single node's ChainState.
+    pub async fn refresh_node_state(&self, index: usize) -> Result<()> {
         let node = self
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
         trace!(index, "running manual refresh_node_state");
-        let semaphore = Arc::new(Semaphore::new(1));
-        let (_peer_service, peer_handle) = tape_node::runtime::PeerService::new();
-        let cancel = CancellationToken::new();
 
-        let (_key, outcome) = tape_node::task_runner::execute_task(
-            node.context(),
-            peer_handle,
-            Task::RefreshOnchainState,
-            cancel,
-            semaphore,
-        )
-        .await;
+        let ctx = node.context();
+        let our_bls = ctx.bls_keypair.public_key()
+            .map_err(|e| anyhow::anyhow!("bls key: {e:?}"))?;
+        let state = tape_node::chain_state::fetch_chain_state(&ctx.rpc, &our_bls)
+            .await
+            .map_err(|e| anyhow::anyhow!("fetch_chain_state: {e}"))?;
 
-        match outcome {
-            TaskOutcome::Success => {
-                trace!(index, outcome = "success", "manual refresh_node_state complete");
-                Ok(())
-            }
-            TaskOutcome::Pending(_) => Ok(()),
-            TaskOutcome::Retryable(reason) => {
-                trace!(index, %reason, "manual refresh_node_state retryable");
-                bail!("refresh_node_state({index}) retryable failure: {reason}")
-            }
-            TaskOutcome::Permanent(reason) => {
-                trace!(index, %reason, "manual refresh_node_state permanent");
-                bail!("refresh_node_state({index}) permanent failure: {reason}")
-            }
-        }
+        ctx.chain_state.store(state);
+        trace!(index, "manual refresh_node_state complete");
+        Ok(())
     }
 
-    /// Run `RefreshOnchainState` for all nodes.
+    /// Fetch on-chain state and update all nodes' ChainState.
     pub async fn refresh_all_nodes(&self) -> Result<()> {
         for i in 0..self.harness.nodes().len() {
             self.refresh_node_state(i)

@@ -40,11 +40,7 @@ pub async fn stats<S: Store, R: Rpc>(
     use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
     let store = &state.context.store;
-    let current_epoch = store
-        .get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .map(|e| e.0)
-        .unwrap_or(0);
+    let current_epoch = state.context.chain_state.load().epoch.0;
     let last_slot = store
         .get_sync_cursor()
         .map_err(|e| ApiError::InternalError(e.to_string()))?

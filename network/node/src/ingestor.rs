@@ -93,18 +93,9 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
             .store
             .get_sync_cursor()?;
 
-        let epoch = context
-            .store
-            .get_chain_epoch()
-            .ok()
-            .flatten();
-
-        let status = context
-            .store
-            .get_node_status()
-            .ok()
-            .flatten()
-            .unwrap_or(NodeStatus::Standby);
+        let cs = context.chain_state.load();
+        let epoch = if cs.has_epoch() { Some(cs.epoch) } else { None };
+        let status = cs.node_status.clone();
 
         let cursor_slot = cursor.map(|slot| slot.0);
 
@@ -270,9 +261,13 @@ async fn sleep_or_active(delay: Duration, cancel: &CancellationToken) -> bool {
 mod tests {
     use super::*;
 
+    use std::collections::HashSet;
+
     use tape_core::types::EpochNumber;
+    use tape_core::system::EpochPhase;
     use tokio::time::sleep;
 
+    use crate::chain_state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]
@@ -281,8 +276,15 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Active at epoch 5 with no cursor → needs bootstrap
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(5)).unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(5),
+            phase: EpochPhase::Active,
+            nonce: tape_crypto::Hash::default(),
+            committee: Vec::new(),
+            committee_prev: Vec::new(),
+            node_status: NodeStatus::Active,
+            spools: HashSet::new(),
+        });
 
         let (tx, _rx) = mpsc::channel(4);
 
@@ -313,7 +315,15 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Standby with no cursor → no bootstrap needed, start from 0
-        ctx.store.set_node_status(NodeStatus::Standby).unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(0),
+            phase: EpochPhase::Unknown,
+            nonce: tape_crypto::Hash::default(),
+            committee: Vec::new(),
+            committee_prev: Vec::new(),
+            node_status: NodeStatus::Standby,
+            spools: HashSet::new(),
+        });
 
         let (tx, _rx) = mpsc::channel(4);
 

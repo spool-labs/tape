@@ -13,6 +13,7 @@
 pub mod core;
 pub mod task;
 pub mod chain;
+pub mod chain_state;
 pub mod fsm;
 pub mod http;
 pub mod ingestor;

@@ -8,10 +8,9 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
-use tape_core::types::EpochNumber;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_node_api::{BlsSignResponse, SignedMessage, SlicePayload, BINARY_CONTENT};
-use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 
 use crate::fsm::UserEvent;
 use crate::http::error::ApiError;
@@ -130,9 +129,7 @@ pub async fn put_slice<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.store.get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(EpochNumber(0));
+    let epoch = state.context.chain_state.load().epoch;
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state
@@ -230,9 +227,7 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.store.get_chain_epoch()
-        .map_err(|e| ApiError::InternalError(e.to_string()))?
-        .unwrap_or(EpochNumber(0));
+    let epoch = state.context.chain_state.load().epoch;
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state
