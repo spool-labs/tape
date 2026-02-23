@@ -23,6 +23,7 @@ use crate::core::{PeerHandle, PeerService};
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
+use crate::scheduler::SpoolPlanner;
 use crate::TaskResult;
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
@@ -351,7 +352,7 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
         Ok(changes) => {
             context.stats.inc_blocks();
             if !changes.is_empty() {
-                apply_state(&changes, context, cancel);
+                apply_state(&changes, context, cancel, change_tx);
                 if change_tx.send(changes).await.is_err() {
                     return LoopControl::Break;
                 }
@@ -373,6 +374,7 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
     changes: &[StateChange],
     context: &Arc<NodeContext<S, R>>,
     cancel: &CancellationToken,
+    change_tx: &mpsc::Sender<Vec<StateChange>>,
 ) {
     for change in changes {
         match change {
@@ -383,6 +385,7 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
             StateChange::EpochAdvanced { .. } => {
                 let ctx = context.clone();
                 let cancel = cancel.clone();
+                let change_tx = change_tx.clone();
                 tokio::spawn(async move {
                     let our_bls = match ctx.bls_keypair.public_key() {
                         Ok(pk) => pk,
@@ -403,6 +406,12 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
                                 "chain state: updated from RPC"
                             );
                             ctx.chain_state.store(state);
+
+                            // Bridge chain spool assignments → store rows
+                            let cs = ctx.chain_state.load();
+                            if SpoolPlanner::reconcile_ownership(&*ctx.store, &cs.spools) {
+                                let _ = change_tx.send(vec![StateChange::SpoolAssignmentChanged]).await;
+                            }
                         }
                         Err(_) => {
                             tracing::debug!("chain state fetch cancelled");

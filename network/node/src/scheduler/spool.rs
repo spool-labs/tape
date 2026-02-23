@@ -137,6 +137,74 @@ impl SpoolPlanner {
         }
     }
 
+    /// Create store rows for newly assigned spools, lock lost ones.
+    ///
+    /// Compares `chain_spools` against existing store rows.
+    /// New assignments get `ActiveSync` status, triggering `SpoolSync` tasks.
+    /// Lost spools transition to `LockedToMove` — the old owner must keep
+    /// serving data until the new owner completes sync.
+    ///
+    /// Returns true if any spool rows changed.
+    pub fn reconcile_ownership<S: Store>(
+        store: &TapeStore<S>,
+        chain_spools: &HashSet<u16>,
+    ) -> bool {
+        let existing: HashSet<u16> = match store.iter_all_spools() {
+            Ok(spools) => spools.into_iter().map(|(id, _)| id).collect(),
+            Err(e) => {
+                tracing::error!("reconcile_ownership: failed to read spools: {e}");
+                return false;
+            }
+        };
+
+        let mut changed = false;
+
+        // New assignments → ActiveSync
+        for &spool in chain_spools {
+            if !existing.contains(&spool) {
+                if let Err(e) = store.set_spool_status(spool, SpoolStatus::ActiveSync) {
+                    tracing::error!(spool, "reconcile_ownership: failed to create spool: {e}");
+                } else {
+                    tracing::info!(spool, "spool assigned, marked ActiveSync");
+                    changed = true;
+                }
+            }
+        }
+
+        // Lost assignments → LockedToMove (keep data for new owner to sync)
+        for &spool in &existing {
+            if !chain_spools.contains(&spool) {
+                if let Err(e) = store.set_spool_status(spool, SpoolStatus::LockedToMove) {
+                    tracing::error!(spool, "reconcile_ownership: failed to lock spool: {e}");
+                } else {
+                    tracing::info!(spool, "spool lost, marked LockedToMove");
+                    changed = true;
+                }
+            }
+        }
+
+        changed
+    }
+
+    /// Remove spools marked `LockedToMove`. Called when phase reaches Settling,
+    /// meaning the new owners have completed sync.
+    pub fn cleanup_locked<S: Store>(store: &TapeStore<S>) {
+        let spools = match store.iter_all_spools() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for (spool_id, status) in &spools {
+            if matches!(status, SpoolStatus::LockedToMove) {
+                let _ = store.remove_spool_sync_cursor(*spool_id);
+                if let Err(e) = store.remove_spool_status(*spool_id) {
+                    tracing::error!(spool_id, "cleanup_locked: {e}");
+                } else {
+                    tracing::info!(spool_id, "locked spool cleaned up");
+                }
+            }
+        }
+    }
+
     /// Remove pending recovery entries whose tracks no longer exist in the store
     /// (e.g. deleted or invalidated). Clears SpoolRecovery from desired when a
     /// spool has no remaining pending recoveries.

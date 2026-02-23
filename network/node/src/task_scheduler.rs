@@ -235,6 +235,9 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                 
                 StateChange::PhaseAdvanced { phase } => {
                     tracing::trace!(?phase, "scheduler handling phase advance");
+                    if matches!(phase, EpochPhase::Settling) {
+                        SpoolPlanner::cleanup_locked(&*self.context.store);
+                    }
                     let cs = self.context.chain_state.load();
                     let epoch = cs.epoch;
                     if !epoch.is_zero() {
