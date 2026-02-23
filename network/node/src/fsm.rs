@@ -65,7 +65,11 @@ pub enum UserEvent {
     SliceAccepted { track: Pubkey, spool: u16 },
 }
 
-/// Internal FSM state, seeded from store on startup.
+/// Internal FSM state, seeded at epoch 0 on startup.
+///
+/// The FSM replays blocks from the sync cursor forward. `AdvanceEpoch`
+/// events in the block stream advance `state.epoch` to the correct value,
+/// so seeding at 0 is safe — all handlers are idempotent.
 struct FsmState {
     epoch: EpochNumber,
     phase: EpochPhase,
@@ -79,12 +83,12 @@ pub struct Fsm<S: Store, R: Rpc> {
 
 impl<S: Store, R: Rpc> Fsm<S, R> {
     pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
-        let cs = context.chain_state.load();
-        let epoch = cs.epoch;
-        let phase = cs.phase;
         Self {
             context,
-            state: FsmState { epoch, phase },
+            state: FsmState {
+                epoch: EpochNumber(0),
+                phase: EpochPhase::Unknown,
+            },
         }
     }
 

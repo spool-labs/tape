@@ -454,19 +454,19 @@ pub async fn execute_task<S: Store, R: Rpc>(
             tasks::invalidate_track::run(context, *track, cancel).await
         }
         Task::SnapshotBuild { .. } => {
-            tasks::snapshot::run_build(context, peer_handle, cancel).await
+            crate::snapshot::run_build(context, peer_handle, cancel).await
         }
         Task::SnapshotCollect { .. } => {
-            tasks::snapshot::run_collect(context, peer_handle, cancel).await
+            crate::snapshot::run_collect(context, peer_handle, cancel).await
         }
         Task::RegisterSnapshot { .. } => {
-            tasks::snapshot::run_register(context, peer_handle, cancel).await
+            crate::snapshot::run_register(context, peer_handle, cancel).await
         }
         Task::SnapshotSubmit { .. } => {
-            tasks::snapshot::run_submit(context, peer_handle, cancel).await
+            crate::snapshot::run_submit(context, peer_handle, cancel).await
         }
         Task::SnapshotBootstrap => {
-            tasks::snapshot::run_bootstrap(context, peer_handle, cancel).await
+            crate::snapshot::run_bootstrap(context, peer_handle, cancel).await
         }
     };
 

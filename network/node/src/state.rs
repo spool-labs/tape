@@ -19,12 +19,12 @@ use solana_sdk::pubkey::Pubkey;
 use tape_api::state::Node;
 use tape_core::bls::BlsPubkey;
 use tape_core::prelude::Hash;
-use tape_core::spooler::SpoolAssignment;
+use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::{Committee, EpochPhase};
 use tape_core::types::EpochNumber;
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_store::types::{NodeInfo, NodeStatus};
+use tape_store::types::{NodeInfo, NodeStatus, Pubkey as StorePubkey};
 
 /// Snapshot of the current chain-derived state.
 ///
@@ -42,7 +42,7 @@ pub struct ChainState {
     /// This node's status (Active, Standby, etc.)
     pub node_status: NodeStatus,
     /// Spool indices assigned to this node.
-    pub spools: HashSet<u16>,
+    pub spools: HashSet<SpoolIndex>,
 }
 
 impl ChainState {
@@ -159,11 +159,11 @@ pub async fn fetch_chain_state<R: Rpc>(
 
     let our_membership = system.committee.iter()
         .enumerate()
-        .find(|(_, cm)| cm.key == *our_bls);
+        .find(|(_, member)| member.key == *our_bls);
 
     let (node_status, spools) = match our_membership {
         Some((member_index, _)) => {
-            let assigned: HashSet<u16> = system
+            let assigned: HashSet<SpoolIndex> = system
                 .spools
                 .spools_for_member(member_index)
                 .into_iter()
@@ -193,28 +193,28 @@ fn build_committee<const N: usize, const S: usize>(
     committee
         .iter()
         .enumerate()
-        .map(|(idx, cm)| {
+        .map(|(index, member)| {
             let (node_address, tls_pubkey, network_address) =
-                if let Some(&(pubkey, ref node)) = node_map.get(&cm.id) {
+                if let Some(&(pubkey, ref node)) = node_map.get(&member.id) {
                     (
-                        tape_store::types::Pubkey(pubkey.to_bytes()),
-                        tape_store::types::Pubkey(node.metadata.network_tls.to_bytes()),
+                        StorePubkey(pubkey.to_bytes()),
+                        StorePubkey(node.metadata.network_tls.to_bytes()),
                         node.metadata.network_address,
                     )
                 } else {
                     (
-                        tape_store::types::Pubkey([0u8; 32]),
-                        tape_store::types::Pubkey([0u8; 32]),
+                        StorePubkey([0u8; 32]),
+                        StorePubkey([0u8; 32]),
                         NetworkAddress::zeroed(),
                     )
                 };
 
             NodeInfo {
                 node_address,
-                bls_pubkey: cm.key,
+                bls_pubkey: member.key,
                 tls_pubkey,
                 network_address,
-                spools: spools.spools_for_member(idx),
+                spools: spools.spools_for_member(index),
             }
         })
         .collect()

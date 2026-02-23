@@ -6,7 +6,7 @@ use tape_core::erasure::slice_for_spool;
 use tape_core::types::EpochNumber;
 use tape_store::types::TrackInfo;
 
-use crate::chain_state::ChainStateHandle;
+use crate::state::ChainStateHandle;
 use crate::TaskOutcome;
 
 /// Expand `~` and environment variables in a path.

@@ -17,7 +17,6 @@ use crate::types::{
 use crate::TapeStore;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
-use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 
 const SNAPSHOT_PARTIAL_SIG_PREFIX: &str = "snapshot_partial_sig";
@@ -46,8 +45,6 @@ fn parse_partial_sig_key(key: &[u8]) -> Option<(EpochNumber, u64, u8)> {
 // Meta keys
 const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
-const CHAIN_EPOCH_KEY: &str = "chain_epoch";
-const CHAIN_EPOCH_PHASE_KEY: &str = "chain_epoch_phase";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
 const SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY: &str = "snapshot_bootstrap_target_epoch";
@@ -65,12 +62,6 @@ pub trait MetaOps {
     // Cluster hash
     fn get_cluster_hash(&self) -> Result<Option<Hash>>;
     fn set_cluster_hash(&self, hash: Hash) -> Result<()>;
-
-    // Chain epoch
-    fn get_chain_epoch(&self) -> Result<Option<EpochNumber>>;
-    fn set_chain_epoch(&self, epoch: EpochNumber) -> Result<()>;
-    fn get_chain_epoch_phase(&self) -> Result<Option<EpochPhase>>;
-    fn set_chain_epoch_phase(&self, phase: EpochPhase) -> Result<()>;
 
     // Node address
     fn get_node_address(&self) -> Result<Option<Pubkey>>;
@@ -191,60 +182,6 @@ impl<S: Store> MetaOps for TapeStore<S> {
     fn set_cluster_hash(&self, hash: Hash) -> Result<()> {
         let key = CLUSTER_HASH_KEY.to_string();
         let bytes = hash.as_ref().to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn get_chain_epoch(&self) -> Result<Option<EpochNumber>> {
-        let key = CHAIN_EPOCH_KEY.to_string();
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                if bytes.len() != 8 {
-                    return Err(TapeStoreError::InvalidDataLength {
-                        expected: 8,
-                        actual: bytes.len(),
-                    });
-                }
-                let mut epoch_bytes = [0u8; 8];
-                epoch_bytes.copy_from_slice(&bytes);
-                let epoch = u64::from_le_bytes(epoch_bytes);
-                Ok(Some(EpochNumber(epoch)))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_chain_epoch(&self, epoch: EpochNumber) -> Result<()> {
-        let key = CHAIN_EPOCH_KEY.to_string();
-        let bytes = epoch.as_u64().to_le_bytes().to_vec();
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
-    fn get_chain_epoch_phase(&self) -> Result<Option<EpochPhase>> {
-        let key = CHAIN_EPOCH_PHASE_KEY.to_string();
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                if bytes.len() != 8 {
-                    return Err(TapeStoreError::InvalidDataLength {
-                        expected: 8,
-                        actual: bytes.len(),
-                    });
-                }
-                let mut phase_bytes = [0u8; 8];
-                phase_bytes.copy_from_slice(&bytes);
-                let phase_u64 = u64::from_le_bytes(phase_bytes);
-                let phase = EpochPhase::try_from(phase_u64)
-                    .map_err(|_| TapeStoreError::Serialization(format!("invalid epoch phase: {phase_u64}")))?;
-                Ok(Some(phase))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_chain_epoch_phase(&self, phase: EpochPhase) -> Result<()> {
-        let key = CHAIN_EPOCH_PHASE_KEY.to_string();
-        let bytes = u64::from(phase).to_le_bytes().to_vec();
         self.put::<MetaCol>(&key, &bytes)?;
         Ok(())
     }
@@ -659,27 +596,6 @@ mod tests {
 
         store.set_cluster_hash(hash).unwrap();
         assert_eq!(store.get_cluster_hash().unwrap(), Some(hash));
-    }
-
-    #[test]
-    fn test_chain_epoch_roundtrip() {
-        let store = test_store();
-        let epoch = EpochNumber(12345);
-
-        assert!(store.get_chain_epoch().unwrap().is_none());
-
-        store.set_chain_epoch(epoch).unwrap();
-        assert_eq!(store.get_chain_epoch().unwrap(), Some(epoch));
-    }
-
-    #[test]
-    fn test_chain_epoch_phase_roundtrip() {
-        let store = test_store();
-
-        assert!(store.get_chain_epoch_phase().unwrap().is_none());
-
-        store.set_chain_epoch_phase(EpochPhase::Syncing).unwrap();
-        assert_eq!(store.get_chain_epoch_phase().unwrap(), Some(EpochPhase::Syncing));
     }
 
     #[test]

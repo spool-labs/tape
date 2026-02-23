@@ -210,7 +210,7 @@ mod tests {
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
 
-    use crate::chain_state::ChainState;
+    use crate::state::ChainState;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
     use tape_node_api::{

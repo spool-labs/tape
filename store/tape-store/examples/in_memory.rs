@@ -57,12 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Metadata
     store.set_node_status(NodeStatus::Active)?;
-    store.set_chain_epoch(EpochNumber(100))?;
     store.set_sync_cursor(SlotNumber(12345))?;
 
     println!("\nFinal state:");
     println!("  Node status: {:?}", store.get_node_status()?);
-    println!("  Current epoch: {:?}", store.get_chain_epoch()?);
     println!("  Sync cursor: {:?}", store.get_sync_cursor()?);
 
     Ok(())

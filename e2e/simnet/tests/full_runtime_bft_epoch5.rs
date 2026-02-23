@@ -115,11 +115,7 @@ async fn full_runtime_bft_epoch5() {
 
     for &index in &honest {
         let node = harness.node(index).expect("honest node exists");
-        let current = node
-            .context()
-            .store
-            .get_chain_epoch()
-            .expect("read node epoch");
+        let current = Some(node.context().chain_state.load().epoch);
         assert_eq!(current, Some(final_epoch), "honest node {index} epoch mismatch");
 
         let status = node

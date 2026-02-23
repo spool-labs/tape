@@ -250,13 +250,6 @@ mod tests {
             Some(NodeStatus::Active)
         );
 
-        // Current epoch
-        store.set_chain_epoch(EpochNumber(100)).unwrap();
-        assert_eq!(
-            store.get_chain_epoch().unwrap(),
-            Some(EpochNumber(100))
-        );
-
         // Node address
         let addr = Pubkey::new_unique();
         store.set_node_address(addr).unwrap();

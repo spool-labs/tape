@@ -14,8 +14,6 @@ use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_store::ops::MetaOps;
-
 use crate::simnet::SimnetHarness;
 
 #[derive(Debug, Clone)]
@@ -244,11 +242,7 @@ impl<'a> SimnetScenario<'a> {
                     .harness
                     .node(i)
                     .with_context(|| format!("node {i} missing"))?;
-                let got = node
-                    .context()
-                    .store
-                    .get_chain_epoch()
-                    .with_context(|| format!("node {i} get_chain_epoch"))?;
+                let got = Some(node.context().chain_state.load().epoch);
                 last_seen.push(got);
 
                 match expected {

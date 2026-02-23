@@ -17,8 +17,9 @@ use tracing::Instrument;
 
 use crate::core::{BackoffConfig, retry_with_backoff};
 
-use crate::chain_state::fetch_chain_state;
+use crate::state::fetch_chain_state;
 use crate::core::NodeContext;
+use tape_core::types::NodeId;
 use crate::core::{PeerHandle, PeerService};
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
@@ -28,7 +29,25 @@ use crate::TaskResult;
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
 
+/// Ingestor → FSM. Small buffer; sender awaits when full so the ingestor
+/// never outpaces the FSM.
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
+
+/// FSM → Scheduler. Sender awaits when full; FSM stalls until the scheduler
+/// drains the batch.
+const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
+
+/// HTTP handlers → FSM. Sender awaits when full; HTTP handler applies
+/// backpressure to the caller.
+const USER_EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Scheduler → TaskRunner. Sender awaits when full; scheduler stalls until
+/// the runner drains actions.
+const ACTION_CHANNEL_CAPACITY: usize = 256;
+
+/// TaskRunner → Scheduler. Sender awaits when full; completed tasks wait
+/// until the scheduler processes results.
+const RESULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Backoff for RPC chain state fetches on epoch transitions.
 fn chain_state_backoff() -> BackoffConfig {
@@ -38,10 +57,6 @@ fn chain_state_backoff() -> BackoffConfig {
         max_retries: None,
     }
 }
-const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
-const USER_EVENT_CHANNEL_CAPACITY: usize = 256;
-const ACTION_CHANNEL_CAPACITY: usize = 256;
-const RESULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Handles for all runtime tasks.
 pub struct RuntimeHandles {
@@ -51,140 +66,6 @@ pub struct RuntimeHandles {
     pub task_runner: JoinHandle<()>,
     pub peer_service: JoinHandle<()>,
     pub http: JoinHandle<()>,
-}
-
-/// Channels for all runtime tasks.
-struct RuntimeChannels {
-    block_tx: mpsc::Sender<IngestedBlock>,
-    block_rx: mpsc::Receiver<IngestedBlock>,
-    change_tx: mpsc::Sender<Vec<StateChange>>,
-    change_rx: mpsc::Receiver<Vec<StateChange>>,
-    user_event_tx: mpsc::Sender<UserEvent>,
-    user_event_rx: mpsc::Receiver<UserEvent>,
-}
-
-fn build_channels() -> RuntimeChannels {
-    let (block_tx, block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
-    let (change_tx, change_rx) = mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
-    let (user_event_tx, user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
-
-    RuntimeChannels {
-        block_tx,
-        block_rx,
-        change_tx,
-        change_rx,
-        user_event_tx,
-        user_event_rx,
-    }
-}
-
-fn spawn_ingestor<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
-    cancel: CancellationToken,
-    block_tx: mpsc::Sender<IngestedBlock>,
-) -> JoinHandle<()> {
-    let ingestor_span = tracing::info_span!("", node_id = context.node_id().0);
-
-    tokio::spawn(
-        async move {
-            if let Err(e) = BlockIngestor::run(context, block_tx, cancel).await {
-                tracing::error!("Ingestor error: {e}");
-            }
-        }
-        .instrument(ingestor_span),
-    )
-}
-
-fn spawn_fsm<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
-    cancel: CancellationToken,
-    block_rx: mpsc::Receiver<IngestedBlock>,
-    user_event_rx: mpsc::Receiver<UserEvent>,
-    change_tx: mpsc::Sender<Vec<StateChange>>,
-) -> JoinHandle<()> {
-    let fsm_span = tracing::info_span!("", node_id = context.node_id().0);
-
-    tokio::spawn(
-        run_fsm_loop(
-            context, 
-            block_rx, 
-            user_event_rx, 
-            change_tx, 
-            cancel
-        )
-        .instrument(fsm_span)
-    )
-}
-
-fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
-    cancel: CancellationToken,
-    change_rx: mpsc::Receiver<Vec<StateChange>>,
-    result_rx: mpsc::Receiver<TaskResult>,
-    action_tx: mpsc::Sender<Action>,
-) -> JoinHandle<()> {
-    let scheduler = TaskScheduler::new(context.clone());
-    let scheduler_span = tracing::info_span!("", node_id = context.node_id().0);
-
-    tokio::spawn(
-        async move {
-            scheduler
-                .run(change_rx, result_rx, action_tx, cancel)
-                .await;
-        }
-        .instrument(scheduler_span)
-    )
-}
-
-fn spawn_task_runner<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
-    cancel: CancellationToken,
-    action_rx: mpsc::Receiver<Action>,
-    result_tx: mpsc::Sender<TaskResult>,
-    peer_handle: PeerHandle,
-) -> JoinHandle<()> {
-    let task_runner = TaskRunner::new(context.clone(), peer_handle, result_tx);
-    let task_runner_span = tracing::info_span!("", node_id = context.node_id().0);
-
-    tokio::spawn(
-        async move {
-            task_runner.run(action_rx, cancel).await;
-        }
-        .instrument(task_runner_span),
-    )
-}
-
-fn spawn_peer_service(
-    cancel: CancellationToken,
-    peer_service: PeerService,
-    node_id: u64,
-) -> JoinHandle<()> {
-    let peer_service_span = tracing::info_span!("", node_id = node_id);
-
-    tokio::spawn(
-        async move {
-            peer_service.run(cancel).await;
-        }
-        .instrument(peer_service_span),
-    )
-}
-
-fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
-    cancel: CancellationToken,
-    user_event_tx: mpsc::Sender<UserEvent>,
-) -> JoinHandle<()> {
-    let http_span = tracing::info_span!("", node_id = context.node_id().0);
-
-    tokio::spawn(
-        async move {
-            let server = HttpServer::new(context, Some(user_event_tx));
-            if let Err(e) = server.serve(cancel).await {
-                tracing::error!("HTTP server error: {e}");
-            }
-        }
-        .instrument(http_span),
-    )
 }
 
 /// Spawn the runtime component channels.
@@ -202,8 +83,8 @@ pub async fn spawn_runtime_channels<S: Store + 'static, R: Rpc + 'static>(
 ) {
     let channels = build_channels();
     let ingestor_handle = spawn_ingestor(
-        context.clone(), 
-        cancel.clone(), 
+        context.clone(),
+        cancel.clone(),
         channels.block_tx
     );
 
@@ -261,7 +142,7 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     let peer_service_handle = spawn_peer_service(
         cancel.clone(),
         peer_service,
-        context.node_id().0,
+        context.node_id(),
     );
 
     let http_handle = spawn_http_server(
@@ -280,9 +161,146 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     }
 }
 
+// -- Private types ----------------------------------------------------------
+
+struct RuntimeChannels {
+    block_tx: mpsc::Sender<IngestedBlock>,
+    block_rx: mpsc::Receiver<IngestedBlock>,
+    change_tx: mpsc::Sender<Vec<StateChange>>,
+    change_rx: mpsc::Receiver<Vec<StateChange>>,
+    user_event_tx: mpsc::Sender<UserEvent>,
+    user_event_rx: mpsc::Receiver<UserEvent>,
+}
+
 enum LoopControl {
     Continue,
     Break,
+}
+
+// -- Private functions ------------------------------------------------------
+
+fn build_channels() -> RuntimeChannels {
+    let (block_tx, block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
+    let (change_tx, change_rx) = mpsc::channel::<Vec<StateChange>>(STATE_CHANGE_CHANNEL_CAPACITY);
+    let (user_event_tx, user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
+
+    RuntimeChannels {
+        block_tx,
+        block_rx,
+        change_tx,
+        change_rx,
+        user_event_tx,
+        user_event_rx,
+    }
+}
+
+fn spawn_ingestor<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
+    cancel: CancellationToken,
+    block_tx: mpsc::Sender<IngestedBlock>,
+) -> JoinHandle<()> {
+    let ingestor_span = tracing::info_span!("", node_id = context.node_id().0);
+
+    tokio::spawn(
+        async move {
+            if let Err(e) = BlockIngestor::run(context, block_tx, cancel).await {
+                tracing::error!("Ingestor error: {e}");
+            }
+        }
+        .instrument(ingestor_span),
+    )
+}
+
+fn spawn_fsm<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
+    cancel: CancellationToken,
+    block_rx: mpsc::Receiver<IngestedBlock>,
+    user_event_rx: mpsc::Receiver<UserEvent>,
+    change_tx: mpsc::Sender<Vec<StateChange>>,
+) -> JoinHandle<()> {
+    let fsm_span = tracing::info_span!("", node_id = context.node_id().0);
+
+    tokio::spawn(
+        run_fsm_loop(
+            context,
+            block_rx,
+            user_event_rx,
+            change_tx,
+            cancel
+        )
+        .instrument(fsm_span)
+    )
+}
+
+fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
+    cancel: CancellationToken,
+    change_rx: mpsc::Receiver<Vec<StateChange>>,
+    result_rx: mpsc::Receiver<TaskResult>,
+    action_tx: mpsc::Sender<Action>,
+) -> JoinHandle<()> {
+    let scheduler = TaskScheduler::new(context.clone());
+    let scheduler_span = tracing::info_span!("", node_id = context.node_id().0);
+
+    tokio::spawn(
+        async move {
+            scheduler
+                .run(change_rx, result_rx, action_tx, cancel)
+                .await;
+        }
+        .instrument(scheduler_span)
+    )
+}
+
+fn spawn_task_runner<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
+    cancel: CancellationToken,
+    action_rx: mpsc::Receiver<Action>,
+    result_tx: mpsc::Sender<TaskResult>,
+    peer_handle: PeerHandle,
+) -> JoinHandle<()> {
+    let task_runner = TaskRunner::new(context.clone(), peer_handle, result_tx);
+    let task_runner_span = tracing::info_span!("", node_id = context.node_id().0);
+
+    tokio::spawn(
+        async move {
+            task_runner.run(action_rx, cancel).await;
+        }
+        .instrument(task_runner_span),
+    )
+}
+
+fn spawn_peer_service(
+    cancel: CancellationToken,
+    peer_service: PeerService,
+    node_id: NodeId,
+) -> JoinHandle<()> {
+    let peer_service_span = tracing::info_span!("", node_id = node_id.0);
+
+    tokio::spawn(
+        async move {
+            peer_service.run(cancel).await;
+        }
+        .instrument(peer_service_span),
+    )
+}
+
+fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
+    context: Arc<NodeContext<S, R>>,
+    cancel: CancellationToken,
+    user_event_tx: mpsc::Sender<UserEvent>,
+) -> JoinHandle<()> {
+    let http_span = tracing::info_span!("", node_id = context.node_id().0);
+
+    tokio::spawn(
+        async move {
+            let server = HttpServer::new(context, Some(user_event_tx));
+            if let Err(e) = server.serve(cancel).await {
+                tracing::error!("HTTP server error: {e}");
+            }
+        }
+        .instrument(http_span),
+    )
 }
 
 /// One-time RPC fetch to seed ChainState on startup.
@@ -321,12 +339,15 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
     cancel: CancellationToken,
 ) {
     let mut fsm = Fsm::new(context.clone());
+    let mut chain_fetch: Option<JoinHandle<()>> = None;
 
     loop {
         tokio::select! {
             maybe_block = block_rx.recv() => {
                 let Some(block) = maybe_block else { break };
-                if let LoopControl::Break = handle_block(&mut fsm, &context, block, &change_tx, &cancel).await {
+                if let LoopControl::Break = handle_block(
+                    &mut fsm, &context, block, &change_tx, &cancel, &mut chain_fetch,
+                ).await {
                     break;
                 }
             }
@@ -336,7 +357,12 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
                     tracing::error!("FSM user event error: {e}");
                 }
             }
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                if let Some(handle) = chain_fetch.take() {
+                    handle.abort();
+                }
+                break;
+            }
         }
     }
 }
@@ -347,12 +373,13 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
     cancel: &CancellationToken,
+    chain_fetch: &mut Option<JoinHandle<()>>,
 ) -> LoopControl {
     match fsm.apply(&block) {
         Ok(changes) => {
             context.stats.inc_blocks();
             if !changes.is_empty() {
-                apply_state(&changes, context, cancel, change_tx);
+                apply_state(&changes, context, cancel, change_tx, chain_fetch);
                 if change_tx.send(changes).await.is_err() {
                     return LoopControl::Break;
                 }
@@ -375,6 +402,7 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
     context: &Arc<NodeContext<S, R>>,
     cancel: &CancellationToken,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
+    chain_fetch: &mut Option<JoinHandle<()>>,
 ) {
     for change in changes {
         match change {
@@ -383,10 +411,15 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
                 tracing::trace!(?phase, "chain state: phase updated");
             }
             StateChange::EpochAdvanced { .. } => {
+                // Abort previous in-flight fetch before spawning a replacement
+                if let Some(handle) = chain_fetch.take() {
+                    handle.abort();
+                }
+
                 let ctx = context.clone();
                 let cancel = cancel.clone();
                 let change_tx = change_tx.clone();
-                tokio::spawn(async move {
+                *chain_fetch = Some(tokio::spawn(async move {
                     let our_bls = match ctx.bls_keypair.public_key() {
                         Ok(pk) => pk,
                         Err(e) => {
@@ -417,7 +450,7 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
                             tracing::debug!("chain state fetch cancelled");
                         }
                     }
-                });
+                }));
             }
             _ => {}
         }
@@ -560,7 +593,6 @@ mod tests {
 
         // Active at epoch 5, no cursor → bootstrap needed
         ctx.store.set_node_status(NodeStatus::Active).unwrap();
-        ctx.store.set_chain_epoch(EpochNumber(5)).unwrap();
 
         let (block_tx, _block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 

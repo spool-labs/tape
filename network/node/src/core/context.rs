@@ -17,7 +17,7 @@ use tape_crypto::Pubkey;
 use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
-use crate::chain_state::ChainStateHandle;
+use crate::state::ChainStateHandle;
 use crate::core::expand_path;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;

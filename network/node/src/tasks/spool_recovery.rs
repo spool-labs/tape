@@ -381,7 +381,7 @@ mod tests {
     use tape_store::types::TrackInfo;
     use tokio_util::sync::CancellationToken;
 
-    use crate::chain_state::ChainState;
+    use crate::state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]

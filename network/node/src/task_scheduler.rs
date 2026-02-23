@@ -596,7 +596,7 @@ mod tests {
         TrackInfo,
     };
 
-    use crate::chain_state::ChainState;
+    use crate::state::ChainState;
     use crate::fsm::{Fsm, StateChange};
     use crate::core::NodeContext;
     use crate::core::test_utils::test_context;

@@ -267,7 +267,7 @@ mod tests {
     use tape_core::system::EpochPhase;
     use tokio::time::sleep;
 
-    use crate::chain_state::ChainState;
+    use crate::state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]

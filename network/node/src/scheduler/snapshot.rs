@@ -211,7 +211,8 @@ impl SnapshotPlanner {
             return;
         }
         tracing::trace!(task = ?key, "scheduler handling snapshot stage success");
-        let Some(epoch) = context.store.get_chain_epoch().ok().flatten() else {
+        let epoch = context.chain_state.load().epoch;
+        let Some(epoch) = Some(epoch).filter(|e| e.0 > 0) else {
             return;
         };
         if self.progress.epoch() == epoch {

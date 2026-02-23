@@ -73,11 +73,7 @@ async fn full_runtime_20_nodes_register_and_refresh_state() {
     }
 
     for node in harness.nodes() {
-        let epoch = node
-            .context()
-            .store
-            .get_chain_epoch()
-            .expect("read current epoch");
+        let epoch = Some(node.context().chain_state.load().epoch);
         assert_eq!(epoch, Some(expected_epoch));
 
         let status = node
