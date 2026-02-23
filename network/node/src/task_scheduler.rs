@@ -76,6 +76,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         action_tx: mpsc::Sender<Action>,
         cancel: CancellationToken,
     ) {
+
         // On startup, reconcile spools and schedule lifecycle from current ChainState
         // (seeded by runtime before scheduler starts).
         {
@@ -97,6 +98,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                 }
             }
         }
+
         self.flush(&action_tx);
         tracing::trace!("scheduler bootstrapped");
 

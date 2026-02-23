@@ -113,8 +113,8 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
-    // Seed ChainState from RPC on startup
-    seed_chain_state(&context).await;
+    // One time fetch of current on-chain state
+    boostrap_chain_state(&context).await;
 
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
         spawn_runtime_channels(context.clone(), cancel.clone()).await;
@@ -307,7 +307,8 @@ fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
 ///
 /// Called before spawning FSM/scheduler. If it fails, components start with
 /// default state and ChainState is populated on the first EpochAdvanced.
-async fn seed_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>) {
+async fn boostrap_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>) {
+
     let our_bls = match context.bls_keypair.public_key() {
         Ok(pk) => pk,
         Err(e) => {
@@ -315,6 +316,7 @@ async fn seed_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>) {
             return;
         }
     };
+
     match fetch_chain_state(&context.rpc, &our_bls).await {
         Ok(state) => {
             tracing::info!(
@@ -339,14 +341,13 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
     cancel: CancellationToken,
 ) {
     let mut fsm = Fsm::new(context.clone());
-    let mut chain_fetch: Option<JoinHandle<()>> = None;
 
     loop {
         tokio::select! {
             maybe_block = block_rx.recv() => {
                 let Some(block) = maybe_block else { break };
                 if let LoopControl::Break = handle_block(
-                    &mut fsm, &context, block, &change_tx, &cancel, &mut chain_fetch,
+                    &mut fsm, &context, block, &change_tx, &cancel,
                 ).await {
                     break;
                 }
@@ -357,12 +358,7 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
                     tracing::error!("FSM user event error: {e}");
                 }
             }
-            _ = cancel.cancelled() => {
-                if let Some(handle) = chain_fetch.take() {
-                    handle.abort();
-                }
-                break;
-            }
+            _ = cancel.cancelled() => break,
         }
     }
 }
@@ -373,16 +369,36 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
     cancel: &CancellationToken,
-    chain_fetch: &mut Option<JoinHandle<()>>,
 ) -> LoopControl {
     match fsm.apply(&block) {
-        Ok(changes) => {
+        Ok(mut changes) => {
             context.stats.inc_blocks();
-            if !changes.is_empty() {
-                apply_state(&changes, context, cancel, change_tx, chain_fetch);
-                if change_tx.send(changes).await.is_err() {
+
+            if changes.is_empty() {
+                return LoopControl::Continue;
+            }
+
+            for change in &changes {
+                if let StateChange::PhaseAdvanced { phase } = change {
+                    context.chain_state.update_phase(*phase);
+                    tracing::trace!(?phase, "chain state: phase updated");
+                }
+            }
+
+            let has_epoch = changes.iter().any(|c| matches!(c, StateChange::EpochAdvanced { .. }));
+            if has_epoch {
+                if refresh_chain_state(context, cancel).await.is_err() {
                     return LoopControl::Break;
                 }
+
+                let cs = context.chain_state.load();
+                if SpoolPlanner::reconcile_ownership(&*context.store, &cs.spools) {
+                    changes.push(StateChange::SpoolAssignmentChanged);
+                }
+            }
+
+            if change_tx.send(changes).await.is_err() {
+                return LoopControl::Break;
             }
         }
         Err(e) => tracing::error!("FSM error: {e}"),
@@ -390,69 +406,40 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
     LoopControl::Continue
 }
 
-/// Process state changes for in-memory ChainState updates.
+/// Fetch chain state from RPC inline, blocking the FSM loop until complete.
 ///
-/// - `PhaseAdvanced`: immediate in-memory update (no RPC needed).
-/// - `EpochAdvanced`: spawns an async RPC fetch to refresh committee/spools.
-///   Retries with exponential backoff (500ms → 30s cap) until success or
-///   cancellation. ChainState stays at the old epoch until the fetch succeeds,
-///   so consumers never see epoch N+1 with epoch N's committee.
-fn apply_state<S: Store + 'static, R: Rpc + 'static>(
-    changes: &[StateChange],
+/// Retries with exponential backoff (500ms → 30s cap) until success or
+/// cancellation. Returns `Ok(())` on success or BLS key error (non-fatal),
+/// `Err(())` on cancellation.
+async fn refresh_chain_state<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
     cancel: &CancellationToken,
-    change_tx: &mpsc::Sender<Vec<StateChange>>,
-    chain_fetch: &mut Option<JoinHandle<()>>,
-) {
-    for change in changes {
-        match change {
-            StateChange::PhaseAdvanced { phase } => {
-                context.chain_state.update_phase(*phase);
-                tracing::trace!(?phase, "chain state: phase updated");
-            }
-            StateChange::EpochAdvanced { .. } => {
-                // Abort previous in-flight fetch before spawning a replacement
-                if let Some(handle) = chain_fetch.take() {
-                    handle.abort();
-                }
+) -> Result<(), ()> {
+    let our_bls = match context.bls_keypair.public_key() {
+        Ok(pk) => pk,
+        Err(e) => {
+            tracing::error!("chain state fetch: bls key error: {e:?}");
+            return Ok(());
+        }
+    };
 
-                let ctx = context.clone();
-                let cancel = cancel.clone();
-                let change_tx = change_tx.clone();
-                *chain_fetch = Some(tokio::spawn(async move {
-                    let our_bls = match ctx.bls_keypair.public_key() {
-                        Ok(pk) => pk,
-                        Err(e) => {
-                            tracing::error!("chain state fetch: bls key error: {e:?}");
-                            return;
-                        }
-                    };
-                    match retry_with_backoff(chain_state_backoff(), &cancel, || {
-                        fetch_chain_state(&ctx.rpc, &our_bls)
-                    }).await {
-                        Ok(state) => {
-                            tracing::info!(
-                                epoch = state.epoch.0,
-                                phase = ?state.phase,
-                                committee_size = state.committee.len(),
-                                spools = state.spools.len(),
-                                "chain state: updated from RPC"
-                            );
-                            ctx.chain_state.store(state);
-
-                            // Bridge chain spool assignments → store rows
-                            let cs = ctx.chain_state.load();
-                            if SpoolPlanner::reconcile_ownership(&*ctx.store, &cs.spools) {
-                                let _ = change_tx.send(vec![StateChange::SpoolAssignmentChanged]).await;
-                            }
-                        }
-                        Err(_) => {
-                            tracing::debug!("chain state fetch cancelled");
-                        }
-                    }
-                }));
-            }
-            _ => {}
+    match retry_with_backoff(chain_state_backoff(), cancel, || {
+        fetch_chain_state(&context.rpc, &our_bls)
+    }).await {
+        Ok(state) => {
+            tracing::info!(
+                epoch = state.epoch.0,
+                phase = ?state.phase,
+                committee_size = state.committee.len(),
+                spools = state.spools.len(),
+                "chain state: updated from RPC"
+            );
+            context.chain_state.store(state);
+            Ok(())
+        }
+        Err(_) => {
+            tracing::debug!("chain state fetch cancelled");
+            Err(())
         }
     }
 }

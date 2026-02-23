@@ -18,9 +18,9 @@ use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
 use crate::state::ChainStateHandle;
-use crate::core::expand_path;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
+use crate::core::expand_path;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
