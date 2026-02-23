@@ -14,7 +14,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 
 use crate::fsm::UserEvent;
 use crate::http::error::ApiError;
-use crate::http::state::AppState;
+use crate::http::state::{require_chain_epoch, AppState};
 
 /// GET /v1/tracks/:track_id/slices/:slice_index
 pub async fn get_slice<S: Store, R: Rpc>(
@@ -129,7 +129,7 @@ pub async fn put_slice<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.chain_state.load().epoch;
+    let epoch = require_chain_epoch(&state)?;
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state
@@ -227,7 +227,7 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
     }
 
     // BLS sign a CertifyMessage
-    let epoch = state.context.chain_state.load().epoch;
+    let epoch = require_chain_epoch(&state)?;
 
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
     let sig = state

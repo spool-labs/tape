@@ -15,7 +15,7 @@ use tape_store::ops::{MetaOps, TrackOps};
 use tape_store::types::SnapshotPartialSignature;
 
 use crate::http::error::ApiError;
-use crate::http::state::AppState;
+use crate::http::state::{require_chain_epoch, AppState};
 
 /// GET /v1/tracks/:track_id/sign — BLS sign track certification.
 pub async fn get_signature<S: Store, R: Rpc>(
@@ -32,7 +32,7 @@ pub async fn get_signature<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let epoch = state.context.chain_state.load().epoch;
+    let epoch = require_chain_epoch(&state)?;
 
     let root = track_info.commitment_root();
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());

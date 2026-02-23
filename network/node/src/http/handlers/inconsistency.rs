@@ -17,7 +17,7 @@ use tape_store::ops::TrackOps;
 
 use crate::core::NodeContext;
 use crate::http::error::ApiError;
-use crate::http::state::AppState;
+use crate::http::state::{require_chain_epoch, AppState};
 
 /// POST /v1/tracks/:track_id/inconsistency — attest data inconsistency.
 pub async fn post_inconsistency<S: Store, R: Rpc>(
@@ -39,7 +39,7 @@ pub async fn post_inconsistency<S: Store, R: Rpc>(
         .ok_or(ApiError::NotFound)?;
 
     verify_local_root_mismatch(&track_info.commitment_root(), request.proof.observed_root)?;
-    let epoch = current_chain_epoch(&state)?;
+    let epoch = require_chain_epoch(&state)?;
     verify_inconsistency_proof(
         &state.context,
         &request.proof,
@@ -83,14 +83,6 @@ fn verify_local_root_mismatch(
         return Err(ApiError::BadRequest("roots match, no inconsistency".into()));
     }
     Ok(())
-}
-
-fn current_chain_epoch<S: Store, R: Rpc>(state: &AppState<S, R>) -> Result<EpochNumber, ApiError> {
-    let epoch = state.context.chain_state.load().epoch;
-    if epoch.is_zero() {
-        return Err(ApiError::BadRequest("chain epoch missing".into()));
-    }
-    Ok(epoch)
 }
 
 fn verify_inconsistency_proof<S: Store, R: Rpc>(

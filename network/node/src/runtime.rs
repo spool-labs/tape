@@ -28,6 +28,15 @@ use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
+
+/// Backoff for RPC chain state fetches on epoch transitions.
+fn chain_state_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_millis(500),
+        max_delay: Duration::from_secs(30),
+        max_retries: None,
+    }
+}
 const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
 const USER_EVENT_CHANNEL_CAPACITY: usize = 256;
 const ACTION_CHANNEL_CAPACITY: usize = 256;
@@ -382,12 +391,7 @@ fn apply_state<S: Store + 'static, R: Rpc + 'static>(
                             return;
                         }
                     };
-                    let config = BackoffConfig {
-                        min_delay: Duration::from_millis(500),
-                        max_delay: Duration::from_secs(30),
-                        max_retries: None,
-                    };
-                    match retry_with_backoff(config, &cancel, || {
+                    match retry_with_backoff(chain_state_backoff(), &cancel, || {
                         fetch_chain_state(&ctx.rpc, &our_bls)
                     }).await {
                         Ok(state) => {
