@@ -11,7 +11,9 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
-use tape_node::runtime::{NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig};
+use tape_node::core::{
+    NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig,
+};
 use tape_node::runtime::{spawn_runtime, RuntimeHandles};
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};

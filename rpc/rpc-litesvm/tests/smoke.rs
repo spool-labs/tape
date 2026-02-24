@@ -53,7 +53,9 @@ async fn send_transfer_records_block_and_status() {
         .expect("status exists");
     assert!(status.is_ok(), "transaction should be successful");
 
-    let block = rpc.get_block(slot).await.expect("block exists");
+    // The tx was recorded at pending_slot (slot + 1). Warp to make it visible.
+    rpc.warp_to_slot(slot + 1).expect("warp past tx slot");
+    let block = rpc.get_block(slot + 1).await.expect("block exists");
     let txs = block.transactions.expect("full tx details present");
     assert_eq!(txs.len(), 1, "one tx recorded in block");
 

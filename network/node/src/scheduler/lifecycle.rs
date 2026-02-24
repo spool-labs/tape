@@ -106,50 +106,36 @@ impl LifecyclePlanner {
             "schedule_lifecycle phase snapshot"
         );
 
-        // Recompute lifecycle desired-set from phase each time to avoid stale keys.
-        desired.remove(&Task::SyncEpoch { epoch });
-        desired.remove(&Task::AdvancePool { epoch });
-        desired.remove(&Task::JoinNetwork { epoch });
+        // Monotonic forward scheduling: tasks are added when their window opens
+        // and only removed when the window provably closes. This avoids canceling
+        // in-flight retries that the remove-then-re-add pattern caused.
+        let past_syncing = matches!(
+            chain_phase,
+            Some(EpochPhase::Settling) | Some(EpochPhase::Active)
+        );
 
-        let chain_phase_is_active = matches!(chain_phase, Some(EpochPhase::Active));
-        match chain_phase {
-            Some(EpochPhase::Syncing) | Some(EpochPhase::Unknown) | None => {
-                if !self.state.is_done(&Task::SyncEpoch { epoch }) {
-                    tracing::trace!(epoch = epoch.0, "scheduling SyncEpoch in lifecycle");
-                    desired.insert(Task::SyncEpoch { epoch });
-                } else {
-                    tracing::trace!(epoch = epoch.0, "schedule_lifecycle: SyncEpoch already done for epoch");
-                }
-            }
-            Some(EpochPhase::Settling) => {
-                if !self.state.is_done(&Task::AdvancePool { epoch }) {
-                    tracing::trace!(epoch = epoch.0, "scheduling AdvancePool in lifecycle");
-                    desired.insert(Task::AdvancePool { epoch });
-                }
-                if !self.state.is_done(&Task::JoinNetwork { epoch }) {
-                    tracing::trace!(epoch = epoch.0, "scheduling JoinNetwork in lifecycle");
-                    desired.insert(Task::JoinNetwork { epoch });
-                } else {
-                    tracing::trace!(epoch = epoch.0, "schedule_lifecycle: JoinNetwork already done for epoch");
-                }
-            }
-            Some(EpochPhase::Active) => {
-                tracing::trace!(epoch = epoch.0, "schedule_lifecycle: chain phase active, waiting for Refresh/AdvanceEpoch loop");
-            }
+        // SyncEpoch: on-chain rejects after Syncing phase.
+        if past_syncing {
+            desired.remove(&Task::SyncEpoch { epoch });
+        } else if !self.state.is_done(&Task::SyncEpoch { epoch }) {
+            desired.insert(Task::SyncEpoch { epoch });
         }
-        if chain_phase_is_active && !self.state.is_done(&Task::AdvanceEpoch { epoch }) {
-            tracing::trace!(epoch = epoch.0, "scheduling AdvanceEpoch in lifecycle");
+
+        // AdvancePool: on-chain accepts Settling + Active.
+        if past_syncing && !self.state.is_done(&Task::AdvancePool { epoch }) {
+            desired.insert(Task::AdvancePool { epoch });
+        }
+
+        // JoinNetwork: no on-chain phase gate. Schedule from Settling onward.
+        if past_syncing && !self.state.is_done(&Task::JoinNetwork { epoch }) {
+            desired.insert(Task::JoinNetwork { epoch });
+        }
+
+        // AdvanceEpoch: on-chain requires Active + time gate.
+        if matches!(chain_phase, Some(EpochPhase::Active))
+            && !self.state.is_done(&Task::AdvanceEpoch { epoch })
+        {
             desired.insert(Task::AdvanceEpoch { epoch });
-        } else if self.state.is_done(&Task::AdvanceEpoch { epoch }) {
-            tracing::trace!(
-                epoch = epoch.0,
-                "schedule_lifecycle: AdvanceEpoch already done for epoch"
-            );
-        } else {
-            tracing::trace!(
-                epoch = epoch.0,
-                "schedule_lifecycle: chain not active for AdvanceEpoch schedule"
-            );
         }
     }
 
@@ -186,52 +172,6 @@ impl LifecyclePlanner {
         }
     }
 
-    /// Called on the timer tick. Schedules AdvanceEpoch if the node is Active
-    /// and the chain is in the Active phase.
-    pub fn periodic(
-        &self,
-        node_status: NodeStatus,
-        epoch: EpochNumber,
-        chain_phase: Option<EpochPhase>,
-        desired: &mut HashSet<Task>,
-    ) {
-        let lifecycle_done = self.state.is_done(&Task::AdvanceEpoch { epoch });
-        tracing::trace!(
-            epoch = epoch.0,
-            node_status = ?node_status,
-            lifecycle_done,
-            "periodic lifecycle scheduling check"
-        );
-
-        if !matches!(node_status, NodeStatus::Active) {
-            tracing::trace!(
-                epoch = epoch.0,
-                node_status = ?node_status,
-                "periodic lifecycle scheduling skipped: node not active"
-            );
-            return;
-        }
-
-        if lifecycle_done {
-            tracing::trace!(
-                epoch = epoch.0,
-                "periodic lifecycle scheduling skipped: AdvanceEpoch already done for epoch"
-            );
-            return;
-        }
-
-        if !matches!(chain_phase, Some(EpochPhase::Active)) {
-            tracing::trace!(
-                epoch = epoch.0,
-                chain_phase = ?chain_phase,
-                "periodic lifecycle scheduling skipped: chain phase not active"
-            );
-            return;
-        }
-
-        tracing::trace!(epoch = epoch.0, "periodic scheduler adding AdvanceEpoch task");
-        desired.insert(Task::AdvanceEpoch { epoch });
-    }
 }
 
 #[cfg(test)]
@@ -270,5 +210,71 @@ mod tests {
     fn non_lifecycle_key() {
         let state = LifecycleState::new(EpochNumber(1));
         assert!(!state.is_done(&Task::SpoolSync { spool: 1 }));
+    }
+
+    #[test]
+    fn bootstrap_fast_path() {
+        let epoch = EpochNumber(2);
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        // Syncing→Active (no Settling observed, e.g. empty committee_prev)
+        planner.schedule(Some(EpochPhase::Syncing), NodeStatus::Active, epoch, &mut desired);
+        assert!(desired.contains(&Task::SyncEpoch { epoch }));
+
+        planner.state.mark_done(&Task::SyncEpoch { epoch });
+        planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
+
+        assert!(desired.contains(&Task::AdvancePool { epoch }));
+        assert!(desired.contains(&Task::JoinNetwork { epoch }));
+        assert!(desired.contains(&Task::AdvanceEpoch { epoch }));
+    }
+
+    #[test]
+    fn sync_removed_past_syncing() {
+        let epoch = EpochNumber(3);
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        planner.schedule(Some(EpochPhase::Syncing), NodeStatus::Active, epoch, &mut desired);
+        assert!(desired.contains(&Task::SyncEpoch { epoch }));
+
+        planner.schedule(Some(EpochPhase::Settling), NodeStatus::Active, epoch, &mut desired);
+        assert!(!desired.contains(&Task::SyncEpoch { epoch }));
+    }
+
+    #[test]
+    fn monotonic_no_cancel() {
+        let epoch = EpochNumber(4);
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        planner.schedule(Some(EpochPhase::Settling), NodeStatus::Active, epoch, &mut desired);
+        assert!(desired.contains(&Task::AdvancePool { epoch }));
+        assert!(desired.contains(&Task::JoinNetwork { epoch }));
+
+        // Repeated calls during Active never drop these tasks
+        for _ in 0..3 {
+            planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
+            assert!(desired.contains(&Task::AdvancePool { epoch }));
+            assert!(desired.contains(&Task::JoinNetwork { epoch }));
+        }
+    }
+
+    #[test]
+    fn done_not_readded() {
+        let epoch = EpochNumber(5);
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        planner.schedule(Some(EpochPhase::Settling), NodeStatus::Active, epoch, &mut desired);
+        planner.state.mark_done(&Task::AdvancePool { epoch });
+        planner.state.mark_done(&Task::JoinNetwork { epoch });
+        desired.remove(&Task::AdvancePool { epoch });
+        desired.remove(&Task::JoinNetwork { epoch });
+
+        planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
+        assert!(!desired.contains(&Task::AdvancePool { epoch }));
+        assert!(!desired.contains(&Task::JoinNetwork { epoch }));
     }
 }

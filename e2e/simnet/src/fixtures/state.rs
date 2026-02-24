@@ -89,7 +89,7 @@ impl SimnetScenario<'_> {
         let ctx = node.context();
         let our_bls = ctx.bls_keypair.public_key()
             .map_err(|e| anyhow::anyhow!("bls key: {e:?}"))?;
-        let state = tape_node::chain_state::fetch_chain_state(&ctx.rpc, &our_bls)
+        let state = tape_node::state::fetch_chain_state(&ctx.rpc, &our_bls)
             .await
             .map_err(|e| anyhow::anyhow!("fetch_chain_state: {e}"))?;
 

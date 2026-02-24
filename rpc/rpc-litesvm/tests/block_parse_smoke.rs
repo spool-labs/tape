@@ -32,7 +32,9 @@ async fn fetched_block_is_parseable_by_tape_blocks() {
         .await
         .expect("transfer should succeed");
 
-    let block = rpc.get_block(slot).await.expect("block exists");
+    // The tx was recorded at pending_slot (slot + 1). Warp to make it visible.
+    rpc.warp_to_slot(slot + 1).expect("warp past tx slot");
+    let block = rpc.get_block(slot + 1).await.expect("block exists");
 
     let parsed = tape_blocks::parse(&block).expect("block should parse");
     assert_eq!(parsed.tx_count, 1, "block parser should see one transaction");

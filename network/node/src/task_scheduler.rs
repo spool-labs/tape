@@ -66,9 +66,9 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         }
     }
 
-    /// Main event loop. Selects over FSM state changes, task_runner task results,
-    /// and a periodic timer. Each event recomputes `desired` and emits the diff
-    /// as Schedule/Cancel actions to the task_runner.
+    /// Main event loop. Selects over FSM state changes and task_runner task
+    /// results. Each event recomputes `desired` and emits the diff as
+    /// Schedule/Cancel actions to the task_runner.
     pub async fn run(
         mut self,
         mut change_rx: mpsc::Receiver<Vec<StateChange>>,
@@ -586,7 +586,7 @@ mod tests {
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_crypto::Hash as CryptoHash;
     use tokio::sync::mpsc;
-    use tape_store::ops::{CommitteeOps, MetaOps, ObjectInfoOps, SliceOps, TrackOps};
+    use tape_store::ops::{CommitteeOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
     use tape_store::types::{
         NodeInfo,
         NodeStatus,

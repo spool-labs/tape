@@ -33,7 +33,8 @@ struct Inner {
     last_recorded_slot: Option<Slot>,
     /// Highest slot visible via `get_slot()` / `get_block()`.
     confirmed_tip: u64,
-    /// Next SVM slot where a submitted transaction will be recorded.
+    /// Current SVM slot where submitted transactions are recorded. Multiple
+    /// transactions between block producer ticks share this slot.
     pending_slot: u64,
 }
 
@@ -97,19 +98,21 @@ impl LiteSvmRpc {
         Ok(())
     }
 
-    /// Spawn a background task that advances `confirmed_tip` by one slot
-    /// every `interval`.  Returns a handle the caller can `abort()` to
-    /// stop the producer.
+    /// Closes the current block (making it visible via get_slot/get_block)
+    /// and opens a new slot, every `interval`.
     pub fn start_block_producer(&self, interval: Duration) -> JoinHandle<()> {
         let rpc = self.clone();
         tokio::spawn(async move {
+            let tick_seconds = interval.as_secs() as i64;
             loop {
                 tokio::time::sleep(interval).await;
                 let mut inner = rpc.inner.lock().expect("mutex poisoned");
-                inner.confirmed_tip += 1;
-                if inner.pending_slot <= inner.confirmed_tip {
-                    inner.pending_slot = inner.confirmed_tip + 1;
-                }
+                inner.confirmed_tip = inner.pending_slot;
+                inner.pending_slot = inner.confirmed_tip + 1;
+
+                let mut clock = inner.svm.get_sysvar::<Clock>();
+                clock.unix_timestamp = clock.unix_timestamp.saturating_add(tick_seconds);
+                inner.svm.set_sysvar(&clock);
             }
         })
     }
@@ -386,9 +389,6 @@ impl Rpc for LiteSvmRpc {
 
         let post_balances = Self::balances_for_transaction(&inner, &vtx);
         Self::record_transaction_locked(&mut inner, vtx, &result, pre_balances, post_balances);
-
-        // Advance to the next pending slot for the next transaction.
-        inner.pending_slot += 1;
 
         // Fresh blockhash so repeated identical messages don't hit
         // "already processed" in tight test loops.

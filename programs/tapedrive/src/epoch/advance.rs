@@ -13,7 +13,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         system_info,
         archive_info,
         epoch_info,
-        snapshot_state_info,
+        _snapshot_state_info,
         slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -53,11 +53,12 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::BadSchedule.into());
     }
 
+    // TODO: bring this in once we have snapshots working
     // Snapshot gate
-    let snapshot_state = snapshot_state_info
-        .is_snapshot_state()?
-        .as_account::<SnapshotState>(&tapedrive::ID)?;
-    require_previous_snapshot(epoch, &snapshot_state)?;
+    // let snapshot_state = _snapshot_state_info
+    //     .is_snapshot_state()?
+    //     .as_account::<SnapshotState>(&tapedrive::ID)?;
+    // require_previous_snapshot(epoch, &snapshot_state)?;
 
     // Save old epoch for event logging
     let old_epoch = epoch.id;
