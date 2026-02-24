@@ -792,8 +792,14 @@ mod tests {
             .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
             .unwrap();
         ctx.store
-            .put_committee(committee_epoch, committee_for_epoch)
+            .put_committee(committee_epoch, committee_for_epoch.clone())
             .unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(epoch),
+            phase: EpochPhase::Active,
+            committee: committee_for_epoch,
+            ..Default::default()
+        });
 
         let msg = SnapshotMessage::new(committee_epoch, commitment.0).to_bytes();
         let signature = signer.sign(msg).unwrap();
@@ -837,9 +843,23 @@ mod tests {
         ctx.store
             .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
             .unwrap();
+        let dummy_member = NodeInfo {
+            node_address: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::new_unique(),
+            tls_pubkey: Pubkey::new_unique(),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
+            spools: vec![0],
+        };
+        let committee_members = vec![dummy_member];
         ctx.store
-            .put_committee(committee_epoch, vec![])
+            .put_committee(committee_epoch, committee_members.clone())
             .unwrap();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(epoch),
+            phase: EpochPhase::Active,
+            committee: committee_members,
+            ..Default::default()
+        });
 
         let signer = BlsPrivateKey::from_random();
         let msg = SnapshotMessage::new(committee_epoch, commitment.0).to_bytes();
@@ -847,7 +867,7 @@ mod tests {
 
         let payload = SnapshotSignatureSubmission {
             signature,
-            member_index: 0,
+            member_index: 5,
             epoch: EpochNumber(epoch),
         };
 

@@ -220,6 +220,7 @@ impl SpoolPlanner {
                 Err(_) => continue,
             };
 
+            let mut remaining = pending.len();
             for track in &pending {
                 let missing = match store.get_track(*track) {
                     Ok(track_info) => track_info.is_none(),
@@ -227,10 +228,11 @@ impl SpoolPlanner {
                 };
                 if missing {
                     let _ = store.remove_pending_recovery(*spool, *track);
+                    remaining -= 1;
                 }
             }
 
-            let has_pending = !pending.is_empty();
+            let has_pending = remaining > 0;
 
             if !has_pending && !matches!(status, SpoolStatus::ActiveRecover) {
                 desired.remove(&Task::SpoolRecovery { spool: *spool });

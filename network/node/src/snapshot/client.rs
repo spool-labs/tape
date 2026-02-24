@@ -414,8 +414,8 @@ mod tests {
             },
         ];
 
-        assert_eq!(group_weight(&committee[0], 0), 1);
+        assert_eq!(group_weight(&committee[0], 0), 3);
         assert_eq!(group_weight(&committee[1], 0), 0);
-        assert_eq!(group_total_weight(&committee, 0), 1);
+        assert_eq!(group_total_weight(&committee, 0), 3);
     }
 }

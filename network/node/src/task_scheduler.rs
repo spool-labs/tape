@@ -181,6 +181,8 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                         self.desired.insert(Task::SnapshotBootstrap);
                     }
 
+                    self.scheduled.retain(|key| !matches!(key.scheduled_epoch(), Some(e) if e != *epoch));
+
                     tracing::trace!(epoch = epoch.0, "scheduler scheduling lifecycle for new epoch");
 
                     self.lifecycle.schedule(
@@ -778,9 +780,10 @@ mod tests {
     #[tokio::test]
     async fn oneshot_cleared() {
         let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         let mut scheduler = TaskScheduler::new(ctx.clone());
 
-        let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
+        let key = Task::AdvanceEpoch { epoch: EpochNumber(1) };
         scheduler.desired.insert(key.clone());
         scheduler.scheduled.insert(key.clone());
 
@@ -793,9 +796,10 @@ mod tests {
     #[tokio::test]
     async fn retryable_kept() {
         let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         let mut scheduler = TaskScheduler::new(ctx.clone());
 
-        let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
+        let key = Task::AdvanceEpoch { epoch: EpochNumber(1) };
         scheduler.desired.insert(key.clone());
         scheduler.scheduled.insert(key.clone());
 
@@ -1191,6 +1195,8 @@ mod tests {
         scheduler
             .desired
             .insert(Task::AdvanceEpoch { epoch: old_epoch });
+
+        scheduler.scheduled.retain(|key| !matches!(key.scheduled_epoch(), Some(e) if e != new_epoch));
 
         scheduler.lifecycle.schedule(
             Some(EpochPhase::Active),
