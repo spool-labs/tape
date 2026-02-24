@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use tape_store::types::NodeStatus;
+use tape_store::ops::SpoolOps;
+use tape_store::types::{NodeStatus, SpoolStatus};
 use tracing::trace;
 
 use crate::log::{log_path, read_log};
@@ -137,5 +138,32 @@ impl SimnetScenario<'_> {
             }
         }
         Ok(())
+    }
+
+    pub fn node_spool_count(&self, index: usize) -> Result<usize> {
+        let node = self
+            .harness
+            .node(index)
+            .with_context(|| format!("node {index} missing"))?;
+        let spools = node.context().store.iter_all_spools()
+            .with_context(|| format!("iter_all_spools node {index}"))?;
+        Ok(spools.len())
+    }
+
+    pub fn node_spool_statuses(&self, index: usize) -> Result<Vec<(u16, SpoolStatus)>> {
+        let node = self
+            .harness
+            .node(index)
+            .with_context(|| format!("node {index} missing"))?;
+        node.context().store.iter_all_spools()
+            .with_context(|| format!("iter_all_spools node {index}"))
+    }
+
+    pub fn total_spool_count(&self, indices: &[usize]) -> Result<usize> {
+        let mut total = 0;
+        for &i in indices {
+            total += self.node_spool_count(i)?;
+        }
+        Ok(total)
     }
 }

@@ -177,6 +177,28 @@ impl SimnetHarness {
         Ok(())
     }
 
+    pub async fn stop_nodes(&mut self, indices: &[usize]) -> Result<()> {
+        for &i in indices {
+            let node = self
+                .nodes
+                .get_mut(i)
+                .ok_or_else(|| anyhow!("node {i} out of range"))?;
+            node.stop().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn start_nodes(&mut self, indices: &[usize]) -> Result<()> {
+        for &i in indices {
+            let node = self
+                .nodes
+                .get_mut(i)
+                .ok_or_else(|| anyhow!("node {i} out of range"))?;
+            node.start().await?;
+        }
+        Ok(())
+    }
+
     pub async fn stop_all(&mut self) -> Result<()> {
         if let Some(handle) = self.block_producer.take() {
             handle.abort();

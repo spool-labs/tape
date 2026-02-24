@@ -19,24 +19,15 @@ async fn node_churn() {
         .expect("bootstrap nodes");
 
     let all: Vec<usize> = (0..30).collect();
-    let active_timeout = Duration::from_secs(20);
-    let advance_timeout = Duration::from_secs(30);
-
-    {
-        let scenario = harness.scenario();
-        scenario
-            .wait_nodes_active(&all, active_timeout)
-            .await
-            .expect("all nodes active");
-    }
-
-    {
-        let scenario = harness.scenario();
-        scenario
-            .self_advance_epoch(advance_timeout)
-            .await
-            .expect("self advance epoch");
-    }
+    let scenario = harness.scenario();
+    scenario
+        .wait_nodes_active(&all, Duration::from_secs(20))
+        .await
+        .expect("all nodes active");
+    scenario
+        .self_advance_epoch(Duration::from_secs(30))
+        .await
+        .expect("self advance epoch");
 
     harness.stop_all().await.expect("stop runtimes");
 }
