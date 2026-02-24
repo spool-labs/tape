@@ -11,7 +11,7 @@ use tape_api::instruction::{
 use tape_api::program::tapedrive::{node_pda, stake_pda};
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_store::ops::{MetaOps, SpoolOps};
+use tape_store::ops::SpoolOps;
 use tape_store::types::NodeStatus;
 use tracing::trace;
 
@@ -338,12 +338,12 @@ impl SimnetScenario<'_> {
     }
 
     pub fn node_status(&self, index: usize) -> Option<NodeStatus> {
-        self.harness.nodes()[index]
-            .context()
-            .store
-            .get_node_status()
-            .ok()
-            .flatten()
+        let cs = self.harness.nodes()[index].context().chain_state.load();
+        if cs.has_epoch() {
+            Some(cs.node_status.clone())
+        } else {
+            None
+        }
     }
 
     pub async fn stake_all(&self, payer_index: usize, amount_tape: u64) -> Result<()> {

@@ -68,9 +68,6 @@ fn all_column_families() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    // Meta - test via MetaOps
-    store.set_node_status(NodeStatus::Active).unwrap();
-
     // Tracks
     let track_address = Pubkey::new_unique();
     let tape_address = Pubkey::new_unique();
@@ -142,10 +139,6 @@ fn all_column_families() {
         .unwrap();
 
     // Verify we can read everything back
-    assert_eq!(
-        store.get_node_status().unwrap(),
-        Some(NodeStatus::Active)
-    );
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());

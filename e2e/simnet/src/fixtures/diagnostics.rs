@@ -1,8 +1,7 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use reqwest::Client;
-use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 use tracing::trace;
 
@@ -62,6 +61,23 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
+    pub async fn wait_nodes_active(&self, indices: &[usize], timeout: Duration) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            if indices.iter().all(|&i| self.node_status(i) == Some(NodeStatus::Active)) {
+                return Ok(());
+            }
+            if start.elapsed() >= timeout {
+                let statuses: Vec<_> = indices.iter()
+                    .map(|&i| (i, self.node_status(i)))
+                    .filter(|(_, s)| *s != Some(NodeStatus::Active))
+                    .collect();
+                bail!("nodes did not reach Active within {timeout:?}: {statuses:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     pub fn read_node_log(&self, index: usize) -> Option<String> {
         let node = self.harness.node(index)?;
         let raw = read_log()?;
@@ -114,13 +130,8 @@ impl SimnetScenario<'_> {
 
     pub fn check_node_stores(&self) -> Result<()> {
         for node in self.harness.nodes() {
-            let status = node
-                .context()
-                .store
-                .get_node_status()
-                .with_context(|| format!("read node {} status", node.id()))?
-                .unwrap_or(NodeStatus::Standby);
-
+            let cs = node.context().chain_state.load();
+            let status = cs.node_status.clone();
             if matches!(status, NodeStatus::RecoverMetadata | NodeStatus::RecoveryReplay) {
                 bail!("node {} remained in recovery status: {status:?}", node.id());
             }

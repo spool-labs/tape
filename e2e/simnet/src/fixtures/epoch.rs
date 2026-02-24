@@ -128,6 +128,15 @@ impl SimnetScenario<'_> {
         }
     }
 
+    /// Warp time and let nodes self-drive the epoch transition.
+    pub async fn self_advance_epoch(&self, timeout: Duration) -> Result<u64> {
+        let current = self.current_epoch_number().await?;
+        self.warp_epoch()?;
+        let next = self.wait_epoch_change(current, timeout).await?;
+        self.wait_phase("Active", timeout).await?;
+        Ok(next)
+    }
+
     /// Deterministic slot driver for explicit test control.
     pub async fn drive_slots(&self, slot_count: u64) -> Result<u64> {
         self.harness

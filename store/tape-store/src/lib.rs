@@ -243,13 +243,6 @@ mod tests {
     fn test_meta_ops() {
         let store = TapeStore::new(MemoryStore::new());
 
-        // Node status
-        store.set_node_status(NodeStatus::Active).unwrap();
-        assert_eq!(
-            store.get_node_status().unwrap(),
-            Some(NodeStatus::Active)
-        );
-
         // Node address
         let addr = Pubkey::new_unique();
         store.set_node_address(addr).unwrap();

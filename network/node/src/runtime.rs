@@ -449,14 +449,15 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use tape_api::event::EpochAdvanced;
+    use solana_sdk::pubkey::Pubkey;
+    use tape_api::event::NodeRegistered;
     use tape_blocks::ParsedInstruction;
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
-    use tape_crypto::Hash;
+    use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_store::ops::{MetaOps, SpoolOps};
     use tape_store::types::{NodeStatus, SpoolStatus};
 
     use crate::ingestor::IngestedBlock;
+    use crate::state::ChainState;
     use crate::core::PeerService;
     use crate::core::test_utils::test_context;
 
@@ -484,21 +485,20 @@ mod tests {
 
         let fsm_handle = spawn_test_fsm(ctx.clone(), block_rx, change_tx, cancel.clone()).await;
 
-        // Send blocks directly to the FSM channel
+        // Send a block that produces a StateChange (RegisterNode avoids
+        // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
+        let node_pk = Pubkey::new_unique();
         let block1 = IngestedBlock {
             slot: SlotNumber(10),
-            instructions: vec![ParsedInstruction::AdvanceEpoch {
-                event: EpochAdvanced {
-                    old_epoch: EpochNumber(0),
-                    new_epoch: EpochNumber(1),
-                    timestamp: [0; 8],
-                    committee_size: [0; 8],
-                    total_stake: [0; 8],
-                    storage_price: [0; 8],
-                    storage_capacity: StorageUnits(0),
-                    nonce: Hash::default(),
-                    phase: 1, // Syncing
-                },
+            instructions: vec![ParsedInstruction::RegisterNode {
+                authority: Pubkey::new_unique(),
+                node: node_pk,
+                event: Some(NodeRegistered {
+                    node: node_pk,
+                    id: NodeId(1),
+                    authority: Pubkey::new_unique(),
+                    epoch: EpochNumber(0),
+                }),
             }],
         };
 
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert!(matches!(
             &changes[0],
-            StateChange::EpochAdvanced { epoch } if *epoch == EpochNumber(1)
+            StateChange::NodeRegistered { .. }
         ));
 
         // Verify store state
@@ -519,7 +519,7 @@ mod tests {
         );
 
         // Clean shutdown
-        drop(block_tx);
+        cancel.cancel();
         fsm_handle.await.unwrap();
     }
 
@@ -579,7 +579,11 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Active at epoch 5, no cursor → bootstrap needed
-        ctx.store.set_node_status(NodeStatus::Active).unwrap();
+        ctx.chain_state.store(ChainState {
+            node_status: NodeStatus::Active,
+            epoch: EpochNumber(5),
+            ..ChainState::default()
+        });
 
         let (block_tx, _block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 
@@ -621,21 +625,20 @@ mod tests {
         // Drop the change receiver — sends will fail
         drop(change_rx);
 
-        // Send a block that produces a StateChange
+        // Send a block that produces a StateChange (RegisterNode avoids
+        // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
+        let node_pk = Pubkey::new_unique();
         let block = IngestedBlock {
             slot: SlotNumber(10),
-            instructions: vec![ParsedInstruction::AdvanceEpoch {
-                event: EpochAdvanced {
-                    old_epoch: EpochNumber(0),
-                    new_epoch: EpochNumber(1),
-                    timestamp: [0; 8],
-                    committee_size: [0; 8],
-                    total_stake: [0; 8],
-                    storage_price: [0; 8],
-                    storage_capacity: StorageUnits(0),
-                    nonce: Hash::default(),
-                    phase: 1, // Syncing
-                },
+            instructions: vec![ParsedInstruction::RegisterNode {
+                authority: Pubkey::new_unique(),
+                node: node_pk,
+                event: Some(NodeRegistered {
+                    node: node_pk,
+                    id: NodeId(1),
+                    authority: Pubkey::new_unique(),
+                    epoch: EpochNumber(0),
+                }),
             }],
         };
         let _ = block_tx.send(block).await;

@@ -56,11 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("All spools: {:?}", spools);
 
     // Metadata
-    store.set_node_status(NodeStatus::Active)?;
     store.set_sync_cursor(SlotNumber(12345))?;
 
     println!("\nFinal state:");
-    println!("  Node status: {:?}", store.get_node_status()?);
     println!("  Sync cursor: {:?}", store.get_sync_cursor()?);
 
     Ok(())

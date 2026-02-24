@@ -30,8 +30,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         primary.put_track(track_address, info)?;
     }
 
-    // Set some metadata
-    primary.set_node_status(NodeStatus::Active)?;
     println!("Primary: created 3 tracks");
 
     // Read-only replica (static snapshot)
@@ -109,9 +107,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Operation traits work on secondary
     let found = secondary.get_track(Pubkey::new([1; 32]))?;
     println!("Found track 1: {:?}", found.is_some());
-
-    let status = secondary.get_node_status()?;
-    println!("Secondary sees node status: {:?}", status);
 
     running.store(false, std::sync::atomic::Ordering::Relaxed);
     sync_thread.join().unwrap();

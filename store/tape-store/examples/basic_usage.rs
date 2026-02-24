@@ -77,11 +77,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     store.put_committee(EpochNumber(100), vec![member1, member2])?;
     println!("Stored committee for epoch 100");
 
-    // Metadata via MetaOps
-    store.set_node_status(NodeStatus::Active)?;
-    let status = store.get_node_status()?;
-    println!("Node status: {:?}", status);
-
     // Tape info
     let tape_info = TapeInfo {
         end_epoch: EpochNumber(200),
@@ -105,7 +100,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify storage
     println!("\nFinal state:");
-    println!("  Node status: {:?}", store.get_node_status()?);
     println!(
         "  Has tape info: {}",
         store.get_tape(tape_address)?.is_some()

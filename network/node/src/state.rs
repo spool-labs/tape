@@ -170,7 +170,17 @@ pub async fn fetch_chain_state<R: Rpc>(
                 .collect();
             (NodeStatus::Active, assigned)
         }
-        None => (NodeStatus::Standby, HashSet::new()),
+        None => {
+            // Bootstrap: current committee empty, check committee_next.
+            // Active with no spools lets lifecycle scheduler run AdvanceEpoch.
+            let in_next = system.committee.size() == 0
+                && system.committee_next.iter().any(|m| m.key == *our_bls);
+            if in_next {
+                (NodeStatus::Active, HashSet::new())
+            } else {
+                (NodeStatus::Standby, HashSet::new())
+            }
+        }
     };
 
     Ok(ChainState {

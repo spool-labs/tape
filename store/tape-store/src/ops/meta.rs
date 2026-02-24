@@ -11,7 +11,7 @@
 use crate::columns::{GcCol, MetaCol, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{
-    ChunkIndex, EpochNumber, Hash, InvalidationProof, NodeStatus, Pubkey, SlotNumber,
+    ChunkIndex, EpochNumber, Hash, InvalidationProof, Pubkey, SlotNumber,
     SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature, UnitKey,
 };
 use crate::TapeStore;
@@ -43,7 +43,6 @@ fn parse_partial_sig_key(key: &[u8]) -> Option<(EpochNumber, u64, u8)> {
 }
 
 // Meta keys
-const NODE_STATUS_KEY: &str = "node_status";
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
@@ -55,10 +54,6 @@ const GC_COMPLETED_KEY: &str = "completed";
 
 /// Operations for node metadata
 pub trait MetaOps {
-    // Node status
-    fn get_node_status(&self) -> Result<Option<NodeStatus>>;
-    fn set_node_status(&self, status: NodeStatus) -> Result<()>;
-
     // Cluster hash
     fn get_cluster_hash(&self) -> Result<Option<Hash>>;
     fn set_cluster_hash(&self, hash: Hash) -> Result<()>;
@@ -138,29 +133,6 @@ pub trait MetaOps {
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
-    fn get_node_status(&self) -> Result<Option<NodeStatus>> {
-        let key = NODE_STATUS_KEY.to_string();
-        match self.get::<MetaCol>(&key)? {
-            Some(bytes) => {
-                if bytes.is_empty() {
-                    return Ok(None);
-                }
-                let status: NodeStatus = wincode::deserialize(&bytes)
-                    .map_err(|e| TapeStoreError::Serialization(format!("node status: {}", e)))?;
-                Ok(Some(status))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn set_node_status(&self, status: NodeStatus) -> Result<()> {
-        let key = NODE_STATUS_KEY.to_string();
-        let bytes = wincode::serialize(&status)
-            .map_err(|e| TapeStoreError::Serialization(format!("node status: {}", e)))?;
-        self.put::<MetaCol>(&key, &bytes)?;
-        Ok(())
-    }
-
     fn get_cluster_hash(&self) -> Result<Option<Hash>> {
         let key = CLUSTER_HASH_KEY.to_string();
         match self.get::<MetaCol>(&key)? {
@@ -563,28 +535,6 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
-    }
-
-    #[test]
-    fn test_node_status_roundtrip() {
-        let store = test_store();
-
-        assert!(store.get_node_status().unwrap().is_none());
-
-        store.set_node_status(NodeStatus::Active).unwrap();
-        assert_eq!(store.get_node_status().unwrap(), Some(NodeStatus::Active));
-
-        store
-            .set_node_status(NodeStatus::RecoveryInProgress {
-                epoch: EpochNumber(42),
-            })
-            .unwrap();
-        assert_eq!(
-            store.get_node_status().unwrap(),
-            Some(NodeStatus::RecoveryInProgress {
-                epoch: EpochNumber(42)
-            })
-        );
     }
 
     #[test]

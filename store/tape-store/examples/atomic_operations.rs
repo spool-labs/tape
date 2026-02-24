@@ -68,17 +68,12 @@ fn main() -> Result<()> {
     println!("Has pending recovery: {}", has_pending);
 
     // MetaOps - node state
-    store.set_node_status(NodeStatus::Active)?;
     store.set_sync_cursor(SlotNumber(12345))?;
-    println!("Set node to Active, sync cursor 12345");
+    println!("Set sync cursor 12345");
 
     // Verify meta state
-    let status = store.get_node_status()?.unwrap();
     let cursor = store.get_sync_cursor()?.unwrap();
-    println!(
-        "Node status: {:?}, cursor: {:?}",
-        status, cursor
-    );
+    println!("Sync cursor: {:?}", cursor);
 
     Ok(())
 }
