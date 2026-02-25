@@ -1012,17 +1012,6 @@ mod tests {
     }
 
     #[test]
-    fn one_shot() {
-        assert!(Task::AdvanceEpoch { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(Task::SyncEpoch { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(Task::SnapshotBuild { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(Task::SnapshotCollect { epoch: EpochNumber(0) }.is_one_shot());
-        assert!(!Task::RecoveryScan { spool: 0 }.is_one_shot());
-        assert!(!Task::SpoolRecovery { spool: 0 }.is_one_shot());
-        assert!(!Task::SpoolSync { spool: 0 }.is_one_shot());
-    }
-
-    #[test]
     fn delay_exponential() {
         let config = BackoffConfig {
             min_delay: Duration::from_secs(1),

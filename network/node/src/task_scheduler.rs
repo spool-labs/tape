@@ -301,17 +301,15 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         self.scheduled.remove(key);
     }
 
-    /// Task succeeded. Marks lifecycle state, removes one-shot tasks from desired,
-    /// and triggers follow-up scheduling (refresh → lifecycle, sync → lifecycle,
+    /// Task succeeded. Marks lifecycle state, removes from desired, and
+    /// triggers follow-up scheduling (refresh → lifecycle, sync → lifecycle,
     /// bootstrap → refresh, snapshot stages).
     fn handle_success(&mut self, key: &Task) {
         tracing::trace!(task = ?key, "scheduler handling task success");
 
         self.scheduled.remove(key);
+        self.desired.remove(key);
         self.lifecycle.state_mut().mark_done(key);
-        if key.is_one_shot() {
-            self.desired.remove(key);
-        }
 
         self.handle_sync_success(key);
         self.handle_bootstrap_success(key);
@@ -778,12 +776,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oneshot_cleared() {
+    async fn success_cleared() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         let mut scheduler = TaskScheduler::new(ctx.clone());
 
-        let key = Task::AdvanceEpoch { epoch: EpochNumber(1) };
+        let key = Task::SpoolSync { spool: 42 };
         scheduler.desired.insert(key.clone());
         scheduler.scheduled.insert(key.clone());
 
@@ -791,6 +789,23 @@ mod tests {
 
         assert!(!scheduler.desired.contains(&key));
         assert!(!scheduler.scheduled.contains(&key));
+    }
+
+    #[tokio::test]
+    async fn success_no_reschedule() {
+        let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
+        let mut scheduler = TaskScheduler::new(ctx.clone());
+        let (action_tx, mut action_rx) = mpsc::channel(16);
+
+        let key = Task::SpoolSync { spool: 42 };
+        scheduler.desired.insert(key.clone());
+        scheduler.scheduled.insert(key.clone());
+
+        scheduler.handle_result(&TaskResult::Success(key));
+        scheduler.flush(&action_tx);
+
+        assert!(action_rx.try_recv().is_err(), "no actions after success + flush");
     }
 
     #[tokio::test]

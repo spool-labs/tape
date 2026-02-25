@@ -78,24 +78,6 @@ impl Task {
         self.scheduled_epoch().is_some()
     }
 
-    pub fn is_one_shot(&self) -> bool {
-        matches!(
-            self,
-            Task::AdvanceEpoch { .. }
-                | Task::SyncEpoch { .. }
-                | Task::JoinNetwork { .. }
-                | Task::AdvancePool { .. }
-                | Task::RegisterSnapshot { .. }
-                | Task::SnapshotSubmit { .. }
-                | Task::InvalidateTrack { .. }
-                | Task::SnapshotBuild { .. }
-                | Task::SnapshotCollect { .. }
-                | Task::SnapshotBootstrap
-        )
-    }
-
-    /// Spool-oriented tasks are rerunnable while their owning spool remains in
-    /// active work, so keep them as continuous tasks.
     pub fn spool_id(&self) -> Option<SpoolIndex> {
         match self {
             Task::SpoolSync { spool }
