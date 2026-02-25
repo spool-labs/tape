@@ -4,31 +4,34 @@ use tape_core::{prelude::{Bitmap, Hash}, types::EpochNumber};
 use super::token::MINT_ADDRESS;
 
 pub use tape_core::erasure::MEMBER_COUNT;
-pub const MIN_COMMITTEE_SIZE:     usize = 20;              // 20 for production (matches SPOOL_GROUP_SIZE)
+
+pub const MIN_COMMITTEE_SIZE:     usize = 20;   // 20 for production (matches SPOOL_GROUP_SIZE)
 pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;
-pub const EPOCH_VALUES:           usize = 4;               // Epoch N, N+1, N+2, N+3
-pub const EPOCH_DURATION:           i64 = 5;               // 5 seconds for local testing (60s testnet, 604800s mainnet)
-pub const STUCK_SYSTEM_THRESHOLD:   i64 = EPOCH_DURATION * 2;  // Emergency unstaking trigger
-pub const BLACKLIST_SIZE:      usize = 24;                 // 2^24 blob entries in blocklist
-pub const STREAM_SEGMENTS:     usize = 18;                 // 2^18 = 262,144 segments (32MiB with 128B segments)
+pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
+pub const EPOCH_DURATION:           i64 = 5;    // 5 seconds for local testing (60s testnet, 604800s mainnet)
+pub const BLACKLIST_SIZE:         usize = 24;   // 2^24 blob entries in blocklist
+pub const STREAM_SEGMENTS:        usize = 18;   // 2^18 = 262,144 segments (32MiB with 128B segments)
+
+// Emergency unstaking trigger
+pub const STUCK_SYSTEM_THRESHOLD:   i64 = EPOCH_DURATION * 2;  
 
 tape_solana::declare_id!("tajZ1QndNonM3teK59PdUfiF9ZAQT6xqucipbs8mN8W"); 
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
 
-pub const SYSTEM:       &[u8] = b"system";
-pub const ARCHIVE:      &[u8] = b"archive";
-pub const EPOCH:        &[u8] = b"epoch";
-pub const NODE:         &[u8] = b"node";
-pub const HISTORY:      &[u8] = b"history";
-pub const RESOURCE:     &[u8] = b"resource";
-pub const TRACK:        &[u8] = b"track";
-pub const STAKE:        &[u8] = b"stake";
-pub const CERTIFICATE:      &[u8] = b"certificate";
-pub const SNAPSHOT:         &[u8] = b"snapshot";
-pub const SNAPSHOT_STATE:   &[u8] = b"snapshot_state";
+pub const SYSTEM:          &[u8] = b"system";
+pub const ARCHIVE:         &[u8] = b"archive";
+pub const EPOCH:           &[u8] = b"epoch";
+pub const NODE:            &[u8] = b"node";
+pub const HISTORY:         &[u8] = b"history";
+pub const RESOURCE:        &[u8] = b"resource";
+pub const TRACK:           &[u8] = b"track";
+pub const STAKE:           &[u8] = b"stake";
+pub const CERTIFICATE:     &[u8] = b"certificate";
+pub const SNAPSHOT:        &[u8] = b"snapshot";
+pub const SNAPSHOT_STATE:  &[u8] = b"snapshot_state";
 
 pub type CommitteeBitmap = Bitmap<{ (MEMBER_COUNT + 7) / 8 }>;
 

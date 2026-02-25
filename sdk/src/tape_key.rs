@@ -77,7 +77,7 @@ impl TapeKey {
     }
 
     /// Access the underlying keypair for signing transactions.
-    pub(crate) fn as_keypair(&self) -> &Keypair {
+    pub fn as_keypair(&self) -> &Keypair {
         &self.keypair
     }
 }
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn track_address_deterministic() {
+    fn track_address() {
         let key = TapeKey::generate();
         let hash = Hash::default();
         let addr1 = key.track_address(&hash);

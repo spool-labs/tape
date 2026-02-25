@@ -1,7 +1,9 @@
 //! High-level client for the Tapedrive storage network.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
@@ -13,7 +15,7 @@ use tape_api::instruction::{
     build_split_tape_by_size_ix,
 };
 use tape_api::program::tapedrive::track_pda;
-use tape_api::state::{Tape, Track};
+use tape_api::state::{System, Tape, Track};
 use tape_core::encoding::EncodingProfile;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
@@ -78,7 +80,7 @@ impl<R: Rpc> Tapedrive<R> {
         }
     }
 
-    // ── Data operations ─────────────────────────────────────────────────
+    // Data operations
 
     /// Write data to the network in one call.
     ///
@@ -150,7 +152,7 @@ impl<R: Rpc> Tapedrive<R> {
         Ok(computed == on_chain.data.commitment_hash)
     }
 
-    // ── Tape management ─────────────────────────────────────────────────
+    // Tape management
 
     /// Reserve a new tape (storage allocation).
     ///
@@ -415,7 +417,7 @@ impl<R: Rpc> Tapedrive<R> {
         Ok(())
     }
 
-    // ── Track management ────────────────────────────────────────────────
+    // Track management
 
     /// Write a track to an existing tape.
     ///
@@ -489,10 +491,9 @@ impl<R: Rpc> Tapedrive<R> {
             .map_err(TapedriveError::Certification)?;
 
         // 6. Certify track on-chain
-        let compute_ix =
-            solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(
-                CERTIFY_COMPUTE_UNITS,
-            );
+        let compute_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+            CERTIFY_COMPUTE_UNITS
+        );
 
         let certify_ix = build_certify_track_ix(
             self.payer.pubkey(),
@@ -533,7 +534,7 @@ impl<R: Rpc> Tapedrive<R> {
             .map_err(TapedriveError::Rpc)
     }
 
-    // ── Private helpers ─────────────────────────────────────────────────
+    // Private helpers
 
     /// Discover network state (committee, spool assignment, node addresses)
     /// using the existing RPC client.
@@ -576,7 +577,7 @@ impl<R: Rpc> Tapedrive<R> {
     /// Build a map of NodeId → HTTP address for certification.
     async fn build_node_address_map(
         &self,
-        system: &tape_api::state::System,
+        system: &System,
     ) -> HashMap<NodeId, String> {
         let mut map = HashMap::new();
         for member in system.committee.iter() {
@@ -598,9 +599,7 @@ impl<R: Rpc> Tapedrive<R> {
                 Err(e) => {
                     last_err = Some(e);
                     if attempt < RPC_PROPAGATION_RETRIES - 1 {
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            RPC_PROPAGATION_DELAY_MS,
-                        ))
+                        tokio::time::sleep(Duration::from_millis(RPC_PROPAGATION_DELAY_MS))
                         .await;
                     }
                 }
@@ -626,13 +625,14 @@ mod tests {
     use tape_core::tape::TrackData;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::{EpochNumber, StorageUnits};
+    use tape_crypto::hash;
 
     fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc>) {
         let rpc = LiteSvmRpc::new();
         let payer = Keypair::new();
         let client = RpcClient::from_rpc(rpc.clone());
-        let td = Tapedrive::new(client, &payer);
-        (rpc, td)
+        let tapedrive = Tapedrive::new(client, &payer);
+        (rpc, tapedrive)
     }
 
     fn pipe(rpc: &LiteSvmRpc, address: Pubkey, packed: &[u8]) {
@@ -655,11 +655,7 @@ mod tests {
         track.tape = tape_address;
         track.key = key;
         track.size = StorageUnits(5);
-        track.data = TrackData::new(
-            EpochNumber(1),
-            Hash::default(),
-            0,
-        );
+        track.data = TrackData::new(EpochNumber(1), Hash::default(), 0);
         track.data.set_profile(EncodingProfile::clay_default());
         track
     }
@@ -671,15 +667,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_tape_by_address() {
-        let (rpc, td) = setup();
+    async fn get_tape() {
+        let (rpc, tapedrive) = setup();
         let authority = Keypair::new();
         let (tape_address, _) = tape_pda(authority.pubkey());
 
         let tape = make_tape(authority.pubkey());
         pipe(&rpc, tape_address, &tape.pack());
 
-        let result = td.get_tape(&tape_address).await.unwrap();
+        let result = tapedrive.get_tape(&tape_address).await.unwrap();
         assert_eq!(result.capacity, StorageUnits(100));
         assert_eq!(result.used, StorageUnits(10));
         assert_eq!(result.active_epoch, EpochNumber(1));
@@ -687,8 +683,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_track_by_address() {
-        let (rpc, td) = setup();
+    async fn get_track() {
+        let (rpc, tapedrive) = setup();
         let authority = Keypair::new();
         let key = Hash::default();
         let (tape_address, _) = tape_pda(authority.pubkey());
@@ -697,70 +693,67 @@ mod tests {
         let track = make_track(tape_address, key);
         pipe(&rpc, track_address, &track.pack());
 
-        let result = td.get_track(&track_address).await.unwrap();
+        let result = tapedrive.get_track(&track_address).await.unwrap();
         assert_eq!(result.tape, tape_address);
         assert_eq!(result.key, key);
         assert_eq!(result.size, StorageUnits(5));
     }
 
     #[tokio::test]
-    async fn list_tracks_filters_by_tape() {
-        let (rpc, td) = setup();
+    async fn list_tracks() {
+        let (rpc, tapedrive) = setup();
 
         let authority_a = Keypair::new();
         let authority_b = Keypair::new();
         let (tape_a, _) = tape_pda(authority_a.pubkey());
         let (tape_b, _) = tape_pda(authority_b.pubkey());
 
-        let key1 = tape_crypto::hash::hash(b"track1");
-        let key2 = tape_crypto::hash::hash(b"track2");
-        let key3 = tape_crypto::hash::hash(b"track3");
+        let key1 = hash::hash(b"track1");
+        let key2 = hash::hash(b"track2");
+        let key3 = hash::hash(b"track3");
 
-        // Two tracks on tape A
         let (addr1, _) = track_pda(authority_a.pubkey(), key1);
         let (addr2, _) = track_pda(authority_a.pubkey(), key2);
-        // One track on tape B
         let (addr3, _) = track_pda(authority_b.pubkey(), key3);
 
         pipe(&rpc, addr1, &make_track(tape_a, key1).pack());
         pipe(&rpc, addr2, &make_track(tape_a, key2).pack());
         pipe(&rpc, addr3, &make_track(tape_b, key3).pack());
 
-        let tracks_a = td.list_tracks(&tape_a).await.unwrap();
+        let tracks_a = tapedrive.list_tracks(&tape_a).await.unwrap();
         assert_eq!(tracks_a.len(), 2);
-        for (_, t) in &tracks_a {
-            assert_eq!(t.tape, tape_a);
+        for (_, track) in &tracks_a {
+            assert_eq!(track.tape, tape_a);
         }
 
-        let tracks_b = td.list_tracks(&tape_b).await.unwrap();
+        let tracks_b = tapedrive.list_tracks(&tape_b).await.unwrap();
         assert_eq!(tracks_b.len(), 1);
         assert_eq!(tracks_b[0].1.tape, tape_b);
     }
 
     #[tokio::test]
-    async fn estimate_cost_computation() {
-        let (rpc, td) = setup();
+    async fn estimate_cost() {
+        let (rpc, tapedrive) = setup();
         let (archive_address, _) = archive_pda();
 
         pipe(&rpc, archive_address, &make_archive(100).pack());
 
-        let cost = td.estimate_cost(StorageUnits(50), 4).await.unwrap();
+        let cost = tapedrive.estimate_cost(StorageUnits(50), 4).await.unwrap();
         // 100 price * 50 capacity * 4 epochs = 20000
         assert_eq!(cost.as_u64(), 20_000);
     }
 
     #[tokio::test]
-    async fn verify_matching_data() {
-        let (rpc, td) = setup();
+    async fn verify_match() {
+        let (rpc, tapedrive) = setup();
         let authority = Keypair::new();
-        let key = tape_crypto::hash::hash(b"test-track");
+        let key = hash::hash(b"test-track");
         let (tape_address, _) = tape_pda(authority.pubkey());
         let (track_address, _) = track_pda(authority.pubkey(), key);
 
         let data = b"hello world, this is test data for verify".to_vec();
         let profile = EncodingProfile::clay_default();
 
-        // Encode to get the commitment hash
         let mut encoder = BlobEncoder::with_profile(profile);
         let (_, root) = encoder.encode_with_root(data.clone()).unwrap();
 
@@ -769,14 +762,14 @@ mod tests {
         track.data.set_profile(profile);
         pipe(&rpc, track_address, &track.pack());
 
-        assert!(td.verify(&track_address, &data).await.unwrap());
+        assert!(tapedrive.verify(&track_address, &data).await.unwrap());
     }
 
     #[tokio::test]
-    async fn verify_mismatched_data() {
-        let (rpc, td) = setup();
+    async fn verify_mismatch() {
+        let (rpc, tapedrive) = setup();
         let authority = Keypair::new();
-        let key = tape_crypto::hash::hash(b"test-track");
+        let key = hash::hash(b"test-track");
         let (tape_address, _) = tape_pda(authority.pubkey());
         let (track_address, _) = track_pda(authority.pubkey(), key);
 
@@ -791,22 +784,21 @@ mod tests {
         track.data.set_profile(profile);
         pipe(&rpc, track_address, &track.pack());
 
-        // Different data should not verify
         let wrong_data = b"this is different data entirely".to_vec();
-        assert!(!td.verify(&track_address, &wrong_data).await.unwrap());
+        assert!(!tapedrive.verify(&track_address, &wrong_data).await.unwrap());
     }
 
     #[tokio::test]
-    async fn get_tape_not_found() {
-        let (_rpc, td) = setup();
+    async fn tape_not_found() {
+        let (_rpc, tapedrive) = setup();
         let address = Pubkey::new_unique();
-        assert!(td.get_tape(&address).await.is_err());
+        assert!(tapedrive.get_tape(&address).await.is_err());
     }
 
     #[tokio::test]
-    async fn get_track_not_found() {
-        let (_rpc, td) = setup();
+    async fn track_not_found() {
+        let (_rpc, tapedrive) = setup();
         let address = Pubkey::new_unique();
-        assert!(td.get_track(&address).await.is_err());
+        assert!(tapedrive.get_track(&address).await.is_err());
     }
 }
