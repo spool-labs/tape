@@ -54,6 +54,7 @@ tape-node = { path = "../network/node" }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }
+rpc-litesvm = { path = "../rpc/rpc-litesvm" }
 axum = { workspace = true }
 serial_test = "3.1"
 bytemuck = { workspace = true }

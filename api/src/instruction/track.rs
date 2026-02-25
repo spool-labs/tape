@@ -48,6 +48,8 @@ pub fn build_register_track_ix(
     stripe_count: u64,  // Number of stripes
     leaves: [Hash; SPOOL_GROUP_SIZE], // Per-slice commitment leaf hashes
 ) -> Instruction {
+    assert!(stripe_size > 0, "stripe_size must be non-zero");
+    assert!(stripe_count > 0, "stripe_count must be non-zero");
 
     let (epoch_address, _) = epoch_pda();
     let (tape_address, _) = tape_pda(authority);

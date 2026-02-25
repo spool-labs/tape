@@ -8588,6 +8588,7 @@ dependencies = [
  "hex",
  "rand 0.8.5",
  "rpc-client",
+ "rpc-litesvm",
  "serde",
  "serde_json",
  "serial_test",
