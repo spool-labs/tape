@@ -53,6 +53,26 @@ impl System {
         self.committee_prev.size() == 0
     }
 
+    /// Return the committee and spool assignment for `epoch`, if it is the
+    /// current or immediately-previous epoch and the data is available.
+    #[inline]
+    pub fn committee_at(
+        &self,
+        epoch: EpochNumber,
+        current: EpochNumber,
+    ) -> Option<(&Committee<MEMBER_COUNT>, &SpoolAssignment<SPOOL_COUNT>)> {
+        if epoch == current {
+            Some((&self.committee, &self.spools))
+        } else if current.0 > 0
+            && epoch == EpochNumber(current.0 - 1)
+            && !self.committee_prev_empty()
+        {
+            Some((&self.committee_prev, &self.spools_prev))
+        } else {
+            None
+        }
+    }
+
     /// Current committee is empty (true bootstrap - first epoch with no serving committee).
     #[inline]
     pub fn committee_empty(&self) -> bool {

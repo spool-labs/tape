@@ -72,18 +72,23 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
+    let signing_epoch = EpochNumber::unpack(args.signing_epoch);
+    let (committee, spools) = system
+        .committee_at(signing_epoch, current_epoch(epoch))
+        .ok_or(TapeError::BadEpochId)?;
+
     let group = track.data.spool_group();
     if (group as usize) >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
     }
 
-    let weight = system.spools.group_weight(group, &args.bitmap);
+    let weight = spools.group_weight(group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let committee_size = system.committee.size();
+    let committee_size = committee.size();
     let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
@@ -91,7 +96,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let mut pubkeys = Vec::with_capacity(indices.len());
     for member_index in &indices {
-        if let Some(member) = system.committee.member_at(*member_index) {
+        if let Some(member) = committee.member_at(*member_index) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -255,8 +260,10 @@ mod tests {
 
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
 
+        // signing_epoch = current on-chain epoch (epoch has advanced past snapshot epoch)
+        let signing_epoch = epoch.id;
         let instruction = build_certify_snapshot_ix(
-            fee_payer, epoch_number, commitment_hash, bitmap, agg_sig,
+            fee_payer, epoch_number, signing_epoch, commitment_hash, bitmap, agg_sig,
         );
 
         let (snapshot_state_address, _) = snapshot_state_pda();

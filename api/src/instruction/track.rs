@@ -23,6 +23,7 @@ pub struct DeleteTrack {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CertifyTrack {
+    pub epoch: [u8; 8],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
 }
@@ -30,6 +31,7 @@ pub struct CertifyTrack {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct InvalidateTrack {
+    pub epoch: [u8; 8],
     pub bitmap: CommitteeBitmap,
     pub signature: BlsSignature,
     pub computed_root: Hash,
@@ -111,6 +113,7 @@ pub fn build_certify_track_ix(
     fee_payer: Pubkey,
     authority: Pubkey,
     id: Hash,
+    epoch: EpochNumber,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
 ) -> Instruction {
@@ -132,6 +135,7 @@ pub fn build_certify_track_ix(
             AccountMeta::new(track_address, false),
         ],
         data: CertifyTrack {
+            epoch: epoch.pack(),
             bitmap,
             signature,
         }.to_bytes(),
@@ -144,6 +148,7 @@ pub fn build_invalidate_track_ix(
     epoch_address: Pubkey,
     tape_address: Pubkey,
     track_address: Pubkey,
+    epoch: EpochNumber,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
     computed_root: Hash,
@@ -159,6 +164,7 @@ pub fn build_invalidate_track_ix(
             AccountMeta::new(track_address, false),
         ],
         data: InvalidateTrack {
+            epoch: epoch.pack(),
             bitmap,
             signature,
             computed_root,

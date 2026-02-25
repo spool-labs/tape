@@ -52,6 +52,9 @@ pub struct CertifySnapshot {
     /// Epoch this snapshot covers.
     pub epoch: [u8; 8],
 
+    /// Epoch the signatures were collected under.
+    pub signing_epoch: [u8; 8],
+
     /// Bitmap of committee members who signed.
     pub bitmap: CommitteeBitmap,
 
@@ -114,6 +117,7 @@ pub fn build_register_snapshot_ix(
 pub fn build_certify_snapshot_ix(
     fee_payer: Pubkey,
     epoch: EpochNumber,
+    signing_epoch: EpochNumber,
     commitment: Hash,
     bitmap: CommitteeBitmap,
     signature: BlsSignature,
@@ -123,8 +127,6 @@ pub fn build_certify_snapshot_ix(
     let (tape_address, _) = tape_pda(system_address);
     let (track_address, _) = snapshot_pda(epoch, commitment);
     let (snapshot_state_address, _) = snapshot_state_pda();
-
-    let epoch = epoch.pack();
 
     Instruction {
         program_id: crate::program::tapedrive::ID,
@@ -137,7 +139,8 @@ pub fn build_certify_snapshot_ix(
             AccountMeta::new(snapshot_state_address, false),
         ],
         data: CertifySnapshot {
-            epoch,
+            epoch: epoch.pack(),
+            signing_epoch: signing_epoch.pack(),
             bitmap,
             signature,
         }

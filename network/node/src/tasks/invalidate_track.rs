@@ -45,6 +45,8 @@ pub async fn run<S: Store, R: Rpc>(
 
     let tape_address: Pubkey = track_info.tape_address.into();
 
+    let epoch = context.chain_state.load().epoch;
+
     let bitmap: CommitteeBitmap = bytemuck::cast(proof.bitmap);
     let signature = proof.signature;
     let observed_root = Hash(proof.computed_root);
@@ -54,6 +56,7 @@ pub async fn run<S: Store, R: Rpc>(
             &context,
             tape_address,
             track,
+            epoch,
             bitmap,
             signature,
             observed_root,

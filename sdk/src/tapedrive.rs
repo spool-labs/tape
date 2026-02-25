@@ -501,6 +501,7 @@ impl<R: Rpc> Tapedrive<R> {
                 self.payer.pubkey(),
                 tape_key.pubkey(),
                 key,
+                EpochNumber(collected.epoch),
                 collected.bitmap,
                 collected.aggregated_signature,
             );

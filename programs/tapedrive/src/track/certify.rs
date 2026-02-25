@@ -60,14 +60,19 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidAccountData);
     }
 
+    let cert_epoch = EpochNumber::unpack(args.epoch);
+    let (committee, spools) = system
+        .committee_at(cert_epoch, current_epoch(epoch))
+        .ok_or(TapeError::BadEpochId)?;
+
     let group = track.data.spool_group();
-    let weight = system.spools.group_weight(group, &args.bitmap);
+    let weight = spools.group_weight(group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let committee_size = system.committee.size();
+    let committee_size = committee.size();
     let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
@@ -75,7 +80,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     let mut pubkeys = Vec::with_capacity(indices.len());
     for member_index in &indices {
-        if let Some(member) = system.committee.member_at(*member_index) {
+        if let Some(member) = committee.member_at(*member_index) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -88,7 +93,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     // Build certification message with domain separation and epoch binding
     // Must match the format used by storage nodes when signing
     let certify_message = CertifyMessage::new(
-        current_epoch(epoch),
+        cert_epoch,
         track_address.to_bytes(),
         track.data.commitment_hash.0,
     );
@@ -225,7 +230,7 @@ mod tests {
 
         // Instruction and accounts
         let instruction = build_certify_track_ix(
-            fee_payer, authority, bucket_hash, bitmap, agg_sig);
+            fee_payer, authority, bucket_hash, epoch.id, bitmap, agg_sig);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),

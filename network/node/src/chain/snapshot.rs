@@ -59,6 +59,7 @@ pub async fn submit_certify<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
     committee_len: usize,
     local_epoch: EpochNumber,
+    signing_epoch: EpochNumber,
     commitment: Hash,
     cert: &SnapshotCertResult,
 ) -> Result<Signature, RpcError> {
@@ -71,7 +72,7 @@ pub async fn submit_certify<S: Store, R: Rpc>(
 
     let pubkey = context.keypair.pubkey();
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_CERTIFY_CU);
-    let ix = build_certify_snapshot_ix(pubkey, local_epoch, commitment, bitmap, cert.signature);
+    let ix = build_certify_snapshot_ix(pubkey, local_epoch, signing_epoch, commitment, bitmap, cert.signature);
 
     context
         .rpc

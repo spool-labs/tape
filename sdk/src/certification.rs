@@ -495,6 +495,7 @@ impl CertificationCollector {
             fee_payer,
             authority,
             track_key,
+            EpochNumber(collected.epoch),
             collected.bitmap,
             collected.aggregated_signature,
         )

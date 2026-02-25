@@ -9,7 +9,7 @@ pub const MIN_COMMITTEE_SIZE:     usize = 20;   // 20 for production (matches SP
 pub const FUTURE_EPOCHS:          usize = 256;
 pub const EPOCH_HISTORY:          usize = 256;
 pub const EPOCH_VALUES:           usize = 4;    // Epoch N, N+1, N+2, N+3
-pub const EPOCH_DURATION:           i64 = 5;    // 5 seconds for local testing (60s testnet, 604800s mainnet)
+pub const EPOCH_DURATION:           i64 = 10;    // 10 seconds for local testing (60s testnet, 604800s mainnet)
 pub const BLACKLIST_SIZE:         usize = 24;   // 2^24 blob entries in blocklist
 pub const STREAM_SEGMENTS:        usize = 18;   // 2^18 = 262,144 segments (32MiB with 128B segments)
 

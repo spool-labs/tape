@@ -77,7 +77,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
             }
         };
 
-        match submit_certify(&context, committee_len, local_epoch, commitment, &cert).await {
+        match submit_certify(&context, committee_len, local_epoch, current, commitment, &cert).await {
             Ok(_tx_sig) => {
                 tracing::info!(
                     group,

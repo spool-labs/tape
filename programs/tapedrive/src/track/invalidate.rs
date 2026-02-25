@@ -61,14 +61,19 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidInstructionData);
     }
 
+    let cert_epoch = EpochNumber::unpack(args.epoch);
+    let (committee, spools) = system
+        .committee_at(cert_epoch, current_epoch(epoch))
+        .ok_or(TapeError::BadEpochId)?;
+
     let group = track.data.spool_group();
-    let weight = system.spools.group_weight(group, &args.bitmap);
+    let weight = spools.group_weight(group, &args.bitmap);
 
     if !is_supermajority(weight, SPOOL_GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let committee_size = system.committee.size();
+    let committee_size = committee.size();
     let indices = args.bitmap.indices(committee_size);
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
@@ -76,7 +81,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let mut pubkeys = Vec::with_capacity(indices.len());
     for member_index in &indices {
-        if let Some(member) = system.committee.member_at(*member_index) {
+        if let Some(member) = committee.member_at(*member_index) {
             pubkeys.push(member.key.0);
         } else {
             return Err(TapeError::BadMember.into());
@@ -88,7 +93,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     // Build invalidation message with domain separation and epoch binding
     let invalidate_message = InvalidateMessage::new(
-        current_epoch(epoch),
+        cert_epoch,
         track_address.to_bytes(),
         args.computed_root.0,
     );
@@ -219,7 +224,7 @@ mod tests {
 
         let instruction = build_invalidate_track_ix(
             fee_payer, system_address, epoch_address, tape_address, track_address,
-            bitmap, agg_sig, computed_root,
+            epoch.id, bitmap, agg_sig, computed_root,
         );
 
         let accounts = vec![
@@ -344,7 +349,7 @@ mod tests {
 
         let instruction = build_invalidate_track_ix(
             fee_payer, system_address, epoch_address, tape_address, track_address,
-            bitmap, agg_sig, commitment_hash, // Same as on-chain
+            epoch.id, bitmap, agg_sig, commitment_hash, // Same as on-chain
         );
 
         let accounts = vec![
