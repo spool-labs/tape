@@ -11,10 +11,9 @@ use tape_core::system::Committee;
 use tape_core::spooler::SpoolGroup;
 use tape_crypto::Hash;
 use tape_node_api::SlicePayload;
+use tape_node_client::{with_retry_all, Pubkey, RetryConfig};
 use tokio::sync::Semaphore;
-use tracing::{debug, warn};
-
-use tape_node_client::Pubkey;
+use tracing::warn;
 
 use crate::communication::NodeCommunicationFactory;
 use crate::encoder::SliceMerkleProof;
@@ -28,9 +27,6 @@ pub use tape_core::spooler::{SpoolAssignment, SpoolIndex, SpoolMapping};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
-
-/// Default number of retries per node.
-const DEFAULT_RETRY_COUNT: usize = 3;
 
 /// A slice with its merkle proof, ready for upload.
 #[derive(Clone)]
@@ -65,7 +61,7 @@ pub struct DistributedUploader<const MEMBERS: usize> {
     router: SliceRouter<MEMBERS>,
     factory: NodeCommunicationFactory,
     concurrency_limit: Arc<Semaphore>,
-    retry_count: usize,
+    retry_config: RetryConfig,
 }
 
 impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
@@ -98,7 +94,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
             router,
             factory,
             concurrency_limit: Arc::new(Semaphore::new(DEFAULT_CONCURRENCY)),
-            retry_count: DEFAULT_RETRY_COUNT,
+            retry_config: RetryConfig::upload(),
         })
     }
 
@@ -108,9 +104,9 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
         self
     }
 
-    /// Set the retry count for failed uploads.
-    pub fn with_retry_count(mut self, count: usize) -> Self {
-        self.retry_count = count;
+    /// Set the retry configuration for failed uploads.
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
         self
     }
 
@@ -146,7 +142,7 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                 let factory = self.factory.clone();
                 let track = self.track;
                 let permit = self.concurrency_limit.clone();
-                let retry_count = self.retry_count;
+                let retry_config = self.retry_config.clone();
 
                 // Get the address for this member using the first spool index
                 let first_spool = slice_spool_pairs.first().map(|(_, s)| *s).unwrap_or(0);
@@ -174,30 +170,15 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                     let mut failed_slices = Vec::new();
 
                     for (global_spool, slice) in slices {
-                        let mut last_error = None;
+                        // Retry all errors unconditionally with backoff — a 404
+                        // typically means the node hasn't ingested the track yet.
+                        let payload = slice.to_payload();
+                        let result = with_retry_all(&retry_config, || {
+                            client.put_slice_internal(track, global_spool, &payload)
+                        })
+                        .await;
 
-                        for attempt in 0..retry_count {
-                            let payload = slice.to_payload();
-                            // Use global spool index so nodes store under the correct key
-                            match client.put_slice_internal(track, global_spool, &payload).await {
-                                Ok(_) => {
-                                    last_error = None;
-                                    break;
-                                }
-                                Err(e) => {
-                                    if attempt < retry_count - 1 {
-                                        debug!(
-                                            slice = global_spool,
-                                            attempt = attempt + 1,
-                                            "Retrying slice upload"
-                                        );
-                                    }
-                                    last_error = Some(e);
-                                }
-                            }
-                        }
-
-                        if let Some(e) = last_error {
+                        if let Err(e) = result {
                             warn!(
                                 slice = global_spool,
                                 member = member_idx,

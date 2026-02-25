@@ -5,8 +5,24 @@ use tape_core::types::BasisPoints;
 use tape_crypto::hash;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
-#[tokio::test]
-async fn blob_upload() {
+#[test]
+fn blob_upload() {
+    // The SDK write/read futures are large; run on a thread with extra stack.
+    let thread = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(blob_upload_inner())
+        })
+        .expect("spawn test thread");
+
+    thread.join().unwrap();
+}
+
+async fn blob_upload_inner() {
     let node_count = 25;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)

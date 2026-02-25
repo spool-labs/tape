@@ -7,7 +7,8 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
-use rpc_client::{Rpc, RpcClient, RpcError};
+use rpc_client::{parse_tape_error, Rpc, RpcClient, RpcError};
+use tape_api::errors::TapeError;
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{
     build_certify_track_ix, build_delete_track_ix, build_destroy_tape_ix, build_merge_tape_ix,
@@ -31,6 +32,9 @@ use crate::tape_key::TapeKey;
 
 /// Compute unit limit for BLS signature verification in CertifyTrack.
 const CERTIFY_COMPUTE_UNITS: u32 = 1_400_000;
+
+/// Retries for certification when epoch advances between signature collection and submission.
+const CERTIFY_RETRIES: usize = 3;
 
 /// Retries when waiting for RPC to propagate a newly confirmed transaction.
 const RPC_PROPAGATION_RETRIES: usize = 5;
@@ -480,36 +484,44 @@ impl<R: Rpc> Tapedrive<R> {
             .await
             .map_err(TapedriveError::Upload)?;
 
-        // 5. Collect BLS signatures
-        let system = self.client.get_system().await?;
-        let node_address_map = self.build_node_address_map(&system).await;
+        // 5+6. Collect BLS signatures and certify (retry on epoch race)
+        for attempt in 0..CERTIFY_RETRIES {
+            let system = self.client.get_system().await?;
+            let node_address_map = self.build_node_address_map(&system).await;
 
-        let collector = CertificationCollector::with_defaults();
-        let collected = collector
-            .collect_signatures(&track_address, spool_group, &system, &node_address_map)
-            .await
-            .map_err(TapedriveError::Certification)?;
+            let collector = CertificationCollector::with_defaults();
+            let collected = collector
+                .collect_signatures(&track_address, spool_group, &system, &node_address_map)
+                .await
+                .map_err(TapedriveError::Certification)?;
 
-        // 6. Certify track on-chain
-        let compute_ix = ComputeBudgetInstruction::set_compute_unit_limit(
-            CERTIFY_COMPUTE_UNITS
-        );
+            let compute_ix =
+                ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_COMPUTE_UNITS);
+            let certify_ix = build_certify_track_ix(
+                self.payer.pubkey(),
+                tape_key.pubkey(),
+                key,
+                collected.bitmap,
+                collected.aggregated_signature,
+            );
 
-        let certify_ix = build_certify_track_ix(
-            self.payer.pubkey(),
-            tape_key.pubkey(),
-            key,
-            collected.bitmap,
-            collected.aggregated_signature,
-        );
-
-        self.client
-            .send_instructions_with_signers(
-                &self.payer,
-                vec![compute_ix, certify_ix],
-                &[tape_key.as_keypair()],
-            )
-            .await?;
+            match self
+                .client
+                .send_instructions_with_signers(
+                    &self.payer,
+                    vec![compute_ix, certify_ix],
+                    &[tape_key.as_keypair()],
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(e) => match parse_tape_error(&e) {
+                    Some(TapeError::AlreadyCertified) => break,
+                    Some(TapeError::BadSignature) if attempt < CERTIFY_RETRIES - 1 => continue,
+                    _ => return Err(TapedriveError::Rpc(e)),
+                },
+            }
+        }
 
         // 7. Return the certified track
         self.client

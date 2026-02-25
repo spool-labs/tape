@@ -38,6 +38,19 @@ impl RetryConfig {
         }
     }
 
+    /// Upload retry preset: 8 retries, 2s base, 30s max.
+    ///
+    /// Tuned for slice uploads where nodes may not have ingested the track
+    /// yet. On mainnet Solana, block confirmation takes 15-30s, so retries
+    /// must span that window: 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s (~150s total).
+    pub fn upload() -> Self {
+        Self {
+            max_retries: 8,
+            base_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(30),
+        }
+    }
+
     /// Resilient retry preset: 10 retries, 1s base, 30s max.
     pub fn resilient() -> Self {
         Self {
@@ -55,6 +68,9 @@ impl RetryConfig {
 }
 
 /// Execute an async operation with retry on transient failures.
+///
+/// Only retries errors where [`NodeError::is_retryable`] returns true.
+/// Use [`with_retry_all`] when all errors should be retried (e.g. timing races).
 pub async fn with_retry<T, F, Fut>(config: &RetryConfig, mut operation: F) -> Result<T, NodeError>
 where
     F: FnMut() -> Fut,
@@ -70,6 +86,35 @@ where
                 }
                 let delay = config.backoff_delay(attempt);
                 tracing::debug!(attempt, ?delay, "retrying after transient error: {e}");
+                tokio::time::sleep(delay).await;
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+/// Execute an async operation with unconditional retry and exponential backoff.
+///
+/// Unlike [`with_retry`], this retries on ALL errors regardless of type.
+/// Useful when errors are expected to be transient due to timing (e.g. a node
+/// returning 404 because it hasn't ingested a track yet).
+pub async fn with_retry_all<T, E, F, Fut>(config: &RetryConfig, mut operation: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut last_err = None;
+    for attempt in 0..=config.max_retries {
+        match operation().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                if attempt == config.max_retries {
+                    return Err(e);
+                }
+                let delay = config.backoff_delay(attempt);
+                tracing::debug!(attempt, ?delay, "retrying after error: {e}");
                 tokio::time::sleep(delay).await;
                 last_err = Some(e);
             }
@@ -102,6 +147,11 @@ mod tests {
         assert_eq!(fast.max_retries, 3);
         assert_eq!(fast.base_delay, Duration::from_millis(100));
         assert_eq!(fast.max_delay, Duration::from_secs(2));
+
+        let upload = RetryConfig::upload();
+        assert_eq!(upload.max_retries, 8);
+        assert_eq!(upload.base_delay, Duration::from_secs(2));
+        assert_eq!(upload.max_delay, Duration::from_secs(30));
 
         let resilient = RetryConfig::resilient();
         assert_eq!(resilient.max_retries, 10);
