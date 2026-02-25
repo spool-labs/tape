@@ -29,30 +29,21 @@ pub async fn run<S: Store, R: Rpc>(
     attempt: u32,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+    let attempt_count = attempt.saturating_add(1);
+
     let epoch = match require_epoch(&context.chain_state) {
         Ok(e) => e,
         Err(outcome) => return outcome,
     };
 
     if epoch.is_zero() {
-        match context.store.get_spool_status(spool) {
-            Ok(Some(SpoolStatus::ActiveSync)) => {}
-            Ok(_) => {
-                tracing::info!(spool, "spool status changed during sync, skipping activation");
-                return TaskOutcome::Success;
-            }
-            Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
-        }
-        if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
-            return TaskOutcome::Retryable(format!("set spool active: {e}"));
-        }
-        return TaskOutcome::Success;
+        return promote_active(&context, spool, false);
     }
 
     // Look up previous epoch committee to find the peer that owned this spool
     let prev_epoch = epoch - EpochNumber(1);
-    let cs = context.chain_state.load();
-    let prev_committee = match cs.committee_for(prev_epoch) {
+    let chain_state = context.chain_state.load();
+    let prev_committee = match chain_state.committee_for(prev_epoch) {
         Some(c) => c.clone(),
         None => return TaskOutcome::Retryable("no committee for previous epoch".into()),
     };
@@ -66,18 +57,7 @@ pub async fn run<S: Store, R: Rpc>(
         Some(n) => n,
         None => {
             tracing::info!(spool, "no previous owner, marking active");
-            match context.store.get_spool_status(spool) {
-                Ok(Some(SpoolStatus::ActiveSync)) => {}
-                Ok(_) => {
-                    tracing::info!(spool, "spool status changed during sync, skipping activation");
-                    return TaskOutcome::Success;
-                }
-                Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
-            }
-            if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
-                return TaskOutcome::Retryable(format!("set spool active: {e}"));
-            }
-            return TaskOutcome::Success;
+            return promote_active(&context, spool, false);
         }
     };
 
@@ -85,49 +65,39 @@ pub async fn run<S: Store, R: Rpc>(
     let our_address: StorePubkey = context.node_address().into();
     if prev_owner.node_address == our_address {
         tracing::info!(spool, "we owned this spool last epoch, marking active");
-        match context.store.get_spool_status(spool) {
-            Ok(Some(SpoolStatus::ActiveSync)) => {}
-            Ok(_) => {
-                tracing::info!(spool, "spool status changed during sync, skipping activation");
-                return TaskOutcome::Success;
-            }
-            Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
-        }
-        if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
-            return TaskOutcome::Retryable(format!("set spool active: {e}"));
-        }
-        return TaskOutcome::Success;
+        return promote_active(&context, spool, false);
     }
 
     // Build client for previous owner
-    let addr = match prev_owner.network_address.to_socket_addr() {
+    let peer_address = match prev_owner.network_address.to_socket_addr() {
         Ok(a) => a,
         Err(e) => return TaskOutcome::Permanent(format!("parse network address: {e}")),
     };
 
-    match peer_handle.is_cooling_down(addr).await {
+    match peer_handle.is_cooling_down(peer_address).await {
         Ok(true) => return TaskOutcome::Pending(Duration::from_secs(5)),
         Ok(false) => {}
         Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
     }
 
-    let client = match NodeClientBuilder::new().build(&addr.to_string()) {
+    let client = match NodeClientBuilder::new().build(&peer_address.to_string()) {
         Ok(c) => c,
         Err(e) => {
-            if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
-                return TaskOutcome::Permanent(format!("build client failed after {attempt} attempts: {e}"));
+            if reached_limit(attempt_count) {
+                return TaskOutcome::Permanent(format!(
+                    "build client failed after {} attempts: {e}",
+                    attempt_count,
+                ));
             }
             return TaskOutcome::Retryable(format!("build client: {e}"));
         }
     };
 
     // Resume from cursor if we have one
-    let mut cursor: Option<[u8; 32]> = context
-        .store
-        .get_spool_sync_cursor(spool)
-        .ok()
-        .flatten()
-        .map(|p| p.0);
+    let mut cursor: Option<[u8; 32]> = match context.store.get_spool_sync_cursor(spool) {
+        Ok(cursor) => cursor.map(|p| p.0),
+        Err(e) => return TaskOutcome::Retryable(format!("get cursor: {e}")),
+    };
 
     loop {
         if cancel.is_cancelled() {
@@ -146,18 +116,17 @@ pub async fn run<S: Store, R: Rpc>(
         };
 
         let response_bytes = match with_retry(&RetryConfig::fast(), || client.sync_spool(request_bytes.clone())).await {
-            Ok(b) => {
-                if let Err(e) = peer_handle.record_success(addr).await {
-                    tracing::warn!("failed to record peer success for {addr}: {e}");
-                }
-                b
-            }
+            Ok(b) => b,
             Err(e) => {
-                if let Err(err) = peer_handle.record_failure(addr).await {
-                    tracing::warn!("failed to record peer failure for {addr}: {err}");
+                if let Err(err) = peer_handle.record_failure(peer_address).await {
+                    tracing::warn!("failed to record peer failure for {peer_address}: {err}");
                 }
-                if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
-                    return TaskOutcome::Permanent(format!("sync failed after {attempt} attempts: {e}"));
+
+                if reached_limit(attempt_count) {
+                    return TaskOutcome::Permanent(format!(
+                        "sync failed after {} attempts: {e}",
+                        attempt_count,
+                    ));
                 }
                 return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
             }
@@ -165,7 +134,19 @@ pub async fn run<S: Store, R: Rpc>(
 
         let response: SyncSpoolResponse = match wincode::deserialize(&response_bytes) {
             Ok(r) => r,
-            Err(e) => return TaskOutcome::Retryable(format!("deserialize response: {e}")),
+            Err(e) => {
+                if let Err(err) = peer_handle.record_failure(peer_address).await {
+                    tracing::warn!("failed to record peer failure for {peer_address}: {err}");
+                }
+
+                if reached_limit(attempt_count) {
+                    return TaskOutcome::Permanent(format!(
+                        "deserialize response failed after {} attempts: {e}",
+                        attempt_count,
+                    ));
+                }
+                return TaskOutcome::Retryable(format!("deserialize response: {e}"));
+            }
         };
 
         for entry in &response.entries {
@@ -183,11 +164,15 @@ pub async fn run<S: Store, R: Rpc>(
             };
 
             if let Err(err) = validate_slice_entry(spool, &track_info, &entry.slice_data) {
-                if let Err(err2) = peer_handle.record_failure(addr).await {
-                    tracing::warn!("failed to record peer failure for {addr}: {err2}");
+                if let Err(err2) = peer_handle.record_failure(peer_address).await {
+                    tracing::warn!("failed to record peer failure for {peer_address}: {err2}");
                 }
-                if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
-                    return TaskOutcome::Permanent(format!("sync validation failed after {attempt} attempts: {err}"));
+
+                if reached_limit(attempt_count) {
+                    return TaskOutcome::Permanent(format!(
+                        "sync validation failed after {} attempts: {err}",
+                        attempt_count,
+                    ));
                 }
                 return TaskOutcome::Retryable(format!("sync validation failed: {err}"));
             }
@@ -209,6 +194,9 @@ pub async fn run<S: Store, R: Rpc>(
                 return TaskOutcome::Retryable(format!("set cursor: {e}"));
             }
         }
+        if let Err(e) = peer_handle.record_success(peer_address).await {
+            tracing::warn!("failed to record peer success for {peer_address}: {e}");
+        }
 
         match response.next_cursor {
             Some(c) => cursor = Some(c),
@@ -218,19 +206,44 @@ pub async fn run<S: Store, R: Rpc>(
 
     // Sync complete — only mark Active if still in ActiveSync.
     // An epoch advance may have marked this spool LockedToMove while we were syncing.
-    match context.store.get_spool_status(spool) {
-        Ok(Some(SpoolStatus::ActiveSync)) => {}
-        Ok(_) => {
-            tracing::info!(spool, "spool status changed during sync, skipping activation");
-            return TaskOutcome::Success;
-        }
-        Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+    let outcome = promote_active(&context, spool, true);
+    if matches!(outcome, TaskOutcome::Success) {
+        tracing::info!(spool, "spool sync complete");
     }
-    let _ = context.store.remove_spool_sync_cursor(spool);
+    outcome
+}
+
+fn promote_active<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    spool: u16,
+    clear_sync_cursor: bool,
+) -> TaskOutcome {
+
+    let status = match context.store.get_spool_status(spool) {
+        Ok(status) => status,
+        Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+    };
+
+    if !matches!(status, Some(SpoolStatus::ActiveSync)) {
+        tracing::info!(
+            spool,
+            ?status,
+            "spool status changed during sync, skipping activation"
+        );
+        return TaskOutcome::Success;
+    }
+
+    if clear_sync_cursor {
+        let _ = context.store.remove_spool_sync_cursor(spool);
+    }
+
     if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
         return TaskOutcome::Retryable(format!("set spool active: {e}"));
     }
 
-    tracing::info!(spool, "spool sync complete");
     TaskOutcome::Success
+}
+
+fn reached_limit(attempt_count: u32) -> bool {
+    attempt_count >= SYNC_FAILURE_THRESHOLD
 }

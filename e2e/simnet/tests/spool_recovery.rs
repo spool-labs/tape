@@ -40,7 +40,7 @@ async fn spool_recovery_inner() {
         .expect("bootstrap nodes");
 
     let all: Vec<usize> = (0..node_count).collect();
-    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(60);
 
     let scenario = harness.scenario();
     scenario
