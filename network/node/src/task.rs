@@ -52,9 +52,8 @@ impl Task {
             | Task::RegisterSnapshot { .. }
             | Task::SnapshotSubmit { .. }
             | Task::InvalidateTrack { .. } => TaskCategory::SolanaTx,
-            Task::SpoolSync { .. } | Task::SpoolRecovery { .. } | Task::RecoveryScan { .. } => {
-                TaskCategory::PeerHttp
-            }
+            Task::SpoolSync { .. } | Task::SpoolRecovery { .. } => TaskCategory::PeerHttp,
+            Task::RecoveryScan { .. } => TaskCategory::Internal,
             Task::SnapshotBuild { .. } | Task::SnapshotCollect { .. } => TaskCategory::CpuHeavy,
             Task::SnapshotBootstrap => TaskCategory::PeerHttp,
         }

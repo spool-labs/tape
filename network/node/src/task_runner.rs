@@ -358,10 +358,11 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
 
         self.futures.spawn(
             execute_task(
-                ctx, 
-                peers, 
-                key_to_run.clone(), 
-                token_clone, 
+                ctx,
+                peers,
+                key_to_run.clone(),
+                attempt,
+                token_clone,
                 sem
             ).instrument(span),
         );
@@ -387,6 +388,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     peer_handle: PeerHandle,
     key: Task,
+    attempt: u32,
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
 ) -> (Task, TaskOutcome) {
@@ -442,7 +444,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
             tasks::advance_pool::run(context, cancel).await
         }
         Task::SpoolSync { spool } => {
-            tasks::spool_sync::run(context, peer_handle, *spool, cancel).await
+            tasks::spool_sync::run(context, peer_handle, *spool, attempt, cancel).await
         }
         Task::SpoolRecovery { spool } => {
             tasks::spool_recovery::run(context, peer_handle, *spool, cancel).await

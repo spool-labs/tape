@@ -107,6 +107,11 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
             .with_block_based()
             .with_prefix_extractor(8)
             .build(),
+
+        // Spool scan done flag - 2-byte SpoolIndexKey (PlainTable)
+        ColumnFamilyConfig::new("spool_scan_done")
+            .with_plain_table(2)
+            .build(),
     ]
 }
 
@@ -157,7 +162,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 12);
+        assert_eq!(configs.len(), 13);
     }
 
     #[test]
@@ -178,6 +183,7 @@ mod tests {
             "slice",
             "spool_sync_cursor",
             "event_log",
+            "spool_scan_done",
         ];
 
         assert_eq!(names, expected);

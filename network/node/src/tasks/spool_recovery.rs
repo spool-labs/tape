@@ -1,6 +1,7 @@
 //! SpoolRecovery — recover missing slices via Clay repair protocol.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -10,7 +11,7 @@ use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_slicer::ClayCoder;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeInfo, Pubkey as StorePubkey, TrackInfo};
+use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::validate_slice_entry;
@@ -268,6 +269,22 @@ pub async fn run<S: Store, R: Rpc>(
     if any_failed {
         TaskOutcome::Retryable("some tracks could not be recovered".into())
     } else {
+        // Only transition to Active if RecoveryScan has completed.
+        // Use Pending (not Retryable) — this is a wait condition, not a failure.
+        let scan_done = match context.store.is_scan_done(spool) {
+            Ok(done) => done,
+            Err(e) => return TaskOutcome::Retryable(format!("read scan_done: {e}")),
+        };
+        if !scan_done {
+            return TaskOutcome::Pending(Duration::from_secs(5));
+        }
+        if let Ok(Some(SpoolStatus::ActiveRecover)) = context.store.get_spool_status(spool) {
+            if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+                return TaskOutcome::Retryable(format!("set spool active: {e}"));
+            }
+            let _ = context.store.clear_scan_done(spool);
+            tracing::info!(spool, "spool recovery complete, marked active");
+        }
         TaskOutcome::Success
     }
 }
@@ -394,6 +411,9 @@ mod tests {
             ..Default::default()
         });
 
+        // With scan_done set, empty queue means recovery is complete
+        ctx.store.set_scan_done(5).unwrap();
+
         let cancel = CancellationToken::new();
         let (_peer_service, peer_handle) = crate::core::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
@@ -433,5 +453,47 @@ mod tests {
         let (_peer_service, peer_handle) = crate::core::PeerService::new();
         let result = run(ctx, peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
+    }
+
+    #[tokio::test]
+    async fn recovery_gate_on_scan() {
+        let ctx = test_context();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(1),
+            phase: EpochPhase::Active,
+            committee: vec![],
+            ..Default::default()
+        });
+
+        // Empty queue + no scan flag → Pending (waiting for scan)
+        let cancel = CancellationToken::new();
+        let (_peer_service, peer_handle) = crate::core::PeerService::new();
+        let result = run(ctx, peer_handle, 5, cancel).await;
+        assert!(matches!(result, TaskOutcome::Pending(_)));
+    }
+
+    #[tokio::test]
+    async fn recovery_promotes_active() {
+        let ctx = test_context();
+        ctx.chain_state.store(ChainState {
+            epoch: EpochNumber(1),
+            phase: EpochPhase::Active,
+            committee: vec![],
+            ..Default::default()
+        });
+
+        // Set up ActiveRecover spool with scan_done flag
+        ctx.store.set_spool_status(5, SpoolStatus::ActiveRecover).unwrap();
+        ctx.store.set_scan_done(5).unwrap();
+
+        let cancel = CancellationToken::new();
+        let (_peer_service, peer_handle) = crate::core::PeerService::new();
+        let result = run(ctx.clone(), peer_handle, 5, cancel).await;
+        assert!(matches!(result, TaskOutcome::Success));
+        assert_eq!(
+            ctx.store.get_spool_status(5).unwrap(),
+            Some(SpoolStatus::Active)
+        );
+        assert!(!ctx.store.is_scan_done(5).unwrap());
     }
 }

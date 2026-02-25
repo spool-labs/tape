@@ -52,6 +52,9 @@ impl SpoolPlanner {
             if matches!(status, SpoolStatus::ActiveRecover) {
                 tracing::trace!(spool_id, status = ?status, "scheduling spool recovery");
                 desired.insert(Task::SpoolRecovery { spool: *spool_id });
+                if !store.is_scan_done(*spool_id).unwrap_or(false) {
+                    desired.insert(Task::RecoveryScan { spool: *spool_id });
+                }
             }
         }
     }
@@ -177,6 +180,7 @@ impl SpoolPlanner {
                 if let Err(e) = store.set_spool_status(spool, SpoolStatus::LockedToMove) {
                     tracing::error!(spool, "reconcile_ownership: failed to lock spool: {e}");
                 } else {
+                    let _ = store.clear_scan_done(spool);
                     tracing::info!(spool, "spool lost, marked LockedToMove");
                     changed = true;
                 }
@@ -196,6 +200,7 @@ impl SpoolPlanner {
         for (spool_id, status) in &spools {
             if matches!(status, SpoolStatus::LockedToMove) {
                 let _ = store.remove_spool_sync_cursor(*spool_id);
+                let _ = store.clear_scan_done(*spool_id);
                 if let Err(e) = store.remove_spool_status(*spool_id) {
                     tracing::error!(spool_id, "cleanup_locked: {e}");
                 } else {

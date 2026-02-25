@@ -12,17 +12,21 @@ use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
 
+use std::time::Duration;
+
 use crate::core::validate_slice_entry;
 use crate::core::{NodeContext, PeerHandle};
 use crate::core::require_epoch;
 use crate::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
+const SYNC_FAILURE_THRESHOLD: u32 = 5;
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     peer_handle: PeerHandle,
     spool: u16,
+    attempt: u32,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let epoch = match require_epoch(&context.chain_state) {
@@ -78,14 +82,19 @@ pub async fn run<S: Store, R: Rpc>(
     };
 
     match peer_handle.is_cooling_down(addr).await {
-        Ok(true) => return TaskOutcome::Retryable("peer cooling down".into()),
+        Ok(true) => return TaskOutcome::Pending(Duration::from_secs(5)),
         Ok(false) => {}
         Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
     }
 
     let client = match NodeClientBuilder::new().build(&addr.to_string()) {
         Ok(c) => c,
-        Err(e) => return TaskOutcome::Retryable(format!("build client: {e}")),
+        Err(e) => {
+            if attempt >= SYNC_FAILURE_THRESHOLD {
+                return TaskOutcome::Permanent(format!("build client failed after {attempt} attempts: {e}"));
+            }
+            return TaskOutcome::Retryable(format!("build client: {e}"));
+        }
     };
 
     // Resume from cursor if we have one
@@ -122,6 +131,9 @@ pub async fn run<S: Store, R: Rpc>(
             Err(e) => {
                 if let Err(err) = peer_handle.record_failure(addr).await {
                     tracing::warn!("failed to record peer failure for {addr}: {err}");
+                }
+                if attempt >= SYNC_FAILURE_THRESHOLD {
+                    return TaskOutcome::Permanent(format!("sync failed after {attempt} attempts: {e}"));
                 }
                 return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
             }
