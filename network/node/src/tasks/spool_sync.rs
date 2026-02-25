@@ -35,6 +35,14 @@ pub async fn run<S: Store, R: Rpc>(
     };
 
     if epoch.is_zero() {
+        match context.store.get_spool_status(spool) {
+            Ok(Some(SpoolStatus::ActiveSync)) => {}
+            Ok(_) => {
+                tracing::info!(spool, "spool status changed during sync, skipping activation");
+                return TaskOutcome::Success;
+            }
+            Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+        }
         if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
             return TaskOutcome::Retryable(format!("set spool active: {e}"));
         }
@@ -58,6 +66,14 @@ pub async fn run<S: Store, R: Rpc>(
         Some(n) => n,
         None => {
             tracing::info!(spool, "no previous owner, marking active");
+            match context.store.get_spool_status(spool) {
+                Ok(Some(SpoolStatus::ActiveSync)) => {}
+                Ok(_) => {
+                    tracing::info!(spool, "spool status changed during sync, skipping activation");
+                    return TaskOutcome::Success;
+                }
+                Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+            }
             if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
                 return TaskOutcome::Retryable(format!("set spool active: {e}"));
             }
@@ -69,6 +85,14 @@ pub async fn run<S: Store, R: Rpc>(
     let our_address: StorePubkey = context.node_address().into();
     if prev_owner.node_address == our_address {
         tracing::info!(spool, "we owned this spool last epoch, marking active");
+        match context.store.get_spool_status(spool) {
+            Ok(Some(SpoolStatus::ActiveSync)) => {}
+            Ok(_) => {
+                tracing::info!(spool, "spool status changed during sync, skipping activation");
+                return TaskOutcome::Success;
+            }
+            Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+        }
         if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
             return TaskOutcome::Retryable(format!("set spool active: {e}"));
         }
@@ -78,7 +102,7 @@ pub async fn run<S: Store, R: Rpc>(
     // Build client for previous owner
     let addr = match prev_owner.network_address.to_socket_addr() {
         Ok(a) => a,
-        Err(e) => return TaskOutcome::Retryable(format!("parse network address: {e}")),
+        Err(e) => return TaskOutcome::Permanent(format!("parse network address: {e}")),
     };
 
     match peer_handle.is_cooling_down(addr).await {
@@ -90,7 +114,7 @@ pub async fn run<S: Store, R: Rpc>(
     let client = match NodeClientBuilder::new().build(&addr.to_string()) {
         Ok(c) => c,
         Err(e) => {
-            if attempt >= SYNC_FAILURE_THRESHOLD {
+            if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
                 return TaskOutcome::Permanent(format!("build client failed after {attempt} attempts: {e}"));
             }
             return TaskOutcome::Retryable(format!("build client: {e}"));
@@ -132,7 +156,7 @@ pub async fn run<S: Store, R: Rpc>(
                 if let Err(err) = peer_handle.record_failure(addr).await {
                     tracing::warn!("failed to record peer failure for {addr}: {err}");
                 }
-                if attempt >= SYNC_FAILURE_THRESHOLD {
+                if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
                     return TaskOutcome::Permanent(format!("sync failed after {attempt} attempts: {e}"));
                 }
                 return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
@@ -162,6 +186,9 @@ pub async fn run<S: Store, R: Rpc>(
                 if let Err(err2) = peer_handle.record_failure(addr).await {
                     tracing::warn!("failed to record peer failure for {addr}: {err2}");
                 }
+                if attempt + 1 >= SYNC_FAILURE_THRESHOLD {
+                    return TaskOutcome::Permanent(format!("sync validation failed after {attempt} attempts: {err}"));
+                }
                 return TaskOutcome::Retryable(format!("sync validation failed: {err}"));
             }
 
@@ -189,7 +216,16 @@ pub async fn run<S: Store, R: Rpc>(
         }
     }
 
-    // Sync complete — clean up
+    // Sync complete — only mark Active if still in ActiveSync.
+    // An epoch advance may have marked this spool LockedToMove while we were syncing.
+    match context.store.get_spool_status(spool) {
+        Ok(Some(SpoolStatus::ActiveSync)) => {}
+        Ok(_) => {
+            tracing::info!(spool, "spool status changed during sync, skipping activation");
+            return TaskOutcome::Success;
+        }
+        Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
+    }
     let _ = context.store.remove_spool_sync_cursor(spool);
     if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
         return TaskOutcome::Retryable(format!("set spool active: {e}"));

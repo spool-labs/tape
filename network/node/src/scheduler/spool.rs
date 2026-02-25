@@ -35,16 +35,42 @@ impl SpoolPlanner {
         };
         tracing::trace!(owned_spools = owned_spools.len(), "reconciling spool tasks");
 
-        // Remove SpoolSync/SpoolRecovery/RecoveryScan for spools we no longer own
-        desired.retain(|key| match key {
-            Task::SpoolSync { spool }
-            | Task::SpoolRecovery { spool }
-            | Task::RecoveryScan { spool } => owned_spools.iter().any(|(id, _)| *id == *spool),
-            _ => true,
-        });
+        let schedulable_spools = Self::schedulable_spools(&owned_spools);
+        Self::prune_desired_spool_tasks(desired, &schedulable_spools);
+        Self::add_spool_tasks(store, &owned_spools, desired);
+    }
 
+    /// Build the spool-id set that may have active spool tasks scheduled.
+    /// `LockedToMove` spools are intentionally excluded.
+    fn schedulable_spools(owned_spools: &[(u16, SpoolStatus)]) -> HashSet<u16> {
+        owned_spools
+            .iter()
+            .filter_map(|(spool_id, status)| {
+                if matches!(status, SpoolStatus::LockedToMove) {
+                    None
+                } else {
+                    Some(*spool_id)
+                }
+            })
+            .collect()
+    }
+
+    /// Remove spool-scoped tasks for spools that are no longer schedulable.
+    fn prune_desired_spool_tasks(desired: &mut HashSet<Task>, schedulable_spools: &HashSet<u16>) {
+        desired.retain(|task| match task.spool_id() {
+            Some(spool_id) => schedulable_spools.contains(&spool_id),
+            None => true,
+        });
+    }
+
+    /// Add spool tasks based on each spool's current status.
+    fn add_spool_tasks<S: Store>(
+        store: &TapeStore<S>,
+        owned_spools: &[(u16, SpoolStatus)],
+        desired: &mut HashSet<Task>,
+    ) {
         // Add tasks for owned spools based on their status
-        for (spool_id, status) in &owned_spools {
+        for (spool_id, status) in owned_spools {
             if matches!(status, SpoolStatus::ActiveSync) {
                 tracing::trace!(spool_id, status = ?status, "scheduling spool sync");
                 desired.insert(Task::SpoolSync { spool: *spool_id });
