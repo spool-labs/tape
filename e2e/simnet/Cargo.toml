@@ -27,6 +27,8 @@ rcgen = "0.13"
 rustls-pki-types = "1.10"
 tokio-rustls = "0.26"
 reqwest.workspace = true
+tape-sdk.workspace = true
+tape-crypto.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

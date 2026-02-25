@@ -1,0 +1,82 @@
+use anyhow::{Context, Result};
+use rpc_litesvm::LiteSvmRpc;
+use solana_sdk::pubkey::Pubkey;
+use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
+use tape_core::spooler::SpoolGroup;
+use tape_crypto::Hash;
+use tape_sdk::{RpcClient, TapeKey, Tapedrive};
+use tape_store::ops::{SliceOps, SpoolOps};
+
+use crate::scenario::SimnetScenario;
+
+impl SimnetScenario<'_> {
+    /// Create an SDK client backed by the simnet chain.
+    pub fn sdk(&self, payer: usize) -> Tapedrive<LiteSvmRpc> {
+        let rpc = self.harness.chain().rpc().clone();
+        let client = RpcClient::from_rpc(rpc);
+        let keypair = self.harness.nodes()[payer].keypair();
+        Tapedrive::new(client, keypair)
+    }
+
+    /// Upload a blob: reserve tape, register track, upload slices, certify.
+    pub async fn upload(
+        &self,
+        payer: usize,
+        key: Hash,
+        data: &[u8],
+        epochs: u64,
+    ) -> Result<(TapeKey, tape_api::state::Track)> {
+        let sdk = self.sdk(payer);
+        let (tape_key, track) = sdk
+            .write(key, data, epochs)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((tape_key, track))
+    }
+
+    /// Download and reconstruct a blob from its track address.
+    pub async fn download(&self, payer: usize, track: &Pubkey) -> Result<Vec<u8>> {
+        let sdk = self.sdk(payer);
+        sdk.read(track)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Count slices stored across all nodes for a track's spool group.
+    pub fn count_slices(&self, track: &Pubkey, group: SpoolGroup) -> Result<usize> {
+        let track_store_key = tape_store::types::Pubkey::new(track.to_bytes());
+        let mut count = 0usize;
+
+        for i in 0..SPOOL_GROUP_SIZE {
+            let spool_id = spool_for_slice(group, i);
+
+            for node in self.harness.nodes() {
+                if !node.is_running() {
+                    continue;
+                }
+                let ctx = node.context();
+                let spools = ctx
+                    .store
+                    .iter_all_spools()
+                    .with_context(|| format!("iter_all_spools node {}", node.id()))?;
+
+                let owns_spool = spools.iter().any(|(id, _)| *id == spool_id);
+                if !owns_spool {
+                    continue;
+                }
+
+                if ctx
+                    .store
+                    .has_slice(spool_id, track_store_key)
+                    .with_context(|| {
+                        format!("has_slice node {} spool {spool_id}", node.id())
+                    })?
+                {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
+    }
+}
