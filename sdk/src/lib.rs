@@ -44,7 +44,13 @@ pub mod encoder;
 pub mod error;
 pub mod helpers;
 pub mod routing;
+pub mod tape_key;
+pub mod tapedrive;
 pub mod uploader;
+
+// High-level SDK interface
+pub use tape_key::TapeKey;
+pub use tapedrive::Tapedrive;
 
 // Primary client interface for blob operations
 pub use client::{TapeClient, TapeClientBuilder};
@@ -58,7 +64,7 @@ pub use downloader::ParallelDownloader;
 pub use uploader::{DistributedUploader, SliceWithProof};
 
 // Error types
-pub use error::{ClientError, DownloadError, UploadError};
+pub use error::{ClientError, DownloadError, TapedriveError, UploadError};
 
 // Certification (BLS signature collection for tracks)
 pub use certification::{
@@ -86,7 +92,7 @@ pub use helpers::{
 
 // Re-export RPC client types for on-chain queries
 pub use rpc_client::RpcClient;
-pub use rpc_client::{RpcConfig, SolanaRpc};
+pub use rpc_client::{Rpc, RpcConfig, RpcError, SolanaRpc};
 
 // Re-export key constants from tape-core for convenience
 pub use tape_core::erasure::{MAX_BLOB_SIZE, MAX_SLICE_SIZE, SPOOL_GROUP_SIZE, SPOOL_COUNT};

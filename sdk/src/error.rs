@@ -1,8 +1,12 @@
 //! Error types for SDK operations.
 
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::StorageUnits;
 use tape_node_client::NodeError;
 use thiserror::Error;
+
+use crate::certification::CertificationError;
+use crate::discovery::DiscoveryError;
 
 /// Errors that can occur during client operations.
 #[derive(Debug, Error)]
@@ -80,4 +84,44 @@ pub enum DownloadError {
 
     #[error("invalid slice index: {0}")]
     InvalidSliceIndex(SpoolIndex),
+}
+
+/// Errors from the high-level [`Tapedrive`](crate::Tapedrive) client.
+#[derive(Debug, Error)]
+pub enum TapedriveError {
+    #[error("RPC error: {0}")]
+    Rpc(#[from] rpc_client::RpcError),
+
+    #[error("upload failed: {0}")]
+    Upload(#[from] UploadError),
+
+    #[error("download failed: {0}")]
+    Download(#[from] ClientError),
+
+    #[error("certification failed: {0}")]
+    Certification(#[from] CertificationError),
+
+    #[error("discovery failed: {0}")]
+    Discovery(#[from] DiscoveryError),
+
+    #[error("encoding error: {0}")]
+    Encoding(String),
+
+    #[error("commitment mismatch")]
+    CommitmentMismatch,
+
+    #[error("not found")]
+    NotFound,
+
+    #[error("insufficient capacity: need {need}, available {available}")]
+    InsufficientCapacity {
+        need: StorageUnits,
+        available: StorageUnits,
+    },
+
+    #[error("{0}")]
+    InvalidArgument(String),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
