@@ -26,6 +26,15 @@ impl MemoryStore {
             data: RwLock::new(HashMap::new()),
         }
     }
+
+    /// Total byte size of all keys and values across all column families.
+    pub fn total_size_bytes(&self) -> usize {
+        let data = self.data.read().unwrap();
+        data.values()
+            .flat_map(|cf| cf.iter())
+            .map(|(k, v)| k.len() + v.len())
+            .sum()
+    }
 }
 
 impl Default for MemoryStore {

@@ -8,6 +8,8 @@ pub struct RuntimeStats {
     pub epoch_transitions: AtomicU64,
     pub bytes_uploaded: AtomicU64,
     pub bytes_downloaded: AtomicU64,
+    pub repair_bytes_received: AtomicU64,
+    pub sync_bytes_received: AtomicU64,
 }
 
 impl Default for RuntimeStats {
@@ -17,6 +19,8 @@ impl Default for RuntimeStats {
             epoch_transitions: AtomicU64::new(0),
             bytes_uploaded: AtomicU64::new(0),
             bytes_downloaded: AtomicU64::new(0),
+            repair_bytes_received: AtomicU64::new(0),
+            sync_bytes_received: AtomicU64::new(0),
         }
     }
 }
@@ -36,5 +40,13 @@ impl RuntimeStats {
 
     pub fn add_downloaded(&self, n: u64) {
         self.bytes_downloaded.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn add_repair_received(&self, n: u64) {
+        self.repair_bytes_received.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn add_sync_received(&self, n: u64) {
+        self.sync_bytes_received.fetch_add(n, Ordering::Relaxed);
     }
 }

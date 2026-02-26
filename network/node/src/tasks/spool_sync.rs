@@ -132,6 +132,8 @@ pub async fn run<S: Store, R: Rpc>(
             }
         };
 
+        context.stats.add_sync_received(response_bytes.len() as u64);
+
         let response: SyncSpoolResponse = match wincode::deserialize(&response_bytes) {
             Ok(r) => r,
             Err(e) => {

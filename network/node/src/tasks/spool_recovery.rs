@@ -165,6 +165,7 @@ pub async fn run<S: Store, R: Rpc>(
                 .await
                 {
                     Ok(data) if !data.is_empty() => {
+                        context.stats.add_repair_received(data.len() as u64);
                         // Validate before using helper data because peers can be
                         // stale, buggy, or malicious.
                         if let Err(reason) = validate_slice_entry(spool, &track_info, &data) {
@@ -202,6 +203,7 @@ pub async fn run<S: Store, R: Rpc>(
                                     &data,
                                     &request_template,
                                     &peer_handle,
+                                    &context,
                                 )
                                 .await
                                 {
@@ -334,7 +336,7 @@ fn build_repair_request(track_info: &TrackInfo) -> Result<RepairRequest, String>
 ///
 /// Returns true only when another helper returns the same non-empty, validated
 /// bytes, preventing silent acceptance of one faulty or malicious helper.
-async fn helpers_match(
+async fn helpers_match<S: Store, R: Rpc>(
     helper_pairs: &[(NodeInfo, u16)],
     skip_index: usize,
     track_info: &TrackInfo,
@@ -343,6 +345,7 @@ async fn helpers_match(
     candidate: &[u8],
     request_template: &RepairRequest,
     peer_handle: &PeerHandle,
+    context: &NodeContext<S, R>,
 ) -> bool {
     for (helper, helper_spool) in helper_pairs.iter().skip(skip_index + 1) {
         // Only query peers that can currently be trusted for retries.
@@ -379,6 +382,7 @@ async fn helpers_match(
         let Ok(data) = response else {
             continue;
         };
+        context.stats.add_repair_received(data.len() as u64);
         if data.is_empty() || validate_slice_entry(spool, track_info, &data).is_err() {
             continue;
         }

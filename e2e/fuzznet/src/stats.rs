@@ -11,6 +11,7 @@ pub struct UploadRecord {
     pub data: Vec<u8>,
     pub track_address: Pubkey,
     pub epoch: u64,
+    pub expiry_epoch: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -18,12 +19,18 @@ pub struct EpochStats {
     pub epoch: u64,
     pub wall_duration: Duration,
     pub uploads: usize,
+    pub uploaded_bytes: u64,
+    pub network_size_bytes: u64,
+    pub alive_count: usize,
     pub churn_stopped: usize,
     pub churn_started: usize,
     pub spools_active: usize,
     pub spools_sync: usize,
     pub spools_recover: usize,
     pub spools_locked: usize,
+    pub committee_count: usize,
+    pub sync_bytes: u64,
+    pub repair_bytes: u64,
     pub log_counts: HashMap<(Level, String), u64>,
     pub warnings: Vec<String>,
 }
@@ -47,10 +54,6 @@ pub enum FuzzPhase {
     Fuzzing {
         iteration: u64,
         current_epoch: u64,
-    },
-    Verifying {
-        checked: usize,
-        total: usize,
     },
     Done {
         passed: bool,
