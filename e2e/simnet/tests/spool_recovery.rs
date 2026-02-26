@@ -104,6 +104,19 @@ async fn spool_recovery_inner() {
         .await
         .expect("alive nodes active at epoch 4");
 
+    // Advance epoch 4 → 5 so dead nodes drop out of committee
+    // (they joined during epoch 3 so they're still in epoch 4's committee)
+    let epoch5 = scenario
+        .self_advance_epoch(timeout)
+        .await
+        .expect("advance to epoch 5");
+    assert_eq!(epoch5, 5);
+
+    scenario
+        .wait_nodes_active(&alive_indices, timeout)
+        .await
+        .expect("alive nodes active at epoch 5");
+
     // Wait for spool reconciliation
     tokio::time::sleep(Duration::from_secs(2)).await;
 

@@ -312,6 +312,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         self.lifecycle.state_mut().mark_done(key);
 
         self.handle_sync_success(key);
+        self.handle_advance_pool_success(key);
         self.handle_bootstrap_success(key);
         self.handle_snapshot_success(key);
         self.on_recovery_done(key);
@@ -324,6 +325,23 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             return;
         }
         tracing::trace!(task = ?key, "scheduler handling sync success");
+        let cs = self.context.chain_state.load();
+        if cs.has_epoch() {
+            self.lifecycle.schedule(
+                self.chain_phase(),
+                self.node_status(),
+                cs.epoch,
+                &mut self.desired,
+            );
+        }
+    }
+
+    /// After AdvancePool succeeds, re-run lifecycle scheduling to unlock
+    /// JoinNetwork (which is gated on AdvancePool being done).
+    fn handle_advance_pool_success(&mut self, key: &Task) {
+        if !matches!(key, Task::AdvancePool { .. }) {
+            return;
+        }
         let cs = self.context.chain_state.load();
         if cs.has_epoch() {
             self.lifecycle.schedule(

@@ -88,51 +88,56 @@ impl LifecyclePlanner {
         desired: &mut HashSet<Task>,
     ) {
         tracing::trace!(epoch = epoch.0, "executing lifecycle scheduling");
-        if !matches!(node_status, NodeStatus::Active) {
-            tracing::trace!(epoch = epoch.0, "schedule_lifecycle skipped for non-active node");
-            return;
-        }
 
-        // Keep local lifecycle epoch (scheduler-owned) aligned to chain epoch,
-        // even when epoch changes arrive via refresh/replay without EpochAdvanced state changes.
+        // Always align epoch and prune stale tasks, regardless of status.
         if self.state.epoch() != epoch {
             self.state.reset(epoch);
         }
         desired.retain(|key| !matches!(key.scheduled_epoch(), Some(x) if x != epoch));
+
+        // Recovery states: skip all lifecycle scheduling.
+        if !matches!(node_status, NodeStatus::Active | NodeStatus::Standby) {
+            tracing::trace!(epoch = epoch.0, "schedule_lifecycle skipped for recovery node");
+            return;
+        }
+
         tracing::trace!(
             epoch = epoch.0,
             chain_phase = ?chain_phase,
-            in_standby_lifecycle_epoch = self.state.epoch().0,
+            ?node_status,
             "schedule_lifecycle phase snapshot"
         );
 
-        // Monotonic forward scheduling: tasks are added when their window opens
-        // and only removed when the window provably closes. This avoids canceling
-        // in-flight retries that the remove-then-re-add pattern caused.
         let past_syncing = matches!(
             chain_phase,
             Some(EpochPhase::Settling) | Some(EpochPhase::Active)
         );
 
-        // SyncEpoch: on-chain rejects after Syncing phase.
-        if past_syncing {
-            desired.remove(&Task::SyncEpoch { epoch });
-        } else if !self.state.is_done(&Task::SyncEpoch { epoch }) {
-            desired.insert(Task::SyncEpoch { epoch });
+        // SyncEpoch: Active-only (Standby has no spools to sync).
+        if matches!(node_status, NodeStatus::Active) {
+            if past_syncing {
+                desired.remove(&Task::SyncEpoch { epoch });
+            } else if !self.state.is_done(&Task::SyncEpoch { epoch }) {
+                desired.insert(Task::SyncEpoch { epoch });
+            }
         }
 
-        // AdvancePool: on-chain accepts Settling + Active.
+        // AdvancePool: Active + Standby (needed for re-join).
         if past_syncing && !self.state.is_done(&Task::AdvancePool { epoch }) {
             desired.insert(Task::AdvancePool { epoch });
         }
 
-        // JoinNetwork: no on-chain phase gate. Schedule from Settling onward.
-        if past_syncing && !self.state.is_done(&Task::JoinNetwork { epoch }) {
+        // JoinNetwork: Active + Standby, gated on AdvancePool done.
+        if past_syncing
+            && self.state.is_done(&Task::AdvancePool { epoch })
+            && !self.state.is_done(&Task::JoinNetwork { epoch })
+        {
             desired.insert(Task::JoinNetwork { epoch });
         }
 
-        // AdvanceEpoch: on-chain requires Active + time gate.
-        if matches!(chain_phase, Some(EpochPhase::Active))
+        // AdvanceEpoch: Active-only (committee members trigger epoch advance).
+        if matches!(node_status, NodeStatus::Active)
+            && matches!(chain_phase, Some(EpochPhase::Active))
             && !self.state.is_done(&Task::AdvanceEpoch { epoch })
         {
             desired.insert(Task::AdvanceEpoch { epoch });
@@ -226,8 +231,13 @@ mod tests {
         planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
 
         assert!(desired.contains(&Task::AdvancePool { epoch }));
-        assert!(desired.contains(&Task::JoinNetwork { epoch }));
+        // JoinNetwork gated on AdvancePool being done
+        assert!(!desired.contains(&Task::JoinNetwork { epoch }));
         assert!(desired.contains(&Task::AdvanceEpoch { epoch }));
+
+        planner.state.mark_done(&Task::AdvancePool { epoch });
+        planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
+        assert!(desired.contains(&Task::JoinNetwork { epoch }));
     }
 
     #[test]
@@ -251,12 +261,14 @@ mod tests {
 
         planner.schedule(Some(EpochPhase::Settling), NodeStatus::Active, epoch, &mut desired);
         assert!(desired.contains(&Task::AdvancePool { epoch }));
-        assert!(desired.contains(&Task::JoinNetwork { epoch }));
+        // JoinNetwork not yet scheduled (AdvancePool not done)
+        assert!(!desired.contains(&Task::JoinNetwork { epoch }));
+
+        planner.state.mark_done(&Task::AdvancePool { epoch });
 
         // Repeated calls during Active never drop these tasks
         for _ in 0..3 {
             planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
-            assert!(desired.contains(&Task::AdvancePool { epoch }));
             assert!(desired.contains(&Task::JoinNetwork { epoch }));
         }
     }
@@ -276,5 +288,42 @@ mod tests {
         planner.schedule(Some(EpochPhase::Active), NodeStatus::Active, epoch, &mut desired);
         assert!(!desired.contains(&Task::AdvancePool { epoch }));
         assert!(!desired.contains(&Task::JoinNetwork { epoch }));
+    }
+
+    #[test]
+    fn standby_rejoin() {
+        let epoch = EpochNumber(3);
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        // Standby node in Settling phase gets AdvancePool but not SyncEpoch.
+        planner.schedule(Some(EpochPhase::Settling), NodeStatus::Standby, epoch, &mut desired);
+        assert!(!desired.contains(&Task::SyncEpoch { epoch }));
+        assert!(desired.contains(&Task::AdvancePool { epoch }));
+        assert!(!desired.contains(&Task::JoinNetwork { epoch }));
+
+        // After AdvancePool completes, JoinNetwork is scheduled.
+        planner.state.mark_done(&Task::AdvancePool { epoch });
+        planner.schedule(Some(EpochPhase::Active), NodeStatus::Standby, epoch, &mut desired);
+        assert!(desired.contains(&Task::JoinNetwork { epoch }));
+        assert!(!desired.contains(&Task::AdvanceEpoch { epoch }));
+    }
+
+    #[test]
+    fn standby_prunes_stale() {
+        let mut planner = LifecyclePlanner::new();
+        let mut desired = HashSet::new();
+
+        // Simulate leftover tasks from a previous epoch.
+        let old = EpochNumber(2);
+        let new = EpochNumber(3);
+        desired.insert(Task::SyncEpoch { epoch: old });
+        desired.insert(Task::AdvancePool { epoch: old });
+        planner.state.reset(old);
+
+        // Standby node at new epoch prunes stale tasks.
+        planner.schedule(Some(EpochPhase::Settling), NodeStatus::Standby, new, &mut desired);
+        assert!(!desired.contains(&Task::SyncEpoch { epoch: old }));
+        assert!(!desired.contains(&Task::AdvancePool { epoch: old }));
     }
 }
