@@ -4,7 +4,7 @@ use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
 #[tokio::test]
-async fn node_churn() {
+async fn basic_flow() {
     let mut harness = SimnetBuilder::new()
         .node_count(30)
         .runtime_mode(NodeRuntimeMode::Full)
@@ -14,7 +14,7 @@ async fn node_churn() {
 
     let health_timeout = Duration::from_secs(30);
     harness
-        .bootstrap_nodes(0, BasisPoints(100), 1_000, health_timeout)
+        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
         .await
         .expect("bootstrap nodes");
 

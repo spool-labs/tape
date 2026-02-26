@@ -35,7 +35,7 @@ async fn spool_recovery_inner() {
 
     let health_timeout = Duration::from_secs(30);
     harness
-        .bootstrap_nodes(0, BasisPoints(100), 1_000, health_timeout)
+        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
         .await
         .expect("bootstrap nodes");
 
@@ -66,7 +66,7 @@ async fn spool_recovery_inner() {
     let data: Vec<u8> = (0..10_240).map(|i| (i % 256) as u8).collect();
 
     let (tape_key, track) = scenario
-        .upload(0, key, &data, 4)
+        .upload(harness.admin(), key, &data, 4)
         .await
         .expect("upload blob");
 
@@ -186,7 +186,7 @@ async fn spool_recovery_inner() {
 
     // Download the blob and verify data integrity
     let downloaded = scenario
-        .download(0, &track_address)
+        .download(harness.admin(), &track_address)
         .await
         .expect("download blob after recovery");
     assert_eq!(downloaded, data, "downloaded data should match original");

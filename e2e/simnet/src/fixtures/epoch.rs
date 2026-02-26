@@ -137,21 +137,6 @@ impl SimnetScenario<'_> {
         Ok(next)
     }
 
-    /// Deterministic slot driver for explicit test control.
-    pub async fn drive_slots(&self, slot_count: u64) -> Result<u64> {
-        self.harness
-            .chain()
-            .advance_slots(slot_count)
-            .await
-            .context("drive_slots")
-    }
-
-    /// Deterministic slot bump policy derived from configured `slot_advance_per_tx`.
-    pub async fn bump_slots_after_txs(&self, tx_count: u64) -> Result<u64> {
-        let slot_count = tx_count.saturating_mul(self.harness.config().slot_advance_per_tx);
-        self.drive_slots(slot_count).await
-    }
-
     pub fn warp_seconds(&self, seconds: i64) -> Result<()> {
         trace!(seconds, "advancing chain time for phase1");
         self.harness
@@ -168,7 +153,6 @@ impl SimnetScenario<'_> {
     pub async fn advance_to_epoch(
         &self,
         target_epoch: u64,
-        payer_index: usize,
         participants: &[usize],
         timeout: Duration,
     ) -> Result<()> {
@@ -189,8 +173,8 @@ impl SimnetScenario<'_> {
             );
 
             self.wait_phase("Active", timeout).await?;
-            self.pool_many(payer_index, participants).await?;
-            self.join_many(payer_index, participants).await?;
+            self.pool_many(participants).await?;
+            self.join_many(participants).await?;
             self.wait_next_quorum(participants.len(), timeout).await?;
             self.wait_snapshot_ready_for(current, timeout).await?;
 

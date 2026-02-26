@@ -26,6 +26,7 @@ members = [
   "network/client",
   "network/node",
   "e2e/simnet",
+  "e2e/fuzznet",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf
@@ -84,6 +85,8 @@ tape-metrics = { version = "0.3.0", path = "./metrics" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
 tape-node = { version = "0.3.0", path = "./network/node" }
+ratatui = "0.29"
+crossterm = "0.28"
 
 # program dependencies
 bytemuck = "1.14.3"

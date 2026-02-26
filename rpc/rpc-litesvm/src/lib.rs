@@ -56,7 +56,9 @@ impl LiteSvmRpc {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner {
-                svm: LiteSVM::new().with_transaction_history(10_000),
+                svm: LiteSVM::new()
+                    .with_blockhash_check(false)
+                    .with_transaction_history(10_000),
                 slots: HashMap::new(),
                 tx_slot_index: HashMap::new(),
                 current_block_height: 0,

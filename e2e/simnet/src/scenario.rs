@@ -12,6 +12,7 @@ use tape_api::instruction::{
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_api::utils::to_name;
+use solana_sdk::signer::Signer;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::{BasisPoints, EpochNumber};
 use crate::simnet::SimnetHarness;
@@ -37,21 +38,19 @@ impl<'a> SimnetScenario<'a> {
         crate::ChainFixture::workspace_root_from_manifest(&manifest_dir)
     }
 
-    pub async fn init_system(&self, admin_node_index: usize) -> Result<()> {
+    pub async fn init_system(&self) -> Result<()> {
         let workspace = self.workspace_root()?;
         self.harness
             .chain()
             .load_default_programs(&workspace)
             .context("load_default_programs")?;
 
-        let admin = self
-            .harness
-            .node(admin_node_index)
-            .context("admin node missing")?;
+        let admin = self.harness.admin();
+        let admin_pub = admin.pubkey();
 
         self.harness
             .chain()
-            .airdrop(&admin.authority(), 50_000_000_000)
+            .airdrop(&admin_pub, 50_000_000_000)
             .context("airdrop admin")?;
 
         let slot_bump = self.harness.config().slot_advance_per_tx;
@@ -59,8 +58,8 @@ impl<'a> SimnetScenario<'a> {
         self.harness
             .chain()
             .send_instructions_and_advance(
-                admin.keypair(),
-                vec![build_initialize_mint_ix(admin.authority(), admin.authority())],
+                admin,
+                vec![build_initialize_mint_ix(admin_pub, admin_pub)],
                 slot_bump,
             )
             .await
@@ -69,8 +68,8 @@ impl<'a> SimnetScenario<'a> {
         self.harness
             .chain()
             .send_instructions_and_advance(
-                admin.keypair(),
-                vec![build_create_system_ix(admin.authority(), admin.authority())],
+                admin,
+                vec![build_create_system_ix(admin_pub, admin_pub)],
                 slot_bump,
             )
             .await
@@ -81,8 +80,8 @@ impl<'a> SimnetScenario<'a> {
                 .harness
                 .chain()
                 .send_instructions_and_advance(
-                    admin.keypair(),
-                    vec![build_expand_system_ix(admin.authority(), admin.authority())],
+                    admin,
+                    vec![build_expand_system_ix(admin_pub, admin_pub)],
                     slot_bump,
                 )
                 .await;
@@ -105,8 +104,8 @@ impl<'a> SimnetScenario<'a> {
         self.harness
             .chain()
             .send_instructions_and_advance(
-                admin.keypair(),
-                vec![build_initialize_ix(admin.authority(), admin.authority())],
+                admin,
+                vec![build_initialize_ix(admin_pub, admin_pub)],
                 slot_bump,
             )
             .await
@@ -115,8 +114,8 @@ impl<'a> SimnetScenario<'a> {
         self.harness
             .chain()
             .send_instructions_and_advance(
-                admin.keypair(),
-                vec![build_reserve_snapshot_tape_ix(admin.authority())],
+                admin,
+                vec![build_reserve_snapshot_tape_ix(admin_pub)],
                 slot_bump,
             )
             .await

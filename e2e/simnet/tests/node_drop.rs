@@ -17,7 +17,7 @@ async fn spool_node_drop() {
 
     let health_timeout = Duration::from_secs(30);
     harness
-        .bootstrap_nodes(0, BasisPoints(100), 1_000, health_timeout)
+        .bootstrap_nodes(BasisPoints(100), 1_000, health_timeout)
         .await
         .expect("bootstrap nodes");
 

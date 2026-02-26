@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signer::keypair::Keypair;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_crypto::Hash;
@@ -10,23 +11,22 @@ use tape_store::ops::{SliceOps, SpoolOps};
 use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
-    /// Create an SDK client backed by the simnet chain.
-    pub fn sdk(&self, payer: usize) -> Tapedrive<LiteSvmRpc> {
+    /// Create an SDK client backed by the simnet chain using an arbitrary keypair.
+    pub fn sdk(&self, keypair: &Keypair) -> Tapedrive<LiteSvmRpc> {
         let rpc = self.harness.chain().rpc().clone();
         let client = RpcClient::from_rpc(rpc);
-        let keypair = self.harness.nodes()[payer].keypair();
         Tapedrive::new(client, keypair)
     }
 
     /// Upload a blob: reserve tape, register track, upload slices, certify.
     pub async fn upload(
         &self,
-        payer: usize,
+        keypair: &Keypair,
         key: Hash,
         data: &[u8],
         epochs: u64,
     ) -> Result<(TapeKey, tape_api::state::Track)> {
-        let sdk = self.sdk(payer);
+        let sdk = self.sdk(keypair);
         let (tape_key, track) = sdk
             .write(key, data, epochs)
             .await
@@ -35,8 +35,8 @@ impl SimnetScenario<'_> {
     }
 
     /// Download and reconstruct a blob from its track address.
-    pub async fn download(&self, payer: usize, track: &Pubkey) -> Result<Vec<u8>> {
-        let sdk = self.sdk(payer);
+    pub async fn download(&self, keypair: &Keypair, track: &Pubkey) -> Result<Vec<u8>> {
+        let sdk = self.sdk(keypair);
         sdk.read(track)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))

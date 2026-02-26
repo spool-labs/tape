@@ -45,17 +45,15 @@ impl SimnetScenario<'_> {
 
     pub async fn stake_node(
         &self,
-        payer_index: usize,
         node_index: usize,
         amount_tape: u64,
     ) -> Result<Pubkey> {
         trace!(
-            payer_index,
             node_index,
             amount_tape,
             "submitting stake_node instruction"
         );
-        let payer = self.harness.nodes()[payer_index].keypair();
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let authority = node.authority();
@@ -93,13 +91,13 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("stake node {node_index}"))?;
 
-        trace!(payer_index, node_index, "stake_node completed");
+        trace!(node_index, "stake_node completed");
         Ok(self.stake_address(node_index))
     }
 
-    pub async fn unlock_stake(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting unlock_stake instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn unlock_stake(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting unlock_stake instruction");
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_request_stake_unlock_ix(
@@ -120,13 +118,13 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("unlock stake for node {node_index}"))?;
 
-        trace!(payer_index, node_index, "unlock_stake completed");
+        trace!(node_index, "unlock_stake completed");
         Ok(())
     }
 
-    pub async fn withdraw_stake(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting withdraw_stake instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn withdraw_stake(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting withdraw_stake instruction");
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_unstake_from_pool_ix(
@@ -147,13 +145,13 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("withdraw stake for node {node_index}"))?;
 
-        trace!(payer_index, node_index, "withdraw_stake completed");
+        trace!(node_index, "withdraw_stake completed");
         Ok(())
     }
 
-    pub async fn join_node(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting join_network instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn join_node(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting join_network instruction");
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_join_network_ix(
@@ -174,24 +172,24 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("join node {node_index}"))?;
 
-        trace!(payer_index, node_index, "join_node completed");
+        trace!(node_index, "join_node completed");
         Ok(())
     }
 
-    pub async fn join_node_ok(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        if let Err(error) = self.join_node(payer_index, node_index).await {
+    pub async fn join_node_ok(&self, node_index: usize) -> Result<()> {
+        if let Err(error) = self.join_node(node_index).await {
             if !join_done(&error) {
                 return Err(error);
             }
-            trace!(payer_index, node_index, "join_node idempotent completion");
+            trace!(node_index, "join_node idempotent completion");
         }
-        trace!(payer_index, node_index, "join_node_ok complete");
+        trace!(node_index, "join_node_ok complete");
         Ok(())
     }
 
-    pub async fn advance_pool(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting advance_pool instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn advance_pool(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting advance_pool instruction");
+        let payer = self.harness.admin();
         let authority = self.harness.nodes()[node_index].authority();
         let ix = build_advance_pool_ix(payer.pubkey(), authority, self.node_address(node_index));
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
@@ -206,24 +204,24 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("advance pool for node {node_index}"))?;
 
-        trace!(payer_index, node_index, "advance_pool completed");
+        trace!(node_index, "advance_pool completed");
         Ok(())
     }
 
-    pub async fn advance_pool_ok(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        if let Err(error) = self.advance_pool(payer_index, node_index).await {
+    pub async fn advance_pool_ok(&self, node_index: usize) -> Result<()> {
+        if let Err(error) = self.advance_pool(node_index).await {
             if !adv_done(&error) {
                 return Err(error);
             }
-            trace!(payer_index, node_index, "advance_pool idempotent completion");
+            trace!(node_index, "advance_pool idempotent completion");
         }
-        trace!(payer_index, node_index, "advance_pool_ok complete");
+        trace!(node_index, "advance_pool_ok complete");
         Ok(())
     }
 
-    pub async fn sync_node(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting sync_network instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn sync_node(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting sync_network instruction");
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
@@ -258,28 +256,27 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("sync node {node_index}"))?;
 
-        trace!(payer_index, node_index, "sync_node completed");
+        trace!(node_index, "sync_node completed");
         Ok(())
     }
 
-    pub async fn sync_node_ok(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        if let Err(error) = self.sync_node(payer_index, node_index).await {
+    pub async fn sync_node_ok(&self, node_index: usize) -> Result<()> {
+        if let Err(error) = self.sync_node(node_index).await {
             if !sync_done(&error) {
                 return Err(error);
             }
-            trace!(payer_index, node_index, "sync_node idempotent completion");
+            trace!(node_index, "sync_node idempotent completion");
         }
-        trace!(payer_index, node_index, "sync_node_ok complete");
+        trace!(node_index, "sync_node_ok complete");
         Ok(())
     }
 
     pub async fn set_commission(
         &self,
-        payer_index: usize,
         node_index: usize,
         basis_points: u64,
     ) -> Result<()> {
-        let payer = self.harness.nodes()[payer_index].keypair();
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_set_commission_ix(
@@ -302,7 +299,6 @@ impl SimnetScenario<'_> {
             .with_context(|| format!("set commission for node {node_index}"))?;
 
         trace!(
-            payer_index,
             node_index,
             basis_points,
             "set_commission completed"
@@ -310,9 +306,9 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
-    pub async fn claim_commission(&self, payer_index: usize, node_index: usize) -> Result<()> {
-        trace!(payer_index, node_index, "submitting claim_commission instruction");
-        let payer = self.harness.nodes()[payer_index].keypair();
+    pub async fn claim_commission(&self, node_index: usize) -> Result<()> {
+        trace!(node_index, "submitting claim_commission instruction");
+        let payer = self.harness.admin();
         let node = &self.harness.nodes()[node_index];
 
         let ix = build_claim_commission_ix(
@@ -333,7 +329,7 @@ impl SimnetScenario<'_> {
             .await
             .with_context(|| format!("claim commission for node {node_index}"))?;
 
-        trace!(payer_index, node_index, "claim_commission completed");
+        trace!(node_index, "claim_commission completed");
         Ok(())
     }
 
@@ -346,29 +342,27 @@ impl SimnetScenario<'_> {
         }
     }
 
-    pub async fn stake_all(&self, payer_index: usize, amount_tape: u64) -> Result<()> {
+    pub async fn stake_all(&self, amount_tape: u64) -> Result<()> {
         let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.stake_many(payer_index, &all, amount_tape).await
+        self.stake_many(&all, amount_tape).await
     }
 
-    pub async fn join_all(&self, payer_index: usize) -> Result<()> {
+    pub async fn join_all(&self) -> Result<()> {
         let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.join_many(payer_index, &all).await
+        self.join_many(&all).await
     }
 
-    pub async fn pool_all(&self, payer_index: usize) -> Result<()> {
+    pub async fn pool_all(&self) -> Result<()> {
         let all: Vec<usize> = (0..self.harness.nodes().len()).collect();
-        self.pool_many(payer_index, &all).await
+        self.pool_many(&all).await
     }
 
     pub async fn stake_many(
         &self,
-        payer_index: usize,
         node_indices: &[usize],
         amount_tape: u64,
     ) -> Result<()> {
         trace!(
-            payer_index,
             count = node_indices.len(),
             amount_tape,
             "stake_many start"
@@ -378,12 +372,11 @@ impl SimnetScenario<'_> {
             node_indices.len()
         ));
         for &i in node_indices {
-            self.stake_node(payer_index, i, amount_tape)
+            self.stake_node(i, amount_tape)
                 .await
                 .with_context(|| format!("stake node {i}"))?;
         }
         trace!(
-            payer_index,
             count = node_indices.len(),
             "stake_many complete"
         );
@@ -391,28 +384,28 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
-    pub async fn join_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
-        trace!(payer_index, count = node_indices.len(), "join_many start");
+    pub async fn join_many(&self, node_indices: &[usize]) -> Result<()> {
+        trace!(count = node_indices.len(), "join_many start");
         append_log(&format!("join many start count={}", node_indices.len()));
         for &i in node_indices {
-            self.join_node_ok(payer_index, i)
+            self.join_node_ok(i)
                 .await
                 .with_context(|| format!("join node {i}"))?;
         }
-        trace!(payer_index, count = node_indices.len(), "join_many complete");
+        trace!(count = node_indices.len(), "join_many complete");
         append_log("join many done");
         Ok(())
     }
 
-    pub async fn pool_many(&self, payer_index: usize, node_indices: &[usize]) -> Result<()> {
-        trace!(payer_index, count = node_indices.len(), "pool_many start");
+    pub async fn pool_many(&self, node_indices: &[usize]) -> Result<()> {
+        trace!(count = node_indices.len(), "pool_many start");
         append_log(&format!("pool many start count={}", node_indices.len()));
         for &i in node_indices {
-            self.advance_pool_ok(payer_index, i)
+            self.advance_pool_ok(i)
                 .await
                 .with_context(|| format!("advance pool for node {i}"))?;
         }
-        trace!(payer_index, count = node_indices.len(), "pool_many complete");
+        trace!(count = node_indices.len(), "pool_many complete");
         append_log("pool many done");
         Ok(())
     }

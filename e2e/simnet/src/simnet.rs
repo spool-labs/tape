@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signer::keypair::Keypair;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
@@ -110,9 +111,12 @@ impl SimnetBuilder {
             )?);
         }
 
+        let admin = Keypair::new();
+
         Ok(SimnetHarness {
             config: self.config,
             chain,
+            admin,
             nodes,
             block_producer: None,
         })
@@ -132,6 +136,7 @@ const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
 pub struct SimnetHarness {
     config: SimnetConfig,
     chain: ChainFixture,
+    admin: Keypair,
     nodes: Vec<TestNode>,
     block_producer: Option<JoinHandle<()>>,
 }
@@ -139,6 +144,10 @@ pub struct SimnetHarness {
 impl SimnetHarness {
     pub fn config(&self) -> &SimnetConfig {
         &self.config
+    }
+
+    pub fn admin(&self) -> &Keypair {
+        &self.admin
     }
 
     pub fn chain(&self) -> &ChainFixture {

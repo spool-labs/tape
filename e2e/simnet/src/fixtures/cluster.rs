@@ -33,13 +33,11 @@ impl SimnetHarness {
     /// Initialize chain state and bootstrap all configured nodes to joined state.
     pub async fn bootstrap_nodes(
         &mut self,
-        payer_index: usize,
         commission: BasisPoints,
         stake_amount_tape: u64,
         health_timeout: Duration,
     ) -> Result<()> {
         trace!(
-            payer_index,
             nodes = self.config().node_count,
             stake_amount_tape,
             commission = ?commission,
@@ -47,17 +45,17 @@ impl SimnetHarness {
         );
         {
             let scenario = self.scenario();
-            scenario.init_system(payer_index).await.context("init_system")?;
+            scenario.init_system().await.context("init_system")?;
             scenario
                 .register_nodes(commission)
                 .await
                 .context("register_nodes")?;
             scenario
-                .stake_all(payer_index, stake_amount_tape)
+                .stake_all(stake_amount_tape)
                 .await
                 .context("stake_all")?;
-            scenario.pool_all(payer_index).await.context("pool_all")?;
-            scenario.join_all(payer_index).await.context("join_all")?;
+            scenario.pool_all().await.context("pool_all")?;
+            scenario.join_all().await.context("join_all")?;
         }
 
         self.start_all_with_retry(START_TRIES, Duration::from_millis(START_DELAY_MS))
@@ -69,7 +67,7 @@ impl SimnetHarness {
             .await
             .context("wait_nodes_healthy")?;
 
-        trace!(payer_index, "bootstrap_nodes complete");
+        trace!("bootstrap_nodes complete");
         Ok(())
     }
 }
