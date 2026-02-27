@@ -151,9 +151,9 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
-    // Left side: logo + stats
-    let mut left_spans = vec![
+    let mut left_spans: Vec<Span> = vec![
         Span::styled(" \u{2299}\u{2299}", Style::default().fg(Color::Yellow)),
+        Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
             format!("  Nodes: {}  Stake: {}", snap.node_count, format_tape(snap.total_stake)),
             Style::default().fg(Color::White),
@@ -182,11 +182,13 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
 
     // Right side: epoch | slot | time
     let elapsed = format_duration(snap.runtime_secs);
-    let right = format!("Epoch: {} | Slot: {} | {} ", snap.epoch, snap.slot, elapsed);
-    let right_len = right.len();
+    let right = format!(
+        "Epoch: {}  Nodes: {}  {}  slot:{} ",
+        snap.epoch, snap.node_count, elapsed, snap.slot,
+    );
 
     let left_len: usize = left_spans.iter().map(|s| s.width()).sum();
-    let gap = (area.width as usize).saturating_sub(left_len + right_len);
+    let gap = (area.width as usize).saturating_sub(left_len + right.len());
 
     left_spans.push(Span::raw(" ".repeat(gap)));
     left_spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
