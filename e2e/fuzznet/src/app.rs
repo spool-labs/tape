@@ -42,6 +42,9 @@ pub struct PollSnapshot {
     pub stake_fuzz_enabled: bool,
     pub stake_fuzz_succeeded: u64,
     pub stake_fuzz_failed: u64,
+    pub uploads_pending: u64,
+    pub uploads_certified: u64,
+    pub uploads_expired: u64,
 }
 
 impl Default for PollSnapshot {
@@ -64,6 +67,9 @@ impl Default for PollSnapshot {
             stake_fuzz_enabled: false,
             stake_fuzz_succeeded: 0,
             stake_fuzz_failed: 0,
+            uploads_pending: 0,
+            uploads_certified: 0,
+            uploads_expired: 0,
         }
     }
 }

@@ -26,6 +26,11 @@ pub enum PollerUpdate {
         succeeded: u64,
         failed: u64,
     },
+    UploadStatus {
+        pending: u64,
+        certified: u64,
+        expired: u64,
+    },
 }
 
 pub struct PollerHandle {
@@ -76,6 +81,9 @@ struct PollerState {
     stake_fuzz_enabled: bool,
     stake_fuzz_succeeded: u64,
     stake_fuzz_failed: u64,
+    uploads_pending: u64,
+    uploads_certified: u64,
+    uploads_expired: u64,
 }
 
 const HISTORY_CAP: usize = 200;
@@ -107,6 +115,9 @@ async fn poller_task(
         stake_fuzz_enabled: false,
         stake_fuzz_succeeded: 0,
         stake_fuzz_failed: 0,
+        uploads_pending: 0,
+        uploads_certified: 0,
+        uploads_expired: 0,
     };
 
     let mut interval = time::interval(Duration::from_secs(1));
@@ -135,6 +146,11 @@ async fn poller_task(
                         state.stake_fuzz_enabled = enabled;
                         state.stake_fuzz_succeeded = succeeded;
                         state.stake_fuzz_failed = failed;
+                    }
+                    Some(PollerUpdate::UploadStatus { pending, certified, expired }) => {
+                        state.uploads_pending = pending;
+                        state.uploads_certified = certified;
+                        state.uploads_expired = expired;
                     }
                     None => break,
                 }
@@ -262,6 +278,9 @@ async fn poll_once(
         stake_fuzz_enabled: state.stake_fuzz_enabled,
         stake_fuzz_succeeded: state.stake_fuzz_succeeded,
         stake_fuzz_failed: state.stake_fuzz_failed,
+        uploads_pending: state.uploads_pending,
+        uploads_certified: state.uploads_certified,
+        uploads_expired: state.uploads_expired,
     };
 
     snapshot.store(Arc::new(snap));

@@ -23,6 +23,8 @@ use tape_e2e_simnet::tls::{init_tls, pick_bind};
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
 use tape_sdk::Tapedrive;
 
+use tokio::sync::mpsc;
+
 use crate::app::Command;
 use crate::log_layer::LogHistogram;
 use crate::poller::{PollerHandle, PollerUpdate};
@@ -31,6 +33,12 @@ use crate::stake_fuzzer::StakeFuzzer;
 const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
+const UPLOAD_EPOCHS: u64 = 4;
+
+enum UploadResult {
+    Success { expiry_epoch: u64 },
+    Failed,
+}
 
 fn is_already_advanced(error: &anyhow::Error) -> bool {
     for cause in error.chain() {
@@ -99,6 +107,7 @@ async fn async_run(
     let rpc = chain.rpc().clone();
     let poller = PollerHandle::spawn(rpc.clone(), snapshot, histogram);
 
+    let (upload_tx, upload_rx) = mpsc::unbounded_channel();
     let mut state = SimnetState {
         chain,
         admin,
@@ -108,6 +117,11 @@ async fn async_run(
         stake_fuzzer: StakeFuzzer::new(),
         stake_fuzz_enabled: false,
         prev_epoch: 0,
+        upload_pending: 0,
+        upload_completed: Vec::new(),
+        upload_failed: 0,
+        upload_tx,
+        upload_rx,
     };
 
     tracing::info!("ready");
@@ -136,14 +150,22 @@ async fn async_run(
                         }
                     }
                     Some(Command::UploadBlob) => {
+                        state.upload_pending += 1;
                         let rpc = state.chain.rpc().clone();
                         let admin_bytes = state.admin.to_bytes();
+                        let tx = state.upload_tx.clone();
                         tokio::spawn(async move {
                             tracing::info!("uploading blob");
                             let admin = Keypair::try_from(admin_bytes.as_ref()).unwrap();
                             match upload_random_blob(rpc, &admin).await {
-                                Ok(size) => tracing::info!("uploaded {size} bytes"),
-                                Err(e) => tracing::error!("upload failed: {e:#}"),
+                                Ok(expiry) => {
+                                    tracing::info!("uploaded, expires epoch {expiry}");
+                                    let _ = tx.send(UploadResult::Success { expiry_epoch: expiry });
+                                }
+                                Err(e) => {
+                                    tracing::error!("upload failed: {e:#}");
+                                    let _ = tx.send(UploadResult::Failed);
+                                }
                             }
                         });
                     }
@@ -173,17 +195,46 @@ async fn async_run(
                     }
                 }
             }
-            _ = epoch_interval.tick() => {
-                if !state.stake_fuzz_enabled {
-                    continue;
+            result = state.upload_rx.recv() => {
+                match result {
+                    Some(UploadResult::Success { expiry_epoch }) => {
+                        state.upload_pending -= 1;
+                        state.upload_completed.push(expiry_epoch);
+                    }
+                    Some(UploadResult::Failed) => {
+                        state.upload_pending -= 1;
+                        state.upload_failed += 1;
+                    }
+                    None => {}
                 }
+                let epoch = state.prev_epoch;
+                let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
+                let expired = state.upload_completed.iter().filter(|e| **e <= epoch).count() as u64;
+                state.poller.send(PollerUpdate::UploadStatus {
+                    pending: state.upload_pending,
+                    certified,
+                    expired,
+                });
+            }
+            _ = epoch_interval.tick() => {
                 let rpc = state.chain.rpc().clone();
                 let epoch = RpcClient::from_rpc(rpc.clone())
                     .get_epoch()
                     .await
                     .map(|e| e.id.as_u64())
                     .unwrap_or(0);
-                if epoch != state.prev_epoch {
+
+                // Upload status
+                let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
+                let expired = state.upload_completed.iter().filter(|e| **e <= epoch).count() as u64;
+                state.poller.send(PollerUpdate::UploadStatus {
+                    pending: state.upload_pending,
+                    certified,
+                    expired,
+                });
+
+                // Stake fuzzing
+                if state.stake_fuzz_enabled && epoch != state.prev_epoch {
                     let authorities: Vec<_> = state.nodes.iter().map(|n| n.authority()).collect();
                     state.stake_fuzzer.step_epoch(&rpc, &state.admin, &authorities).await;
                     state.poller.send(PollerUpdate::StakeFuzzStatus {
@@ -288,6 +339,11 @@ struct SimnetState {
     stake_fuzzer: StakeFuzzer,
     stake_fuzz_enabled: bool,
     prev_epoch: u64,
+    upload_pending: u64,
+    upload_completed: Vec<u64>,
+    upload_failed: u64,
+    upload_tx: mpsc::UnboundedSender<UploadResult>,
+    upload_rx: mpsc::UnboundedReceiver<UploadResult>,
 }
 
 impl SimnetState {
@@ -550,7 +606,7 @@ impl SimnetState {
 
 }
 
-async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<usize> {
+async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<u64> {
     let (key, data) = {
         let mut rng = rand::thread_rng();
         let size = (rng.next_u32() as usize % (1024 * 1024 - 1024)) + 1024; // 1KB..1MB
@@ -560,13 +616,13 @@ async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<usize> {
         (key, data)
     };
 
-    let size = data.len();
     let sdk = Tapedrive::new(RpcClient::from_rpc(rpc), admin);
-    sdk.write(key, &data, 4)
+    let (_tape_key, track) = sdk.write(key, &data, UPLOAD_EPOCHS)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let expiry = track.data.registered_epoch.0 + UPLOAD_EPOCHS;
 
-    Ok(size)
+    Ok(expiry)
 }
 
 #[cfg(test)]
@@ -589,6 +645,7 @@ mod tests {
 
                     let _bp = chain.rpc().start_block_producer(Duration::from_secs(1));
 
+                    let (upload_tx, upload_rx) = mpsc::unbounded_channel();
                     let mut state = SimnetState {
                         chain,
                         admin,
@@ -598,6 +655,11 @@ mod tests {
                         stake_fuzzer: StakeFuzzer::new(),
                         stake_fuzz_enabled: false,
                         prev_epoch: 0,
+                        upload_pending: 0,
+                        upload_completed: Vec::new(),
+                        upload_failed: 0,
+                        upload_tx,
+                        upload_rx,
                     };
 
                     for i in 0..25 {

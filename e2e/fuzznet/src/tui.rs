@@ -171,6 +171,15 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         left_spans.push(Span::styled(fuzz_text, Style::default().fg(color)));
     }
 
+    // Upload stats
+    if snap.uploads_pending > 0 || snap.uploads_certified > 0 || snap.uploads_expired > 0 {
+        left_spans.push(Span::styled(
+            format!("  Upload: ({} pend, {} cert, {} exp)",
+                snap.uploads_pending, snap.uploads_certified, snap.uploads_expired),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     // Right side: epoch | slot | time
     let elapsed = format_duration(snap.runtime_secs);
     let right = format!("Epoch: {} | Slot: {} | {} ", snap.epoch, snap.slot, elapsed);
