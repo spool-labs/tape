@@ -8669,14 +8669,18 @@ name = "tape-e2e-fuzznet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "crossterm",
  "rand 0.8.5",
  "ratatui",
+ "rpc-client",
+ "rpc-litesvm",
  "solana-sdk",
  "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-e2e-simnet",
+ "tape-node",
  "tape-store",
  "tokio",
  "tracing",

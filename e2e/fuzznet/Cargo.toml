@@ -22,3 +22,7 @@ tracing-core = "0.1"
 solana-sdk.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+rpc-client.workspace = true
+rpc-litesvm.workspace = true
+tape-node.workspace = true
+arc-swap = "1"
