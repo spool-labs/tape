@@ -522,17 +522,18 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     frame.render_widget(block, area);
 
     let rows: Vec<Row> = if snap.log.is_empty() {
-        vec![Row::new(vec!["(no log events)", ""])]
+        vec![Row::new(vec!["(no log events)", "", ""])]
     } else {
         snap.log
             .iter()
-            .map(|(level, msg, count)| {
+            .map(|(source, level, msg, count)| {
                 let color = match level.as_str() {
                     "ERROR" => Color::Red,
                     "WARN" => Color::Yellow,
                     _ => Color::White,
                 };
                 Row::new(vec![
+                    Cell::from(source.as_str()),
                     Cell::from(msg.as_str()),
                     Cell::from(count.to_string()),
                 ])
@@ -541,8 +542,17 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             .collect()
     };
 
-    let table = Table::new(rows, [Constraint::Percentage(80), Constraint::Percentage(20)])
-        .header(Row::new(vec!["message", "count"]).style(Style::default().fg(Color::DarkGray)));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(25),
+            Constraint::Percentage(65),
+            Constraint::Percentage(10),
+        ],
+    )
+    .header(
+        Row::new(vec!["source", "message", "count"]).style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(table, pad_left(inner));
 }
 

@@ -7,10 +7,10 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// message → (worst_level, count)
+// (source, message) → (worst_level, count)
 #[derive(Debug, Default, Clone)]
 pub struct LogHistogram {
-    entries: Arc<Mutex<HashMap<String, (String, u64)>>>,
+    entries: Arc<Mutex<HashMap<(String, String), (String, u64)>>>,
 }
 
 fn level_rank(level: &str) -> u8 {
@@ -29,14 +29,16 @@ impl LogHistogram {
         }
     }
 
-    /// Returns (level, message, count) sorted by count desc.
-    pub fn snapshot_top(&self, n: usize) -> Vec<(String, String, u64)> {
+    /// Returns (source, level, message, count) sorted by count desc.
+    pub fn snapshot_top(&self, n: usize) -> Vec<(String, String, String, u64)> {
         let entries = self.entries.lock().expect("log histogram lock poisoned");
-        let mut out: Vec<(String, String, u64)> = entries
+        let mut out: Vec<(String, String, String, u64)> = entries
             .iter()
-            .map(|(msg, (level, count))| (level.clone(), msg.clone(), *count))
+            .map(|((source, message), (level, count))| {
+                (source.clone(), level.clone(), message.clone(), *count)
+            })
             .collect();
-        out.sort_by(|a, b| b.2.cmp(&a.2));
+        out.sort_by(|a, b| b.3.cmp(&a.3));
         out.truncate(n);
         out
     }
@@ -57,9 +59,12 @@ where
         let level_str = level.to_string();
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
-        let key = visitor
+        let source = event.metadata().target().to_owned();
+        let message = visitor
             .message
-            .unwrap_or_else(|| event.metadata().target().to_owned());
+            .unwrap_or_else(|| source.clone());
+
+        let key = (source, message);
 
         let mut entries = self.entries.lock().expect("log histogram lock poisoned");
         let entry = entries.entry(key).or_insert_with(|| (level_str.clone(), 0));

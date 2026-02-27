@@ -44,7 +44,7 @@ pub struct PollSnapshot {
     pub total_repair_bytes: u64,
     pub total_upload_bytes: u64,
     pub total_stake: u64,
-    pub log: Vec<(String, String, u64)>,
+    pub log: Vec<(String, String, String, u64)>,
     pub stake_fuzz_enabled: bool,
     pub stake_fuzz_succeeded: u64,
     pub stake_fuzz_failed: u64,
