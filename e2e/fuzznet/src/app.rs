@@ -4,6 +4,7 @@ use tape_store::types::NodeStatus;
 pub enum Command {
     AddNode,
     RemoveNode,
+    UploadBlob,
     Quit,
 }
 
@@ -22,7 +23,6 @@ pub struct NodeSnapshot {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct PollSnapshot {
-    pub status: String,
     pub slot: u64,
     pub epoch: u64,
     pub tx_count: u64,
@@ -35,13 +35,12 @@ pub struct PollSnapshot {
     pub repair_bw_history: Vec<u64>,
     pub sync_bw_history: Vec<u64>,
     pub upload_bw_history: Vec<u64>,
-    pub log_top: Vec<(String, u64)>,
+    pub log: Vec<(String, String, u64)>,
 }
 
 impl Default for PollSnapshot {
     fn default() -> Self {
         Self {
-            status: "starting".into(),
             slot: 0,
             epoch: 0,
             tx_count: 0,
@@ -54,7 +53,7 @@ impl Default for PollSnapshot {
             repair_bw_history: Vec::new(),
             sync_bw_history: Vec::new(),
             upload_bw_history: Vec::new(),
-            log_top: Vec::new(),
+            log: Vec::new(),
         }
     }
 }

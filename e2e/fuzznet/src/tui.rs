@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
@@ -44,6 +44,9 @@ pub fn run_tui(
                         }
                         KeyCode::Char('r') => {
                             let _ = cmd_tx.send(Command::RemoveNode);
+                        }
+                        KeyCode::Char('u') => {
+                            let _ = cmd_tx.send(Command::UploadBlob);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = cmd_tx.send(Command::Quit);
@@ -94,6 +97,7 @@ impl Drop for TerminalDropGuard {
 
 fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) {
     let area = frame.area();
+    let term_h = area.height as usize;
 
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);
@@ -109,31 +113,37 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     };
     let node_chips_height = chip_rows as u16 + 2;
 
+    // Cap spool and node sections to prevent pushing everything off-screen
+    let max_spool_h = (term_h * 40 / 100) as u16;
+    let max_node_h = (term_h * 30 / 100) as u16;
+    let capped_spool_h = spool_grid_height.min(max_spool_h).max(5);
+    let capped_node_h = node_chips_height.min(max_node_h).max(3);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(spool_grid_height),
-            Constraint::Length(node_chips_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
+            Constraint::Length(1),              // title bar
+            Constraint::Length(capped_spool_h), // spools (capped)
+            Constraint::Length(capped_node_h),  // nodes (capped)
+            Constraint::Length(1),              // epoch-dur
+            Constraint::Length(1),              // store-sz
+            Constraint::Length(1),              // repair-bw
+            Constraint::Length(1),              // sync-bw
+            Constraint::Length(1),              // upload-bw
+            Constraint::Min(3),                // log
+            Constraint::Length(1),              // help bar
         ])
         .split(area);
 
     render_title_bar(frame, chunks[0], snap);
     render_spool_grid(frame, chunks[1], snap);
     render_node_chips(frame, chunks[2], snap);
-    render_spark(frame, chunks[3], "epoch-dur", Color::Cyan, &snap.epoch_duration_history);
-    render_spark(frame, chunks[4], "store-sz", Color::Yellow, &snap.total_store_history);
-    render_spark(frame, chunks[5], "repair-bw", Color::Red, &snap.repair_bw_history);
-    render_spark(frame, chunks[6], "sync-bw", Color::Blue, &snap.sync_bw_history);
-    render_spark(frame, chunks[7], "upload-bw", Color::Green, &snap.upload_bw_history);
-    render_log_histogram(frame, chunks[8], snap);
+    render_spark(frame, chunks[3], "epoch-dur", &snap.epoch_duration_history, "ms");
+    render_spark(frame, chunks[4], "store-sz", &snap.total_store_history, "bytes");
+    render_spark(frame, chunks[5], "repair-bw", &snap.repair_bw_history, "bytes");
+    render_spark(frame, chunks[6], "sync-bw", &snap.sync_bw_history, "bytes");
+    render_spark(frame, chunks[7], "upload-bw", &snap.upload_bw_history, "bytes");
+    render_log(frame, chunks[8], snap);
     render_help_bar(frame, chunks[9], disconnected);
 }
 
@@ -143,20 +153,11 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         "Epoch: {}  Nodes: {}  {}  slot:{} ",
         snap.epoch, snap.node_count, elapsed, snap.slot,
     );
-    // display width: " ⊙⊙" (3) + " TAPEDRIVE" (10) + "  [status]" (4+status)
-    let left_display_width = 17 + snap.status.len();
+    let left_display_width = 13; // " ⊙⊙" (3) + " TAPEDRIVE" (10)
     let gap = (area.width as usize).saturating_sub(left_display_width + right.len());
-    let status_color = if snap.status == "ready" {
-        Color::Green
-    } else if snap.status.starts_with("INIT FAILED") || snap.status.starts_with("add_node failed") {
-        Color::Red
-    } else {
-        Color::Yellow
-    };
     let line = Line::from(vec![
         Span::styled(" \u{2299}\u{2299}", Style::default().fg(Color::Yellow)),
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
-        Span::styled(format!("  [{}]", snap.status), Style::default().fg(status_color)),
         Span::raw(" ".repeat(gap)),
         Span::styled(right, Style::default().fg(Color::DarkGray)),
     ]);
@@ -181,7 +182,6 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut lines: Vec<Line> = Vec::new();
 
     for band in 0..bands {
-        // Label row
         let mut label_spans: Vec<Span> = Vec::new();
         for col in 0..groups_per_row {
             let group = band * groups_per_row + col;
@@ -194,7 +194,6 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         }
         lines.push(Line::from(label_spans));
 
-        // 3 spool rows per band
         for row in 0..GROUP_ROWS {
             let mut spans: Vec<Span> = Vec::new();
             for col in 0..groups_per_row {
@@ -249,10 +248,12 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut current_spans: Vec<Span> = Vec::new();
 
     for (i, ns) in snap.nodes.iter().enumerate() {
-        let color = node_color(ns.id + 1);
-        let chip = format!("\u{25a0} #{} [{}]", ns.id, ns.spool_count);
-        let padded = format!("{:<width$}", chip, width = CHIP_WIDTH);
-        current_spans.push(Span::styled(padded, Style::default().fg(color)));
+        let glyph_color = node_color(ns.id + 1);
+        let chip_text = format!(" #{} [{}]", ns.id, ns.spool_count);
+        let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len());
+        current_spans.push(Span::styled("\u{25a0}", Style::default().fg(glyph_color)));
+        current_spans.push(Span::styled(chip_text, Style::default().fg(Color::White)));
+        current_spans.push(Span::raw(" ".repeat(pad_len)));
 
         if (i + 1) % chips_per_row == 0 {
             lines.push(Line::from(std::mem::take(&mut current_spans)));
@@ -267,7 +268,7 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     frame.render_widget(p, inner);
 }
 
-fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, color: Color, data: &[u64]) {
+fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, data: &[u64], unit: &str) {
     if area.width < 20 {
         return;
     }
@@ -287,35 +288,115 @@ fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, color: Color, da
 
     let label_p = Paragraph::new(Line::styled(
         format!(" {label}"),
-        Style::default().fg(color),
+        Style::default().fg(Color::White),
     ));
     frame.render_widget(label_p, chunks[0]);
 
     let current = data.last().copied().unwrap_or(0);
-    let val_str = format_bytes(current);
+    let val_str = match unit {
+        "ms" => format_ms(current),
+        _ => format_bytes(current),
+    };
     let val_p = Paragraph::new(Line::styled(
         format!("{val_str:>9} "),
-        Style::default().fg(color),
+        Style::default().fg(Color::White),
     ));
     frame.render_widget(val_p, chunks[2]);
 
-    let spark = Sparkline::default()
-        .data(data)
-        .style(Style::default().fg(color));
-    frame.render_widget(spark, chunks[1]);
+    // Braille sparkline with btop gradient
+    let chart_w = chunks[1].width as usize;
+    let braille_line = render_braille_spans(data, chart_w);
+    let braille_p = Paragraph::new(Line::from(braille_line));
+    frame.render_widget(braille_p, chunks[1]);
 }
 
-fn render_log_histogram(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
-    let rows: Vec<Row> = if snap.log_top.is_empty() {
+fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
+    if data.is_empty() || width == 0 {
+        return vec![Span::raw(" ".repeat(width))];
+    }
+
+    // Each braille char encodes 2 data points side by side (left col, right col)
+    // with 4 vertical levels per column (height = 4 dots).
+    let needed = width * 2; // 2 data points per braille character
+    let start = data.len().saturating_sub(needed);
+    let visible = &data[start..];
+
+    let data_max = visible.iter().copied().max().unwrap_or(1).max(1);
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
+
+    for i in 0..width {
+        let li = i * 2;
+        let ri = li + 1;
+
+        let lv = if li < visible.len() {
+            ((visible[li] as f64 / data_max as f64) * 4.0).round() as u8
+        } else {
+            0
+        };
+        let rv = if ri < visible.len() {
+            ((visible[ri] as f64 / data_max as f64) * 4.0).round() as u8
+        } else {
+            0
+        };
+
+        // Braille dot positions:
+        // Left col (bottom to top):  dot7=0x40, dot3=0x04, dot2=0x02, dot1=0x01
+        // Right col (bottom to top): dot8=0x80, dot6=0x20, dot5=0x10, dot4=0x08
+        let left_bits: [u8; 4] = [0x40, 0x04, 0x02, 0x01];
+        let right_bits: [u8; 4] = [0x80, 0x20, 0x10, 0x08];
+
+        let mut code: u8 = 0;
+        for j in 0..(lv.min(4) as usize) {
+            code |= left_bits[j];
+        }
+        for j in 0..(rv.min(4) as usize) {
+            code |= right_bits[j];
+        }
+
+        let ch = char::from_u32(0x2800 + code as u32).unwrap_or(' ');
+        let peak = lv.max(rv);
+        let color = btop_gradient(peak, 4);
+        spans.push(Span::styled(
+            String::from(ch),
+            Style::default().fg(color),
+        ));
+    }
+
+    spans
+}
+
+fn btop_gradient(value: u8, max: u8) -> Color {
+    if max == 0 || value == 0 {
+        return Color::Green;
+    }
+    let ratio = value as f64 / max as f64;
+    if ratio <= 0.33 {
+        Color::Green
+    } else if ratio <= 0.66 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
+}
+
+fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let rows: Vec<Row> = if snap.log.is_empty() {
         vec![Row::new(vec!["(no log events)", ""])]
     } else {
-        snap.log_top
+        snap.log
             .iter()
-            .map(|(msg, count)| {
+            .map(|(level, msg, count)| {
+                let color = match level.as_str() {
+                    "ERROR" => Color::Red,
+                    "WARN" => Color::Yellow,
+                    _ => Color::White,
+                };
                 Row::new(vec![
                     Cell::from(truncate_str(msg, 60)),
                     Cell::from(count.to_string()),
                 ])
+                .style(Style::default().fg(color))
             })
             .collect()
     };
@@ -333,7 +414,7 @@ fn render_log_histogram(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) 
 
 fn render_help_bar(frame: &mut Frame<'_>, area: Rect, disconnected: bool) {
     let mut spans = vec![
-        Span::styled(" [a]dd  [r]emove  [q]uit", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [a]dd  [r]emove  [u]pload  [q]uit", Style::default().fg(Color::DarkGray)),
     ];
     if disconnected {
         spans.push(Span::styled("  DISCONNECTED", Style::default().fg(Color::Red)));
@@ -359,6 +440,14 @@ fn format_bytes(b: u64) -> String {
         format!("{:.1}K", b as f64 / 1024.0)
     } else {
         format!("{b}B")
+    }
+}
+
+fn format_ms(ms: u64) -> String {
+    if ms >= 10_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
     }
 }
 

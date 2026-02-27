@@ -14,6 +14,9 @@ use tokio::time::{self, Duration};
 use crate::app::{NodeSnapshot, PollSnapshot};
 use crate::log_layer::LogHistogram;
 
+/// Shared snapshot handle created in main and passed to both poller and TUI.
+pub type SnapshotHandle = Arc<ArcSwap<PollSnapshot>>;
+
 pub enum PollerUpdate {
     AddNode(usize, Arc<NodeContext<MemoryStore, LiteSvmRpc>>),
     RemoveNode(usize),
@@ -212,12 +215,9 @@ async fn poll_once(
         .sum();
     push_capped(&mut state.total_store_history, total_store);
 
-    let log_top = histogram.snapshot_top(10);
+    let log = histogram.snapshot_top(20);
 
-    // Preserve status set by simnet command loop (errors, etc.)
-    let prev_status = snapshot.load().status.clone();
     let snap = PollSnapshot {
-        status: prev_status,
         slot,
         epoch,
         tx_count: 0,
@@ -230,7 +230,7 @@ async fn poll_once(
         repair_bw_history: state.repair_bw_history.clone(),
         sync_bw_history: state.sync_bw_history.clone(),
         upload_bw_history: state.upload_bw_history.clone(),
-        log_top,
+        log,
     };
 
     snapshot.store(Arc::new(snap));

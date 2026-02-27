@@ -8681,6 +8681,7 @@ dependencies = [
  "tape-crypto",
  "tape-e2e-simnet",
  "tape-node",
+ "tape-sdk",
  "tape-store",
  "tokio",
  "tracing",

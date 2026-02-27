@@ -7,28 +7,42 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
+/// message → (worst_level, count)
 #[derive(Debug, Default, Clone)]
 pub struct LogHistogram {
-    counts: Arc<Mutex<HashMap<String, u64>>>,
+    entries: Arc<Mutex<HashMap<String, (String, u64)>>>,
+}
+
+fn level_rank(level: &str) -> u8 {
+    match level {
+        "ERROR" => 3,
+        "WARN" => 2,
+        "INFO" => 1,
+        _ => 0,
+    }
 }
 
 impl LogHistogram {
     pub fn new() -> Self {
         Self {
-            counts: Arc::new(Mutex::new(HashMap::new())),
+            entries: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn snapshot_top(&self, n: usize) -> Vec<(String, u64)> {
-        let counts = self.counts.lock().expect("log histogram lock poisoned");
-        let mut entries: Vec<(String, u64)> = counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
-        entries.truncate(n);
-        entries
+    /// Returns (level, message, count) sorted by count desc.
+    pub fn snapshot_top(&self, n: usize) -> Vec<(String, String, u64)> {
+        let entries = self.entries.lock().expect("log histogram lock poisoned");
+        let mut out: Vec<(String, String, u64)> = entries
+            .iter()
+            .map(|(msg, (level, count))| (level.clone(), msg.clone(), *count))
+            .collect();
+        out.sort_by(|a, b| b.2.cmp(&a.2));
+        out.truncate(n);
+        out
     }
 
     pub fn clear(&self) {
-        self.counts.lock().expect("log histogram lock poisoned").clear();
+        self.entries.lock().expect("log histogram lock poisoned").clear();
     }
 }
 
@@ -37,13 +51,20 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let level = *event.metadata().level();
+        let level_str = level.to_string();
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let key = visitor
             .message
             .unwrap_or_else(|| event.metadata().target().to_owned());
-        let mut counts = self.counts.lock().expect("log histogram lock poisoned");
-        *counts.entry(key).or_default() += 1;
+
+        let mut entries = self.entries.lock().expect("log histogram lock poisoned");
+        let entry = entries.entry(key).or_insert_with(|| (level_str.clone(), 0));
+        entry.1 += 1;
+        if level_rank(&level_str) > level_rank(&entry.0) {
+            entry.0 = level_str;
+        }
     }
 }
 

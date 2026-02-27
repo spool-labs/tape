@@ -1,9 +1,10 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use arc_swap::ArcSwap;
+use rand::RngCore;
+use rpc_client::RpcClient;
+use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
@@ -20,8 +21,9 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::{init_tls, pick_bind};
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
+use tape_sdk::Tapedrive;
 
-use crate::app::{Command, PollSnapshot};
+use crate::app::Command;
 use crate::log_layer::LogHistogram;
 use crate::poller::{PollerHandle, PollerUpdate};
 
@@ -53,39 +55,34 @@ fn is_join_done(error: &anyhow::Error) -> bool {
 
 pub fn run(
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
-    snapshot: Arc<ArcSwap<PollSnapshot>>,
+    snapshot: crate::poller::SnapshotHandle,
     histogram: LogHistogram,
 ) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(8 * 1024 * 1024)
         .build()
         .expect("build tokio runtime");
 
     rt.block_on(async_run(cmd_rx, snapshot, histogram));
 }
 
-fn set_status(snapshot: &Arc<ArcSwap<PollSnapshot>>, status: &str) {
-    let mut snap = (**snapshot.load()).clone();
-    snap.status = status.to_owned();
-    snapshot.store(Arc::new(snap));
-}
-
 async fn async_run(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
-    snapshot: Arc<ArcSwap<PollSnapshot>>,
+    snapshot: crate::poller::SnapshotHandle,
     histogram: LogHistogram,
 ) {
-    set_status(&snapshot, "initializing tls");
+    tracing::info!("initializing tls");
     init_tls();
 
-    set_status(&snapshot, "creating chain");
+    tracing::info!("creating chain");
     let chain = ChainFixture::new();
 
-    set_status(&snapshot, "loading programs");
+    tracing::info!("loading programs");
     let admin = match init_chain(&chain).await {
         Ok(admin) => admin,
         Err(e) => {
-            set_status(&snapshot, &format!("INIT FAILED: {e:#}"));
+            tracing::error!("init failed: {e:#}");
             while let Some(cmd) = cmd_rx.recv().await {
                 if matches!(cmd, Command::Quit) {
                     break;
@@ -95,11 +92,11 @@ async fn async_run(
         }
     };
 
-    set_status(&snapshot, "starting block producer");
+    tracing::info!("starting block producer");
     let _block_producer = chain.rpc().start_block_producer(Duration::from_secs(1));
 
     let rpc = chain.rpc().clone();
-    let poller = PollerHandle::spawn(rpc.clone(), Arc::clone(&snapshot), histogram);
+    let poller = PollerHandle::spawn(rpc.clone(), snapshot, histogram);
 
     let mut state = SimnetState {
         chain,
@@ -109,29 +106,41 @@ async fn async_run(
         poller,
     };
 
-    set_status(&snapshot, "ready");
+    tracing::info!("ready");
 
     loop {
         match cmd_rx.recv().await {
             Some(Command::AddNode) => {
                 let id = state.next_id;
-                set_status(&snapshot, &format!("adding node {id}"));
+                tracing::info!("adding node {id}");
                 if let Err(e) = state.add_node().await {
-                    set_status(&snapshot, &format!("add_node failed: {e:#}"));
+                    tracing::error!("add_node failed: {e:#}");
                 } else {
-                    set_status(&snapshot, "ready");
+                    tracing::info!("node {id} added");
                 }
             }
             Some(Command::RemoveNode) => {
-                set_status(&snapshot, "removing node");
+                tracing::info!("removing node");
                 if let Err(e) = state.remove_node().await {
-                    set_status(&snapshot, &format!("remove failed: {e:#}"));
+                    tracing::error!("remove failed: {e:#}");
                 } else {
-                    set_status(&snapshot, "ready");
+                    tracing::info!("node removed");
                 }
             }
+            Some(Command::UploadBlob) => {
+                let rpc = state.chain.rpc().clone();
+                let admin_bytes = state.admin.to_bytes();
+                tokio::spawn(async move {
+                    tracing::info!("uploading blob");
+                    let admin = Keypair::try_from(admin_bytes.as_ref()).unwrap();
+                    match upload_random_blob(rpc, &admin).await {
+                        Ok(size) => tracing::info!("uploaded {size} bytes"),
+                        Err(e) => tracing::error!("upload failed: {e:#}"),
+                    }
+                });
+            }
             Some(Command::Quit) | None => {
-                set_status(&snapshot, "shutting down");
+                tracing::info!("shutting down");
                 for node in &mut state.nodes {
                     let _ = node.stop().await;
                 }
@@ -487,6 +496,26 @@ impl SimnetState {
         }
         Ok(())
     }
+
+}
+
+async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<usize> {
+    let (key, data) = {
+        let mut rng = rand::thread_rng();
+        let size = (rng.next_u32() as usize % (1024 * 1024 - 1024)) + 1024; // 1KB..1MB
+        let mut data = vec![0u8; size];
+        rng.fill_bytes(&mut data);
+        let key = tape_crypto::hash::hash(&data[..32.min(data.len())]);
+        (key, data)
+    };
+
+    let size = data.len();
+    let sdk = Tapedrive::new(RpcClient::from_rpc(rpc), admin);
+    sdk.write(key, &data, 4)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    Ok(size)
 }
 
 #[cfg(test)]

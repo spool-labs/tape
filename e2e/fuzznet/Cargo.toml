@@ -13,6 +13,7 @@ tape-core.workspace = true
 tape-crypto.workspace = true
 tape-store.workspace = true
 tape-api.workspace = true
+tape-sdk.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 rand.workspace = true
