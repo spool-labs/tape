@@ -392,6 +392,7 @@ pub async fn execute_task<S: Store, R: Rpc>(
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
 ) -> (Task, TaskOutcome) {
+    context.stats.inc_events();
 
     let started_at = std::time::Instant::now();
     tracing::trace!(task = ?key, "task execution started");

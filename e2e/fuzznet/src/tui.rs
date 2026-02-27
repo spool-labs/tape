@@ -17,11 +17,16 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
-use crate::app::{node_color, Command, PollSnapshot};
+use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 
 const GROUP_COLS: usize = 7;
 const GROUP_ROWS: usize = 3;
-const CHIP_WIDTH: usize = 22;
+const CHIP_WIDTH: usize = 27;
+const NODE_ID_WIDTH: usize = 3;
+const NODE_SPOOL_WIDTH: usize = 2;
+const NODE_STAKE_WIDTH: usize = 5;
+const NODE_EVENT_SPARK_WIDTH: usize = NODE_EVENT_HISTORY_EPOCHS;
+const BRAILLE_SPARK_HEIGHT: u8 = 3;
 
 pub fn run_tui(
     snapshot: Arc<ArcSwap<PollSnapshot>>,
@@ -282,11 +287,22 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
 
     for (i, ns) in sorted.iter().enumerate() {
         let glyph_color = node_color(ns.id + 1);
-        let stake = format_tape(ns.pool_stake);
-        let chip_text = format!(" #{} [{}] {}", ns.id, ns.spool_count, stake);
-        let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len());
+        let stake = format_tape_fixed_width(ns.pool_stake, NODE_STAKE_WIDTH);
+        let chip_text = format!(
+            "{:>id_width$} [{:>spools_width$}] {:>stake_width$}",
+            ns.id,
+            ns.spool_count,
+            stake,
+            id_width = NODE_ID_WIDTH,
+            spools_width = NODE_SPOOL_WIDTH,
+            stake_width = NODE_STAKE_WIDTH,
+        );
+        let spark = render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH);
+        let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len() + 1 + spark.len());
         current_spans.push(Span::styled("\u{25a0}", Style::default().fg(glyph_color)));
         current_spans.push(Span::styled(chip_text, Style::default().fg(Color::White)));
+        current_spans.push(Span::raw(" "));
+        current_spans.extend_from_slice(&spark);
         current_spans.push(Span::raw(" ".repeat(pad_len)));
 
         if (i + 1) % chips_per_row == 0 {
@@ -383,11 +399,12 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
     }
 
     // Each braille char encodes 2 data points side by side (left col, right col)
-    // with 4 vertical levels per column (height = 4 dots).
-    let needed = width * 2; // 2 data points per braille character
+    // with BRAILLE_SPARK_HEIGHT vertical levels per column.
+    let needed = width * 2;
     let start = data.len().saturating_sub(needed);
     let visible = &data[start..];
 
+    let max_level = BRAILLE_SPARK_HEIGHT;
     let data_max = visible.iter().copied().max().unwrap_or(0).max(1);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
@@ -400,7 +417,6 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
         let has_right = ri < visible.len();
 
         if !has_left && !has_right {
-            // Beyond data: gray low dot
             spans.push(Span::styled(
                 "\u{28c0}",
                 Style::default().fg(Color::Rgb(80, 80, 80)),
@@ -410,43 +426,68 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
 
         let lv = if has_left {
             let raw = visible[li];
-            if raw == 0 { 0 } else { ((raw as f64 / data_max as f64) * 4.0).round().max(1.0) as u8 }
+            if raw == 0 {
+                0
+            } else {
+                ((raw as f64 / data_max as f64) * max_level as f64)
+                    .round()
+                    .max(1.0) as u8
+            }
         } else {
             0
         };
         let rv = if has_right {
             let raw = visible[ri];
-            if raw == 0 { 0 } else { ((raw as f64 / data_max as f64) * 4.0).round().max(1.0) as u8 }
+            if raw == 0 {
+                0
+            } else {
+                ((raw as f64 / data_max as f64) * max_level as f64)
+                    .round()
+                    .max(1.0) as u8
+            }
+        } else if has_left {
+            lv
         } else {
             0
         };
 
-        // Braille dot positions:
-        // Left col (bottom to top):  dot7=0x40, dot3=0x04, dot2=0x02, dot1=0x01
-        // Right col (bottom to top): dot8=0x80, dot6=0x20, dot5=0x10, dot4=0x08
         let left_bits: [u8; 4] = [0x40, 0x04, 0x02, 0x01];
         let right_bits: [u8; 4] = [0x80, 0x20, 0x10, 0x08];
 
         let mut code: u8 = 0;
-        for j in 0..(lv.min(4) as usize) {
+        for j in 0..(lv.min(max_level) as usize) {
             code |= left_bits[j];
         }
-        for j in 0..(rv.min(4) as usize) {
+        for j in 0..(rv.min(max_level) as usize) {
             code |= right_bits[j];
         }
 
         let ch = char::from_u32(0x2800 + code as u32).unwrap_or(' ');
         if code == 0 {
-            // Both values are zero: gray baseline
-            spans.push(Span::styled("\u{28c0}", Style::default().fg(Color::Rgb(80, 80, 80))));
+            spans.push(Span::styled(
+                "\u{28c0}",
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            ));
         } else {
             let peak = lv.max(rv);
-            let color = btop_gradient(peak, 4);
+            let color = btop_gradient(peak, max_level);
             spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
     }
 
     spans
+}
+
+fn render_node_sparkline(data: &[u64], width: usize) -> Vec<Span<'static>> {
+    if width == 0 {
+        return vec![];
+    }
+
+    let point_count = data.len().min(width);
+    let visible = &data[data.len().saturating_sub(point_count)..];
+    let glyph_width = (visible.len() + 1) / 2;
+
+    render_braille_spans(visible, glyph_width)
 }
 
 fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
@@ -556,6 +597,29 @@ fn format_tape(flux: u64) -> String {
     } else {
         format!("{tape}T")
     }
+}
+
+fn format_tape_fixed_width(flux: u64, width: usize) -> String {
+    let tape = flux / 1_000_000;
+    let frac = (flux % 1_000_000) / 1000;
+
+    let mut raw = if frac == 0 || tape >= 100 {
+        tape.to_string()
+    } else if tape < 10 {
+        format!("{}.{}", tape, frac / 100)
+    } else {
+        format!("{}.{}", tape, frac / 10 % 10)
+    };
+
+    if raw.len() > width {
+        raw = tape.to_string();
+    }
+
+    if raw.len() > width {
+        raw.truncate(width);
+    }
+
+    format!("{:>width$}", raw, width = width)
 }
 
 fn format_spool_size(bytes: u64) -> String {

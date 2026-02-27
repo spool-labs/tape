@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Atomic counters incremented by pipeline components and read by the stats handler.
 pub struct RuntimeStats {
+    pub events: AtomicU64,
     pub blocks_processed: AtomicU64,
     pub epoch_transitions: AtomicU64,
     pub bytes_uploaded: AtomicU64,
@@ -15,6 +16,7 @@ pub struct RuntimeStats {
 impl Default for RuntimeStats {
     fn default() -> Self {
         Self {
+            events: AtomicU64::new(0),
             blocks_processed: AtomicU64::new(0),
             epoch_transitions: AtomicU64::new(0),
             bytes_uploaded: AtomicU64::new(0),
@@ -26,6 +28,10 @@ impl Default for RuntimeStats {
 }
 
 impl RuntimeStats {
+    pub fn inc_events(&self) {
+        self.events.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_blocks(&self) {
         self.blocks_processed.fetch_add(1, Ordering::Relaxed);
     }

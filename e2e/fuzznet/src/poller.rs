@@ -12,7 +12,7 @@ use tape_store::MemoryStore;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{NodeSnapshot, PollSnapshot};
+use crate::app::{NodeSnapshot, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::log_layer::LogHistogram;
 
 /// Shared snapshot handle created in main and passed to both poller and TUI.
@@ -64,7 +64,10 @@ struct TrackedNode {
     prev_sync: u64,
     prev_repair: u64,
     prev_upload: u64,
+    prev_events: u64,
     pool_stake: u64,
+    event_history: [u64; NODE_EVENT_HISTORY_EPOCHS],
+    epoch_event_accum: u64,
 }
 
 struct PollerState {
@@ -99,6 +102,11 @@ fn push_capped(buf: &mut Vec<u64>, val: u64) {
     if buf.len() > HISTORY_CAP {
         buf.remove(0);
     }
+}
+
+fn push_node_history(history: &mut [u64; NODE_EVENT_HISTORY_EPOCHS], val: u64) {
+    history.rotate_left(1);
+    history[NODE_EVENT_HISTORY_EPOCHS - 1] = val;
 }
 
 async fn poller_task(
@@ -148,7 +156,10 @@ async fn poller_task(
                             prev_sync: 0,
                             prev_repair: 0,
                             prev_upload: 0,
+                            prev_events: 0,
                             pool_stake: 0,
+                            event_history: [0u64; NODE_EVENT_HISTORY_EPOCHS],
+                            epoch_event_accum: 0,
                         });
                     }
                     Some(PollerUpdate::RemoveNode(id)) => {
@@ -207,10 +218,20 @@ async fn poll_once(
         let sync_delta = sync.saturating_sub(tracked.prev_sync);
         let repair_delta = repair.saturating_sub(tracked.prev_repair);
         let upload_delta = upload.saturating_sub(tracked.prev_upload);
+        let events = tracked.ctx.stats.events.load(Ordering::Relaxed);
+        let event_delta = events.saturating_sub(tracked.prev_events);
+        let transport_delta = sync_delta
+            .saturating_add(repair_delta)
+            .saturating_add(upload_delta);
 
         tracked.prev_sync = sync;
         tracked.prev_repair = repair;
         tracked.prev_upload = upload;
+        tracked.prev_events = events;
+        tracked.epoch_event_accum = tracked
+            .epoch_event_accum
+            .saturating_add(event_delta)
+            .saturating_add(transport_delta);
 
         total_sync_delta += sync_delta;
         total_repair_delta += repair_delta;
@@ -235,10 +256,11 @@ async fn poll_once(
             repair_bytes: repair,
             upload_bytes: upload,
             spool_count,
-            pool_stake: tracked.pool_stake,
-            node_status,
-            sync_bw_history: Vec::new(),
-        };
+                pool_stake: tracked.pool_stake,
+                node_status,
+                event_history: tracked.event_history,
+                sync_bw_history: Vec::new(),
+            };
 
         // We'll just store the delta as the latest bw for the sparkline
         ns.sync_bw_history.push(sync_delta);
@@ -258,6 +280,10 @@ async fn poll_once(
             let dur_ms = state.epoch_start.elapsed().as_millis() as u64;
             push_capped(&mut state.epoch_duration_history, dur_ms);
             histogram.clear();
+        }
+        for tracked in &mut state.nodes {
+            push_node_history(&mut tracked.event_history, tracked.epoch_event_accum);
+            tracked.epoch_event_accum = 0;
         }
         state.epoch_start = Instant::now();
         state.prev_epoch = epoch;

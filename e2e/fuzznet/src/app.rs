@@ -1,6 +1,8 @@
 use ratatui::style::Color;
 use tape_store::types::NodeStatus;
 
+pub const NODE_EVENT_HISTORY_EPOCHS: usize = 10;
+
 pub enum Command {
     AddNode,
     RemoveNode,
@@ -19,6 +21,7 @@ pub struct NodeSnapshot {
     pub spool_count: usize,
     pub pool_stake: u64,
     pub node_status: Option<NodeStatus>,
+    pub event_history: [u64; NODE_EVENT_HISTORY_EPOCHS],
     pub sync_bw_history: Vec<u64>,
 }
 
