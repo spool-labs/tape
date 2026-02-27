@@ -15,6 +15,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
+use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
@@ -27,6 +28,8 @@ const NODE_SPOOL_WIDTH: usize = 2;
 const NODE_STAKE_WIDTH: usize = 5;
 const NODE_EVENT_SPARK_WIDTH: usize = NODE_EVENT_HISTORY_EPOCHS;
 const BRAILLE_SPARK_HEIGHT: u8 = 3;
+const BRAILLE_COLOR_STEPS: u8 = 3;
+const EPOCH_CHART_MAX_MS: u64 = (EPOCH_DURATION as u64) * 10 * 1000;
 
 pub fn run_tui(
     snapshot: Arc<ArcSwap<PollSnapshot>>,
@@ -285,6 +288,12 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut sorted: Vec<_> = snap.nodes.iter().collect();
     sorted.sort_by(|a, b| b.pool_stake.cmp(&a.pool_stake));
 
+    let node_event_max = sorted
+        .iter()
+        .flat_map(|ns| ns.event_history.iter().copied())
+        .max()
+        .unwrap_or(0);
+
     for (i, ns) in sorted.iter().enumerate() {
         let glyph_color = node_color(ns.id + 1);
         let stake = format_tape_fixed_width(ns.pool_stake, NODE_STAKE_WIDTH);
@@ -297,7 +306,7 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             spools_width = NODE_SPOOL_WIDTH,
             stake_width = NODE_STAKE_WIDTH,
         );
-        let spark = render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH);
+        let spark = render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH, node_event_max);
         let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len() + 1 + spark.len());
         current_spans.push(Span::styled("\u{25a0}", Style::default().fg(glyph_color)));
         current_spans.push(Span::styled(chip_text, Style::default().fg(Color::White)));
@@ -337,11 +346,51 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         ])
         .split(inner);
 
-    render_spark(frame, rows[0], "epoch", &snap.epoch_duration_history, "ms", None);
-    render_spark(frame, rows[1], "network", &snap.total_store_history, "bytes", None);
-    render_spark(frame, rows[2], "repair", &snap.repair_bw_history, "bytes", Some(snap.total_repair_bytes));
-    render_spark(frame, rows[3], "sync", &snap.sync_bw_history, "bytes", Some(snap.total_sync_bytes));
-    render_spark(frame, rows[4], "upload", &snap.upload_bw_history, "bytes", Some(snap.total_upload_bytes));
+    render_spark(
+        frame,
+        rows[0],
+        "epoch",
+        &snap.epoch_duration_history,
+        "ms",
+        None,
+        Some(EPOCH_CHART_MAX_MS),
+    );
+    render_spark(
+        frame,
+        rows[1],
+        "network",
+        &snap.total_store_history,
+        "bytes",
+        None,
+        None,
+    );
+    render_spark(
+        frame,
+        rows[2],
+        "repair",
+        &snap.repair_bw_history,
+        "bytes",
+        Some(snap.total_repair_bytes),
+        None,
+    );
+    render_spark(
+        frame,
+        rows[3],
+        "sync",
+        &snap.sync_bw_history,
+        "bytes",
+        Some(snap.total_sync_bytes),
+        None,
+    );
+    render_spark(
+        frame,
+        rows[4],
+        "upload",
+        &snap.upload_bw_history,
+        "bytes",
+        Some(snap.total_upload_bytes),
+        None,
+    );
 }
 
 fn render_spark(
@@ -351,6 +400,7 @@ fn render_spark(
     data: &[u64],
     unit: &str,
     total: Option<u64>,
+    fixed_scale_max: Option<u64>,
 ) {
     if area.width < 20 {
         return;
@@ -388,24 +438,27 @@ fn render_spark(
 
     // Braille sparkline with btop gradient
     let chart_w = chunks[1].width as usize;
-    let braille_line = render_braille_spans(data, chart_w);
+    let braille_line = render_braille_spans(data, chart_w, fixed_scale_max);
     let braille_p = Paragraph::new(Line::from(braille_line));
     frame.render_widget(braille_p, chunks[1]);
 }
 
-fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
+fn render_braille_spans(data: &[u64], width: usize, scale_max: Option<u64>) -> Vec<Span<'static>> {
     if width == 0 {
         return vec![];
     }
 
-    // Each braille char encodes 2 data points side by side (left col, right col)
+    // Each braille char encodes 2 data points side by side (left col, right col),
     // with BRAILLE_SPARK_HEIGHT vertical levels per column.
     let needed = width * 2;
     let start = data.len().saturating_sub(needed);
     let visible = &data[start..];
-
     let max_level = BRAILLE_SPARK_HEIGHT;
-    let data_max = visible.iter().copied().max().unwrap_or(0).max(1);
+    let color_steps = BRAILLE_COLOR_STEPS;
+    let max_color_step = max_level * color_steps;
+    let data_max = scale_max
+        .unwrap_or_else(|| visible.iter().copied().max().unwrap_or(0))
+        .max(1);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
 
@@ -426,39 +479,28 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
 
         let lv = if has_left {
             let raw = visible[li];
-            if raw == 0 {
-                0
-            } else {
-                ((raw as f64 / data_max as f64) * max_level as f64)
-                    .round()
-                    .max(1.0) as u8
-            }
+            quantized_level(raw, data_max, max_level, color_steps)
         } else {
             0
         };
         let rv = if has_right {
             let raw = visible[ri];
-            if raw == 0 {
-                0
-            } else {
-                ((raw as f64 / data_max as f64) * max_level as f64)
-                    .round()
-                    .max(1.0) as u8
-            }
-        } else if has_left {
-            lv
+            quantized_level(raw, data_max, max_level, color_steps)
         } else {
             0
         };
+
+        let left_level = ((lv + color_steps - 1) / color_steps).min(max_level);
+        let right_level = ((rv + color_steps - 1) / color_steps).min(max_level);
 
         let left_bits: [u8; 4] = [0x40, 0x04, 0x02, 0x01];
         let right_bits: [u8; 4] = [0x80, 0x20, 0x10, 0x08];
 
         let mut code: u8 = 0;
-        for j in 0..(lv.min(max_level) as usize) {
+        for j in 0..(left_level as usize) {
             code |= left_bits[j];
         }
-        for j in 0..(rv.min(max_level) as usize) {
+        for j in 0..(right_level as usize) {
             code |= right_bits[j];
         }
 
@@ -469,8 +511,8 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
                 Style::default().fg(Color::Rgb(80, 80, 80)),
             ));
         } else {
-            let peak = lv.max(rv);
-            let color = btop_gradient(peak, max_level);
+            let peak = lv.max(rv).min(max_color_step);
+            let color = btop_gradient(peak, max_color_step);
             spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
     }
@@ -478,7 +520,7 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
     spans
 }
 
-fn render_node_sparkline(data: &[u64], width: usize) -> Vec<Span<'static>> {
+fn render_node_sparkline(data: &[u64], width: usize, scale_max: u64) -> Vec<Span<'static>> {
     if width == 0 {
         return vec![];
     }
@@ -487,7 +529,18 @@ fn render_node_sparkline(data: &[u64], width: usize) -> Vec<Span<'static>> {
     let visible = &data[data.len().saturating_sub(point_count)..];
     let glyph_width = (visible.len() + 1) / 2;
 
-    render_braille_spans(visible, glyph_width)
+    render_braille_spans(visible, glyph_width, Some(scale_max))
+}
+
+fn quantized_level(value: u64, data_max: u64, max_level: u8, color_steps: u8) -> u8 {
+    if value == 0 || data_max == 0 {
+        return 0;
+    }
+
+    let max_color_step = (max_level * color_steps) as f64;
+    let raw = (value as f64 / data_max as f64) * max_color_step;
+    let level = raw.ceil().clamp(0.0, max_color_step) as u8;
+    level.max(1)
 }
 
 fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {

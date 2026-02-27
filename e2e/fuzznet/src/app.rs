@@ -1,7 +1,7 @@
 use ratatui::style::Color;
 use tape_store::types::NodeStatus;
 
-pub const NODE_EVENT_HISTORY_EPOCHS: usize = 10;
+pub const NODE_EVENT_HISTORY_EPOCHS: usize = 16;
 
 pub enum Command {
     AddNode,

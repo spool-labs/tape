@@ -33,7 +33,7 @@ use crate::stake_fuzzer::StakeFuzzer;
 const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
-const UPLOAD_EPOCHS: u64 = 4;
+const UPLOAD_EPOCHS: u64 = 100;
 
 enum UploadResult {
     Success { expiry_epoch: u64 },
