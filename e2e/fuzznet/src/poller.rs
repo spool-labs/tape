@@ -5,6 +5,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
+use solana_sdk::signature::Signer;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_node::core::NodeContext;
 use tape_store::MemoryStore;
@@ -20,6 +21,11 @@ pub type SnapshotHandle = Arc<ArcSwap<PollSnapshot>>;
 pub enum PollerUpdate {
     AddNode(usize, Arc<NodeContext<MemoryStore, LiteSvmRpc>>),
     RemoveNode(usize),
+    StakeFuzzStatus {
+        enabled: bool,
+        succeeded: u64,
+        failed: u64,
+    },
 }
 
 pub struct PollerHandle {
@@ -53,6 +59,7 @@ struct TrackedNode {
     prev_sync: u64,
     prev_repair: u64,
     prev_upload: u64,
+    pool_stake: u64,
 }
 
 struct PollerState {
@@ -66,6 +73,9 @@ struct PollerState {
     repair_bw_history: Vec<u64>,
     sync_bw_history: Vec<u64>,
     upload_bw_history: Vec<u64>,
+    stake_fuzz_enabled: bool,
+    stake_fuzz_succeeded: u64,
+    stake_fuzz_failed: u64,
 }
 
 const HISTORY_CAP: usize = 200;
@@ -94,6 +104,9 @@ async fn poller_task(
         repair_bw_history: Vec::new(),
         sync_bw_history: Vec::new(),
         upload_bw_history: Vec::new(),
+        stake_fuzz_enabled: false,
+        stake_fuzz_succeeded: 0,
+        stake_fuzz_failed: 0,
     };
 
     let mut interval = time::interval(Duration::from_secs(1));
@@ -112,10 +125,16 @@ async fn poller_task(
                             prev_sync: 0,
                             prev_repair: 0,
                             prev_upload: 0,
+                            pool_stake: 0,
                         });
                     }
                     Some(PollerUpdate::RemoveNode(id)) => {
                         state.nodes.retain(|n| n.id != id);
+                    }
+                    Some(PollerUpdate::StakeFuzzStatus { enabled, succeeded, failed }) => {
+                        state.stake_fuzz_enabled = enabled;
+                        state.stake_fuzz_succeeded = succeeded;
+                        state.stake_fuzz_failed = failed;
                     }
                     None => break,
                 }
@@ -177,12 +196,18 @@ async fn poll_once(
             None
         };
 
+        let authority = tracked.ctx.keypair.pubkey();
+        if let Ok(node) = state.rpc.get_node(&authority).await {
+            tracked.pool_stake = node.pool.stake.as_u64();
+        }
+
         let mut ns = NodeSnapshot {
             id: tracked.id,
             sync_bytes: sync,
             repair_bytes: repair,
             upload_bytes: upload,
             spool_count,
+            pool_stake: tracked.pool_stake,
             node_status,
             sync_bw_history: Vec::new(),
         };
@@ -215,6 +240,8 @@ async fn poll_once(
         .sum();
     push_capped(&mut state.total_store_history, total_store);
 
+    let total_stake: u64 = node_snapshots.iter().map(|n| n.pool_stake).sum();
+
     let log = histogram.snapshot_top(20);
 
     let snap = PollSnapshot {
@@ -230,7 +257,11 @@ async fn poll_once(
         repair_bw_history: state.repair_bw_history.clone(),
         sync_bw_history: state.sync_bw_history.clone(),
         upload_bw_history: state.upload_bw_history.clone(),
+        total_stake,
         log,
+        stake_fuzz_enabled: state.stake_fuzz_enabled,
+        stake_fuzz_succeeded: state.stake_fuzz_succeeded,
+        stake_fuzz_failed: state.stake_fuzz_failed,
     };
 
     snapshot.store(Arc::new(snap));

@@ -12,6 +12,7 @@ mod app;
 mod log_layer;
 mod poller;
 mod simnet;
+mod stake_fuzzer;
 mod tui;
 
 use crate::app::{Command, PollSnapshot};

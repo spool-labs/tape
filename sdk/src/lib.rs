@@ -44,11 +44,14 @@ pub mod encoder;
 pub mod error;
 pub mod helpers;
 pub mod routing;
+pub mod stake_key;
+pub mod staking;
 pub mod tape_key;
 pub mod tapedrive;
 pub mod uploader;
 
 // High-level SDK interface
+pub use stake_key::StakeKey;
 pub use tape_key::TapeKey;
 pub use tapedrive::Tapedrive;
 

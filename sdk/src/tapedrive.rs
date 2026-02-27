@@ -67,8 +67,8 @@ const RPC_PROPAGATION_DELAY_MS: u64 = 500;
 /// sdk.delete(&tape_key, key).await?;
 /// ```
 pub struct Tapedrive<R: Rpc> {
-    client: RpcClient<R>,
-    payer: Keypair,
+    pub client: RpcClient<R>,
+    pub payer: Keypair,
 }
 
 impl<R: Rpc> Tapedrive<R> {

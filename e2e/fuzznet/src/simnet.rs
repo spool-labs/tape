@@ -26,6 +26,7 @@ use tape_sdk::Tapedrive;
 use crate::app::Command;
 use crate::log_layer::LogHistogram;
 use crate::poller::{PollerHandle, PollerUpdate};
+use crate::stake_fuzzer::StakeFuzzer;
 
 const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
@@ -104,47 +105,94 @@ async fn async_run(
         nodes: Vec::new(),
         next_id: 0,
         poller,
+        stake_fuzzer: StakeFuzzer::new(),
+        stake_fuzz_enabled: false,
+        prev_epoch: 0,
     };
 
     tracing::info!("ready");
 
+    let mut epoch_interval = tokio::time::interval(Duration::from_secs(2));
+
     loop {
-        match cmd_rx.recv().await {
-            Some(Command::AddNode) => {
-                let id = state.next_id;
-                tracing::info!("adding node {id}");
-                if let Err(e) = state.add_node().await {
-                    tracing::error!("add_node failed: {e:#}");
-                } else {
-                    tracing::info!("node {id} added");
-                }
-            }
-            Some(Command::RemoveNode) => {
-                tracing::info!("removing node");
-                if let Err(e) = state.remove_node().await {
-                    tracing::error!("remove failed: {e:#}");
-                } else {
-                    tracing::info!("node removed");
-                }
-            }
-            Some(Command::UploadBlob) => {
-                let rpc = state.chain.rpc().clone();
-                let admin_bytes = state.admin.to_bytes();
-                tokio::spawn(async move {
-                    tracing::info!("uploading blob");
-                    let admin = Keypair::try_from(admin_bytes.as_ref()).unwrap();
-                    match upload_random_blob(rpc, &admin).await {
-                        Ok(size) => tracing::info!("uploaded {size} bytes"),
-                        Err(e) => tracing::error!("upload failed: {e:#}"),
+        tokio::select! {
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(Command::AddNode) => {
+                        let id = state.next_id;
+                        tracing::info!("adding node {id}");
+                        if let Err(e) = state.add_node().await {
+                            tracing::error!("add_node failed: {e:#}");
+                        } else {
+                            tracing::info!("node {id} added");
+                        }
                     }
-                });
-            }
-            Some(Command::Quit) | None => {
-                tracing::info!("shutting down");
-                for node in &mut state.nodes {
-                    let _ = node.stop().await;
+                    Some(Command::RemoveNode) => {
+                        tracing::info!("removing node");
+                        if let Err(e) = state.remove_node().await {
+                            tracing::error!("remove failed: {e:#}");
+                        } else {
+                            tracing::info!("node removed");
+                        }
+                    }
+                    Some(Command::UploadBlob) => {
+                        let rpc = state.chain.rpc().clone();
+                        let admin_bytes = state.admin.to_bytes();
+                        tokio::spawn(async move {
+                            tracing::info!("uploading blob");
+                            let admin = Keypair::try_from(admin_bytes.as_ref()).unwrap();
+                            match upload_random_blob(rpc, &admin).await {
+                                Ok(size) => tracing::info!("uploaded {size} bytes"),
+                                Err(e) => tracing::error!("upload failed: {e:#}"),
+                            }
+                        });
+                    }
+                    Some(Command::ToggleStakeFuzz) => {
+                        state.stake_fuzz_enabled = !state.stake_fuzz_enabled;
+                        if state.stake_fuzz_enabled {
+                            let rpc = state.chain.rpc().clone();
+                            state.prev_epoch = RpcClient::from_rpc(rpc)
+                                .get_epoch()
+                                .await
+                                .map(|e| e.id.as_u64())
+                                .unwrap_or(0);
+                        }
+                        tracing::info!("stake fuzz {}", if state.stake_fuzz_enabled { "on" } else { "off" });
+                        state.poller.send(PollerUpdate::StakeFuzzStatus {
+                            enabled: state.stake_fuzz_enabled,
+                            succeeded: state.stake_fuzzer.tx_succeeded,
+                            failed: state.stake_fuzzer.tx_failed,
+                        });
+                    }
+                    Some(Command::Quit) | None => {
+                        tracing::info!("shutting down");
+                        for node in &mut state.nodes {
+                            let _ = node.stop().await;
+                        }
+                        break;
+                    }
                 }
-                break;
+            }
+            _ = epoch_interval.tick() => {
+                if !state.stake_fuzz_enabled {
+                    continue;
+                }
+                let rpc = state.chain.rpc().clone();
+                let epoch = RpcClient::from_rpc(rpc.clone())
+                    .get_epoch()
+                    .await
+                    .map(|e| e.id.as_u64())
+                    .unwrap_or(0);
+                if epoch != state.prev_epoch {
+                    let authorities: Vec<_> = state.nodes.iter().map(|n| n.authority()).collect();
+                    state.stake_fuzzer.step_epoch(&rpc, &state.admin, &authorities).await;
+                    state.poller.send(PollerUpdate::StakeFuzzStatus {
+                        enabled: state.stake_fuzz_enabled,
+                        succeeded: state.stake_fuzzer.tx_succeeded,
+                        failed: state.stake_fuzzer.tx_failed,
+                    });
+                }
+                state.prev_epoch = epoch;
             }
         }
     }
@@ -237,6 +285,9 @@ struct SimnetState {
     nodes: Vec<TestNode>,
     next_id: usize,
     poller: PollerHandle,
+    stake_fuzzer: StakeFuzzer,
+    stake_fuzz_enabled: bool,
+    prev_epoch: u64,
 }
 
 impl SimnetState {
@@ -544,6 +595,9 @@ mod tests {
                         nodes: Vec::new(),
                         next_id: 0,
                         poller: PollerHandle::spawn_noop(),
+                        stake_fuzzer: StakeFuzzer::new(),
+                        stake_fuzz_enabled: false,
+                        prev_epoch: 0,
                     };
 
                     for i in 0..25 {

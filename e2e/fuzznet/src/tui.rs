@@ -21,7 +21,7 @@ use crate::app::{node_color, Command, PollSnapshot};
 
 const GROUP_COLS: usize = 7;
 const GROUP_ROWS: usize = 3;
-const CHIP_WIDTH: usize = 16;
+const CHIP_WIDTH: usize = 22;
 
 pub fn run_tui(
     snapshot: Arc<ArcSwap<PollSnapshot>>,
@@ -47,6 +47,9 @@ pub fn run_tui(
                         }
                         KeyCode::Char('u') => {
                             let _ = cmd_tx.send(Command::UploadBlob);
+                        }
+                        KeyCode::Char('s') => {
+                            let _ = cmd_tx.send(Command::ToggleStakeFuzz);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = cmd_tx.send(Command::Quit);
@@ -148,20 +151,38 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
-    let elapsed = format_duration(snap.runtime_secs);
-    let right = format!(
-        "Epoch: {}  Nodes: {}  {}  slot:{} ",
-        snap.epoch, snap.node_count, elapsed, snap.slot,
-    );
-    let left_display_width = 13; // " ⊙⊙" (3) + " TAPEDRIVE" (10)
-    let gap = (area.width as usize).saturating_sub(left_display_width + right.len());
-    let line = Line::from(vec![
+    // Left side: logo + stats
+    let mut left_spans = vec![
         Span::styled(" \u{2299}\u{2299}", Style::default().fg(Color::Yellow)),
-        Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
-        Span::raw(" ".repeat(gap)),
-        Span::styled(right, Style::default().fg(Color::DarkGray)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        Span::styled(
+            format!("  Nodes: {}  Stake: {}", snap.node_count, format_tape(snap.total_stake)),
+            Style::default().fg(Color::White),
+        ),
+    ];
+
+    // Fuzz stats (inline after stake)
+    if snap.stake_fuzz_enabled {
+        let fuzz_text = if snap.stake_fuzz_failed > 0 {
+            format!("  ({} ok, {} err)", snap.stake_fuzz_succeeded, snap.stake_fuzz_failed)
+        } else {
+            format!("  ({} ok)", snap.stake_fuzz_succeeded)
+        };
+        let color = if snap.stake_fuzz_failed > 0 { Color::Red } else { Color::DarkGray };
+        left_spans.push(Span::styled(fuzz_text, Style::default().fg(color)));
+    }
+
+    // Right side: epoch | slot | time
+    let elapsed = format_duration(snap.runtime_secs);
+    let right = format!("Epoch: {} | Slot: {} | {} ", snap.epoch, snap.slot, elapsed);
+    let right_len = right.len();
+
+    let left_len: usize = left_spans.iter().map(|s| s.width()).sum();
+    let gap = (area.width as usize).saturating_sub(left_len + right_len);
+
+    left_spans.push(Span::raw(" ".repeat(gap)));
+    left_spans.push(Span::styled(right, Style::default().fg(Color::DarkGray)));
+
+    frame.render_widget(Paragraph::new(Line::from(left_spans)), area);
 }
 
 fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
@@ -247,9 +268,13 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut lines: Vec<Line> = Vec::new();
     let mut current_spans: Vec<Span> = Vec::new();
 
-    for (i, ns) in snap.nodes.iter().enumerate() {
+    let mut sorted: Vec<_> = snap.nodes.iter().collect();
+    sorted.sort_by(|a, b| b.pool_stake.cmp(&a.pool_stake));
+
+    for (i, ns) in sorted.iter().enumerate() {
         let glyph_color = node_color(ns.id + 1);
-        let chip_text = format!(" #{} [{}]", ns.id, ns.spool_count);
+        let stake = format_tape(ns.pool_stake);
+        let chip_text = format!(" #{} [{}] {}", ns.id, ns.spool_count, stake);
         let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len());
         current_spans.push(Span::styled("\u{25a0}", Style::default().fg(glyph_color)));
         current_spans.push(Span::styled(chip_text, Style::default().fg(Color::White)));
@@ -414,7 +439,7 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
 
 fn render_help_bar(frame: &mut Frame<'_>, area: Rect, disconnected: bool) {
     let mut spans = vec![
-        Span::styled(" [a]dd  [r]emove  [u]pload  [q]uit", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [a]dd  [r]emove  [u]pload  [s]take-fuzz  [q]uit", Style::default().fg(Color::DarkGray)),
     ];
     if disconnected {
         spans.push(Span::styled("  DISCONNECTED", Style::default().fg(Color::Red)));
@@ -448,6 +473,20 @@ fn format_ms(ms: u64) -> String {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else {
         format!("{ms}ms")
+    }
+}
+
+fn format_tape(flux: u64) -> String {
+    let tape = flux / 1_000_000;
+    let frac = (flux % 1_000_000) / 1_000;
+    if tape >= 1_000_000 {
+        format!("{:.1}MT", tape as f64 / 1_000_000.0)
+    } else if tape >= 1_000 {
+        format!("{:.1}KT", tape as f64 / 1_000.0)
+    } else if frac > 0 {
+        format!("{tape}.{frac:03}T")
+    } else {
+        format!("{tape}T")
     }
 }
 

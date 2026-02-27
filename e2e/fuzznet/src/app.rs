@@ -5,6 +5,7 @@ pub enum Command {
     AddNode,
     RemoveNode,
     UploadBlob,
+    ToggleStakeFuzz,
     Quit,
 }
 
@@ -16,6 +17,7 @@ pub struct NodeSnapshot {
     pub repair_bytes: u64,
     pub upload_bytes: u64,
     pub spool_count: usize,
+    pub pool_stake: u64,
     pub node_status: Option<NodeStatus>,
     pub sync_bw_history: Vec<u64>,
 }
@@ -35,7 +37,11 @@ pub struct PollSnapshot {
     pub repair_bw_history: Vec<u64>,
     pub sync_bw_history: Vec<u64>,
     pub upload_bw_history: Vec<u64>,
+    pub total_stake: u64,
     pub log: Vec<(String, String, u64)>,
+    pub stake_fuzz_enabled: bool,
+    pub stake_fuzz_succeeded: u64,
+    pub stake_fuzz_failed: u64,
 }
 
 impl Default for PollSnapshot {
@@ -53,7 +59,11 @@ impl Default for PollSnapshot {
             repair_bw_history: Vec::new(),
             sync_bw_history: Vec::new(),
             upload_bw_history: Vec::new(),
+            total_stake: 0,
             log: Vec::new(),
+            stake_fuzz_enabled: false,
+            stake_fuzz_succeeded: 0,
+            stake_fuzz_failed: 0,
         }
     }
 }
