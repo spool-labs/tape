@@ -78,6 +78,12 @@ struct PollerState {
     repair_bw_history: Vec<u64>,
     sync_bw_history: Vec<u64>,
     upload_bw_history: Vec<u64>,
+    sync_accum: u64,
+    repair_accum: u64,
+    upload_accum: u64,
+    total_sync: u64,
+    total_repair: u64,
+    total_upload: u64,
     stake_fuzz_enabled: bool,
     stake_fuzz_succeeded: u64,
     stake_fuzz_failed: u64,
@@ -112,6 +118,12 @@ async fn poller_task(
         repair_bw_history: Vec::new(),
         sync_bw_history: Vec::new(),
         upload_bw_history: Vec::new(),
+        sync_accum: 0,
+        repair_accum: 0,
+        upload_accum: 0,
+        total_sync: 0,
+        total_repair: 0,
+        total_upload: 0,
         stake_fuzz_enabled: false,
         stake_fuzz_succeeded: 0,
         stake_fuzz_failed: 0,
@@ -233,11 +245,14 @@ async fn poll_once(
         node_snapshots.push(ns);
     }
 
-    push_capped(&mut state.sync_bw_history, total_sync_delta);
-    push_capped(&mut state.repair_bw_history, total_repair_delta);
-    push_capped(&mut state.upload_bw_history, total_upload_delta);
+    state.sync_accum += total_sync_delta;
+    state.repair_accum += total_repair_delta;
+    state.upload_accum += total_upload_delta;
+    state.total_sync += total_sync_delta;
+    state.total_repair += total_repair_delta;
+    state.total_upload += total_upload_delta;
 
-    // Epoch duration: record on epoch change, clear histogram
+    // Epoch boundary: record duration, push history, keep error log state
     if epoch != state.prev_epoch {
         if state.prev_epoch != 0 {
             let dur_ms = state.epoch_start.elapsed().as_millis() as u64;
@@ -246,15 +261,21 @@ async fn poll_once(
         }
         state.epoch_start = Instant::now();
         state.prev_epoch = epoch;
-    }
 
-    // Total store size across all tracked nodes
-    let total_store: u64 = state
-        .nodes
-        .iter()
-        .map(|n| n.ctx.store.inner().inner().total_size_bytes() as u64)
-        .sum();
-    push_capped(&mut state.total_store_history, total_store);
+        push_capped(&mut state.sync_bw_history, state.sync_accum);
+        push_capped(&mut state.repair_bw_history, state.repair_accum);
+        push_capped(&mut state.upload_bw_history, state.upload_accum);
+        state.sync_accum = 0;
+        state.repair_accum = 0;
+        state.upload_accum = 0;
+
+        let total_store: u64 = state
+            .nodes
+            .iter()
+            .map(|n| n.ctx.store.inner().inner().total_size_bytes() as u64)
+            .sum();
+        push_capped(&mut state.total_store_history, total_store);
+    }
 
     let total_stake: u64 = node_snapshots.iter().map(|n| n.pool_stake).sum();
 
@@ -273,6 +294,9 @@ async fn poll_once(
         repair_bw_history: state.repair_bw_history.clone(),
         sync_bw_history: state.sync_bw_history.clone(),
         upload_bw_history: state.upload_bw_history.clone(),
+        total_sync_bytes: state.total_sync,
+        total_repair_bytes: state.total_repair,
+        total_upload_bytes: state.total_upload,
         total_stake,
         log,
         stake_fuzz_enabled: state.stake_fuzz_enabled,

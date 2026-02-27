@@ -55,7 +55,7 @@ impl StakeFuzzer {
         for auth in node_authorities {
             let (pool, _) = node_pda(*auth);
             if let Err(e) = sdk.advance_pool(*auth, pool).await {
-                tracing::warn!("advance_pool: {e:#}");
+                tracing::error!("advance_pool: {e:#}");
             }
         }
 
@@ -81,7 +81,7 @@ impl StakeFuzzer {
                             self.tx_succeeded += 1;
                         }
                         Err(e) => {
-                            tracing::warn!("stake_with_pool: {e:#}");
+                            tracing::error!("stake_with_pool: {e:#}");
                             self.tx_failed += 1;
                         }
                     }
@@ -95,7 +95,7 @@ impl StakeFuzzer {
                             self.tx_succeeded += 1;
                         }
                         Err(e) => {
-                            tracing::warn!("request_stake_unlock: {e:#}");
+                            tracing::error!("request_stake_unlock: {e:#}");
                             self.tx_failed += 1;
                         }
                     }
@@ -110,7 +110,7 @@ impl StakeFuzzer {
                             self.tx_succeeded += 1;
                         }
                         Err(e) => {
-                            tracing::warn!("unstake_from_pool: {e:#}");
+                            tracing::error!("unstake_from_pool: {e:#}");
                             self.tx_failed += 1;
                         }
                     }

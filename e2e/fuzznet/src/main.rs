@@ -36,7 +36,7 @@ fn main() {
     tracing_subscriber::registry()
         .with(histogram.clone())
         .with(tracing_subscriber::EnvFilter::new(
-            "tape_e2e_fuzznet=info,tape_e2e_simnet=info,tape_node=info",
+            "fuzznet=info,tape_e2e_fuzznet=info,tape_e2e_simnet=info,tape_node=info",
         ))
         .init();
 

@@ -128,11 +128,7 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
             Constraint::Length(1),              // title bar
             Constraint::Length(capped_spool_h), // spools (capped)
             Constraint::Length(capped_node_h),  // nodes (capped)
-            Constraint::Length(1),              // epoch-dur
-            Constraint::Length(1),              // store-sz
-            Constraint::Length(1),              // repair-bw
-            Constraint::Length(1),              // sync-bw
-            Constraint::Length(1),              // upload-bw
+            Constraint::Length(7),              // charts (bordered)
             Constraint::Min(3),                // log
             Constraint::Length(1),              // help bar
         ])
@@ -141,13 +137,9 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     render_title_bar(frame, chunks[0], snap);
     render_spool_grid(frame, chunks[1], snap);
     render_node_chips(frame, chunks[2], snap);
-    render_spark(frame, chunks[3], "epoch-dur", &snap.epoch_duration_history, "ms");
-    render_spark(frame, chunks[4], "store-sz", &snap.total_store_history, "bytes");
-    render_spark(frame, chunks[5], "repair-bw", &snap.repair_bw_history, "bytes");
-    render_spark(frame, chunks[6], "sync-bw", &snap.sync_bw_history, "bytes");
-    render_spark(frame, chunks[7], "upload-bw", &snap.upload_bw_history, "bytes");
-    render_log(frame, chunks[8], snap);
-    render_help_bar(frame, chunks[9], disconnected);
+    render_charts(frame, chunks[3], snap);
+    render_log(frame, chunks[4], snap);
+    render_help_bar(frame, chunks[5], disconnected);
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
@@ -196,11 +188,17 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     frame.render_widget(Paragraph::new(Line::from(left_spans)), area);
 }
 
+fn pad_left(area: Rect) -> Rect {
+    Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area }
+}
+
 fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let latest_total_store = snap.total_store_history.last().copied().unwrap_or(0);
+    let spool_size = format_spool_size(latest_total_store / (SPOOL_COUNT as u64));
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(" Spools ");
+        .title(format!(" Spools ({spool_size} each) "));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -255,14 +253,14 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     }
 
     let p = Paragraph::new(lines);
-    frame.render_widget(p, inner);
+    frame.render_widget(p, pad_left(inner));
 }
 
 fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(" Nodes ");
+        .title(format!(" Nodes ({}) ", snap.node_count));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -301,15 +299,48 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     }
 
     let p = Paragraph::new(lines);
-    frame.render_widget(p, inner);
+    frame.render_widget(p, pad_left(inner));
 }
 
-fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, data: &[u64], unit: &str) {
+fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Charts ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    render_spark(frame, rows[0], "epoch", &snap.epoch_duration_history, "ms", None);
+    render_spark(frame, rows[1], "network", &snap.total_store_history, "bytes", None);
+    render_spark(frame, rows[2], "repair", &snap.repair_bw_history, "bytes", Some(snap.total_repair_bytes));
+    render_spark(frame, rows[3], "sync", &snap.sync_bw_history, "bytes", Some(snap.total_sync_bytes));
+    render_spark(frame, rows[4], "upload", &snap.upload_bw_history, "bytes", Some(snap.total_upload_bytes));
+}
+
+fn render_spark(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    data: &[u64],
+    unit: &str,
+    total: Option<u64>,
+) {
     if area.width < 20 {
         return;
     }
 
-    let label_width = label.len() as u16 + 2;
+    let label_width = 9u16; // fixed: " network " is the widest
     let value_width = 10u16;
     let spark_width = area.width.saturating_sub(label_width + value_width);
 
@@ -323,15 +354,15 @@ fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, data: &[u64], un
         .split(area);
 
     let label_p = Paragraph::new(Line::styled(
-        format!(" {label}"),
+        format!(" {label:<8}"),
         Style::default().fg(Color::White),
     ));
     frame.render_widget(label_p, chunks[0]);
 
-    let current = data.last().copied().unwrap_or(0);
+    let display_val = total.unwrap_or_else(|| data.last().copied().unwrap_or(0));
     let val_str = match unit {
-        "ms" => format_ms(current),
-        _ => format_bytes(current),
+        "ms" => format_ms(display_val),
+        _ => format_bytes(display_val),
     };
     let val_p = Paragraph::new(Line::styled(
         format!("{val_str:>9} "),
@@ -347,8 +378,8 @@ fn render_spark(frame: &mut Frame<'_>, area: Rect, label: &str, data: &[u64], un
 }
 
 fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
-    if data.is_empty() || width == 0 {
-        return vec![Span::raw(" ".repeat(width))];
+    if width == 0 {
+        return vec![];
     }
 
     // Each braille char encodes 2 data points side by side (left col, right col)
@@ -357,7 +388,7 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
     let start = data.len().saturating_sub(needed);
     let visible = &data[start..];
 
-    let data_max = visible.iter().copied().max().unwrap_or(1).max(1);
+    let data_max = visible.iter().copied().max().unwrap_or(0).max(1);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
 
@@ -365,13 +396,27 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
         let li = i * 2;
         let ri = li + 1;
 
-        let lv = if li < visible.len() {
-            ((visible[li] as f64 / data_max as f64) * 4.0).round() as u8
+        let has_left = li < visible.len();
+        let has_right = ri < visible.len();
+
+        if !has_left && !has_right {
+            // Beyond data: gray low dot
+            spans.push(Span::styled(
+                "\u{28c0}",
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            ));
+            continue;
+        }
+
+        let lv = if has_left {
+            let raw = visible[li];
+            if raw == 0 { 0 } else { ((raw as f64 / data_max as f64) * 4.0).round().max(1.0) as u8 }
         } else {
             0
         };
-        let rv = if ri < visible.len() {
-            ((visible[ri] as f64 / data_max as f64) * 4.0).round() as u8
+        let rv = if has_right {
+            let raw = visible[ri];
+            if raw == 0 { 0 } else { ((raw as f64 / data_max as f64) * 4.0).round().max(1.0) as u8 }
         } else {
             0
         };
@@ -391,32 +436,50 @@ fn render_braille_spans(data: &[u64], width: usize) -> Vec<Span<'static>> {
         }
 
         let ch = char::from_u32(0x2800 + code as u32).unwrap_or(' ');
-        let peak = lv.max(rv);
-        let color = btop_gradient(peak, 4);
-        spans.push(Span::styled(
-            String::from(ch),
-            Style::default().fg(color),
-        ));
+        if code == 0 {
+            // Both values are zero: gray baseline
+            spans.push(Span::styled("\u{28c0}", Style::default().fg(Color::Rgb(80, 80, 80))));
+        } else {
+            let peak = lv.max(rv);
+            let color = btop_gradient(peak, 4);
+            spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
+        }
     }
 
     spans
 }
 
+fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
+    (
+        (a.0 as f64 + (b.0 as f64 - a.0 as f64) * t) as u8,
+        (a.1 as f64 + (b.1 as f64 - a.1 as f64) * t) as u8,
+        (a.2 as f64 + (b.2 as f64 - a.2 as f64) * t) as u8,
+    )
+}
+
 fn btop_gradient(value: u8, max: u8) -> Color {
-    if max == 0 || value == 0 {
-        return Color::Green;
+    if value == 0 {
+        return Color::Rgb(80, 80, 80);
     }
     let ratio = value as f64 / max as f64;
-    if ratio <= 0.33 {
-        Color::Green
-    } else if ratio <= 0.66 {
-        Color::Yellow
+    let (r, g, b) = if ratio <= 0.5 {
+        let t = ratio * 2.0;
+        lerp_rgb((0x77, 0xca, 0x9b), (0xcb, 0xc0, 0x6c), t)
     } else {
-        Color::Red
-    }
+        let t = (ratio - 0.5) * 2.0;
+        lerp_rgb((0xcb, 0xc0, 0x6c), (0xdc, 0x4c, 0x4c), t)
+    };
+    Color::Rgb(r, g, b)
 }
 
 fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Log ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     let rows: Vec<Row> = if snap.log.is_empty() {
         vec![Row::new(vec!["(no log events)", ""])]
     } else {
@@ -429,7 +492,7 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                     _ => Color::White,
                 };
                 Row::new(vec![
-                    Cell::from(truncate_str(msg, 60)),
+                    Cell::from(msg.as_str()),
                     Cell::from(count.to_string()),
                 ])
                 .style(Style::default().fg(color))
@@ -438,14 +501,8 @@ fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     };
 
     let table = Table::new(rows, [Constraint::Percentage(80), Constraint::Percentage(20)])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Log "),
-        )
         .header(Row::new(vec!["message", "count"]).style(Style::default().fg(Color::DarkGray)));
-    frame.render_widget(table, area);
+    frame.render_widget(table, pad_left(inner));
 }
 
 fn render_help_bar(frame: &mut Frame<'_>, area: Rect, disconnected: bool) {
@@ -501,10 +558,14 @@ fn format_tape(flux: u64) -> String {
     }
 }
 
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_owned()
+fn format_spool_size(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1}GiB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1}MiB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KiB", bytes as f64 / 1024.0)
     } else {
-        format!("{}...", &s[..max - 3])
+        format!("{bytes}B")
     }
 }

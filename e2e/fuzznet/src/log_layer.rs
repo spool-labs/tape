@@ -41,8 +41,10 @@ impl LogHistogram {
         out
     }
 
+    /// Clear non-error log entries. Errors are preserved across epochs.
     pub fn clear(&self) {
-        self.entries.lock().expect("log histogram lock poisoned").clear();
+        let mut entries = self.entries.lock().expect("log histogram lock poisoned");
+        entries.retain(|_, (level, _)| level == "ERROR");
     }
 }
 
