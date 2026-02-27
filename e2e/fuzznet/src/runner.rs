@@ -17,6 +17,7 @@ use tape_core::types::coin::TAPE;
 use tape_crypto::{hash, Hash};
 use tape_e2e_simnet::SimnetHarness;
 use tape_store::types::SpoolStatus;
+use tokio::time::interval;
 use tracing::Level;
 
 use crate::log_histogram::LogHistogram;
@@ -26,10 +27,11 @@ use crate::stats::{EpochStats, FuzzPhase, FuzzStats, UploadRecord};
 pub struct FuzzConfig {
     pub node_count: usize,
     pub target_epochs: u64,
-    pub churn_enabled: bool,
-    pub churn_prob: f64,
-    pub uploads_min: usize,
-    pub uploads_max: usize,
+    pub min_alive: usize,
+    pub poll_interval: Duration,
+    pub upload_interval: Duration,
+    pub download_interval: Duration,
+    pub churn_interval: Duration,
     pub blob_size_min: usize,
     pub blob_size_max: usize,
     pub epoch_timeout: Duration,
@@ -122,305 +124,209 @@ pub async fn run_fuzz(
             .context("start epoch")?
     };
     let target_epoch = start_epoch + config.target_epochs;
-    let mut iteration = 0u64;
+    let mut last_epoch = start_epoch;
+    let mut upload_counter = 0u64;
+
+    // Per-epoch counters (reset on each epoch transition)
+    let mut epoch_uploads = 0usize;
+    let mut epoch_uploaded_bytes = 0u64;
+    let mut epoch_churn_stopped = 0usize;
+    let mut epoch_churn_started = 0usize;
+    let mut epoch_wall_start = Instant::now();
+    let mut warnings: Vec<String> = Vec::new();
+
+    {
+        let mut state = stats.lock().expect("stats lock poisoned");
+        state.phase = FuzzPhase::Fuzzing {
+            current_epoch: start_epoch,
+            target_epoch,
+        };
+    }
+
+    let mut poll_tick = interval(config.poll_interval);
+    let mut upload_tick = interval(config.upload_interval);
+    let mut download_tick = interval(config.download_interval);
+    let mut churn_tick = interval(config.churn_interval);
 
     loop {
         if aborted.load(Ordering::Acquire) {
             break;
         }
 
-        let next_epoch = {
-            let scenario = harness.scenario();
-            scenario
-                .current_epoch_number()
-                .await
-                .context("current_epoch_number")?
-        };
+        tokio::select! {
+            biased;
 
-        if next_epoch >= target_epoch {
-            break;
-        }
+            _ = poll_tick.tick() => {
+                let current_epoch = {
+                    let scenario = harness.scenario();
+                    scenario.current_epoch_number().await.context("poll epoch")?
+                };
 
-        iteration += 1;
+                if current_epoch > last_epoch {
+                    snapshot_epoch(
+                        harness,
+                        stats,
+                        histogram,
+                        &config,
+                        &alive,
+                        current_epoch,
+                        epoch_wall_start.elapsed(),
+                        epoch_uploads,
+                        epoch_uploaded_bytes,
+                        epoch_churn_stopped,
+                        epoch_churn_started,
+                        &mut warnings,
+                        &mut prev_sync_snapshot,
+                        &mut prev_repair_snapshot,
+                        &mut recover_streak,
+                        target_epoch,
+                    )?;
 
-        {
-            let mut state = stats.lock().expect("stats lock poisoned");
-            state.phase = FuzzPhase::Fuzzing {
-                iteration,
-                current_epoch: next_epoch,
-            };
-        }
+                    epoch_uploads = 0;
+                    epoch_uploaded_bytes = 0;
+                    epoch_churn_stopped = 0;
+                    epoch_churn_started = 0;
+                    epoch_wall_start = Instant::now();
+                    last_epoch = current_epoch;
+                }
 
-        let epoch_started = Instant::now();
-        let mut churn_stopped = 0usize;
-        let mut churn_started = 0usize;
-        let mut uploads_this_epoch = 0usize;
-        let mut uploaded_bytes_this_epoch = 0u64;
-        let mut warnings: Vec<String> = Vec::new();
-        let upload_count = rng.gen_range(config.uploads_min..=config.uploads_max);
+                if current_epoch >= target_epoch {
+                    break;
+                }
 
-        let tape_lifetime = rng.gen_range(4..=20);
-
-        for upload_idx in 0..upload_count {
-            if aborted.load(Ordering::Acquire) {
-                break;
-            }
-
-            let size = rng.gen_range(config.blob_size_min..=config.blob_size_max);
-            let mut data = vec![0u8; size];
-            rng.fill_bytes(&mut data);
-
-            let key_source = format!("{seed}-{next_epoch}-{upload_idx}");
-            let key: Hash = hash::hash(key_source.as_bytes());
-
-            let upload = {
-                let scenario = harness.scenario();
-                scenario.upload(&user_keypair, key, &data, tape_lifetime).await
-            };
-
-            match upload {
-                Ok((tape_key, _track)) => {
-                    let track_address = tape_key.track_address(&key);
-                    uploads_this_epoch += 1;
-                    uploaded_bytes_this_epoch += data.len() as u64;
+                {
                     let mut state = stats.lock().expect("stats lock poisoned");
-                    state.upload_registry.push(UploadRecord {
-                        key,
-                        data,
-                        track_address,
-                        epoch: next_epoch,
-                        expiry_epoch: next_epoch + tape_lifetime as u64,
-                    });
-                }
-                Err(error) => {
-                    warnings.push(format!("upload failed: {error}"));
+                    state.phase = FuzzPhase::Fuzzing {
+                        current_epoch,
+                        target_epoch,
+                    };
                 }
             }
-        }
 
-        if config.churn_enabled {
-            let bft = {
-                let scenario = harness.scenario();
-                scenario.bft_targets()
-            };
+            _ = upload_tick.tick() => {
+                let current_epoch = {
+                    let scenario = harness.scenario();
+                    scenario.current_epoch_number().await.unwrap_or(last_epoch)
+                };
 
-            let max_stoppable = alive.len().saturating_sub(bft.min_for_advance);
-            if max_stoppable > 0 && rng.gen_bool(config.churn_prob) {
-                let prior_stopped: Vec<usize> = stopped.iter().copied().collect();
+                let size = rng.gen_range(config.blob_size_min..=config.blob_size_max);
+                let mut data = vec![0u8; size];
+                rng.fill_bytes(&mut data);
 
-                let mut stop_choices: Vec<usize> = alive.iter().copied().collect();
-                stop_choices.shuffle(&mut rng);
-                let churn_count = rng.gen_range(1..=max_stoppable);
-                let stop_picks = stop_choices.into_iter().take(churn_count).collect::<Vec<_>>();
+                let tape_lifetime = rng.gen_range(4u64..=20);
+                upload_counter += 1;
+                let key_source = format!("{seed}-{upload_counter}");
+                let key: Hash = hash::hash(key_source.as_bytes());
 
-                if !stop_picks.is_empty() {
-                    harness.stop_nodes(&stop_picks).await.context("stop_nodes")?;
-                    for node in &stop_picks {
-                        alive.remove(node);
-                        stopped.insert(*node);
-                        churn_stopped += 1;
+                let upload = {
+                    let scenario = harness.scenario();
+                    scenario.upload(&user_keypair, key, &data, tape_lifetime).await
+                };
+                match upload {
+                    Ok((tape_key, _track)) => {
+                        let track_address = tape_key.track_address(&key);
+                        epoch_uploads += 1;
+                        epoch_uploaded_bytes += data.len() as u64;
+                        let mut state = stats.lock().expect("stats lock poisoned");
+                        state.upload_registry.push(UploadRecord {
+                            key,
+                            data,
+                            track_address,
+                            epoch: current_epoch,
+                            expiry_epoch: current_epoch + tape_lifetime,
+                        });
+                    }
+                    Err(error) => {
+                        warnings.push(format!("upload failed: {error}"));
                     }
                 }
+            }
 
-                if !prior_stopped.is_empty() {
-                    let mut start_choices = prior_stopped;
-                    start_choices.shuffle(&mut rng);
-                    let start_count = start_choices.len().min(churn_count);
-                    let start_picks = start_choices.into_iter().take(start_count).collect::<Vec<_>>();
+            _ = download_tick.tick() => {
+                let current_epoch = {
+                    let scenario = harness.scenario();
+                    scenario.current_epoch_number().await.unwrap_or(last_epoch)
+                };
 
-                    if !start_picks.is_empty() {
-                        harness.start_nodes(&start_picks).await.context("start_nodes")?;
-                        for node in &start_picks {
-                            stopped.remove(node);
-                            alive.insert(*node);
-                            churn_started += 1;
+                let candidates: Vec<usize> = {
+                    let state = stats.lock().expect("stats lock poisoned");
+                    state
+                        .upload_registry
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.expiry_epoch > current_epoch)
+                        .map(|(i, _)| i)
+                        .collect()
+                };
+
+                if let Some(&idx) = candidates.choose(&mut rng) {
+                    let (track_address, expected_data) = {
+                        let state = stats.lock().expect("stats lock poisoned");
+                        let r = &state.upload_registry[idx];
+                        (r.track_address, r.data.clone())
+                    };
+                    let result = {
+                        let scenario = harness.scenario();
+                        scenario.download(&user_keypair, &track_address).await
+                    };
+                    let ok = match result {
+                        Ok(downloaded) => downloaded == expected_data,
+                        Err(_) => false,
+                    };
+                    let mut state = stats.lock().expect("stats lock poisoned");
+                    state.download_results.push((track_address, ok));
+                }
+            }
+
+            _ = churn_tick.tick() => {
+                let bft = {
+                    let scenario = harness.scenario();
+                    scenario.bft_targets()
+                };
+
+                let max_stoppable = alive
+                    .len()
+                    .saturating_sub(config.min_alive.max(bft.min_for_advance));
+
+                if max_stoppable > 0 {
+                    let prior_stopped: Vec<usize> = stopped.iter().copied().collect();
+
+                    let mut stop_choices: Vec<usize> = alive.iter().copied().collect();
+                    stop_choices.shuffle(&mut rng);
+                    let churn_count = rng.gen_range(1..=max_stoppable.min(3));
+                    let stop_picks: Vec<usize> =
+                        stop_choices.into_iter().take(churn_count).collect();
+
+                    if !stop_picks.is_empty() {
+                        harness.stop_nodes(&stop_picks).await.context("stop_nodes")?;
+                        for node in &stop_picks {
+                            alive.remove(node);
+                            stopped.insert(*node);
+                            epoch_churn_stopped += 1;
+                        }
+                    }
+
+                    if !prior_stopped.is_empty() {
+                        let mut start_choices = prior_stopped;
+                        start_choices.shuffle(&mut rng);
+                        let start_count = start_choices.len().min(3);
+                        let start_picks: Vec<usize> =
+                            start_choices.into_iter().take(start_count).collect();
+
+                        if !start_picks.is_empty() {
+                            harness
+                                .start_nodes(&start_picks)
+                                .await
+                                .context("start_nodes")?;
+                            for node in &start_picks {
+                                stopped.remove(node);
+                                alive.insert(*node);
+                                epoch_churn_started += 1;
+                            }
                         }
                     }
                 }
             }
-        }
-
-        // Inline downloads: pick up to 2 random non-expired uploads and verify
-        {
-            let candidates: Vec<usize> = {
-                let state = stats.lock().expect("stats lock poisoned");
-                state
-                    .upload_registry
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.expiry_epoch > next_epoch)
-                    .map(|(i, _)| i)
-                    .collect()
-            };
-            let download_count = candidates.len().min(2);
-            let picks: Vec<usize> = candidates
-                .choose_multiple(&mut rng, download_count)
-                .copied()
-                .collect();
-            for idx in picks {
-                let (track_address, expected_data) = {
-                    let state = stats.lock().expect("stats lock poisoned");
-                    let r = &state.upload_registry[idx];
-                    (r.track_address, r.data.clone())
-                };
-                let result = {
-                    let scenario = harness.scenario();
-                    scenario.download(&user_keypair, &track_address).await
-                };
-                let ok = match result {
-                    Ok(downloaded) => downloaded == expected_data,
-                    Err(_) => false,
-                };
-                let mut state = stats.lock().expect("stats lock poisoned");
-                state.download_results.push((track_address, ok));
-            }
-        }
-
-        let alive_indices: Vec<usize> = alive.iter().copied().collect();
-        if alive_indices.is_empty() {
-            warnings.push("epoch had no alive nodes".to_string());
-            let epoch = {
-                let scenario = harness.scenario();
-                scenario.current_epoch_number().await.context("read epoch")?
-            };
-            let logs = histogram.snapshot_and_reset();
-            {
-                let mut state = stats.lock().expect("stats lock poisoned");
-                state.epochs.push(EpochStats {
-                    epoch,
-                    wall_duration: epoch_started.elapsed(),
-                    uploads: uploads_this_epoch,
-                    uploaded_bytes: uploaded_bytes_this_epoch,
-                    network_size_bytes: 0,
-                    alive_count: 0,
-                    churn_stopped,
-                    churn_started,
-                    spools_active: 0,
-                    spools_sync: 0,
-                    spools_recover: 0,
-                    spools_locked: 0,
-                    committee_count: 0,
-                    sync_bytes: 0,
-                    repair_bytes: 0,
-                    log_counts: logs,
-                    warnings,
-                });
-            }
-            break;
-        }
-
-        {
-            let scenario = harness.scenario();
-            scenario
-                .wait_epoch_change(next_epoch, config.epoch_timeout)
-                .await
-                .context("wait_epoch_change")?;
-            scenario
-                .wait_phase("Active", config.epoch_timeout)
-                .await
-                .context("wait_phase Active")?;
-            scenario
-                .wait_nodes_active(&alive_indices, config.epoch_timeout)
-                .await
-                .context("wait_nodes_active")?;
-        }
-
-        let committee_count = alive.len();
-
-        let all_nodes: Vec<usize> = (0..config.node_count).collect();
-        let sync_snapshot = sync_bytes_snapshot(harness, &all_nodes);
-        let sync_bytes = sync_snapshot.saturating_sub(prev_sync_snapshot);
-        prev_sync_snapshot = sync_snapshot;
-
-        let repair_snapshot = repair_bytes_snapshot(harness, &all_nodes);
-        let repair_bytes = repair_snapshot.saturating_sub(prev_repair_snapshot);
-        prev_repair_snapshot = repair_snapshot;
-
-        let (active, sync, recover, locked, total) =
-            spool_status_snapshot(harness, &alive_indices).context("spool_status_snapshot")?;
-        if total != SPOOL_COUNT as usize {
-            warnings.push(format!("spool coverage mismatch: {total}/{SPOOL_COUNT}"));
-        }
-
-        if recover > 0 {
-            recover_streak += 1;
-        } else {
-            recover_streak = 0;
-        }
-        if recover_streak > 5 {
-            warnings.push(format!("stuck recoveries for {recover_streak} consecutive epochs"));
-        }
-
-        let net_size = network_store_size(harness, &alive_indices);
-
-        let wall_duration = epoch_started.elapsed();
-        let epoch = {
-            let scenario = harness.scenario();
-            scenario.current_epoch_number().await.context("read next epoch")?
-        };
-
-        {
-            let state = stats.lock().expect("stats lock poisoned");
-            if !state.epochs.is_empty() {
-                let mean = state
-                    .epochs
-                    .iter()
-                    .map(|entry| entry.wall_duration.as_secs_f64())
-                    .sum::<f64>()
-                    / state.epochs.len() as f64;
-                if mean > 0.0 && wall_duration.as_secs_f64() > mean * 3.0 {
-                    warnings.push(format!(
-                        "epoch duration spike: {:.1}s > 3x mean {:.1}s",
-                        wall_duration.as_secs_f64(),
-                        mean
-                    ));
-                }
-            }
-        }
-
-        let logs = histogram.snapshot_and_reset();
-        let error_count: u64 = logs
-            .iter()
-            .filter(|((level, _), _)| *level == Level::ERROR)
-            .map(|(_, count)| *count)
-            .sum();
-        if error_count > 0 {
-            let mut top_errors: Vec<_> = logs
-                .iter()
-                .filter(|((level, _), _)| *level == Level::ERROR)
-                .map(|((_, target), count)| (target.clone(), *count))
-                .collect();
-            top_errors.sort_by(|a, b| b.1.cmp(&a.1));
-            let top = top_errors
-                .iter()
-                .take(2)
-                .map(|(target, count)| format!("{target}={count}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            warnings.push(format!("error logs ({error_count}): {top}"));
-        }
-
-        {
-            let mut state = stats.lock().expect("stats lock poisoned");
-            state.epochs.push(EpochStats {
-                epoch,
-                wall_duration,
-                uploads: uploads_this_epoch,
-                uploaded_bytes: uploaded_bytes_this_epoch,
-                network_size_bytes: net_size,
-                alive_count: alive.len(),
-                churn_stopped,
-                churn_started,
-                spools_active: active,
-                spools_sync: sync,
-                spools_recover: recover,
-                spools_locked: locked,
-                committee_count,
-                sync_bytes,
-                repair_bytes,
-                log_counts: logs,
-                warnings,
-            });
         }
     }
 
@@ -437,6 +343,129 @@ pub async fn run_fuzz(
         };
         return Ok(state.clone());
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn snapshot_epoch(
+    harness: &SimnetHarness,
+    stats: &Arc<Mutex<FuzzStats>>,
+    histogram: &LogHistogram,
+    config: &FuzzConfig,
+    alive: &HashSet<usize>,
+    current_epoch: u64,
+    wall_duration: Duration,
+    epoch_uploads: usize,
+    epoch_uploaded_bytes: u64,
+    epoch_churn_stopped: usize,
+    epoch_churn_started: usize,
+    warnings: &mut Vec<String>,
+    prev_sync_snapshot: &mut u64,
+    prev_repair_snapshot: &mut u64,
+    recover_streak: &mut usize,
+    target_epoch: u64,
+) -> Result<()> {
+    let alive_indices: Vec<usize> = alive.iter().copied().collect();
+    let all_nodes: Vec<usize> = (0..config.node_count).collect();
+
+    let sync_snapshot = sync_bytes_snapshot(harness, &all_nodes);
+    let sync_bytes = sync_snapshot.saturating_sub(*prev_sync_snapshot);
+    *prev_sync_snapshot = sync_snapshot;
+
+    let repair_snapshot = repair_bytes_snapshot(harness, &all_nodes);
+    let repair_bytes = repair_snapshot.saturating_sub(*prev_repair_snapshot);
+    *prev_repair_snapshot = repair_snapshot;
+
+    let (active, sync, recover, locked, total) = if !alive_indices.is_empty() {
+        spool_status_snapshot(harness, &alive_indices).context("spool_status_snapshot")?
+    } else {
+        warnings.push("epoch had no alive nodes".to_string());
+        (0, 0, 0, 0, 0)
+    };
+
+    if total > 0 && total != SPOOL_COUNT as usize {
+        warnings.push(format!("spool coverage mismatch: {total}/{SPOOL_COUNT}"));
+    }
+
+    if recover > 0 {
+        *recover_streak += 1;
+    } else {
+        *recover_streak = 0;
+    }
+    if *recover_streak > 5 {
+        warnings.push(format!(
+            "stuck recoveries for {} consecutive epochs",
+            *recover_streak
+        ));
+    }
+
+    let net_size = network_store_size(harness, &alive_indices);
+
+    let logs = histogram.snapshot_and_reset();
+    let error_count: u64 = logs
+        .iter()
+        .filter(|((level, _), _)| *level == Level::ERROR)
+        .map(|(_, count)| *count)
+        .sum();
+    if error_count > 0 {
+        let mut top_errors: Vec<_> = logs
+            .iter()
+            .filter(|((level, _), _)| *level == Level::ERROR)
+            .map(|((_, target), count)| (target.clone(), *count))
+            .collect();
+        top_errors.sort_by(|a, b| b.1.cmp(&a.1));
+        let top = top_errors
+            .iter()
+            .take(2)
+            .map(|(target, count)| format!("{target}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!("error logs ({error_count}): {top}"));
+    }
+
+    let mut state = stats.lock().expect("stats lock poisoned");
+
+    if !state.epochs.is_empty() {
+        let mean = state
+            .epochs
+            .iter()
+            .map(|entry| entry.wall_duration.as_secs_f64())
+            .sum::<f64>()
+            / state.epochs.len() as f64;
+        if mean > 0.0 && wall_duration.as_secs_f64() > mean * 3.0 {
+            warnings.push(format!(
+                "epoch duration spike: {:.1}s > 3x mean {:.1}s",
+                wall_duration.as_secs_f64(),
+                mean
+            ));
+        }
+    }
+
+    state.epochs.push(EpochStats {
+        epoch: current_epoch,
+        wall_duration,
+        uploads: epoch_uploads,
+        uploaded_bytes: epoch_uploaded_bytes,
+        network_size_bytes: net_size,
+        alive_count: alive.len(),
+        churn_stopped: epoch_churn_stopped,
+        churn_started: epoch_churn_started,
+        spools_active: active,
+        spools_sync: sync,
+        spools_recover: recover,
+        spools_locked: locked,
+        committee_count: alive.len(),
+        sync_bytes,
+        repair_bytes,
+        log_counts: logs,
+        warnings: std::mem::take(warnings),
+    });
+
+    state.phase = FuzzPhase::Fuzzing {
+        current_epoch,
+        target_epoch,
+    };
+
+    Ok(())
 }
 
 fn sync_bytes_snapshot(harness: &SimnetHarness, nodes: &[usize]) -> u64 {

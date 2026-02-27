@@ -179,7 +179,7 @@ fn snapshot_stats(stats: &Arc<Mutex<FuzzStats>>) -> RenderState {
     let phase = match &state.phase {
         FuzzPhase::Bootstrap => "Bootstrap".to_string(),
         FuzzPhase::Warmup => "Warmup".to_string(),
-        FuzzPhase::Fuzzing { iteration, current_epoch } => format!("Fuzzing: {iteration}/{} | Epoch: {current_epoch}", state.target_epochs),
+        FuzzPhase::Fuzzing { current_epoch, target_epoch } => format!("Epoch: {current_epoch}/{target_epoch}"),
         FuzzPhase::Done { passed } => format!("Done ({})", if *passed { "pass" } else { "fail" }),
     };
 

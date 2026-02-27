@@ -52,8 +52,8 @@ pub enum FuzzPhase {
     Bootstrap,
     Warmup,
     Fuzzing {
-        iteration: u64,
         current_epoch: u64,
+        target_epoch: u64,
     },
     Done {
         passed: bool,

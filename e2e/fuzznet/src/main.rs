@@ -25,10 +25,11 @@ use crate::stats::{FuzzPhase, FuzzStats};
 
 const NODE_COUNT: usize = 25;
 const TARGET_EPOCHS: u64 = 100;
-const CHURN_ENABLED: bool = true;
-const CHURN_PROB: f64 = 0.3;
-const UPLOADS_MIN: usize = 1;
-const UPLOADS_MAX: usize = 3;
+const MIN_ALIVE: usize = 20;
+const POLL_INTERVAL_SECS: u64 = 2;
+const UPLOAD_INTERVAL_SECS: u64 = 5;
+const DOWNLOAD_INTERVAL_SECS: u64 = 7;
+const CHURN_INTERVAL_SECS: u64 = 25;
 const BLOB_SIZE_MIN: usize = 10_240;
 const BLOB_SIZE_MAX: usize = 1_024_000;
 const RING_BUFFER_SIZE: usize = 2000;
@@ -99,10 +100,11 @@ async fn run() -> Result<i32> {
     let config = FuzzConfig {
         node_count: NODE_COUNT,
         target_epochs: TARGET_EPOCHS,
-        churn_enabled: CHURN_ENABLED,
-        churn_prob: CHURN_PROB,
-        uploads_min: UPLOADS_MIN,
-        uploads_max: UPLOADS_MAX,
+        min_alive: MIN_ALIVE,
+        poll_interval: Duration::from_secs(POLL_INTERVAL_SECS),
+        upload_interval: Duration::from_secs(UPLOAD_INTERVAL_SECS),
+        download_interval: Duration::from_secs(DOWNLOAD_INTERVAL_SECS),
+        churn_interval: Duration::from_secs(CHURN_INTERVAL_SECS),
         blob_size_min: BLOB_SIZE_MIN,
         blob_size_max: BLOB_SIZE_MAX,
         epoch_timeout: Duration::from_secs(EPOCH_TIMEOUT_SECS),
