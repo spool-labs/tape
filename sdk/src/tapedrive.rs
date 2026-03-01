@@ -444,34 +444,47 @@ impl<R: Rpc> Tapedrive<R> {
         let root_hash: Hash = merkle_root.into();
         let storage_units = StorageUnits::from_bytes(data.len() as u64);
 
-        // 2. Register track on-chain
+        // 2. Resume existing track if one already exists, otherwise register it on-chain.
         let stripe_size = pick_stripe_size(data.len());
         let stripe_count = num_stripes(data.len(), stripe_size);
+        let (track_address, _) = track_pda(tape_key.pubkey(), key);
+        let on_chain = match self.client.get_track_by_address(&track_address).await {
+            Ok(track) => track,
+            Err(RpcError::AccountNotFound(_)) => {
+                let register_ix = build_register_track_ix(
+                    self.payer.pubkey(),
+                    tape_key.pubkey(),
+                    storage_units,
+                    root_hash,
+                    commitment_hash,
+                    key,
+                    EncodingProfile::clay_default(),
+                    stripe_size as u64,
+                    stripe_count as u64,
+                    leaves,
+                );
 
-        let register_ix = build_register_track_ix(
-            self.payer.pubkey(),
-            tape_key.pubkey(),
-            storage_units,
-            root_hash,
-            commitment_hash,
-            key,
-            EncodingProfile::clay_default(),
-            stripe_size as u64,
-            stripe_count as u64,
-            leaves,
-        );
+                self.client
+                    .send_instructions_with_signers(
+                        &self.payer,
+                        vec![register_ix],
+                        &[tape_key.as_keypair()],
+                    )
+                    .await?;
 
-        self.client
-            .send_instructions_with_signers(
-                &self.payer,
-                vec![register_ix],
-                &[tape_key.as_keypair()],
-            )
-            .await?;
+                // Fetch on-chain track (retry for RPC propagation)
+                self.retry_fetch_track(&track_address).await?
+            }
+            Err(error) => {
+                return Err(TapedriveError::Rpc(error));
+            }
+        };
+
+        if on_chain.data.is_certified() {
+            return Ok(on_chain);
+        }
 
         // 3. Fetch on-chain track (retry for RPC propagation)
-        let (track_address, _) = track_pda(tape_key.pubkey(), key);
-        let on_chain = self.retry_fetch_track(&track_address).await?;
         let spool_group = on_chain.data.spool_group();
 
         // 4. Discover network and upload slices

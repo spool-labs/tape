@@ -12,6 +12,7 @@ mod app;
 mod log_layer;
 mod poller;
 mod simnet;
+mod sparkline;
 mod stake_fuzzer;
 mod tui;
 

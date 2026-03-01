@@ -21,8 +21,22 @@ pub struct NodeSnapshot {
     pub spool_count: usize,
     pub pool_stake: u64,
     pub node_status: Option<NodeStatus>,
-    pub event_history: [u64; NODE_EVENT_HISTORY_EPOCHS],
+    pub event_history: Vec<u64>,
     pub sync_bw_history: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TrackStatus {
+    Registered,
+    Certified,
+    Expired,
+    Failed,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TrackSnapshot {
+    pub status: TrackStatus,
 }
 
 #[allow(dead_code)]
@@ -51,6 +65,12 @@ pub struct PollSnapshot {
     pub uploads_pending: u64,
     pub uploads_certified: u64,
     pub uploads_expired: u64,
+    pub uploads_failed: u64,
+    pub uploads_retries: u64,
+    pub uploads_last_retry_error: Option<String>,
+    pub uploads_next_retry_in_ms: Option<u64>,
+    pub uploads_retry_in_progress: bool,
+    pub tracks: Vec<TrackSnapshot>,
 }
 
 impl Default for PollSnapshot {
@@ -79,6 +99,12 @@ impl Default for PollSnapshot {
             uploads_pending: 0,
             uploads_certified: 0,
             uploads_expired: 0,
+            uploads_failed: 0,
+            uploads_retries: 0,
+            uploads_last_retry_error: None,
+            uploads_next_retry_in_ms: None,
+            uploads_retry_in_progress: false,
+            tracks: Vec::new(),
         }
     }
 }

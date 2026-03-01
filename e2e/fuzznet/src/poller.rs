@@ -1,18 +1,22 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::signature::Signer;
+use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_node::core::NodeContext;
 use tape_store::MemoryStore;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
-use crate::app::{NodeSnapshot, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
+use crate::app::{
+    NodeSnapshot, PollSnapshot, TrackSnapshot, TrackStatus,
+};
 use crate::log_layer::LogHistogram;
 
 /// Shared snapshot handle created in main and passed to both poller and TUI.
@@ -30,6 +34,11 @@ pub enum PollerUpdate {
         pending: u64,
         certified: u64,
         expired: u64,
+        failed: u64,
+        retries: u64,
+        last_retry_error: Option<String>,
+        next_retry_in_ms: Option<u64>,
+        retry_in_progress: bool,
     },
 }
 
@@ -66,8 +75,8 @@ struct TrackedNode {
     prev_upload: u64,
     prev_events: u64,
     pool_stake: u64,
-    event_history: [u64; NODE_EVENT_HISTORY_EPOCHS],
-    epoch_event_accum: u64,
+    event_history: Vec<u64>,
+    node_event_accum: u64,
 }
 
 struct PollerState {
@@ -93,20 +102,29 @@ struct PollerState {
     uploads_pending: u64,
     uploads_certified: u64,
     uploads_expired: u64,
+    uploads_failed: u64,
+    uploads_retries: u64,
+    uploads_last_retry_error: Option<String>,
+    uploads_next_retry_in_ms: Option<u64>,
+    uploads_retry_in_progress: bool,
+    track_next_refresh: Instant,
+    chart_next_update: Instant,
+    track_pending: u64,
+    track_certified: u64,
+    track_expired: u64,
+    track_failed: u64,
+    tracks: Vec<TrackSnapshot>,
 }
 
 const HISTORY_CAP: usize = 200;
+const TRACK_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const CHART_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 fn push_capped(buf: &mut Vec<u64>, val: u64) {
     buf.push(val);
     if buf.len() > HISTORY_CAP {
         buf.remove(0);
     }
-}
-
-fn push_node_history(history: &mut [u64; NODE_EVENT_HISTORY_EPOCHS], val: u64) {
-    history.rotate_left(1);
-    history[NODE_EVENT_HISTORY_EPOCHS - 1] = val;
 }
 
 async fn poller_task(
@@ -138,12 +156,24 @@ async fn poller_task(
         uploads_pending: 0,
         uploads_certified: 0,
         uploads_expired: 0,
+        uploads_failed: 0,
+        uploads_retries: 0,
+        uploads_last_retry_error: None,
+        uploads_next_retry_in_ms: None,
+        uploads_retry_in_progress: false,
+        track_next_refresh: Instant::now(),
+        chart_next_update: Instant::now() + CHART_UPDATE_INTERVAL,
+        track_pending: 0,
+        track_certified: 0,
+        track_expired: 0,
+        track_failed: 0,
+        tracks: Vec::new(),
     };
 
     let mut interval = time::interval(Duration::from_secs(1));
 
     loop {
-        tokio::select! {
+                tokio::select! {
             _ = interval.tick() => {
                 poll_once(&mut state, &snapshot, &histogram).await;
             }
@@ -158,8 +188,8 @@ async fn poller_task(
                             prev_upload: 0,
                             prev_events: 0,
                             pool_stake: 0,
-                            event_history: [0u64; NODE_EVENT_HISTORY_EPOCHS],
-                            epoch_event_accum: 0,
+                            event_history: Vec::new(),
+                            node_event_accum: 0,
                         });
                     }
                     Some(PollerUpdate::RemoveNode(id)) => {
@@ -170,10 +200,24 @@ async fn poller_task(
                         state.stake_fuzz_succeeded = succeeded;
                         state.stake_fuzz_failed = failed;
                     }
-                    Some(PollerUpdate::UploadStatus { pending, certified, expired }) => {
+                    Some(PollerUpdate::UploadStatus {
+                        pending,
+                        certified,
+                        expired,
+                        failed,
+                        retries,
+                        last_retry_error,
+                        next_retry_in_ms,
+                        retry_in_progress,
+                    }) => {
                         state.uploads_pending = pending;
                         state.uploads_certified = certified;
                         state.uploads_expired = expired;
+                        state.uploads_failed = failed;
+                        state.uploads_retries = retries;
+                        state.uploads_last_retry_error = last_retry_error;
+                        state.uploads_next_retry_in_ms = next_retry_in_ms;
+                        state.uploads_retry_in_progress = retry_in_progress;
                     }
                     None => break,
                 }
@@ -194,6 +238,45 @@ async fn poll_once(
         .await
         .map(|e| e.id.as_u64())
         .unwrap_or(0);
+    let now = Instant::now();
+
+    if now >= state.track_next_refresh {
+        match state.rpc.get_all_tapes().await {
+            Ok(tapes) => {
+                let tape_expiry = tapes
+                    .into_iter()
+                    .map(|(pubkey, tape)| (pubkey, tape.expiry_epoch.as_u64()))
+                    .collect::<HashMap<_, _>>();
+
+                match state.rpc.get_all_tracks().await {
+                    Ok(tracks) => {
+                        let (
+                            track_snapshots,
+                            track_pending,
+                            track_certified,
+                            track_expired,
+                            track_failed,
+                        ) = classify_tracks(epoch, tracks, tape_expiry);
+                        state.tracks = track_snapshots;
+                        state.track_pending = track_pending;
+                        state.track_certified = track_certified;
+                        state.track_expired = track_expired;
+                        state.track_failed = track_failed;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "failed to refresh track status from chain"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to refresh tape accounts from chain");
+            }
+        }
+        state.track_next_refresh = now + TRACK_POLL_INTERVAL;
+    }
 
     let mut spool_owners = [0u8; SPOOL_COUNT];
     if let Ok(system) = state.rpc.get_system().await {
@@ -228,8 +311,8 @@ async fn poll_once(
         tracked.prev_repair = repair;
         tracked.prev_upload = upload;
         tracked.prev_events = events;
-        tracked.epoch_event_accum = tracked
-            .epoch_event_accum
+        tracked.node_event_accum = tracked
+            .node_event_accum
             .saturating_add(event_delta)
             .saturating_add(transport_delta);
 
@@ -258,7 +341,7 @@ async fn poll_once(
             spool_count,
                 pool_stake: tracked.pool_stake,
                 node_status,
-                event_history: tracked.event_history,
+                event_history: tracked.event_history.clone(),
                 sync_bw_history: Vec::new(),
             };
 
@@ -274,33 +357,38 @@ async fn poll_once(
     state.total_repair += total_repair_delta;
     state.total_upload += total_upload_delta;
 
-    // Epoch boundary: record duration, push history, keep error log state
+    // Epoch boundary: record duration and keep epoch-specific state.
     if epoch != state.prev_epoch {
         if state.prev_epoch != 0 {
             let dur_ms = state.epoch_start.elapsed().as_millis() as u64;
             push_capped(&mut state.epoch_duration_history, dur_ms);
             histogram.clear();
         }
-        for tracked in &mut state.nodes {
-            push_node_history(&mut tracked.event_history, tracked.epoch_event_accum);
-            tracked.epoch_event_accum = 0;
-        }
         state.epoch_start = Instant::now();
         state.prev_epoch = epoch;
+    }
 
-        push_capped(&mut state.sync_bw_history, state.sync_accum);
-        push_capped(&mut state.repair_bw_history, state.repair_accum);
-        push_capped(&mut state.upload_bw_history, state.upload_accum);
-        state.sync_accum = 0;
-        state.repair_accum = 0;
-        state.upload_accum = 0;
+    if now >= state.chart_next_update {
+        for tracked in &mut state.nodes {
+            push_capped(&mut tracked.event_history, tracked.node_event_accum);
+            tracked.node_event_accum = 0;
+        }
 
         let total_store: u64 = state
             .nodes
             .iter()
             .map(|n| n.ctx.store.inner().inner().total_size_bytes() as u64)
             .sum();
+
+        push_capped(&mut state.sync_bw_history, state.sync_accum);
+        push_capped(&mut state.repair_bw_history, state.repair_accum);
+        push_capped(&mut state.upload_bw_history, state.upload_accum);
         push_capped(&mut state.total_store_history, total_store);
+
+        state.sync_accum = 0;
+        state.repair_accum = 0;
+        state.upload_accum = 0;
+        state.chart_next_update += CHART_UPDATE_INTERVAL;
     }
 
     let total_stake: u64 = node_snapshots.iter().map(|n| n.pool_stake).sum();
@@ -328,10 +416,68 @@ async fn poll_once(
         stake_fuzz_enabled: state.stake_fuzz_enabled,
         stake_fuzz_succeeded: state.stake_fuzz_succeeded,
         stake_fuzz_failed: state.stake_fuzz_failed,
-        uploads_pending: state.uploads_pending,
-        uploads_certified: state.uploads_certified,
-        uploads_expired: state.uploads_expired,
+        uploads_pending: state.track_pending,
+        uploads_certified: state.track_certified,
+        uploads_expired: state.track_expired,
+        uploads_failed: state.track_failed,
+        uploads_retries: state.uploads_retries,
+        uploads_last_retry_error: state.uploads_last_retry_error.clone(),
+        uploads_next_retry_in_ms: state.uploads_next_retry_in_ms,
+        uploads_retry_in_progress: state.uploads_retry_in_progress,
+        tracks: state.tracks.clone(),
     };
 
     snapshot.store(Arc::new(snap));
+}
+
+fn classify_tracks(
+    epoch: u64,
+    tracks: Vec<(solana_sdk::pubkey::Pubkey, Track)>,
+    tape_expiry: HashMap<solana_sdk::pubkey::Pubkey, u64>,
+) -> (
+    Vec<TrackSnapshot>,
+    u64,
+    u64,
+    u64,
+    u64,
+) {
+    let mut ordered = tracks;
+    ordered.sort_by_key(|(_, track)| track.id.as_u64());
+
+    let mut pending = 0u64;
+    let mut certified = 0u64;
+    let mut expired = 0u64;
+    let mut failed = 0u64;
+
+    let result = ordered
+        .into_iter()
+        .map(|(_, track)| {
+            let status = if track.data.is_invalidated() {
+                failed += 1;
+                TrackStatus::Failed
+            } else if track.data.is_certified() {
+                match tape_expiry.get(&track.tape) {
+                    Some(expiry_epoch) if epoch >= *expiry_epoch => {
+                        expired += 1;
+                        TrackStatus::Expired
+                    }
+                    Some(_) => {
+                        certified += 1;
+                        TrackStatus::Certified
+                    }
+                    None => TrackStatus::Unknown,
+                }
+            } else if track.data.is_registered() {
+                pending += 1;
+                TrackStatus::Registered
+            } else {
+                TrackStatus::Unknown
+            };
+            TrackSnapshot {
+                status,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    (result, pending, certified, expired, failed)
 }

@@ -1,11 +1,13 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rand::RngCore;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tape_api::errors::{is_account_state_pending_error, ProgramError, TapeError};
@@ -17,11 +19,12 @@ use tape_api::instruction::{
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_core::types::coin::TAPE;
+use tape_core::types::StorageUnits;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::{init_tls, pick_bind};
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
-use tape_sdk::Tapedrive;
+use tape_sdk::{Tapedrive, TapeKey};
 
 use tokio::sync::mpsc;
 
@@ -34,10 +37,23 @@ const SLOT_BUMP: u64 = 1;
 const CU_HIGH: u32 = 1_400_000;
 const CU_MED: u32 = 400_000;
 const UPLOAD_EPOCHS: u64 = 100;
+const UPLOAD_MAX_RETRIES: u32 = 8;
+const UPLOAD_RETRY_BASE_MS: u64 = 500;
+const UPLOAD_RETRY_MAX_MS: u64 = 30_000;
 
 enum UploadResult {
-    Success { expiry_epoch: u64 },
-    Failed,
+    Success {
+        upload_id: Pubkey,
+        expiry_epoch: u64,
+    },
+    Retrying {
+        upload_id: Pubkey,
+        error: String,
+        next_retry_in_ms: u64,
+    },
+    Failed {
+        upload_id: Pubkey,
+    },
 }
 
 fn is_already_advanced(error: &anyhow::Error) -> bool {
@@ -120,6 +136,11 @@ async fn async_run(
         upload_pending: 0,
         upload_completed: Vec::new(),
         upload_failed: 0,
+        upload_retries: 0,
+        upload_last_retry_error: None,
+        upload_next_retry_in_ms: None,
+        upload_next_retry_deadlines: HashMap::new(),
+        upload_retry_in_progress: false,
         upload_tx,
         upload_rx,
     };
@@ -127,6 +148,7 @@ async fn async_run(
     tracing::info!("ready");
 
     let mut epoch_interval = tokio::time::interval(Duration::from_secs(2));
+    let mut status_interval = tokio::time::interval(Duration::from_millis(250));
 
     loop {
         tokio::select! {
@@ -150,6 +172,8 @@ async fn async_run(
                         }
                     }
                     Some(Command::UploadBlob) => {
+                        let tape_key = TapeKey::generate();
+                        let upload_id = tape_key.pubkey();
                         state.upload_pending += 1;
                         let rpc = state.chain.rpc().clone();
                         let admin_bytes = state.admin.to_bytes();
@@ -157,14 +181,17 @@ async fn async_run(
                         tokio::spawn(async move {
                             tracing::info!("uploading blob");
                             let admin = Keypair::try_from(admin_bytes.as_ref()).unwrap();
-                            match upload_random_blob(rpc, &admin).await {
+                            match upload_random_blob(rpc, &admin, tape_key, tx.clone()).await {
                                 Ok(expiry) => {
                                     tracing::info!("uploaded, expires epoch {expiry}");
-                                    let _ = tx.send(UploadResult::Success { expiry_epoch: expiry });
+                                    let _ = tx.send(UploadResult::Success {
+                                        upload_id,
+                                        expiry_epoch: expiry,
+                                    });
                                 }
                                 Err(e) => {
                                     tracing::error!("upload failed: {e:#}");
-                                    let _ = tx.send(UploadResult::Failed);
+                                    let _ = tx.send(UploadResult::Failed { upload_id });
                                 }
                             }
                         });
@@ -197,23 +224,46 @@ async fn async_run(
             }
             result = state.upload_rx.recv() => {
                 match result {
-                    Some(UploadResult::Success { expiry_epoch }) => {
+                    Some(UploadResult::Success {
+                        upload_id,
+                        expiry_epoch,
+                    }) => {
                         state.upload_pending -= 1;
                         state.upload_completed.push(expiry_epoch);
+                        state.upload_next_retry_deadlines.remove(&upload_id);
                     }
-                    Some(UploadResult::Failed) => {
+                    Some(UploadResult::Retrying {
+                        upload_id,
+                        error,
+                        next_retry_in_ms,
+                    }) => {
+                        state.upload_retries += 1;
+                        state.upload_last_retry_error = Some(error);
+                        let deadline = Instant::now() + Duration::from_millis(next_retry_in_ms);
+                        state
+                            .upload_next_retry_deadlines
+                            .insert(upload_id, deadline);
+                    }
+                    Some(UploadResult::Failed { upload_id }) => {
                         state.upload_pending -= 1;
                         state.upload_failed += 1;
+                        state.upload_next_retry_deadlines.remove(&upload_id);
                     }
                     None => {}
                 }
                 let epoch = state.prev_epoch;
                 let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
                 let expired = state.upload_completed.iter().filter(|e| **e <= epoch).count() as u64;
+                state.refresh_upload_retry_countdown();
                 state.poller.send(PollerUpdate::UploadStatus {
                     pending: state.upload_pending,
                     certified,
                     expired,
+                    failed: state.upload_failed,
+                    retries: state.upload_retries,
+                    last_retry_error: state.upload_last_retry_error.clone(),
+                    next_retry_in_ms: state.upload_next_retry_in_ms,
+                    retry_in_progress: state.upload_retry_in_progress,
                 });
             }
             _ = epoch_interval.tick() => {
@@ -227,10 +277,16 @@ async fn async_run(
                 // Upload status
                 let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
                 let expired = state.upload_completed.iter().filter(|e| **e <= epoch).count() as u64;
+                state.refresh_upload_retry_countdown();
                 state.poller.send(PollerUpdate::UploadStatus {
                     pending: state.upload_pending,
                     certified,
                     expired,
+                    failed: state.upload_failed,
+                    retries: state.upload_retries,
+                    last_retry_error: state.upload_last_retry_error.clone(),
+                    next_retry_in_ms: state.upload_next_retry_in_ms,
+                    retry_in_progress: state.upload_retry_in_progress,
                 });
 
                 // Stake fuzzing
@@ -244,6 +300,22 @@ async fn async_run(
                     });
                 }
                 state.prev_epoch = epoch;
+            }
+            _ = status_interval.tick() => {
+                let epoch = state.prev_epoch;
+                let certified = state.upload_completed.iter().filter(|e| **e > epoch).count() as u64;
+                let expired = state.upload_completed.iter().filter(|e| **e <= epoch).count() as u64;
+                state.refresh_upload_retry_countdown();
+                state.poller.send(PollerUpdate::UploadStatus {
+                    pending: state.upload_pending,
+                    certified,
+                    expired,
+                    failed: state.upload_failed,
+                    retries: state.upload_retries,
+                    last_retry_error: state.upload_last_retry_error.clone(),
+                    next_retry_in_ms: state.upload_next_retry_in_ms,
+                    retry_in_progress: state.upload_retry_in_progress,
+                });
             }
         }
     }
@@ -342,6 +414,11 @@ struct SimnetState {
     upload_pending: u64,
     upload_completed: Vec<u64>,
     upload_failed: u64,
+    upload_retries: u64,
+    upload_last_retry_error: Option<String>,
+    upload_next_retry_in_ms: Option<u64>,
+    upload_next_retry_deadlines: HashMap<Pubkey, Instant>,
+    upload_retry_in_progress: bool,
     upload_tx: mpsc::UnboundedSender<UploadResult>,
     upload_rx: mpsc::UnboundedReceiver<UploadResult>,
 }
@@ -604,9 +681,36 @@ impl SimnetState {
         Ok(())
     }
 
+    fn refresh_upload_retry_countdown(&mut self) {
+        let now = Instant::now();
+        self.upload_retry_in_progress = false;
+        let mut next_retry_ms = None;
+
+        self.upload_next_retry_deadlines.iter().for_each(|(_, deadline)| {
+            if *deadline <= now {
+                self.upload_retry_in_progress = true;
+            } else {
+                let remaining_ms = deadline
+                    .duration_since(now)
+                    .as_millis()
+                    .max(1) as u64;
+                next_retry_ms = Some(next_retry_ms.map_or(remaining_ms, |current: u64| {
+                    current.min(remaining_ms)
+                }));
+            }
+        });
+
+        self.upload_next_retry_in_ms = next_retry_ms;
+    }
+
 }
 
-async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<u64> {
+async fn upload_random_blob(
+    rpc: LiteSvmRpc,
+    admin: &Keypair,
+    tape_key: TapeKey,
+    tx: mpsc::UnboundedSender<UploadResult>,
+) -> Result<u64> {
     let (key, data) = {
         let mut rng = rand::thread_rng();
         let size = (rng.next_u32() as usize % (1024 * 1024 - 1024)) + 1024; // 1KB..1MB
@@ -617,12 +721,85 @@ async fn upload_random_blob(rpc: LiteSvmRpc, admin: &Keypair) -> Result<u64> {
     };
 
     let sdk = Tapedrive::new(RpcClient::from_rpc(rpc), admin);
-    let (_tape_key, track) = sdk.write(key, &data, UPLOAD_EPOCHS)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let expiry = track.data.registered_epoch.0 + UPLOAD_EPOCHS;
+    let upload_id = tape_key.pubkey();
+    let capacity = StorageUnits::from_bytes(data.len() as u64);
+    let reserve_capacity = StorageUnits(capacity.as_u64().max(1) + 1);
+    let mut is_reserved = false;
 
-    Ok(expiry)
+    for attempt in 0..=UPLOAD_MAX_RETRIES {
+        if !is_reserved {
+            match sdk.reserve(&tape_key, reserve_capacity, UPLOAD_EPOCHS).await {
+                Ok(_) => {
+                    is_reserved = true;
+                }
+                Err(error) if !is_retriable_upload_error(&error) => {
+                    return Err(anyhow::Error::from(error))
+                        .context("upload failed with non-retriable error");
+                }
+                Err(error) if attempt == UPLOAD_MAX_RETRIES => {
+                    return Err(anyhow::Error::from(error))
+                        .context(format!("upload exhausted after {} attempts", attempt + 1));
+                }
+                Err(error) => {
+                    let delay = upload_retry_delay(attempt);
+                    let _ = tx.send(UploadResult::Retrying {
+                        upload_id,
+                        error: format!("{error:#}"),
+                        next_retry_in_ms: delay.as_millis() as u64,
+                    });
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis(),
+                        error = %error,
+                        "upload failed, retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+        }
+
+        match sdk.write_track(&tape_key, key, &data).await {
+            Ok(track) => {
+                let expiry = track.data.registered_epoch.0 + UPLOAD_EPOCHS;
+                return Ok(expiry);
+            }
+            Err(error) if !is_retriable_upload_error(&error) => {
+                return Err(anyhow::Error::from(error))
+                    .context("upload failed with non-retriable error");
+            }
+            Err(error) if attempt == UPLOAD_MAX_RETRIES => {
+                return Err(anyhow::Error::from(error))
+                    .context(format!("upload exhausted after {} attempts", attempt + 1));
+            }
+            Err(error) => {
+                let delay = upload_retry_delay(attempt);
+                let _ = tx.send(UploadResult::Retrying {
+                    upload_id,
+                    error: format!("{error:#}"),
+                    next_retry_in_ms: delay.as_millis() as u64,
+                });
+                tracing::warn!(attempt = attempt + 1, delay_ms = delay.as_millis(), error = %error, "upload failed, retrying");
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    unreachable!()
+}
+
+fn is_retriable_upload_error(error: &tape_sdk::TapedriveError) -> bool {
+    !matches!(
+        error,
+        tape_sdk::TapedriveError::CommitmentMismatch
+            | tape_sdk::TapedriveError::InvalidArgument(_)
+            | tape_sdk::TapedriveError::InsufficientCapacity { .. }
+    )
+}
+
+fn upload_retry_delay(attempt: u32) -> Duration {
+    let delay_ms = (UPLOAD_RETRY_BASE_MS.saturating_mul(1u64 << attempt.min(12))).min(UPLOAD_RETRY_MAX_MS);
+    Duration::from_millis(delay_ms)
 }
 
 #[cfg(test)]
@@ -658,6 +835,11 @@ mod tests {
                         upload_pending: 0,
                         upload_completed: Vec::new(),
                         upload_failed: 0,
+                        upload_retries: 0,
+                        upload_last_retry_error: None,
+                        upload_next_retry_in_ms: None,
+                        upload_next_retry_deadlines: HashMap::new(),
+                        upload_retry_in_progress: false,
                         upload_tx,
                         upload_rx,
                     };

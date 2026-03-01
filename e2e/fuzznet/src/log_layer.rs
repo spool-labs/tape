@@ -7,10 +7,10 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-// (source, message) → (worst_level, count)
+// (source, task, message) → (worst_level, count)
 #[derive(Debug, Default, Clone)]
 pub struct LogHistogram {
-    entries: Arc<Mutex<HashMap<(String, String), (String, u64)>>>,
+    entries: Arc<Mutex<HashMap<(String, Option<String>, String), (String, u64)>>>,
 }
 
 fn level_rank(level: &str) -> u8 {
@@ -34,8 +34,13 @@ impl LogHistogram {
         let entries = self.entries.lock().expect("log histogram lock poisoned");
         let mut out: Vec<(String, String, String, u64)> = entries
             .iter()
-            .map(|((source, message), (level, count))| {
-                (source.clone(), level.clone(), message.clone(), *count)
+            .map(|((source, task, message), (level, count))| {
+                let msg = match task {
+                    Some(task) if task.is_empty() => message.clone(),
+                    Some(task) => format!("{task}: {message}"),
+                    None => message.clone(),
+                };
+                (source.clone(), level.clone(), msg, *count)
             })
             .collect();
         out.sort_by(|a, b| b.3.cmp(&a.3));
@@ -63,8 +68,7 @@ where
         let message = visitor
             .message
             .unwrap_or_else(|| source.clone());
-
-        let key = (source, message);
+        let key = (source, visitor.task, message);
 
         let mut entries = self.entries.lock().expect("log histogram lock poisoned");
         let entry = entries.entry(key).or_insert_with(|| (level_str.clone(), 0));
@@ -78,18 +82,23 @@ where
 #[derive(Default)]
 struct MessageVisitor {
     message: Option<String>,
+    task: Option<String>,
 }
 
 impl Visit for MessageVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         if field.name() == "message" {
             self.message = Some(format!("{value:?}"));
+        } else if field.name() == "task" {
+            self.task = Some(format!("{value:?}"));
         }
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             self.message = Some(value.to_owned());
+        } else if field.name() == "task" {
+            self.task = Some(value.to_owned());
         }
     }
 }

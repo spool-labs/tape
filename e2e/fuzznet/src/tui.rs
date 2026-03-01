@@ -18,7 +18,8 @@ use ratatui::{Frame, Terminal};
 use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
-use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
+use crate::app::{node_color, Command, PollSnapshot, TrackSnapshot, TrackStatus, NODE_EVENT_HISTORY_EPOCHS};
+use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
 
 const GROUP_COLS: usize = 7;
 const GROUP_ROWS: usize = 3;
@@ -27,8 +28,6 @@ const NODE_ID_WIDTH: usize = 3;
 const NODE_SPOOL_WIDTH: usize = 2;
 const NODE_STAKE_WIDTH: usize = 5;
 const NODE_EVENT_SPARK_WIDTH: usize = NODE_EVENT_HISTORY_EPOCHS;
-const BRAILLE_SPARK_HEIGHT: u8 = 3;
-const BRAILLE_COLOR_STEPS: u8 = 3;
 const EPOCH_CHART_MAX_MS: u64 = (EPOCH_DURATION as u64) * 10 * 1000;
 
 pub fn run_tui(
@@ -137,6 +136,7 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
             Constraint::Length(capped_spool_h), // spools (capped)
             Constraint::Length(capped_node_h),  // nodes (capped)
             Constraint::Length(7),              // charts (bordered)
+            Constraint::Length(8),              // tapes (bordered + track grid)
             Constraint::Min(3),                // log
             Constraint::Length(1),              // help bar
         ])
@@ -146,8 +146,9 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     render_spool_grid(frame, chunks[1], snap);
     render_node_chips(frame, chunks[2], snap);
     render_charts(frame, chunks[3], snap);
-    render_log(frame, chunks[4], snap);
-    render_help_bar(frame, chunks[5], disconnected);
+    render_tapes(frame, chunks[4], snap);
+    render_log(frame, chunks[5], snap);
+    render_help_bar(frame, chunks[6], disconnected);
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
@@ -169,15 +170,6 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         };
         let color = if snap.stake_fuzz_failed > 0 { Color::Red } else { Color::DarkGray };
         left_spans.push(Span::styled(fuzz_text, Style::default().fg(color)));
-    }
-
-    // Upload stats
-    if snap.uploads_pending > 0 || snap.uploads_certified > 0 || snap.uploads_expired > 0 {
-        left_spans.push(Span::styled(
-            format!("  Upload: ({} pend, {} cert, {} exp)",
-                snap.uploads_pending, snap.uploads_certified, snap.uploads_expired),
-            Style::default().fg(Color::DarkGray),
-        ));
     }
 
     // Right side: epoch | slot | time
@@ -358,19 +350,10 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     render_spark(
         frame,
         rows[1],
-        "network",
+        "store",
         &snap.total_store_history,
         "bytes",
         None,
-        None,
-    );
-    render_spark(
-        frame,
-        rows[2],
-        "repair",
-        &snap.repair_bw_history,
-        "bytes",
-        Some(snap.total_repair_bytes),
         None,
     );
     render_spark(
@@ -384,6 +367,15 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     );
     render_spark(
         frame,
+        rows[2],
+        "repair",
+        &snap.repair_bw_history,
+        "bytes",
+        Some(snap.total_repair_bytes),
+        None,
+    );
+    render_spark(
+        frame,
         rows[4],
         "upload",
         &snap.upload_bw_history,
@@ -391,6 +383,98 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         Some(snap.total_upload_bytes),
         None,
     );
+}
+
+fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Tapes ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let line1 = format!(
+        " pending: {}  cert: {}  exp: {}  fail: {}  retry: {}",
+        snap.uploads_pending, snap.uploads_certified, snap.uploads_expired, snap.uploads_failed, snap.uploads_retries
+    );
+
+    let line2 = if let Some(last_retry_error) = snap.uploads_last_retry_error.as_ref() {
+        if let Some(next_retry_in_ms) = snap.uploads_next_retry_in_ms {
+            if next_retry_in_ms == 0 {
+                format!(" last retry: {last_retry_error} | retrying now")
+            } else {
+                let delay = format_retry_delay(next_retry_in_ms);
+                format!(" last retry: {last_retry_error} | next retry in {delay}")
+            }
+        } else if snap.uploads_retry_in_progress {
+            format!(" last retry: {last_retry_error} | retrying now")
+        } else {
+            format!(" last retry: {last_retry_error}")
+        }
+    } else {
+        if let Some(next_retry_in_ms) = snap.uploads_next_retry_in_ms {
+            if next_retry_in_ms == 0 {
+                " retrying now".to_string()
+            } else {
+                format!(" next retry in {}", format_retry_delay(next_retry_in_ms))
+            }
+        } else if snap.uploads_retry_in_progress {
+            " retrying now".to_string()
+        } else {
+            " no retry yet".to_string()
+        }
+    };
+
+    let mut lines: Vec<Line> = vec![Line::from(line1), Line::from(line2)];
+    let track_rows = render_track_grid(inner.width as usize, &snap.tracks);
+    lines.extend(track_rows);
+
+    let max_rows = inner.height as usize;
+    if lines.len() > max_rows {
+        lines.truncate(max_rows.saturating_sub(1));
+        lines.push(Line::styled(" ...", Style::default().fg(Color::DarkGray)));
+    }
+
+    let p = Paragraph::new(lines);
+    frame.render_widget(p, inner);
+}
+
+fn render_track_grid(width: usize, tracks: &[TrackSnapshot]) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    if tracks.is_empty() {
+        return vec![Line::styled(
+            " no tracks",
+            Style::default().fg(Color::DarkGray),
+        )];
+    }
+
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span> = Vec::new();
+    for track in tracks {
+        let (glyph, color) = track_glyph(track);
+        current.push(Span::styled(glyph, Style::default().fg(color)));
+        if current.len() == width {
+            rows.push(Line::from(std::mem::take(&mut current)));
+        }
+    }
+    if !current.is_empty() {
+        rows.push(Line::from(current));
+    }
+
+    rows
+}
+
+fn track_glyph(track: &TrackSnapshot) -> (String, Color) {
+    match track.status {
+        TrackStatus::Registered => ("◻".to_string(), Color::DarkGray),
+        TrackStatus::Certified => ("◼".to_string(), Color::Green),
+        TrackStatus::Expired => ("◻".to_string(), Color::Yellow),
+        TrackStatus::Failed => ("✗".to_string(), Color::Red),
+        TrackStatus::Unknown => ("?".to_string(), Color::DarkGray),
+    }
 }
 
 fn render_spark(
@@ -438,132 +522,9 @@ fn render_spark(
 
     // Braille sparkline with btop gradient
     let chart_w = chunks[1].width as usize;
-    let braille_line = render_braille_spans(data, chart_w, fixed_scale_max);
+    let braille_line = render_braille_sparkline(data, chart_w, fixed_scale_max);
     let braille_p = Paragraph::new(Line::from(braille_line));
     frame.render_widget(braille_p, chunks[1]);
-}
-
-fn render_braille_spans(data: &[u64], width: usize, scale_max: Option<u64>) -> Vec<Span<'static>> {
-    if width == 0 {
-        return vec![];
-    }
-
-    // Each braille char encodes 2 data points side by side (left col, right col),
-    // with BRAILLE_SPARK_HEIGHT vertical levels per column.
-    let needed = width * 2;
-    let start = data.len().saturating_sub(needed);
-    let visible = &data[start..];
-    let max_level = BRAILLE_SPARK_HEIGHT;
-    let color_steps = BRAILLE_COLOR_STEPS;
-    let max_color_step = max_level * color_steps;
-    let data_max = scale_max
-        .unwrap_or_else(|| visible.iter().copied().max().unwrap_or(0))
-        .max(1);
-
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
-
-    for i in 0..width {
-        let li = i * 2;
-        let ri = li + 1;
-
-        let has_left = li < visible.len();
-        let has_right = ri < visible.len();
-
-        if !has_left && !has_right {
-            spans.push(Span::styled(
-                "\u{28c0}",
-                Style::default().fg(Color::Rgb(80, 80, 80)),
-            ));
-            continue;
-        }
-
-        let lv = if has_left {
-            let raw = visible[li];
-            quantized_level(raw, data_max, max_level, color_steps)
-        } else {
-            0
-        };
-        let rv = if has_right {
-            let raw = visible[ri];
-            quantized_level(raw, data_max, max_level, color_steps)
-        } else {
-            0
-        };
-
-        let left_level = ((lv + color_steps - 1) / color_steps).min(max_level);
-        let right_level = ((rv + color_steps - 1) / color_steps).min(max_level);
-
-        let left_bits: [u8; 4] = [0x40, 0x04, 0x02, 0x01];
-        let right_bits: [u8; 4] = [0x80, 0x20, 0x10, 0x08];
-
-        let mut code: u8 = 0;
-        for j in 0..(left_level as usize) {
-            code |= left_bits[j];
-        }
-        for j in 0..(right_level as usize) {
-            code |= right_bits[j];
-        }
-
-        let ch = char::from_u32(0x2800 + code as u32).unwrap_or(' ');
-        if code == 0 {
-            spans.push(Span::styled(
-                "\u{28c0}",
-                Style::default().fg(Color::Rgb(80, 80, 80)),
-            ));
-        } else {
-            let peak = lv.max(rv).min(max_color_step);
-            let color = btop_gradient(peak, max_color_step);
-            spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
-        }
-    }
-
-    spans
-}
-
-fn render_node_sparkline(data: &[u64], width: usize, scale_max: u64) -> Vec<Span<'static>> {
-    if width == 0 {
-        return vec![];
-    }
-
-    let point_count = data.len().min(width);
-    let visible = &data[data.len().saturating_sub(point_count)..];
-    let glyph_width = (visible.len() + 1) / 2;
-
-    render_braille_spans(visible, glyph_width, Some(scale_max))
-}
-
-fn quantized_level(value: u64, data_max: u64, max_level: u8, color_steps: u8) -> u8 {
-    if value == 0 || data_max == 0 {
-        return 0;
-    }
-
-    let max_color_step = (max_level * color_steps) as f64;
-    let raw = (value as f64 / data_max as f64) * max_color_step;
-    let level = raw.ceil().clamp(0.0, max_color_step) as u8;
-    level.max(1)
-}
-
-fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
-    (
-        (a.0 as f64 + (b.0 as f64 - a.0 as f64) * t) as u8,
-        (a.1 as f64 + (b.1 as f64 - a.1 as f64) * t) as u8,
-        (a.2 as f64 + (b.2 as f64 - a.2 as f64) * t) as u8,
-    )
-}
-
-fn btop_gradient(value: u8, max: u8) -> Color {
-    if value == 0 {
-        return Color::Rgb(80, 80, 80);
-    }
-    let ratio = value as f64 / max as f64;
-    let (r, g, b) = if ratio <= 0.5 {
-        let t = ratio * 2.0;
-        lerp_rgb((0x77, 0xca, 0x9b), (0xcb, 0xc0, 0x6c), t)
-    } else {
-        let t = (ratio - 0.5) * 2.0;
-        lerp_rgb((0xcb, 0xc0, 0x6c), (0xdc, 0x4c, 0x4c), t)
-    };
-    Color::Rgb(r, g, b)
 }
 
 fn render_log(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
@@ -626,6 +587,14 @@ fn format_duration(secs: f64) -> String {
     let m = (total / 60) % 60;
     let s = total % 60;
     format!("{h:02}:{m:02}:{s:02}")
+}
+
+fn format_retry_delay(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
 }
 
 fn format_bytes(b: u64) -> String {

@@ -337,6 +337,41 @@ impl<R: Rpc> RpcClient<R> {
             .collect()
     }
 
+    /// Find all Track accounts registered in the system
+    ///
+    /// WARNING: This is an expensive operation that fetches all track accounts.
+    /// Use sparingly, especially on mainnet.
+    pub async fn get_all_tracks(&self) -> Result<Vec<(Pubkey, Track)>, RpcError> {
+        let config = RpcProgramAccountsConfig {
+            filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                0, // Offset 0 is the discriminator
+                vec![AccountType::Track as u8],
+            ))]),
+            account_config: solana_client::rpc_config::RpcAccountInfoConfig {
+                encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
+                commitment: Some(solana_sdk::commitment_config::CommitmentConfig {
+                    commitment: self.rpc().commitment(),
+                }),
+                data_slice: None,
+                min_context_slot: None,
+            },
+            with_context: None,
+            sort_results: None,
+        };
+
+        let accounts = self.rpc().get_program_accounts(&tapedrive::ID, config).await?;
+
+        accounts
+            .into_iter()
+            .map(|(pubkey, account)| {
+                let track = Track::unpack_with_discriminator(&account.data)
+                    .map(|t| *t)
+                    .map_err(|e| RpcError::Deserialization(e.to_string()))?;
+                Ok((pubkey, track))
+            })
+            .collect()
+    }
+
     // ========================================================================
     // ID-based Lookups
     // ========================================================================

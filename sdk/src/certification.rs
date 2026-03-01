@@ -26,30 +26,25 @@
 //! let result = collector.collect_signatures(&track_address, &system, &node_addresses).await?;
 //! ```
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use futures::stream::{self, StreamExt};
 use solana_sdk::pubkey::Pubkey;
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 use tape_api::instruction::build_certify_track_ix;
 use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_api::state::System;
 use tape_core::bft::is_supermajority;
-use tape_core::bls::{BlsPubkey, BlsSignature};
-use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::bls::BlsSignature;
+use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 use tape_node_client::{with_retry, NodeClient, NodeError, RetryConfig, BlsSignResponse};
 
 use crate::communication::NodeCommunicationFactory;
-
-// ============================================================================
-// Error Types
-// ============================================================================
 
 /// Errors that can occur during certification.
 #[derive(Debug, Error)]
@@ -132,10 +127,6 @@ impl From<&NodeError> for NodeSignError {
     }
 }
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
 /// Configuration for certification collection.
 #[derive(Clone, Debug)]
 pub struct CertificationConfig {
@@ -187,10 +178,6 @@ impl CertificationConfig {
     }
 }
 
-// ============================================================================
-// Result Types
-// ============================================================================
-
 /// Result of a successful signature collection.
 #[derive(Debug)]
 pub struct CollectedSignatures {
@@ -211,18 +198,6 @@ pub struct CollectedSignatures {
     /// Whether collection exited early (supermajority reached before all responses).
     pub early_exit: bool,
 }
-
-/// Result from a single node signature request.
-struct NodeResult {
-    node_id: NodeId,
-    member_idx: u8,
-    pubkey: BlsPubkey,
-    result: Result<BlsSignResponse, NodeSignError>,
-}
-
-// ============================================================================
-// Collector
-// ============================================================================
 
 /// Collector for gathering BLS signatures from committee members.
 pub struct CertificationCollector {
@@ -257,7 +232,7 @@ impl CertificationCollector {
     /// * `Err(CertificationError)` - If insufficient signatures or other error
     ///
     /// # Features
-    /// * Bounded concurrency via semaphore
+    /// * Bounded concurrency via buffered async stream
     /// * Early exit when supermajority reached (if enabled)
     /// * Retry with exponential backoff for transient failures
     pub async fn collect_signatures(
@@ -269,149 +244,109 @@ impl CertificationCollector {
     ) -> Result<CollectedSignatures, CertificationError> {
         let committee = &system.committee;
         let committee_size = committee.size();
+        let group_total_weight = SPOOL_GROUP_SIZE as u64;
 
         if committee_size == 0 {
             return Err(CertificationError::NoCommitteeMembers);
         }
 
-        // Determine which members own spools in this group (deduplicated)
-        let group_members: std::collections::HashSet<u8> = {
-            let mut members = std::collections::HashSet::new();
-            for i in 0..SPOOL_GROUP_SIZE {
-                let spool = tape_core::erasure::spool_for_slice(spool_group, i);
-                let member = system.spools.0[spool as usize];
-                members.insert(member);
-            }
-            members
-        };
+        let group_members = collect_group_members(spool_group, system);
+        let (signature_requests, mut remaining_node_weight) =
+            signature_requests_for_group(
+                spool_group,
+                system,
+                &self.factory,
+                committee_size,
+                &group_members,
+                node_addresses,
+            );
 
-        let track = tape_node_client::Pubkey(track_address.to_bytes());
-
-        let target_count = group_members.len();
-        // Channel for streaming results as they complete
-        let (tx, mut rx) = mpsc::channel::<NodeResult>(target_count.max(1));
-
-        // Semaphore for bounded concurrency
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent));
-
-        // Spawn tasks only for members who own spools in this group
-        let mut task_count = 0;
-        for (member_idx, member) in committee.iter().enumerate() {
-            if !group_members.contains(&(member_idx as u8)) {
-                continue;
-            }
-            // Look up network address
-            let address = match node_addresses.get(&member.id) {
-                Some(addr) => addr.clone(),
-                None => {
-                    tracing::warn!(node_id = member.id.as_u64(), "No address found for node");
-                    continue;
-                }
-            };
-
-            let client = match self.factory.client_for_address(&address) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        node_id = member.id.as_u64(),
-                        error = %e,
-                        "Failed to create client for node"
-                    );
-                    continue;
-                }
-            };
-
-            let node_id = member.id;
-            let pubkey = member.key;
-            let sem_clone = semaphore.clone();
-            let tx_clone = tx.clone();
-            let retry_config = self.config.retry.clone();
-
-            tokio::spawn(async move {
-                let _permit = sem_clone.acquire_owned().await;
-                let result = request_signature_with_retry(&client, track, &retry_config).await;
-
-                // Send result through channel (ignore error if receiver dropped - early exit)
-                let _ = tx_clone
-                    .send(NodeResult {
-                        node_id,
-                        member_idx: member_idx as u8,
-                        pubkey,
-                        result,
-                    })
-                    .await;
+        if signature_requests.is_empty() {
+            return Err(CertificationError::InsufficientSignatures {
+                got: 0,
+                total: group_total_weight as usize,
             });
-
-            task_count += 1;
         }
 
-        // Drop our sender so channel closes when all tasks complete
-        drop(tx);
+        let track_bytes = track_address.to_bytes();
+        let mut requests = stream::iter(signature_requests.into_iter().map(|request| {
+            let retry_config = self.config.retry.clone();
+            let track = track_bytes;
+            async move {
+                let track = tape_node_client::Pubkey(track);
+                let result = request_signature_with_retry(&request.client, track, &retry_config).await;
+                NodeResult {
+                    node_id: request.node_id,
+                    member_idx: request.member_idx,
+                    weight: request.weight,
+                    result,
+                }
+            }
+        }))
+        .buffer_unordered(self.config.max_concurrent);
 
         // Collect results, potentially exiting early
-        let mut successful: Vec<(u8, BlsPubkey, BlsSignResponse)> = Vec::new();
+        let mut epoch_buckets: HashMap<u64, SignatureBucket> = HashMap::new();
         let mut failures: Vec<(NodeId, NodeSignError)> = Vec::new();
-        let mut received = 0;
         let mut early_exit_triggered = false;
-        let mut expected_epoch: Option<EpochNumber> = None;
 
-        while let Some(node_result) = rx.recv().await {
-            received += 1;
+        while let Some(node_result) = requests.next().await {
+            let remaining_after = remaining_node_weight.saturating_sub(node_result.weight);
+            remaining_node_weight = remaining_after;
 
             match node_result.result {
                 Ok(response) => {
-                    // Verify epoch consistency - all signatures must be for the same epoch
-                    match expected_epoch {
-                        None => {
-                            expected_epoch = Some(response.epoch);
-                            tracing::debug!(epoch = response.epoch.0, "First signature epoch");
-                        }
-                        Some(expected) if response.epoch != expected => {
-                            // Epoch mismatch - this could happen during epoch transitions
-                            tracing::warn!(
-                                node_id = node_result.node_id.as_u64(),
-                                expected_epoch = expected.0,
-                                got_epoch = response.epoch.0,
-                                "Node returned signature for different epoch, skipping"
-                            );
-                            failures.push((
-                                node_result.node_id,
-                                NodeSignError::Other(format!(
-                                    "epoch mismatch: expected {}, got {}",
-                                    expected.0, response.epoch.0
-                                )),
-                            ));
-                            continue;
-                        }
-                        Some(_) => {} // Epoch matches, continue
-                    }
-
+                    let epoch_key = response.epoch.0;
                     tracing::debug!(
                         node_id = node_result.node_id.as_u64(),
                         member_idx = node_result.member_idx,
-                        epoch = response.epoch.0,
+                        epoch = epoch_key,
                         "Got signature from node"
                     );
-                    successful.push((node_result.member_idx, node_result.pubkey, response));
+
+                    record_signature_response(
+                        &mut epoch_buckets,
+                        epoch_key,
+                        response,
+                        node_result.member_idx as usize,
+                        node_result.weight,
+                    );
+                    let bucket = epoch_buckets
+                        .get(&epoch_key)
+                        .expect("epoch bucket inserted");
 
                     // Check for early exit using spool-group-weighted supermajority
                     // Weight = number of spools in the group owned by signers
-                    let signer_weight = system.spools.group_weight(spool_group, &{
-                        let indices: Vec<usize> = successful.iter().map(|(idx, _, _)| *idx as usize).collect();
-                        tape_api::program::tapedrive::CommitteeBitmap::from_indices(&indices, committee_size)
-                    });
                     if self.config.early_exit
-                        && is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64)
+                        && is_supermajority(bucket.weight, group_total_weight)
                     {
+                        let bitmap = CommitteeBitmap::from_indices(&bucket.member_indices, committee_size);
+                        let responses = bucket.responses.clone();
                         tracing::info!(
-                            signatures = successful.len(),
-                            weight = signer_weight,
+                            signatures = bucket.responses.len(),
+                            weight = bucket.weight,
                             group_size = SPOOL_GROUP_SIZE,
-                            remaining = task_count - received,
+                            remaining_weight = remaining_node_weight,
                             "Spool group supermajority reached, exiting early"
                         );
                         early_exit_triggered = true;
-                        break;
+
+                        let signatures: Vec<BlsSignature> = responses
+                            .iter()
+                            .map(|response| response.signature)
+                            .collect();
+                        let aggregated_signature = BlsSignature::aggregate(&signatures)
+                            .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
+                        return Ok(CollectedSignatures {
+                            aggregated_signature,
+                            bitmap,
+                            signature_count: signatures.len(),
+                            committee_size,
+                            epoch: epoch_key,
+                            responses,
+                            failures,
+                            early_exit: early_exit_triggered,
+                        });
                     }
                 }
                 Err(e) => {
@@ -433,45 +368,70 @@ impl CertificationCollector {
                     failures.push((node_result.node_id, e));
                 }
             }
+
+            let can_reach_quorum = can_reach_supermajority(
+                &epoch_buckets,
+                remaining_node_weight,
+                group_total_weight,
+            );
+            if !can_reach_quorum {
+                break;
+            }
         }
 
-        // Check if we have spool-weighted supermajority within the group
-        let signature_count = successful.len();
-        let member_indices: Vec<usize> = successful.iter().map(|(idx, _, _)| *idx as usize).collect();
-        let check_bitmap = tape_api::program::tapedrive::CommitteeBitmap::from_indices(&member_indices, committee_size);
+        let selected_epoch = select_supermajority_epoch(&epoch_buckets, group_total_weight);
+
+        if selected_epoch.is_none() {
+            let (best_epoch, best_weight, best_signatures) =
+                select_best_epoch(&epoch_buckets);
+            tracing::debug!(
+                best_epoch,
+                best_weight,
+                best_signatures,
+                remaining_weight = remaining_node_weight,
+                "No epoch achieved supermajority"
+            );
+            return Err(CertificationError::InsufficientSignatures {
+                got: best_weight,
+                total: group_total_weight as usize,
+            });
+        }
+
+        let selected_epoch = selected_epoch.expect("selected epoch");
+        let selected_bucket = epoch_buckets.remove(&selected_epoch).expect("selected epoch should exist");
+        let signature_count = selected_bucket.responses.len();
+        let member_indices = selected_bucket.member_indices.clone();
+        let check_bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
         let final_weight = system.spools.group_weight(spool_group, &check_bitmap);
-        if !is_supermajority(final_weight, SPOOL_GROUP_SIZE as u64) {
+        if !is_supermajority(final_weight, group_total_weight) {
             return Err(CertificationError::InsufficientSignatures {
                 got: final_weight as usize,
-                total: SPOOL_GROUP_SIZE,
+                total: group_total_weight as usize,
             });
         }
 
         // Build bitmap from member indices (reuse from supermajority check above)
-        let bitmap = CommitteeBitmap::from_indices(&member_indices, committee_size);
+        let bitmap = check_bitmap;
 
         // Extract signatures and aggregate
-        let signatures: Vec<BlsSignature> = successful
+        let signatures: Vec<BlsSignature> = selected_bucket
+            .responses
             .iter()
-            .map(|(_, _, resp)| resp.signature)
+            .map(|response| response.signature)
             .collect();
 
         let aggregated_signature = BlsSignature::aggregate(&signatures)
             .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
 
         // Collect responses for return
-        let responses: Vec<BlsSignResponse> =
-            successful.into_iter().map(|(_, _, resp)| resp).collect();
-
-        // Epoch should always be Some at this point since we have signatures
-        let epoch = expected_epoch.expect("should have epoch from successful signatures");
+        let responses = selected_bucket.responses;
 
         Ok(CollectedSignatures {
             aggregated_signature,
             bitmap,
             signature_count,
             committee_size,
-            epoch: epoch.0,
+            epoch: selected_epoch,
             responses,
             failures,
             early_exit: early_exit_triggered,
@@ -502,9 +462,209 @@ impl CertificationCollector {
     }
 }
 
-// ============================================================================
-// Retry Logic
-// ============================================================================
+/// Internal per-node collection state.
+struct NodeResult {
+    node_id: NodeId,
+    member_idx: u8,
+    weight: u64,
+    result: Result<BlsSignResponse, NodeSignError>,
+}
+
+/// Accumulates all signature responses for a single epoch candidate.
+///
+/// Each epoch is tracked independently so mixed-epoch responses can be grouped and
+/// evaluated for quorum progress before being chosen for certification.
+struct SignatureBucket {
+    responses: Vec<BlsSignResponse>,
+    weight: u64,
+    member_indices: Vec<usize>,
+}
+
+/// Request metadata for a single committee member used during signature collection.
+///
+/// This captures the minimal data needed to request a signature and account for a
+/// node's committee weight when its response contributes to a bucket.
+struct SignatureRequest {
+    node_id: NodeId,
+    member_idx: u8,
+    weight: u64,
+    client: NodeClient,
+}
+
+/// Builds the set of member indices that belong to the given spool group.
+///
+/// Returns a deduplicated set of committee member indices so request generation can
+/// quickly skip non-group members.
+fn collect_group_members(spool_group: SpoolGroup, system: &System) -> HashSet<u8> {
+    let mut members = HashSet::new();
+
+    for i in 0..SPOOL_GROUP_SIZE {
+        let spool = spool_for_slice(spool_group, i);
+        let member = system.spools.0[spool as usize];
+        members.insert(member);
+    }
+
+    members
+}
+
+/// Builds signature requests for members of `spool_group` and computes remaining weight.
+///
+/// Returns a tuple containing:
+/// - request descriptors for members with reachable addresses/clients and non-zero weight
+/// - total weight represented by all discovered members in the group
+fn signature_requests_for_group(
+    spool_group: SpoolGroup,
+    system: &System,
+    node_communicator: &NodeCommunicationFactory,
+    committee_size: usize,
+    group_members: &HashSet<u8>,
+    node_addresses: &HashMap<NodeId, String>,
+) -> (Vec<SignatureRequest>, u64) {
+    let mut remaining_node_weight = 0u64;
+    let mut signature_requests: Vec<SignatureRequest> = Vec::new();
+
+    for (member_idx, member) in system.committee.iter().enumerate() {
+        if !group_members.contains(&(member_idx as u8)) {
+            continue;
+        }
+
+        let node_id = member.id;
+        let address = match node_addresses.get(&node_id) {
+            Some(addr) => addr.clone(),
+            None => {
+                tracing::warn!(node_id = node_id.as_u64(), "No address found for node");
+                continue;
+            }
+        };
+
+        let client = match node_communicator.client_for_address(&address) {
+            Ok(c) => c,
+            Err(error) => {
+                tracing::warn!(
+                    node_id = node_id.as_u64(),
+                    error = %error,
+                    "Failed to create client for node"
+                );
+                continue;
+            }
+        };
+
+        let member_bitmap = CommitteeBitmap::from_indices(&[member_idx], committee_size);
+        let node_weight = system.spools.group_weight(spool_group, &member_bitmap);
+        if node_weight == 0 {
+            tracing::debug!(
+                node_id = node_id.as_u64(),
+                member_idx,
+                "Skipping group member with no group weight"
+            );
+            continue;
+        }
+
+        remaining_node_weight += node_weight;
+        signature_requests.push(SignatureRequest {
+            node_id,
+            member_idx: member_idx as u8,
+            weight: node_weight,
+            client,
+        });
+    }
+
+    (signature_requests, remaining_node_weight)
+}
+
+/// Records a successful response into the bucket for its epoch.
+///
+/// Tracks response count, aggregate weight, and participating member indices for
+/// later quorum checks and tie-breaking.
+fn record_signature_response(
+    epoch_buckets: &mut HashMap<u64, SignatureBucket>,
+    epoch_key: u64,
+    response: BlsSignResponse,
+    member_idx: usize,
+    node_weight: u64,
+) {
+    let bucket = epoch_buckets.entry(epoch_key).or_insert(SignatureBucket {
+        responses: Vec::new(),
+        weight: 0,
+        member_indices: Vec::new(),
+    });
+    bucket.responses.push(response);
+    bucket.weight += node_weight;
+    bucket.member_indices.push(member_idx);
+}
+
+/// Returns true if the remaining in-flight weight could still hit supermajority.
+///
+/// This checks both:
+/// - immediate success from remaining responses alone, and
+/// - any existing epoch bucket combined with remaining responses.
+fn can_reach_supermajority(
+    epoch_buckets: &HashMap<u64, SignatureBucket>,
+    remaining_node_weight: u64,
+    group_total_weight: u64,
+) -> bool {
+    is_supermajority(remaining_node_weight, group_total_weight)
+        || epoch_buckets
+            .values()
+            .any(|bucket| is_supermajority(bucket.weight + remaining_node_weight, group_total_weight))
+}
+
+/// Chooses an epoch that already has supermajority, preferring higher weight then higher epoch.
+///
+/// This is used to fail fast when an epoch can certify, keeping behavior deterministic
+/// when multiple epochs reach supermajority simultaneously.
+fn select_supermajority_epoch(
+    epoch_buckets: &HashMap<u64, SignatureBucket>,
+    group_total_weight: u64,
+) -> Option<u64> {
+    let mut selected_epoch = None;
+    let mut selected_weight = 0u64;
+
+    for (epoch, bucket) in epoch_buckets.iter() {
+        if !is_supermajority(bucket.weight, group_total_weight) {
+            continue;
+        }
+
+        match selected_epoch {
+            Some(selected) => {
+                if bucket.weight > selected_weight
+                    || (bucket.weight == selected_weight && *epoch > selected)
+                {
+                    selected_epoch = Some(*epoch);
+                    selected_weight = bucket.weight;
+                }
+            }
+            None => {
+                selected_epoch = Some(*epoch);
+                selected_weight = bucket.weight;
+            }
+        }
+    }
+
+    selected_epoch
+}
+
+/// Selects the best non-final epoch when no epoch reached supermajority yet.
+///
+/// Preference is by highest weighted bucket, then by highest signature count, and
+/// returns `(selected_epoch, weight, signature_count)` for diagnostics.
+fn select_best_epoch(epoch_buckets: &HashMap<u64, SignatureBucket>) -> (Option<u64>, usize, usize) {
+    let mut best_epoch = None;
+    let mut best_weight = 0usize;
+    let mut best_signatures = 0usize;
+
+    for (epoch, bucket) in epoch_buckets.iter() {
+        if bucket.weight as usize > best_weight
+            || (bucket.weight as usize == best_weight && bucket.responses.len() > best_signatures)
+        {
+            best_weight = bucket.weight as usize;
+            best_signatures = bucket.responses.len();
+            best_epoch = Some(*epoch);
+        }
+    }
+
+    (best_epoch, best_weight, best_signatures)
+}
 
 /// Request a signature from a node with retry logic.
 async fn request_signature_with_retry(
@@ -516,10 +676,6 @@ async fn request_signature_with_retry(
         .await
         .map_err(|e| NodeSignError::from(&e))
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -613,5 +769,122 @@ mod tests {
         assert!(!NodeError::NotFound.is_retryable());
         assert!(!NodeError::NotInCommittee.is_retryable());
         assert!(!NodeError::MissingSlices { have: 5, need: 10 }.is_retryable());
+    }
+
+    /// Builds a deterministic mock signature response for unit tests.
+    fn mock_signature_response(epoch: u64, node_id: u64) -> BlsSignResponse {
+        BlsSignResponse {
+            signature: BlsSignature(tape_crypto::bls12254::min_sig::G1CompressedPoint([1u8; 32])),
+            node_id: NodeId::new(node_id),
+            epoch: EpochNumber(epoch),
+        }
+    }
+
+    #[test]
+    fn test_reach_supermajority_by_remaining() {
+        let buckets = HashMap::new();
+        assert!(can_reach_supermajority(&buckets, 14, 20));
+    }
+
+    #[test]
+    fn test_reach_supermajority_by_bucket() {
+        let buckets = HashMap::from([
+            (8, SignatureBucket {
+                responses: Vec::new(),
+                weight: 9,
+                member_indices: Vec::new(),
+            }),
+            (9, SignatureBucket {
+                responses: Vec::new(),
+                weight: 6,
+                member_indices: Vec::new(),
+            }),
+        ]);
+
+        assert!(can_reach_supermajority(&buckets, 5, 20));
+        assert!(!can_reach_supermajority(&buckets, 4, 20));
+    }
+
+    #[test]
+    fn test_reach_supermajority_impossible() {
+        let buckets = HashMap::from([
+            (8, SignatureBucket {
+                responses: Vec::new(),
+                weight: 6,
+                member_indices: Vec::new(),
+            }),
+            (9, SignatureBucket {
+                responses: Vec::new(),
+                weight: 5,
+                member_indices: Vec::new(),
+            }),
+        ]);
+
+        assert!(!can_reach_supermajority(&buckets, 4, 20));
+    }
+
+    #[test]
+    fn test_select_supermajority_epoch() {
+        let buckets = HashMap::from([
+            (7, SignatureBucket {
+                responses: Vec::new(),
+                weight: 13,
+                member_indices: Vec::new(),
+            }),
+            (8, SignatureBucket {
+                responses: Vec::new(),
+                weight: 14,
+                member_indices: Vec::new(),
+            }),
+            (9, SignatureBucket {
+                responses: Vec::new(),
+                weight: 14,
+                member_indices: Vec::new(),
+            }),
+        ]);
+
+        assert_eq!(select_supermajority_epoch(&buckets, 20), Some(9));
+    }
+
+    #[test]
+    fn test_select_best_epoch_weight_then_count() {
+        let buckets = HashMap::from([
+            (7, SignatureBucket {
+                responses: vec![mock_signature_response(7, 1), mock_signature_response(7, 2)],
+                weight: 12,
+                member_indices: Vec::new(),
+            }),
+            (8, SignatureBucket {
+                responses: vec![mock_signature_response(8, 3)],
+                weight: 13,
+                member_indices: Vec::new(),
+            }),
+        ]);
+
+        let (selected, weight, count) = select_best_epoch(&buckets);
+        assert_eq!(selected, Some(8));
+        assert_eq!(weight, 13);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_select_best_epoch_tie_count() {
+        let buckets = HashMap::from([
+            (7, SignatureBucket {
+                responses: vec![mock_signature_response(7, 1)],
+                weight: 12,
+                member_indices: Vec::new(),
+            }),
+            (8, SignatureBucket {
+                responses: vec![mock_signature_response(8, 2), mock_signature_response(8, 3)],
+                weight: 12,
+                member_indices: Vec::new(),
+            }),
+        ]);
+
+        let (selected, weight, count) = select_best_epoch(&buckets);
+        assert_eq!(selected, Some(8));
+        assert_eq!(weight, 12);
+        assert_eq!(count, 2);
     }
 }
