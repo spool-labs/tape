@@ -84,13 +84,22 @@ impl<S: Store, R: Rpc> Fsm<S, R> {}
 mod tests {
     use super::*;
 
+    use tape_api::event::{
+        EpochAdvanced, TapeDestroyed, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
+        TrackRegistered,
+    };
+    use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::StorageUnits;
+    use tape_core::snapshot::ReplayableEvent;
+    use tape_core::types::{SlotNumber, StorageUnits};
     use tape_crypto::Hash;
-    use tape_store::ops::{SliceOps, SpoolOps};
-    use tape_store::types::SpoolStatus;
+    use tape_store::ops::{
+        EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
+    };
+    use tape_store::types::{ObjectInfo, SpoolStatus};
 
     use crate::core::test_utils::test_context;
+    use crate::ingestor::IngestedBlock;
 
     fn make_advance_epoch(old: u64, new: u64) -> ParsedInstruction {
         ParsedInstruction::AdvanceEpoch {

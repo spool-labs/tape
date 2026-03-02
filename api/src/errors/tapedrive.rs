@@ -86,13 +86,15 @@ pub enum TapeError {
     #[error("zero shares")]
     ZeroShares = 0x66,
 
-    // Commitment (0x70-0x73)
+    // Commitment (0x70-0x74)
     #[error("bad proof")]
     BadProof = 0x70,
     #[error("list full")]
     ListFull = 0x71,
     #[error("invalid commitment")]
     InvalidCommitment = 0x72,
+    #[error("already invalidated")]
+    AlreadyInvalidated = 0x73,
     #[error("already certified")]
     AlreadyCertified = 0x74,
 }
@@ -124,6 +126,7 @@ impl TapeError {
             Self::BadEpochState
                 | Self::AlreadyAdvanced
                 | Self::AlreadySynced
+                | Self::AlreadyInvalidated
                 | Self::AlreadyCertified
                 | Self::UnexpectedState
         )
@@ -181,6 +184,7 @@ impl TapeError {
             Self::ListFull => "Blacklist is full",
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",
             Self::SnapshotIncomplete => "Previous epoch snapshot not yet complete",
+            Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Snapshot track already certified",
         }
     }

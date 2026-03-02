@@ -253,11 +253,17 @@ pub fn load_snapshot_local_epoch(
 
 /// Map a Solana RPC error to a submission class.
 pub fn classify_submit_error(err: &RpcError) -> SubmitClass {
-    if parse_tape_error(err)
+    let tape_error = parse_tape_error(err);
+
+    if tape_error
         .map(|error| error.is_already_done())
         .unwrap_or(false)
     {
         return SubmitClass::Done;
+    }
+
+    if tape_error.map(|error| error.is_retriable()).unwrap_or(false) {
+        return SubmitClass::Pending;
     }
 
     if is_account_state_pending_error(&err.to_string()) {
@@ -327,6 +333,7 @@ pub fn decode_outer(decoded_chunks: Vec<Option<(usize, Vec<u8>)>>) -> Result<Vec
 mod tests {
     use super::*;
     use crate::core::test_utils;
+    use tape_api::errors::TapeError;
     use tape_crypto::Hash;
     use tape_store::types::SnapshotChunkMeta;
 
@@ -411,5 +418,23 @@ mod tests {
             .unwrap();
 
         assert!(is_snapshot_chunk_ready(&ctx, local_epoch, 3).unwrap());
+    }
+
+    #[test]
+    fn submit_error_retriable_is_pending() {
+        let err = RpcError::Transaction(format!(
+            "custom program error: 0x{:x}",
+            TapeError::TooSoon as u32
+        ));
+        assert_eq!(classify_submit_error(&err), SubmitClass::Pending);
+    }
+
+    #[test]
+    fn submit_error_already_done_is_done() {
+        let err = RpcError::Transaction(format!(
+            "custom program error: 0x{:x}",
+            TapeError::AlreadyCertified as u32
+        ));
+        assert_eq!(classify_submit_error(&err), SubmitClass::Done);
     }
 }

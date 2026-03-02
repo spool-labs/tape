@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpc::Rpc;
+use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::errors::TapeError;
 use tape_store::ops::SpoolOps;
@@ -15,7 +15,18 @@ use crate::core::{NodeContext, require_epoch};
 use crate::TaskOutcome;
 use rpc_client::parse_tape_error;
 
-const SYNC_EPOCH_PENDING_DELAY: Duration = Duration::from_secs(30);
+const SYNC_EPOCH_PENDING_DELAY: Duration = Duration::from_secs(5);
+
+fn classify_sync_epoch_error(err: &RpcError) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::AlreadySynced) => TaskOutcome::Success,
+        Some(TapeError::BadEpochState) => TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY),
+        Some(TapeError::NotInCommittee)
+        | Some(TapeError::BadSpoolHash)
+        | Some(TapeError::BadEpochId) => TaskOutcome::Permanent(format!("sync_epoch: {err}")),
+        _ => TaskOutcome::Retryable(format!("sync_epoch: {err}")),
+    }
+}
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
@@ -44,27 +55,73 @@ pub async fn run<S: Store, R: Rpc>(
         r = submit_sync_epoch(&context, epoch, &owned_spools) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
-    match result {
+    let had_error = result.is_err();
+    let outcome = match result {
         Ok(sig) => {
             tracing::info!(%sig, epoch = epoch.as_u64(), "sync_epoch submitted");
             TaskOutcome::Success
         }
-        Err(ref e) => match parse_tape_error(e) {
-            Some(TapeError::AlreadySynced) => {
-                tracing::info!("sync_epoch already completed");
-                TaskOutcome::Success
-            }
-            Some(TapeError::BadEpochState)
-            | Some(TapeError::NotInCommittee)
-            | Some(TapeError::BadSpoolHash)
-            | Some(TapeError::BadEpochId) => {
-                tracing::debug!(error = %e, "sync_epoch waiting for protocol state");
-                TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY)
-            }
-            _ => {
-                tracing::warn!(error = %e, "sync_epoch submission failed");
-                TaskOutcome::Retryable(format!("sync_epoch: {e}"))
-            }
-        },
+        Err(ref e) => classify_sync_epoch_error(e),
+    };
+
+    match &outcome {
+        TaskOutcome::Success if had_error => {
+            tracing::info!("sync_epoch already completed");
+        }
+        TaskOutcome::Pending(_) => {
+            tracing::debug!("sync_epoch waiting for protocol state");
+        }
+        TaskOutcome::Retryable(err) => {
+            tracing::warn!(error = %err, "sync_epoch submission failed");
+        }
+        _ => {}
+    }
+
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tx_error(code: u32) -> RpcError {
+        RpcError::Transaction(format!("custom program error: 0x{code:x}"))
+    }
+
+    #[test]
+    fn already_synced_is_success() {
+        let out = classify_sync_epoch_error(&tx_error(TapeError::AlreadySynced as u32));
+        assert!(matches!(out, TaskOutcome::Success));
+    }
+
+    #[test]
+    fn bad_epoch_state_is_pending() {
+        let out = classify_sync_epoch_error(&tx_error(TapeError::BadEpochState as u32));
+        assert!(matches!(out, TaskOutcome::Pending(delay) if delay == SYNC_EPOCH_PENDING_DELAY));
+    }
+
+    #[test]
+    fn membership_and_hash_errors_are_permanent() {
+        let codes = [
+            TapeError::NotInCommittee as u32,
+            TapeError::BadSpoolHash as u32,
+            TapeError::BadEpochId as u32,
+        ];
+        for code in codes {
+            let out = classify_sync_epoch_error(&tx_error(code));
+            assert!(matches!(out, TaskOutcome::Permanent(_)));
+        }
+    }
+
+    #[test]
+    fn unexpected_state_is_retryable() {
+        let out = classify_sync_epoch_error(&tx_error(TapeError::UnexpectedState as u32));
+        assert!(matches!(out, TaskOutcome::Retryable(_)));
+    }
+
+    #[test]
+    fn request_error_is_retryable() {
+        let out = classify_sync_epoch_error(&RpcError::Request("timeout".into()));
+        assert!(matches!(out, TaskOutcome::Retryable(_)));
     }
 }
