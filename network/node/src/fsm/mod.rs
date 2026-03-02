@@ -24,6 +24,7 @@ use crate::core::NodeContext;
 mod apply;
 mod handlers;
 mod replay;
+mod helpers;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FsmError {
@@ -78,7 +79,6 @@ pub struct Fsm<S: Store, R: Rpc> {
 
 impl<S: Store, R: Rpc> Fsm<S, R> {}
 
-// Behavior and replay handlers are now implemented in dedicated submodules.
 
 #[cfg(test)]
 mod tests {

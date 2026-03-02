@@ -1,10 +1,13 @@
 //! InvalidateTrack — submit track invalidation on-chain.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
+use rpc_client::parse_tape_error;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_crypto::Hash;
 use tape_store::ops::{MetaOps, TrackOps};
@@ -13,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 use crate::chain::submit_invalidate_track;
 use crate::core::NodeContext;
 use crate::TaskOutcome;
+
+const INVALIDATE_TRACK_PENDING_DELAY: Duration = Duration::from_secs(30);
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
@@ -69,14 +74,15 @@ pub async fn run<S: Store, R: Rpc>(
             let _ = context.store.delete_invalidation_proof(store_track);
             TaskOutcome::Success
         }
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("already invalidated") {
-                let _ = context.store.delete_invalidation_proof(store_track);
-                TaskOutcome::Success
-            } else {
-                TaskOutcome::Retryable(format!("invalidate_track: {e}"))
+        Err(ref e) => match parse_tape_error(e) {
+            Some(TapeError::BadEpochId) => TaskOutcome::Pending(INVALIDATE_TRACK_PENDING_DELAY),
+            Some(TapeError::NoQuorum)
+            | Some(TapeError::NoSigners)
+            | Some(TapeError::BadMember)
+            | Some(TapeError::BadSignature) => {
+                TaskOutcome::Permanent(format!("invalidate_track: {e}"))
             }
-        }
+            _ => TaskOutcome::Retryable(format!("invalidate_track: {e}")),
+        },
     }
 }

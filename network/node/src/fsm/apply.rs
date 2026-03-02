@@ -9,7 +9,7 @@ use tape_core::types::{EpochNumber, SlotNumber};
 use crate::core::NodeContext;
 use crate::ingestor::IngestedBlock;
 
-use super::{Fsm, FsmError, StateChange};
+use super::{RuntimeEvent, Fsm, FsmError, StateChange};
 
 impl<S: Store, R: Rpc> Fsm<S, R> {
     pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
@@ -73,7 +73,15 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         Ok(changes)
     }
 
-    fn apply_instruction(
+    /// Apply a runtime event (e.g. slice accepted by HTTP handler).
+    pub fn apply_event(&self, event: &RuntimeEvent) -> Result<(), FsmError> {
+        match event {
+            RuntimeEvent::SliceAccepted { track, spool } => self.handle_slice_accepted(*track, *spool),
+        }
+    }
+
+    /// Apply a parsed instruction (e.g. AdvanceEpoch)
+    pub fn apply_instruction(
         &mut self,
         instruction: &ParsedInstruction,
         slot: SlotNumber,

@@ -1,6 +1,7 @@
 //! SyncEpoch — submit epoch sync attestation on-chain.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -13,6 +14,8 @@ use crate::chain::submit_sync_epoch;
 use crate::core::{NodeContext, require_epoch};
 use crate::TaskOutcome;
 use rpc_client::parse_tape_error;
+
+const SYNC_EPOCH_PENDING_DELAY: Duration = Duration::from_secs(30);
 
 pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
@@ -50,6 +53,13 @@ pub async fn run<S: Store, R: Rpc>(
             Some(TapeError::AlreadySynced) => {
                 tracing::info!("sync_epoch already completed");
                 TaskOutcome::Success
+            }
+            Some(TapeError::BadEpochState)
+            | Some(TapeError::NotInCommittee)
+            | Some(TapeError::BadSpoolHash)
+            | Some(TapeError::BadEpochId) => {
+                tracing::debug!(error = %e, "sync_epoch waiting for protocol state");
+                TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY)
             }
             _ => {
                 tracing::warn!(error = %e, "sync_epoch submission failed");

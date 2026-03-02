@@ -33,9 +33,6 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         slot: SlotNumber,
     ) -> Result<(), FsmError> {
         match event {
-            ReplayableEvent::AdvanceEpoch { new_epoch, .. } => {
-                self.log_member_index_for_epoch(*new_epoch, "bootstrap-replay");
-            }
             ReplayableEvent::RegisterTrack { track, event_data } => {
                 let track_key: StorePubkey = Pubkey::new_from_array(*track).into();
                 let event: &TrackRegistered = bytemuck::from_bytes(event_data);
@@ -79,7 +76,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
                 self.cascade_delete_tape_tracks(tape_key)?;
                 self.context.store.delete_tape(tape_key)?;
             }
-            // SyncEpoch, RegisterNode, JoinNetwork — no local store ops needed
+            // AdvanceEpoch, SyncEpoch, RegisterNode, JoinNetwork — no local store ops needed
             _ => {}
         }
         Ok(())
