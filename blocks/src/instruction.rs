@@ -85,12 +85,12 @@ pub enum ParsedInstruction {
         root: Hash,
         commitment: Hash,
         size: StorageUnits,
-        event: Option<TrackRegistered>,
+        event: TrackRegistered,
     },
     DeleteTrack {
         owner: Pubkey,
         track: Pubkey,
-        event: Option<TrackDeleted>,
+        event: TrackDeleted,
     },
     CertifyTrack {
         track: Pubkey,
@@ -98,30 +98,30 @@ pub enum ParsedInstruction {
     },
     InvalidateTrack {
         track: Pubkey,
-        event: Option<TrackInvalidated>,
+        event: TrackInvalidated,
     },
 
     // Tape management
     ReserveTape {
         owner: Pubkey,
         tape: Pubkey,
-        event: Option<TapeReserved>,
+        event: TapeReserved,
     },
     DestroyTape {
         owner: Pubkey,
         tape: Pubkey,
-        event: Option<TapeDestroyed>,
+        event: TapeDestroyed,
     },
 
     // Node management
     RegisterNode {
         authority: Pubkey,
         node: Pubkey,
-        event: Option<NodeRegistered>,
+        event: NodeRegistered,
     },
     JoinNetwork {
         node: Pubkey,
-        event: Option<NodeJoinedCommittee>,
+        event: NodeJoinedCommittee,
     },
 }
 

@@ -12,26 +12,18 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
 use store::Store;
-use tape_api::event::{
-    EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, PoolAdvanced, TapeDestroyed,
-    TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
-};
-use tape_blocks::ParsedInstruction;
-use tape_core::snapshot::{ReplayableEvent, SnapshotLog};
 use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, SlotNumber};
-use tape_core::erasure::spool_in_group;
+use tape_core::types::EpochNumber;
 use tape_store::error::TapeStoreError;
-use tape_store::ops::{
-    EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
-};
-use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo, TrackInfo};
+#[cfg(test)]
+use tape_store::types::Pubkey as StorePubkey;
 
 use crate::core::NodeContext;
-use crate::core::committee::our_member_index;
-use crate::ingestor::IngestedBlock;
+
+mod apply;
+mod handlers;
+mod replay;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FsmError {
@@ -59,11 +51,14 @@ pub enum StateChange {
     PoolAdvanced { node: Pubkey },
 }
 
-/// An event from user-facing HTTP handlers, forwarded to the FSM.
+/// An event from runtime-facing HTTP handlers, forwarded to the FSM.
 #[derive(Debug)]
 pub enum UserEvent {
     SliceAccepted { track: Pubkey, spool: u16 },
 }
+
+/// Backward-compatible alias for existing call sites.
+pub type RuntimeEvent = UserEvent;
 
 /// Internal FSM state, seeded at epoch 0 on startup.
 ///
@@ -81,676 +76,9 @@ pub struct Fsm<S: Store, R: Rpc> {
     state: FsmState,
 }
 
-impl<S: Store, R: Rpc> Fsm<S, R> {
-    pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
-        Self {
-            context,
-            state: FsmState {
-                epoch: EpochNumber(0),
-                phase: EpochPhase::Unknown,
-            },
-        }
-    }
+impl<S: Store, R: Rpc> Fsm<S, R> {}
 
-    /// Apply a user event (e.g. slice accepted by HTTP handler).
-    pub fn apply_user_event(&self, event: &UserEvent) -> Result<(), FsmError> {
-        match event {
-            UserEvent::SliceAccepted { track, .. } => {
-                let key: StorePubkey = (*track).into();
-                let Some(obj) = self.context.store.get_object_info(key)? else {
-                    return Ok(());
-                };
-                if let ObjectInfo::Valid {
-                    is_stored: false,
-                    track_address,
-                    registered_epoch,
-                    certified_epoch,
-                    slot,
-                } = obj
-                {
-                    self.context.store.put_object_info(
-                        key,
-                        ObjectInfo::Valid {
-                            is_stored: true,
-                            track_address,
-                            registered_epoch,
-                            certified_epoch,
-                            slot,
-                        },
-                    )?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// Apply a single ingested block to local state.
-    ///
-    /// Returns the state changes produced, which the scheduler uses to
-    /// determine what tasks to schedule or cancel.
-    pub fn apply(&mut self, block: &IngestedBlock) -> Result<Vec<StateChange>, FsmError> {
-        tracing::trace!(
-            slot = %block.slot,
-            instruction_count = block.instructions.len(),
-            "fsm applying block"
-        );
-
-        let mut changes = Vec::new();
-        let mut current_epoch = self.state.epoch;
-
-        for instruction in &block.instructions {
-            tracing::trace!(
-                slot = %block.slot,
-                epoch = current_epoch.0,
-                instruction = ?instruction,
-                "fsm applying instruction"
-            );
-
-            let before_len = changes.len();
-            self.apply_instruction(
-                instruction,
-                block.slot, 
-                &mut changes,
-                &mut current_epoch
-            )?;
-
-            let added = changes.len() - before_len;
-            if added > 0 {
-                tracing::trace!(
-                    slot = %block.slot,
-                    epoch = current_epoch.0,
-                    added,
-                    "fsm emitted state change"
-                );
-            }
-        }
-
-        // Update sync cursor LAST — crash recovery re-processes from cursor
-        self.context.store.set_sync_cursor(block.slot)?;
-
-        tracing::trace!(
-            slot = %block.slot,
-            change_count = changes.len(),
-            "fsm finished block apply"
-        );
-        Ok(changes)
-    }
-
-    fn apply_instruction(
-        &mut self,
-        instruction: &ParsedInstruction,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: &mut EpochNumber,
-    ) -> Result<(), FsmError> {
-        match instruction {
-            ParsedInstruction::AdvanceEpoch { event } => {
-                self.handle_advance_epoch(event, slot, changes, current_epoch)
-            }
-            ParsedInstruction::SyncEpoch { event } => {
-                self.handle_sync_epoch(event, slot, changes, *current_epoch)
-            }
-            ParsedInstruction::RegisterTrack { track, event, .. } => self.apply_opt(event, |ev| {
-                self.handle_register_track(*track, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::CertifyTrack { track, event } => {
-                self.handle_certify_track(*track, event, slot, changes, *current_epoch)
-            }
-            ParsedInstruction::DeleteTrack { track, event, .. } => self.apply_opt(event, |ev| {
-                self.handle_delete_track(*track, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::InvalidateTrack { track, event } => self.apply_opt(event, |ev| {
-                self.handle_invalidate_track(*track, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::ReserveTape { tape, event, .. } => self.apply_opt(event, |ev| {
-                self.handle_reserve_tape(*tape, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::DestroyTape { tape, event, .. } => self.apply_opt(event, |ev| {
-                self.handle_destroy_tape(*tape, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::RegisterNode {
-                authority,
-                node,
-                event,
-            } => self.apply_opt(event, |ev| {
-                self.handle_register_node(*authority, *node, ev, slot, changes, *current_epoch)
-            }),
-            ParsedInstruction::JoinNetwork { node, event } => {
-                self.apply_opt(event, |ev| self.handle_join_network(*node, ev, slot, changes, *current_epoch))
-            }
-            ParsedInstruction::AdvancePool { node, event } => {
-                self.handle_advance_pool(*node, event, changes)
-            }
-        }
-    }
-
-    fn apply_opt<T, F>(&self, event: &Option<T>, apply: F) -> Result<(), FsmError>
-    where
-        F: FnOnce(&T) -> Result<(), FsmError>,
-    {
-        if let Some(ev) = event {
-            return apply(ev);
-        }
-        Ok(())
-    }
-
-    fn track_info(&self, event: &TrackRegistered) -> TrackInfo {
-        let mut info = TrackInfo {
-            tape_address: event.tape.into(),
-            spool_group: u64::from_le_bytes(event.spool_group),
-            original_size: event.size.0,
-            stripe_size: u64::from_le_bytes(event.stripe_size),
-            stripe_count: u64::from_le_bytes(event.stripe_count),
-            encoding_type: 0,
-            encoding_params: 0,
-            commitment: event.leaves.to_vec(),
-        };
-        info.set_profile(event.profile);
-        info
-    }
-
-    fn put_track_obj(
-        &self,
-        track: StorePubkey,
-        event: &TrackRegistered,
-        slot: SlotNumber,
-    ) -> Result<(), FsmError> {
-        self.context.store.put_track(track, self.track_info(event))?;
-        self.context.store.put_object_info(
-            track,
-            ObjectInfo::Valid {
-                is_stored: false,
-                track_address: track,
-                registered_epoch: event.epoch,
-                certified_epoch: None,
-                slot,
-            },
-        )?;
-        Ok(())
-    }
-
-    fn set_certified(&self, track: StorePubkey, epoch: EpochNumber) -> Result<(), FsmError> {
-        let Some(obj) = self.context.store.get_object_info(track)? else {
-            return Ok(());
-        };
-        if let ObjectInfo::Valid {
-            is_stored,
-            track_address,
-            registered_epoch,
-            slot,
-            ..
-        } = obj
-        {
-            self.context.store.put_object_info(
-                track,
-                ObjectInfo::Valid {
-                    is_stored,
-                    track_address,
-                    registered_epoch,
-                    certified_epoch: Some(epoch),
-                    slot,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
-    fn handle_advance_epoch(
-        &mut self,
-        event: &EpochAdvanced,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: &mut EpochNumber,
-    ) -> Result<(), FsmError> {
-        let old_epoch = *current_epoch;
-        let new_phase = EpochPhase::try_from(event.phase).unwrap_or(EpochPhase::Syncing);
-
-        // Update internal state
-        self.state.epoch = event.new_epoch;
-        self.state.phase = new_phase;
-        *current_epoch = event.new_epoch;
-
-        // GC expired tapes (end_epoch <= new_epoch)
-        self.gc_expired_tapes(event.new_epoch)?;
-
-        self.context.store.append_event(
-            event.new_epoch,
-            slot,
-            &ReplayableEvent::AdvanceEpoch {
-                old_epoch,
-                new_epoch: event.new_epoch,
-            },
-        )?;
-
-        self.context.stats.inc_epochs();
-        self.log_member_index_for_epoch(event.new_epoch, "ingest");
-        changes.push(StateChange::EpochAdvanced {
-            epoch: event.new_epoch,
-        });
-        Ok(())
-    }
-
-    fn log_member_index_for_epoch(&self, epoch: EpochNumber, source: &str) {
-        let cs = self.context.chain_state.load();
-        let Some(committee) = cs.committee_for(epoch) else {
-            tracing::warn!(
-                source = source,
-                epoch = epoch.0,
-                "cannot resolve committee when logging member index"
-            );
-            return;
-        };
-        if committee.is_empty() {
-            tracing::warn!(
-                source = source,
-                epoch = epoch.0,
-                "cannot resolve committee when logging member index"
-            );
-            return;
-        }
-
-        match our_member_index(&committee, self.context.keypair.pubkey()) {
-            Ok(member_index) => {
-                tracing::info!(
-                    source = source,
-                    epoch = epoch.0,
-                    member_index,
-                    committee_size = committee.len(),
-                    "node member index for epoch"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    source = source,
-                    epoch = epoch.0,
-                    error = %error,
-                    "node not found in committee for epoch"
-                );
-            }
-        }
-    }
-
-    fn handle_sync_epoch(
-        &mut self,
-        event: &NodeSynced,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::SyncEpoch {
-                node: event.node.to_bytes(),
-                node_id: event.id,
-                epoch: event.epoch,
-                spools_hash: event.spools_hash,
-            },
-        )?;
-
-        // Check for phase transition from event
-        self.emit_phase(event.phase, changes);
-
-        changes.push(StateChange::NodeSynced { node: event.node });
-        Ok(())
-    }
-
-    fn handle_advance_pool(
-        &mut self,
-        node: Pubkey,
-        event: &PoolAdvanced,
-        changes: &mut Vec<StateChange>,
-    ) -> Result<(), FsmError> {
-        // Check for phase transition from event
-        self.emit_phase(event.phase, changes);
-
-        changes.push(StateChange::PoolAdvanced { node });
-        Ok(())
-    }
-
-    /// If the event's phase differs from our tracked phase, update and emit.
-    fn emit_phase(&mut self, event_phase: u64, changes: &mut Vec<StateChange>) {
-        if let Ok(new_phase) = EpochPhase::try_from(event_phase) {
-            if new_phase != self.state.phase {
-                self.state.phase = new_phase;
-                changes.push(StateChange::PhaseAdvanced { phase: new_phase });
-            }
-        }
-    }
-
-    fn handle_register_track(
-        &self,
-        track: Pubkey,
-        event: &TrackRegistered,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        self.put_track_obj(track.into(), event, slot)?;
-
-        let event_data = bytemuck::bytes_of(event).to_vec();
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::RegisterTrack {
-                track: track.to_bytes(),
-                event_data,
-            },
-        )?;
-
-        changes.push(StateChange::TrackRegistered { track });
-        Ok(())
-    }
-
-    fn handle_certify_track(
-        &self,
-        track: Pubkey,
-        event: &TrackCertified,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        self.set_certified(track.into(), event.epoch)?;
-
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::CertifyTrack {
-                track: track.to_bytes(),
-                epoch: event.epoch,
-            },
-        )?;
-
-        changes.push(StateChange::TrackCertified { track });
-        Ok(())
-    }
-
-    fn handle_delete_track(
-        &self,
-        track: Pubkey,
-        _event: &TrackDeleted,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        let store_track: StorePubkey = track.into();
-
-        // Read track info before deleting (need spool_group for slice cleanup)
-        if let Ok(Some(info)) = self.context.store.get_track(store_track) {
-            self.cleanup_slices_for_track(store_track, info.spool_group)?;
-        }
-
-        self.context.store.delete_track(store_track)?;
-        self.context.store.delete_object_info(store_track)?;
-
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::DeleteTrack {
-                track: track.to_bytes(),
-                epoch: current_epoch,
-            },
-        )?;
-
-        changes.push(StateChange::TrackDeleted { track });
-        Ok(())
-    }
-
-    fn cleanup_slices_for_track(
-        &self,
-        track: StorePubkey,
-        spool_group: u64,
-    ) -> Result<(), FsmError> {
-        let owned_spools = self.context.store.iter_all_spools()?;
-        for (spool_id, _status) in &owned_spools {
-            if spool_in_group(*spool_id, spool_group) {
-                let _ = self.context.store.delete_slice(*spool_id, track);
-            }
-        }
-        Ok(())
-    }
-
-    fn cascade_delete_tape_tracks(
-        &self,
-        tape: StorePubkey,
-    ) -> Result<(), FsmError> {
-        let mut cursor = None;
-        loop {
-            let tracks = self.context.store.iter_tracks_from(cursor, 100)?;
-            if tracks.is_empty() {
-                break;
-            }
-            for (track_addr, track_info) in &tracks {
-                if track_info.tape_address == tape {
-                    self.cleanup_slices_for_track(*track_addr, track_info.spool_group)?;
-                    self.context.store.delete_track(*track_addr)?;
-                    self.context.store.delete_object_info(*track_addr)?;
-                }
-            }
-            cursor = tracks.last().map(|(addr, _)| *addr);
-        }
-        Ok(())
-    }
-
-    fn gc_expired_tapes(&self, current_epoch: EpochNumber) -> Result<(), FsmError> {
-        let tapes = self.context.store.iter_all_tapes()?;
-        for (tape_addr, tape_info) in &tapes {
-            if tape_info.end_epoch <= current_epoch {
-                self.cascade_delete_tape_tracks(*tape_addr)?;
-                self.context.store.delete_tape(*tape_addr)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_invalidate_track(
-        &self,
-        track: Pubkey,
-        event: &TrackInvalidated,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        let store_track: StorePubkey = track.into();
-
-        // Delete slices before marking invalid
-        if let Ok(Some(info)) = self.context.store.get_track(store_track) {
-            self.cleanup_slices_for_track(store_track, info.spool_group)?;
-        }
-
-        let invalid = ObjectInfo::Invalid {
-            epoch: event.epoch,
-            slot,
-        };
-        self.context.store.put_object_info(store_track, invalid)?;
-
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::InvalidateTrack {
-                track: track.to_bytes(),
-                epoch: event.epoch,
-            },
-        )?;
-
-        changes.push(StateChange::TrackInvalidated { track });
-        Ok(())
-    }
-
-    fn handle_reserve_tape(
-        &self,
-        tape: Pubkey,
-        event: &TapeReserved,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        let tape_info = TapeInfo {
-            end_epoch: event.expiry_epoch,
-        };
-        self.context.store.put_tape(tape.into(), tape_info)?;
-
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::ReserveTape {
-                tape: tape.to_bytes(),
-                authority: event.authority.to_bytes(),
-                active_epoch: event.active_epoch,
-                expiry_epoch: event.expiry_epoch,
-            },
-        )?;
-
-        changes.push(StateChange::TapeReserved { tape });
-        Ok(())
-    }
-
-    fn handle_destroy_tape(
-        &self,
-        tape: Pubkey,
-        _event: &TapeDestroyed,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        let store_tape: StorePubkey = tape.into();
-
-        // Cascade-delete all tracks belonging to this tape
-        self.cascade_delete_tape_tracks(store_tape)?;
-
-        self.context.store.delete_tape(store_tape)?;
-
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::DestroyTape {
-                tape: tape.to_bytes(),
-                epoch: current_epoch,
-            },
-        )?;
-
-        changes.push(StateChange::TapeDestroyed { tape });
-        Ok(())
-    }
-
-    fn handle_register_node(
-        &self,
-        authority: Pubkey,
-        node: Pubkey,
-        _event: &NodeRegistered,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::RegisterNode {
-                authority: authority.to_bytes(),
-                node: node.to_bytes(),
-            },
-        )?;
-
-        changes.push(StateChange::NodeRegistered { node });
-        Ok(())
-    }
-
-    fn handle_join_network(
-        &self,
-        node: Pubkey,
-        _event: &NodeJoinedCommittee,
-        slot: SlotNumber,
-        changes: &mut Vec<StateChange>,
-        current_epoch: EpochNumber,
-    ) -> Result<(), FsmError> {
-        self.context.store.append_event(
-            current_epoch,
-            slot,
-            &ReplayableEvent::JoinNetwork {
-                node: node.to_bytes(),
-            },
-        )?;
-
-        changes.push(StateChange::NodeJoinedCommittee { node });
-        Ok(())
-    }
-
-    /// Replay a snapshot log into local state.
-    ///
-    /// This applies the same store operations as the live FSM handlers but
-    /// skips event log writes and StateChange emission. Used by
-    /// SnapshotBootstrap after downloading and decoding a snapshot.
-    pub fn replay_snapshot(&self, log: &SnapshotLog) -> Result<(), FsmError> {
-        for entry in &log.entries {
-            for event in &entry.events {
-                self.apply_replay_event(event, entry.slot)?;
-            }
-        }
-        self.context.store.set_sync_cursor(log.end_slot)?;
-        Ok(())
-    }
-
-    fn apply_replay_event(
-        &self,
-        event: &ReplayableEvent,
-        slot: SlotNumber,
-    ) -> Result<(), FsmError> {
-        match event {
-            ReplayableEvent::AdvanceEpoch { new_epoch, .. } => {
-                self.log_member_index_for_epoch(*new_epoch, "bootstrap-replay");
-            }
-            ReplayableEvent::RegisterTrack { track, event_data } => {
-                let track_key: StorePubkey = Pubkey::new_from_array(*track).into();
-                let event: &TrackRegistered = bytemuck::from_bytes(event_data);
-                self.put_track_obj(track_key, event, slot)?;
-            }
-            ReplayableEvent::CertifyTrack { track, epoch } => {
-                let track_key: StorePubkey = Pubkey::new_from_array(*track).into();
-                self.set_certified(track_key, *epoch)?;
-            }
-            ReplayableEvent::DeleteTrack { track, .. } => {
-                let track_key: StorePubkey = Pubkey::new_from_array(*track).into();
-                if let Ok(Some(info)) = self.context.store.get_track(track_key) {
-                    self.cleanup_slices_for_track(track_key, info.spool_group)?;
-                }
-                self.context.store.delete_track(track_key)?;
-                self.context.store.delete_object_info(track_key)?;
-            }
-            ReplayableEvent::InvalidateTrack { track, epoch } => {
-                let track_key: StorePubkey = Pubkey::new_from_array(*track).into();
-                if let Ok(Some(info)) = self.context.store.get_track(track_key) {
-                    self.cleanup_slices_for_track(track_key, info.spool_group)?;
-                }
-                self.context.store.put_object_info(
-                    track_key,
-                    ObjectInfo::Invalid {
-                        epoch: *epoch,
-                        slot,
-                    },
-                )?;
-            }
-            ReplayableEvent::ReserveTape {
-                tape, expiry_epoch, ..
-            } => {
-                let tape_key: StorePubkey = Pubkey::new_from_array(*tape).into();
-                self.context.store.put_tape(
-                    tape_key,
-                    TapeInfo {
-                        end_epoch: *expiry_epoch,
-                    },
-                )?;
-            }
-            ReplayableEvent::DestroyTape { tape, .. } => {
-                let tape_key: StorePubkey = Pubkey::new_from_array(*tape).into();
-                self.cascade_delete_tape_tracks(tape_key)?;
-                self.context.store.delete_tape(tape_key)?;
-            }
-            // SyncEpoch, RegisterNode, JoinNetwork — no local store ops needed
-            _ => {}
-        }
-        Ok(())
-    }
-}
+// Behavior and replay handlers are now implemented in dedicated submodules.
 
 #[cfg(test)]
 mod tests {
@@ -788,7 +116,7 @@ mod tests {
             root: Hash::default(),
             commitment: Hash::default(),
             size: StorageUnits(1024),
-            event: Some(TrackRegistered {
+            event: TrackRegistered {
                 track,
                 tape,
                 key: Hash::default(),
@@ -800,7 +128,7 @@ mod tests {
                 stripe_size: (1024u64 * 1024).to_le_bytes(),
                 stripe_count: 1u64.to_le_bytes(),
                 leaves: [Hash::default(); 20],
-            }),
+            },
         }
     }
 
@@ -821,22 +149,22 @@ mod tests {
         ParsedInstruction::DeleteTrack {
             owner: Pubkey::new_unique(),
             track,
-            event: Some(TrackDeleted {
+            event: TrackDeleted {
                 track,
                 tape,
                 key: Hash::default(),
                 size: StorageUnits(1024),
-            }),
+            },
         }
     }
 
     fn make_invalidate_track(track: Pubkey, epoch: u64) -> ParsedInstruction {
         ParsedInstruction::InvalidateTrack {
             track,
-            event: Some(TrackInvalidated {
+            event: TrackInvalidated {
                 track,
                 epoch: EpochNumber(epoch),
-            }),
+            },
         }
     }
 
@@ -844,14 +172,14 @@ mod tests {
         ParsedInstruction::ReserveTape {
             owner: Pubkey::new_unique(),
             tape,
-            event: Some(TapeReserved {
+            event: TapeReserved {
                 tape,
                 authority: Pubkey::new_unique(),
                 capacity: StorageUnits(5000),
                 active_epoch: EpochNumber(1),
                 expiry_epoch: EpochNumber(expiry_epoch),
                 cost: [0; 8],
-            }),
+            },
         }
     }
 
@@ -859,10 +187,10 @@ mod tests {
         ParsedInstruction::DestroyTape {
             owner: Pubkey::new_unique(),
             tape,
-            event: Some(TapeDestroyed {
+            event: TapeDestroyed {
                 tape,
                 authority: Pubkey::new_unique(),
-            }),
+            },
         }
     }
 
@@ -889,7 +217,7 @@ mod tests {
         assert!(matches!(obj, ObjectInfo::Valid { is_stored: false, .. }));
 
         // Apply SliceAccepted
-        fsm.apply_user_event(&UserEvent::SliceAccepted { track, spool: 0 })
+        fsm.apply_event(&RuntimeEvent::SliceAccepted { track, spool: 0 })
             .unwrap();
 
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
@@ -906,9 +234,9 @@ mod tests {
         let block = make_block(100, vec![make_register_track(track, tape, 1)]);
         fsm.apply(&block).unwrap();
 
-        let event = UserEvent::SliceAccepted { track, spool: 0 };
-        fsm.apply_user_event(&event).unwrap();
-        fsm.apply_user_event(&event).unwrap();
+        let event = RuntimeEvent::SliceAccepted { track, spool: 0 };
+        fsm.apply_event(&event).unwrap();
+        fsm.apply_event(&event).unwrap();
 
         let store_track: StorePubkey = track.into();
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
@@ -918,11 +246,11 @@ mod tests {
     #[test]
     fn slice_accepted_missing() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx);
+        let fsm = Fsm::new(ctx);
 
         let track = Pubkey::new_unique();
-        let event = UserEvent::SliceAccepted { track, spool: 0 };
-        fsm.apply_user_event(&event).unwrap(); // no-op, no error
+        let event = RuntimeEvent::SliceAccepted { track, spool: 0 };
+        fsm.apply_event(&event).unwrap(); // no-op, no error
     }
 
     #[test]

@@ -29,34 +29,11 @@ use crate::TaskResult;
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
 
-/// Ingestor → FSM. Small buffer; sender awaits when full so the ingestor
-/// never outpaces the FSM.
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
-
-/// FSM → Scheduler. Sender awaits when full; FSM stalls until the scheduler
-/// drains the batch.
 const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
-
-/// HTTP handlers → FSM. Sender awaits when full; HTTP handler applies
-/// backpressure to the caller.
 const USER_EVENT_CHANNEL_CAPACITY: usize = 256;
-
-/// Scheduler → TaskRunner. Sender awaits when full; scheduler stalls until
-/// the runner drains actions.
 const ACTION_CHANNEL_CAPACITY: usize = 256;
-
-/// TaskRunner → Scheduler. Sender awaits when full; completed tasks wait
-/// until the scheduler processes results.
 const RESULT_CHANNEL_CAPACITY: usize = 256;
-
-/// Backoff for RPC chain state fetches on epoch transitions.
-fn chain_state_backoff() -> BackoffConfig {
-    BackoffConfig {
-        min_delay: Duration::from_millis(500),
-        max_delay: Duration::from_secs(30),
-        max_retries: None,
-    }
-}
 
 /// Handles for all runtime tasks.
 pub struct RuntimeHandles {
@@ -161,8 +138,6 @@ pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
     }
 }
 
-// -- Private types ----------------------------------------------------------
-
 struct RuntimeChannels {
     block_tx: mpsc::Sender<IngestedBlock>,
     block_rx: mpsc::Receiver<IngestedBlock>,
@@ -176,8 +151,6 @@ enum LoopControl {
     Continue,
     Break,
 }
-
-// -- Private functions ------------------------------------------------------
 
 fn build_channels() -> RuntimeChannels {
     let (block_tx, block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
@@ -354,7 +327,7 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
             }
             maybe_event = user_event_rx.recv() => {
                 let Some(event) = maybe_event else { break };
-                if let Err(e) = fsm.apply_user_event(&event) {
+                if let Err(e) = fsm.apply_event(&event) {
                     tracing::error!("FSM user event error: {e}");
                 }
             }
@@ -444,6 +417,15 @@ async fn refresh_chain_state<S: Store, R: Rpc>(
     }
 }
 
+fn chain_state_backoff() -> BackoffConfig {
+    BackoffConfig {
+        min_delay: Duration::from_millis(500),
+        max_delay: Duration::from_secs(30),
+        max_retries: None,
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,19 +470,19 @@ mod tests {
         // Send a block that produces a StateChange (RegisterNode avoids
         // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
         let node_pk = Pubkey::new_unique();
-        let block1 = IngestedBlock {
-            slot: SlotNumber(10),
-            instructions: vec![ParsedInstruction::RegisterNode {
-                authority: Pubkey::new_unique(),
-                node: node_pk,
-                event: Some(NodeRegistered {
-                    node: node_pk,
-                    id: NodeId(1),
+            let block1 = IngestedBlock {
+                slot: SlotNumber(10),
+                instructions: vec![ParsedInstruction::RegisterNode {
                     authority: Pubkey::new_unique(),
-                    epoch: EpochNumber(0),
-                }),
-            }],
-        };
+                    node: node_pk,
+                    event: NodeRegistered {
+                        node: node_pk,
+                        id: NodeId(1),
+                        authority: Pubkey::new_unique(),
+                        epoch: EpochNumber(0),
+                    },
+                }],
+            };
 
         block_tx.send(block1).await.unwrap();
 
@@ -628,19 +610,19 @@ mod tests {
         // Send a block that produces a StateChange (RegisterNode avoids
         // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
         let node_pk = Pubkey::new_unique();
-        let block = IngestedBlock {
-            slot: SlotNumber(10),
-            instructions: vec![ParsedInstruction::RegisterNode {
-                authority: Pubkey::new_unique(),
-                node: node_pk,
-                event: Some(NodeRegistered {
-                    node: node_pk,
-                    id: NodeId(1),
+            let block = IngestedBlock {
+                slot: SlotNumber(10),
+                instructions: vec![ParsedInstruction::RegisterNode {
                     authority: Pubkey::new_unique(),
-                    epoch: EpochNumber(0),
-                }),
-            }],
-        };
+                    node: node_pk,
+                    event: NodeRegistered {
+                        node: node_pk,
+                        id: NodeId(1),
+                        authority: Pubkey::new_unique(),
+                        epoch: EpochNumber(0),
+                    },
+                }],
+            };
         let _ = block_tx.send(block).await;
 
         // FSM should exit within 1s because change_tx.send fails

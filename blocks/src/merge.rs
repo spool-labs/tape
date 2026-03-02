@@ -9,7 +9,8 @@ use std::collections::VecDeque;
 ///
 /// This function matches events to instructions based on their order
 /// in the transaction. Some instructions require events (AdvanceEpoch,
-/// CertifyTrack, SyncEpoch), while others have optional events.
+/// CertifyTrack, SyncEpoch, RegisterTrack, DeleteTrack, InvalidateTrack,
+/// ReserveTape, DestroyTape, RegisterNode, JoinNetwork).
 ///
 /// # Arguments
 /// * `instructions` - Raw instructions parsed from the transaction
@@ -59,13 +60,14 @@ pub fn merge(
                 commitment,
                 size,
             } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::TrackRegistered(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackRegistered(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TrackRegistered event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::RegisterTrack {
                     owner,
                     track,
@@ -87,13 +89,14 @@ pub fn merge(
             }
 
             RawInstruction::DeleteTrack { owner, track } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::TrackDeleted(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackDeleted(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TrackDeleted event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::DeleteTrack {
                     owner,
                     track,
@@ -102,13 +105,14 @@ pub fn merge(
             }
 
             RawInstruction::InvalidateTrack { track } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::TrackInvalidated(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TrackInvalidated(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TrackInvalidated event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::InvalidateTrack {
                     track,
                     event,
@@ -117,13 +121,14 @@ pub fn merge(
 
             RawInstruction::ReserveTape { owner, tape } => {
                 // TapeReserved event is now included
-                let event = match events.front() {
-                    Some(TapedriveEvent::TapeReserved(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeReserved(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeReserved event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::ReserveTape {
                     owner,
                     tape,
@@ -132,13 +137,14 @@ pub fn merge(
             }
 
             RawInstruction::DestroyTape { owner, tape } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::TapeDestroyed(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeDestroyed(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeDestroyed event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::DestroyTape {
                     owner,
                     tape,
@@ -147,13 +153,14 @@ pub fn merge(
             }
 
             RawInstruction::RegisterNode { authority, node } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::NodeRegistered(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::NodeRegistered(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected NodeRegistered event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::RegisterNode {
                     authority,
                     node,
@@ -162,13 +169,14 @@ pub fn merge(
             }
 
             RawInstruction::JoinNetwork { node } => {
-                let event = match events.front() {
-                    Some(TapedriveEvent::NodeJoinedCommittee(e)) => Some(*e),
-                    _ => None,
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::NodeJoinedCommittee(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected NodeJoinedCommittee event",
+                        ))
+                    }
                 };
-                if event.is_some() {
-                    let _ = events.pop_front();
-                }
                 ParsedInstruction::JoinNetwork {
                     node,
                     event,
@@ -194,7 +202,10 @@ pub fn merge(
 mod tests {
     use super::*;
     use solana_sdk::pubkey::Pubkey;
-    use tape_api::event::{EpochAdvanced, NodeSynced, TrackCertified, TrackRegistered};
+    use tape_api::event::{
+        EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
+        TrackCertified, TrackDeleted, TrackInvalidated, TrackRegistered,
+    };
     use tape_core::prelude::*;
     use tape_crypto::Hash;
 
@@ -354,8 +365,7 @@ mod tests {
         match &merged[1] {
             ParsedInstruction::RegisterTrack { track, event, .. } => {
                 assert_eq!(*track, track1);
-                assert!(event.is_some());
-                assert_eq!(event.as_ref().unwrap().epoch, EpochNumber(2));
+                assert_eq!(event.epoch, EpochNumber(2));
             }
             _ => panic!("Expected RegisterTrack"),
         }
@@ -371,27 +381,223 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_optional_events() {
-        // DeleteTrack, InvalidateTrack, etc. have optional events
+    fn test_merge_required_events_missing() {
+        // DeleteTrack requires TrackDeleted event
         let track = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
 
         let instructions = vec![RawInstruction::DeleteTrack { owner, track }];
-        let events = vec![]; // No event (optional)
+        let events = vec![]; // No event
 
-        let merged = merge(instructions, events).unwrap();
+        let result = merge(instructions, events);
+        assert!(result.is_err());
+        match result {
+            Err(ParseError::EventMismatch(_)) => {}
+            _ => panic!("Expected EventMismatch error"),
+        }
+    }
 
-        assert_eq!(merged.len(), 1);
-        match &merged[0] {
-            ParsedInstruction::DeleteTrack {
-                track: t,
-                event,
-                ..
-            } => {
-                assert_eq!(*t, track);
-                assert!(event.is_none()); // Event is optional
+    fn required_events_missing_cases() -> Vec<RawInstruction> {
+        vec![
+            RawInstruction::RegisterTrack {
+                owner: Pubkey::new_unique(),
+                track: Pubkey::new_unique(),
+                key: Hash::default(),
+                root: Hash::default(),
+                commitment: Hash::default(),
+                size: StorageUnits(1_024),
+            },
+            RawInstruction::DeleteTrack {
+                owner: Pubkey::new_unique(),
+                track: Pubkey::new_unique(),
+            },
+            RawInstruction::InvalidateTrack {
+                track: Pubkey::new_unique(),
+            },
+            RawInstruction::ReserveTape {
+                owner: Pubkey::new_unique(),
+                tape: Pubkey::new_unique(),
+            },
+            RawInstruction::DestroyTape {
+                owner: Pubkey::new_unique(),
+                tape: Pubkey::new_unique(),
+            },
+            RawInstruction::RegisterNode {
+                authority: Pubkey::new_unique(),
+                node: Pubkey::new_unique(),
+            },
+            RawInstruction::JoinNetwork {
+                node: Pubkey::new_unique(),
+            },
+        ]
+    }
+
+    fn required_event_mismatch_case() -> TapedriveEvent {
+        TapedriveEvent::EpochAdvanced(EpochAdvanced {
+            old_epoch: EpochNumber(1),
+            new_epoch: EpochNumber(2),
+            timestamp: [0; 8],
+            committee_size: [0; 8],
+            total_stake: [0; 8],
+            storage_price: [0; 8],
+            storage_capacity: StorageUnits(0),
+            nonce: Hash::default(),
+            phase: 1, // Syncing
+        })
+    }
+
+    #[test]
+    fn test_merge_required_events_missing_all() {
+        for raw in required_events_missing_cases() {
+            let result = merge(vec![raw], vec![]);
+            assert!(
+                result.is_err(),
+                "expected error when required event was missing"
+            );
+            match result {
+                Err(ParseError::EventMismatch(_)) => {}
+                _ => panic!("Expected EventMismatch error"),
             }
-            _ => panic!("Expected DeleteTrack"),
+        }
+    }
+
+    fn required_events_success_cases() -> Vec<(RawInstruction, TapedriveEvent)> {
+        let register_track = Pubkey::new_unique();
+        let register_tape = Pubkey::new_unique();
+        let delete_track = Pubkey::new_unique();
+        let delete_tape = Pubkey::new_unique();
+        let invalid_track = Pubkey::new_unique();
+        let reserve_tape = Pubkey::new_unique();
+        let destroy_tape = Pubkey::new_unique();
+        let register_node = Pubkey::new_unique();
+        let join_node = Pubkey::new_unique();
+
+        vec![
+            (
+                RawInstruction::RegisterTrack {
+                    owner: Pubkey::new_unique(),
+                    track: register_track,
+                    key: Hash::default(),
+                    root: Hash::default(),
+                    commitment: Hash::default(),
+                    size: StorageUnits(1_024),
+                },
+                TapedriveEvent::TrackRegistered(TrackRegistered {
+                    track: register_track,
+                    tape: register_tape,
+                    key: Hash::default(),
+                    size: StorageUnits(1_024),
+                    commitment: Hash::default(),
+                    epoch: EpochNumber(2),
+                    profile: tape_core::encoding::EncodingProfile::basic_default(),
+                    spool_group: 0u64.to_le_bytes(),
+                    stripe_size: 0u64.to_le_bytes(),
+                    stripe_count: 0u64.to_le_bytes(),
+                    leaves: [Hash::default(); SPOOL_GROUP_SIZE],
+                }),
+            ),
+            (
+                RawInstruction::DeleteTrack {
+                    owner: Pubkey::new_unique(),
+                    track: delete_track,
+                },
+                TapedriveEvent::TrackDeleted(TrackDeleted {
+                    track: delete_track,
+                    tape: delete_tape,
+                    key: Hash::default(),
+                    size: StorageUnits(1_024),
+                }),
+            ),
+            (
+                RawInstruction::InvalidateTrack {
+                    track: invalid_track,
+                },
+                TapedriveEvent::TrackInvalidated(TrackInvalidated {
+                    track: invalid_track,
+                    epoch: EpochNumber(3),
+                }),
+            ),
+            (
+                RawInstruction::ReserveTape {
+                    owner: Pubkey::new_unique(),
+                    tape: reserve_tape,
+                },
+                TapedriveEvent::TapeReserved(TapeReserved {
+                    tape: reserve_tape,
+                    authority: Pubkey::new_unique(),
+                    capacity: StorageUnits(10_000),
+                    active_epoch: EpochNumber(1),
+                    expiry_epoch: EpochNumber(10),
+                    cost: [0; 8],
+                }),
+            ),
+            (
+                RawInstruction::DestroyTape {
+                    owner: Pubkey::new_unique(),
+                    tape: destroy_tape,
+                },
+                TapedriveEvent::TapeDestroyed(TapeDestroyed {
+                    tape: destroy_tape,
+                    authority: Pubkey::new_unique(),
+                }),
+            ),
+            (
+                RawInstruction::RegisterNode {
+                    authority: Pubkey::new_unique(),
+                    node: register_node,
+                },
+                TapedriveEvent::NodeRegistered(NodeRegistered {
+                    node: register_node,
+                    id: NodeId::new(1),
+                    authority: Pubkey::new_unique(),
+                    epoch: EpochNumber(0),
+                }),
+            ),
+            (
+                RawInstruction::JoinNetwork {
+                    node: join_node,
+                },
+                TapedriveEvent::NodeJoinedCommittee(NodeJoinedCommittee {
+                    node: join_node,
+                    id: NodeId::new(2),
+                    stake: [0; 8],
+                    activation_epoch: EpochNumber(1),
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_merge_required_events_success_all() {
+        for (raw, event) in required_events_success_cases() {
+            let merged = merge(vec![raw], vec![event]).unwrap();
+            assert_eq!(merged.len(), 1);
+
+            match &merged[0] {
+                ParsedInstruction::RegisterTrack { .. }
+                | ParsedInstruction::DeleteTrack { .. }
+                | ParsedInstruction::InvalidateTrack { .. }
+                | ParsedInstruction::ReserveTape { .. }
+                | ParsedInstruction::DestroyTape { .. }
+                | ParsedInstruction::RegisterNode { .. }
+                | ParsedInstruction::JoinNetwork { .. } => {}
+                _ => panic!("expected one of the required instruction variants"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_merge_required_events_wrong_event_type_all() {
+        for raw in required_events_missing_cases() {
+            let result = merge(vec![raw], vec![required_event_mismatch_case()]);
+            assert!(
+                result.is_err(),
+                "expected error when event type mismatched required event"
+            );
+            match result {
+                Err(ParseError::EventMismatch(_)) => {}
+                _ => panic!("Expected EventMismatch error"),
+            }
         }
     }
 

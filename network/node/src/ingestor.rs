@@ -97,7 +97,7 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
         let epoch = if cs.has_epoch() { Some(cs.epoch) } else { None };
         let status = cs.node_status.clone();
 
-        let cursor_slot = cursor.map(|slot| slot.0);
+        let _cursor_slot = cursor.map(|slot| slot.0);
 
         if let Some(slot) = cursor {
             return Ok(Some(SlotNumber(slot.0 + 1)));
@@ -125,9 +125,7 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
             "waiting for snapshot bootstrap to complete"
         );
 
-        // TODO: Why is the duration defined here?
         if !sleep_or_active(Duration::from_secs(BOOTSTRAP_POLL_SECS), cancel).await {
-            // TODO: why are we returning None?
             return Ok(None);
         }
     }
@@ -248,8 +246,6 @@ async fn ingest_slot<S: Store, R: Rpc>(
     Ok(IngestStep::Continue(SlotNumber(next_slot.0 + 1)))
 }
 
-// TODO: feels weird that we're doing this. should we maybe consider using retry/backoff. this
-// feels sloppy for some reason.
 async fn sleep_or_active(delay: Duration, cancel: &CancellationToken) -> bool {
     tokio::select! {
         _ = sleep(delay) => true,

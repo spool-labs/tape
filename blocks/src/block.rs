@@ -293,24 +293,11 @@ mod tests {
             ..ParsedBlock::default()
         };
 
-        let merged = merge_transactions(&parsed.transactions).unwrap();
-        assert_eq!(merged.len(), 2);
-        match &merged[0] {
-            ParsedInstruction::RegisterTrack {
-                event: first_event,
-                ..
-            } => assert!(first_event.is_none()),
-            _ => panic!("expected first instruction to be register track"),
-        }
-        match &merged[1] {
-            ParsedInstruction::RegisterTrack {
-                event: second_event,
-                ..
-            } => {
-                assert!(second_event.is_some());
-                assert_eq!(second_event.as_ref().unwrap().track, tx2_track);
-            }
-            _ => panic!("expected second instruction to be register track"),
+        let result = merge_transactions(&parsed.transactions);
+        assert!(result.is_err());
+        match result {
+            Err(ParseError::EventMismatch(_)) => {}
+            _ => panic!("Expected EventMismatch error"),
         }
     }
 
