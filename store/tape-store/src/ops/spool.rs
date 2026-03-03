@@ -2,19 +2,19 @@
 
 use crate::columns::{SpoolPendingRecoveryCol, SpoolScanDoneCol, SpoolStatusCol, SpoolSyncCursorCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolStatus};
+use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use crate::TapeStore;
 use store::{Column, Store};
 
 /// Operations for spool management (NOT epoch-namespaced)
 pub trait SpoolOps {
-    // Spool status
-    fn get_spool_status(&self, spool_id: u16) -> Result<Option<SpoolStatus>>;
-    fn set_spool_status(&self, spool_id: u16, status: SpoolStatus) -> Result<()>;
-    fn remove_spool_status(&self, spool_id: u16) -> Result<()>;
+    // Spool state (status + epoch entered)
+    fn get_spool_state(&self, spool_id: u16) -> Result<Option<SpoolState>>;
+    fn set_spool_state(&self, spool_id: u16, state: SpoolState) -> Result<()>;
+    fn remove_spool_state(&self, spool_id: u16) -> Result<()>;
 
     // Iterate all spools
-    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolStatus)>>;
+    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolState)>>;
 
     // Pending recovery
     fn add_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()>;
@@ -40,28 +40,28 @@ pub trait SpoolOps {
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
-    fn get_spool_status(&self, spool_id: u16) -> Result<Option<SpoolStatus>> {
+    fn get_spool_state(&self, spool_id: u16) -> Result<Option<SpoolState>> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.get::<SpoolStatusCol>(&key)?)
     }
 
-    fn set_spool_status(&self, spool_id: u16, status: SpoolStatus) -> Result<()> {
+    fn set_spool_state(&self, spool_id: u16, state: SpoolState) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
-        self.put::<SpoolStatusCol>(&key, &status)?;
+        self.put::<SpoolStatusCol>(&key, &state)?;
         Ok(())
     }
 
-    fn remove_spool_status(&self, spool_id: u16) -> Result<()> {
+    fn remove_spool_state(&self, spool_id: u16) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.delete::<SpoolStatusCol>(&key)?;
         Ok(())
     }
 
-    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolStatus)>> {
+    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolState)>> {
         let iter = self.iter::<SpoolStatusCol>()?;
         Ok(iter
             .into_iter()
-            .map(|(key, status)| (key.0, status))
+            .map(|(key, state)| (key.0, state))
             .collect())
     }
 
@@ -143,41 +143,47 @@ impl<S: Store> SpoolOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SpoolStatus;
     use store_memory::MemoryStore;
+    use tape_core::types::EpochNumber;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
+    fn state(status: SpoolStatus) -> SpoolState {
+        SpoolState { status, epoch: EpochNumber(0) }
+    }
+
     #[test]
-    fn test_spool_status_roundtrip() {
+    fn spool_state_roundtrip() {
         let store = test_store();
         let spool_id = 42;
 
-        assert!(store.get_spool_status(spool_id).unwrap().is_none());
+        assert!(store.get_spool_state(spool_id).unwrap().is_none());
 
         store
-            .set_spool_status(spool_id, SpoolStatus::Active)
+            .set_spool_state(spool_id, state(SpoolStatus::Active))
             .unwrap();
 
         assert_eq!(
-            store.get_spool_status(spool_id).unwrap(),
-            Some(SpoolStatus::Active)
+            store.get_spool_state(spool_id).unwrap().unwrap().status,
+            SpoolStatus::Active,
         );
     }
 
     #[test]
-    fn test_iter_all_spools() {
+    fn iter_all_spools() {
         let store = test_store();
 
         store
-            .set_spool_status(10, SpoolStatus::Active)
+            .set_spool_state(10, state(SpoolStatus::Active))
             .unwrap();
         store
-            .set_spool_status(20, SpoolStatus::ActiveSync)
+            .set_spool_state(20, state(SpoolStatus::ActiveSync))
             .unwrap();
         store
-            .set_spool_status(30, SpoolStatus::ActiveRecover)
+            .set_spool_state(30, state(SpoolStatus::ActiveRecover))
             .unwrap();
 
         let spools = store.iter_all_spools().unwrap();

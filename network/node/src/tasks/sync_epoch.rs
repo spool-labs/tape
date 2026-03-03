@@ -7,7 +7,6 @@ use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::errors::TapeError;
 use tape_store::ops::SpoolOps;
-use tape_store::types::SpoolStatus;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_sync_epoch;
@@ -40,7 +39,7 @@ pub async fn run<S: Store, R: Rpc>(
     let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {
         Ok(spools) => spools
             .into_iter()
-            .filter(|(_, status)| !matches!(status, SpoolStatus::LockedToMove))
+            .filter(|(_, state)| !state.is_locked())
             .map(|(id, _)| id)
             .collect(),
         Err(e) => return TaskOutcome::Retryable(format!("iter spools: {e}")),

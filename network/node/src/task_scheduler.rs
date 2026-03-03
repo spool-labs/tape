@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use tape_core::types::EpochNumber;
 use tape_store::ops::{MetaOps, SpoolOps};
-use tape_store::types::{NodeStatus, SpoolStatus};
+use tape_store::types::{NodeStatus, SpoolState, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::fsm::StateChange;
@@ -191,6 +191,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                         *epoch,
                         &mut self.desired,
                     );
+
                 }
 
                 StateChange::SpoolAssignmentChanged => {
@@ -239,9 +240,6 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                 
                 StateChange::PhaseAdvanced { phase } => {
                     tracing::trace!(?phase, "scheduler handling phase advance");
-                    if matches!(phase, EpochPhase::Settling) {
-                        SpoolPlanner::cleanup_locked(&*self.context.store);
-                    }
                     let cs = self.context.chain_state.load();
                     let epoch = cs.epoch;
                     if !epoch.is_zero() {
@@ -251,6 +249,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
                             epoch,
                             &mut self.desired,
                         );
+
                     }
                 }
 
@@ -589,13 +588,18 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     fn on_sync_failure(&mut self, key: &Task) {
         let Task::SpoolSync { spool } = key else { return };
 
-        let current_status = self.context.store.get_spool_status(*spool).ok().flatten();
-        if !matches!(current_status, Some(SpoolStatus::ActiveSync)) {
-            tracing::debug!(spool, ?current_status, "ignoring stale spool sync failure");
+        let current_state = self.context.store.get_spool_state(*spool).ok().flatten();
+        let Some(state) = current_state else {
+            tracing::debug!(spool, "ignoring stale spool sync failure: no state");
+            return;
+        };
+        if !state.is_syncing() {
+            tracing::debug!(spool, status = ?state.status, "ignoring stale spool sync failure");
             return;
         }
 
-        if let Err(e) = self.context.store.set_spool_status(*spool, SpoolStatus::ActiveRecover) {
+        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch };
+        if let Err(e) = self.context.store.set_spool_state(*spool, new_state) {
             tracing::error!(spool, "failed to set ActiveRecover: {e}");
             return;
         }
@@ -645,6 +649,7 @@ mod tests {
         Pubkey as StorePubkey,
         SnapshotCertResult,
         SnapshotChunkMeta,
+        SpoolState,
         SpoolStatus,
         TrackInfo,
     };
@@ -762,10 +767,10 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
-            .set_spool_status(20, SpoolStatus::ActiveSync)
+            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -796,7 +801,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -809,7 +814,7 @@ mod tests {
 
         while action_rx.try_recv().is_ok() {}
 
-        ctx.store.remove_spool_status(10).unwrap();
+        ctx.store.remove_spool_state(10).unwrap();
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(2),
@@ -898,7 +903,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(30, SpoolStatus::ActiveRecover)
+            .set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -925,7 +930,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(15, SpoolStatus::ActiveSync)
+            .set_spool_state(15, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -963,7 +968,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(5, SpoolStatus::Active)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -992,7 +997,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(5, SpoolStatus::Active)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1015,7 +1020,7 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(5, SpoolStatus::Active)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1036,7 +1041,7 @@ mod tests {
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
+        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1089,7 +1094,7 @@ mod tests {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1152,10 +1157,10 @@ mod tests {
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
-            .set_spool_status(20, SpoolStatus::ActiveSync)
+            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1194,7 +1199,7 @@ mod tests {
     async fn standby_blocks() {
         let ctx = test_context();
         ctx.store
-            .set_spool_status(10, SpoolStatus::ActiveSync)
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Standby);
 
@@ -1327,7 +1332,7 @@ mod tests {
         let ctx = test_context();
         let mut scheduler = TaskScheduler::new(ctx);
 
-        scheduler.context.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
+        scheduler.context.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
@@ -1341,7 +1346,7 @@ mod tests {
     async fn epoch_reconcile() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_status(10, SpoolStatus::ActiveSync).unwrap();
+        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1423,6 +1428,7 @@ mod tests {
             epoch,
             &mut scheduler.desired,
         );
+
         assert!(scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
         assert!(!scheduler.desired.contains(&Task::SnapshotBuild { epoch }));
         assert!(scheduler.desired.contains(&Task::RegisterSnapshot { epoch }));
@@ -1444,6 +1450,7 @@ mod tests {
             epoch,
             &mut scheduler.desired,
         );
+
         assert!(!scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
         assert!(!scheduler.desired.contains(&Task::RegisterSnapshot { epoch }));
         assert!(!scheduler.desired.contains(&Task::SnapshotSubmit { epoch }));
@@ -1476,6 +1483,7 @@ mod tests {
             epoch,
             &mut scheduler.desired,
         );
+
         assert!(scheduler.desired.contains(&Task::SnapshotSubmit { epoch }));
         assert!(scheduler.desired.contains(&Task::RegisterSnapshot { epoch }));
         assert!(!scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
@@ -1508,6 +1516,7 @@ mod tests {
             epoch,
             &mut scheduler.desired,
         );
+
         assert!(scheduler.desired.contains(&Task::RegisterSnapshot { epoch }));
         assert!(scheduler.desired.contains(&Task::SnapshotSubmit { epoch }));
         assert!(scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
@@ -1549,6 +1558,7 @@ mod tests {
             &mut scheduler.desired,
         );
 
+
         assert!(scheduler.desired.contains(&Task::SnapshotBuild { epoch }));
         assert!(scheduler.desired.contains(&Task::RegisterSnapshot { epoch }));
         assert!(scheduler.desired.contains(&Task::SnapshotCollect { epoch }));
@@ -1559,7 +1569,7 @@ mod tests {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_status(5, SpoolStatus::Active)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1580,7 +1590,7 @@ mod tests {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(2), EpochPhase::Syncing, NodeStatus::Active);
         ctx.store
-            .set_spool_status(5, SpoolStatus::Active)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1643,7 +1653,7 @@ mod tests {
     async fn sync_permanent_to_recover() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_status(42, SpoolStatus::ActiveSync).unwrap();
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.desired.insert(Task::SpoolSync { spool: 42 });
@@ -1655,8 +1665,8 @@ mod tests {
         ));
 
         assert_eq!(
-            ctx.store.get_spool_status(42).unwrap(),
-            Some(SpoolStatus::ActiveRecover)
+            ctx.store.get_spool_state(42).unwrap().unwrap().status,
+            SpoolStatus::ActiveRecover
         );
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
@@ -1667,7 +1677,7 @@ mod tests {
     async fn reconcile_active_recover() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_status(30, SpoolStatus::ActiveRecover).unwrap();
+        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1692,7 +1702,7 @@ mod tests {
     async fn reconcile_scan_done() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_status(30, SpoolStatus::ActiveRecover).unwrap();
+        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
         ctx.store.set_scan_done(30).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1728,5 +1738,85 @@ mod tests {
         scheduler.handle_result(&TaskResult::Success(Task::SpoolRecovery { spool: 30 }));
 
         assert!(!scheduler.desired.contains(&Task::RecoveryScan { spool: 30 }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_respects_epoch() {
+        let ctx = test_context();
+        // Lock spool at epoch 3
+        ctx.store.set_spool_state(10, SpoolState {
+            status: SpoolStatus::LockedToMove,
+            epoch: EpochNumber(3),
+        }).unwrap();
+
+        // At epoch 4, should NOT be cleaned (3 + 2 > 4)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(4));
+        assert!(ctx.store.get_spool_state(10).unwrap().is_some());
+
+        // At epoch 5, should be cleaned (3 + 2 <= 5)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(5));
+        assert!(ctx.store.get_spool_state(10).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn reconcile_sets_epoch() {
+        let ctx = test_context();
+        let mut chain_spools = HashSet::new();
+        chain_spools.insert(10u16);
+        chain_spools.insert(20u16);
+
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        assert!(changed);
+
+        let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
+        assert_eq!(s10.status, SpoolStatus::ActiveSync);
+        assert_eq!(s10.epoch, EpochNumber(5));
+
+        let s20 = ctx.store.get_spool_state(20).unwrap().unwrap();
+        assert_eq!(s20.status, SpoolStatus::ActiveSync);
+        assert_eq!(s20.epoch, EpochNumber(5));
+    }
+
+    #[tokio::test]
+    async fn reconcile_reactivates_locked() {
+        let ctx = test_context();
+        // Spool 10 locked at epoch 3
+        ctx.store.set_spool_state(10, SpoolState {
+            status: SpoolStatus::LockedToMove,
+            epoch: EpochNumber(3),
+        }).unwrap();
+
+        // Chain says we own spool 10 again at epoch 5
+        let mut chain_spools = HashSet::new();
+        chain_spools.insert(10u16);
+
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        assert!(changed);
+
+        let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
+        assert_eq!(s10.status, SpoolStatus::ActiveSync);
+        assert_eq!(s10.epoch, EpochNumber(5));
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_existing_lock() {
+        let ctx = test_context();
+        // Spool 10 locked at epoch 3
+        ctx.store.set_spool_state(10, SpoolState {
+            status: SpoolStatus::LockedToMove,
+            epoch: EpochNumber(3),
+        }).unwrap();
+
+        // Chain does not include spool 10 at epoch 5
+        let chain_spools = HashSet::new();
+
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        // No change — spool already locked
+        assert!(!changed);
+
+        let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
+        assert_eq!(s10.status, SpoolStatus::LockedToMove);
+        // Epoch NOT updated — preserved original lock time
+        assert_eq!(s10.epoch, EpochNumber(3));
     }
 }

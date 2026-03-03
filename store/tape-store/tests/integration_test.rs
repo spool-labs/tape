@@ -104,7 +104,7 @@ fn all_column_families() {
 
     // Spool status (NOT epoch-namespaced)
     store
-        .set_spool_status(42, SpoolStatus::Active)
+        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
         .unwrap();
 
     // Sync progress
@@ -143,8 +143,8 @@ fn all_column_families() {
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());
     assert_eq!(
-        store.get_spool_status(42).unwrap(),
-        Some(SpoolStatus::Active)
+        store.get_spool_state(42).unwrap().unwrap().status,
+        SpoolStatus::Active
     );
     assert_eq!(
         store.get_spool_sync_cursor(42).unwrap(),
@@ -276,19 +276,19 @@ fn spool_ops() {
 
     // Set status (NOT epoch-namespaced)
     store
-        .set_spool_status(42, SpoolStatus::Active)
+        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
         .unwrap();
     store
-        .set_spool_status(43, SpoolStatus::ActiveSync)
+        .set_spool_state(43, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
         .unwrap();
 
     assert_eq!(
-        store.get_spool_status(42).unwrap(),
-        Some(SpoolStatus::Active)
+        store.get_spool_state(42).unwrap().unwrap().status,
+        SpoolStatus::Active
     );
     assert_eq!(
-        store.get_spool_status(43).unwrap(),
-        Some(SpoolStatus::ActiveSync)
+        store.get_spool_state(43).unwrap().unwrap().status,
+        SpoolStatus::ActiveSync
     );
 
     // Iterate all spools
@@ -296,8 +296,8 @@ fn spool_ops() {
     assert_eq!(spools.len(), 2);
 
     // Remove
-    store.remove_spool_status(42).unwrap();
-    assert!(store.get_spool_status(42).unwrap().is_none());
+    store.remove_spool_state(42).unwrap();
+    assert!(store.get_spool_state(42).unwrap().is_none());
 }
 
 #[test]

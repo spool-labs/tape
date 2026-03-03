@@ -365,7 +365,8 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
                 }
 
                 let cs = context.chain_state.load();
-                if SpoolPlanner::reconcile_ownership(&*context.store, &cs.spools) {
+                SpoolPlanner::cleanup_locked(&*context.store, cs.epoch);
+                if SpoolPlanner::reconcile_ownership(&*context.store, &cs.spools, cs.epoch) {
                     changes.push(StateChange::SpoolAssignmentChanged);
                 }
             }
@@ -436,7 +437,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_store::ops::{MetaOps, SpoolOps};
-    use tape_store::types::{NodeStatus, SpoolStatus};
+    use tape_store::types::{NodeStatus, SpoolState, SpoolStatus};
 
     use crate::ingestor::IngestedBlock;
     use crate::state::ChainState;
@@ -512,7 +513,7 @@ mod tests {
 
         // Pre-populate spool state so scheduler has work to do
         ctx.store
-            .set_spool_status(5, SpoolStatus::ActiveSync)
+            .set_spool_state(5, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
             .unwrap();
 
         // We use spawn_runtime_channels + manual wiring since LiteSvmRpc

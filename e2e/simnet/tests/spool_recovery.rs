@@ -133,8 +133,8 @@ async fn spool_recovery_inner() {
         let mut any_sync = false;
         for &i in &alive_indices {
             let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
-            for (_, status) in &statuses {
-                if matches!(status, SpoolStatus::ActiveSync) {
+            for (_, state) in &statuses {
+                if matches!(state.status, SpoolStatus::ActiveSync) {
                     any_sync = true;
                     break;
                 }
@@ -162,8 +162,8 @@ async fn spool_recovery_inner() {
         let mut all_active = true;
         for &i in &alive_indices {
             let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
-            for (_, status) in &statuses {
-                if !matches!(status, SpoolStatus::Active | SpoolStatus::LockedToMove) {
+            for (_, state) in &statuses {
+                if !matches!(state.status, SpoolStatus::Active | SpoolStatus::LockedToMove) {
                     all_active = false;
                     break;
                 }

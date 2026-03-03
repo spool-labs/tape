@@ -52,6 +52,34 @@ impl Default for SpoolStatus {
     }
 }
 
+/// Spool status with the epoch it entered this state.
+///
+/// Used to defer garbage collection of `LockedToMove` spools so old owners
+/// keep serving data until new owners complete sync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SpoolState {
+    pub status: SpoolStatus,
+    pub epoch: EpochNumber,
+}
+
+impl SpoolState {
+    pub fn is_locked(&self) -> bool {
+        self.status == SpoolStatus::LockedToMove
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.status == SpoolStatus::Active
+    }
+
+    pub fn is_syncing(&self) -> bool {
+        self.status == SpoolStatus::ActiveSync
+    }
+
+    pub fn is_recovering(&self) -> bool {
+        self.status == SpoolStatus::ActiveRecover
+    }
+}
+
 /// Information about a tracked object
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum ObjectInfo {
@@ -84,6 +112,26 @@ mod tests {
     #[test]
     fn test_spool_status_default() {
         assert_eq!(SpoolStatus::default(), SpoolStatus::None);
+    }
+
+    #[test]
+    fn spool_state_roundtrip() {
+        let states = vec![
+            super::SpoolState {
+                status: SpoolStatus::Active,
+                epoch: EpochNumber(0),
+            },
+            super::SpoolState {
+                status: SpoolStatus::LockedToMove,
+                epoch: EpochNumber(42),
+            },
+        ];
+
+        for state in states {
+            let bytes = wincode::serialize(&state).unwrap();
+            let decoded: super::SpoolState = wincode::deserialize(&bytes).unwrap();
+            assert_eq!(state, decoded);
+        }
     }
 
     #[test]

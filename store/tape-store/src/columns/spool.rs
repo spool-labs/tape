@@ -5,19 +5,19 @@
 //! - SpoolSyncCursorCol: spool_id -> Pubkey (last synced track)
 //! - SpoolScanDoneCol: spool_id -> () (recovery scan completion flag)
 
-use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolStatus};
+use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use store::Column;
 
 /// Spool status tracking
 ///
 /// Key: SpoolIndexKey (2 bytes: spool_id BE)
-/// Value: SpoolStatus
+/// Value: SpoolState (status + epoch entered)
 pub struct SpoolStatusCol;
 
 impl Column for SpoolStatusCol {
     const CF_NAME: &'static str = "spool_status";
     type Key = SpoolIndexKey;
-    type Value = SpoolStatus;
+    type Value = SpoolState;
 }
 
 /// Pending recovery queue (presence-only)

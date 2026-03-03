@@ -96,7 +96,7 @@ mod tests {
     use tape_store::ops::{
         EventLogOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps,
     };
-    use tape_store::types::{ObjectInfo, SpoolStatus};
+    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus};
 
     use crate::core::test_utils::test_context;
     use crate::ingestor::IngestedBlock;
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn replay_advance_epoch() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let log = make_log(
             vec![SnapshotEntry {
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn replay_register_track() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn replay_certify_track() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn replay_delete_track() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn replay_delete_slices() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -679,7 +679,7 @@ mod tests {
         };
         let track_key: StorePubkey = track.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn replay_cursor_update() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let log = make_log(vec![], 999);
         fsm.replay_snapshot(&log).unwrap();
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn replay_no_event_log() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let log = make_log(
             vec![SnapshotEntry {
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn replay_invalidate_slices() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
@@ -763,7 +763,7 @@ mod tests {
         };
         let track_key: StorePubkey = track.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn replay_destroy_cascade() {
         let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
+        let fsm = Fsm::new(ctx.clone());
 
         let tape = Pubkey::new_unique();
         let track = Pubkey::new_unique();
@@ -817,7 +817,7 @@ mod tests {
         let track_key: StorePubkey = track.into();
         let tape_key: StorePubkey = tape.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -870,7 +870,7 @@ mod tests {
         // Own spool 60 (in group 3) and store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])
@@ -918,7 +918,7 @@ mod tests {
         // Store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])
@@ -977,7 +977,7 @@ mod tests {
         let st1: StorePubkey = track1.into();
         let st2: StorePubkey = track2.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store.put_slice(60, st1, vec![1, 2, 3]).unwrap();
         ctx.store.put_slice(60, st2, vec![4, 5, 6]).unwrap();
@@ -1028,7 +1028,7 @@ mod tests {
         // Own spool 60 and store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_status(60, SpoolStatus::Active)
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])

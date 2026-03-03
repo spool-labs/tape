@@ -11,6 +11,7 @@ pub use types::{ReplayableEvent, SnapshotEntry, SnapshotLog};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{EpochNumber, NodeId, SlotNumber};
     use tape_crypto::hash::Hash;
 
     #[test]

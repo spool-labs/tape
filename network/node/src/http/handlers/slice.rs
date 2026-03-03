@@ -271,7 +271,7 @@ fn verify_spool_ownership<S: Store, R: Rpc>(
         .iter_all_spools()
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
 
-    if spools.iter().any(|(id, _)| *id == spool_id) {
+    if spools.iter().any(|(id, s)| *id == spool_id && !s.is_locked()) {
         Ok(())
     } else {
         Err(ApiError::NotResponsible)

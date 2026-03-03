@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
 use tape_store::ops::SpoolOps;
-use tape_store::types::{NodeStatus, SpoolStatus};
+use tape_store::types::{NodeStatus, SpoolState};
 use tracing::trace;
 
 use crate::log::{log_path, read_log};
@@ -150,7 +150,7 @@ impl SimnetScenario<'_> {
         Ok(spools.len())
     }
 
-    pub fn node_spool_statuses(&self, index: usize) -> Result<Vec<(u16, SpoolStatus)>> {
+    pub fn node_spool_statuses(&self, index: usize) -> Result<Vec<(u16, SpoolState)>> {
         let node = self
             .harness
             .node(index)

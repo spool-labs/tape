@@ -66,26 +66,28 @@ async fn spool_node_drop() {
     // Wait for nodes to process the epoch change and reconcile spools
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Verify spool redistribution: all 1000 spools assigned to alive nodes
+    // Verify spool redistribution: alive nodes have at least SPOOL_COUNT spools.
+    // May overcount due to deferred GC: old owner keeps LockedToMove alongside
+    // new owner's ActiveSync until cleanup runs 2 epochs later.
     let alive_total = scenario
         .total_spool_count(&alive_indices)
         .expect("total spool count");
-    assert_eq!(
-        alive_total, SPOOL_COUNT,
-        "all {SPOOL_COUNT} spools reassigned to alive nodes, got {alive_total}"
+    assert!(
+        alive_total >= SPOOL_COUNT,
+        "expected >= {SPOOL_COUNT} spools on alive nodes, got {alive_total}"
     );
 
     // Verify newly gained spools have ActiveSync status
     let mut sync_count = 0usize;
     for &i in &alive_indices {
         let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
-        for (spool_id, status) in &statuses {
-            if matches!(status, SpoolStatus::ActiveSync) {
+        for (spool_id, state) in &statuses {
+            if matches!(state.status, SpoolStatus::ActiveSync) {
                 sync_count += 1;
             }
             assert!(
-                matches!(status, SpoolStatus::Active | SpoolStatus::ActiveSync),
-                "node {i} spool {spool_id} unexpected status {status:?}"
+                matches!(state.status, SpoolStatus::Active | SpoolStatus::ActiveSync | SpoolStatus::LockedToMove),
+                "node {i} spool {spool_id} unexpected status {:?}", state.status
             );
         }
     }

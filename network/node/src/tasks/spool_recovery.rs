@@ -11,7 +11,7 @@ use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
 use tape_slicer::ClayCoder;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SpoolStatus, TrackInfo};
+use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::validate_slice_entry;
@@ -280,12 +280,15 @@ pub async fn run<S: Store, R: Rpc>(
         if !scan_done {
             return TaskOutcome::Pending(Duration::from_secs(5));
         }
-        if let Ok(Some(SpoolStatus::ActiveRecover)) = context.store.get_spool_status(spool) {
-            if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
-                return TaskOutcome::Retryable(format!("set spool active: {e}"));
+        if let Ok(Some(state)) = context.store.get_spool_state(spool) {
+            if state.is_recovering() {
+                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
+                if let Err(e) = context.store.set_spool_state(spool, new_state) {
+                    return TaskOutcome::Retryable(format!("set spool active: {e}"));
+                }
+                let _ = context.store.clear_scan_done(spool);
+                tracing::info!(spool, "spool recovery complete, marked active");
             }
-            let _ = context.store.clear_scan_done(spool);
-            tracing::info!(spool, "spool recovery complete, marked active");
         }
         TaskOutcome::Success
     }
@@ -487,7 +490,8 @@ mod tests {
         });
 
         // Set up ActiveRecover spool with scan_done flag
-        ctx.store.set_spool_status(5, SpoolStatus::ActiveRecover).unwrap();
+        use tape_store::types::SpoolState;
+        ctx.store.set_spool_state(5, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
         ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();
@@ -495,8 +499,8 @@ mod tests {
         let result = run(ctx.clone(), peer_handle, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
         assert_eq!(
-            ctx.store.get_spool_status(5).unwrap(),
-            Some(SpoolStatus::Active)
+            ctx.store.get_spool_state(5).unwrap().unwrap().status,
+            SpoolStatus::Active,
         );
         assert!(!ctx.store.is_scan_done(5).unwrap());
     }

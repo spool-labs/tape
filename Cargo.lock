@@ -8449,6 +8449,7 @@ name = "store"
 version = "0.3.0"
 dependencies = [
  "serde",
+ "store-memory",
  "tape-metrics",
  "thiserror 2.0.18",
  "wincode 0.1.2",

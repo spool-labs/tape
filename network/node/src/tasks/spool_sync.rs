@@ -9,7 +9,7 @@ use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::types::EpochNumber;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
-use tape_store::types::SpoolStatus;
+use tape_store::types::{SpoolState, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
 use std::time::Duration;
@@ -221,15 +221,20 @@ fn promote_active<S: Store, R: Rpc>(
     clear_sync_cursor: bool,
 ) -> TaskOutcome {
 
-    let status = match context.store.get_spool_status(spool) {
-        Ok(status) => status,
+    let state = match context.store.get_spool_state(spool) {
+        Ok(state) => state,
         Err(e) => return TaskOutcome::Retryable(format!("read spool status: {e}")),
     };
 
-    if !matches!(status, Some(SpoolStatus::ActiveSync)) {
+    let Some(state) = state else {
+        tracing::info!(spool, "spool state missing during sync, skipping activation");
+        return TaskOutcome::Success;
+    };
+
+    if !state.is_syncing() {
         tracing::info!(
             spool,
-            ?status,
+            status = ?state.status,
             "spool status changed during sync, skipping activation"
         );
         return TaskOutcome::Success;
@@ -239,7 +244,8 @@ fn promote_active<S: Store, R: Rpc>(
         let _ = context.store.remove_spool_sync_cursor(spool);
     }
 
-    if let Err(e) = context.store.set_spool_status(spool, SpoolStatus::Active) {
+    let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
+    if let Err(e) = context.store.set_spool_state(spool, new_state) {
         return TaskOutcome::Retryable(format!("set spool active: {e}"));
     }
 
