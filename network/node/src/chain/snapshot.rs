@@ -5,6 +5,7 @@ use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
 use store::Store;
+use tape_api::compute::{REGISTER_SNAPSHOT_CU, CERTIFY_SNAPSHOT_CU};
 use tape_api::prelude::{build_certify_snapshot_ix, build_register_snapshot_ix};
 use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_core::encoding::EncodingProfile;
@@ -15,9 +16,6 @@ use tape_crypto::Hash;
 use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 
 use crate::core::NodeContext;
-
-const SNAPSHOT_REGISTER_CU: u32 = 700_000;
-const SNAPSHOT_CERTIFY_CU: u32 = 1_400_000;
 
 pub async fn submit_register<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
@@ -37,7 +35,7 @@ pub async fn submit_register<S: Store, R: Rpc>(
     };
 
     let pubkey = context.keypair.pubkey();
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_REGISTER_CU);
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REGISTER_SNAPSHOT_CU);
     let ix = build_register_snapshot_ix(
         pubkey,
         local_epoch,
@@ -71,7 +69,7 @@ pub async fn submit_certify<S: Store, R: Rpc>(
     let bitmap = CommitteeBitmap::from_indices(&member_indices, committee_len);
 
     let pubkey = context.keypair.pubkey();
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SNAPSHOT_CERTIFY_CU);
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_SNAPSHOT_CU);
     let ix = build_certify_snapshot_ix(pubkey, local_epoch, signing_epoch, commitment, bitmap, cert.signature);
 
     context

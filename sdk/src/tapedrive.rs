@@ -8,6 +8,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
 use rpc_client::{parse_tape_error, Rpc, RpcClient, RpcError};
+use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{
@@ -30,8 +31,6 @@ use crate::encoder::BlobEncoder;
 use crate::error::TapedriveError;
 use crate::tape_key::TapeKey;
 
-/// Compute unit limit for BLS signature verification in CertifyTrack.
-const CERTIFY_COMPUTE_UNITS: u32 = 1_400_000;
 
 /// Retries for certification when epoch advances between signature collection and submission.
 const CERTIFY_RETRIES: usize = 3;
@@ -509,7 +508,7 @@ impl<R: Rpc> Tapedrive<R> {
                 .map_err(TapedriveError::Certification)?;
 
             let compute_ix =
-                ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_COMPUTE_UNITS);
+                ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
             let certify_ix = build_certify_track_ix(
                 self.payer.pubkey(),
                 tape_key.pubkey(),

@@ -1,5 +1,6 @@
 #![allow(unexpected_cfgs)]
 
+pub mod compute;
 pub mod consts;
 pub mod errors;
 pub mod event;
@@ -15,6 +16,7 @@ pub mod prelude {
     pub use tape_core::prelude::*;
     pub use tape_solana::*;
 
+    pub use crate::compute::*;
     pub use crate::consts::*;
     pub use crate::event::*;
     pub use crate::fsm::*;

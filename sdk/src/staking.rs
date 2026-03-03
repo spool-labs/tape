@@ -5,6 +5,9 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signer;
 
 use rpc_client::Rpc;
+use tape_api::compute::{
+    ADVANCE_POOL_CU, REQUEST_STAKE_UNLOCK_CU, STAKE_WITH_POOL_CU, UNSTAKE_FROM_POOL_CU,
+};
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::instruction::{
     build_advance_pool_ix, build_request_stake_unlock_ix, build_stake_with_pool_ix,
@@ -15,8 +18,6 @@ use tape_core::types::coin::{Coin, TAPE};
 use crate::error::TapedriveError;
 use crate::stake_key::StakeKey;
 use crate::tapedrive::Tapedrive;
-
-const STAKE_COMPUTE_UNITS: u32 = 1_400_000;
 
 impl<R: Rpc> Tapedrive<R> {
     /// Delegate TAPE to a node's staking pool.
@@ -30,7 +31,7 @@ impl<R: Rpc> Tapedrive<R> {
         amount: Coin<TAPE>,
     ) -> Result<(), TapedriveError> {
         let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(
-            STAKE_COMPUTE_UNITS,
+            STAKE_WITH_POOL_CU,
         )];
         ixs.extend(build_authority_with_tokens_ix(
             self.payer.pubkey(),
@@ -64,9 +65,10 @@ impl<R: Rpc> Tapedrive<R> {
         node_authority: Pubkey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_POOL_CU);
         let ix = build_advance_pool_ix(self.payer.pubkey(), node_authority, pool);
         self.client
-            .send_instructions(&self.payer, vec![ix])
+            .send_instructions(&self.payer, vec![cu_ix, ix])
             .await?;
         Ok(())
     }
@@ -80,6 +82,7 @@ impl<R: Rpc> Tapedrive<R> {
         stake_key: &StakeKey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REQUEST_STAKE_UNLOCK_CU);
         let ix = build_request_stake_unlock_ix(
             self.payer.pubkey(),
             stake_key.pubkey(),
@@ -88,7 +91,7 @@ impl<R: Rpc> Tapedrive<R> {
         self.client
             .send_instructions_with_signers(
                 &self.payer,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[stake_key.as_keypair()],
             )
             .await?;
@@ -103,6 +106,7 @@ impl<R: Rpc> Tapedrive<R> {
         stake_key: &StakeKey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNSTAKE_FROM_POOL_CU);
         let ix = build_unstake_from_pool_ix(
             self.payer.pubkey(),
             stake_key.pubkey(),
@@ -111,7 +115,7 @@ impl<R: Rpc> Tapedrive<R> {
         self.client
             .send_instructions_with_signers(
                 &self.payer,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[stake_key.as_keypair()],
             )
             .await?;

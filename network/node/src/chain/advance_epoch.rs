@@ -5,11 +5,10 @@ use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
 use store::Store;
+use tape_api::compute::ADVANCE_EPOCH_CU;
 use tape_api::instruction::build_advance_epoch_ix;
 
 use crate::core::NodeContext;
-
-const ADVANCE_EPOCH_CU: u32 = 1_400_000;
 
 pub async fn submit_advance_epoch<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,

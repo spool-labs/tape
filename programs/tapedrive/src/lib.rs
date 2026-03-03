@@ -38,6 +38,8 @@ pub fn process_instruction(
 
     solana_program::msg!("Instruction: {}", ix_type);
 
+    // Instructions marked with CU require a ComputeBudgetInstruction in the
+    // transaction.  See `tape_api::compute` for the canonical budget constants.
     if let Ok(ix) = TapeInstruction::try_from(discriminator) {
         match ix {
 
@@ -45,13 +47,13 @@ pub fn process_instruction(
             TapeInstruction::CreateSystem => process_create_system(accounts, data)?,
             TapeInstruction::ExpandSystem => process_expand_system(accounts, data)?,
             TapeInstruction::Initialize => process_initialize(accounts, data)?,
-            TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,
+            TapeInstruction::AdvanceEpoch => process_advance_epoch(accounts, data)?,    // CU 1_400_000
 
             // Node
-            TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,
+            TapeInstruction::AdvancePool => process_advance_pool(accounts, data)?,      // CU   400_000
             TapeInstruction::RegisterNode => process_register_node(accounts, data)?,
-            TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,
-            TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,
+            TapeInstruction::JoinNetwork => process_join_network(accounts, data)?,      // CU   400_000
+            TapeInstruction::SyncEpoch => process_sync_epoch(accounts, data)?,          // CU   400_000
             TapeInstruction::SetAuthority => process_set_authority(accounts, data)?,
             TapeInstruction::SetBlsPubkey => process_set_bls_pubkey(accounts, data)?,
             TapeInstruction::SetName => process_set_name(accounts, data)?,
@@ -59,17 +61,17 @@ pub fn process_instruction(
             TapeInstruction::SetNetworkTls => process_set_network_tls(accounts, data)?,
             TapeInstruction::SetStoragePrice => process_set_storage_price(accounts, data)?,
             TapeInstruction::SetStorageCapacity => process_set_storage_capacity(accounts, data)?,
-            TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,
-            TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
+            TapeInstruction::SetCommissionRate => process_set_commission_rate(accounts, data)?,  // CU 400_000
+            TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,       // CU 400_000
 
             // Blacklist
             TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
             TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,
- 
+
             // Staking
-            TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,
-            TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,
-            TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,
+            TapeInstruction::StakeWithPool => process_stake_with_pool(accounts, data)?,             // CU 1_400_000
+            TapeInstruction::RequestStakeUnlock => process_request_stake_unlock(accounts, data)?,   // CU   400_000
+            TapeInstruction::UnstakeFromPool => process_unstake_from_pool(accounts, data)?,         // CU   400_000
             TapeInstruction::MergePoolStake => process_merge_pool_stake(accounts, data)?,
             TapeInstruction::SplitPoolStake => process_split_pool_stake(accounts, data)?,
 
@@ -83,13 +85,13 @@ pub fn process_instruction(
             // Track
             TapeInstruction::RegisterTrack => process_register_track(accounts, data)?,
             TapeInstruction::DeleteTrack => process_delete_track(accounts, data)?,
-            TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,
-            TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,
+            TapeInstruction::CertifyTrack => process_certify_track(accounts, data)?,        // CU 1_400_000
+            TapeInstruction::InvalidateTrack => process_invalidate_track(accounts, data)?,  // CU 1_400_000
 
             // Snapshot
             TapeInstruction::ReserveSnapshotTape => process_reserve_snapshot_tape(accounts, data)?,
-            TapeInstruction::RegisterSnapshot => process_register_snapshot(accounts, data)?,
-            TapeInstruction::CertifySnapshot => process_certify_snapshot(accounts, data)?,
+            TapeInstruction::RegisterSnapshot => process_register_snapshot(accounts, data)?,    // CU   700_000
+            TapeInstruction::CertifySnapshot => process_certify_snapshot(accounts, data)?,      // CU 1_400_000
 
             _ => return Err(ProgramError::InvalidInstructionData),
         }

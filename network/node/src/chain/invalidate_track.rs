@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use rpc_client::RpcError;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Signature, Signer};
 use store::Store;
+use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda};
 use tape_crypto::Hash;
@@ -24,6 +26,7 @@ pub async fn submit_invalidate_track<S: Store, R: Rpc>(
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
 
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(INVALIDATE_TRACK_CU);
     let ix = build_invalidate_track_ix(
         fee_payer,
         system_address,
@@ -36,5 +39,5 @@ pub async fn submit_invalidate_track<S: Store, R: Rpc>(
         observed_root,
     );
 
-    context.rpc.send_instructions(&context.keypair, vec![ix]).await
+    context.rpc.send_instructions(&context.keypair, vec![cu_ix, ix]).await
 }
