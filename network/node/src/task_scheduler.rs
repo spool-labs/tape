@@ -1759,6 +1759,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_deletes_slices() {
+        let ctx = test_context();
+
+        // Lock spool 10 at epoch 3
+        ctx.store.set_spool_state(10, SpoolState {
+            status: SpoolStatus::LockedToMove,
+            epoch: EpochNumber(3),
+        }).unwrap();
+
+        // Seed slice data and pending recoveries for spool 10
+        let track = StorePubkey::new_unique();
+        ctx.store.put_slice(10, track, vec![0xAB; 64]).unwrap();
+        ctx.store.add_pending_recovery(10, track).unwrap();
+
+        // Cleanup at epoch 5 (3 + 2 <= 5)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(5));
+
+        assert!(ctx.store.get_spool_state(10).unwrap().is_none());
+        assert_eq!(ctx.store.count_slices_by_spool(10).unwrap(), 0);
+        assert!(ctx.store.iter_pending_recoveries(10, 100).unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn reconcile_sets_epoch() {
         let ctx = test_context();
         let mut chain_spools = HashSet::new();

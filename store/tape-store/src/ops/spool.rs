@@ -33,6 +33,9 @@ pub trait SpoolOps {
     fn set_spool_sync_cursor(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()>;
     fn remove_spool_sync_cursor(&self, spool_id: u16) -> Result<()>;
 
+    // Bulk clear all pending recoveries for a spool
+    fn clear_all_pending_recoveries(&self, spool_id: u16) -> Result<()>;
+
     // Recovery scan completion flag
     fn set_scan_done(&self, spool_id: u16) -> Result<()>;
     fn is_scan_done(&self, spool_id: u16) -> Result<bool>;
@@ -103,6 +106,22 @@ impl<S: Store> SpoolOps for TapeStore<S> {
             }
         }
         Ok(results)
+    }
+
+    fn clear_all_pending_recoveries(&self, spool_id: u16) -> Result<()> {
+        let raw = self.inner().inner();
+        let prefix = SliceKey::spool_prefix(spool_id);
+
+        let keys: Vec<Vec<u8>> = raw
+            .iter_prefix(SpoolPendingRecoveryCol::CF_NAME, &prefix)?
+            .map(|(k, _)| k)
+            .collect();
+
+        for key in keys {
+            raw.delete(SpoolPendingRecoveryCol::CF_NAME, &key)?;
+        }
+
+        Ok(())
     }
 
     fn get_spool_sync_cursor(&self, spool_id: u16) -> Result<Option<Pubkey>> {
@@ -225,6 +244,24 @@ mod tests {
 
         let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
         assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn clear_all_pending() {
+        let store = test_store();
+
+        let t1 = Pubkey::new_unique();
+        let t2 = Pubkey::new_unique();
+        let t3 = Pubkey::new_unique();
+
+        store.add_pending_recovery(42, t1).unwrap();
+        store.add_pending_recovery(42, t2).unwrap();
+        store.add_pending_recovery(99, t3).unwrap();
+
+        store.clear_all_pending_recoveries(42).unwrap();
+
+        assert!(store.iter_pending_recoveries(42, 100).unwrap().is_empty());
+        assert_eq!(store.iter_pending_recoveries(99, 100).unwrap().len(), 1);
     }
 
     #[test]

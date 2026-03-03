@@ -246,6 +246,15 @@ impl SpoolPlanner {
         };
         for (spool_id, state) in &spools {
             if state.is_locked() && state.epoch.0 + 2 <= current_epoch.0 {
+                match store.delete_all_slices_for_spool(*spool_id) {
+                    Ok(count) => {
+                        if count > 0 {
+                            tracing::info!(spool_id, count, "deleted orphaned slices");
+                        }
+                    }
+                    Err(e) => tracing::error!(spool_id, "delete slices: {e}"),
+                }
+                let _ = store.clear_all_pending_recoveries(*spool_id);
                 let _ = store.remove_spool_sync_cursor(*spool_id);
                 let _ = store.clear_scan_done(*spool_id);
                 if let Err(e) = store.remove_spool_state(*spool_id) {

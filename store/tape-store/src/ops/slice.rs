@@ -43,6 +43,9 @@ pub trait SliceOps {
 
     /// Count slices in a spool without loading data.
     fn count_slices_by_spool(&self, spool_id: u16) -> Result<usize>;
+
+    /// Delete all slices for a spool. Returns count of deleted slices.
+    fn delete_all_slices_for_spool(&self, spool_id: u16) -> Result<usize>;
 }
 
 impl<S: Store> SliceOps for TapeStore<S> {
@@ -156,6 +159,23 @@ impl<S: Store> SliceOps for TapeStore<S> {
             .iter_prefix(SliceCol::CF_NAME, &prefix)?;
 
         Ok(iter.count())
+    }
+
+    fn delete_all_slices_for_spool(&self, spool_id: u16) -> Result<usize> {
+        let raw = self.inner().inner();
+        let prefix = SliceKey::spool_prefix(spool_id);
+
+        let keys: Vec<Vec<u8>> = raw
+            .iter_prefix(SliceCol::CF_NAME, &prefix)?
+            .map(|(k, _)| k)
+            .collect();
+
+        let count = keys.len();
+        for key in keys {
+            raw.delete(SliceCol::CF_NAME, &key)?;
+        }
+
+        Ok(count)
     }
 }
 
@@ -288,6 +308,24 @@ mod tests {
 
         let keys = store.iter_slice_keys_by_spool(spool_id).unwrap();
         assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn delete_all_for_spool() {
+        let store = test_store();
+
+        let t1 = Pubkey::new_unique();
+        let t2 = Pubkey::new_unique();
+        let t3 = Pubkey::new_unique();
+
+        store.put_slice(42, t1, vec![1]).unwrap();
+        store.put_slice(42, t2, vec![2]).unwrap();
+        store.put_slice(99, t3, vec![3]).unwrap();
+
+        let count = store.delete_all_slices_for_spool(42).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(store.count_slices_by_spool(42).unwrap(), 0);
+        assert_eq!(store.count_slices_by_spool(99).unwrap(), 1);
     }
 
     #[test]
