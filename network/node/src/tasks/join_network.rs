@@ -29,8 +29,9 @@ fn classify_join_network_error(
             )),
             None => TaskOutcome::Retryable(format!("join_network: {err}")),
         },
-        Some(TapeError::NodeStale) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
-        Some(TapeError::NotStaked) => TaskOutcome::Permanent(format!("join_network: {err}")),
+        Some(TapeError::NodeStale)
+        | Some(TapeError::NotStaked)
+        | Some(TapeError::BadEpochState) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
         _ => TaskOutcome::Retryable(format!("join_network: {err}")),
     }
 }
@@ -119,9 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn not_staked_is_permanent() {
+    fn not_staked_is_pending() {
         let out = classify_join_network_error(&tx_error(TapeError::NotStaked as u32), None);
-        assert!(matches!(out, TaskOutcome::Permanent(_)));
+        assert!(matches!(out, TaskOutcome::Pending(delay) if delay == JOIN_NETWORK_PENDING_DELAY));
+    }
+
+    #[test]
+    fn bad_epoch_state_is_pending() {
+        let out = classify_join_network_error(&tx_error(TapeError::BadEpochState as u32), None);
+        assert!(matches!(out, TaskOutcome::Pending(delay) if delay == JOIN_NETWORK_PENDING_DELAY));
     }
 
     #[test]

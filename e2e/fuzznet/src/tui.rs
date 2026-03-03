@@ -152,13 +152,32 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
+    let phase_color = match snap.epoch_phase.as_str() {
+        "Syncing" => Color::Cyan,
+        "Settling" => Color::Yellow,
+        "Active" => Color::Green,
+        _ => Color::DarkGray,
+    };
+    let phase_detail = match snap.epoch_phase_weight {
+        Some(w) => format!(" {}(w:{})", snap.epoch_phase, w),
+        None => format!(" {}", snap.epoch_phase),
+    };
+
     let mut left_spans: Vec<Span> = vec![
         Span::styled(" \u{2299}\u{2299}", Style::default().fg(Color::Yellow)),
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
-            format!("  Nodes: {}  Stake: {}", snap.node_count, format_tape(snap.total_stake)),
+            format!(
+                "  Nodes: {}  Stake: {}  C[{}/{}/{}]",
+                snap.node_count,
+                format_tape(snap.total_stake),
+                snap.committee_prev_size,
+                snap.committee_size,
+                snap.committee_next_size,
+            ),
             Style::default().fg(Color::White),
         ),
+        Span::styled(phase_detail, Style::default().fg(phase_color)),
     ];
 
     // Fuzz stats (inline after stake)

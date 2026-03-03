@@ -232,12 +232,20 @@ async fn poll_once(
     histogram: &LogHistogram,
 ) {
     let slot = state.rpc.get_slot().await.unwrap_or(0);
-    let epoch = state
-        .rpc
-        .get_epoch()
-        .await
-        .map(|e| e.id.as_u64())
-        .unwrap_or(0);
+    let epoch_account = state.rpc.get_epoch().await.ok();
+    let epoch = epoch_account.map(|e| e.id.as_u64()).unwrap_or(0);
+    let (epoch_phase, epoch_phase_weight) = match &epoch_account {
+        Some(e) => {
+            let phase = match tape_core::system::EpochPhase::try_from(e.state.phase) {
+                Ok(tape_core::system::EpochPhase::Syncing) => "Syncing",
+                Ok(tape_core::system::EpochPhase::Settling) => "Settling",
+                Ok(tape_core::system::EpochPhase::Active) => "Active",
+                _ => "?",
+            };
+            (phase.to_string(), e.state.weight())
+        }
+        None => (String::new(), None),
+    };
     let now = Instant::now();
 
     if now >= state.track_next_refresh {
@@ -279,12 +287,18 @@ async fn poll_once(
     }
 
     let mut spool_owners = [0u8; SPOOL_COUNT];
+    let mut committee_prev_size = 0;
+    let mut committee_size = 0;
+    let mut committee_next_size = 0;
     if let Ok(system) = state.rpc.get_system().await {
         for (i, owner) in system.spools.0.iter().enumerate() {
             if i < SPOOL_COUNT {
                 spool_owners[i] = *owner;
             }
         }
+        committee_prev_size = system.committee_prev.size();
+        committee_size = system.committee.size();
+        committee_next_size = system.committee_next.size();
     }
 
     let mut total_sync_delta = 0u64;
@@ -398,6 +412,11 @@ async fn poll_once(
     let snap = PollSnapshot {
         slot,
         epoch,
+        epoch_phase,
+        epoch_phase_weight,
+        committee_prev_size,
+        committee_size,
+        committee_next_size,
         tx_count: 0,
         runtime_secs: state.start.elapsed().as_secs_f64(),
         nodes: node_snapshots,

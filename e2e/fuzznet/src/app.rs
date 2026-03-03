@@ -44,6 +44,11 @@ pub struct TrackSnapshot {
 pub struct PollSnapshot {
     pub slot: u64,
     pub epoch: u64,
+    pub epoch_phase: String,
+    pub epoch_phase_weight: Option<u64>,
+    pub committee_prev_size: usize,
+    pub committee_size: usize,
+    pub committee_next_size: usize,
     pub tx_count: u64,
     pub runtime_secs: f64,
     pub nodes: Vec<NodeSnapshot>,
@@ -78,6 +83,11 @@ impl Default for PollSnapshot {
         Self {
             slot: 0,
             epoch: 0,
+            epoch_phase: String::new(),
+            epoch_phase_weight: None,
+            committee_prev_size: 0,
+            committee_size: 0,
+            committee_next_size: 0,
             tx_count: 0,
             runtime_secs: 0.0,
             nodes: Vec::new(),
