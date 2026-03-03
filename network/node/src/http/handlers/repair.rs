@@ -57,7 +57,10 @@ pub async fn post_repair<S: Store, R: Rpc>(
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let chunk_size = coder.chunk_size_for(track_info.stripe_size as usize);
+    let chunk_size = coder.track_chunk_size(
+        track_info.stripe_size as usize,
+        track_info.original_size as usize,
+    );
     if chunk_size == 0 || alpha == 0 {
         return Err(ApiError::BadRequest("invalid encoding parameters".into()));
     }

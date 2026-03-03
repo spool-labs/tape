@@ -467,16 +467,19 @@ mod tests {
         let clay_params = ClayParams::new(20, 7, 16);
         let coder = ClayCoder::from_params(clay_params);
         let alpha = coder.alpha();
-        let chunk_size = alpha * 16; // sub_chunk_size = 16
+        let k = clay_params.k() as usize;
+        let stripe_size = k * alpha * 16;
+        let chunk_size = coder.chunk_size_for(stripe_size);
         let sub_chunk_size = chunk_size / alpha;
         let stripe_count = 2u64;
+        let original_size = stripe_size as u64 * stripe_count;
 
         let profile = EncodingProfile::clay(clay_params);
         let mut track_info = TrackInfo {
             tape_address: Pubkey([0; 32]),
             spool_group,
-            original_size: 0,
-            stripe_size: chunk_size as u64,
+            original_size,
+            stripe_size: stripe_size as u64,
             stripe_count,
             encoding_type: 0,
             encoding_params: 0,

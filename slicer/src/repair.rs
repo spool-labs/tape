@@ -147,8 +147,7 @@ impl Slicer<ClayCoder> {
             (blob_len + stripe_size - 1) / stripe_size
         };
 
-        let effective_len = stripe_size.min(blob_len);
-        let chunk_size = self.coder.chunk_size_for(effective_len);
+        let chunk_size = self.coder.track_chunk_size(stripe_size, blob_len);
 
         let n = self.n();
         let alpha = self.coder.alpha();
