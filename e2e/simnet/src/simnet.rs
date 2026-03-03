@@ -197,6 +197,18 @@ impl SimnetHarness {
         Ok(())
     }
 
+    /// Simulate a crash on the given nodes by aborting their tasks immediately.
+    pub fn kill_nodes(&mut self, indices: &[usize]) -> Result<()> {
+        for &i in indices {
+            let node = self
+                .nodes
+                .get_mut(i)
+                .ok_or_else(|| anyhow!("node {i} out of range"))?;
+            node.kill();
+        }
+        Ok(())
+    }
+
     pub async fn start_nodes(&mut self, indices: &[usize]) -> Result<()> {
         for &i in indices {
             let node = self

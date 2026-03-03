@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use tape_api::program::EPOCH_DURATION;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 
@@ -19,13 +20,14 @@ async fn basic_flow() {
         .expect("bootstrap nodes");
 
     let all: Vec<usize> = (0..30).collect();
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
     let scenario = harness.scenario();
     scenario
         .wait_nodes_active(&all, Duration::from_secs(20))
         .await
         .expect("all nodes active");
     scenario
-        .self_advance_epoch(Duration::from_secs(30))
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("self advance epoch");
 

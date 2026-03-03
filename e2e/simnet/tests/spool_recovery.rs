@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use rand::Rng as _;
+use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
@@ -41,6 +43,7 @@ async fn spool_recovery_inner() {
 
     let all: Vec<usize> = (0..node_count).collect();
     let timeout = Duration::from_secs(60);
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
 
     let scenario = harness.scenario();
     scenario
@@ -50,13 +53,13 @@ async fn spool_recovery_inner() {
 
     // Advance to epoch 2 then 3 so committee is fully active
     let epoch2 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 2");
     assert_eq!(epoch2, 2);
 
     let epoch3 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 3");
     assert_eq!(epoch3, 3);
@@ -82,19 +85,26 @@ async fn spool_recovery_inner() {
         .expect("count slices");
     assert_eq!(slice_count, SPOOL_GROUP_SIZE);
 
-    // Stop nodes 20-24 (previous spool owners will be unreachable)
-    let drop_indices: Vec<usize> = (20..node_count).collect();
-    let alive_indices: Vec<usize> = (0..20).collect();
+    // Crash 5 random nodes (previous spool owners will be unreachable)
+    let mut rng = rand::thread_rng();
+    let mut indices: Vec<usize> = (0..node_count).collect();
+    let mut drop_indices = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let pick = rng.gen_range(0..indices.len());
+        drop_indices.push(indices.swap_remove(pick));
+    }
+    drop_indices.sort();
+    let alive_indices = indices;
+
     drop(scenario);
     harness
-        .stop_nodes(&drop_indices)
-        .await
-        .expect("stop dropped nodes");
+        .kill_nodes(&drop_indices)
+        .expect("kill dropped nodes");
 
     // Advance epoch 3 → 4 (surviving nodes get reassigned spools as ActiveSync)
     let scenario = harness.scenario();
     let epoch4 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 4");
     assert_eq!(epoch4, 4);
@@ -107,7 +117,7 @@ async fn spool_recovery_inner() {
     // Advance epoch 4 → 5 so dead nodes drop out of committee
     // (they joined during epoch 3 so they're still in epoch 4's committee)
     let epoch5 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 5");
     assert_eq!(epoch5, 5);

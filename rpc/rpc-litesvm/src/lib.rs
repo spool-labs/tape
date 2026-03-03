@@ -119,17 +119,6 @@ impl LiteSvmRpc {
         })
     }
 
-    pub fn advance_time(&self, seconds: i64) -> Result<(), RpcError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        let mut clock = inner.svm.get_sysvar::<Clock>();
-        clock.unix_timestamp = clock.unix_timestamp.saturating_add(seconds);
-        inner.svm.set_sysvar(&clock);
-        Ok(())
-    }
-
     pub fn unix_timestamp(&self) -> Result<i64, RpcError> {
         let inner = self
             .inner

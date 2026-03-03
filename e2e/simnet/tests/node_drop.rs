@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use rand::Rng as _;
+use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
@@ -23,6 +25,7 @@ async fn spool_node_drop() {
 
     let all: Vec<usize> = (0..node_count).collect();
     let timeout = Duration::from_secs(30);
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
 
     // Wait for all nodes active at epoch 1
     let scenario = harness.scenario();
@@ -32,7 +35,7 @@ async fn spool_node_drop() {
         .expect("all nodes active");
 
     // Advance epoch 1 → 2
-    let epoch2 = scenario.self_advance_epoch(timeout).await.expect("advance to epoch 2");
+    let epoch2 = scenario.self_advance_epoch(epoch_timeout).await.expect("advance to epoch 2");
     assert_eq!(epoch2, 2, "expected epoch 2");
 
     // Record initial spool assignments for all nodes
@@ -43,21 +46,28 @@ async fn spool_node_drop() {
     let initial_total: usize = initial_counts.iter().sum();
     assert_eq!(initial_total, SPOOL_COUNT, "all spools assigned at epoch 2");
 
-    // Stop nodes 20-24 (drop 5, keep 20 = MIN_COMMITTEE_SIZE)
-    let drop_indices: Vec<usize> = (20..node_count).collect();
-    let alive_indices: Vec<usize> = (0..20).collect();
+    // Pick 5 random nodes to crash (keep 20 = MIN_COMMITTEE_SIZE)
+    let mut rng = rand::thread_rng();
+    let mut indices: Vec<usize> = (0..node_count).collect();
+    let mut drop_indices = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let pick = rng.gen_range(0..indices.len());
+        drop_indices.push(indices.swap_remove(pick));
+    }
+    drop_indices.sort();
+    let alive_indices = indices;
+
     drop(scenario);
     harness
-        .stop_nodes(&drop_indices)
-        .await
-        .expect("stop dropped nodes");
+        .kill_nodes(&drop_indices)
+        .expect("kill dropped nodes");
 
     // Self-advance epoch 2 → 3 (only 20 running nodes participate)
     let scenario = harness.scenario();
-    let epoch3 = scenario.self_advance_epoch(timeout).await.expect("advance to epoch 3");
+    let epoch3 = scenario.self_advance_epoch(epoch_timeout).await.expect("advance to epoch 3");
     assert_eq!(epoch3, 3, "expected epoch 3");
 
-    // Wait for remaining 20 nodes to reach active at epoch 3
+    // Wait for remaining nodes to reach active at epoch 3
     scenario
         .wait_nodes_active(&alive_indices, timeout)
         .await

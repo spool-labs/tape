@@ -8695,6 +8695,7 @@ name = "tape-e2e-simnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "rand 0.8.5",
  "rcgen",
  "reqwest",
  "rpc",

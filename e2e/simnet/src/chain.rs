@@ -130,12 +130,6 @@ impl ChainFixture {
         Ok(target)
     }
 
-    pub fn advance_time_seconds(&self, seconds: i64) -> Result<()> {
-        self.rpc
-            .advance_time(seconds)
-            .context("advance_time_seconds")
-    }
-
     pub async fn send_instructions_and_advance(
         &self,
         payer: &Keypair,

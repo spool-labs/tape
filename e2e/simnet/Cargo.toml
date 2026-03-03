@@ -8,6 +8,9 @@ description = "LiteSVM + in-memory multi-node simnet harness for Tapedrive e2e t
 repository.workspace = true
 readme = "README.md"
 
+[lib]
+doctest = false
+
 [dependencies]
 anyhow.workspace = true
 tokio.workspace = true
@@ -32,3 +35,4 @@ tape-crypto.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+rand.workspace = true

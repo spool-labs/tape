@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use tape_api::program::EPOCH_DURATION;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::hash;
@@ -39,6 +40,7 @@ async fn blob_upload_inner() {
 
     let all: Vec<usize> = (0..node_count).collect();
     let timeout = Duration::from_secs(30);
+    let epoch_timeout = Duration::from_secs(EPOCH_DURATION as u64 * 2);
 
     let scenario = harness.scenario();
     scenario
@@ -48,13 +50,13 @@ async fn blob_upload_inner() {
 
     // Advance to epoch 2 then 3 so committee is fully active
     let epoch2 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 2");
     assert_eq!(epoch2, 2);
 
     let epoch3 = scenario
-        .self_advance_epoch(timeout)
+        .self_advance_epoch(epoch_timeout)
         .await
         .expect("advance to epoch 3");
     assert_eq!(epoch3, 3);

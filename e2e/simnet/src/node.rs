@@ -282,12 +282,26 @@ impl TestNode {
                 let _ = handles.fsm.await;
                 let _ = handles.scheduler.await;
                 let _ = handles.task_runner.await;
+                let _ = handles.peer_service.await;
                 let _ = handles.http.await;
             };
             let _ = timeout(self.test_config.stop_timeout, wait).await;
         }
 
         Ok(())
+    }
+
+    /// Simulate a crash by aborting all runtime tasks immediately.
+    pub fn kill(&mut self) {
+        self.test_context.cancel.take();
+        if let Some(handles) = self.test_context.runtime.take() {
+            handles.ingestor.abort();
+            handles.fsm.abort();
+            handles.scheduler.abort();
+            handles.task_runner.abort();
+            handles.peer_service.abort();
+            handles.http.abort();
+        }
     }
 }
 
