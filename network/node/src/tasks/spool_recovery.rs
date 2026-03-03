@@ -1,17 +1,18 @@
 //! SpoolRecovery — recover missing slices via Clay repair protocol.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
-use tape_core::erasure::spool_in_group;
+use tape_core::erasure::{slice_for_spool, spool_for_slice, spool_in_group};
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
-use tape_slicer::ClayCoder;
+use tape_slicer::{ClayCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
+use tape_store::types::{SpoolState, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::validate_slice_entry;
@@ -93,39 +94,113 @@ pub async fn run<S: Store, R: Rpc>(
                 }
             }
 
-            // Build the request shape once so every helper query is identical;
-            // this avoids candidate skew from caller-specific request construction.
-            let request_template = match build_repair_request(&track_info) {
-                Ok(req) => req,
-                Err(reason) => {
-                    tracing::warn!(?track_addr, spool, "build repair request: {reason}");
+            // Validate encoding type before attempting repair.
+            let profile = track_info.profile();
+            let encoding = match profile.encoding_type() {
+                Some(e) => e,
+                None => {
+                    tracing::warn!(?track_addr, spool, "unknown encoding type");
+                    any_failed = true;
+                    continue;
+                }
+            };
+            if !matches!(encoding, EncodingType::Clay) {
+                tracing::warn!(?track_addr, spool, "repair only supported for clay encoding");
+                any_failed = true;
+                continue;
+            }
+            if track_info.stripe_count == 0 || track_info.stripe_size == 0 {
+                tracing::warn!(?track_addr, spool, "invalid stripe parameters");
+                any_failed = true;
+                continue;
+            }
+
+            // Compute the lost slice index within the spool group.
+            let lost_idx = match slice_for_spool(track_info.spool_group, spool) {
+                Some(idx) => idx,
+                None => {
+                    tracing::warn!(?track_addr, spool, "spool not in track's group");
+                    any_failed = true;
+                    continue;
+                }
+            };
+            let lost = match SliceIndex::new(lost_idx) {
+                Some(si) => si,
+                None => {
+                    tracing::warn!(?track_addr, spool, "invalid slice index {lost_idx}");
                     any_failed = true;
                     continue;
                 }
             };
 
-            let helpers: Vec<(NodeInfo, u16)> = committee
-                .iter()
-                .filter_map(|node| {
-                    node.spools
-                        .iter()
-                        .find(|&&s| s != spool && spool_in_group(s, track_info.spool_group))
-                        .map(|&helper_spool| (node.clone(), helper_spool))
-                })
-                .collect();
+            // Build helper map: SliceIndex -> (NodeInfo, helper_spool).
+            // Each committee member may own multiple spools in the group.
+            let mut helper_map: HashMap<SliceIndex, (&_, u16)> = HashMap::new();
+            for node in committee.iter() {
+                for &s in &node.spools {
+                    if s == spool || !spool_in_group(s, track_info.spool_group) {
+                        continue;
+                    }
+                    if let Some(idx) = slice_for_spool(track_info.spool_group, s) {
+                        if let Some(si) = SliceIndex::new(idx) {
+                            helper_map.entry(si).or_insert((node, s));
+                        }
+                    }
+                }
+            }
 
-            if helpers.is_empty() {
-                tracing::warn!(?track_addr, spool, "no helper found for recovery");
+            let available: Vec<SliceIndex> = helper_map.keys().copied().collect();
+            if available.is_empty() {
+                tracing::warn!(?track_addr, spool, "no helpers found for repair");
                 any_failed = true;
                 continue;
             }
 
-            let mut recovered = false;
+            // Build the repair plan via the slicer.
+            let coder = ClayCoder::from_params(profile.clay_params());
+            let slicer = Slicer::with_profile(
+                coder,
+                track_info.stripe_size as usize,
+                true, // rotated — SDK encoder always uses rotation for Clay tracks
+                profile,
+            );
+            let plan = match slicer.repair_plan_from_params(
+                lost,
+                &available,
+                track_info.original_size as usize,
+                track_info.stripe_size as usize,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(?track_addr, spool, "repair plan: {e}");
+                    any_failed = true;
+                    continue;
+                }
+            };
 
-            // Try multiple candidate helpers. A single response is treated as
-            // untrusted; we only persist when validation and optional cross-check
-            // confirm improvement over current local state.
-            for (helper_idx, (helper, helper_spool)) in helpers.iter().enumerate() {
+            // Build per-helper RepairRequests from the plan.
+            let per_helper = build_per_helper_requests(&plan, track_info.spool_group);
+
+            // Collect required helper slice indices from the plan.
+            let mut required: Vec<SliceIndex> = Vec::new();
+            for stripe_repair in &plan.stripes {
+                for hp in &stripe_repair.helpers {
+                    if !required.contains(&hp.slice) {
+                        required.push(hp.slice);
+                    }
+                }
+            }
+
+            // Send requests to each helper and collect partial data.
+            // Requests are sequential (~10ms each, d=16 helpers = ~160ms total).
+            // Could be parallelized with FuturesUnordered if throughput matters.
+            let mut helper_data: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
+            for (slice_idx, request) in &per_helper {
+                let (helper, _helper_spool) = match helper_map.get(slice_idx) {
+                    Some(h) => h,
+                    None => continue,
+                };
+
                 let addr = match helper.network_address.to_socket_addr() {
                     Ok(a) => a,
                     Err(e) => {
@@ -139,7 +214,6 @@ pub async fn run<S: Store, R: Rpc>(
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(?track_addr, spool, "peer tracker unavailable: {e}");
-                        any_failed = true;
                         continue;
                     }
                 }
@@ -152,97 +226,19 @@ pub async fn run<S: Store, R: Rpc>(
                     }
                 };
 
-                let request = RepairRequest {
-                    helper_spool: *helper_spool,
-                    stripes: request_template.stripes.clone(),
-                };
-
-                // Ask one helper for this full track request, then validate and
-                // merge only if the bytes are structurally safe.
                 match with_retry(&RetryConfig::fast(), || {
-                    client.request_repair(track_addr, &request)
+                    client.request_repair(track_addr, request)
                 })
                 .await
                 {
                     Ok(data) if !data.is_empty() => {
                         context.stats.add_repair_received(data.len() as u64);
-                        // Validate before using helper data because peers can be
-                        // stale, buggy, or malicious.
-                        if let Err(reason) = validate_slice_entry(spool, &track_info, &data) {
-                            if let Err(e) = peer_handle.record_failure(addr).await {
-                                tracing::warn!(?track_addr, spool, "failed to record peer failure for {addr}: {e}");
-                            }
-                            tracing::warn!(?track_addr, spool, "validation error: {reason}");
-                            continue;
-                        }
-
-                        match context.store.get_slice(spool, track_addr) {
-                            Ok(Some(existing)) if existing == data => {
-                                // Fast path: the missing slice is already present and
-                                // identical after refresh, so clear pending state only.
-                                if let Err(e) =
-                                    context.store.remove_pending_recovery(spool, track_addr)
-                                {
-                                    tracing::warn!(?track_addr, spool, "remove pending recovery: {e}");
-                                    any_failed = true;
-                                    continue;
-                                }
-                                recovered = true;
-                                removed_any = true;
-                                break;
-                            }
-                            Ok(Some(_)) => {
-                                // Existing local slice differs; require a second helper
-                                // to return the same bytes before we overwrite.
-                                if !helpers_match(
-                                    &helpers,
-                                    helper_idx,
-                                    &track_info,
-                                    spool,
-                                    track_addr,
-                                    &data,
-                                    &request_template,
-                                    &peer_handle,
-                                    &context,
-                                )
-                                .await
-                                {
-                                    tracing::debug!(?track_addr, spool, "second helper disagreement");
-                                    continue;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                tracing::warn!(?track_addr, spool, "get_slice error: {e}");
-                                any_failed = true;
-                                continue;
-                            }
-                        }
-
                         if let Err(e) = peer_handle.record_success(addr).await {
                             tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
                         }
-                        if let Err(e) = context.store.put_slice(spool, track_addr, data) {
-                            tracing::warn!(?track_addr, "put_slice error: {e}");
-                            any_failed = true;
-                            continue;
-                        }
-
-                        // Persisting after validation and optional quorum check
-                        // guarantees local state only improves, never regresses.
-                        if let Err(e) = context.store.remove_pending_recovery(spool, track_addr) {
-                            tracing::warn!(?track_addr, spool, "remove pending recovery: {e}");
-                            any_failed = true;
-                            continue;
-                        }
-                        tracing::debug!(?track_addr, spool, "recovered slice");
-                        recovered = true;
-                        removed_any = true;
-                        break;
+                        helper_data.insert(*slice_idx, data);
                     }
                     Ok(_) => {
-                        // Empty payloads are non-fatal; they are usually transient
-                        // helper-side load responses but do not prove recovery.
                         if let Err(e) = peer_handle.record_success(addr).await {
                             tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
                         }
@@ -257,10 +253,54 @@ pub async fn run<S: Store, R: Rpc>(
                 }
             }
 
-            if !recovered {
-                tracing::debug!(?track_addr, spool, "all helpers exhausted");
+            // Check that all required helpers responded. If any are missing
+            // we skip this track rather than re-planning with fewer helpers.
+            // The task returns Retryable and peer cooldowns may produce a
+            // different helper set on the next attempt.
+            if !required.iter().all(|si| helper_data.contains_key(si)) {
+                tracing::debug!(?track_addr, spool, "insufficient helper responses for repair");
                 any_failed = true;
+                continue;
             }
+
+            // Construct slice metadata for the repair.
+            let metadata = SliceMetadata::with_profile(
+                track_info.original_size as usize,
+                track_info.stripe_size as usize,
+                profile,
+            );
+            let metadata_bytes = metadata.to_bytes();
+
+            // Run Clay repair to reconstruct the lost slice.
+            let repaired = match slicer.repair(&plan, &helper_data, &metadata_bytes) {
+                Ok(data) => data,
+                Err(e) => {
+                    tracing::warn!(?track_addr, spool, "clay repair failed: {e}");
+                    any_failed = true;
+                    continue;
+                }
+            };
+
+            // Validate the reconstructed slice against the commitment.
+            if let Err(reason) = validate_slice_entry(spool, &track_info, &repaired) {
+                tracing::warn!(?track_addr, spool, "repaired slice validation failed: {reason}");
+                any_failed = true;
+                continue;
+            }
+
+            // Store the repaired slice and clear pending state.
+            if let Err(e) = context.store.put_slice(spool, track_addr, repaired) {
+                tracing::warn!(?track_addr, spool, "put_slice error: {e}");
+                any_failed = true;
+                continue;
+            }
+            if let Err(e) = context.store.remove_pending_recovery(spool, track_addr) {
+                tracing::warn!(?track_addr, spool, "remove pending recovery: {e}");
+                any_failed = true;
+                continue;
+            }
+            tracing::debug!(?track_addr, spool, "repaired slice via clay");
+            removed_any = true;
         }
 
         if !removed_any {
@@ -294,106 +334,30 @@ pub async fn run<S: Store, R: Rpc>(
     }
 }
 
-/// Build the repair request from track metadata so recovery uses deterministic
-/// and complete extraction for all stripes/sub-chunks.
-///
-/// Why:
-/// - avoids repeating request-shape construction in every helper loop
-/// - guarantees helper peers see identical, reproducible repair instructions
-fn build_repair_request(track_info: &TrackInfo) -> Result<RepairRequest, String> {
-    let profile = track_info.profile();
-    let encoding = profile.encoding_type().ok_or_else(|| "unknown encoding".to_string())?;
-    if !matches!(encoding, EncodingType::Clay) {
-        return Err("repair only supported for clay encoding".to_string());
+/// Invert a `RepairPlan` (per-stripe, per-helper) into per-helper `RepairRequest`s.
+/// Each helper gets only its specific sub-chunks across all stripes.
+fn build_per_helper_requests(
+    plan: &RepairPlan,
+    spool_group: u64,
+) -> HashMap<SliceIndex, RepairRequest> {
+    let mut map: HashMap<SliceIndex, Vec<StripeSubChunkRequest>> = HashMap::new();
+    for stripe_repair in &plan.stripes {
+        for hp in &stripe_repair.helpers {
+            map.entry(hp.slice)
+                .or_default()
+                .push(StripeSubChunkRequest {
+                    stripe: stripe_repair.stripe,
+                    sub_chunks: hp.sub_chunks.clone(),
+                });
+        }
     }
 
-    let coder = ClayCoder::from_params(profile.clay_params());
-    let alpha = coder.alpha();
-    if alpha == 0 {
-        return Err("invalid clay alpha".to_string());
-    }
-    if track_info.stripe_count == 0 {
-        return Err("no stripes to repair".to_string());
-    }
-    if track_info.stripe_size == 0 {
-        return Err("invalid stripe size".to_string());
-    }
-
-    let stripe_count = usize::try_from(track_info.stripe_count)
-        .map_err(|_| "stripe count overflow".to_string())?;
-    let sub_chunks: Vec<u32> = (0..alpha).map(|value| value as u32).collect();
-    let stripes = (0..stripe_count)
-        .map(|stripe| StripeSubChunkRequest {
-            stripe: stripe as u32,
-            sub_chunks: sub_chunks.clone(),
+    map.into_iter()
+        .map(|(slice_idx, stripes)| {
+            let helper_spool = spool_for_slice(spool_group, *slice_idx);
+            (slice_idx, RepairRequest { helper_spool, stripes })
         })
-        .collect();
-
-    Ok(RepairRequest {
-        helper_spool: 0,
-        stripes,
-    })
-}
-
-/// Ask a second helper for the same track to confirm candidate bytes.
-///
-/// Returns true only when another helper returns the same non-empty, validated
-/// bytes, preventing silent acceptance of one faulty or malicious helper.
-async fn helpers_match<S: Store, R: Rpc>(
-    helper_pairs: &[(NodeInfo, u16)],
-    skip_index: usize,
-    track_info: &TrackInfo,
-    spool: u16,
-    track_addr: StorePubkey,
-    candidate: &[u8],
-    request_template: &RepairRequest,
-    peer_handle: &PeerHandle,
-    context: &NodeContext<S, R>,
-) -> bool {
-    for (helper, helper_spool) in helper_pairs.iter().skip(skip_index + 1) {
-        // Only query peers that can currently be trusted for retries.
-
-        let addr = match helper.network_address.to_socket_addr() {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-
-        if peer_handle
-            .is_cooling_down(addr)
-            .await
-            .unwrap_or(true)
-        {
-            continue;
-        }
-
-        let client = match NodeClientBuilder::new().build(&addr.to_string()) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let request = RepairRequest {
-            helper_spool: *helper_spool,
-            stripes: request_template.stripes.clone(),
-        };
-
-        let response = with_retry(&RetryConfig::fast(), || {
-            client.request_repair(track_addr, &request)
-        })
-        .await;
-
-        // Any failure to parse or validate is treated as disagreement and ignored.
-        let Ok(data) = response else {
-            continue;
-        };
-        context.stats.add_repair_received(data.len() as u64);
-        if data.is_empty() || validate_slice_entry(spool, track_info, &data).is_err() {
-            continue;
-        }
-        if data == candidate {
-            return true;
-        }
-    }
-    false
+        .collect()
 }
 
 #[cfg(test)]
