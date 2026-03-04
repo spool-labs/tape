@@ -43,6 +43,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::spooler::SpoolGroup;
     use tape_test::*;
 
     #[test]
@@ -73,7 +74,7 @@ mod tests {
             data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
-                0,
+                SpoolGroup(0),
             )
         };
 

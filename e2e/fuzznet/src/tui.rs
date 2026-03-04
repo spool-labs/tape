@@ -135,7 +135,7 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
             Constraint::Length(1),              // title bar
             Constraint::Length(capped_spool_h), // spools (capped)
             Constraint::Length(capped_node_h),  // nodes (capped)
-            Constraint::Length(7),              // charts (bordered)
+            Constraint::Length(8),              // charts (bordered)
             Constraint::Length(8),              // tapes (bordered + track grid)
             Constraint::Min(3),                // log
             Constraint::Length(1),              // help bar

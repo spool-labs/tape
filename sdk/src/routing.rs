@@ -485,7 +485,7 @@ mod tests {
         let assignment = make_uniform_assignment(3);
         let router = SliceRouter::new(assignment, committee);
 
-        let members = router.members_for_group(0);
+        let members = router.members_for_group(SpoolGroup(0));
         assert_eq!(members.len(), 20); // SPOOL_GROUP_SIZE
         // First spool in group 0 is spool 0
         assert_eq!(members[0].1, 0); // global spool index
@@ -498,7 +498,7 @@ mod tests {
         let assignment = make_uniform_assignment(3);
         let router = SliceRouter::new(assignment, committee);
 
-        let groups = router.group_slices_by_member_for_group(0);
+        let groups = router.group_slices_by_member_for_group(SpoolGroup(0));
         // With 3 members and 20 spools, should have up to 3 groups
         assert!(!groups.is_empty());
 

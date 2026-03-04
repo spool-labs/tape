@@ -648,6 +648,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_core::tape::TrackData;
     use tape_core::types::coin::{Coin, TAPE};
+    use tape_core::spooler::SpoolGroup;
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_crypto::hash;
 
@@ -679,7 +680,7 @@ mod tests {
         track.tape = tape_address;
         track.key = key;
         track.size = StorageUnits::mb(5);
-        track.data = TrackData::new(EpochNumber(1), Hash::default(), 0);
+        track.data = TrackData::new(EpochNumber(1), Hash::default(), SpoolGroup(0));
         track.data.set_profile(EncodingProfile::clay_default());
         track
     }

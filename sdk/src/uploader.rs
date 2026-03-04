@@ -298,7 +298,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Pubkey::new_unique(),
-            0, // spool group 0
+            SpoolGroup(0), // spool group 0
             slices,
             router,
             factory,
