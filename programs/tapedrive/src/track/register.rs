@@ -17,6 +17,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         track_info,
 
         system_program_info,
+        slot_hashes_info,
         rent_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -66,7 +67,11 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     )?;
 
     let track_number = tape.track_count;
-    let spool_group = track_number % SPOOL_GROUP_COUNT as u64;
+    let seed = slot_hash_seed(slot_hashes_info)?;
+    let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
+        .wrapping_add(track_number);
+
+    let spool_group = mixed % SPOOL_GROUP_COUNT as u64;
     tape.track_count = tape.track_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -118,10 +123,33 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     Ok(())
 }
 
+fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
+    slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
+    let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
+    let seed = Hash(
+        slot_hashes_data[16..48]
+            .try_into()
+            .map_err(|_| TapeError::UnexpectedState)?
+    );
+    Ok(seed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tape_test::*;
+
+    fn slot_hashes_account() -> (Pubkey, solana_sdk::account::Account) {
+        let mut data = vec![0u8; 48];
+        data[0] = 1; // count = 1
+        (sysvar::slot_hashes::ID, solana_sdk::account::Account {
+            lamports: 1,
+            data,
+            owner: sysvar::ID,
+            executable: false,
+            rent_epoch: 0,
+        })
+    }
 
     #[test]
     fn test_register_track() {
@@ -177,11 +205,12 @@ mod tests {
             empty(track_address),
 
             system_program(),
+            slot_hashes_account(),
             rent_sysvar(),
         ];
 
         // Build expected track data with profile
-        // spool_group = tape.track_count % SPOOL_GROUP_COUNT = 100 % 50 = 0
+        // seed=0 (zeroed slot hash), mixed = 0 + 100 = 100, spool_group = 100 % 50 = 0
         let mut expected_data = TrackData::new(EpochNumber(0), commitment, 0);
         expected_data.profile = profile;
 

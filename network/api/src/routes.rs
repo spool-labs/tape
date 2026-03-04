@@ -4,13 +4,16 @@
 pub const API_V1: &str = "/v1";
 
 /// GET/PUT endpoint for individual slice operations.
-pub const SLICE_PATH: &str = "/v1/tracks/:track_id/slices/:slice_index";
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub const SLICE_PATH: &str = "/v1/tracks/:track_id/slices/:spool_id";
 
 /// Internal authenticated PUT endpoint for individual slice ingest.
-pub const INTERNAL_SLICE_PATH: &str = "/v1/internal/tracks/:track_id/slices/:slice_index";
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub const INTERNAL_SLICE_PATH: &str = "/v1/internal/tracks/:track_id/slices/:spool_id";
 
 /// GET endpoint for slice existence check.
-pub const SLICE_STATUS_PATH: &str = "/v1/tracks/:track_id/slices/:slice_index/status";
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub const SLICE_STATUS_PATH: &str = "/v1/tracks/:track_id/slices/:spool_id/status";
 
 /// GET/PUT endpoint for track metadata.
 pub const METADATA_PATH: &str = "/v1/tracks/:track_id/metadata";
@@ -48,19 +51,22 @@ pub const INFO_PATH: &str = "/v1/info";
 /// GET endpoint for node statistics.
 pub const STATS_PATH: &str = "/v1/stats";
 
-/// Build a slice endpoint URL for a specific track and slice.
-pub fn slice_url(track_id: &str, slice_index: u16) -> String {
-    format!("/v1/tracks/{track_id}/slices/{slice_index}")
+/// Build a slice endpoint URL.
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub fn slice_url(track_id: &str, spool_id: u16) -> String {
+    format!("/v1/tracks/{track_id}/slices/{spool_id}")
 }
 
 /// Build an internal slice endpoint URL.
-pub fn internal_slice_url(track_id: &str, slice_index: u16) -> String {
-    format!("/v1/internal/tracks/{track_id}/slices/{slice_index}")
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub fn internal_slice_url(track_id: &str, spool_id: u16) -> String {
+    format!("/v1/internal/tracks/{track_id}/slices/{spool_id}")
 }
 
 /// Build a slice status endpoint URL.
-pub fn slice_status_url(track_id: &str, slice_index: u16) -> String {
-    format!("/v1/tracks/{track_id}/slices/{slice_index}/status")
+/// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
+pub fn slice_status_url(track_id: &str, spool_id: u16) -> String {
+    format!("/v1/tracks/{track_id}/slices/{spool_id}/status")
 }
 
 /// Build a metadata endpoint URL for a specific track.

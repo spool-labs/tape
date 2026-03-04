@@ -214,10 +214,16 @@ fn pad_left(area: Rect) -> Rect {
 fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let latest_total_store = snap.total_store_history.last().copied().unwrap_or(0);
     let spool_size = format_spool_size(latest_total_store / (SPOOL_COUNT as u64));
+    let available = snap.spool_available.iter().filter(|&&a| a).count();
+    let title = if available < SPOOL_COUNT {
+        format!(" Spools {}/{} ({spool_size} each) ", available, SPOOL_COUNT)
+    } else {
+        format!(" Spools ({spool_size} each) ")
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(format!(" Spools ({spool_size} each) "));
+        .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -262,8 +268,12 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                         continue;
                     }
                     let owner = snap.spool_owners[spool_idx] as usize;
-                    let color = node_color(owner);
-                    spans.push(Span::styled("\u{258c}", Style::default().fg(color)));
+                    if !snap.spool_available[spool_idx] {
+                        spans.push(Span::styled("\u{00d7}", Style::default().fg(Color::Red)));
+                    } else {
+                        let color = node_color(owner);
+                        spans.push(Span::styled("\u{258c}", Style::default().fg(color)));
+                    }
                 }
                 spans.push(Span::raw(" "));
             }

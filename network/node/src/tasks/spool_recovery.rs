@@ -8,11 +8,12 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
 use tape_core::erasure::{slice_for_spool, spool_for_slice, spool_in_group};
+use tape_core::types::network::NetworkAddress;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
 use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
-use tape_slicer::{ClayCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
+use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{SpoolState, SpoolStatus};
+use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::validate_slice_entry;
@@ -133,9 +134,9 @@ pub async fn run<S: Store, R: Rpc>(
                 }
             };
 
-            // Build helper map: SliceIndex -> (NodeInfo, helper_spool).
+            // Build helper map: SliceIndex -> helper network address.
             // Each committee member may own multiple spools in the group.
-            let mut helper_map: HashMap<SliceIndex, (&_, u16)> = HashMap::new();
+            let mut helper_map: HashMap<SliceIndex, NetworkAddress> = HashMap::new();
             for node in committee.iter() {
                 for &s in &node.spools {
                     if s == spool || !spool_in_group(s, track_info.spool_group) {
@@ -143,7 +144,7 @@ pub async fn run<S: Store, R: Rpc>(
                     }
                     if let Some(idx) = slice_for_spool(track_info.spool_group, s) {
                         if let Some(si) = SliceIndex::new(idx) {
-                            helper_map.entry(si).or_insert((node, s));
+                            helper_map.entry(si).or_insert(node.network_address);
                         }
                     }
                 }
@@ -158,7 +159,7 @@ pub async fn run<S: Store, R: Rpc>(
 
             // Build the repair plan via the slicer.
             let coder = ClayCoder::from_params(profile.clay_params());
-            let slicer = Slicer::with_profile(
+            let mut slicer = Slicer::with_profile(
                 coder,
                 track_info.stripe_size as usize,
                 true, // rotated — SDK encoder always uses rotation for Clay tracks
@@ -173,8 +174,33 @@ pub async fn run<S: Store, R: Rpc>(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "repair plan: {e}");
-                    any_failed = true;
-                    continue;
+                    match recover_with_full_fallback(
+                        &context,
+                        &peer_handle,
+                        track_addr,
+                        spool,
+                        lost,
+                        &helper_map,
+                        &mut slicer,
+                        &track_info,
+                        "repair-plan failure",
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            removed_any = true;
+                            continue;
+                        }
+                        Err(reason) => {
+                            tracing::warn!(
+                                ?track_addr,
+                                spool,
+                                "full recovery fallback after repair-plan failure failed: {reason}"
+                            );
+                            any_failed = true;
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -196,12 +222,12 @@ pub async fn run<S: Store, R: Rpc>(
             // Could be parallelized with FuturesUnordered if throughput matters.
             let mut helper_data: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
             for (slice_idx, request) in &per_helper {
-                let (helper, _helper_spool) = match helper_map.get(slice_idx) {
-                    Some(h) => h,
+                let helper_addr = match helper_map.get(slice_idx) {
+                    Some(addr) => *addr,
                     None => continue,
                 };
 
-                let addr = match helper.network_address.to_socket_addr() {
+                let addr = match helper_addr.to_socket_addr() {
                     Ok(a) => a,
                     Err(e) => {
                         tracing::warn!(?track_addr, "parse helper address: {e}");
@@ -242,25 +268,48 @@ pub async fn run<S: Store, R: Rpc>(
                         if let Err(e) = peer_handle.record_success(addr).await {
                             tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
                         }
-                        tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "empty repair response");
+                        tracing::debug!(?track_addr, spool, helper = ?helper_addr, "empty repair response");
                     }
                     Err(e) => {
                         if let Err(err) = peer_handle.record_failure(addr).await {
                             tracing::warn!(?track_addr, spool, "failed to record peer failure for {addr}: {err}");
                         }
-                        tracing::debug!(?track_addr, spool, helper = ?helper.network_address, "repair error: {e}");
+                        tracing::debug!(?track_addr, spool, helper = ?helper_addr, "repair error: {e}");
                     }
                 }
             }
 
-            // Check that all required helpers responded. If any are missing
-            // we skip this track rather than re-planning with fewer helpers.
-            // The task returns Retryable and peer cooldowns may produce a
-            // different helper set on the next attempt.
+            // Check that all required helpers responded. If any are missing,
+            // fall back to full recovery using k full slices.
             if !required.iter().all(|si| helper_data.contains_key(si)) {
                 tracing::debug!(?track_addr, spool, "insufficient helper responses for repair");
-                any_failed = true;
-                continue;
+                match recover_with_full_fallback(
+                    &context,
+                    &peer_handle,
+                    track_addr,
+                    spool,
+                    lost,
+                    &helper_map,
+                    &mut slicer,
+                    &track_info,
+                    "insufficient helper responses",
+                )
+                .await
+                {
+                    Ok(()) => {
+                        removed_any = true;
+                        continue;
+                    }
+                    Err(reason) => {
+                        tracing::warn!(
+                            ?track_addr,
+                            spool,
+                            "full recovery fallback after insufficient helpers failed: {reason}"
+                        );
+                        any_failed = true;
+                        continue;
+                    }
+                }
             }
 
             // Construct slice metadata for the repair.
@@ -276,26 +325,44 @@ pub async fn run<S: Store, R: Rpc>(
                 Ok(data) => data,
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "clay repair failed: {e}");
-                    any_failed = true;
-                    continue;
+                    match recover_with_full_fallback(
+                        &context,
+                        &peer_handle,
+                        track_addr,
+                        spool,
+                        lost,
+                        &helper_map,
+                        &mut slicer,
+                        &track_info,
+                        "clay repair failure",
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            removed_any = true;
+                            continue;
+                        }
+                        Err(reason) => {
+                            tracing::warn!(
+                                ?track_addr,
+                                spool,
+                                "full recovery fallback after clay repair failure failed: {reason}"
+                            );
+                            any_failed = true;
+                            continue;
+                        }
+                    }
                 }
             };
 
-            // Validate the reconstructed slice against the commitment.
-            if let Err(reason) = validate_slice_entry(spool, &track_info, &repaired) {
-                tracing::warn!(?track_addr, spool, "repaired slice validation failed: {reason}");
-                any_failed = true;
-                continue;
-            }
-
-            // Store the repaired slice and clear pending state.
-            if let Err(e) = context.store.put_slice(spool, track_addr, repaired) {
-                tracing::warn!(?track_addr, spool, "put_slice error: {e}");
-                any_failed = true;
-                continue;
-            }
-            if let Err(e) = context.store.remove_pending_recovery(spool, track_addr) {
-                tracing::warn!(?track_addr, spool, "remove pending recovery: {e}");
+            if let Err(e) = persist_recovered_slice(
+                &context,
+                spool,
+                track_addr,
+                &track_info,
+                repaired,
+            ) {
+                tracing::warn!(?track_addr, spool, "persist repaired slice: {e}");
                 any_failed = true;
                 continue;
             }
@@ -332,6 +399,170 @@ pub async fn run<S: Store, R: Rpc>(
         }
         TaskOutcome::Success
     }
+}
+
+fn persist_recovered_slice<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    spool: u16,
+    track_addr: StorePubkey,
+    track_info: &TrackInfo,
+    recovered: Vec<u8>,
+) -> Result<(), String> {
+    validate_slice_entry(spool, track_info, &recovered)
+        .map_err(|reason| format!("slice validation failed: {reason}"))?;
+    context
+        .store
+        .put_slice(spool, track_addr, recovered)
+        .map_err(|e| format!("put_slice error: {e}"))?;
+    context
+        .store
+        .remove_pending_recovery(spool, track_addr)
+        .map_err(|e| format!("remove pending recovery: {e}"))?;
+    Ok(())
+}
+
+async fn recover_with_full_fallback<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    peer_handle: &PeerHandle,
+    track_addr: StorePubkey,
+    spool: u16,
+    lost: SliceIndex,
+    helper_map: &HashMap<SliceIndex, NetworkAddress>,
+    slicer: &mut Slicer<ClayCoder>,
+    track_info: &TrackInfo,
+    reason: &str,
+) -> Result<(), String> {
+    let recovered = attempt_full_recovery_from_helpers(
+        context,
+        peer_handle,
+        track_addr,
+        lost,
+        helper_map,
+        slicer,
+        track_info.spool_group,
+    )
+    .await?;
+    persist_recovered_slice(context, spool, track_addr, track_info, recovered)?;
+    tracing::debug!(?track_addr, spool, reason, "recovered slice via full fallback");
+    Ok(())
+}
+
+async fn attempt_full_recovery_from_helpers<S: Store, R: Rpc>(
+    context: &Arc<NodeContext<S, R>>,
+    peer_handle: &PeerHandle,
+    track_addr: StorePubkey,
+    lost: SliceIndex,
+    helper_map: &HashMap<SliceIndex, NetworkAddress>,
+    slicer: &mut Slicer<ClayCoder>,
+    spool_group: u64,
+) -> Result<Vec<u8>, String> {
+    let needed = slicer.k();
+    let mut helper_indices: Vec<SliceIndex> = helper_map.keys().copied().collect();
+    helper_indices.sort_unstable_by_key(|si| **si);
+
+    let mut full_slices: Vec<(usize, Vec<u8>)> = Vec::with_capacity(needed);
+    for slice_idx in helper_indices {
+        if full_slices.len() >= needed {
+            break;
+        }
+
+        let helper_addr = match helper_map.get(&slice_idx) {
+            Some(addr) => *addr,
+            None => continue,
+        };
+        let addr = match helper_addr.to_socket_addr() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(?track_addr, "parse helper address: {e}");
+                continue;
+            }
+        };
+
+        match peer_handle.is_cooling_down(addr).await {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(?track_addr, "peer tracker unavailable: {e}");
+                continue;
+            }
+        }
+
+        let client = match NodeClientBuilder::new().build(&addr.to_string()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(?track_addr, "build helper client: {e}");
+                continue;
+            }
+        };
+
+        // Convert group-relative slice index to global spool ID for the HTTP API.
+        let global_spool = spool_for_slice(spool_group, *slice_idx) as u16;
+        match with_retry(&RetryConfig::fast(), || {
+            client.get_slice(track_addr, global_spool)
+        })
+        .await
+        {
+            Ok(data) if !data.is_empty() => {
+                context.stats.add_repair_received(data.len() as u64);
+                if let Err(e) = peer_handle.record_success(addr).await {
+                    tracing::warn!(?track_addr, "failed to record peer success for {addr}: {e}");
+                }
+                full_slices.push((*slice_idx, data));
+            }
+            Ok(_) => {
+                if let Err(e) = peer_handle.record_success(addr).await {
+                    tracing::warn!(?track_addr, "failed to record peer success for {addr}: {e}");
+                }
+                tracing::debug!(?track_addr, helper = ?helper_addr, "empty full-slice response");
+            }
+            Err(e) => {
+                if let Err(err) = peer_handle.record_failure(addr).await {
+                    tracing::warn!(?track_addr, "failed to record peer failure for {addr}: {err}");
+                }
+                tracing::debug!(?track_addr, helper = ?helper_addr, "full-slice fetch error: {e}");
+            }
+        }
+    }
+
+    if full_slices.len() < needed {
+        return Err(format!(
+            "insufficient full slices for fallback: got {} need {}",
+            full_slices.len(),
+            needed,
+        ));
+    }
+
+    reconstruct_slice_via_full_recovery(slicer, lost, &full_slices)
+}
+
+fn reconstruct_slice_via_full_recovery(
+    slicer: &mut Slicer<ClayCoder>,
+    lost: SliceIndex,
+    helpers: &[(usize, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
+    let Some((_, sample)) = helpers.first() else {
+        return Err("no helper slices provided".into());
+    };
+
+    let metadata = SliceMetadata::from_slice(sample)
+        .map_err(|e| format!("parse helper metadata failed: {e}"))?;
+    slicer.set_chunk_index(metadata.chunk_index);
+
+    let helper_refs: Vec<(usize, &[u8])> = helpers
+        .iter()
+        .map(|(idx, data)| (*idx, data.as_slice()))
+        .collect();
+
+    let decoded = slicer
+        .decode(&helper_refs)
+        .map_err(|e| format!("decode fallback failed: {e}"))?;
+    let reencoded = slicer
+        .encode(&decoded)
+        .map_err(|e| format!("re-encode fallback failed: {e}"))?;
+    reencoded
+        .get(*lost)
+        .cloned()
+        .ok_or_else(|| format!("lost slice index {} out of bounds", *lost))
 }
 
 /// Invert a `RepairPlan` (per-stripe, per-helper) into per-helper `RepairRequest`s.
@@ -467,5 +698,41 @@ mod tests {
             SpoolStatus::Active,
         );
         assert!(!ctx.store.is_scan_done(5).unwrap());
+    }
+
+    #[test]
+    fn full_fallback_reconstructs_lost_slice_from_k_helpers() {
+        let profile = tape_core::encoding::EncodingProfile::clay_default();
+        let mut encoder = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            2_000,
+            true,
+            profile,
+        );
+        encoder.set_chunk_index(42);
+
+        let payload: Vec<u8> = (0..50_000).map(|i| (i % 251) as u8).collect();
+        let slices = encoder.encode(&payload).unwrap();
+
+        let lost = SliceIndex::new(0).unwrap();
+        let helper_count = encoder.k();
+        let helpers: Vec<(usize, Vec<u8>)> = slices
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != *lost)
+            .take(helper_count)
+            .map(|(idx, data)| (idx, data.clone()))
+            .collect();
+
+        let mut recovery_slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            2_000,
+            true,
+            profile,
+        );
+        let recovered =
+            reconstruct_slice_via_full_recovery(&mut recovery_slicer, lost, &helpers)
+                .unwrap();
+        assert_eq!(recovered, slices[*lost]);
     }
 }

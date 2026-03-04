@@ -11,6 +11,7 @@ use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_node::core::NodeContext;
 use tape_store::MemoryStore;
+use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 
@@ -301,6 +302,21 @@ async fn poll_once(
         committee_next_size = system.committee_next.size();
     }
 
+    // Build per-spool availability: a spool is available if ANY node has it Active.
+    // Multiple nodes may have the same spool (Active on the current owner,
+    // LockedToMove on the former owner), so we must not let a non-Active
+    // status overwrite an Active one.
+    let mut spool_available = [false; SPOOL_COUNT];
+    for tracked in &state.nodes {
+        if let Ok(spools) = tracked.ctx.store.iter_all_spools() {
+            for (spool_id, spool_state) in spools {
+                if (spool_id as usize) < SPOOL_COUNT && spool_state.is_active() {
+                    spool_available[spool_id as usize] = true;
+                }
+            }
+        }
+    }
+
     let mut total_sync_delta = 0u64;
     let mut total_repair_delta = 0u64;
     let mut total_upload_delta = 0u64;
@@ -421,6 +437,7 @@ async fn poll_once(
         runtime_secs: state.start.elapsed().as_secs_f64(),
         nodes: node_snapshots,
         spool_owners,
+        spool_available,
         node_count: state.nodes.len(),
         epoch_duration_history: state.epoch_duration_history.clone(),
         total_store_history: state.total_store_history.clone(),

@@ -66,11 +66,12 @@ pub fn build_register_track_ix(
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
 
-            AccountMeta::new(epoch_address, false),
+            AccountMeta::new_readonly(epoch_address, false),
             AccountMeta::new(tape_address, false),
             AccountMeta::new(track_address, false),
 
             AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: RegisterTrack {

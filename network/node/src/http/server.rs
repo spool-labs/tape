@@ -52,7 +52,7 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
         // Status routes (lightweight checks)
         let status = Router::new()
             .route(
-                "/v1/tracks/{track_id}/slices/{slice_index}/status",
+                "/v1/tracks/{track_id}/slices/{spool_id}/status",
                 get(handlers::status::slice_status::<S, R>),
             )
             .route(
@@ -66,7 +66,7 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
 
         // Slice read
         let slice_read = Router::new().route(
-            "/v1/tracks/{track_id}/slices/{slice_index}",
+            "/v1/tracks/{track_id}/slices/{spool_id}",
             get(handlers::slice::get_slice::<S, R>),
         );
 
@@ -90,7 +90,7 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
         // Public data ingestion (PUT slice + PUT metadata)
         let mut public_data = Router::new()
             .route(
-                "/v1/tracks/{track_id}/slices/{slice_index}",
+                "/v1/tracks/{track_id}/slices/{spool_id}",
                 put(handlers::slice::put_slice::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.slice_body_max))
@@ -110,7 +110,7 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
         // Internal data ingestion
         let internal_data = Router::new()
             .route(
-                "/v1/internal/tracks/{track_id}/slices/{slice_index}",
+                "/v1/internal/tracks/{track_id}/slices/{spool_id}",
                 put(handlers::slice::put_slice_internal::<S, R>),
             )
             .layer(DefaultBodyLimit::max(limits.slice_body_max))
@@ -287,8 +287,8 @@ mod tests {
     async fn put_and_get_slice() {
         let ctx = test_context();
         let spool_group = 0u64;
-        let slice_index = 0u16;
-        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+        let spool_id = 0u16;
+        let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
         // Register the spool
         ctx.store
@@ -325,7 +325,7 @@ mod tests {
         let put_resp = app
             .oneshot(
                 Request::put(format!(
-                    "/v1/internal/tracks/{track_b58}/slices/{slice_index}"
+                    "/v1/internal/tracks/{track_b58}/slices/{spool_id}"
                 ))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(wincode::serialize(&payload).unwrap()))
@@ -341,7 +341,7 @@ mod tests {
         let get_resp = app
             .oneshot(
                 Request::get(format!(
-                    "/v1/tracks/{track_b58}/slices/{slice_index}"
+                    "/v1/tracks/{track_b58}/slices/{spool_id}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -360,8 +360,8 @@ mod tests {
     async fn put_bad_proof() {
         let ctx = test_context();
         let spool_group = 0u64;
-        let slice_index = 0u16;
-        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+        let spool_id = 0u16;
+        let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
         ctx.store
             .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
@@ -385,7 +385,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::put(format!(
-                    "/v1/internal/tracks/{track_b58}/slices/{slice_index}"
+                    "/v1/internal/tracks/{track_b58}/slices/{spool_id}"
                 ))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(wincode::serialize(&payload).unwrap()))
@@ -401,8 +401,8 @@ mod tests {
     async fn slice_status_check() {
         let ctx = test_context();
         let spool_group = 0u64;
-        let slice_index = 0u16;
-        let spool_id = spool_for_slice(spool_group, slice_index as usize);
+        let spool_id = 0u16;
+        let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
         ctx.store
             .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
@@ -420,7 +420,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::get(format!(
-                    "/v1/tracks/{track_b58}/slices/{slice_index}/status"
+                    "/v1/tracks/{track_b58}/slices/{spool_id}/status"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -439,7 +439,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::get(format!(
-                    "/v1/tracks/{track_b58}/slices/{slice_index}/status"
+                    "/v1/tracks/{track_b58}/slices/{spool_id}/status"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -456,8 +456,8 @@ mod tests {
 
         let ctx = test_context();
         let spool_group = 0u64;
-        let helper_slice_index = 1u16;
-        let helper_spool = spool_for_slice(spool_group, helper_slice_index as usize);
+        let helper_spool_id = 1u16;
+        let helper_spool = spool_for_slice(spool_group, helper_spool_id as usize);
 
         ctx.store
             .set_spool_state(helper_spool, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })

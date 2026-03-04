@@ -4,36 +4,34 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::spool_for_slice;
 use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::types::Pubkey;
 
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
-/// GET /v1/tracks/:track_id/slices/:slice_index/status
+/// GET /v1/tracks/:track_id/slices/:spool_id/status
+/// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn slice_status<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
-    Path((track_id, slice_index)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, u16)>,
 ) -> Result<StatusCode, ApiError> {
-    tracing::trace!(track_id = %track_id, slice_index, "http slice_status start");
+    tracing::trace!(track_id = %track_id, spool_id, "http slice_status start");
     let track_address = parse_track_address(&track_id)?;
 
-    let track_info = state
+    state
         .context
         .store
         .get_track(track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let spool_id = spool_for_slice(track_info.spool_group, slice_index as usize);
-
     let exists = state
         .context
         .store
         .has_slice(spool_id, track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?;
-    tracing::trace!(track_id = %track_id, slice_index, exists, "http slice_status result");
+    tracing::trace!(track_id = %track_id, spool_id, exists, "http slice_status result");
 
     if exists {
         Ok(StatusCode::OK)

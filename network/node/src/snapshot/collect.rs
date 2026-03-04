@@ -35,7 +35,7 @@ pub async fn run_collect<S: Store, R: Rpc>(
     };
 
     let local_epoch = snapshot.local_epoch;
-    let our_member_index = snapshot.member_index.unwrap_or(0);
+    let our_member_index = snapshot.member_index.expect("member_index required for collect");
 
     tracing::trace!(
         current_chain_epoch = snapshot.current_chain_epoch.0,

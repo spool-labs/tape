@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
-use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 use tape_node_api::{BlsSignResponse, SignedMessage, SlicePayload, BINARY_CONTENT};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
@@ -16,22 +16,21 @@ use crate::fsm::UserEvent;
 use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
-/// GET /v1/tracks/:track_id/slices/:slice_index
+/// GET /v1/tracks/:track_id/slices/:spool_id
+/// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn get_slice<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
-    Path((track_id, slice_index)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, u16)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    tracing::trace!(track_id = %track_id, slice_index, "http get_slice start");
+    tracing::trace!(track_id = %track_id, spool_id, "http get_slice start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
-    let track_info = state
+    state
         .context
         .store
         .get_track(track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
-
-    let spool_id = spool_for_slice(track_info.spool_group, slice_index as usize);
 
     let data = state
         .context
@@ -42,7 +41,6 @@ pub async fn get_slice<S: Store, R: Rpc>(
     state.context.stats.add_downloaded(data.len() as u64);
     tracing::trace!(
         track_id = %track_id,
-        slice_index,
         spool_id,
         size = data.len(),
         "http get_slice success"
@@ -55,15 +53,16 @@ pub async fn get_slice<S: Store, R: Rpc>(
     ))
 }
 
-/// PUT /v1/tracks/:track_id/slices/:slice_index — public (authority-signed) upload.
+/// PUT /v1/tracks/:track_id/slices/:spool_id — public (authority-signed) upload.
+/// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn put_slice<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
-    Path((track_id, slice_index)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(
         track_id = %track_id,
-        slice_index,
+        spool_id,
         payload_bytes = body.len(),
         "http put_slice start"
     );
@@ -88,13 +87,14 @@ pub async fn put_slice<S: Store, R: Rpc>(
         return Err(ApiError::BadRequest("leaf hash mismatch".into()));
     }
 
-    // Verify merkle proof
+    // Verify merkle proof — convert global spool ID to group-relative leaf position.
+    let leaf_pos = (spool_id as usize) % SPOOL_GROUP_SIZE;
     let root = track_info.commitment_root();
     if !verify_proof(
         &payload.data,
         &root,
         &payload.merkle_proof,
-        slice_index as u64,
+        leaf_pos as u64,
         COMMITMENT_TREE_HEIGHT,
     ) {
         return Err(ApiError::BadRequest("invalid merkle proof".into()));
@@ -106,7 +106,6 @@ pub async fn put_slice<S: Store, R: Rpc>(
         .map_err(|_| ApiError::InvalidSignature)?;
 
     // Check spool ownership
-    let spool_id = spool_for_slice(track_info.spool_group, slice_index as usize);
     verify_spool_ownership(&state, spool_id)?;
 
     // Store the slice
@@ -148,7 +147,6 @@ pub async fn put_slice<S: Store, R: Rpc>(
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
     tracing::trace!(
         track_id = %track_id,
-        slice_index,
         spool_id,
         size = data_len,
         "http put_slice success"
@@ -161,15 +159,16 @@ pub async fn put_slice<S: Store, R: Rpc>(
     ))
 }
 
-/// PUT /v1/internal/tracks/:track_id/slices/:slice_index — internal (peer) upload.
+/// PUT /v1/internal/tracks/:track_id/slices/:spool_id — internal (peer) upload.
+/// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn put_slice_internal<S: Store, R: Rpc>(
     State(state): State<AppState<S, R>>,
-    Path((track_id, slice_index)): Path<(String, u16)>,
+    Path((track_id, spool_id)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(
         track_id = %track_id,
-        slice_index,
+        spool_id,
         payload_bytes = body.len(),
         "http put_slice_internal start"
     );
@@ -191,20 +190,20 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
         return Err(ApiError::BadRequest("leaf hash mismatch".into()));
     }
 
-    // Verify merkle proof
+    // Verify merkle proof — convert global spool ID to group-relative leaf position.
+    let leaf_pos = (spool_id as usize) % SPOOL_GROUP_SIZE;
     let root = track_info.commitment_root();
     if !verify_proof(
         &payload.data,
         &root,
         &payload.merkle_proof,
-        slice_index as u64,
+        leaf_pos as u64,
         COMMITMENT_TREE_HEIGHT,
     ) {
         return Err(ApiError::BadRequest("invalid merkle proof".into()));
     }
 
     // Check spool ownership
-    let spool_id = spool_for_slice(track_info.spool_group, slice_index as usize);
     verify_spool_ownership(&state, spool_id)?;
 
     // Store the slice
@@ -246,7 +245,6 @@ pub async fn put_slice_internal<S: Store, R: Rpc>(
         wincode::serialize(&resp).map_err(|e| ApiError::InternalError(e.to_string()))?;
     tracing::trace!(
         track_id = %track_id,
-        slice_index,
         spool_id,
         size = data_len,
         "http put_slice_internal success"

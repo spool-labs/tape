@@ -46,7 +46,7 @@ pub async fn run_build<S: Store, R: Rpc>(
 
     let current_chain_epoch = snapshot.current_chain_epoch;
     let local_epoch = snapshot.local_epoch;
-    let our_member_index = snapshot.member_index.unwrap_or(0);
+    let our_member_index = snapshot.member_index.expect("member_index required for build");
 
     tracing::debug!(
         current_chain_epoch = current_chain_epoch.0,

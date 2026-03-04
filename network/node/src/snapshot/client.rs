@@ -229,7 +229,8 @@ pub async fn collect_group_slices(
                 continue;
             }
 
-            match client.get_slice(track, slice_index as u16).await {
+            // get_slice expects a global spool ID, not a group-relative index.
+            match client.get_slice(track, spool).await {
                 Ok(data) if !data.is_empty() => {
                     let (weight, peers) = index_votes
                         .entry(slice_index)

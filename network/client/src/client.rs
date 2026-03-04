@@ -34,14 +34,15 @@ impl NodeClient {
     }
 
     /// PUT a slice via the public (authority-signed) route.
+    /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
     pub async fn put_slice(
         &self,
         track: Pubkey,
-        slice_index: u16,
+        spool_id: u16,
         payload: &SignedMessage,
     ) -> Result<(), NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::slice_url(&track_id, slice_index))?;
+        let url = self.url(&tape_node_api::slice_url(&track_id, spool_id))?;
         let body =
             wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -62,14 +63,15 @@ impl NodeClient {
     }
 
     /// PUT a slice via the internal (peer-authenticated) route.
+    /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
     pub async fn put_slice_internal(
         &self,
         track: Pubkey,
-        slice_index: u16,
+        spool_id: u16,
         payload: &SlicePayload,
     ) -> Result<(), NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::internal_slice_url(&track_id, slice_index))?;
+        let url = self.url(&tape_node_api::internal_slice_url(&track_id, spool_id))?;
         let body =
             wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -90,13 +92,14 @@ impl NodeClient {
     }
 
     /// GET a slice's raw data.
+    /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
     pub async fn get_slice(
         &self,
         track: Pubkey,
-        slice_index: u16,
+        spool_id: u16,
     ) -> Result<Vec<u8>, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::slice_url(&track_id, slice_index))?;
+        let url = self.url(&tape_node_api::slice_url(&track_id, spool_id))?;
         let start = Instant::now();
 
         let resp = self
