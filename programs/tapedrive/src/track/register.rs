@@ -3,6 +3,7 @@ use tape_api::prelude::*;
 use tape_api::event::TrackRegistered;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT};
 use tape_core::encoding::EncodingProfile;
+use tape_core::spooler::SpoolGroup;
 use tape_crypto::merkle::root_from_leaf_hashes;
 use crate::error::*;
 
@@ -71,7 +72,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
         .wrapping_add(track_number);
 
-    let spool_group = mixed % SPOOL_GROUP_COUNT as u64;
+    let spool_group = SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64);
     tape.track_count = tape.track_count
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
@@ -114,7 +115,7 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         commitment: args.commitment,
         epoch: current_epoch(epoch),
         profile,
-        spool_group: spool_group.to_le_bytes(),
+        spool_group: spool_group.0.to_le_bytes(),
         stripe_size: args.stripe_size,
         stripe_count: args.stripe_count,
         leaves: args.leaves,
@@ -211,7 +212,7 @@ mod tests {
 
         // Build expected track data with profile
         // seed=0 (zeroed slot hash), mixed = 0 + 100 = 100, spool_group = 100 % 50 = 0
-        let mut expected_data = TrackData::new(EpochNumber(0), commitment, 0);
+        let mut expected_data = TrackData::new(EpochNumber(0), commitment, SpoolGroup(0));
         expected_data.profile = profile;
 
         let env = test_env();

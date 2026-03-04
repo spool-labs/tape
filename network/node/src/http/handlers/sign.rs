@@ -9,6 +9,7 @@ use store::Store;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::group_for_spool;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_node_api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
 use tape_store::ops::{MetaOps, TrackOps};
@@ -83,7 +84,7 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
         return Err(ApiError::BadRequest("epoch mismatch".into()));
     }
 
-    let group = chunk_index;
+    let group = SpoolGroup(chunk_index);
     let chunk_idx = ChunkIndex(chunk_index);
 
     let member_index = request.member_index as usize;
@@ -129,7 +130,7 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
         .store
         .set_snapshot_partial_signature(
             epoch,
-            group,
+            group.0,
             SnapshotPartialSignature {
                 member_index: request.member_index,
                 signature: request.signature,

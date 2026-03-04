@@ -168,7 +168,7 @@ async fn verify_commitments<S: Store, R: Rpc>(
             )));
         }
 
-        if track.data.spool_group != group as u64 {
+        if track.data.spool_group != SpoolGroup(group as u64) {
             return Err(TaskOutcome::Retryable(format!(
                 "snapshot track spool mismatch for epoch {} group {}: got {}",
                 local_epoch.0,
@@ -415,8 +415,8 @@ mod tests {
             },
         ];
 
-        assert_eq!(group_weight(&committee[0], 0), 3);
-        assert_eq!(group_weight(&committee[1], 0), 0);
-        assert_eq!(group_total_weight(&committee, 0), 3);
+        assert_eq!(group_weight(&committee[0], SpoolGroup(0)), 3);
+        assert_eq!(group_weight(&committee[1], SpoolGroup(0)), 0);
+        assert_eq!(group_total_weight(&committee, SpoolGroup(0)), 3);
     }
 }

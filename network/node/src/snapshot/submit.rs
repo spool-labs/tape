@@ -53,7 +53,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
             return outcome;
         }
 
-        let _chunk_index = ChunkIndex(group);
+        let _chunk_index = ChunkIndex(group.0);
         let artifacts = match load_group_artifacts::<S, R>(&context, local_epoch, group) {
             Ok(artifacts) => artifacts,
             Err(e) => return missing_state(format!("snapshot submit read artifacts for group {group}: {e}")),
@@ -80,7 +80,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
         match submit_certify(&context, committee_len, local_epoch, current, commitment, &cert).await {
             Ok(_tx_sig) => {
                 tracing::info!(
-                    group,
+                    %group,
                     local_epoch = local_epoch.0,
                     "snapshot submit completed"
                 );
@@ -88,7 +88,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
             }
             Err(ref e) => match classify_submit_error(e) {
                 SubmitClass::Done => {
-                    tracing::debug!(group, "snapshot group already submitted");
+                    tracing::debug!(%group, "snapshot group already submitted");
                     submitted += 1;
                 }
                 SubmitClass::Pending => {

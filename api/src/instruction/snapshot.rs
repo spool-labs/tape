@@ -70,7 +70,7 @@ pub struct CertifySnapshot {
 pub fn build_register_snapshot_ix(
     fee_payer: Pubkey,
     epoch_number: EpochNumber,
-    spool_group: u64,
+    spool_group: SpoolGroup,
     commitment: Hash,
     profile: EncodingProfile,
     stripe_size: u64,
@@ -99,7 +99,7 @@ pub fn build_register_snapshot_ix(
         ],
         data: RegisterSnapshot {
             epoch: epoch_number.pack(),
-            spool_group: spool_group.to_le_bytes(),
+            spool_group: spool_group.0.to_le_bytes(),
             commitment,
             profile: profile.pack(),
             stripe_size: stripe_size.to_le_bytes(),

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::SpoolGroup;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_register;
@@ -64,13 +63,12 @@ pub async fn run_register<S: Store, R: Rpc>(
                 ));
             }
         };
-        let group = group as SpoolGroup;
         let request = match submit_register(&context, local_epoch, group, commitment, &metadata).await {
             Ok(sig) => {
                 tracing::info!(
                     %sig,
                     local_epoch = local_epoch.0,
-                    group,
+                    %group,
                     "snapshot register submitted"
                 );
                 continue;
@@ -80,10 +78,10 @@ pub async fn run_register<S: Store, R: Rpc>(
 
         match request {
             SubmitClass::Done => {
-                tracing::debug!(group, "snapshot chunk already registered");
+                tracing::debug!(%group, "snapshot chunk already registered");
             }
             SubmitClass::Pending => {
-                tracing::debug!(group, "snapshot register pending");
+                tracing::debug!(%group, "snapshot register pending");
             }
             SubmitClass::Retryable => {
                 return TaskOutcome::Retryable(format!(

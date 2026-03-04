@@ -124,6 +124,7 @@ mod tests {
     use super::*;
     use tape_test::*;
     use tape_spooler::dhondt_allocate;
+    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_invalidate_track() {
@@ -183,7 +184,7 @@ mod tests {
             key: bucket_hash,
             data: TrackData {
                 commitment_hash,
-                spool_group: 0,
+                spool_group: SpoolGroup(0),
                 ..TrackData::zeroed()
             },
             ..Track::zeroed()
@@ -318,7 +319,7 @@ mod tests {
             key: bucket_hash,
             data: TrackData {
                 commitment_hash,
-                spool_group: 0,
+                spool_group: SpoolGroup(0),
                 ..TrackData::zeroed()
             },
             ..Track::zeroed()
@@ -423,7 +424,7 @@ mod tests {
 
         let mut track_data = TrackData {
             commitment_hash,
-            spool_group: 0,
+            spool_group: SpoolGroup(0),
             ..TrackData::zeroed()
         };
         track_data.set_invalidated();

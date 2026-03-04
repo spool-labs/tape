@@ -203,6 +203,7 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
+    use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::EpochNumber;
@@ -228,7 +229,7 @@ mod tests {
     }
 
     fn make_track_with_data(
-        spool_group: u64,
+        spool_group: SpoolGroup,
         slice_data: &[&[u8]],
     ) -> (TrackInfo, Vec<Hash>) {
         let leaf_hashes: Vec<Hash> = slice_data.iter().map(|d| hash_leaf(d)).collect();
@@ -286,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn put_and_get_slice() {
         let ctx = test_context();
-        let spool_group = 0u64;
+        let spool_group = SpoolGroup(0);
         let spool_id = 0u16;
         let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
@@ -359,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn put_bad_proof() {
         let ctx = test_context();
-        let spool_group = 0u64;
+        let spool_group = SpoolGroup(0);
         let spool_id = 0u16;
         let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
@@ -400,7 +401,7 @@ mod tests {
     #[tokio::test]
     async fn slice_status_check() {
         let ctx = test_context();
-        let spool_group = 0u64;
+        let spool_group = SpoolGroup(0);
         let spool_id = 0u16;
         let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
@@ -455,7 +456,7 @@ mod tests {
         use tape_slicer::ClayCoder;
 
         let ctx = test_context();
-        let spool_group = 0u64;
+        let spool_group = SpoolGroup(0);
         let helper_spool_id = 1u16;
         let helper_spool = spool_for_slice(spool_group, helper_spool_id as usize);
 

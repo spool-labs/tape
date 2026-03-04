@@ -5,6 +5,7 @@ use rpc::Rpc;
 use solana_sdk::signer::Signer;
 use store::Store;
 
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_store::ops::MetaOps;
 use tape_store::types::ChunkIndex;
@@ -86,7 +87,7 @@ impl SnapshotPlanner {
 
         let cs = context.chain_state.load();
         let committee = cs.committee_for(epoch);
-        let owned_groups: HashSet<u64> = if committee.map_or(true, |c| c.is_empty()) {
+        let owned_groups: HashSet<SpoolGroup> = if committee.map_or(true, |c| c.is_empty()) {
             tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
             HashSet::new()
         } else {
@@ -126,18 +127,18 @@ impl SnapshotPlanner {
             };
             tracing::trace!(
                 epoch = epoch.0,
-                group = group,
+                group = %group,
                 ready,
                 "snapshot group readiness"
             );
             if ready {
-                ready_groups.push(group as usize);
+                ready_groups.push(group.0 as usize);
             }
             if !ready {
                 continue;
             }
 
-            let ci = ChunkIndex(group);
+            let ci = ChunkIndex(group.0);
             let has_cert = context
                 .store
                 .get_snapshot_cert(local_epoch, ci)
@@ -146,11 +147,11 @@ impl SnapshotPlanner {
                 .is_some();
             if has_cert {
                 self.progress
-                    .advance(group as usize, GroupState::Certified);
+                    .advance(group.0 as usize, GroupState::Certified);
             }
         }
 
-        let owned_vec: Vec<usize> = owned_groups.iter().map(|&g| g as usize).collect();
+        let owned_vec: Vec<usize> = owned_groups.iter().map(|g| g.0 as usize).collect();
         let all_certified = self.progress.all_local_cert(&owned_vec);
         let all_onchain = self.progress.all_done_onchain(&owned_vec);
 
@@ -238,7 +239,7 @@ impl SnapshotPlanner {
     pub fn groups_for_epoch<S: Store, R: Rpc>(
         context: &Arc<NodeContext<S, R>>,
         epoch: EpochNumber,
-    ) -> HashSet<u64> {
+    ) -> HashSet<SpoolGroup> {
         let cs = context.chain_state.load();
         let Some(committee) = cs.committee_for(epoch) else {
             return HashSet::new();
@@ -257,7 +258,7 @@ impl SnapshotPlanner {
         state: GroupState,
     ) {
         for group in Self::groups_for_epoch(context, epoch) {
-            self.progress.advance(group as usize, state);
+            self.progress.advance(group.0 as usize, state);
         }
     }
 
@@ -275,12 +276,12 @@ impl SnapshotPlanner {
         for group in Self::groups_for_epoch(context, epoch) {
             if context
                 .store
-                .get_snapshot_cert(local_epoch, ChunkIndex(group))
+                .get_snapshot_cert(local_epoch, ChunkIndex(group.0))
                 .ok()
                 .flatten()
                 .is_some()
             {
-                self.progress.advance(group as usize, state);
+                self.progress.advance(group.0 as usize, state);
             }
         }
     }

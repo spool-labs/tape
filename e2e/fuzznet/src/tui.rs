@@ -364,6 +364,7 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -387,15 +388,6 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     );
     render_spark(
         frame,
-        rows[3],
-        "sync",
-        &snap.sync_bw_history,
-        "bytes",
-        Some(snap.total_sync_bytes),
-        None,
-    );
-    render_spark(
-        frame,
         rows[2],
         "repair",
         &snap.repair_bw_history,
@@ -405,7 +397,25 @@ fn render_charts(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     );
     render_spark(
         frame,
+        rows[3],
+        "recovery",
+        &snap.recovery_bw_history,
+        "bytes",
+        Some(snap.total_recovery_bytes),
+        None,
+    );
+    render_spark(
+        frame,
         rows[4],
+        "sync",
+        &snap.sync_bw_history,
+        "bytes",
+        Some(snap.total_sync_bytes),
+        None,
+    );
+    render_spark(
+        frame,
+        rows[5],
         "upload",
         &snap.upload_bw_history,
         "bytes",

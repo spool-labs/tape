@@ -34,59 +34,34 @@ pub const MAX_SLICE_SIZE: usize = MAX_BLOB_SIZE / 7;
 
 use crate::spooler::{SpoolGroup, SpoolIndex};
 
-// TODO: It feels like SpoolGroup should be a first class type, with impl functions that do some of the following.
-
 /// Get the spool group index (0..SPOOL_GROUP_COUNT-1) for a given spool.
 #[inline]
 pub fn group_for_spool(spool: SpoolIndex) -> SpoolGroup {
-    assert!(spool < SPOOL_COUNT as u16);
-
-    (spool as usize / SPOOL_GROUP_SIZE) as SpoolGroup
+    SpoolGroup::of(spool)
 }
 
 /// Get the first spool index in a group.
 #[inline]
 pub fn group_start(group: SpoolGroup) -> SpoolIndex {
-    assert!(group < SPOOL_GROUP_COUNT as u64);
-
-    (group as usize * SPOOL_GROUP_SIZE) as SpoolIndex
+    group.base()
 }
 
 /// Get the global spool index for a slice within a group.
-// TODO: this function needs a rename or to be dropped
-// suggestion: spool_from_group_and_slice 
 #[inline]
 pub fn spool_for_slice(group: SpoolGroup, slice_in_group: usize) -> SpoolIndex {
-    assert!(group < SPOOL_GROUP_COUNT as u64);
-    assert!(slice_in_group < SPOOL_GROUP_SIZE);
-
-    (group as usize * SPOOL_GROUP_SIZE + slice_in_group) as SpoolIndex
+    group.spool_at(slice_in_group)
 }
 
 /// Get the slice index within a group for a spool, if the spool belongs to the group.
-// TODO: this function needs a rename
-// suggestion: slice_for_group(..)
 #[inline]
 pub fn slice_for_spool(group: SpoolGroup, spool: SpoolIndex) -> Option<usize> {
-    assert!(spool < SPOOL_COUNT as u16);
-    assert!(group < SPOOL_GROUP_COUNT as u64);
-
-    if group_for_spool(spool) != group {
-        return None;
-    }
-
-    Some(spool as usize % SPOOL_GROUP_SIZE)
+    group.slice_of(spool)
 }
 
 /// Check if a spool belongs to a given group.
-// TODO: this function needs a rename. 
-// suggestion: is_spool_in_group(..)
 #[inline]
 pub fn spool_in_group(spool: SpoolIndex, group: SpoolGroup) -> bool {
-    assert!(spool < SPOOL_COUNT as u16);
-    assert!(group < SPOOL_GROUP_COUNT as u64);
-
-    group_for_spool(spool) == group
+    group.contains(spool)
 }
 
 #[cfg(test)]
@@ -117,42 +92,42 @@ mod tests {
 
     #[test]
     fn test_group_for_spool() {
-        assert_eq!(group_for_spool(0), 0);
-        assert_eq!(group_for_spool(19), 0);
-        assert_eq!(group_for_spool(20), 1);
-        assert_eq!(group_for_spool(999), 49);
+        assert_eq!(group_for_spool(0), SpoolGroup(0));
+        assert_eq!(group_for_spool(19), SpoolGroup(0));
+        assert_eq!(group_for_spool(20), SpoolGroup(1));
+        assert_eq!(group_for_spool(999), SpoolGroup(49));
     }
 
     #[test]
     fn test_group_start() {
-        assert_eq!(group_start(0), 0);
-        assert_eq!(group_start(1), 20);
-        assert_eq!(group_start(49), 980);
+        assert_eq!(group_start(SpoolGroup(0)), 0);
+        assert_eq!(group_start(SpoolGroup(1)), 20);
+        assert_eq!(group_start(SpoolGroup(49)), 980);
     }
 
     #[test]
     fn test_spool_for_slice() {
-        assert_eq!(spool_for_slice(0, 0), 0);
-        assert_eq!(spool_for_slice(0, 19), 19);
-        assert_eq!(spool_for_slice(1, 0), 20);
-        assert_eq!(spool_for_slice(49, 19), 999);
+        assert_eq!(spool_for_slice(SpoolGroup(0), 0), 0);
+        assert_eq!(spool_for_slice(SpoolGroup(0), 19), 19);
+        assert_eq!(spool_for_slice(SpoolGroup(1), 0), 20);
+        assert_eq!(spool_for_slice(SpoolGroup(49), 19), 999);
     }
 
     #[test]
     fn test_spool_in_group() {
-        assert!(spool_in_group(0, 0));
-        assert!(spool_in_group(19, 0));
-        assert!(!spool_in_group(20, 0));
-        assert!(spool_in_group(20, 1));
-        assert!(spool_in_group(999, 49));
+        assert!(spool_in_group(0, SpoolGroup(0)));
+        assert!(spool_in_group(19, SpoolGroup(0)));
+        assert!(!spool_in_group(20, SpoolGroup(0)));
+        assert!(spool_in_group(20, SpoolGroup(1)));
+        assert!(spool_in_group(999, SpoolGroup(49)));
     }
 
     #[test]
     fn test_slice_for_spool() {
-        assert_eq!(slice_for_spool(0, 0), Some(0));
-        assert_eq!(slice_for_spool(0, 19), Some(19));
-        assert_eq!(slice_for_spool(1, 20), Some(0));
-        assert_eq!(slice_for_spool(1, 39), Some(19));
-        assert_eq!(slice_for_spool(0, 20), None);
+        assert_eq!(slice_for_spool(SpoolGroup(0), 0), Some(0));
+        assert_eq!(slice_for_spool(SpoolGroup(0), 19), Some(19));
+        assert_eq!(slice_for_spool(SpoolGroup(1), 20), Some(0));
+        assert_eq!(slice_for_spool(SpoolGroup(1), 39), Some(19));
+        assert_eq!(slice_for_spool(SpoolGroup(0), 20), None);
     }
 }

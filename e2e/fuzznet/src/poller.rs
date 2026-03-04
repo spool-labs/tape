@@ -73,6 +73,7 @@ struct TrackedNode {
     ctx: Arc<NodeContext<MemoryStore, LiteSvmRpc>>,
     prev_sync: u64,
     prev_repair: u64,
+    prev_recovery: u64,
     prev_upload: u64,
     prev_events: u64,
     pool_stake: u64,
@@ -89,13 +90,16 @@ struct PollerState {
     epoch_duration_history: Vec<u64>,
     total_store_history: Vec<u64>,
     repair_bw_history: Vec<u64>,
+    recovery_bw_history: Vec<u64>,
     sync_bw_history: Vec<u64>,
     upload_bw_history: Vec<u64>,
     sync_accum: u64,
     repair_accum: u64,
+    recovery_accum: u64,
     upload_accum: u64,
     total_sync: u64,
     total_repair: u64,
+    total_recovery: u64,
     total_upload: u64,
     stake_fuzz_enabled: bool,
     stake_fuzz_succeeded: u64,
@@ -143,13 +147,16 @@ async fn poller_task(
         epoch_duration_history: Vec::new(),
         total_store_history: Vec::new(),
         repair_bw_history: Vec::new(),
+        recovery_bw_history: Vec::new(),
         sync_bw_history: Vec::new(),
         upload_bw_history: Vec::new(),
         sync_accum: 0,
         repair_accum: 0,
+        recovery_accum: 0,
         upload_accum: 0,
         total_sync: 0,
         total_repair: 0,
+        total_recovery: 0,
         total_upload: 0,
         stake_fuzz_enabled: false,
         stake_fuzz_succeeded: 0,
@@ -186,6 +193,7 @@ async fn poller_task(
                             ctx,
                             prev_sync: 0,
                             prev_repair: 0,
+                            prev_recovery: 0,
                             prev_upload: 0,
                             prev_events: 0,
                             pool_stake: 0,
@@ -319,6 +327,7 @@ async fn poll_once(
 
     let mut total_sync_delta = 0u64;
     let mut total_repair_delta = 0u64;
+    let mut total_recovery_delta = 0u64;
     let mut total_upload_delta = 0u64;
 
     let mut node_snapshots = Vec::with_capacity(state.nodes.len());
@@ -326,19 +335,23 @@ async fn poll_once(
     for tracked in &mut state.nodes {
         let sync = tracked.ctx.stats.sync_bytes_received.load(Ordering::Relaxed);
         let repair = tracked.ctx.stats.repair_bytes_received.load(Ordering::Relaxed);
+        let recovery = tracked.ctx.stats.recovery_bytes_received.load(Ordering::Relaxed);
         let upload = tracked.ctx.stats.bytes_uploaded.load(Ordering::Relaxed);
 
         let sync_delta = sync.saturating_sub(tracked.prev_sync);
         let repair_delta = repair.saturating_sub(tracked.prev_repair);
+        let recovery_delta = recovery.saturating_sub(tracked.prev_recovery);
         let upload_delta = upload.saturating_sub(tracked.prev_upload);
         let events = tracked.ctx.stats.events.load(Ordering::Relaxed);
         let event_delta = events.saturating_sub(tracked.prev_events);
         let transport_delta = sync_delta
             .saturating_add(repair_delta)
+            .saturating_add(recovery_delta)
             .saturating_add(upload_delta);
 
         tracked.prev_sync = sync;
         tracked.prev_repair = repair;
+        tracked.prev_recovery = recovery;
         tracked.prev_upload = upload;
         tracked.prev_events = events;
         tracked.node_event_accum = tracked
@@ -348,6 +361,7 @@ async fn poll_once(
 
         total_sync_delta += sync_delta;
         total_repair_delta += repair_delta;
+        total_recovery_delta += recovery_delta;
         total_upload_delta += upload_delta;
 
         let cs = tracked.ctx.chain_state.load();
@@ -367,6 +381,7 @@ async fn poll_once(
             id: tracked.id,
             sync_bytes: sync,
             repair_bytes: repair,
+            recovery_bytes: recovery,
             upload_bytes: upload,
             spool_count,
                 pool_stake: tracked.pool_stake,
@@ -382,9 +397,11 @@ async fn poll_once(
 
     state.sync_accum += total_sync_delta;
     state.repair_accum += total_repair_delta;
+    state.recovery_accum += total_recovery_delta;
     state.upload_accum += total_upload_delta;
     state.total_sync += total_sync_delta;
     state.total_repair += total_repair_delta;
+    state.total_recovery += total_recovery_delta;
     state.total_upload += total_upload_delta;
 
     // Epoch boundary: record duration and keep epoch-specific state.
@@ -412,11 +429,13 @@ async fn poll_once(
 
         push_capped(&mut state.sync_bw_history, state.sync_accum);
         push_capped(&mut state.repair_bw_history, state.repair_accum);
+        push_capped(&mut state.recovery_bw_history, state.recovery_accum);
         push_capped(&mut state.upload_bw_history, state.upload_accum);
         push_capped(&mut state.total_store_history, total_store);
 
         state.sync_accum = 0;
         state.repair_accum = 0;
+        state.recovery_accum = 0;
         state.upload_accum = 0;
         state.chart_next_update += CHART_UPDATE_INTERVAL;
     }
@@ -442,10 +461,12 @@ async fn poll_once(
         epoch_duration_history: state.epoch_duration_history.clone(),
         total_store_history: state.total_store_history.clone(),
         repair_bw_history: state.repair_bw_history.clone(),
+        recovery_bw_history: state.recovery_bw_history.clone(),
         sync_bw_history: state.sync_bw_history.clone(),
         upload_bw_history: state.upload_bw_history.clone(),
         total_sync_bytes: state.total_sync,
         total_repair_bytes: state.total_repair,
+        total_recovery_bytes: state.total_recovery,
         total_upload_bytes: state.total_upload,
         total_stake,
         log,

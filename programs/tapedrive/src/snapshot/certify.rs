@@ -78,7 +78,7 @@ pub fn process_certify_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         .ok_or(TapeError::BadEpochId)?;
 
     let group = track.data.spool_group();
-    if (group as usize) >= SPOOL_GROUP_COUNT {
+    if (group.0 as usize) >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -159,6 +159,7 @@ mod tests {
     use super::*;
     use tape_test::*;
     use tape_spooler::dhondt_allocate;
+    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_certify_snapshot() {
@@ -169,7 +170,7 @@ mod tests {
 
         let epoch_number = EpochNumber(42);
         let commitment_hash = Hash::new_unique();
-        let spool_group = 49u64; // Last chunk triggers latest_epoch update
+        let spool_group = SpoolGroup(49); // Last chunk triggers latest_epoch update
         let (track_address, _) = snapshot_pda(epoch_number, commitment_hash);
 
         const SIGNERS: usize = 75;

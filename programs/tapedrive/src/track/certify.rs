@@ -126,6 +126,7 @@ mod tests {
     use super::*;
     use tape_test::*;
     use tape_spooler::dhondt_allocate;
+    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_certify_track() {
@@ -186,7 +187,7 @@ mod tests {
             key: bucket_hash,
             data: TrackData {
                 commitment_hash,
-                spool_group: 0, // test uses group 0 (spools 0-19)
+                spool_group: SpoolGroup(0), // test uses group 0 (spools 0-19)
                 ..TrackData::zeroed()
             },
             ..Track::zeroed()

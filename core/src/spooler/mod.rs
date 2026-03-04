@@ -5,13 +5,14 @@
 //! retains the shared types consumed throughout the codebase.
 
 mod assignment;
+mod group;
 
 pub use assignment::*;
+pub use group::*;
 
 pub type SpoolIndex = u16;
 pub type SpoolCount = u16;
 pub type SpoolMapping = u8;
-pub type SpoolGroup = u64;
 
 /// Errors used across spool allocation and migration.
 #[derive(Debug, Clone, PartialEq, Eq)]

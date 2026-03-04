@@ -77,8 +77,8 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     /// # Panics
     /// Panics if `group >= SPOOL_GROUP_COUNT`.
     pub fn members_in_group(&self, group: SpoolGroup) -> &[SpoolMapping] {
-        assert!((group as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
-        let start = group as usize * SPOOL_GROUP_SIZE;
+        assert!((group.0 as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
+        let start = group.0 as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
         &self.0[start..end]
     }
@@ -88,8 +88,8 @@ impl <const SPOOLS: usize> SpoolAssignment<SPOOLS> {
     /// # Panics
     /// Panics if `group >= SPOOL_GROUP_COUNT`.
     pub fn group_weight<const BYTES: usize>(&self, group: SpoolGroup, bitmap: &Bitmap<BYTES>) -> u64 {
-        assert!((group as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
-        let start = group as usize * SPOOL_GROUP_SIZE;
+        assert!((group.0 as usize) < SPOOL_GROUP_COUNT, "spool group {group} out of range (max {})", SPOOL_GROUP_COUNT - 1);
+        let start = group.0 as usize * SPOOL_GROUP_SIZE;
         let end = start + SPOOL_GROUP_SIZE;
         let mut weight = 0u64;
         for i in start..end {
@@ -172,12 +172,12 @@ mod tests {
         for i in 20..40 { arr[i] = ((i - 20) % 3) as u8; } // group 1: members 0-2
         let sa = SpoolAssignment::new(arr);
 
-        let g0 = sa.members_in_group(0);
+        let g0 = sa.members_in_group(SpoolGroup(0));
         assert_eq!(g0.len(), 20);
         assert_eq!(g0[0], 0);
         assert_eq!(g0[1], 1);
 
-        let g1 = sa.members_in_group(1);
+        let g1 = sa.members_in_group(SpoolGroup(1));
         assert_eq!(g1.len(), 20);
         assert_eq!(g1[0], 0);
     }
@@ -195,8 +195,8 @@ mod tests {
 
         // Bitmap with members 0 and 1 set
         let bm = Bitmap::<1>::from_indices(&[0, 1], 8);
-        assert_eq!(sa.group_weight(0, &bm), 20); // all 20 owned by member 0
-        assert_eq!(sa.group_weight(1, &bm), 10); // 10 owned by member 1
+        assert_eq!(sa.group_weight(SpoolGroup(0), &bm), 20); // all 20 owned by member 0
+        assert_eq!(sa.group_weight(SpoolGroup(1), &bm), 10); // 10 owned by member 1
     }
 
     #[test]

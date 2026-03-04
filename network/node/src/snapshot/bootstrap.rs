@@ -5,6 +5,7 @@ use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_core::encoding::ClayParams;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
+use tape_core::spooler::SpoolGroup;
 use tape_core::snapshot::SnapshotLog;
 use tape_crypto::hash::hashv;
 use tape_slicer::DEFAULT_K_OUTER;
@@ -105,7 +106,7 @@ pub async fn run_bootstrap<S: Store, R: Rpc>(
         let slices = match collect_group_slices(
             &peer_handle,
             &snapshot.committee,
-            group as u64,
+            SpoolGroup(group as u64),
             track_addr,
             clay_k,
         )

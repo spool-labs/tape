@@ -12,6 +12,7 @@ pub mod keys;
 mod values;
 
 // Re-export core types used throughout the crate
+pub use tape_core::spooler::SpoolGroup;
 pub use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
 pub use tape_crypto::Hash;
 

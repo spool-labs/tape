@@ -97,6 +97,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SpoolGroup;
     use store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -106,7 +107,7 @@ mod tests {
     fn make_track_info() -> TrackInfo {
         TrackInfo {
             tape_address: Pubkey::new_unique(),
-            spool_group: 3,
+            spool_group: SpoolGroup(3),
             original_size: 1024 * 1024,
             stripe_size: 0,
             stripe_count: 0,

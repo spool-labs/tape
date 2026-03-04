@@ -63,7 +63,7 @@ impl ClayCoder {
         helpers
             .into_iter()
             .map(|(idx, sub_chunks)| {
-                let si = SliceIndex::new(idx).ok_or(RepairError::InvalidSlice)?;
+                let si = SliceIndex::new(idx);
                 Ok((si, sub_chunks.into_iter().map(|v| v as u32).collect()))
             })
             .collect()
@@ -161,16 +161,11 @@ impl Slicer<ClayCoder> {
         let mut stripes = Vec::with_capacity(num_stripes);
 
         for s in 0..num_stripes {
-            let lost_shard_raw = slice_to_shard(self.strategy, n, s, *lost);
-            let lost_shard =
-                SliceIndex::new(lost_shard_raw).ok_or(RepairError::InvalidSlice)?;
+            let lost_shard = SliceIndex::new(slice_to_shard(self.strategy, n, s, *lost));
 
             let available_shards: Vec<SliceIndex> = available
                 .iter()
-                .filter_map(|slice| {
-                    let shard = slice_to_shard(self.strategy, n, s, **slice);
-                    SliceIndex::new(shard)
-                })
+                .map(|slice| SliceIndex::new(slice_to_shard(self.strategy, n, s, **slice)))
                 .collect();
 
             let helper_plan = self.coder.plan_repair(lost_shard, &available_shards)?;
@@ -178,17 +173,16 @@ impl Slicer<ClayCoder> {
             let helpers: Vec<HelperPlan> = helper_plan
                 .into_iter()
                 .map(|(helper_shard, sub_chunks)| {
-                    let helper_slice_raw =
-                        shard_to_slice(self.strategy, n, s, *helper_shard);
-                    let helper_slice = SliceIndex::new(helper_slice_raw)
-                        .ok_or(RepairError::InvalidSlice)?;
-                    Ok(HelperPlan {
+                    let helper_slice = SliceIndex::new(
+                        shard_to_slice(self.strategy, n, s, *helper_shard),
+                    );
+                    HelperPlan {
                         slice: helper_slice,
                         shard: helper_shard,
                         sub_chunks,
-                    })
+                    }
                 })
-                .collect::<Result<Vec<_>, RepairError>>()?;
+                .collect();
 
             stripes.push(StripeRepair {
                 stripe: s as u32,
@@ -247,16 +241,11 @@ impl Slicer<ClayCoder> {
         let mut stripes = Vec::with_capacity(num_stripes);
 
         for s in 0..num_stripes {
-            let lost_shard_raw = slice_to_shard(self.strategy, n, s, *lost);
-            let lost_shard =
-                SliceIndex::new(lost_shard_raw).ok_or(RepairError::InvalidSlice)?;
+            let lost_shard = SliceIndex::new(slice_to_shard(self.strategy, n, s, *lost));
 
             let available_shards: Vec<SliceIndex> = available
                 .iter()
-                .filter_map(|slice| {
-                    let shard = slice_to_shard(self.strategy, n, s, **slice);
-                    SliceIndex::new(shard)
-                })
+                .map(|slice| SliceIndex::new(slice_to_shard(self.strategy, n, s, **slice)))
                 .collect();
 
             let helper_plan = self.coder.plan_repair(lost_shard, &available_shards)?;
@@ -264,17 +253,16 @@ impl Slicer<ClayCoder> {
             let helpers: Vec<HelperPlan> = helper_plan
                 .into_iter()
                 .map(|(helper_shard, sub_chunks)| {
-                    let helper_slice_raw =
-                        shard_to_slice(self.strategy, n, s, *helper_shard);
-                    let helper_slice = SliceIndex::new(helper_slice_raw)
-                        .ok_or(RepairError::InvalidSlice)?;
-                    Ok(HelperPlan {
+                    let helper_slice = SliceIndex::new(
+                        shard_to_slice(self.strategy, n, s, *helper_shard),
+                    );
+                    HelperPlan {
                         slice: helper_slice,
                         shard: helper_shard,
                         sub_chunks,
-                    })
+                    }
                 })
-                .collect::<Result<Vec<_>, RepairError>>()?;
+                .collect();
 
             stripes.push(StripeRepair {
                 stripe: s as u32,
@@ -394,7 +382,7 @@ mod tests {
     }
 
     fn si(i: usize) -> SliceIndex {
-        SliceIndex::new(i).unwrap()
+        SliceIndex::new(i)
     }
 
     fn helper_refs(chunks: &[Vec<u8>], lost: usize) -> Vec<(SliceIndex, &[u8])> {

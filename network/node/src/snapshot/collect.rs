@@ -60,7 +60,7 @@ pub async fn run_collect<S: Store, R: Rpc>(
             return outcome;
         }
 
-        match context.store.get_snapshot_cert(local_epoch, ChunkIndex(group)) {
+        match context.store.get_snapshot_cert(local_epoch, ChunkIndex(group.0)) {
             Ok(Some(_)) => continue,
             Ok(None) => {}
             Err(e) => {
@@ -129,7 +129,7 @@ async fn certify_group<S: Store, R: Rpc>(
     cancel: &CancellationToken,
 ) -> Result<GroupResult, TaskOutcome> {
     let group_start = Instant::now();
-    let chunk_index = ChunkIndex(group);
+    let chunk_index = ChunkIndex(group.0);
 
     let commitment = match context.store.get_snapshot_commitment(local_epoch, chunk_index) {
         Ok(Some(commitment)) => commitment,
@@ -138,7 +138,7 @@ async fn certify_group<S: Store, R: Rpc>(
     };
 
     let message = SnapshotMessage::new(local_epoch, commitment.0).to_bytes();
-    let partials = match context.store.get_snapshot_partial_signatures(local_epoch, group as u64) {
+    let partials = match context.store.get_snapshot_partial_signatures(local_epoch, group.0) {
         Ok(partials) => partials,
         Err(e) => return Err(TaskOutcome::Retryable(format!("read partial sigs: {e}"))),
     };
@@ -160,7 +160,7 @@ async fn certify_group<S: Store, R: Rpc>(
         let member = match committee.get(member_index) {
             Some(member) => member,
             None => {
-                tracing::debug!(group, member_index, "partial signature for unknown member");
+                tracing::debug!(%group, member_index, "partial signature for unknown member");
                 continue;
             }
         };
@@ -179,7 +179,7 @@ async fn certify_group<S: Store, R: Rpc>(
             .verify_aggregate(message, &[member.bls_pubkey])
             .is_err()
         {
-            tracing::debug!(group, member_index, "invalid snapshot partial signature");
+            tracing::debug!(%group, member_index, "invalid snapshot partial signature");
             continue;
         }
 
@@ -205,13 +205,13 @@ async fn certify_group<S: Store, R: Rpc>(
 
     let quorum = is_supermajority(gathered_weight, group_total_weight);
     if quorum {
-        tracing::trace!(group, gathered_weight, group_total_weight, "snapshot collect reached quorum");
+        tracing::trace!(%group, gathered_weight, group_total_weight, "snapshot collect reached quorum");
     }
 
     let quorum_needed = min_correct(group_total_weight);
     tracing::info!(
         epoch = local_epoch.0,
-        group,
+        %group,
         quorum,
         gathered_weight,
         needed_weight = quorum_needed,

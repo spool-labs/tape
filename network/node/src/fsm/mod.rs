@@ -91,6 +91,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::encoding::EncodingProfile;
     use tape_core::snapshot::ReplayableEvent;
+    use tape_core::spooler::SpoolGroup;
     use tape_core::types::{SlotNumber, StorageUnits};
     use tape_crypto::Hash;
     use tape_store::ops::{
@@ -292,7 +293,7 @@ mod tests {
 
         let store_track: StorePubkey = track.into();
         let info = ctx.store.get_track(store_track).unwrap().unwrap();
-        assert_eq!(info.spool_group, 3);
+        assert_eq!(info.spool_group, SpoolGroup(3));
         assert_eq!(info.original_size, StorageUnits::mb(1024).0);
 
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
@@ -549,7 +550,7 @@ mod tests {
 
         let store_track: StorePubkey = track.into();
         let info = ctx.store.get_track(store_track).unwrap().unwrap();
-        assert_eq!(info.spool_group, 7);
+        assert_eq!(info.spool_group, SpoolGroup(7));
         assert_eq!(info.original_size, StorageUnits::mb(2048).0);
 
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();

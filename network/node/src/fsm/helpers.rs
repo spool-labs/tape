@@ -1,6 +1,7 @@
 use rpc::Rpc;
 use store::Store;
 use tape_api::event::TrackRegistered;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TrackInfo};
@@ -17,7 +18,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     ) -> Result<(), FsmError> {
         let mut info = TrackInfo {
             tape_address: event.tape.into(),
-            spool_group: u64::from_le_bytes(event.spool_group),
+            spool_group: SpoolGroup(u64::from_le_bytes(event.spool_group)),
             original_size: event.size.0,
             stripe_size: u64::from_le_bytes(event.stripe_size),
             stripe_count: u64::from_le_bytes(event.stripe_count),
@@ -75,11 +76,11 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
     pub fn cleanup_slices_for_track(
         &self,
         track: StorePubkey,
-        spool_group: u64,
+        spool_group: SpoolGroup,
     ) -> Result<(), FsmError> {
         let owned_spools = self.context.store.iter_all_spools()?;
         for (spool_id, _status) in &owned_spools {
-            if tape_core::erasure::spool_in_group(*spool_id, spool_group) {
+            if spool_group.contains(*spool_id) {
                 let _ = self.context.store.delete_slice(*spool_id, track);
             }
         }

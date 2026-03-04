@@ -170,7 +170,7 @@ mod tests {
     fn test_track_info_roundtrip() {
         let info = TrackInfo {
             tape_address: Pubkey([1u8; 32]),
-            spool_group: 3,
+            spool_group: SpoolGroup(3),
             original_size: 1024 * 1024,
             stripe_size: 10 * 1024 * 1024,
             stripe_count: 1,
@@ -188,7 +188,7 @@ mod tests {
     fn test_track_info_basic_encoding() {
         let info = TrackInfo {
             tape_address: Pubkey([2u8; 32]),
-            spool_group: 0,
+            spool_group: SpoolGroup(0),
             original_size: 512,
             stripe_size: 0,
             stripe_count: 0,
@@ -208,7 +208,7 @@ mod tests {
 
         let mut info = TrackInfo {
             tape_address: Pubkey([3u8; 32]),
-            spool_group: 1,
+            spool_group: SpoolGroup(1),
             original_size: 1024,
             stripe_size: 0,
             stripe_count: 0,

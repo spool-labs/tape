@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let track_address = Pubkey::new([i as u8; 32]);
         let info = TrackInfo {
             tape_address,
-            spool_group: 3,
+            spool_group: SpoolGroup(3),
             original_size: 1024,
             encoding_type: 1,
             encoding_params: 0,

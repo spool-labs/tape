@@ -13,7 +13,7 @@ fn open_primary() {
     let track_address = Pubkey::new_unique();
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
-        spool_group: 3,
+        spool_group: SpoolGroup(3),
         original_size: 1024,
         stripe_size: 0,
         stripe_count: 0,
@@ -40,7 +40,7 @@ fn open_primary_persistence() {
         let store = TapeStore::open_primary(&db_path).unwrap();
         let info = TrackInfo {
             tape_address,
-            spool_group: 3,
+            spool_group: SpoolGroup(3),
             original_size: 512,
             stripe_size: 0,
             stripe_count: 0,
@@ -73,7 +73,7 @@ fn all_column_families() {
     let tape_address = Pubkey::new_unique();
     let track_info = TrackInfo {
         tape_address,
-        spool_group: 3,
+        spool_group: SpoolGroup(3),
         original_size: 1024 * 1024,
         stripe_size: 0,
         stripe_count: 0,
@@ -216,7 +216,7 @@ fn track_operations() {
 
     let info = TrackInfo {
         tape_address: Pubkey::new_unique(),
-        spool_group: 3,
+        spool_group: SpoolGroup(3),
         original_size: 1024,
         stripe_size: 0,
         stripe_count: 0,

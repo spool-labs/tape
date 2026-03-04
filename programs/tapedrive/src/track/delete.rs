@@ -77,6 +77,7 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 mod tests {
     use super::*;
     use tape_test::*;
+    use tape_core::spooler::SpoolGroup;
 
     #[test]
     fn test_delete_track() {
@@ -95,7 +96,7 @@ mod tests {
             data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
-                0,
+                SpoolGroup(0),
             ),
         };
 

@@ -3,6 +3,7 @@ use tape_api::prelude::*;
 use tape_api::event::TrackRegistered;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_COUNT};
 use tape_core::encoding::EncodingProfile;
+use tape_core::spooler::SpoolGroup;
 use tape_crypto::merkle::root_from_leaf_hashes;
 use crate::error::*;
 
@@ -57,8 +58,8 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .is_epoch()?
         .as_account::<Epoch>(&tapedrive::ID)?;
 
-    let spool_group = u64::from_le_bytes(args.spool_group);
-    if (spool_group as usize) >= SPOOL_GROUP_COUNT {
+    let spool_group = SpoolGroup(u64::from_le_bytes(args.spool_group));
+    if (spool_group.0 as usize) >= SPOOL_GROUP_COUNT {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -141,7 +142,7 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         commitment: args.commitment,
         epoch: current_epoch(epoch),
         profile,
-        spool_group: spool_group.to_le_bytes(),
+        spool_group: spool_group.0.to_le_bytes(),
         stripe_size: args.stripe_size,
         stripe_count: args.stripe_count,
         leaves: args.leaves,
@@ -167,7 +168,7 @@ mod tests {
         let (snapshot_state_address, _) = snapshot_state_pda();
 
         let epoch_number = EpochNumber(5);
-        let spool_group = 7u64;
+        let spool_group = SpoolGroup(7);
 
         // Build valid leaf hashes and commitment
         let leaves: [Hash; SPOOL_GROUP_SIZE] = {

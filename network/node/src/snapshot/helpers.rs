@@ -165,9 +165,9 @@ pub fn is_snapshot_build_complete<S: Store, R: Rpc>(
 pub fn is_snapshot_chunk_ready<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
     local_epoch: EpochNumber,
-    group: u64,
+    group: SpoolGroup,
 ) -> Result<bool, String> {
-    let chunk_index = ChunkIndex(group);
+    let chunk_index = ChunkIndex(group.0);
 
     if context
         .store
@@ -196,7 +196,7 @@ pub fn load_group_artifacts<S: Store, R: Rpc>(
     local_epoch: EpochNumber,
     group: SpoolGroup,
 ) -> Result<SnapshotGroupArtifacts, String> {
-    let chunk_index = ChunkIndex(group);
+    let chunk_index = ChunkIndex(group.0);
 
     let commitment = context
         .store
@@ -397,12 +397,12 @@ mod tests {
         let ctx = test_utils::test_context();
         let local_epoch = EpochNumber(2);
 
-        assert!(!is_snapshot_chunk_ready(&ctx, local_epoch, 3).unwrap());
+        assert!(!is_snapshot_chunk_ready(&ctx, local_epoch, SpoolGroup(3)).unwrap());
 
         ctx.store
             .set_snapshot_commitment(local_epoch, ChunkIndex(3), Hash::new_unique())
             .unwrap();
-        assert!(!is_snapshot_chunk_ready(&ctx, local_epoch, 3).unwrap());
+        assert!(!is_snapshot_chunk_ready(&ctx, local_epoch, SpoolGroup(3)).unwrap());
 
         ctx.store
             .set_snapshot_metadata(
@@ -418,7 +418,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(is_snapshot_chunk_ready(&ctx, local_epoch, 3).unwrap());
+        assert!(is_snapshot_chunk_ready(&ctx, local_epoch, SpoolGroup(3)).unwrap());
     }
 
     #[test]

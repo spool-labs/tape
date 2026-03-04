@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use solana_sdk::pubkey::Pubkey as SolanaPubkey;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::erasure::group_for_spool;
+use tape_core::spooler::SpoolGroup;
 use tape_store::types::{NodeInfo, Pubkey};
 
 pub fn our_member<'a>(
@@ -32,7 +33,7 @@ pub fn our_member_index(
 pub fn our_snapshot_groups(
     committee: &[NodeInfo],
     authority: SolanaPubkey,
-) -> Result<HashSet<u64>, &'static str> {
+) -> Result<HashSet<SpoolGroup>, &'static str> {
     let our_member = our_member(committee, authority)?;
 
     Ok(our_member

@@ -132,7 +132,7 @@ mod tests {
 
         let info = TrackInfo {
             tape_address: Pubkey::new_unique(),
-            spool_group: 3,
+            spool_group: SpoolGroup(3),
             original_size: 1024 * 1024,
             stripe_size: 0,
             stripe_count: 0,
@@ -300,7 +300,7 @@ mod tests {
             let track = Pubkey::new_unique();
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
-                spool_group: 3,
+                spool_group: SpoolGroup(3),
                 original_size: 1024,
                 stripe_size: 0,
                 stripe_count: 0,
@@ -339,7 +339,7 @@ mod tests {
             let track = Pubkey::new_unique();
             let info = TrackInfo {
                 tape_address: Pubkey::new_unique(),
-                spool_group: 0,
+                spool_group: SpoolGroup(0),
                 original_size: 512,
                 stripe_size: 0,
                 stripe_count: 0,

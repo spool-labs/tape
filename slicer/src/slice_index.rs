@@ -15,13 +15,9 @@ use wincode::{SchemaRead, SchemaWrite};
 pub struct SliceIndex(usize);
 
 impl SliceIndex {
-    // TODO: why on earth is this an Option<Self>
-    pub fn new(index: usize) -> Option<Self> {
-        if index < SPOOL_GROUP_SIZE {
-            Some(Self(index))
-        } else {
-            None
-        }
+    pub fn new(index: usize) -> Self {
+        debug_assert!(index < SPOOL_GROUP_SIZE, "SliceIndex out of bounds: {index}");
+        Self(index)
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
@@ -58,8 +54,12 @@ impl<'de> Deserialize<'de> for SliceIndex {
             where
                 E: serde::de::Error,
             {
-                SliceIndex::new(v as usize)
-                    .ok_or_else(|| E::custom(format!("index {} out of bounds", v)))
+                let index = v as usize;
+                if index < SPOOL_GROUP_SIZE {
+                    Ok(SliceIndex(index))
+                } else {
+                    Err(E::custom(format!("index {} out of bounds", v)))
+                }
             }
         }
         deserializer.deserialize_u64(VisitorImpl)
@@ -88,6 +88,14 @@ impl<'de> SchemaRead<'de> for SliceIndex {
 mod tests {
     use super::*;
     use wincode;
+
+    #[test]
+    fn infallible_new() {
+        let si = SliceIndex::new(0);
+        assert_eq!(*si, 0);
+        let si = SliceIndex::new(SPOOL_GROUP_SIZE - 1);
+        assert_eq!(*si, SPOOL_GROUP_SIZE - 1);
+    }
 
     #[test]
     fn serde_roundtrip_ok() {

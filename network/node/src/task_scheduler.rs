@@ -635,6 +635,7 @@ mod tests {
     use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::bls::{BlsPubkey, BlsSignature};
     use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
+    use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_core::types::network::NetworkAddress;
@@ -952,7 +953,7 @@ mod tests {
     fn make_track_info(spool_group: u64) -> TrackInfo {
         TrackInfo {
             tape_address: StorePubkey([0u8; 32]),
-            spool_group,
+            spool_group: SpoolGroup(spool_group),
             original_size: 1024,
             stripe_size: 512,
             stripe_count: 2,

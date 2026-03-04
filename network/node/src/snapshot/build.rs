@@ -161,7 +161,7 @@ pub async fn run_build<S: Store, R: Rpc>(
         };
 
         for slice_idx in 0..SPOOL_GROUP_SIZE {
-            let spool = spool_for_slice(group as u64, slice_idx);
+            let spool = spool_for_slice(SpoolGroup(group as u64), slice_idx);
             if owned_spools.contains(&spool) {
                 if let Err(e) = context
                     .store
@@ -172,7 +172,7 @@ pub async fn run_build<S: Store, R: Rpc>(
             }
         }
 
-        let maybe_local_signature = if our_groups.contains(&(group as u64)) {
+        let maybe_local_signature = if our_groups.contains(&SpoolGroup(group as u64)) {
             let message = SnapshotMessage::new(local_epoch, commitment.0).to_bytes();
             let signature = match context.bls_keypair.sign(&message) {
                 Ok(signature) => signature,
@@ -181,7 +181,7 @@ pub async fn run_build<S: Store, R: Rpc>(
 
             if let Err(e) = context.store.set_snapshot_partial_signature(
                 local_epoch,
-                group as u64,
+                group as u64,  // store API takes u64
                 SnapshotPartialSignature {
                     member_index: our_member_index as u8,
                     signature,
@@ -209,7 +209,7 @@ pub async fn run_build<S: Store, R: Rpc>(
                 &committee,
                 member_index as usize,
                 local_epoch,
-                group as u64,
+                SpoolGroup(group as u64),
                 &request,
             )
             .await
@@ -242,7 +242,7 @@ async fn broadcast_snapshot_signature<S: Store, R: Rpc>(
     committee: &[NodeInfo],
     our_member_index: usize,
     local_epoch: EpochNumber,
-    group: u64,
+    group: SpoolGroup,
     request: &SnapshotSignatureSubmission,
 ) -> Result<(), TaskOutcome> {
     for (member_index, member) in committee.iter().enumerate() {
@@ -264,12 +264,12 @@ async fn broadcast_snapshot_signature<S: Store, R: Rpc>(
         };
 
         if let Err(err) = client
-            .post_snapshot_signature(local_epoch.0, group, request)
+            .post_snapshot_signature(local_epoch.0, group.0, request)
             .await
         {
             tracing::debug!(
                 epoch = local_epoch.0,
-                group,
+                %group,
                 member = member_index,
                 "snapshot signature post failed: {err}"
             );
