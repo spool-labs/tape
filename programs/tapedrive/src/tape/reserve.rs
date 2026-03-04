@@ -82,7 +82,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         .as_u64();
 
     let single_epoch_price = price_per_unit
-        .checked_mul(total_units.as_u64())
+        .checked_mul(total_units.to_mb())
         .ok_or(ProgramError::InvalidArgument)?;
 
     let total_cost = single_epoch_price
@@ -160,7 +160,7 @@ mod tests {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
-        let storage_units = StorageUnits(100);     // 100 MB
+        let storage_units = StorageUnits::mb(100);   // 100 MB
         let start_epoch = EpochNumber(43);         // In the future
         let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
@@ -179,7 +179,7 @@ mod tests {
         let epoch = Epoch::zeroed();
 
         let archive = Archive {
-            storage_capacity: StorageUnits(1000), // 1000 MB capacity
+            storage_capacity: StorageUnits::mb(1000), // 1000 MB capacity
             storage_price: price_per_unit,
             schedule: EpochSchedule::new(),
             ..Archive::zeroed()
@@ -187,7 +187,7 @@ mod tests {
 
         // Calculate expected cost and state
         let num_epochs = (end_epoch - start_epoch).as_u64(); // 2 epochs
-        let single_epoch_price = price_per_unit.as_u64() * storage_units.as_u64(); // 0.0001 * 100 = 0.01 TAPE
+        let single_epoch_price = price_per_unit.as_u64() * storage_units.to_mb(); // 0.0001 * 100 = 0.01 TAPE
         let total_cost = single_epoch_price * num_epochs; // 0.01 * 2 = 0.02 TAPE
         let fee_per_epoch = TAPE(single_epoch_price);
 

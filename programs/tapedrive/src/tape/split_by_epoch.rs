@@ -111,8 +111,8 @@ mod tests {
         // Source: 500 capacity, used 123, epochs [40, 50)
         let source_tape = Tape {
             authority: source_authority,
-            capacity: StorageUnits(500),
-            used: StorageUnits(123),
+            capacity: StorageUnits::mb(500),
+            used: StorageUnits::mb(123),
             active_epoch: EpochNumber(40),
             expiry_epoch: EpochNumber(50),
             ..Tape::zeroed()
@@ -141,7 +141,7 @@ mod tests {
 
         let expected_dest = Tape {
             authority: dest_authority,
-            capacity: StorageUnits(500),
+            capacity: StorageUnits::mb(500),
             used: StorageUnits(0), // starts zero for future slice
             active_epoch: EpochNumber(45),
             expiry_epoch: EpochNumber(50),
@@ -149,8 +149,8 @@ mod tests {
         };
         let expected_source = Tape {
             authority: source_authority,
-            capacity: StorageUnits(500),
-            used: StorageUnits(123),
+            capacity: StorageUnits::mb(500),
+            used: StorageUnits::mb(123),
             active_epoch: EpochNumber(40),
             expiry_epoch: EpochNumber(45),
             ..Tape::zeroed()

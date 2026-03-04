@@ -147,7 +147,7 @@ mod tests {
         CommitteeMember {
             id: NodeId(id),
             stake: TAPE(stake),
-            blacklist: StorageUnits(bl),
+            blacklist: StorageUnits::mb(bl),
             ..CommitteeMember::zeroed()
         }
     }
@@ -210,7 +210,7 @@ mod tests {
         ).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
-        archive.recent_usage = StorageUnits(1_000);
+        archive.recent_usage = StorageUnits::mb(1_000);
         archive.rewards_paid = TAPE(0);
 
         let accounts = vec![
@@ -324,7 +324,7 @@ mod tests {
         system.spools_prev = SpoolAssignment::try_from_counts(&[700, 200, 100]).unwrap();
 
         archive.rewards_pool = TAPE(10_000);
-        archive.recent_usage = StorageUnits(1_000);
+        archive.recent_usage = StorageUnits::mb(1_000);
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -438,7 +438,7 @@ mod tests {
         // Even though there's a rewards pool, we should not pay out
         // because committee_prev is empty
         archive.rewards_pool = TAPE(10_000);
-        archive.recent_usage = StorageUnits(1_000);
+        archive.recent_usage = StorageUnits::mb(1_000);
         archive.rewards_paid = TAPE(0);
 
         let accounts = vec![
@@ -473,7 +473,7 @@ mod tests {
         let expected_archive = Archive {
             rewards_pool: TAPE(10_000),
             rewards_paid: TAPE(0),  // Unchanged - no rewards paid (committee_prev empty)
-            recent_usage: StorageUnits(1_000),
+            recent_usage: StorageUnits::mb(1_000),
             ..Archive::zeroed()
         };
 
@@ -556,7 +556,7 @@ mod tests {
         };
 
         archive.rewards_pool = TAPE(10_000);
-        archive.recent_usage = StorageUnits(1_000);
+        archive.recent_usage = StorageUnits::mb(1_000);
         archive.rewards_paid = TAPE(0);
 
         let accounts = vec![

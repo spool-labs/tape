@@ -63,7 +63,7 @@ mod tests {
 
         // Build a node with a single blacklisted track
         let blob_hash = Hash::new_unique();
-        let units = StorageUnits(500);
+        let units = StorageUnits::mb(500);
 
         let mut node = Node::zeroed();
         node.authority = authority;
@@ -124,7 +124,7 @@ mod tests {
         let (node_address, _) = node_pda(authority);
 
         let blob_hash = Hash::new_unique();
-        let units = StorageUnits(123);
+        let units = StorageUnits::mb(123);
 
         // Node with one blacklisted entry
         let mut node = Node::zeroed();

@@ -111,19 +111,19 @@ mod tests {
     #[test]
     fn score_basic() {
         // weight * max(allocated - blacklist, 0)
-        let s = get_pool_score(StorageUnits(1000), StorageUnits(200), 3);
-        assert_eq!(s, 3u128 * 800u128);
+        let s = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(200), 3);
+        assert_eq!(s, 3u128 * 800u128 * StorageUnits::MB as u128);
 
         // Fully blacklisted
-        let s2 = get_pool_score(StorageUnits(1000), StorageUnits(1000), 5);
+        let s2 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1000), 5);
         assert_eq!(s2, 0);
 
         // Over-blacklisted (saturating_sub → 0)
-        let s3 = get_pool_score(StorageUnits(1000), StorageUnits(1200), 7);
+        let s3 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(1200), 7);
         assert_eq!(s3, 0);
 
         // Zero weight
-        let s4 = get_pool_score(StorageUnits(1000), StorageUnits(100), 0);
+        let s4 = get_pool_score(StorageUnits::mb(1000), StorageUnits::mb(100), 0);
         assert_eq!(s4, 0);
     }
 }

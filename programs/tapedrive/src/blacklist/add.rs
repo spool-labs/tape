@@ -69,7 +69,7 @@ mod tests {
             id: TrackNumber(69),
             tape: tape_address,
             key: blob_hash,
-            size: StorageUnits(500),
+            size: StorageUnits::mb(500),
             data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),

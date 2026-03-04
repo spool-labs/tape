@@ -723,7 +723,7 @@ async fn upload_random_blob(
     let sdk = Tapedrive::new(RpcClient::from_rpc(rpc), admin);
     let upload_id = tape_key.pubkey();
     let capacity = StorageUnits::from_bytes(data.len() as u64);
-    let reserve_capacity = StorageUnits(capacity.as_u64().max(1) + 1);
+    let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
     let mut is_reserved = false;
 
     for attempt in 0..=UPLOAD_MAX_RETRIES {

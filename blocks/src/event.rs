@@ -134,7 +134,7 @@ mod tests {
             committee_size: [10, 0, 0, 0, 0, 0, 0, 0],
             total_stake: [0; 8],
             storage_price: [0; 8],
-            storage_capacity: StorageUnits(1000),
+            storage_capacity: StorageUnits::mb(1000),
             nonce: Hash::default(),
             phase: 1, // Syncing
         };
@@ -182,7 +182,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(500),
+            size: StorageUnits::mb(500),
             commitment: Hash::default(),
             epoch: EpochNumber(3),
             profile: EncodingProfile::clay_default(),
@@ -200,7 +200,7 @@ mod tests {
                 assert_eq!(e.track, track);
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
-                assert_eq!(e.size, StorageUnits(500));
+                assert_eq!(e.size, StorageUnits::mb(500));
             }
             _ => panic!("Expected TrackRegistered event"),
         }
@@ -213,7 +213,7 @@ mod tests {
         let event = TapeReserved {
             tape,
             authority,
-            capacity: StorageUnits(1000),
+            capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(1),
             expiry_epoch: EpochNumber(10),
             cost: [100, 0, 0, 0, 0, 0, 0, 0],
@@ -226,7 +226,7 @@ mod tests {
             TapedriveEvent::TapeReserved(e) => {
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.authority, authority);
-                assert_eq!(e.capacity, StorageUnits(1000));
+                assert_eq!(e.capacity, StorageUnits::mb(1000));
             }
             _ => panic!("Expected TapeReserved event"),
         }

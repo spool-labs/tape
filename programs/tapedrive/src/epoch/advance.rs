@@ -199,7 +199,7 @@ mod tests {
 
     fn member(id: u64, stake: u64, size: u64, price: u64) -> CommitteeMember {
         let mut m = CommitteeMember::new(NodeId(id), TAPE(stake));
-        m.preferences.storage_capacity = StorageUnits(size);
+        m.preferences.storage_capacity = StorageUnits::mb(size);
         m.preferences.storage_price = TAPE(price);
         m
     }
@@ -267,7 +267,7 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
         archive.schedule.reserve_capacity(
-            StorageUnits(500), TAPE(1000), e0, e100
+            StorageUnits::mb(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
         // Snapshot for epoch 41 must be complete to advance from epoch 42
@@ -311,7 +311,7 @@ mod tests {
 
         let mut schedule = EpochSchedule::new_at(e1);
         schedule.reserve_capacity(
-            StorageUnits(500), TAPE(1000), e1, e100
+            StorageUnits::mb(500), TAPE(1000), e1, e100
         ).expect("reserve capacity");
 
         let total_weight: u64 = expected_committee
@@ -361,7 +361,7 @@ mod tests {
 
                         rewards_pool: TAPE(1000),      // fees_prev + leftover(=0)
                         rewards_paid: TAPE(0),         // reset
-                        recent_usage: StorageUnits(500),
+                        recent_usage: StorageUnits::mb(500),
 
                         storage_capacity,
                         storage_price,
@@ -609,7 +609,7 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
         archive.schedule.reserve_capacity(
-            StorageUnits(500), TAPE(1000), e0, e100
+            StorageUnits::mb(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
         let snapshot_state = SnapshotState {
@@ -692,7 +692,7 @@ mod tests {
 
         archive.schedule = EpochSchedule::new_at(epoch.id);
         archive.schedule.reserve_capacity(
-            StorageUnits(500), TAPE(1000), e0, e100
+            StorageUnits::mb(500), TAPE(1000), e0, e100
         ).expect("reserve capacity");
 
         // Epoch 1 — snapshot gate is skipped (bootstrap)

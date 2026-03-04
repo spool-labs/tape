@@ -51,7 +51,7 @@ pub struct TrackRegistered {
     pub tape: Pubkey,
     /// User-defined identifier hash
     pub key: Hash,
-    /// Total storage in MB
+    /// Total storage in bytes
     pub size: StorageUnits,
     /// Erasure coding Merkle root
     pub commitment: Hash,
@@ -123,7 +123,7 @@ pub struct TapeReserved {
     pub tape: Pubkey,
     /// Owner who reserved
     pub authority: Pubkey,
-    /// Reserved capacity in MB
+    /// Reserved capacity in bytes
     pub capacity: StorageUnits,
     /// First active epoch
     pub active_epoch: EpochNumber,

@@ -124,12 +124,12 @@ mod tests {
             key: Hash::default(),
             root: Hash::default(),
             commitment: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             event: TrackRegistered {
                 track,
                 tape,
                 key: Hash::default(),
-                size: StorageUnits(1024),
+                size: StorageUnits::mb(1024),
                 commitment: Hash::default(),
                 epoch: EpochNumber(epoch),
                 profile: EncodingProfile::basic_default(),
@@ -162,7 +162,7 @@ mod tests {
                 track,
                 tape,
                 key: Hash::default(),
-                size: StorageUnits(1024),
+                size: StorageUnits::mb(1024),
             },
         }
     }
@@ -184,7 +184,7 @@ mod tests {
             event: TapeReserved {
                 tape,
                 authority: Pubkey::new_unique(),
-                capacity: StorageUnits(5000),
+                capacity: StorageUnits::mb(5000),
                 active_epoch: EpochNumber(1),
                 expiry_epoch: EpochNumber(expiry_epoch),
                 cost: [0; 8],
@@ -293,7 +293,7 @@ mod tests {
         let store_track: StorePubkey = track.into();
         let info = ctx.store.get_track(store_track).unwrap().unwrap();
         assert_eq!(info.spool_group, 3);
-        assert_eq!(info.original_size, 1024);
+        assert_eq!(info.original_size, StorageUnits::mb(1024).0);
 
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
         assert!(matches!(
@@ -458,7 +458,7 @@ mod tests {
         // Store state should be consistent
         let store_track: StorePubkey = track.into();
         let info = ctx.store.get_track(store_track).unwrap().unwrap();
-        assert_eq!(info.original_size, 1024);
+        assert_eq!(info.original_size, StorageUnits::mb(1024).0);
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(2048),
+            size: StorageUnits::mb(2048),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),
@@ -550,7 +550,7 @@ mod tests {
         let store_track: StorePubkey = track.into();
         let info = ctx.store.get_track(store_track).unwrap().unwrap();
         assert_eq!(info.spool_group, 7);
-        assert_eq!(info.original_size, 2048);
+        assert_eq!(info.original_size, StorageUnits::mb(2048).0);
 
         let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
         assert!(matches!(
@@ -574,7 +574,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),
@@ -624,7 +624,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),
@@ -668,7 +668,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),
@@ -752,7 +752,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),
@@ -805,7 +805,7 @@ mod tests {
             track,
             tape,
             key: Hash::default(),
-            size: StorageUnits(1024),
+            size: StorageUnits::mb(1024),
             commitment: Hash::default(),
             epoch: EpochNumber(1),
             profile: EncodingProfile::basic_default(),

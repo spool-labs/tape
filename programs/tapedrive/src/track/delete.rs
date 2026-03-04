@@ -91,7 +91,7 @@ mod tests {
             id: TrackNumber(100),
             tape: tape_address,
             key: bucket_hash,
-            size: StorageUnits(250),
+            size: StorageUnits::mb(250),
             data: TrackData::new(
                 EpochNumber(10),
                 Hash::new_unique(),
@@ -101,8 +101,8 @@ mod tests {
 
         let tape = Tape {
             authority: authority,
-            capacity: StorageUnits(1000),
-            used: StorageUnits(250),
+            capacity: StorageUnits::mb(1000),
+            used: StorageUnits::mb(250),
             active_epoch: EpochNumber(15),
             expiry_epoch: EpochNumber(100),
             track_count: 1,

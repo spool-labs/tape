@@ -86,7 +86,7 @@ mod tests {
         // Tape expired at 50, used = 0
         let tape = Tape {
             authority: authority,
-            capacity: StorageUnits(123),
+            capacity: StorageUnits::mb(123),
             used: StorageUnits(0),
             active_epoch: EpochNumber(40),
             expiry_epoch: EpochNumber(50),

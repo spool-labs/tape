@@ -172,7 +172,7 @@ mod tests {
         let system = System::zeroed();
         let archive = Archive {
             storage_price: TAPE(100),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
             ..Archive::zeroed()
         };
         let epoch = Epoch {
@@ -223,7 +223,7 @@ mod tests {
                         },
                         preferences: NodePreferences {
                             storage_price: TAPE(100),
-                            storage_capacity: StorageUnits(1_000_000),
+                            storage_capacity: StorageUnits::mb(1_000_000),
                         },
                         registered_epoch: epoch.id,
                         latest_sync_epoch: epoch.id,

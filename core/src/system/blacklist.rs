@@ -150,7 +150,7 @@ mod tests {
         let mut bl = Blacklist::<3>::new();
 
         let blob_hash = Hash::from([7u8; 32]);
-        let units = StorageUnits::from_bytes(1); // 1 byte => 1 unit (ceiling)
+        let units = StorageUnits::from_bytes(1); // 1 byte
 
         // Add
         bl.add(blob_hash, units).unwrap();

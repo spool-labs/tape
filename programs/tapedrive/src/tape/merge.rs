@@ -105,16 +105,16 @@ mod tests {
 
         let source_tape = Tape {
             authority: source_authority,
-            capacity: StorageUnits(200),
-            used: StorageUnits(30),
+            capacity: StorageUnits::mb(200),
+            used: StorageUnits::mb(30),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()
         };
         let dest_tape = Tape {
             authority: dest_authority,
-            capacity: StorageUnits(100),
-            used: StorageUnits(20),
+            capacity: StorageUnits::mb(100),
+            used: StorageUnits::mb(20),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()
@@ -141,8 +141,8 @@ mod tests {
 
         let expected_tape = Tape {
             authority: dest_authority,
-            capacity: StorageUnits(300),
-            used: StorageUnits(50),
+            capacity: StorageUnits::mb(300),
+            used: StorageUnits::mb(50),
             active_epoch: e0,
             expiry_epoch: e1,
             ..Tape::zeroed()

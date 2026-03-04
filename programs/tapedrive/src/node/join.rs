@@ -116,7 +116,7 @@ mod tests {
         node.pool.shares = ShareAmount(1_000);
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         let accounts = vec![
@@ -194,7 +194,7 @@ mod tests {
 
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         let accounts = vec![
@@ -285,7 +285,7 @@ mod tests {
         node.latest_advance_epoch = EpochNumber(9);
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         // Node IS in current committee
@@ -340,7 +340,7 @@ mod tests {
         node.latest_advance_epoch = EpochNumber(10);
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         // Node IS in current committee
@@ -413,7 +413,7 @@ mod tests {
         node.latest_advance_epoch = EpochNumber(10);
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         // Node IS in current committee with STALE stake of 1000
@@ -488,7 +488,7 @@ mod tests {
         node.pool.schedule.stake(EpochNumber(3), TAPE(1_000)).unwrap();
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         // Node IS in current committee but has 0 active stake
@@ -545,7 +545,7 @@ mod tests {
         node.pool.schedule.stake(EpochNumber(11), TAPE(500)).unwrap();
         node.preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits(1_000_000),
+            storage_capacity: StorageUnits::mb(1_000_000),
         };
 
         // Node was in previous committee but NOT in current committee

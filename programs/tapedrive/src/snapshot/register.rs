@@ -103,11 +103,10 @@ pub fn process_register_snapshot(accounts: &[AccountInfo<'_>], data: &[u8]) -> P
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
 
-    // Compute track size from stripe data (stripe_size is in bytes, convert to MB)
     let stripe_size = u64::from_le_bytes(args.stripe_size);
     let stripe_count = u64::from_le_bytes(args.stripe_count);
     let total_bytes = stripe_size.saturating_mul(stripe_count);
-    let track_size = StorageUnits(total_bytes / 1_000_000);
+    let track_size = StorageUnits(total_bytes);
 
     // Back-pointer: store the previous tail address as a Hash so bootstrap
     // can walk the linked list backward.
@@ -200,7 +199,7 @@ mod tests {
 
         let tape = Tape {
             authority: system_address,
-            capacity: StorageUnits(100_000),
+            capacity: StorageUnits::mb(100_000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
             ..Tape::zeroed()

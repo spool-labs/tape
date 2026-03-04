@@ -122,8 +122,8 @@ mod tests {
         // Source: 1000 capacity, used 250, epochs [10, 20)
         let source_tape = Tape {
             authority: source_authority,
-            capacity: StorageUnits(1000),
-            used: StorageUnits(250),
+            capacity: StorageUnits::mb(1000),
+            used: StorageUnits::mb(250),
             active_epoch: EpochNumber(10),
             expiry_epoch: EpochNumber(20),
             ..Tape::zeroed()
@@ -134,7 +134,7 @@ mod tests {
             ..Archive::zeroed()
         };
 
-        let split_size = StorageUnits(200);
+        let split_size = StorageUnits::mb(200);
         let instruction = build_split_tape_by_size_ix(fee_payer, source_authority, dest_authority, split_size);
 
         let accounts = vec![
@@ -153,7 +153,7 @@ mod tests {
         let expected_dest = Tape {
             authority: dest_authority,
             capacity: split_size,
-            used: StorageUnits(200), // min(250, 200)
+            used: StorageUnits::mb(200), // min(250, 200)
             active_epoch: EpochNumber(10),
             expiry_epoch: EpochNumber(20),
             ..Tape::zeroed()
@@ -161,8 +161,8 @@ mod tests {
 
         let expected_source = Tape {
             authority: source_authority,
-            capacity: StorageUnits(800),
-            used: StorageUnits(50), // 250 - 200
+            capacity: StorageUnits::mb(800),
+            used: StorageUnits::mb(50), // 250 - 200
             active_epoch: EpochNumber(10),
             expiry_epoch: EpochNumber(20),
             ..Tape::zeroed()

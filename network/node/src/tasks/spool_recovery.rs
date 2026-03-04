@@ -363,8 +363,17 @@ pub async fn run<S: Store, R: Rpc>(
                 repaired,
             ) {
                 tracing::warn!(?track_addr, spool, "persist repaired slice: {e}");
-                any_failed = true;
-                continue;
+                match recover_with_full_fallback(
+                    &context, &peer_handle, track_addr, spool, lost,
+                    &helper_map, &mut slicer, &track_info, "clay validation failure",
+                ).await {
+                    Ok(()) => { removed_any = true; continue; }
+                    Err(reason) => {
+                        tracing::warn!(?track_addr, spool, "full fallback after validation failure: {reason}");
+                        any_failed = true;
+                        continue;
+                    }
+                }
             }
             tracing::debug!(?track_addr, spool, "repaired slice via clay");
             removed_any = true;

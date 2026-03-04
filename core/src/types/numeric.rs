@@ -30,16 +30,31 @@ impl BasisPoints {
 }
 
 impl StorageUnits {
-    const BYTES: u64 = 1024 * 1024;
+    /// 1 MB in bytes — billing granularity.
+    pub const MB: u64 = 1024 * 1024;
 
+    /// Create from byte count (identity — StorageUnits stores bytes).
     #[inline]
     pub fn from_bytes(bytes: u64) -> Self {
-        Self::new((bytes + Self::BYTES - 1) / Self::BYTES)
+        Self(bytes)
     }
 
+    /// Byte count (identity — StorageUnits stores bytes).
     #[inline]
     pub fn to_bytes(&self) -> u64 {
-        self.0 * Self::BYTES
+        self.0
+    }
+
+    /// Construct from megabytes.
+    #[inline]
+    pub fn mb(megabytes: u64) -> Self {
+        Self(megabytes.saturating_mul(Self::MB))
+    }
+
+    /// Convert to MB (ceiling). Used for billing granularity.
+    #[inline]
+    pub fn to_mb(&self) -> u64 {
+        (self.0 + Self::MB - 1) / Self::MB
     }
 }
 
@@ -90,10 +105,16 @@ mod tests {
     #[test]
     fn test_storage_units() {
         let storage = StorageUnits::from_bytes(5_242_880); // 5 MB
-        assert_eq!(storage.0, 5);
-        assert_eq!(storage.to_bytes(), 5 * StorageUnits::BYTES);
+        assert_eq!(storage.0, 5_242_880);
+        assert_eq!(storage.to_bytes(), 5_242_880);
+        assert_eq!(storage.to_mb(), 5);
 
-        let storage_exact = StorageUnits::from_bytes(5 * StorageUnits::BYTES);
-        assert_eq!(storage_exact.0, 5);
+        let storage_mb = StorageUnits::mb(5);
+        assert_eq!(storage_mb.0, 5 * StorageUnits::MB);
+        assert_eq!(storage_mb.to_mb(), 5);
+
+        // Ceiling division
+        let partial = StorageUnits::from_bytes(StorageUnits::MB + 1);
+        assert_eq!(partial.to_mb(), 2);
     }
 }

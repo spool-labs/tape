@@ -102,8 +102,7 @@ impl<R: Rpc> Tapedrive<R> {
     ) -> Result<(TapeKey, Track), TapedriveError> {
         let tape_key = TapeKey::generate();
         let capacity = StorageUnits::from_bytes(data.len() as u64);
-        // Reserve at least 1 MB (minimum tape size) + 1 MB headroom
-        let reserve_capacity = StorageUnits(capacity.as_u64().max(1) + 1);
+        let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
         self.reserve(&tape_key, reserve_capacity, epochs).await?;
         let track = self.write_track(&tape_key, key, data).await?;
         Ok((tape_key, track))
@@ -177,7 +176,7 @@ impl<R: Rpc> Tapedrive<R> {
             archive
                 .storage_price
                 .as_u64()
-                .saturating_mul(capacity.as_u64())
+                .saturating_mul(capacity.to_mb())
                 .saturating_mul(epochs),
         );
 
@@ -220,7 +219,7 @@ impl<R: Rpc> Tapedrive<R> {
             archive
                 .storage_price
                 .as_u64()
-                .saturating_mul(capacity.as_u64())
+                .saturating_mul(capacity.to_mb())
                 .saturating_mul(epochs),
         ))
     }
@@ -244,7 +243,7 @@ impl<R: Rpc> Tapedrive<R> {
             archive
                 .storage_price
                 .as_u64()
-                .saturating_mul(tape.capacity.as_u64())
+                .saturating_mul(tape.capacity.to_mb())
                 .saturating_mul(extra_epochs),
         );
 
@@ -296,7 +295,7 @@ impl<R: Rpc> Tapedrive<R> {
             archive
                 .storage_price
                 .as_u64()
-                .saturating_mul(extra.as_u64())
+                .saturating_mul(extra.to_mb())
                 .saturating_mul(duration),
         );
 
@@ -668,8 +667,8 @@ mod tests {
     fn make_tape(authority: Pubkey) -> Tape {
         let mut tape: Tape = Zeroable::zeroed();
         tape.authority = authority;
-        tape.capacity = StorageUnits(100);
-        tape.used = StorageUnits(10);
+        tape.capacity = StorageUnits::mb(100);
+        tape.used = StorageUnits::mb(10);
         tape.active_epoch = EpochNumber(1);
         tape.expiry_epoch = EpochNumber(10);
         tape
@@ -679,7 +678,7 @@ mod tests {
         let mut track: Track = Zeroable::zeroed();
         track.tape = tape_address;
         track.key = key;
-        track.size = StorageUnits(5);
+        track.size = StorageUnits::mb(5);
         track.data = TrackData::new(EpochNumber(1), Hash::default(), 0);
         track.data.set_profile(EncodingProfile::clay_default());
         track
@@ -701,8 +700,8 @@ mod tests {
         pipe(&rpc, tape_address, &tape.pack());
 
         let result = tapedrive.get_tape(&tape_address).await.unwrap();
-        assert_eq!(result.capacity, StorageUnits(100));
-        assert_eq!(result.used, StorageUnits(10));
+        assert_eq!(result.capacity, StorageUnits::mb(100));
+        assert_eq!(result.used, StorageUnits::mb(10));
         assert_eq!(result.active_epoch, EpochNumber(1));
         assert_eq!(result.expiry_epoch, EpochNumber(10));
     }
@@ -721,7 +720,7 @@ mod tests {
         let result = tapedrive.get_track(&track_address).await.unwrap();
         assert_eq!(result.tape, tape_address);
         assert_eq!(result.key, key);
-        assert_eq!(result.size, StorageUnits(5));
+        assert_eq!(result.size, StorageUnits::mb(5));
     }
 
     #[tokio::test]
@@ -763,8 +762,8 @@ mod tests {
 
         pipe(&rpc, archive_address, &make_archive(100).pack());
 
-        let cost = tapedrive.estimate_cost(StorageUnits(50), 4).await.unwrap();
-        // 100 price * 50 capacity * 4 epochs = 20000
+        let cost = tapedrive.estimate_cost(StorageUnits::mb(50), 4).await.unwrap();
+        // 100 price * 50 MB * 4 epochs = 20000
         assert_eq!(cost.as_u64(), 20_000);
     }
 

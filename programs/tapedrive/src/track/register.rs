@@ -157,7 +157,7 @@ mod tests {
 
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let storage_units = StorageUnits(100);
+        let storage_units = StorageUnits::mb(100);
 
         let data_root = Hash::new_unique();
         let bucket_hash = Hash::new_unique();
@@ -189,7 +189,7 @@ mod tests {
         let epoch = Epoch::zeroed();
         let tape = Tape {
             authority: authority,
-            capacity: StorageUnits(1000),
+            capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
             expiry_epoch: EpochNumber(100),
             track_count: 100,

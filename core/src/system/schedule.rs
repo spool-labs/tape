@@ -250,7 +250,7 @@ mod tests {
 
     // Helpers
     fn epoch(n: u64) -> EpochNumber { EpochNumber(n) }
-    fn storage(n: u64) -> StorageUnits { StorageUnits(n) }
+    fn storage(n: u64) -> StorageUnits { StorageUnits::mb(n) }
     fn tape(n: u64) -> Coin<TAPE> { TAPE(n) }
 
     #[test]

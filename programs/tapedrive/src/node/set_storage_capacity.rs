@@ -39,8 +39,8 @@ mod tests {
     fn test_set_storage_capacity() {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let old_capacity = StorageUnits(5_000_000);
-        let new_capacity = StorageUnits(1_000_000);
+        let old_capacity = StorageUnits::mb(5_000_000);
+        let new_capacity = StorageUnits::mb(1_000_000);
 
         let (node_address, _) = node_pda(authority);
 
