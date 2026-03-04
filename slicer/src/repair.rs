@@ -130,7 +130,7 @@ pub fn extract_repair_data(
 }
 
 impl Slicer<ClayCoder> {
-    /// Compute a repair plan from locally-known parameters (no reference slice needed).
+    /// Compute a repair plan from locally-known parameters.
     ///
     /// `blob_len` and `stripe_size` come from TrackInfo in the tape-store.
     /// The encoding profile is already configured on the Slicer.

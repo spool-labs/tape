@@ -34,36 +34,58 @@ pub const MAX_SLICE_SIZE: usize = MAX_BLOB_SIZE / 7;
 
 use crate::spooler::{SpoolGroup, SpoolIndex};
 
+// TODO: It feels like SpoolGroup should be a first class type, with impl functions that do some of the following.
+
 /// Get the spool group index (0..SPOOL_GROUP_COUNT-1) for a given spool.
 #[inline]
 pub fn group_for_spool(spool: SpoolIndex) -> SpoolGroup {
+    assert!(spool < SPOOL_COUNT as u16);
+
     (spool as usize / SPOOL_GROUP_SIZE) as SpoolGroup
 }
 
 /// Get the first spool index in a group.
 #[inline]
 pub fn group_start(group: SpoolGroup) -> SpoolIndex {
+    assert!(group < SPOOL_GROUP_COUNT as u64);
+
     (group as usize * SPOOL_GROUP_SIZE) as SpoolIndex
 }
 
 /// Get the global spool index for a slice within a group.
+// TODO: this function needs a rename or to be dropped
+// suggestion: spool_from_group_and_slice 
 #[inline]
 pub fn spool_for_slice(group: SpoolGroup, slice_in_group: usize) -> SpoolIndex {
+    assert!(group < SPOOL_GROUP_COUNT as u64);
+    assert!(slice_in_group < SPOOL_GROUP_SIZE);
+
     (group as usize * SPOOL_GROUP_SIZE + slice_in_group) as SpoolIndex
 }
 
 /// Get the slice index within a group for a spool, if the spool belongs to the group.
+// TODO: this function needs a rename
+// suggestion: slice_for_group(..)
 #[inline]
 pub fn slice_for_spool(group: SpoolGroup, spool: SpoolIndex) -> Option<usize> {
+    assert!(spool < SPOOL_COUNT as u16);
+    assert!(group < SPOOL_GROUP_COUNT as u64);
+
     if group_for_spool(spool) != group {
         return None;
     }
+
     Some(spool as usize % SPOOL_GROUP_SIZE)
 }
 
 /// Check if a spool belongs to a given group.
+// TODO: this function needs a rename. 
+// suggestion: is_spool_in_group(..)
 #[inline]
 pub fn spool_in_group(spool: SpoolIndex, group: SpoolGroup) -> bool {
+    assert!(spool < SPOOL_COUNT as u16);
+    assert!(group < SPOOL_GROUP_COUNT as u64);
+
     group_for_spool(spool) == group
 }
 

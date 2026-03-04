@@ -222,6 +222,7 @@ pub fn load_group_artifacts<S: Store, R: Rpc>(
 pub fn snapshot_chain_epoch<S: Store, R: Rpc>(
     context: &Arc<NodeContext<S, R>>,
 ) -> Result<EpochNumber, TaskOutcome> {
+    // TODO: this is stupid, we are wraping a function in a function!
     require_epoch(&context.chain_state)
 }
 

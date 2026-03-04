@@ -32,8 +32,11 @@ use tape_store::types::{NodeInfo, NodeStatus, Pubkey as StorePubkey};
 /// other — epoch N's committee is always paired with epoch N's phase and spools.
 #[derive(Debug, Clone)]
 pub struct ChainState {
+    /// The epoch this state was captured at.
     pub epoch: EpochNumber,
+    /// The phase the epoch is in.
     pub phase: EpochPhase,
+    /// The epoch nonce value.
     pub nonce: Hash,
     /// Current epoch committee members.
     pub committee: Vec<NodeInfo>,

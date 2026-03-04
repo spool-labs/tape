@@ -15,6 +15,7 @@ use wincode::{SchemaRead, SchemaWrite};
 pub struct SliceIndex(usize);
 
 impl SliceIndex {
+    // TODO: why on earth is this an Option<Self>
     pub fn new(index: usize) -> Option<Self> {
         if index < SPOOL_GROUP_SIZE {
             Some(Self(index))

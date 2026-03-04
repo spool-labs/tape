@@ -149,6 +149,11 @@ macro_rules! define_u64_type {
                 self.0 == 0
             }
 
+            /// Returns true if the value is one.
+            #[inline]
+            pub fn is_one(&self) -> bool {
+                self.0 == 1
+            }
         }
 
         impl core::ops::Add for $type_name {

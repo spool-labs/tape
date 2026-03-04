@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::encoding::EncodingType;
 use tape_core::erasure::{slice_for_spool, spool_for_slice, spool_in_group};
 use tape_core::types::network::NetworkAddress;
 use tape_node_api::{RepairRequest, StripeSubChunkRequest};
@@ -19,28 +18,32 @@ use tokio_util::sync::CancellationToken;
 use crate::core::validate_slice_entry;
 use crate::core::NodeContext;
 use crate::core::PeerHandle;
-use crate::core::require_epoch;
 use crate::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 
 pub async fn run<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+    ctx: Arc<NodeContext<S, R>>,
     peer_handle: PeerHandle,
     spool: u16,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match require_epoch(&context.chain_state) {
-        Ok(e) => e,
-        Err(outcome) => return outcome,
-    };
+    // Get the latest known onchain state
+    let chain = ctx.chain_state.load();
 
-    let cs = context.chain_state.load();
-    let committee = match cs.committee_for(epoch) {
-        Some(c) => c.clone(),
-        None => return TaskOutcome::Retryable("no committee for current epoch".into()),
-    };
+    // No previous committee_prev exists in epoch 0
+    if chain.epoch.is_zero() {
+        return TaskOutcome::Success;
+    }
 
+    // The previous committee_prev exists, but no data could have been asigned yet.
+    if chain.epoch.is_one() {
+        return TaskOutcome::Success;
+    }
+
+    let committee = chain.committee_prev.clone();
+
+    // TODO: this should be a vector of failed items.
     let mut any_failed = false;
 
     loop {
@@ -50,7 +53,8 @@ pub async fn run<S: Store, R: Rpc>(
 
         // Iterate in bounded batches so this task stays cancellable and avoids
         // monopolizing the runtime when there are many missing slices.
-        let pending = match context.store.iter_pending_recoveries(spool, RECOVERY_BATCH_SIZE) {
+        let pending = match ctx.store
+            .iter_pending_recoveries(spool, RECOVERY_BATCH_SIZE) {
             Ok(p) => p,
             Err(e) => return TaskOutcome::Retryable(format!("iter_pending_recoveries: {e}")),
         };
@@ -59,19 +63,20 @@ pub async fn run<S: Store, R: Rpc>(
             break;
         }
 
-        let mut removed_any = false;
+        // TODO: loop should be a function
 
+        let mut removed_any = false;
         for track_addr in pending {
             if cancel.is_cancelled() {
                 return TaskOutcome::Success;
             }
 
-            // Ignore stale pending entries where local metadata is already gone.
-            let track_info = match context.store.get_track(track_addr) {
+            // Get the track metadata
+            let track_info = match ctx.store.get_track(track_addr) {
                 Ok(Some(t)) => t,
                 Ok(None) => {
-                    let _ = context.store.remove_pending_recovery(spool, track_addr);
-                    removed_any = true;
+                    tracing::warn!(?track_addr, "track is missing locally");
+                    any_failed = true;
                     continue;
                 }
                 Err(e) => {
@@ -81,13 +86,18 @@ pub async fn run<S: Store, R: Rpc>(
                 }
             };
 
-            match context.store.get_slice(spool, track_addr) {
+            // Check if we already have the slice data for this spool
+            match ctx.store.get_slice(spool, track_addr) {
                 Ok(Some(_)) => {
-                    let _ = context.store.remove_pending_recovery(spool, track_addr);
+                    // TODO: we should instead add removed entries to a list, then remove them at
+                    // the end (instead of the remove_any bool). We're swallowing store errors here.
+                    let _ = ctx.store.remove_pending_recovery(spool, track_addr);
                     removed_any = true;
                     continue;
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    // No-op, we need to continue with the recovery
+                }
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "get_slice error: {e}");
                     any_failed = true;
@@ -97,26 +107,20 @@ pub async fn run<S: Store, R: Rpc>(
 
             // Validate encoding type before attempting repair.
             let profile = track_info.profile();
-            let encoding = match profile.encoding_type() {
-                Some(e) => e,
-                None => {
-                    tracing::warn!(?track_addr, spool, "unknown encoding type");
-                    any_failed = true;
-                    continue;
-                }
-            };
-            if !matches!(encoding, EncodingType::Clay) {
+
+            if !profile.is_clay() {
                 tracing::warn!(?track_addr, spool, "repair only supported for clay encoding");
                 any_failed = true;
                 continue;
             }
+
             if track_info.stripe_count == 0 || track_info.stripe_size == 0 {
                 tracing::warn!(?track_addr, spool, "invalid stripe parameters");
                 any_failed = true;
                 continue;
             }
 
-            // Compute the lost slice index within the spool group.
+            // Compute the local spoolgroup index for the lost slice
             let lost_idx = match slice_for_spool(track_info.spool_group, spool) {
                 Some(idx) => idx,
                 None => {
@@ -125,6 +129,9 @@ pub async fn run<S: Store, R: Rpc>(
                     continue;
                 }
             };
+
+            // TODO: this really should not be an Option<SliceIndex>, fix the SliceIndex
+            // constructor
             let lost = match SliceIndex::new(lost_idx) {
                 Some(si) => si,
                 None => {
@@ -165,6 +172,7 @@ pub async fn run<S: Store, R: Rpc>(
                 true, // rotated — SDK encoder always uses rotation for Clay tracks
                 profile,
             );
+
             let plan = match slicer.repair_plan_from_params(
                 lost,
                 &available,
@@ -174,8 +182,11 @@ pub async fn run<S: Store, R: Rpc>(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "repair plan: {e}");
+
+                    // TODO: this should not be right here, we should build a list of those that
+                    // need a full repair and do that later
                     match recover_with_full_fallback(
-                        &context,
+                        &ctx,
                         &peer_handle,
                         track_addr,
                         spool,
@@ -218,7 +229,6 @@ pub async fn run<S: Store, R: Rpc>(
             }
 
             // Send requests to each helper and collect partial data.
-            // Requests are sequential (~10ms each, d=16 helpers = ~160ms total).
             // Could be parallelized with FuturesUnordered if throughput matters.
             let mut helper_data: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
             for (slice_idx, request) in &per_helper {
@@ -258,7 +268,7 @@ pub async fn run<S: Store, R: Rpc>(
                 .await
                 {
                     Ok(data) if !data.is_empty() => {
-                        context.stats.add_repair_received(data.len() as u64);
+                        ctx.stats.add_repair_received(data.len() as u64);
                         if let Err(e) = peer_handle.record_success(addr).await {
                             tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
                         }
@@ -283,8 +293,9 @@ pub async fn run<S: Store, R: Rpc>(
             // fall back to full recovery using k full slices.
             if !required.iter().all(|si| helper_data.contains_key(si)) {
                 tracing::debug!(?track_addr, spool, "insufficient helper responses for repair");
+                // TODO: once again we have this inlined... this should not be called here.
                 match recover_with_full_fallback(
-                    &context,
+                    &ctx,
                     &peer_handle,
                     track_addr,
                     spool,
@@ -325,8 +336,9 @@ pub async fn run<S: Store, R: Rpc>(
                 Ok(data) => data,
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "clay repair failed: {e}");
+                    // TODO: once again we have this inlined... this should not be called here.
                     match recover_with_full_fallback(
-                        &context,
+                        &ctx,
                         &peer_handle,
                         track_addr,
                         spool,
@@ -356,15 +368,17 @@ pub async fn run<S: Store, R: Rpc>(
             };
 
             if let Err(e) = persist_recovered_slice(
-                &context,
+                &ctx,
                 spool,
                 track_addr,
                 &track_info,
                 repaired,
             ) {
                 tracing::warn!(?track_addr, spool, "persist repaired slice: {e}");
+
+                // TODO: once again we have this inlined... this should not be called here.
                 match recover_with_full_fallback(
-                    &context, &peer_handle, track_addr, spool, lost,
+                    &ctx, &peer_handle, track_addr, spool, lost,
                     &helper_map, &mut slicer, &track_info, "clay validation failure",
                 ).await {
                     Ok(()) => { removed_any = true; continue; }
@@ -389,20 +403,20 @@ pub async fn run<S: Store, R: Rpc>(
     } else {
         // Only transition to Active if RecoveryScan has completed.
         // Use Pending (not Retryable) — this is a wait condition, not a failure.
-        let scan_done = match context.store.is_scan_done(spool) {
+        let scan_done = match ctx.store.is_scan_done(spool) {
             Ok(done) => done,
             Err(e) => return TaskOutcome::Retryable(format!("read scan_done: {e}")),
         };
         if !scan_done {
             return TaskOutcome::Pending(Duration::from_secs(5));
         }
-        if let Ok(Some(state)) = context.store.get_spool_state(spool) {
+        if let Ok(Some(state)) = ctx.store.get_spool_state(spool) {
             if state.is_recovering() {
                 let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
-                if let Err(e) = context.store.set_spool_state(spool, new_state) {
+                if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
-                let _ = context.store.clear_scan_done(spool);
+                let _ = ctx.store.clear_scan_done(spool);
                 tracing::info!(spool, "spool recovery complete, marked active");
             }
         }
@@ -411,7 +425,7 @@ pub async fn run<S: Store, R: Rpc>(
 }
 
 fn persist_recovered_slice<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+    ctx: &Arc<NodeContext<S, R>>,
     spool: u16,
     track_addr: StorePubkey,
     track_info: &TrackInfo,
@@ -419,11 +433,11 @@ fn persist_recovered_slice<S: Store, R: Rpc>(
 ) -> Result<(), String> {
     validate_slice_entry(spool, track_info, &recovered)
         .map_err(|reason| format!("slice validation failed: {reason}"))?;
-    context
+    ctx
         .store
         .put_slice(spool, track_addr, recovered)
         .map_err(|e| format!("put_slice error: {e}"))?;
-    context
+    ctx
         .store
         .remove_pending_recovery(spool, track_addr)
         .map_err(|e| format!("remove pending recovery: {e}"))?;
@@ -431,7 +445,7 @@ fn persist_recovered_slice<S: Store, R: Rpc>(
 }
 
 async fn recover_with_full_fallback<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+    ctx: &Arc<NodeContext<S, R>>,
     peer_handle: &PeerHandle,
     track_addr: StorePubkey,
     spool: u16,
@@ -442,7 +456,7 @@ async fn recover_with_full_fallback<S: Store, R: Rpc>(
     reason: &str,
 ) -> Result<(), String> {
     let recovered = attempt_full_recovery_from_helpers(
-        context,
+        ctx,
         peer_handle,
         track_addr,
         lost,
@@ -451,13 +465,13 @@ async fn recover_with_full_fallback<S: Store, R: Rpc>(
         track_info.spool_group,
     )
     .await?;
-    persist_recovered_slice(context, spool, track_addr, track_info, recovered)?;
+    persist_recovered_slice(ctx, spool, track_addr, track_info, recovered)?;
     tracing::debug!(?track_addr, spool, reason, "recovered slice via full fallback");
     Ok(())
 }
 
 async fn attempt_full_recovery_from_helpers<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+    ctx: &Arc<NodeContext<S, R>>,
     peer_handle: &PeerHandle,
     track_addr: StorePubkey,
     lost: SliceIndex,
@@ -512,7 +526,7 @@ async fn attempt_full_recovery_from_helpers<S: Store, R: Rpc>(
         .await
         {
             Ok(data) if !data.is_empty() => {
-                context.stats.add_repair_received(data.len() as u64);
+                ctx.stats.add_repair_received(data.len() as u64);
                 if let Err(e) = peer_handle.record_success(addr).await {
                     tracing::warn!(?track_addr, "failed to record peer success for {addr}: {e}");
                 }

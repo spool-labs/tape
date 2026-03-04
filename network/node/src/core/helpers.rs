@@ -45,6 +45,7 @@ pub fn validate_slice_entry(
 }
 
 /// Load the current chain epoch or return a retryable outcome.
+// TODO: remove this function
 pub fn require_epoch(chain_state: &ChainStateHandle) -> Result<EpochNumber, TaskOutcome> {
     let cs = chain_state.load();
     if cs.has_epoch() {
