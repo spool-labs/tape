@@ -15,6 +15,7 @@ mod simnet;
 mod sparkline;
 mod stake_fuzzer;
 mod tui;
+mod verify;
 
 use crate::app::{Command, PollSnapshot};
 use crate::log_layer::LogHistogram;

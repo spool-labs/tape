@@ -289,6 +289,11 @@ async fn async_run(
                     retry_in_progress: state.upload_retry_in_progress,
                 });
 
+                // Spool integrity check on epoch change
+                if epoch != state.prev_epoch && epoch > 0 {
+                    crate::verify::verify_spool_integrity(&state.nodes);
+                }
+
                 // Stake fuzzing
                 if state.stake_fuzz_enabled && epoch != state.prev_epoch {
                     let authorities: Vec<_> = state.nodes.iter().map(|n| n.authority()).collect();

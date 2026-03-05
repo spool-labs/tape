@@ -85,7 +85,9 @@ impl<S: Store> SliceOps for TapeStore<S> {
         for (key_bytes, value_bytes) in iter {
             let key: SliceKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            results.push((key.track_address, value_bytes.to_vec()));
+            let data: Vec<u8> = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
+            results.push((key.track_address, data));
         }
         Ok(results)
     }
@@ -124,7 +126,9 @@ impl<S: Store> SliceOps for TapeStore<S> {
             if after_track.is_some() && Some(key.track_address) == after_track {
                 continue;
             }
-            results.push((key.track_address, value_bytes.to_vec()));
+            let data: Vec<u8> = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("slice value: {}", e)))?;
+            results.push((key.track_address, data));
             if results.len() >= limit {
                 break;
             }
@@ -247,6 +251,13 @@ mod tests {
 
         let slices = store.iter_slices_by_spool(spool_id).unwrap();
         assert_eq!(slices.len(), 3);
+
+        // Verify data content matches what was stored
+        for (track, data) in &slices {
+            if *track == track1 { assert_eq!(data, &vec![1]); }
+            else if *track == track2 { assert_eq!(data, &vec![2]); }
+            else if *track == track3 { assert_eq!(data, &vec![3]); }
+        }
     }
 
     #[test]
@@ -279,6 +290,12 @@ mod tests {
         // Get all with limit
         let all = store.iter_slices_by_spool_from(spool_id, None, 10).unwrap();
         assert_eq!(all.len(), 5);
+
+        // Verify data content survives iteration
+        for (_, data) in &all {
+            assert!(!data.is_empty());
+            assert_eq!(data.len(), 1);
+        }
 
         // Get first 2
         let first_two = store.iter_slices_by_spool_from(spool_id, None, 2).unwrap();

@@ -85,6 +85,28 @@ impl SpoolPlanner {
         }
     }
 
+    /// Transition a spool from ActiveSync to ActiveRecover when sync has failed.
+    /// Called from the scheduler when a SpoolSync task fails permanently.
+    pub fn transition_to_recovery<S: Store>(store: &TapeStore<S>, spool: u16) {
+        let current_state = store.get_spool_state(spool).ok().flatten();
+        let Some(state) = current_state else {
+            tracing::debug!(spool, "ignoring stale spool sync failure: no state");
+            return;
+        };
+        if !state.is_syncing() {
+            tracing::debug!(spool, status = ?state.status, "ignoring stale spool sync failure");
+            return;
+        }
+        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch };
+        if let Err(e) = store.set_spool_state(spool, new_state) {
+            tracing::error!(spool, "failed to set ActiveRecover: {e}");
+            return;
+        }
+        let _ = store.remove_spool_sync_cursor(spool);
+        let _ = store.clear_scan_done(spool);
+        tracing::info!(spool, "spool sync failed, transitioning to recovery");
+    }
+
     /// After a track is certified, check owned spools for missing slices and
     /// enqueue SpoolRecovery tasks for any gaps.
     pub fn check_slices<S: Store>(

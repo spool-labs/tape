@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use tape_core::types::EpochNumber;
-use tape_store::ops::{MetaOps, SpoolOps};
-use tape_store::types::{NodeStatus, SpoolState, SpoolStatus};
+use tape_store::ops::MetaOps;
+use tape_store::types::NodeStatus;
 
 use crate::core::NodeContext;
 use crate::fsm::StateChange;
@@ -301,8 +301,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     }
 
     /// Task succeeded. Marks lifecycle state, removes from desired, and
-    /// triggers follow-up scheduling (refresh → lifecycle, sync → lifecycle,
-    /// bootstrap → refresh, snapshot stages).
+    /// triggers follow-up scheduling based on task type.
     fn handle_success(&mut self, key: &Task) {
         tracing::trace!(task = ?key, "scheduler handling task success");
 
@@ -310,73 +309,24 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         self.desired.remove(key);
         self.lifecycle.state_mut().mark_done(key);
 
-        self.handle_sync_success(key);
-        self.handle_advance_pool_success(key);
-        self.handle_bootstrap_success(key);
-        self.handle_snapshot_success(key);
-        self.on_recovery_done(key);
-    }
+        match key {
+            Task::SyncEpoch { .. } | Task::AdvancePool { .. } | Task::SnapshotBootstrap => {
+                if matches!(key, Task::SnapshotBootstrap) {
+                    SpoolPlanner::reconcile(
+                        &*self.context.store,
+                        self.node_status(),
+                        &mut self.desired,
+                    );
+                }
+                self.reschedule_lifecycle();
+            }
+            Task::SpoolRecovery { spool } => {
+                self.desired.remove(&Task::RecoveryScan { spool: *spool });
+            }
+            _ => {}
+        }
 
-    /// After SyncEpoch succeeds, re-run lifecycle scheduling to unlock the
-    /// Settling-phase tasks (AdvancePool, JoinNetwork).
-    fn handle_sync_success(&mut self, key: &Task) {
-        if !matches!(key, Task::SyncEpoch { .. }) {
-            return;
-        }
-        tracing::trace!(task = ?key, "scheduler handling sync success");
-        let cs = self.context.chain_state.load();
-        if cs.has_epoch() {
-            self.lifecycle.schedule(
-                self.chain_phase(),
-                self.node_status(),
-                cs.epoch,
-                &mut self.desired,
-            );
-        }
-    }
-
-    /// After AdvancePool succeeds, re-run lifecycle scheduling to unlock
-    /// JoinNetwork (which is gated on AdvancePool being done).
-    fn handle_advance_pool_success(&mut self, key: &Task) {
-        if !matches!(key, Task::AdvancePool { .. }) {
-            return;
-        }
-        let cs = self.context.chain_state.load();
-        if cs.has_epoch() {
-            self.lifecycle.schedule(
-                self.chain_phase(),
-                self.node_status(),
-                cs.epoch,
-                &mut self.desired,
-            );
-        }
-    }
-
-    /// After bootstrap completes, reconcile spools and schedule lifecycle.
-    fn handle_bootstrap_success(&mut self, key: &Task) {
-        if !matches!(key, Task::SnapshotBootstrap) {
-            return;
-        }
-        tracing::trace!("scheduler handling snapshot bootstrap success");
-        SpoolPlanner::reconcile(
-            &*self.context.store,
-            self.node_status(),
-            &mut self.desired,
-        );
-        let cs = self.context.chain_state.load();
-        if cs.has_epoch() {
-            self.lifecycle.schedule(
-                self.chain_phase(),
-                self.node_status(),
-                cs.epoch,
-                &mut self.desired,
-            );
-        }
-    }
-
-    /// Advance snapshot pipeline progress when a snapshot stage completes, then
-    /// re-run `schedule_snapshot` to unlock the next stage.
-    fn handle_snapshot_success(&mut self, key: &Task) {
+        // Advance snapshot pipeline.
         let chain_phase_active = self.is_onchain_phase_active();
         self.snapshot.on_success(
             &self.context,
@@ -386,6 +336,19 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             &self.lifecycle.state,
             chain_phase_active,
         );
+    }
+
+    /// Re-run lifecycle scheduling from current chain state.
+    fn reschedule_lifecycle(&mut self) {
+        let cs = self.context.chain_state.load();
+        if cs.has_epoch() {
+            self.lifecycle.schedule(
+                self.chain_phase(),
+                self.node_status(),
+                cs.epoch,
+                &mut self.desired,
+            );
+        }
     }
 
     /// Current chain phase from in-memory ChainState. Returns None for Unknown.
@@ -574,48 +537,19 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         tracing::trace!("scheduler received retryable result");
     }
 
-    /// Task failed permanently — remove from both sets so it is never retried,
-    /// then check if this triggers a recovery transition.
+    /// Task failed permanently — remove from both sets so it is never retried.
+    /// For SpoolSync failures, transitions the spool to recovery and reconciles.
     fn handle_permanent(&mut self, key: &Task) {
         tracing::trace!(task = ?key, "scheduler dropping permanent failure task");
         self.scheduled.remove(key);
         self.desired.remove(key);
-        self.on_sync_failure(key);
-    }
 
-    /// When SpoolSync fails permanently, transition the spool from ActiveSync
-    /// to ActiveRecover and schedule recovery tasks.
-    fn on_sync_failure(&mut self, key: &Task) {
-        let Task::SpoolSync { spool } = key else { return };
-
-        let current_state = self.context.store.get_spool_state(*spool).ok().flatten();
-        let Some(state) = current_state else {
-            tracing::debug!(spool, "ignoring stale spool sync failure: no state");
-            return;
-        };
-        if !state.is_syncing() {
-            tracing::debug!(spool, status = ?state.status, "ignoring stale spool sync failure");
-            return;
+        if let Task::SpoolSync { spool } = key {
+            SpoolPlanner::transition_to_recovery(&*self.context.store, *spool);
         }
-
-        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch };
-        if let Err(e) = self.context.store.set_spool_state(*spool, new_state) {
-            tracing::error!(spool, "failed to set ActiveRecover: {e}");
-            return;
+        if key.spool_id().is_some() {
+            SpoolPlanner::reconcile(&*self.context.store, self.node_status(), &mut self.desired);
         }
-        let _ = self.context.store.remove_spool_sync_cursor(*spool);
-        let _ = self.context.store.clear_scan_done(*spool);
-        tracing::info!(spool, "spool sync failed, transitioning to recovery");
-
-        self.desired.insert(Task::RecoveryScan { spool: *spool });
-        self.desired.insert(Task::SpoolRecovery { spool: *spool });
-    }
-
-    /// When SpoolRecovery succeeds, clean up the RecoveryScan task from desired
-    /// (it may have already completed or be redundant).
-    fn on_recovery_done(&mut self, key: &Task) {
-        let Task::SpoolRecovery { spool } = key else { return };
-        self.desired.remove(&Task::RecoveryScan { spool: *spool });
     }
 }
 
@@ -1672,6 +1606,56 @@ mod tests {
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
         assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));
+    }
+
+    #[tokio::test]
+    async fn recovery_permanent_reschedules() {
+        let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+
+        let mut scheduler = TaskScheduler::new(ctx.clone());
+        scheduler.desired.insert(Task::SpoolRecovery { spool: 42 });
+        scheduler.scheduled.insert(Task::SpoolRecovery { spool: 42 });
+
+        scheduler.handle_result(&TaskResult::PermanentError(
+            Task::SpoolRecovery { spool: 42 },
+            "exhausted retries".into(),
+        ));
+
+        // Spool stays ActiveRecover
+        assert_eq!(
+            ctx.store.get_spool_state(42).unwrap().unwrap().status,
+            SpoolStatus::ActiveRecover
+        );
+        // Reconcile re-adds both recovery tasks
+        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
+        assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
+    }
+
+    #[tokio::test]
+    async fn scan_permanent_reschedules() {
+        let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+
+        let mut scheduler = TaskScheduler::new(ctx.clone());
+        scheduler.desired.insert(Task::RecoveryScan { spool: 42 });
+        scheduler.scheduled.insert(Task::RecoveryScan { spool: 42 });
+
+        scheduler.handle_result(&TaskResult::PermanentError(
+            Task::RecoveryScan { spool: 42 },
+            "exhausted retries".into(),
+        ));
+
+        // Spool stays ActiveRecover
+        assert_eq!(
+            ctx.store.get_spool_state(42).unwrap().unwrap().status,
+            SpoolStatus::ActiveRecover
+        );
+        // Reconcile re-adds scan (not done) and recovery
+        assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
+        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
     }
 
     #[tokio::test]
