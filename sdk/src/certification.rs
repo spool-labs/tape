@@ -42,7 +42,7 @@ use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
-use tape_node_client::{with_retry, NodeClient, NodeError, RetryConfig, BlsSignResponse};
+use tape_node_client::{with_retry_all, NodeClient, NodeError, RetryConfig, BlsSignResponse};
 
 use crate::communication::NodeCommunicationFactory;
 
@@ -672,7 +672,7 @@ async fn request_signature_with_retry(
     track: tape_node_client::Pubkey,
     retry_config: &RetryConfig,
 ) -> Result<BlsSignResponse, NodeSignError> {
-    with_retry(retry_config, || client.get_signature(track))
+    with_retry_all(retry_config, || client.get_signature(track))
         .await
         .map_err(|e| NodeSignError::from(&e))
 }
