@@ -24,10 +24,11 @@ pub use config::{
     TransportSecurityConfig, default_config_content, default_config_path,
 };
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
-pub use helpers::{expand_path, require_epoch, validate_slice_entry};
+pub use helpers::{expand_path, has_missing_slices, validate_slice_entry};
 pub use peer::{PeerHandle, PeerService, PeerServiceError};
 pub use stats::RuntimeStats;
 pub use throttle::RefreshThrottle;
+
 #[cfg(test)]
 pub mod test_utils {
     //! Shared test helpers — config and context factories.

@@ -10,7 +10,7 @@ use tape_store::ops::SpoolOps;
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_sync_epoch;
-use crate::core::{NodeContext, require_epoch};
+use crate::core::NodeContext;
 use crate::TaskOutcome;
 use rpc_client::parse_tape_error;
 
@@ -31,10 +31,11 @@ pub async fn run<S: Store, R: Rpc>(
     context: Arc<NodeContext<S, R>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let epoch = match require_epoch(&context.chain_state) {
-        Ok(e) => e,
-        Err(outcome) => return outcome,
-    };
+    let cs = context.chain_state.load();
+    if cs.epoch.is_zero() {
+        return TaskOutcome::Retryable("no current epoch".into());
+    }
+    let epoch = cs.epoch;
 
     let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {
         Ok(spools) => spools

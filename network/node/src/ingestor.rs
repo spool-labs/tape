@@ -94,7 +94,7 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
             .get_sync_cursor()?;
 
         let cs = context.chain_state.load();
-        let epoch = if cs.has_epoch() { Some(cs.epoch) } else { None };
+        let epoch = if !cs.epoch.is_zero() { Some(cs.epoch) } else { None };
         let status = cs.node_status.clone();
 
         let _cursor_slot = cursor.map(|slot| slot.0);

@@ -924,6 +924,9 @@ mod tests {
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])
             .unwrap();
+        ctx.store
+            .add_pending_recovery(60, store_track)
+            .unwrap();
 
         // Advance to epoch 5 — tape expires, should be GC'd
         let block2 = make_block(200, vec![make_advance_epoch(1, 5)]);
@@ -933,6 +936,7 @@ mod tests {
         assert!(ctx.store.get_tape(store_tape).unwrap().is_none());
         assert!(ctx.store.get_track(store_track).unwrap().is_none());
         assert!(!ctx.store.has_slice(60, store_track).unwrap());
+        assert!(!ctx.store.has_pending_recovery(60, store_track).unwrap());
     }
 
     #[test]

@@ -48,25 +48,6 @@ pub struct ChainState {
     pub spools: HashSet<SpoolIndex>,
 }
 
-impl ChainState {
-    /// True if we have a known epoch (not zero/uninitialized).
-    pub fn has_epoch(&self) -> bool {
-        !self.epoch.is_zero()
-    }
-
-    /// Look up committee for the given epoch.
-    /// Returns current committee, previous committee, or None.
-    pub fn committee_for(&self, epoch: EpochNumber) -> Option<&Vec<NodeInfo>> {
-        if epoch == self.epoch {
-            Some(&self.committee)
-        } else if !self.epoch.is_zero() && epoch == self.epoch - EpochNumber(1) {
-            Some(&self.committee_prev)
-        } else {
-            None
-        }
-    }
-}
-
 impl Default for ChainState {
     fn default() -> Self {
         Self {

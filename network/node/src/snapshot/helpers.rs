@@ -18,7 +18,6 @@ use tape_store::types::{NodeInfo, SnapshotCertResult, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
-use crate::core::require_epoch;
 use crate::TaskOutcome;
 use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
 use rpc_client::parse_tape_error;
@@ -82,9 +81,12 @@ pub fn load_snapshot_task_context<S: Store, R: Rpc>(
     need: SnapshotNeed,
     with_member: bool,
 ) -> Result<SnapshotTaskContext, TaskOutcome> {
-    let current_chain_epoch = match snapshot_chain_epoch(context) {
-        Ok(epoch) => epoch,
-        Err(outcome) => return Err(outcome),
+    let current_chain_epoch = {
+        let cs = context.chain_state.load();
+        if cs.epoch.is_zero() {
+            return Err(TaskOutcome::Retryable("no current epoch".into()));
+        }
+        cs.epoch
     };
     let local_epoch = match load_snapshot_local_epoch(current_chain_epoch, need) {
         Ok(epoch) => epoch,
@@ -92,12 +94,13 @@ pub fn load_snapshot_task_context<S: Store, R: Rpc>(
     };
 
     let cs = context.chain_state.load();
-    let committee = cs.committee_for(current_chain_epoch)
-        .ok_or_else(|| TaskOutcome::Retryable("no committee".into()))?;
-    if committee.is_empty() {
+    if cs.epoch != current_chain_epoch {
         return Err(TaskOutcome::Retryable("no committee".into()));
     }
-    let committee = committee.clone();
+    if cs.committee.is_empty() {
+        return Err(TaskOutcome::Retryable("no committee".into()));
+    }
+    let committee = cs.committee.clone();
 
     let owned_groups = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
         Ok(groups) => groups,
@@ -216,14 +219,6 @@ pub fn load_group_artifacts<S: Store, R: Rpc>(
         metadata,
         cert,
     })
-}
-
-/// Load current chain epoch for snapshot tasks.
-pub fn snapshot_chain_epoch<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
-) -> Result<EpochNumber, TaskOutcome> {
-    // TODO: this is stupid, we are wraping a function in a function!
-    require_epoch(&context.chain_state)
 }
 
 /// Select local snapshot epoch for snapshot tasks.

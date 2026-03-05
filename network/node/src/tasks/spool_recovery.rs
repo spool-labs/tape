@@ -57,6 +57,7 @@ pub async fn run<S: Store, R: Rpc>(
         handle: peer_handle,
         map: build_peer_map(&committee, spool, spool_group),
     };
+
     let mut any_failed = false;
 
     loop {

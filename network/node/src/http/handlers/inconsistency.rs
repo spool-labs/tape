@@ -93,8 +93,10 @@ fn verify_inconsistency_proof<S: Store, R: Rpc>(
     epoch: EpochNumber,
 ) -> Result<(), ApiError> {
     let cs = context.chain_state.load();
-    let committee = cs.committee_for(epoch)
-        .ok_or_else(|| ApiError::BadRequest("committee missing".into()))?;
+    if epoch != cs.epoch {
+        return Err(ApiError::BadRequest("committee missing".into()));
+    }
+    let committee = &cs.committee;
     if committee.is_empty() {
         return Err(ApiError::BadRequest("committee missing".into()));
     }

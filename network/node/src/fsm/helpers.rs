@@ -82,6 +82,7 @@ impl<S: Store, R: Rpc> Fsm<S, R> {
         for (spool_id, _status) in &owned_spools {
             if spool_group.contains(*spool_id) {
                 let _ = self.context.store.delete_slice(*spool_id, track);
+                let _ = self.context.store.remove_pending_recovery(*spool_id, track);
             }
         }
         Ok(())

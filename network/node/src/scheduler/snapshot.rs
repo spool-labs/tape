@@ -86,12 +86,11 @@ impl SnapshotPlanner {
         }
 
         let cs = context.chain_state.load();
-        let committee = cs.committee_for(epoch);
-        let owned_groups: HashSet<SpoolGroup> = if committee.map_or(true, |c| c.is_empty()) {
+        let owned_groups: HashSet<SpoolGroup> = if cs.epoch != epoch || cs.committee.is_empty() {
             tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
             HashSet::new()
         } else {
-            match our_snapshot_groups(committee.unwrap(), context.keypair.pubkey()) {
+            match our_snapshot_groups(&cs.committee, context.keypair.pubkey()) {
                 Ok(groups) => groups,
                 Err(e) => {
                     tracing::warn!("snapshot pipeline: {e}");
@@ -241,13 +240,10 @@ impl SnapshotPlanner {
         epoch: EpochNumber,
     ) -> HashSet<SpoolGroup> {
         let cs = context.chain_state.load();
-        let Some(committee) = cs.committee_for(epoch) else {
-            return HashSet::new();
-        };
-        if committee.is_empty() {
+        if cs.epoch != epoch || cs.committee.is_empty() {
             return HashSet::new();
         }
-        our_snapshot_groups(committee, context.keypair.pubkey()).unwrap_or_default()
+        our_snapshot_groups(&cs.committee, context.keypair.pubkey()).unwrap_or_default()
     }
 
     /// Advance snapshot progress for all groups this node owns.

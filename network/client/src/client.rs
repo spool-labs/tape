@@ -9,8 +9,8 @@ use url::Url;
 
 use tape_node_api::{
     InconsistencyRequest, BlsInconsistencyResponse, NodeStats, RepairRequest,
-    SnapshotSignatureSubmission, BlsSignResponse, SignedMessage, SlicePayload, CONTENT_TYPE_JSON,
-    BINARY_CONTENT,
+    SnapshotSignatureSubmission, BlsSignResponse, SignedMessage, SlicePayload,
+    SyncSpoolRequest, SyncSpoolResponse, CONTENT_TYPE_JSON, BINARY_CONTENT,
 };
 
 use crate::error::NodeError;
@@ -244,17 +244,19 @@ impl NodeClient {
             .map_err(|e| NodeError::InvalidResponse(format!("json: {e}")))
     }
 
-    /// POST spool sync — exchange raw wincode bytes.
-    pub async fn sync_spool(&self, request_bytes: Vec<u8>) -> Result<Vec<u8>, NodeError> {
+    /// POST spool sync — request slice data for a spool from a peer.
+    pub async fn sync_spool(&self, request: &SyncSpoolRequest) -> Result<SyncSpoolResponse, NodeError> {
         let url = self.url(tape_node_api::SYNC_SPOOL_PATH)?;
-        let len = request_bytes.len() as u64;
+        let body =
+            wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
+        let len = body.len() as u64;
         let start = Instant::now();
 
         let resp = self
             .inner
             .post(url)
             .header("content-type", BINARY_CONTENT)
-            .body(request_bytes)
+            .body(body)
             .send()
             .await
             .map_err(|e| self.map_reqwest_error(e))?;
@@ -266,7 +268,7 @@ impl NodeClient {
             .await
             .map_err(|e| self.map_reqwest_error(e))?;
         self.record_rx("sync_spool", bytes.len() as u64);
-        Ok(bytes.to_vec())
+        wincode::deserialize(&bytes).map_err(|e| NodeError::InvalidResponse(e.to_string()))
     }
 
     /// POST repair request.

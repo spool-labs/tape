@@ -89,8 +89,10 @@ pub async fn post_snapshot_signature<S: Store, R: Rpc>(
 
     let member_index = request.member_index as usize;
     let cs = state.context.chain_state.load();
-    let validating_committee = cs.committee_for(epoch)
-        .ok_or(ApiError::NotFound)?;
+    if epoch != cs.epoch {
+        return Err(ApiError::NotFound);
+    }
+    let validating_committee = &cs.committee;
     if validating_committee.is_empty() {
         return Err(ApiError::NotFound);
     }

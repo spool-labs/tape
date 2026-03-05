@@ -27,7 +27,6 @@ pub use helpers::{
     load_group_artifacts,
     load_snapshot_task_context,
     missing_state,
-    snapshot_chain_epoch,
     load_snapshot_local_epoch,
     derive_snapshot_local_epoch,
     snapshot_ready,

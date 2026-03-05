@@ -81,7 +81,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
         // (seeded by runtime before scheduler starts).
         {
             let cs = self.context.chain_state.load();
-            if cs.has_epoch() {
+            if !cs.epoch.is_zero() {
                 SpoolPlanner::reconcile(
                     &*self.context.store,
                     self.node_status(),
@@ -341,7 +341,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
     /// Re-run lifecycle scheduling from current chain state.
     fn reschedule_lifecycle(&mut self) {
         let cs = self.context.chain_state.load();
-        if cs.has_epoch() {
+        if !cs.epoch.is_zero() {
             self.lifecycle.schedule(
                 self.chain_phase(),
                 self.node_status(),
@@ -377,7 +377,7 @@ impl<S: Store, R: Rpc> TaskScheduler<S, R> {
             return false;
         };
         let cs = self.context.chain_state.load();
-        if !cs.has_epoch() {
+        if cs.epoch.is_zero() {
             return true;
         }
         task_epoch != cs.epoch
