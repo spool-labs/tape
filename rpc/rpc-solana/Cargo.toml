@@ -31,8 +31,8 @@ serde_json.workspace = true
 # Logging (optional)
 tracing = { version = "0.1", optional = true }
 
-# Random for jitter
-rand.workspace = true
+# Retry
+tape-retry = { workspace = true }
 
 # Metrics (optional)
 tape-metrics = { workspace = true, optional = true }

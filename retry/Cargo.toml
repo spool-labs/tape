@@ -1,0 +1,11 @@
+[package]
+name = "tape-retry"
+version.workspace = true
+edition.workspace = true
+description = "Shared retry infrastructure with exponential backoff"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+rand = { workspace = true }
+tracing = "0.1"

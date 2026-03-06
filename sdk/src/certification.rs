@@ -98,6 +98,12 @@ impl From<&PeerError> for NodeSignError {
     }
 }
 
+impl From<PeerError> for NodeSignError {
+    fn from(err: PeerError) -> Self {
+        NodeSignError::from(&err)
+    }
+}
+
 /// Configuration for certification collection.
 #[derive(Clone, Debug)]
 pub struct CertificationConfig {
@@ -232,27 +238,16 @@ impl CertificationCollector {
             let track = track_pubkey;
             async move {
                 let req = CertifyReq { track };
-                let mut last_err = None;
-                for _ in 0..max_retries {
-                    match peer_client.certify(request.node_id, &req).await {
-                        Ok(res) => {
-                            return NodeResult {
-                                node_id: request.node_id,
-                                member_idx: request.member_idx,
-                                weight: request.weight,
-                                result: Ok(res),
-                            };
-                        }
-                        Err(e) => {
-                            last_err = Some(e);
-                        }
-                    }
-                }
+                let config = tape_retry::RetryConfig {
+                    max_retries: Some(max_retries as u32),
+                    ..tape_retry::RetryConfig::three()
+                };
+                let result = tape_retry::retry(config, None, || peer_client.certify(request.node_id, &req)).await;
                 NodeResult {
                     node_id: request.node_id,
                     member_idx: request.member_idx,
                     weight: request.weight,
-                    result: Err(NodeSignError::from(&last_err.unwrap())),
+                    result: result.map_err(NodeSignError::from),
                 }
             }
         }))

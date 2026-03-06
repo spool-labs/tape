@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
@@ -43,10 +42,6 @@ use crate::uploader::DistributedUploader;
 
 /// Retries for certification when epoch advances between signature collection and submission.
 const CERTIFY_RETRIES: usize = 3;
-
-/// Retries when waiting for RPC to propagate a newly confirmed transaction.
-const RPC_PROPAGATION_RETRIES: usize = 5;
-const RPC_PROPAGATION_DELAY_MS: u64 = 500;
 
 /// High-level client for the Tapedrive storage network.
 ///
@@ -593,22 +588,13 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
 
     /// Fetch a track by address with retries for RPC propagation delay.
     async fn retry_fetch_track(&self, address: &Pubkey) -> Result<Track, TapedriveError> {
-        let mut last_err = None;
-        for attempt in 0..RPC_PROPAGATION_RETRIES {
-            match self.rpc().get_track_by_address(address).await {
-                Ok(track) => return Ok(track),
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt < RPC_PROPAGATION_RETRIES - 1 {
-                        tokio::time::sleep(Duration::from_millis(RPC_PROPAGATION_DELAY_MS))
-                        .await;
-                    }
-                }
-            }
-        }
-        Err(TapedriveError::Rpc(last_err.unwrap_or(
-            RpcError::Internal("track not found after registration".into()),
-        )))
+        tape_retry::retry(
+            tape_retry::RetryConfig::five(),
+            None,
+            || async { self.rpc().get_track_by_address(address).await },
+        )
+        .await
+        .map_err(TapedriveError::Rpc)
     }
 }
 

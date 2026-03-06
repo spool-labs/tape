@@ -6,7 +6,6 @@
 //! to the task_runner. Channel backpressure ensures no component outpaces another.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -15,7 +14,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::core::{BackoffConfig, retry_with_backoff};
+use tape_retry::RetryConfig;
 
 use crate::state::fetch_chain_state;
 use crate::core::NodeContext;
@@ -397,7 +396,7 @@ async fn refresh_chain_state<S: Store, R: Rpc>(
         }
     };
 
-    match retry_with_backoff(chain_state_backoff(), cancel, || {
+    match tape_retry::retry(chain_state_backoff(), Some(cancel), || {
         fetch_chain_state(&context.rpc, &our_bls)
     }).await {
         Ok(state) => {
@@ -418,12 +417,8 @@ async fn refresh_chain_state<S: Store, R: Rpc>(
     }
 }
 
-fn chain_state_backoff() -> BackoffConfig {
-    BackoffConfig {
-        min_delay: Duration::from_millis(500),
-        max_delay: Duration::from_secs(30),
-        max_retries: None,
-    }
+fn chain_state_backoff() -> RetryConfig {
+    RetryConfig::infinite()
 }
 
 

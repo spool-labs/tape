@@ -2,7 +2,6 @@
 
 use crate::config::RpcConfig;
 use crate::failover::EndpointFailover;
-use crate::retry::ExponentialBackoff;
 use async_trait::async_trait;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -137,7 +136,7 @@ impl SolanaRpc {
         &self,
         _method: &str,
         err: RpcError,
-        backoff: &mut ExponentialBackoff,
+        backoff: &mut tape_retry::Backoff,
     ) -> Result<(), RpcError> {
         #[cfg(feature = "metrics")]
         tracing::warn!(
@@ -191,7 +190,7 @@ impl SolanaRpc {
     async fn handle_timeout(
         &self,
         _method: &str,
-        backoff: &mut ExponentialBackoff,
+        backoff: &mut tape_retry::Backoff,
     ) -> Result<(), RpcError> {
         let timeout_err = RpcError::Timeout(self.config.timeout);
 
@@ -271,7 +270,7 @@ impl Rpc for SolanaRpc {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -306,7 +305,7 @@ impl Rpc for SolanaRpc {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -343,7 +342,7 @@ impl Rpc for SolanaRpc {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
         let commitment = self.config.commitment;
 
@@ -391,7 +390,7 @@ impl Rpc for SolanaRpc {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -428,7 +427,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let pubkey = *pubkey;
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -468,7 +467,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let pubkeys = pubkeys.to_vec();
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -518,7 +517,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let program_id = *program_id;
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -565,7 +564,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let transaction = transaction.clone();
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -609,7 +608,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let transaction = transaction.clone();
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {
@@ -658,7 +657,7 @@ impl Rpc for SolanaRpc {
         let timer = tape_metrics::OperationTimer::new();
 
         let signature = *signature;
-        let mut backoff = ExponentialBackoff::new(&self.config.retry);
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
         self.reset_failover().await;
 
         loop {

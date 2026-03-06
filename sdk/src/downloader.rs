@@ -100,7 +100,12 @@ impl ParallelDownloader {
                     track: track.into(),
                     spool: slice_idx,
                 };
-                let result = peer_client.get_slice(node_id, &req).await;
+                let result = tape_retry::retry_if(
+                    tape_retry::RetryConfig::three(),
+                    None,
+                    || peer_client.get_slice(node_id, &req),
+                    tape_retry::Retryable::is_retryable,
+                ).await;
                 (slice_idx, result)
             });
         }
@@ -139,8 +144,12 @@ impl ParallelDownloader {
             spool: slice_idx,
         };
 
-        let res = peer_client.get_slice(node_id, &req).await
-            .map_err(|e| DownloadError::Node(e.to_string()))?;
+        let res = tape_retry::retry_if(
+            tape_retry::RetryConfig::three(),
+            None,
+            || peer_client.get_slice(node_id, &req),
+            tape_retry::Retryable::is_retryable,
+        ).await.map_err(|e| DownloadError::Node(e.to_string()))?;
 
         Ok(res.data)
     }

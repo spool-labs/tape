@@ -8,6 +8,7 @@ description = "PeerClient trait and shared types for node-to-node communication"
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }
+tape-retry = { workspace = true }
 async-trait.workspace = true
 arc-swap.workspace = true
 thiserror.workspace = true

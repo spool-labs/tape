@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{Backoff, BackoffConfig};
+use tape_retry::{Backoff, RetryConfig};
 use crate::core::NodeContext;
 
 const BOOTSTRAP_POLL_SECS: u64 = 2;
@@ -56,8 +56,8 @@ impl BlockIngestor {
 
         tracing::trace!(next_slot = next_slot.0, "ingestor run started");
 
-        let mut backoff = Backoff::new(BackoffConfig {
-            min_delay: Duration::from_millis(BACKOFF_MIN_MS),
+        let mut backoff = Backoff::new(RetryConfig {
+            base_delay: Duration::from_millis(BACKOFF_MIN_MS),
             max_delay: Duration::from_secs(BACKOFF_MAX_SECS),
             max_retries: None,
         });

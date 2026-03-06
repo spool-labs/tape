@@ -76,7 +76,7 @@ pub async fn run<S: Store, R: Rpc>(
                 limit: SYNC_BATCH_SIZE,
             };
 
-            let response: SyncSpoolResponse = match with_retry(&RetryConfig::fast(), || client.sync_spool(&request)).await {
+            let response: SyncSpoolResponse = match with_retry(&RetryConfig::three(), || client.sync_spool(&request)).await {
                 Ok(r) => r,
                 Err(e) => {
                     return fail_peer(

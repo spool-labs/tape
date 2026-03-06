@@ -11,7 +11,7 @@ mod peers;
 mod types;
 
 pub use error::PeerError;
-pub use peers::TrustedPeers;
+pub use peers::{PeerNode, TrustedPeers};
 pub use types::*;
 
 pub use async_trait::async_trait;

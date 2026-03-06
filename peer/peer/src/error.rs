@@ -1,6 +1,7 @@
 //! Error types for peer operations.
 
 use tape_core::types::NodeId;
+use tape_retry::Retryable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {
@@ -30,4 +31,19 @@ pub enum PeerError {
 
     #[error("peer error: {0}")]
     Other(String),
+}
+
+impl Retryable for PeerError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::ConnectionFailed(_) | Self::Timeout => true,
+            Self::ServerError { status, .. } => matches!(status, 429 | 502 | 503 | 504),
+            Self::NotFound
+            | Self::NotResponsible
+            | Self::NotInCommittee
+            | Self::NodeUnresolved(_)
+            | Self::Serialization(_)
+            | Self::Other(_) => false,
+        }
+    }
 }

@@ -4694,7 +4694,6 @@ name = "rpc-solana"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "rand 0.8.5",
  "rpc",
  "serde",
  "serde_json",
@@ -4702,6 +4701,7 @@ dependencies = [
  "solana-sdk",
  "solana-transaction-status",
  "tape-metrics",
+ "tape-retry",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8781,6 +8781,7 @@ dependencies = [
  "tape-crypto",
  "tape-node-api",
  "tape-node-client",
+ "tape-retry",
  "tape-slicer",
  "tape-spooler",
  "tape-store",
@@ -8817,6 +8818,7 @@ dependencies = [
  "tape-crypto",
  "tape-metrics",
  "tape-node-api",
+ "tape-retry",
  "tape-store",
  "thiserror 2.0.18",
  "tokio",
@@ -8836,9 +8838,20 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-node-api",
+ "tape-retry",
  "thiserror 2.0.18",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
+]
+
+[[package]]
+name = "tape-retry"
+version = "0.3.0"
+dependencies = [
+ "rand 0.8.5",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -8867,6 +8880,7 @@ dependencies = [
  "tape-node",
  "tape-node-api",
  "tape-peer",
+ "tape-retry",
  "tape-slicer",
  "tape-store",
  "thiserror 2.0.18",

@@ -1,7 +1,6 @@
 //! Core module — shared utilities and runtime primitives for the storage node.
 //!
 //! This module centralizes code that is used across multiple components:
-//! - `retry`: Shared retry infrastructure with exponential backoff
 //! - `helpers`: Shared helper functions (path expansion, epoch helpers, etc)
 //! - `committee`: Helpers for committee membership and membership lookups
 //! - `config`: Node/runtime configuration structs and helpers
@@ -9,7 +8,6 @@
 //! - `peer`: Peer cooldown and peer service primitives
 //! - `stats`: Runtime statistics counters
 
-pub mod retry;
 pub mod helpers;
 pub mod committee;
 pub mod config;
@@ -18,7 +16,6 @@ pub mod peer;
 pub mod stats;
 pub mod throttle;
 
-pub use retry::{Backoff, BackoffConfig, retry_with_backoff, compute_delay};
 pub use config::{
     ConfigError, IngressLimitsConfig, NodeApiConfig, NodeConfig, RecoveryConfig, TlsConfig,
     TransportSecurityConfig, default_config_content, default_config_path,

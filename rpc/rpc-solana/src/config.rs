@@ -22,12 +22,12 @@ pub struct RpcConfig {
 
     /// Retry policy configuration
     #[serde(default)]
-    pub retry: RetryConfig,
+    pub retry: RpcRetryConfig,
 }
 
 /// Retry and backoff configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RetryConfig {
+pub struct RpcRetryConfig {
     /// Maximum retry attempts (default: 5)
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -63,12 +63,23 @@ impl Default for RpcConfig {
             endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
             commitment: default_commitment(),
             timeout: default_timeout(),
-            retry: RetryConfig::default(),
+            retry: RpcRetryConfig::default(),
         }
     }
 }
 
-impl Default for RetryConfig {
+impl RpcRetryConfig {
+    /// Convert to `tape_retry::RetryConfig` for use with `Backoff`.
+    pub fn to_retry_config(&self) -> tape_retry::RetryConfig {
+        tape_retry::RetryConfig {
+            base_delay: self.min_backoff,
+            max_delay: self.max_backoff,
+            max_retries: Some(self.max_retries),
+        }
+    }
+}
+
+impl Default for RpcRetryConfig {
     fn default() -> Self {
         Self {
             max_retries: default_max_retries(),
@@ -144,7 +155,7 @@ mod tests {
             endpoints: vec!["https://test.com".to_string()],
             commitment: CommitmentLevel::Finalized,
             timeout: Duration::from_secs(10),
-            retry: RetryConfig {
+            retry: RpcRetryConfig {
                 max_retries: 3,
                 min_backoff: Duration::from_millis(100),
                 max_backoff: Duration::from_secs(5),
@@ -164,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_default_retry_config() {
-        let config = RetryConfig::default();
+        let config = RpcRetryConfig::default();
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.min_backoff, Duration::from_millis(500));
         assert_eq!(config.max_backoff, Duration::from_secs(30));

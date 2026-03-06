@@ -24,7 +24,7 @@ pub async fn fetch_commitments<S: Store, R: Rpc>(
     committee: &[NodeInfo],
     local_epoch: EpochNumber,
 ) -> Result<Vec<Hash>, TaskOutcome> {
-    let config = RetryConfig::fast();
+    let config = RetryConfig::three();
     if committee.is_empty() {
         return Err(TaskOutcome::Retryable(
             "snapshot committee is empty".into(),

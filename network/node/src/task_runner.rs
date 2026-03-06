@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 
-use crate::core::{BackoffConfig, compute_delay};
+use tape_retry::RetryConfig;
 use crate::core::{NodeContext, PeerHandle};
 use crate::{TaskCategory, TaskResult};
 use crate::task_scheduler::Action;
@@ -238,7 +238,12 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
     async fn complete_retry(&mut self, key: Task, attempt: u32, err: String) {
 
         let config = backoff_for(key.category());
-        match compute_delay(&config, attempt) {
+        let delay = if let Some(max) = config.max_retries {
+            if attempt >= max { None } else { Some(tape_retry::compute_delay(&config, attempt)) }
+        } else {
+            Some(tape_retry::compute_delay(&config, attempt))
+        };
+        match delay {
             Some(delay) => {
                 tracing::warn!(
                     task = ?key,
@@ -489,25 +494,25 @@ pub async fn execute_task<S: Store, R: Rpc>(
 }
 
 /// Return the backoff configuration for a task category.
-pub fn backoff_for(category: TaskCategory) -> BackoffConfig {
+pub fn backoff_for(category: TaskCategory) -> RetryConfig {
     match category {
-        TaskCategory::SolanaTx => BackoffConfig {
-            min_delay: Duration::from_secs(1),
+        TaskCategory::SolanaTx => RetryConfig {
+            base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(60),
             max_retries: Some(20),
         },
-        TaskCategory::PeerHttp => BackoffConfig {
-            min_delay: Duration::from_secs(2),
+        TaskCategory::PeerHttp => RetryConfig {
+            base_delay: Duration::from_secs(2),
             max_delay: Duration::from_secs(300),
             max_retries: Some(50),
         },
-        TaskCategory::CpuHeavy => BackoffConfig {
-            min_delay: Duration::from_secs(30),
+        TaskCategory::CpuHeavy => RetryConfig {
+            base_delay: Duration::from_secs(30),
             max_delay: Duration::from_secs(300),
             max_retries: None,
         },
-        TaskCategory::Internal => BackoffConfig {
-            min_delay: Duration::from_secs(5),
+        TaskCategory::Internal => RetryConfig {
+            base_delay: Duration::from_secs(5),
             max_delay: Duration::from_secs(60),
             max_retries: Some(10),
         },
@@ -687,7 +692,6 @@ fn far_future() -> Instant {
 mod tests {
     use super::*;
 
-    use crate::core::BackoffConfig;
     use crate::core::PeerService;
     use crate::core::test_utils::test_context;
     use tape_core::types::EpochNumber;
@@ -974,22 +978,22 @@ mod tests {
     #[test]
     fn backoff_config() {
         let solana = backoff_for(TaskCategory::SolanaTx);
-        assert_eq!(solana.min_delay, Duration::from_secs(1));
+        assert_eq!(solana.base_delay, Duration::from_secs(1));
         assert_eq!(solana.max_delay, Duration::from_secs(60));
         assert_eq!(solana.max_retries, Some(20));
 
         let peer = backoff_for(TaskCategory::PeerHttp);
-        assert_eq!(peer.min_delay, Duration::from_secs(2));
+        assert_eq!(peer.base_delay, Duration::from_secs(2));
         assert_eq!(peer.max_delay, Duration::from_secs(300));
         assert_eq!(peer.max_retries, Some(50));
 
         let cpu = backoff_for(TaskCategory::CpuHeavy);
-        assert_eq!(cpu.min_delay, Duration::from_secs(30));
+        assert_eq!(cpu.base_delay, Duration::from_secs(30));
         assert_eq!(cpu.max_delay, Duration::from_secs(300));
         assert_eq!(cpu.max_retries, None);
 
         let internal = backoff_for(TaskCategory::Internal);
-        assert_eq!(internal.min_delay, Duration::from_secs(5));
+        assert_eq!(internal.base_delay, Duration::from_secs(5));
         assert_eq!(internal.max_delay, Duration::from_secs(60));
         assert_eq!(internal.max_retries, Some(10));
     }
@@ -1016,36 +1020,33 @@ mod tests {
 
     #[test]
     fn delay_exponential() {
-        let config = BackoffConfig {
-            min_delay: Duration::from_secs(1),
+        let config = RetryConfig {
+            base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(60),
             max_retries: Some(3),
         };
 
-        // With half-jitter, delay is in [base/2, base]
-        let d = compute_delay(&config, 0).unwrap(); // base=1s
+        let d = tape_retry::compute_delay(&config, 0); // base=1s
         assert!(d >= Duration::from_millis(500));
         assert!(d <= Duration::from_secs(1));
 
-        let d = compute_delay(&config, 1).unwrap(); // base=2s
+        let d = tape_retry::compute_delay(&config, 1); // base=2s
         assert!(d >= Duration::from_secs(1));
         assert!(d <= Duration::from_secs(2));
 
-        let d = compute_delay(&config, 2).unwrap(); // base=4s
+        let d = tape_retry::compute_delay(&config, 2); // base=4s
         assert!(d >= Duration::from_secs(2));
         assert!(d <= Duration::from_secs(4));
-
-        assert_eq!(compute_delay(&config, 3), None); // max retries exceeded
     }
 
     #[test]
     fn delay_capped() {
-        let config = BackoffConfig {
-            min_delay: Duration::from_secs(1),
+        let config = RetryConfig {
+            base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(5),
             max_retries: None,
         };
-        let d = compute_delay(&config, 10).unwrap(); // base capped at 5s
+        let d = tape_retry::compute_delay(&config, 10); // base capped at 5s
         assert!(d >= Duration::from_millis(2500));
         assert!(d <= Duration::from_secs(5));
     }

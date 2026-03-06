@@ -12,6 +12,7 @@ use tape_core::spooler::SpoolGroup;
 use tape_crypto::Hash;
 use tape_node_api::SlicePayload;
 use tape_peer::{PeerClient, PutSliceReq};
+use tape_retry::RetryConfig;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
 use tracing::warn;
@@ -27,9 +28,6 @@ pub use tape_core::spooler::{SpoolAssignment, SpoolIndex, SpoolMapping};
 
 /// Default concurrency limit for uploads.
 const DEFAULT_CONCURRENCY: usize = 32;
-
-/// Maximum retries for a single slice upload.
-const MAX_RETRIES: usize = 3;
 
 /// A slice with its merkle proof, ready for upload.
 #[derive(Clone)]
@@ -155,20 +153,11 @@ impl<const MEMBERS: usize> DistributedUploader<MEMBERS> {
                             payload,
                         };
 
-                        let mut last_err = None;
-                        for _ in 0..MAX_RETRIES {
-                            match peer_client.put_slice(node_id, &req).await {
-                                Ok(_) => {
-                                    last_err = None;
-                                    break;
-                                }
-                                Err(e) => {
-                                    last_err = Some(e);
-                                }
-                            }
-                        }
-
-                        if let Some(e) = last_err {
+                        if let Err(e) = tape_retry::retry(
+                            RetryConfig::ten(),
+                            None,
+                            || peer_client.put_slice(node_id, &req),
+                        ).await {
                             warn!(
                                 slice = global_spool,
                                 member = member_idx,

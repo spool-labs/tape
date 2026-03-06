@@ -24,6 +24,7 @@ tape-node-client = { workspace = true }
 rpc = { workspace = true }
 rpc-client = { workspace = true }
 rpc-solana = { workspace = true }
+tape-retry = { workspace = true }
 
 # External
 arc-swap = "1"

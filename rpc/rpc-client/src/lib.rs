@@ -111,7 +111,7 @@ pub use state::{ProtocolState, StateCache};
 pub use rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
 
 // Re-export rpc-solana production types
-pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
+pub use rpc_solana::{RpcRetryConfig, RpcConfig, SolanaRpc};
 
 // Re-export tape-api types for convenience
 // Users can access account types and PDA functions
@@ -120,7 +120,7 @@ pub use tape_api;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::client::RpcClient;
-    pub use rpc_solana::{RetryConfig, RpcConfig, SolanaRpc};
+    pub use rpc_solana::{RpcRetryConfig, RpcConfig, SolanaRpc};
     pub use tape_api::prelude::*;
     pub use rpc::{CommitmentLevel, Rpc, RpcError};
 }

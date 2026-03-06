@@ -50,7 +50,6 @@
 mod client;
 mod config;
 mod failover;
-mod retry;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
@@ -59,11 +58,7 @@ pub mod metrics;
 pub use client::SolanaRpc;
 
 // Configuration exports
-pub use config::{RetryConfig, RpcConfig};
-
-// Internal exports (useful for advanced users)
-pub use failover::EndpointFailover;
-pub use retry::ExponentialBackoff;
+pub use config::{RpcRetryConfig, RpcConfig};
 
 // Re-export tape-rpc types for convenience
 pub use rpc::{CommitmentLevel, Rpc, RpcError};
@@ -71,6 +66,6 @@ pub use rpc::{CommitmentLevel, Rpc, RpcError};
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::client::SolanaRpc;
-    pub use crate::config::{RetryConfig, RpcConfig};
+    pub use crate::config::{RpcRetryConfig, RpcConfig};
     pub use rpc::{CommitmentLevel, Rpc, RpcError};
 }

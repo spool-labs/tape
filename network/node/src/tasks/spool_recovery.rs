@@ -305,7 +305,7 @@ async fn try_clay_repair<S: Store, R: Rpc>(
             }
         };
 
-        match with_retry(&RetryConfig::fast(), || {
+        match with_retry(&RetryConfig::three(), || {
             client.request_repair(track_addr, request)
         })
         .await
@@ -409,7 +409,7 @@ async fn recover_from_peers<S: Store, R: Rpc>(
             }
         };
 
-        match with_retry(&RetryConfig::fast(), || {
+        match with_retry(&RetryConfig::three(), || {
             client.get_slice(track_addr, peer_spool)
         })
         .await

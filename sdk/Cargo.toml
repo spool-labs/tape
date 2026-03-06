@@ -21,6 +21,7 @@ tape-node-api = { workspace = true }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-peer = { workspace = true }
+tape-retry = { workspace = true }
 peer-http = { path = "../peer/peer-http" }
 rpc-client = { path = "../rpc/rpc-client" }
 
