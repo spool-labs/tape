@@ -199,6 +199,7 @@ mod tests {
         let store = TapeStore::new(MemoryStore::new());
 
         let member1 = NodeInfo {
+            node_id: NodeId(1),
             node_address: Pubkey::new_unique(),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: Pubkey::new_unique(),
@@ -207,6 +208,7 @@ mod tests {
         };
 
         let member2 = NodeInfo {
+            node_id: NodeId(2),
             node_address: Pubkey::new_unique(),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: Pubkey::new_unique(),

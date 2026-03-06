@@ -398,6 +398,7 @@ mod tests {
     fn group_weight_counts_group_spools() {
         let committee = vec![
             NodeInfo {
+                node_id: tape_core::types::NodeId(1),
                 node_address: tape_store::types::Pubkey::new([0u8; 32]),
                 bls_pubkey: tape_core::bls::BlsPubkey::new_unique(),
                 tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
@@ -406,6 +407,7 @@ mod tests {
                 spools: vec![0, 1, 2],
             },
             NodeInfo {
+                node_id: tape_core::types::NodeId(2),
                 node_address: tape_store::types::Pubkey::new([1u8; 32]),
                 bls_pubkey: tape_core::bls::BlsPubkey::new_unique(),
                 tls_pubkey: tape_store::types::Pubkey::new([1u8; 32]),

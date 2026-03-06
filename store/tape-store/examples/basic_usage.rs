@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tape_core::types::network::NetworkAddress;
 
     let member1 = NodeInfo {
+        node_id: NodeId(1),
         node_address: Pubkey::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
         tls_pubkey: Pubkey::new_unique(),
@@ -67,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let member2 = NodeInfo {
+        node_id: NodeId(2),
         node_address: Pubkey::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
         tls_pubkey: Pubkey::new_unique(),

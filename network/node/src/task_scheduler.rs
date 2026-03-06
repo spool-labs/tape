@@ -571,7 +571,7 @@ mod tests {
     use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_core::types::network::NetworkAddress;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_crypto::Hash as CryptoHash;
@@ -671,6 +671,7 @@ mod tests {
         let (node_address, _) = node_pda(ctx.keypair.pubkey());
 
         let members = vec![NodeInfo {
+            node_id: NodeId(0),
             node_address: StorePubkey::new(node_address.to_bytes()),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -687,6 +688,7 @@ mod tests {
         spools: Vec<u16>,
     ) {
         let members = vec![NodeInfo {
+            node_id: NodeId(0),
             node_address: StorePubkey::new([9u8; 32]),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: StorePubkey::new([0u8; 32]),

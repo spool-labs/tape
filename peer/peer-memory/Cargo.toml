@@ -1,0 +1,13 @@
+[package]
+name = "peer-memory"
+version.workspace = true
+edition.workspace = true
+description = "In-memory mock implementation of the Peer trait for testing"
+
+[dependencies]
+peer = { workspace = true }
+tape-core = { workspace = true }
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

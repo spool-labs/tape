@@ -1,0 +1,15 @@
+[package]
+name = "peer-http"
+version.workspace = true
+edition.workspace = true
+description = "HTTP implementation of the Peer trait for production node-to-node communication"
+
+[dependencies]
+peer = { workspace = true }
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-node-api = { workspace = true }
+tape-store = { workspace = true }
+async-trait.workspace = true
+reqwest = { workspace = true }
+wincode = { workspace = true }

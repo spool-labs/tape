@@ -366,7 +366,7 @@ async fn poll_once(
 
         let cs = tracked.ctx.chain_state.load();
         let spool_count = cs.spools.len();
-        let node_status = if cs.has_epoch() {
+        let node_status = if !cs.epoch.is_zero() {
             Some(cs.node_status.clone())
         } else {
             None

@@ -53,7 +53,7 @@ mod tests {
     use tape_core::erasure::{group_for_spool, SPOOL_GROUP_COUNT};
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::types::network::NetworkAddress;
-    use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
+    use tape_core::types::{ChunkIndex, EpochNumber, NodeId, SlotNumber};
     use tape_crypto::Hash;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_store::types::{
@@ -288,6 +288,7 @@ mod tests {
             .put_committee(
                 current,
                 vec![NodeInfo {
+                    node_id: NodeId(0),
                     node_address: StorePubkey::new(node_address.to_bytes()),
                     bls_pubkey: BlsPubkey::zeroed(),
                     tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -338,6 +339,7 @@ mod tests {
             .put_committee(
                 current,
                 vec![NodeInfo {
+                    node_id: NodeId(0),
                     node_address: StorePubkey::new(node_address.to_bytes()),
                     bls_pubkey,
                     tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -394,6 +396,7 @@ mod tests {
             .put_committee(
                 current,
                 vec![NodeInfo {
+                    node_id: NodeId(0),
                     node_address: StorePubkey::new(node_address.to_bytes()),
                     bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
                     tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -433,6 +436,7 @@ mod tests {
             .put_committee(
                 current,
                 vec![NodeInfo {
+                    node_id: NodeId(0),
                     node_address: StorePubkey::new(node_address.to_bytes()),
                     bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
                     tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -465,6 +469,7 @@ mod tests {
                 current,
                 vec![
                     NodeInfo {
+                        node_id: NodeId(0),
                         node_address: StorePubkey::new(node_address.to_bytes()),
                         bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
                         tls_pubkey: StorePubkey::new([0u8; 32]),
@@ -472,6 +477,7 @@ mod tests {
                         spools: vec![5],
                     },
                     NodeInfo {
+                        node_id: NodeId(1),
                         node_address: StorePubkey::new_unique(),
                         bls_pubkey: BlsPrivateKey::from_random().public_key().unwrap(),
                         tls_pubkey: StorePubkey::new([1u8; 32]),

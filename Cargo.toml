@@ -25,6 +25,9 @@ members = [
   "network/api",
   "network/client",
   "network/node",
+  "peer/peer",
+  "peer/peer-memory",
+  "peer/peer-http",
   "e2e/simnet",
   "e2e/fuzznet",
 ]
@@ -49,6 +52,9 @@ default-members = [
   "network/api",
   "network/client",
   "network/node",
+  "peer/peer",
+  "peer/peer-memory",
+  "peer/peer-http",
 ]
 
 [workspace.package]
@@ -85,6 +91,9 @@ tape-metrics = { version = "0.3.0", path = "./metrics" }
 tape-node-api = { version = "0.3.0", path = "./network/api" }
 tape-node-client = { version = "0.3.0", path = "./network/client" }
 tape-node = { version = "0.3.0", path = "./network/node" }
+peer = { version = "0.3.0", path = "./peer/peer" }
+peer-memory = { version = "0.3.0", path = "./peer/peer-memory" }
+peer-http = { version = "0.3.0", path = "./peer/peer-http" }
 ratatui = "0.29"
 crossterm = "0.28"
 
@@ -128,6 +137,7 @@ uuid = { version = "1.11", features = ["v4"] }
 
 # async
 async-trait = "0.1"
+arc-swap = "1"
 
 # cli-specific
 clap = { version = "4.5", features = ["derive"] }

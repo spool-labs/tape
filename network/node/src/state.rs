@@ -204,6 +204,7 @@ fn build_committee<const N: usize, const S: usize>(
                 };
 
             NodeInfo {
+                node_id: member.id,
                 node_address,
                 bls_pubkey: member.key,
                 tls_pubkey,

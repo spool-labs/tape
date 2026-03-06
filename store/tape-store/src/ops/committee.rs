@@ -45,9 +45,11 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::bls::BlsPubkey;
     use tape_core::types::network::NetworkAddress;
+    use tape_core::types::NodeId;
 
     fn create_test_member(id: u8) -> NodeInfo {
         NodeInfo {
+            node_id: NodeId(id as u64),
             node_address: Pubkey::new([id; 32]),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: Pubkey::new([id + 100; 32]),

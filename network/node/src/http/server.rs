@@ -206,7 +206,7 @@ mod tests {
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::EpochPhase;
     use tape_core::types::network::NetworkAddress;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, NodeId};
 
     use crate::state::ChainState;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
@@ -776,6 +776,7 @@ mod tests {
         let chunk = 0u64;
         let committee_epoch = EpochNumber(epoch);
         let committee = [NodeInfo {
+            node_id: NodeId(0),
             node_address: Pubkey::new_unique(),
             bls_pubkey: BlsPubkey::new_unique(),
             tls_pubkey: Pubkey::new_unique(),
@@ -845,6 +846,7 @@ mod tests {
             .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
             .unwrap();
         let dummy_member = NodeInfo {
+            node_id: NodeId(0),
             node_address: Pubkey::new_unique(),
             bls_pubkey: BlsPubkey::new_unique(),
             tls_pubkey: Pubkey::new_unique(),

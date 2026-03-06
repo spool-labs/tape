@@ -1,0 +1,19 @@
+[package]
+name = "peer"
+version.workspace = true
+edition.workspace = true
+description = "PeerClient trait and shared types for node-to-node communication"
+
+[dependencies]
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-node-api = { workspace = true }
+tape-store = { workspace = true }
+async-trait.workspace = true
+arc-swap.workspace = true
+thiserror.workspace = true
+wincode = { workspace = true }
+wincode-derive = { workspace = true }
+
+[dev-dependencies]
+bytemuck.workspace = true

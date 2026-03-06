@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::encoding::EncodingProfile;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, NodeId};
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -137,6 +137,8 @@ pub struct SnapshotPartialSignature {
 /// Information about a single committee member
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodeInfo {
+    /// Unique on-chain node identifier
+    pub node_id: NodeId,
     /// Node's on-chain account pubkey
     pub node_address: Pubkey,
     /// BLS public key for signatures
@@ -232,6 +234,7 @@ mod tests {
     #[test]
     fn test_node_info_roundtrip() {
         let info = NodeInfo {
+            node_id: NodeId(1),
             node_address: Pubkey::new([1u8; 32]),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: Pubkey::new([2u8; 32]),

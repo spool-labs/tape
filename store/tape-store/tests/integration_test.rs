@@ -127,6 +127,7 @@ fn all_column_families() {
     use tape_core::types::network::NetworkAddress;
 
     let member = NodeInfo {
+        node_id: NodeId(1),
         node_address: Pubkey::new_unique(),
         bls_pubkey: BlsPubkey::zeroed(),
         tls_pubkey: Pubkey::new_unique(),
@@ -247,6 +248,7 @@ fn committee_operations() {
     // Add committees for multiple epochs
     for epoch in [95u64, 100, 98] {
         let members = vec![NodeInfo {
+            node_id: NodeId(epoch),
             node_address: Pubkey::new_unique(),
             bls_pubkey: BlsPubkey::zeroed(),
             tls_pubkey: Pubkey::new_unique(),

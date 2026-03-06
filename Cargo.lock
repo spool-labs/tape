@@ -3949,6 +3949,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "peer"
+version = "0.3.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytemuck",
+ "tape-core",
+ "tape-crypto",
+ "tape-node-api",
+ "tape-store",
+ "thiserror 2.0.18",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
+]
+
+[[package]]
+name = "peer-http"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "peer",
+ "reqwest",
+ "tape-core",
+ "tape-crypto",
+ "tape-node-api",
+ "tape-store",
+ "wincode 0.1.2",
+]
+
+[[package]]
+name = "peer-memory"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "peer",
+ "tape-core",
+ "tokio",
+]
+
+[[package]]
 name = "pem"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
