@@ -10,7 +10,6 @@ use store::Store;
 use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
 use tape_protocol::api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::spooler::SpoolIndex;
-use tape_core::types::EpochNumber;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::{SpoolState, SpoolStatus};
@@ -147,7 +146,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if !synced.is_empty() {
         let _ = context.store.remove_spool_sync_cursor(spool);
-        let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
+        let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
         if let Err(e) = context.store.set_spool_state(spool, new_state) {
             return TaskOutcome::Retryable(format!("set spool active: {e}"));
         }
@@ -155,14 +154,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     } else {
         match has_missing_slices(&*context.store, spool) {
             Ok(false) => {
-                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
+                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
                 if let Err(e) = context.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
             }
             Ok(true) => {
                 tracing::info!(spool, "missing slices detected, transitioning to recovery");
-                let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch };
+                let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch, prev_owner: None };
                 if let Err(e) = context.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool recovering: {e}"));
                 }
@@ -184,33 +183,24 @@ fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Ok(SyncSource::SkipSync);
     }
 
-    let prev_epoch = spool_state.epoch - EpochNumber(1);
-    let cs = context.chain_state.load();
-
-    let prev_committee = if prev_epoch == cs.epoch {
-        cs.committee.clone()
-    } else if !cs.epoch.is_zero() && prev_epoch == cs.epoch - EpochNumber(1) {
-        cs.committee_prev.clone()
-    } else {
-        return Err(TaskOutcome::Retryable("committee for previous epoch not available".into()));
-    };
-
-    let prev_owner = match prev_committee.iter().find(|node| node.spools.contains(&spool)) {
-        Some(n) => n,
+    let prev_owner_id = match spool_state.prev_owner {
+        Some(id) => id,
         None => {
             tracing::info!(spool, "no previous owner, verifying data");
             return Ok(SyncSource::SkipSync);
         }
     };
 
-    let our_address: StorePubkey = context.node_address().into();
-    if prev_owner.node_address == our_address {
+    if prev_owner_id == context.node_id() {
         tracing::info!(spool, "we owned this spool last epoch, verifying data");
         return Ok(SyncSource::SkipSync);
     }
 
-    let peer_address = prev_owner
-        .network_address
+    let peer_address = context
+        .peer_manager
+        .peers()
+        .resolve(prev_owner_id)
+        .ok_or_else(|| TaskOutcome::Retryable("previous owner not in trusted peers".into()))?
         .to_socket_addr()
         .map_err(|e| TaskOutcome::Permanent(format!("parse network address: {e}")))?;
 

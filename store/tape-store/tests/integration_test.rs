@@ -104,7 +104,7 @@ fn all_column_families() {
 
     // Spool status (NOT epoch-namespaced)
     store
-        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
         .unwrap();
 
     // Sync progress
@@ -278,10 +278,10 @@ fn spool_ops() {
 
     // Set status (NOT epoch-namespaced)
     store
-        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
         .unwrap();
     store
-        .set_spool_state(43, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+        .set_spool_state(43, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
         .unwrap();
 
     assert_eq!(

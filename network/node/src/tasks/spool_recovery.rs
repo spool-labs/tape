@@ -154,7 +154,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
         match ctx.store.get_spool_state(spool) {
             Ok(Some(state)) if state.is_recovering() => {
-                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch };
+                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
                 if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
@@ -612,7 +612,7 @@ mod tests {
         });
 
         use tape_store::types::SpoolState;
-        ctx.store.set_spool_state(5, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(5, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
         ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();

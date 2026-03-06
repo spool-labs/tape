@@ -4,7 +4,9 @@ use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_store::TapeStore;
 
-use tape_core::erasure::spool_in_group;
+use tape_core::erasure::{spool_in_group, SPOOL_COUNT};
+use tape_core::spooler::SpoolAssignment;
+use tape_core::system::CommitteeMember;
 use tape_core::types::EpochNumber;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState, SpoolStatus};
@@ -97,7 +99,7 @@ impl SpoolPlanner {
             tracing::debug!(spool, status = ?state.status, "ignoring stale spool sync failure");
             return;
         }
-        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch };
+        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch, prev_owner: state.prev_owner };
         if let Err(e) = store.set_spool_state(spool, new_state) {
             tracing::error!(spool, "failed to set ActiveRecover: {e}");
             return;
@@ -200,6 +202,8 @@ impl SpoolPlanner {
         store: &TapeStore<S>,
         chain_spools: &HashSet<u16>,
         epoch: EpochNumber,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
     ) -> bool {
         let existing = match store.iter_all_spools() {
             Ok(spools) => spools,
@@ -216,11 +220,14 @@ impl SpoolPlanner {
         // New assignments → ActiveSync
         for &spool in chain_spools {
             if !existing_ids.contains(&spool) {
-                let state = SpoolState { status: SpoolStatus::ActiveSync, epoch };
+                let prev_owner = prev_spools.0.get(spool as usize).and_then(|&mapping| {
+                    prev_committee.get(mapping as usize).map(|m| m.id)
+                });
+                let state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner };
                 if let Err(e) = store.set_spool_state(spool, state) {
                     tracing::error!(spool, "reconcile_ownership: failed to create spool: {e}");
                 } else {
-                    tracing::info!(spool, "spool assigned, marked ActiveSync");
+                    tracing::info!(spool, ?prev_owner, "spool assigned, marked ActiveSync");
                     changed = true;
                 }
             }
@@ -233,7 +240,7 @@ impl SpoolPlanner {
                 if state.is_locked() {
                     continue;
                 }
-                let new_state = SpoolState { status: SpoolStatus::LockedToMove, epoch };
+                let new_state = SpoolState { status: SpoolStatus::LockedToMove, epoch, prev_owner: None };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "reconcile_ownership: failed to lock spool: {e}");
                 } else {
@@ -245,7 +252,7 @@ impl SpoolPlanner {
 
             // Reacquired: spool was LockedToMove but is back in chain_spools
             if chain_spools.contains(&spool) && state.is_locked() {
-                let new_state = SpoolState { status: SpoolStatus::ActiveSync, epoch };
+                let new_state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner: None };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "reconcile_ownership: failed to reactivate spool: {e}");
                 } else {

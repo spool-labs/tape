@@ -681,7 +681,7 @@ mod tests {
         };
         let track_key: StorePubkey = track.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -765,7 +765,7 @@ mod tests {
         };
         let track_key: StorePubkey = track.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -819,7 +819,7 @@ mod tests {
         let track_key: StorePubkey = track.into();
         let tape_key: StorePubkey = tape.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, track_key, vec![1, 2, 3])
@@ -872,7 +872,7 @@ mod tests {
         // Own spool 60 (in group 3) and store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])
@@ -920,7 +920,7 @@ mod tests {
         // Store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])
@@ -983,7 +983,7 @@ mod tests {
         let st1: StorePubkey = track1.into();
         let st2: StorePubkey = track2.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store.put_slice(60, st1, vec![1, 2, 3]).unwrap();
         ctx.store.put_slice(60, st2, vec![4, 5, 6]).unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
         // Own spool 60 and store a slice
         let store_track: StorePubkey = track.into();
         ctx.store
-            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(60, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
             .put_slice(60, store_track, vec![1, 2, 3])

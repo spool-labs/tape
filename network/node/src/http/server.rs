@@ -262,7 +262,7 @@ mod tests {
 
         // Register the spool
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         // Create track with proper commitment
@@ -334,7 +334,7 @@ mod tests {
         let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let data = vec![0xABu8; 100];
@@ -375,7 +375,7 @@ mod tests {
         let spool_id = spool_for_slice(spool_group, spool_id as usize);
 
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track_address = Pubkey::new_unique();
@@ -430,7 +430,7 @@ mod tests {
         let helper_spool = spool_for_slice(spool_group, helper_spool_id as usize);
 
         ctx.store
-            .set_spool_state(helper_spool, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(helper_spool, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         // Create Clay-encoded track
@@ -536,7 +536,7 @@ mod tests {
         let spool_id = 42u16;
 
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track1 = Pubkey::new_unique();
@@ -587,7 +587,7 @@ mod tests {
         let spool_id = 10u16;
 
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         // Insert 50 slices
@@ -660,7 +660,7 @@ mod tests {
         let spool_id = 77u16;
 
         ctx.store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let request = SyncSpoolRequest {

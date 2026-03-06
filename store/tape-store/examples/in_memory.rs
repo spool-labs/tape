@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spool status (NOT epoch-namespaced)
     for spool_id in 0..3u16 {
-        store.set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })?;
+        store.set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })?;
     }
 
     let spools = store.iter_all_spools()?;

@@ -1,7 +1,7 @@
 //! Enum types for tape-store
 
 use serde::{Deserialize, Serialize};
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, NodeId};
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 /// Node status in the network
@@ -60,6 +60,7 @@ impl Default for SpoolStatus {
 pub struct SpoolState {
     pub status: SpoolStatus,
     pub epoch: EpochNumber,
+    pub prev_owner: Option<NodeId>,
 }
 
 impl SpoolState {
@@ -120,10 +121,12 @@ mod tests {
             super::SpoolState {
                 status: SpoolStatus::Active,
                 epoch: EpochNumber(0),
+                prev_owner: None,
             },
             super::SpoolState {
                 status: SpoolStatus::LockedToMove,
                 epoch: EpochNumber(42),
+                prev_owner: Some(NodeId(7)),
             },
         ];
 

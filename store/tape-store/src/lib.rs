@@ -184,7 +184,7 @@ mod tests {
         let spool_id = 42;
 
         store
-            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(spool_id, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         let state = store.get_spool_state(spool_id).unwrap();
         assert_eq!(state.unwrap().status, SpoolStatus::Active);

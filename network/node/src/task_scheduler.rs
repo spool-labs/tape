@@ -571,7 +571,7 @@ use tape_protocol::Api;
     use tape_core::erasure::SPOOL_GROUP_COUNT;
     use tape_core::bls::{BlsPubkey, BlsSignature};
     use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
-    use tape_core::spooler::SpoolGroup;
+    use tape_core::spooler::{SpoolAssignment, SpoolGroup};
     use tape_core::system::EpochPhase;
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_core::types::network::NetworkAddress;
@@ -706,10 +706,10 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
-            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -740,7 +740,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -842,7 +842,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) })
+            .set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -869,7 +869,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(15, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(15, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -907,7 +907,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -936,7 +936,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -959,7 +959,7 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -980,7 +980,7 @@ use tape_protocol::Api;
         let ctx = test_context();
         let our_pubkey = ctx.keypair.pubkey();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1033,7 +1033,7 @@ use tape_protocol::Api;
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1096,10 +1096,10 @@ use tape_protocol::Api;
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
 
         ctx.store
-            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         ctx.store
-            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(20, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1138,7 +1138,7 @@ use tape_protocol::Api;
     async fn standby_blocks() {
         let ctx = test_context();
         ctx.store
-            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Standby);
 
@@ -1271,7 +1271,7 @@ use tape_protocol::Api;
         let ctx = test_context();
         let mut scheduler = TaskScheduler::new(ctx);
 
-        scheduler.context.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
+        scheduler.context.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         scheduler.update_desired(&[StateChange::EpochAdvanced {
             epoch: EpochNumber(1),
@@ -1285,7 +1285,7 @@ use tape_protocol::Api;
     async fn epoch_reconcile() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1508,7 +1508,7 @@ use tape_protocol::Api;
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1529,7 +1529,7 @@ use tape_protocol::Api;
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(2), EpochPhase::Syncing, NodeStatus::Active);
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         let track = Pubkey::new_unique();
@@ -1592,7 +1592,7 @@ use tape_protocol::Api;
     async fn sync_permanent_to_recover() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.desired.insert(Task::SpoolSync { spool: 42 });
@@ -1616,7 +1616,7 @@ use tape_protocol::Api;
     async fn recovery_permanent_reschedules() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.desired.insert(Task::SpoolRecovery { spool: 42 });
@@ -1641,7 +1641,7 @@ use tape_protocol::Api;
     async fn scan_permanent_reschedules() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
         scheduler.desired.insert(Task::RecoveryScan { spool: 42 });
@@ -1666,7 +1666,7 @@ use tape_protocol::Api;
     async fn reconcile_active_recover() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1691,7 +1691,7 @@ use tape_protocol::Api;
     async fn reconcile_scan_done() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
-        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0) }).unwrap();
+        ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
         ctx.store.set_scan_done(30).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1736,6 +1736,7 @@ use tape_protocol::Api;
         ctx.store.set_spool_state(10, SpoolState {
             status: SpoolStatus::LockedToMove,
             epoch: EpochNumber(3),
+            prev_owner: None,
         }).unwrap();
 
         // At epoch 4, should NOT be cleaned (3 + 2 > 4)
@@ -1755,6 +1756,7 @@ use tape_protocol::Api;
         ctx.store.set_spool_state(10, SpoolState {
             status: SpoolStatus::LockedToMove,
             epoch: EpochNumber(3),
+            prev_owner: None,
         }).unwrap();
 
         // Seed slice data and pending recoveries for spool 10
@@ -1777,7 +1779,7 @@ use tape_protocol::Api;
         chain_spools.insert(10u16);
         chain_spools.insert(20u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
@@ -1796,13 +1798,14 @@ use tape_protocol::Api;
         ctx.store.set_spool_state(10, SpoolState {
             status: SpoolStatus::LockedToMove,
             epoch: EpochNumber(3),
+            prev_owner: None,
         }).unwrap();
 
         // Chain says we own spool 10 again at epoch 5
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
@@ -1817,12 +1820,13 @@ use tape_protocol::Api;
         ctx.store.set_spool_state(10, SpoolState {
             status: SpoolStatus::LockedToMove,
             epoch: EpochNumber(3),
+            prev_owner: None,
         }).unwrap();
 
         // Chain does not include spool 10 at epoch 5
         let chain_spools = HashSet::new();
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5));
+        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
         // No change — spool already locked
         assert!(!changed);
 

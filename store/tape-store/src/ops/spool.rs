@@ -171,7 +171,7 @@ mod tests {
     }
 
     fn state(status: SpoolStatus) -> SpoolState {
-        SpoolState { status, epoch: EpochNumber(0) }
+        SpoolState { status, epoch: EpochNumber(0), prev_owner: None }
     }
 
     #[test]

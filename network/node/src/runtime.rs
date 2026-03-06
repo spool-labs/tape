@@ -365,8 +365,15 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                 }
 
                 let cs = context.chain_state.load();
+                let ps = context.peer_manager.state();
                 SpoolPlanner::cleanup_locked(&*context.store, cs.epoch);
-                if SpoolPlanner::reconcile_ownership(&*context.store, &cs.spools, cs.epoch) {
+                if SpoolPlanner::reconcile_ownership(
+                    &*context.store,
+                    &cs.spools,
+                    cs.epoch,
+                    &ps.spools_prev,
+                    &ps.committee_prev,
+                ) {
                     changes.push(StateChange::SpoolAssignmentChanged);
                 }
             }
@@ -509,7 +516,7 @@ mod tests {
 
         // Pre-populate spool state so scheduler has work to do
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0) })
+            .set_spool_state(5, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
             .unwrap();
 
         // We use spawn_runtime_channels + manual wiring since LiteSvmRpc
