@@ -195,6 +195,7 @@ fn build_state(system: &System, epoch_id: EpochNumber, phase: EpochPhase, nonce:
 }
 
 impl<R: Rpc> RpcClient<R> {
+
     /// Fetch current protocol state from on-chain accounts.
     ///
     /// Makes 2 RPC calls: `get_system()` + `get_epoch()`.
@@ -203,10 +204,12 @@ impl<R: Rpc> RpcClient<R> {
         let system = self.get_system().await?;
         let epoch = self.get_epoch().await?;
 
-        let phase = EpochPhase::try_from(epoch.state.phase).unwrap_or(EpochPhase::Unknown);
+        let phase = EpochPhase::try_from(epoch.state.phase)
+            .unwrap_or(EpochPhase::Unknown);
 
         Ok(build_state(&system, epoch.id, phase, epoch.nonce))
     }
+
 }
 
 #[cfg(test)]

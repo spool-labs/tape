@@ -111,8 +111,11 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let tape_key = TapeKey::generate();
         let capacity = StorageUnits::from_bytes(data.len() as u64);
         let reserve_capacity = capacity + StorageUnits::mb(1);
+
         self.reserve(&tape_key, reserve_capacity, epochs).await?;
+
         let track = self.write_track(&tape_key, key, data).await?;
+
         Ok((tape_key, track))
     }
 
@@ -123,10 +126,12 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let k = on_chain.data.profile.k() as usize;
 
         let state = self.network.state();
-        let slice_to_node: HashMap<SpoolIndex, NodeId> = state.group_peers(spool_group).into_iter().collect();
+        let slice_to_node: HashMap<SpoolIndex, NodeId> = 
+            state.group_peers(spool_group).into_iter().collect();
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
-        let slices = downloader.download_enough_slices(self.network.peer_client().as_ref()).await
+        let slices = downloader
+            .download_enough_slices(self.network.peer_client().as_ref()).await
             .map_err(ClientError::Download)?;
 
         // Convert global spool indices to local for decoder
@@ -149,10 +154,19 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         tape_key: &TapeKey,
         track_key: Hash,
     ) -> Result<(), TapedriveError> {
-        let ix = build_delete_track_ix(self.payer.pubkey(), tape_key.pubkey(), track_key);
+        let ix = build_delete_track_ix(
+            self.payer.pubkey(), 
+            tape_key.pubkey(), 
+            track_key
+        );
+
         self.rpc()
-            .send_instructions_with_signers(&self.payer, vec![ix], &[tape_key.as_keypair()])
-            .await?;
+            .send_instructions_with_signers(
+                &self.payer, 
+                vec![ix], 
+                &[tape_key.as_keypair()]
+            ).await?;
+
         Ok(())
     }
 
@@ -160,10 +174,13 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
     pub async fn verify(&self, track: &Pubkey, data: &[u8]) -> Result<bool, TapedriveError> {
         let on_chain = self.rpc().get_track_by_address(track).await?;
         let mut encoder = BlobEncoder::with_profile(on_chain.data.profile);
+
         let (_, root) = encoder
             .encode_with_root(data.to_vec())
             .map_err(|e| TapedriveError::Encoding(e.to_string()))?;
+
         let computed: Hash = root.into();
+
         Ok(computed == on_chain.data.commitment_hash)
     }
 
@@ -225,6 +242,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         epochs: u64,
     ) -> Result<Coin<TAPE>, TapedriveError> {
         let archive = self.rpc().get_archive().await?;
+
         Ok(Coin::<TAPE>::new(
             archive
                 .storage_price
@@ -256,6 +274,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
 
         let mut ixs =
             build_authority_with_tokens_ix(self.payer.pubkey(), temp.pubkey(), cost);
+
         ixs.push(build_reserve_tape_ix(
             self.payer.pubkey(),
             temp.pubkey(),
@@ -263,6 +282,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             tape.expiry_epoch,
             new_expiry,
         ));
+
         ixs.push(build_merge_tape_ix(
             self.payer.pubkey(),
             temp.pubkey(),
@@ -293,7 +313,8 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let archive = self.rpc().get_archive().await?;
 
         let temp = TapeKey::generate();
-        let duration = tape.expiry_epoch.as_u64().saturating_sub(tape.active_epoch.as_u64());
+        let duration = tape.expiry_epoch.as_u64()
+            .saturating_sub(tape.active_epoch.as_u64());
 
         let cost = Coin::<TAPE>::new(
             archive
@@ -365,19 +386,20 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         destination: &TapeKey,
         keep: StorageUnits,
     ) -> Result<(Tape, Tape), TapedriveError> {
+
         let ix = build_split_tape_by_size_ix(
             self.payer.pubkey(),
             source.pubkey(),
             destination.pubkey(),
             keep,
         );
+
         self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![ix],
                 &[source.as_keypair(), destination.as_keypair()],
-            )
-            .await?;
+            ).await?;
 
         let src = self.rpc().get_tape(&source.pubkey()).await?;
         let dst = self.rpc().get_tape(&destination.pubkey()).await?;
@@ -395,6 +417,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             source.pubkey(),
             destination.pubkey(),
         );
+
         self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
@@ -412,9 +435,14 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
     /// Destroy an empty, expired tape.
     pub async fn destroy(&self, tape_key: &TapeKey) -> Result<(), TapedriveError> {
         let ix = build_destroy_tape_ix(self.payer.pubkey(), tape_key.pubkey());
+
         self.rpc()
-            .send_instructions_with_signers(&self.payer, vec![ix], &[tape_key.as_keypair()])
-            .await?;
+            .send_instructions_with_signers(
+                &self.payer, 
+                vec![ix], 
+                &[tape_key.as_keypair()]
+            ).await?;
+
         Ok(())
     }
 
@@ -441,9 +469,13 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let stripe_size = pick_stripe_size(data.len());
         let stripe_count = num_stripes(data.len(), stripe_size);
         let (track_address, _) = track_pda(tape_key.pubkey(), key);
-        let on_chain = match self.rpc().get_track_by_address(&track_address).await {
+
+        let on_chain = match self.rpc()
+            .get_track_by_address(&track_address).await {
+
             Ok(track) => track,
             Err(RpcError::AccountNotFound(_)) => {
+
                 let register_ix = build_register_track_ix(
                     self.payer.pubkey(),
                     tape_key.pubkey(),
@@ -511,6 +543,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
 
             let compute_ix =
                 ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
+
             let certify_ix = build_certify_track_ix(
                 self.payer.pubkey(),
                 tape_key.pubkey(),
