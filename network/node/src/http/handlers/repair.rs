@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
 use tape_core::encoding::EncodingType;
-use tape_node_api::{RepairRequest, BINARY_CONTENT};
+use tape_protocol::api::{RepairRequest, BINARY_CONTENT};
 use tape_slicer::ClayCoder;
 use tape_store::ops::{SliceOps, TrackOps};
 

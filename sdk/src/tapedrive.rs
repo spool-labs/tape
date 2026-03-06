@@ -24,15 +24,15 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
-use peer_http::HttpPeerClient;
-use tape_peer::PeerClient;
+use peer_http::HttpApi;
+use tape_protocol::Api;
+use tape_protocol::peer::PeerManager;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
 use crate::codec::decoder::BlobDecoder;
 use crate::codec::encoder::BlobEncoder;
 use crate::error::{ClientError, TapedriveError};
 use crate::keys::tape_key::TapeKey;
-use crate::network::Network;
 use crate::transfer::certify::CertificationCollector;
 use crate::transfer::downloader::ParallelDownloader;
 use crate::transfer::uploader::DistributedUploader;
@@ -42,7 +42,7 @@ const CERTIFY_RETRIES: usize = 3;
 
 /// High-level client for the Tapedrive storage network.
 ///
-/// Generic over `R: Rpc` (on-chain) and `P: PeerClient` (storage nodes).
+/// Generic over `R: Rpc` (on-chain) and `A: Api` (storage nodes).
 ///
 /// # Example
 /// ```rust,ignore
@@ -55,42 +55,50 @@ const CERTIFY_RETRIES: usize = 3;
 /// // Read it back
 /// let data = sdk.read(&tape_key.track_address(&key)).await?;
 /// ```
-pub struct Tapedrive<R: Rpc, P: PeerClient> {
-    pub network: Network<R, P>,
+pub struct Tapedrive<R: Rpc, A: Api> {
+    pub peer_manager: Arc<PeerManager<R, A>>,
+    pub rpc: Arc<RpcClient<R>>,
     pub payer: Keypair,
 }
 
-/// Default constructor using `HttpPeerClient`.
-impl<R: Rpc> Tapedrive<R, HttpPeerClient> {
+/// Default constructor using `HttpApi`.
+impl<R: Rpc> Tapedrive<R, HttpApi> {
     /// Create a new Tapedrive client.
     ///
     /// Takes an RPC backend and a payer keypair. Uses the default HTTP
     /// peer client for storage node communication.
     pub fn new(rpc: R, payer: &Keypair) -> Self {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
-        let peer_client = Arc::new(HttpPeerClient::default());
+        let api = Arc::new(HttpApi::default());
+        let peers = Arc::new(tape_protocol::peer::TrustedPeers::new());
         Self {
-            network: Network::new(rpc_client, peer_client),
+            peer_manager: Arc::new(PeerManager::new(rpc_client.clone(), api, peers)),
+            rpc: rpc_client,
             payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
         }
     }
 }
 
-impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
-    /// Create a Tapedrive client from an existing Network.
+impl<R: Rpc, A: Api> Tapedrive<R, A> {
+    /// Create a Tapedrive client from an existing PeerManager.
     ///
-    /// Use this when you need a custom peer client (e.g. for testing)
-    /// or a pre-bootstrapped network.
-    pub fn from_network(network: Network<R, P>, payer: &Keypair) -> Self {
+    /// Use this when you need a custom Api implementation (e.g. for testing)
+    /// or a pre-bootstrapped peer manager.
+    pub fn from_peer_manager(
+        peer_manager: Arc<PeerManager<R, A>>,
+        rpc: Arc<RpcClient<R>>,
+        payer: &Keypair,
+    ) -> Self {
         Self {
-            network,
+            peer_manager,
+            rpc,
             payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
         }
     }
 
     /// Access the underlying RPC client.
     pub fn rpc(&self) -> &RpcClient<R> {
-        self.network.rpc()
+        &self.rpc
     }
 
     // Data operations
@@ -125,13 +133,13 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let spool_group = on_chain.data.spool_group();
         let k = on_chain.data.profile.k() as usize;
 
-        let state = self.network.state();
-        let slice_to_node: HashMap<SpoolIndex, NodeId> = 
+        let state = self.peer_manager.state();
+        let slice_to_node: HashMap<SpoolIndex, NodeId> =
             state.group_peers(spool_group).into_iter().collect();
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
         let slices = downloader
-            .download_enough_slices(self.network.peer_client().as_ref()).await
+            .download_enough_slices(self.peer_manager.api().as_ref()).await
             .map_err(ClientError::Download)?;
 
         // Convert global spool indices to local for decoder
@@ -511,10 +519,10 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let spool_group = on_chain.data.spool_group();
 
         // 3. Bootstrap network if needed, upload slices
-        self.network.bootstrap().await
+        self.peer_manager.bootstrap().await
             .map_err(TapedriveError::Network)?;
 
-        let state = self.network.state();
+        let state = self.peer_manager.state();
 
         let uploader = DistributedUploader::new(
             track_address,
@@ -523,7 +531,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             &state,
         ).map_err(TapedriveError::Upload)?;
 
-        uploader.upload_all(self.network.peer_client().as_ref()).await
+        uploader.upload_all(self.peer_manager.api().as_ref()).await
             .map_err(TapedriveError::Upload)?;
 
         // 4. Collect BLS signatures and certify (retry on epoch race)
@@ -533,7 +541,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             let collector = CertificationCollector::with_defaults();
             let collected = collector
                 .collect_signatures(
-                    self.network.peer_client().as_ref(),
+                    self.peer_manager.api().as_ref(),
                     &track_address,
                     spool_group,
                     &system,
@@ -613,7 +621,7 @@ mod tests {
     use std::sync::Arc;
 
     use bytemuck::Zeroable;
-    use peer_memory::MemoryPeerClient;
+    use peer_memory::MemoryApi;
     use rpc_client::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
@@ -625,14 +633,16 @@ mod tests {
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_crypto::hash;
+    use tape_protocol::peer::{PeerManager, TrustedPeers};
 
-    fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryPeerClient>) {
+    fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryApi>) {
         let rpc = LiteSvmRpc::new();
         let payer = Keypair::new();
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
-        let peer_client = Arc::new(MemoryPeerClient::noop());
-        let network = Network::new(rpc_client, peer_client);
-        let tapedrive = Tapedrive::from_network(network, &payer);
+        let api = Arc::new(MemoryApi::noop());
+        let peers = Arc::new(TrustedPeers::new());
+        let peer_manager = Arc::new(PeerManager::new(rpc_client.clone(), api, peers));
+        let tapedrive = Tapedrive::from_peer_manager(peer_manager, rpc_client, &payer);
         (rpc, tapedrive)
     }
 

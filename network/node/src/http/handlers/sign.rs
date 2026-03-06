@@ -11,7 +11,7 @@ use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::group_for_spool;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
-use tape_node_api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
+use tape_protocol::api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
 use tape_store::ops::{MetaOps, TrackOps};
 use tape_store::types::SnapshotPartialSignature;
 

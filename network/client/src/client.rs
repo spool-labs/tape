@@ -7,9 +7,9 @@ use reqwest::Client;
 use tape_store::types::Pubkey;
 use url::Url;
 
-use tape_node_api::{
+use tape_protocol::api::{
     InconsistencyRequest, BlsInconsistencyResponse, NodeStats, RepairRequest,
-    SnapshotSignatureSubmission, BlsSignResponse, SignedMessage, SlicePayload,
+    SnapshotSignatureSubmission, BlsSignResponse, SlicePayload,
     SyncSpoolRequest, SyncSpoolResponse, CONTENT_TYPE_JSON, BINARY_CONTENT,
 };
 
@@ -33,16 +33,16 @@ impl NodeClient {
         &self.base_url
     }
 
-    /// PUT a slice via the public (authority-signed) route.
+    /// PUT a slice.
     /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
     pub async fn put_slice(
         &self,
         track: Pubkey,
         spool_id: u16,
-        payload: &SignedMessage,
+        payload: &SlicePayload,
     ) -> Result<(), NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::slice_url(&track_id, spool_id))?;
+        let url = self.url(&tape_protocol::api::slice_url(&track_id, spool_id))?;
         let body =
             wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -62,35 +62,6 @@ impl NodeClient {
         Ok(())
     }
 
-    /// PUT a slice via the internal (peer-authenticated) route.
-    /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
-    pub async fn put_slice_internal(
-        &self,
-        track: Pubkey,
-        spool_id: u16,
-        payload: &SlicePayload,
-    ) -> Result<(), NodeError> {
-        let track_id = track.to_string();
-        let url = self.url(&tape_node_api::internal_slice_url(&track_id, spool_id))?;
-        let body =
-            wincode::serialize(payload).map_err(|e| NodeError::Serialization(e.to_string()))?;
-        let len = body.len() as u64;
-        let start = Instant::now();
-
-        let resp = self
-            .inner
-            .put(url)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| self.map_reqwest_error(e))?;
-
-        self.record("put_slice_internal", &resp, start, len, 0);
-        self.check_status(resp).await?;
-        Ok(())
-    }
-
     /// GET a slice's raw data.
     /// `spool_id` is a **global** spool index (0..SPOOL_COUNT-1), not a group-relative index.
     pub async fn get_slice(
@@ -99,7 +70,7 @@ impl NodeClient {
         spool_id: u16,
     ) -> Result<Vec<u8>, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::slice_url(&track_id, spool_id))?;
+        let url = self.url(&tape_protocol::api::slice_url(&track_id, spool_id))?;
         let start = Instant::now();
 
         let resp = self
@@ -122,7 +93,7 @@ impl NodeClient {
     /// GET track metadata.
     pub async fn get_metadata(&self, track: Pubkey) -> Result<Vec<u8>, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::metadata_url(&track_id))?;
+        let url = self.url(&tape_protocol::api::metadata_url(&track_id))?;
         let start = Instant::now();
 
         let resp = self
@@ -142,59 +113,9 @@ impl NodeClient {
         Ok(bytes.to_vec())
     }
 
-    /// PUT track metadata via the public route.
-    pub async fn put_metadata(
-        &self,
-        track: Pubkey,
-        metadata: Vec<u8>,
-    ) -> Result<(), NodeError> {
-        let track_id = track.to_string();
-        let url = self.url(&tape_node_api::metadata_url(&track_id))?;
-        let len = metadata.len() as u64;
-        let start = Instant::now();
-
-        let resp = self
-            .inner
-            .put(url)
-            .header("content-type", BINARY_CONTENT)
-            .body(metadata)
-            .send()
-            .await
-            .map_err(|e| self.map_reqwest_error(e))?;
-
-        self.record("put_metadata", &resp, start, len, 0);
-        self.check_status(resp).await?;
-        Ok(())
-    }
-
-    /// PUT track metadata via the internal route.
-    pub async fn put_metadata_internal(
-        &self,
-        track: Pubkey,
-        metadata: Vec<u8>,
-    ) -> Result<(), NodeError> {
-        let track_id = track.to_string();
-        let url = self.url(&tape_node_api::internal_metadata_url(&track_id))?;
-        let len = metadata.len() as u64;
-        let start = Instant::now();
-
-        let resp = self
-            .inner
-            .put(url)
-            .header("content-type", BINARY_CONTENT)
-            .body(metadata)
-            .send()
-            .await
-            .map_err(|e| self.map_reqwest_error(e))?;
-
-        self.record("put_metadata_internal", &resp, start, len, 0);
-        self.check_status(resp).await?;
-        Ok(())
-    }
-
     /// GET /v1/health — returns true if the node responds 200.
     pub async fn health_check(&self) -> Result<bool, NodeError> {
-        let url = self.url(tape_node_api::HEALTH_PATH)?;
+        let url = self.url(tape_protocol::api::HEALTH_PATH)?;
         let resp = self
             .inner
             .get(url)
@@ -207,7 +128,7 @@ impl NodeClient {
 
     /// GET /v1/stats — node statistics (JSON).
     pub async fn get_stats(&self) -> Result<NodeStats, NodeError> {
-        let url = self.url(tape_node_api::STATS_PATH)?;
+        let url = self.url(tape_protocol::api::STATS_PATH)?;
         let start = Instant::now();
 
         let resp = self
@@ -227,7 +148,7 @@ impl NodeClient {
 
     /// GET /v1/info — node info (JSON).
     pub async fn get_info(&self) -> Result<serde_json::Value, NodeError> {
-        let url = self.url(tape_node_api::INFO_PATH)?;
+        let url = self.url(tape_protocol::api::INFO_PATH)?;
         let start = Instant::now();
 
         let resp = self
@@ -246,7 +167,7 @@ impl NodeClient {
 
     /// POST spool sync — request slice data for a spool from a peer.
     pub async fn sync_spool(&self, request: &SyncSpoolRequest) -> Result<SyncSpoolResponse, NodeError> {
-        let url = self.url(tape_node_api::SYNC_SPOOL_PATH)?;
+        let url = self.url(tape_protocol::api::SYNC_SPOOL_PATH)?;
         let body =
             wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -278,7 +199,7 @@ impl NodeClient {
         request: &RepairRequest,
     ) -> Result<Vec<u8>, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::repair_url(&track_id))?;
+        let url = self.url(&tape_protocol::api::repair_url(&track_id))?;
         let body =
             wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;
@@ -306,7 +227,7 @@ impl NodeClient {
     /// GET track BLS signature.
     pub async fn get_signature(&self, track: Pubkey) -> Result<BlsSignResponse, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::sign_url(&track_id))?;
+        let url = self.url(&tape_protocol::api::sign_url(&track_id))?;
         let start = Instant::now();
 
         let resp = self
@@ -333,7 +254,7 @@ impl NodeClient {
         chunk_index: u64,
         request: &SnapshotSignatureSubmission,
     ) -> Result<(), NodeError> {
-        let url = self.url(&tape_node_api::snapshot_signature_url(
+        let url = self.url(&tape_protocol::api::snapshot_signature_url(
             target_epoch,
             chunk_index,
         ))?;
@@ -361,7 +282,7 @@ impl NodeClient {
         &self,
         epoch: u64,
     ) -> Result<Vec<tape_crypto::Hash>, NodeError> {
-        let url = self.url(&tape_node_api::snapshot_commitments_url(epoch))?;
+        let url = self.url(&tape_protocol::api::snapshot_commitments_url(epoch))?;
         let start = Instant::now();
 
         let resp = self
@@ -388,7 +309,7 @@ impl NodeClient {
         request: &InconsistencyRequest,
     ) -> Result<BlsInconsistencyResponse, NodeError> {
         let track_id = track.to_string();
-        let url = self.url(&tape_node_api::inconsistency_url(&track_id))?;
+        let url = self.url(&tape_protocol::api::inconsistency_url(&track_id))?;
         let body =
             wincode::serialize(request).map_err(|e| NodeError::Serialization(e.to_string()))?;
         let len = body.len() as u64;

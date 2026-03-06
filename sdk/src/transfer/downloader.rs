@@ -6,7 +6,7 @@ use std::sync::Arc;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
-use tape_peer::{PeerClient, GetSliceReq};
+use tape_protocol::api::{Api, GetSliceReq};
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
 
@@ -72,11 +72,11 @@ impl ParallelDownloader {
         self
     }
 
-    /// Download at least min_slices (k) valid slices via the PeerClient trait.
+    /// Download at least min_slices (k) valid slices via the Api trait.
     ///
     /// Requests slices in parallel (up to concurrency limit) and returns
     /// as soon as enough are collected.
-    pub async fn download_enough_slices<P: PeerClient>(&self, peer_client: &P) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
+    pub async fn download_enough_slices<P: Api>(&self, peer_client: &P) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
         if self.slice_to_node.is_empty() {
             return Err(DownloadError::NoNodesAvailable);
         }
@@ -134,8 +134,8 @@ impl ParallelDownloader {
         Ok(collected_slices)
     }
 
-    /// Download a specific slice via the PeerClient trait.
-    pub async fn download_slice<P: PeerClient>(&self, peer_client: &P, slice_idx: SpoolIndex) -> Result<Vec<u8>, DownloadError> {
+    /// Download a specific slice via the Api trait.
+    pub async fn download_slice<P: Api>(&self, peer_client: &P, slice_idx: SpoolIndex) -> Result<Vec<u8>, DownloadError> {
         let &node_id = self.slice_to_node.get(&slice_idx)
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 

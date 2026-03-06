@@ -36,7 +36,7 @@ pub async fn stats<S: Store, R: Rpc>(
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!("http stats start");
     use std::sync::atomic::Ordering::Relaxed;
-    use tape_node_api::NodeStats;
+    use tape_protocol::api::NodeStats;
     use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
     let store = &state.context.store;

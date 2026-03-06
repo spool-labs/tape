@@ -12,7 +12,7 @@ use tape_core::bft::is_supermajority;
 use tape_core::cert::InvalidateMessage;
 use tape_core::erasure::{group_for_spool, SPOOL_GROUP_SIZE};
 use tape_core::types::EpochNumber;
-use tape_node_api::{BlsInconsistencyResponse, InconsistencyRequest, BINARY_CONTENT};
+use tape_protocol::api::{BlsInconsistencyResponse, InconsistencyRequest, BINARY_CONTENT};
 use tape_store::ops::TrackOps;
 
 use crate::core::NodeContext;
@@ -87,7 +87,7 @@ fn verify_local_root_mismatch(
 
 fn verify_inconsistency_proof<S: Store, R: Rpc>(
     context: &NodeContext<S, R>,
-    proof: &tape_node_api::InconsistencyProof,
+    proof: &tape_protocol::api::InconsistencyProof,
     track_info: &tape_store::types::TrackInfo,
     track_address: [u8; 32],
     epoch: EpochNumber,
@@ -101,7 +101,7 @@ fn verify_inconsistency_proof<S: Store, R: Rpc>(
         return Err(ApiError::BadRequest("committee missing".into()));
     }
 
-    let max_bitmap_bits = tape_node_api::COMMITTEE_BITMAP_BYTES * 8;
+    let max_bitmap_bits = tape_protocol::api::COMMITTEE_BITMAP_BYTES * 8;
     if committee.len() > max_bitmap_bits {
         return Err(ApiError::BadRequest("committee exceeds supported bitmap size".into()));
     }

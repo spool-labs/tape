@@ -1,9 +1,9 @@
-//! HTTP implementation of the `PeerClient` trait for production node-to-node communication.
+//! HTTP implementation of the `Api` trait for production node-to-node communication.
 
 mod builder;
 mod client;
 mod metrics;
 
-pub use builder::HttpPeerClientBuilder;
-pub use client::HttpPeerClient;
-pub use metrics::PeerClientMetrics;
+pub use builder::HttpApiBuilder;
+pub use client::HttpApi;
+pub use metrics::ApiMetrics;

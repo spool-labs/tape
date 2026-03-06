@@ -12,5 +12,4 @@ pub use client::NodeClient;
 pub use error::NodeError;
 pub use metrics::NodeClientMetrics;
 pub use retry::{RetryConfig, with_retry, with_retry_all};
-pub use tape_node_api::{BlsSignResponse, SignedMessage, SlicePayload};
 pub use tape_store::types::Pubkey;

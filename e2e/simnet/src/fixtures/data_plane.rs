@@ -4,14 +4,14 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
-use tape_sdk::{HttpPeerClient, TapeKey, Tapedrive};
+use tape_sdk::{HttpApi, TapeKey, Tapedrive};
 use tape_store::ops::{SliceOps, SpoolOps};
 
 use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
     /// Create an SDK client backed by the simnet chain using an arbitrary keypair.
-    pub fn sdk(&self, keypair: &Keypair) -> Tapedrive<LiteSvmRpc, HttpPeerClient> {
+    pub fn sdk(&self, keypair: &Keypair) -> Tapedrive<LiteSvmRpc, HttpApi> {
         let rpc = self.harness.chain().rpc().clone();
         Tapedrive::new(rpc, keypair)
     }

@@ -1,10 +1,10 @@
-//! Error types for peer operations.
+//! Error types for API operations.
 
 use tape_core::types::NodeId;
 use tape_retry::Retryable;
 
 #[derive(Debug, thiserror::Error)]
-pub enum PeerError {
+pub enum ApiError {
     #[error("node not found in directory: {0:?}")]
     NodeUnresolved(NodeId),
 
@@ -33,7 +33,7 @@ pub enum PeerError {
     Other(String),
 }
 
-impl Retryable for PeerError {
+impl Retryable for ApiError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::ConnectionFailed(_) | Self::Timeout => true,

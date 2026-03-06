@@ -1,5 +1,5 @@
-//! In-memory mock implementation of the `PeerClient` trait for testing.
+//! In-memory mock implementation of the `Api` trait for testing.
 
 mod client;
 
-pub use client::MemoryPeerClient;
+pub use client::MemoryApi;

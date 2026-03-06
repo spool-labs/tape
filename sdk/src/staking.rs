@@ -15,13 +15,13 @@ use tape_api::instruction::{
 };
 use tape_core::types::coin::{Coin, TAPE};
 
-use tape_peer::PeerClient;
+use tape_protocol::Api;
 
 use crate::error::TapedriveError;
 use crate::keys::stake_key::StakeKey;
 use crate::tapedrive::Tapedrive;
 
-impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
+impl<R: Rpc, P: Api> Tapedrive<R, P> {
     /// Delegate TAPE to a node's staking pool.
     ///
     /// Creates an ATA for the stake authority, transfers TAPE from the payer,

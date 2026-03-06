@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
-use tape_node_api::{SyncSpoolEntry, SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT};
+use tape_protocol::api::{SyncSpoolEntry, SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT};
 use tape_store::ops::{SliceOps, SpoolOps};
 use tape_store::types::Pubkey;
 

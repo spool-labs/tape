@@ -7,7 +7,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_COUNT;
 use tape_core::types::{ChunkIndex, EpochNumber};
-use tape_node_api::BINARY_CONTENT;
+use tape_protocol::api::BINARY_CONTENT;
 use tape_store::ops::MetaOps;
 
 use crate::http::error::ApiError;

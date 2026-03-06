@@ -15,7 +15,7 @@ use tape_core::erasure::{group_for_spool, spool_for_slice, SPOOL_GROUP_COUNT, SP
 use tape_core::spooler::SpoolGroup;
 use tape_core::snapshot::SnapshotLog;
 use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
-use tape_node_api::SnapshotSignatureSubmission;
+use tape_protocol::api::SnapshotSignatureSubmission;
 use tape_slicer::{blob_merkle_root, ClayCoder, DEFAULT_K_OUTER, ErasureCoder, OuterCoder, Slicer};
 use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta, SnapshotPartialSignature};
 use tokio_util::sync::CancellationToken;

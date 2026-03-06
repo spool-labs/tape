@@ -2,11 +2,11 @@
 
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::StorageUnits;
-use tape_peer::PeerError;
+use tape_protocol::ApiError;
 use thiserror::Error;
 
 use crate::transfer::certify::CertificationError;
-use crate::network::NetworkError;
+use tape_protocol::peer::PeerManagerError;
 
 /// Errors that can occur during client operations.
 #[derive(Debug, Error)]
@@ -43,7 +43,7 @@ pub enum UploadError {
     InsufficientQuorum { got: usize, need: usize },
 
     #[error("peer error: {0}")]
-    Peer(#[from] PeerError),
+    Peer(#[from] ApiError),
 
     #[error("no nodes available")]
     NoNodesAvailable,
@@ -102,7 +102,7 @@ pub enum TapedriveError {
     Certification(#[from] CertificationError),
 
     #[error("network error: {0}")]
-    Network(#[from] NetworkError),
+    Network(#[from] PeerManagerError),
 
     #[error("encoding error: {0}")]
     Encoding(String),

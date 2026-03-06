@@ -84,7 +84,6 @@
 
 mod accounts;
 mod client;
-pub mod state;
 mod transactions;
 
 use tape_api::errors::{ProgramError, TapeError};
@@ -105,8 +104,6 @@ pub mod metrics;
 
 // Public exports
 pub use client::RpcClient;
-pub use state::{ProtocolState, StateCache};
-
 // Re-export tape-rpc trait types
 pub use rpc::{CommitmentLevel, Pubkey, Rpc, RpcError, Signature};
 

@@ -1,24 +1,15 @@
-//! ProtocolState — cached view of on-chain protocol state.
+//! ProtocolState — snapshot of on-chain protocol state.
 
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
-use rpc::{Rpc, RpcError};
-use tape_api::program::MEMBER_COUNT;
-use tape_api::state::System;
-use tape_core::erasure::SPOOL_COUNT;
+use tape_core::erasure::{MEMBER_COUNT, SPOOL_COUNT};
 use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::{Committee, CommitteeMember, EpochPhase};
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 
-use crate::RpcClient;
-
 /// Snapshot of on-chain protocol state.
 ///
 /// Contains committee membership, spool assignments, and epoch info.
-/// Produced by `RpcClient::fetch_state()`. Does not include network
-/// addresses — those live in `TrustedPeers` (peer crate).
+/// Does not include network addresses — those live in `TrustedPeers`.
 #[derive(Debug, Clone)]
 pub struct ProtocolState {
     pub epoch: EpochNumber,
@@ -140,104 +131,14 @@ fn group_member_count_inner(
     count
 }
 
-/// Thread-safe handle for sharing a `ProtocolState` across tasks.
-///
-/// Uses `ArcSwap` for lock-free reads with atomic updates.
-#[derive(Clone)]
-pub struct StateCache {
-    inner: Arc<ArcSwap<ProtocolState>>,
-}
-
-impl StateCache {
-    /// Create a new cache seeded with the given initial state.
-    pub fn new(initial: ProtocolState) -> Self {
-        Self {
-            inner: Arc::new(ArcSwap::from_pointee(initial)),
-        }
-    }
-
-    /// Load the current state (lock-free).
-    pub fn load(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
-        self.inner.load()
-    }
-
-    /// Replace the cached state atomically.
-    pub fn store(&self, state: ProtocolState) {
-        self.inner.store(Arc::new(state));
-    }
-
-    /// Update just the epoch phase (read-modify-write).
-    pub fn update_phase(&self, phase: EpochPhase) {
-        let current = self.inner.load();
-        let mut updated = (**current).clone();
-        updated.phase = phase;
-        self.inner.store(Arc::new(updated));
-    }
-}
-
-fn build_state(system: &System, epoch_id: EpochNumber, phase: EpochPhase, nonce: Hash) -> ProtocolState {
-    let committee: Vec<CommitteeMember> = system.committee.iter().cloned().collect();
-    let committee_prev: Vec<CommitteeMember> = if epoch_id.0 > 0 && system.committee_prev.size() > 0 {
-        system.committee_prev.iter().cloned().collect()
-    } else {
-        Vec::new()
-    };
-
-    ProtocolState {
-        epoch: epoch_id,
-        phase,
-        nonce,
-        committee,
-        committee_prev,
-        spools: system.spools,
-        spools_prev: system.spools_prev,
-    }
-}
-
-impl<R: Rpc> RpcClient<R> {
-
-    /// Fetch current protocol state from on-chain accounts.
-    ///
-    /// Makes 2 RPC calls: `get_system()` + `get_epoch()`.
-    /// Does NOT fetch individual Node accounts (network addresses).
-    pub async fn fetch_state(&self) -> Result<ProtocolState, RpcError> {
-        let system = self.get_system().await?;
-        let epoch = self.get_epoch().await?;
-
-        let phase = EpochPhase::try_from(epoch.state.phase)
-            .unwrap_or(EpochPhase::Unknown);
-
-        Ok(build_state(&system, epoch.id, phase, epoch.nonce))
-    }
-
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tape_core::types::coin::{Coin, TAPE};
 
     fn empty_state() -> ProtocolState {
         ProtocolState::default()
-    }
-
-    #[test]
-    fn state_cache_store_load() {
-        let cache = StateCache::new(empty_state());
-        assert_eq!(cache.load().epoch, EpochNumber(0));
-
-        let mut s = empty_state();
-        s.epoch = EpochNumber(5);
-        cache.store(s);
-        assert_eq!(cache.load().epoch, EpochNumber(5));
-    }
-
-    #[test]
-    fn state_cache_update_phase() {
-        let cache = StateCache::new(empty_state());
-        assert_eq!(cache.load().phase, EpochPhase::Active);
-
-        cache.update_phase(EpochPhase::Syncing);
-        assert_eq!(cache.load().phase, EpochPhase::Syncing);
     }
 
     #[test]
@@ -251,9 +152,6 @@ mod tests {
         let state = empty_state();
         assert!(state.spool_owner(0).is_none());
     }
-
-    use std::collections::HashMap;
-    use tape_core::types::coin::{Coin, TAPE};
 
     fn state_with_3_members() -> ProtocolState {
         let mut state = ProtocolState::default();

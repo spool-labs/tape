@@ -7,7 +7,7 @@ use std::time::Duration;
 use rpc::Rpc;
 use store::Store;
 use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
-use tape_node_api::{SyncSpoolRequest, SyncSpoolResponse};
+use tape_protocol::api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};

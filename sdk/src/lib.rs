@@ -3,12 +3,11 @@
 pub mod codec;
 pub mod error;
 pub mod keys;
-pub mod network;
 pub mod staking;
 pub mod tapedrive;
 pub mod transfer;
 
-pub use network::{Network, NetworkError};
+pub use tape_protocol::peer::{PeerManager, PeerManagerError};
 pub use keys::stake_key::StakeKey;
 pub use keys::tape_key::TapeKey;
 pub use tapedrive::Tapedrive;
@@ -35,7 +34,7 @@ pub use keys::helpers::{
 
 pub use rpc_client::RpcClient;
 pub use rpc_client::{Rpc, RpcConfig, RpcError, SolanaRpc};
-pub use peer_http::HttpPeerClient;
+pub use peer_http::HttpApi;
 pub use tape_core::erasure::{MAX_BLOB_SIZE, MAX_SLICE_SIZE, SPOOL_GROUP_SIZE, SPOOL_COUNT};
 pub use tape_slicer::{BlobMerkleRoot, MERKLE_HEIGHT};
-pub use tape_node_api::SlicePayload;
+pub use tape_protocol::api::SlicePayload;

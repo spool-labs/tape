@@ -4,14 +4,14 @@ const LATENCY_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
 ];
 
-pub struct PeerClientMetrics {
+pub struct ApiMetrics {
     pub request_duration: HistogramVec,
     pub requests_total: IntCounterVec,
     pub bytes_sent: IntCounterVec,
     pub bytes_received: IntCounterVec,
 }
 
-impl PeerClientMetrics {
+impl ApiMetrics {
     pub fn new(registry: &Registry) -> Self {
         let request_duration = HistogramVec::new(
             prometheus::histogram_opts!(

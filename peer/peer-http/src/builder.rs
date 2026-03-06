@@ -2,25 +2,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peer_tls::TlsConfig;
-use tape_peer::TrustedPeers;
+use tape_protocol::peer::TrustedPeers;
 
-use crate::metrics::PeerClientMetrics;
-use crate::HttpPeerClient;
+use crate::metrics::ApiMetrics;
+use crate::HttpApi;
 
-pub struct HttpPeerClientBuilder {
+pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
     tls: Option<TlsConfig>,
-    metrics: Option<Arc<PeerClientMetrics>>,
+    metrics: Option<Arc<ApiMetrics>>,
 }
 
-impl Default for HttpPeerClientBuilder {
+impl Default for HttpApiBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HttpPeerClientBuilder {
+impl HttpApiBuilder {
     pub fn new() -> Self {
         Self {
             connect_timeout: Duration::from_secs(5),
@@ -45,12 +45,12 @@ impl HttpPeerClientBuilder {
         self
     }
 
-    pub fn metrics(mut self, metrics: Arc<PeerClientMetrics>) -> Self {
+    pub fn metrics(mut self, metrics: Arc<ApiMetrics>) -> Self {
         self.metrics = Some(metrics);
         self
     }
 
-    pub fn build(self) -> Result<HttpPeerClient, peer_tls::TlsError> {
+    pub fn build(self) -> Result<HttpApi, peer_tls::TlsError> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
@@ -68,7 +68,7 @@ impl HttpPeerClientBuilder {
 
         let scheme = if has_tls_keys { "https" } else { "http" };
 
-        Ok(HttpPeerClient {
+        Ok(HttpApi {
             peers: TrustedPeers::new(),
             client,
             metrics: self.metrics,

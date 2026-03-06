@@ -129,7 +129,7 @@ pub struct SyncSpoolEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MERKLE_HEIGHT;
+    use crate::api::MERKLE_HEIGHT;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 
     #[test]

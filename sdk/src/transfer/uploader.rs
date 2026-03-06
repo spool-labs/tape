@@ -11,10 +11,9 @@ use tape_core::erasure::spool_for_slice;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::Hash;
-use tape_node_api::SlicePayload;
-use tape_peer::{PeerClient, PutSliceReq};
+use tape_protocol::api::{Api, SlicePayload, PutSliceReq};
 use tape_retry::RetryConfig;
-use rpc_client::ProtocolState;
+use tape_protocol::ProtocolState;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
 use tracing::warn;
@@ -96,12 +95,12 @@ impl DistributedUploader {
         self
     }
 
-    /// Upload all slices to the network via the PeerClient trait.
+    /// Upload all slices to the network via the Api trait.
     ///
     /// Sends each slice to the correct spool owner based on the committee's
     /// spool assignment. Returns when all nodes have been attempted.
     /// Failed uploads are left for the recovery worker to handle.
-    pub async fn upload_all<P: PeerClient>(&self, peer_client: &P) -> Result<(), UploadError> {
+    pub async fn upload_all<P: Api>(&self, peer_client: &P) -> Result<(), UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
         }

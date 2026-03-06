@@ -1,21 +1,22 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tape_peer::{
+use tape_protocol::api::{
+    Api, ApiError,
     CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
     GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, PeerClient, PeerError, PeerReq, PeerRes, PutSliceReq,
+    InvalidateReq, InvalidateRes, PeerReq, PeerRes, PutSliceReq,
     PutSliceRes, PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
-    TrustedPeers,
 };
+use tape_protocol::peer::TrustedPeers;
 use tape_core::types::NodeId;
 
-pub struct MemoryPeerClient {
+pub struct MemoryApi {
     peers: TrustedPeers,
     handler: Arc<dyn Fn(NodeId, PeerReq) -> PeerRes + Send + Sync>,
 }
 
-impl MemoryPeerClient {
+impl MemoryApi {
     pub fn new(handler: impl Fn(NodeId, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
         Self {
             peers: TrustedPeers::new(),
@@ -23,7 +24,7 @@ impl MemoryPeerClient {
         }
     }
 
-    /// Creates a client where every call returns `PeerError::Other("not implemented")`.
+    /// Creates a client where every call returns `ApiError::Other("not implemented")`.
     pub fn noop() -> Self {
         Self::new(|_, req| match req {
             PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(not_impl())),
@@ -39,10 +40,14 @@ impl MemoryPeerClient {
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
     }
+
+    pub fn peers(&self) -> &TrustedPeers {
+        &self.peers
+    }
 }
 
-fn not_impl() -> PeerError {
-    PeerError::Other("not implemented".into())
+fn not_impl() -> ApiError {
+    ApiError::Other("not implemented".into())
 }
 
 macro_rules! dispatch {
@@ -50,58 +55,54 @@ macro_rules! dispatch {
         let res = ($self.handler)($node, PeerReq::$variant($req));
         match res {
             PeerRes::$variant(r) => r,
-            _ => Err(PeerError::Other("handler returned wrong variant".into())),
+            _ => Err(ApiError::Other("handler returned wrong variant".into())),
         }
     }};
 }
 
 #[async_trait]
-impl PeerClient for MemoryPeerClient {
-    fn peers(&self) -> &TrustedPeers {
-        &self.peers
-    }
-
-    async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, PeerError> {
+impl Api for MemoryApi {
+    async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         dispatch!(self, node, PutSliceReq { track: req.track, spool: req.spool, payload: req.payload.clone() }, PutSlice)
     }
 
-    async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, PeerError> {
+    async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         dispatch!(self, node, GetSliceReq { track: req.track, spool: req.spool }, GetSlice)
     }
 
-    async fn get_metadata(&self, node: NodeId, req: &GetMetadataReq) -> Result<GetMetadataRes, PeerError> {
+    async fn get_metadata(&self, node: NodeId, req: &GetMetadataReq) -> Result<GetMetadataRes, ApiError> {
         dispatch!(self, node, GetMetadataReq { track: req.track }, GetMetadata)
     }
 
-    async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, PeerError> {
+    async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError> {
         dispatch!(self, node, SyncReq { spool_index: req.spool_index, cursor: req.cursor, limit: req.limit }, Sync)
     }
 
-    async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, PeerError> {
+    async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
         dispatch!(self, node, RepairReq { track: req.track, helper_spool: req.helper_spool, stripes: req.stripes.clone() }, Repair)
     }
 
-    async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, PeerError> {
+    async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
         dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
-    async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, PeerError> {
+    async fn invalidate(&self, node: NodeId, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
     }
 
-    async fn put_snapshot(&self, node: NodeId, req: &PutSnapshotReq) -> Result<PutSnapshotRes, PeerError> {
+    async fn put_snapshot(&self, node: NodeId, req: &PutSnapshotReq) -> Result<PutSnapshotRes, ApiError> {
         dispatch!(self, node, PutSnapshotReq { epoch: req.epoch, chunk_index: req.chunk_index, submission: req.submission.clone() }, PutSnapshot)
     }
 
-    async fn get_snapshot(&self, node: NodeId, req: &GetSnapshotReq) -> Result<GetSnapshotRes, PeerError> {
+    async fn get_snapshot(&self, node: NodeId, req: &GetSnapshotReq) -> Result<GetSnapshotRes, ApiError> {
         dispatch!(self, node, GetSnapshotReq { epoch: req.epoch }, GetSnapshot)
     }
 
-    async fn get_health(&self, node: NodeId, _req: &GetHealthReq) -> Result<GetHealthRes, PeerError> {
+    async fn get_health(&self, node: NodeId, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {
         dispatch!(self, node, GetHealthReq, GetHealth)
     }
 
-    async fn get_stats(&self, node: NodeId, _req: &GetStatsReq) -> Result<GetStatsRes, PeerError> {
+    async fn get_stats(&self, node: NodeId, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
         dispatch!(self, node, GetStatsReq, GetStats)
     }
 }
@@ -112,16 +113,16 @@ mod tests {
 
     #[tokio::test]
     async fn noop_returns_error() {
-        let client = MemoryPeerClient::noop();
+        let client = MemoryApi::noop();
         let res = client.get_health(NodeId(1), &GetHealthReq).await;
         assert!(res.is_err());
     }
 
     #[tokio::test]
     async fn custom_handler() {
-        let client = MemoryPeerClient::new(|node, req| match req {
+        let client = MemoryApi::new(|node, req| match req {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Ok(GetHealthRes { ok: node.0 == 1 })),
-            _ => PeerRes::GetHealth(Err(PeerError::Other("unexpected".into()))),
+            _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
         });
 
         let res = client.get_health(NodeId(1), &GetHealthReq).await.unwrap();

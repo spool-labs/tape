@@ -87,41 +87,13 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
             get(handlers::metadata::get_metadata::<S, R>),
         );
 
-        // Public data ingestion (PUT slice + PUT metadata)
-        let mut public_data = Router::new()
+        // Slice ingestion
+        let slice_ingest = Router::new()
             .route(
                 "/v1/tracks/{track_id}/slices/{spool_id}",
                 put(handlers::slice::put_slice::<S, R>),
             )
-            .layer(DefaultBodyLimit::max(limits.slice_body_max))
-            .merge(
-                Router::new()
-                    .route(
-                        "/v1/tracks/{track_id}/metadata",
-                        put(handlers::metadata::put_metadata::<S, R>),
-                    )
-                    .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
-            );
-
-        if let Some(limit) = limits.public_slice_limit {
-            public_data = public_data.layer(ConcurrencyLimitLayer::new(limit));
-        }
-
-        // Internal data ingestion
-        let internal_data = Router::new()
-            .route(
-                "/v1/internal/tracks/{track_id}/slices/{spool_id}",
-                put(handlers::slice::put_slice_internal::<S, R>),
-            )
-            .layer(DefaultBodyLimit::max(limits.slice_body_max))
-            .merge(
-                Router::new()
-                    .route(
-                        "/v1/internal/tracks/{track_id}/metadata",
-                        put(handlers::metadata::put_metadata_internal::<S, R>),
-                    )
-                    .layer(DefaultBodyLimit::max(limits.metadata_body_max)),
-            );
+            .layer(DefaultBodyLimit::max(limits.slice_body_max));
 
         // Sync spool
         let mut sync = Router::new()
@@ -157,21 +129,16 @@ impl<S: Store + 'static, R: Rpc + 'static> HttpServer<S, R> {
         }
 
         // Assemble all route groups
-        let mut app = Router::new()
+        let app = Router::new()
             .merge(observability)
             .merge(status)
             .merge(slice_read)
             .merge(metadata_read)
             .merge(sign)
-            .merge(internal_data)
+            .merge(slice_ingest)
             .merge(sync)
             .merge(repair)
             .merge(inconsistency);
-
-        // Only add public data routes if public_ingest is enabled
-        if limits.public_ingest {
-            app = app.merge(public_data);
-        }
 
         app.with_state(state)
     }
@@ -211,7 +178,7 @@ mod tests {
     use crate::state::ChainState;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
-    use tape_node_api::{
+    use tape_protocol::api::{
         RepairRequest, SnapshotSignatureSubmission, SlicePayload, StripeSubChunkRequest,
         SyncSpoolRequest, SyncSpoolResponse,
     };
@@ -326,7 +293,7 @@ mod tests {
         let put_resp = app
             .oneshot(
                 Request::put(format!(
-                    "/v1/internal/tracks/{track_b58}/slices/{spool_id}"
+                    "/v1/tracks/{track_b58}/slices/{spool_id}"
                 ))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(wincode::serialize(&payload).unwrap()))
@@ -386,7 +353,7 @@ mod tests {
         let resp = app
             .oneshot(
                 Request::put(format!(
-                    "/v1/internal/tracks/{track_b58}/slices/{spool_id}"
+                    "/v1/tracks/{track_b58}/slices/{spool_id}"
                 ))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(wincode::serialize(&payload).unwrap()))
@@ -891,7 +858,7 @@ mod tests {
     #[tokio::test]
     async fn body_limit() {
         let mut config = test_config();
-        config.node_api.ingress_limits.metadata_body_max = 10;
+        config.node_api.ingress_limits.slice_body_max = 10;
         let ctx = NodeContext::new(
             config,
             Keypair::new(),
@@ -905,7 +872,7 @@ mod tests {
         let app = test_router(ctx);
         let resp = app
             .oneshot(
-                Request::put(format!("/v1/tracks/{track_b58}/metadata"))
+                Request::put(format!("/v1/tracks/{track_b58}/slices/0"))
                     .header("content-type", "application/octet-stream")
                     .body(Body::from(vec![0u8; 100]))
                     .unwrap(),

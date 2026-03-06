@@ -4,13 +4,10 @@ use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
-use tape_node_api::{
-    InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission,
-    SyncSpoolEntry,
-};
+use crate::api::types::{ InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission, SyncSpoolEntry, };
 use tape_crypto::Pubkey;
 
-use crate::PeerError;
+use crate::api::ApiError;
 
 #[derive(Clone, Debug)]
 pub struct PutSliceReq {
@@ -60,7 +57,7 @@ pub struct SyncRes {
 pub struct RepairReq {
     pub track: Pubkey,
     pub helper_spool: SpoolIndex,
-    pub stripes: Vec<tape_node_api::StripeSubChunkRequest>,
+    pub stripes: Vec<crate::api::types::StripeSubChunkRequest>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,15 +142,15 @@ pub enum PeerReq {
 }
 
 pub enum PeerRes {
-    PutSlice(Result<PutSliceRes, PeerError>),
-    GetSlice(Result<GetSliceRes, PeerError>),
-    GetMetadata(Result<GetMetadataRes, PeerError>),
-    Sync(Result<SyncRes, PeerError>),
-    Repair(Result<RepairRes, PeerError>),
-    Certify(Result<CertifyRes, PeerError>),
-    Invalidate(Result<InvalidateRes, PeerError>),
-    PutSnapshot(Result<PutSnapshotRes, PeerError>),
-    GetSnapshot(Result<GetSnapshotRes, PeerError>),
-    GetHealth(Result<GetHealthRes, PeerError>),
-    GetStats(Result<GetStatsRes, PeerError>),
+    PutSlice(Result<PutSliceRes, ApiError>),
+    GetSlice(Result<GetSliceRes, ApiError>),
+    GetMetadata(Result<GetMetadataRes, ApiError>),
+    Sync(Result<SyncRes, ApiError>),
+    Repair(Result<RepairRes, ApiError>),
+    Certify(Result<CertifyRes, ApiError>),
+    Invalidate(Result<InvalidateRes, ApiError>),
+    PutSnapshot(Result<PutSnapshotRes, ApiError>),
+    GetSnapshot(Result<GetSnapshotRes, ApiError>),
+    GetHealth(Result<GetHealthRes, ApiError>),
+    GetStats(Result<GetStatsRes, ApiError>),
 }

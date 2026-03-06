@@ -25,7 +25,7 @@ use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
-use tape_peer::{PeerClient, CertifyReq, CertifyRes, PeerError};
+use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
 
 /// Errors that can occur during certification.
 #[derive(Debug, Error)]
@@ -84,22 +84,22 @@ pub enum NodeSignError {
     Other(String),
 }
 
-impl From<&PeerError> for NodeSignError {
-    fn from(err: &PeerError) -> Self {
+impl From<&ApiError> for NodeSignError {
+    fn from(err: &ApiError) -> Self {
         match err {
-            PeerError::NotFound => NodeSignError::NotFound,
-            PeerError::NotInCommittee => NodeSignError::NotInCommittee,
-            PeerError::Timeout => NodeSignError::Timeout,
-            PeerError::NotResponsible => NodeSignError::NotResponsible,
-            PeerError::ConnectionFailed(msg) => NodeSignError::Network(msg.clone()),
-            PeerError::NodeUnresolved(id) => NodeSignError::Network(format!("node {:?} unresolved", id)),
+            ApiError::NotFound => NodeSignError::NotFound,
+            ApiError::NotInCommittee => NodeSignError::NotInCommittee,
+            ApiError::Timeout => NodeSignError::Timeout,
+            ApiError::NotResponsible => NodeSignError::NotResponsible,
+            ApiError::ConnectionFailed(msg) => NodeSignError::Network(msg.clone()),
+            ApiError::NodeUnresolved(id) => NodeSignError::Network(format!("node {:?} unresolved", id)),
             _ => NodeSignError::Other(err.to_string()),
         }
     }
 }
 
-impl From<PeerError> for NodeSignError {
-    fn from(err: PeerError) -> Self {
+impl From<ApiError> for NodeSignError {
+    fn from(err: ApiError) -> Self {
         NodeSignError::from(&err)
     }
 }
@@ -182,8 +182,8 @@ impl CertificationCollector {
         Self::new(CertificationConfig::default())
     }
 
-    /// Collect signatures from committee members for a track via the PeerClient trait.
-    pub async fn collect_signatures<P: PeerClient>(
+    /// Collect signatures from committee members for a track via the Api trait.
+    pub async fn collect_signatures<P: Api>(
         &self,
         peer_client: &P,
         track_address: &Pubkey,
@@ -577,13 +577,13 @@ mod tests {
 
     #[test]
     fn node_sign_error_from_peer_error() {
-        let err = PeerError::NotFound;
+        let err = ApiError::NotFound;
         assert!(matches!(NodeSignError::from(&err), NodeSignError::NotFound));
 
-        let err = PeerError::Timeout;
+        let err = ApiError::Timeout;
         assert!(matches!(NodeSignError::from(&err), NodeSignError::Timeout));
 
-        let err = PeerError::NotInCommittee;
+        let err = ApiError::NotInCommittee;
         assert!(matches!(
             NodeSignError::from(&err),
             NodeSignError::NotInCommittee
