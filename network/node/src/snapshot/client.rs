@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_api::state::Track;
@@ -18,8 +19,8 @@ use crate::core::NodeContext;
 use crate::core::PeerHandle;
 use crate::TaskOutcome;
 
-pub async fn fetch_commitments<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: &PeerHandle,
     committee: &[NodeInfo],
     local_epoch: EpochNumber,
@@ -101,8 +102,8 @@ pub async fn fetch_commitments<S: Store, R: Rpc>(
     Ok(consensus_commitments)
 }
 
-async fn verify_commitments<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+async fn verify_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     commitments: &[Hash],
 ) -> Result<(), TaskOutcome> {

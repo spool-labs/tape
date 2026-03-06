@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
@@ -13,8 +14,8 @@ use tape_crypto::Hash;
 
 use crate::core::NodeContext;
 
-pub async fn submit_invalidate_track<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     tape_address: Pubkey,
     track: Pubkey,
     epoch: tape_core::types::EpochNumber,

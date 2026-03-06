@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_core::system::EpochPhase;
@@ -72,12 +73,12 @@ struct FsmState {
 }
 
 /// Single-writer state machine that processes blocks and updates local storage.
-pub struct Fsm<S: Store, R: Rpc> {
-    context: Arc<NodeContext<S, R>>,
+pub struct Fsm<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     state: FsmState,
 }
 
-impl<S: Store, R: Rpc> Fsm<S, R> {}
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {}
 
 
 #[cfg(test)]

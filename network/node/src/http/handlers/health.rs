@@ -4,20 +4,21 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/health — liveness check.
-pub async fn health<S: Store, R: Rpc>() -> StatusCode {
+pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>() -> StatusCode {
     tracing::trace!("http health check");
     StatusCode::OK
 }
 
 /// GET /v1/info — node identification.
-pub async fn info<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn info<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> impl IntoResponse {
     tracing::trace!(name = %state.context.config.name, "http node info");
     let config = &state.context.config;
@@ -31,8 +32,8 @@ pub async fn info<S: Store, R: Rpc>(
 }
 
 /// GET /v1/stats — node statistics.
-pub async fn stats<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!("http stats start");
     use std::sync::atomic::Ordering::Relaxed;

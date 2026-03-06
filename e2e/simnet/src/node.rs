@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::{fs, io};
 
 use anyhow::{anyhow, Context, Result};
+use peer_memory::MemoryApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
@@ -15,6 +16,7 @@ use tape_node::core::{
     NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig,
 };
 use tape_node::runtime::{spawn_runtime, RuntimeHandles};
+use tape_protocol::peer::{PeerManager, TrustedPeers};
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -46,7 +48,7 @@ struct TestNodeCtx {
     keypair: Option<Keypair>,
     bls_keypair: BlsPrivateKey,
     rpc: Option<RpcClient<LiteSvmRpc>>,
-    context: Option<Arc<NodeContext<MemoryStore, LiteSvmRpc>>>,
+    context: Option<Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>>,
 }
 
 impl TestNodeCtx {
@@ -167,7 +169,7 @@ impl TestNode {
         self.id
     }
 
-    pub fn context(&self) -> Arc<NodeContext<MemoryStore, LiteSvmRpc>> {
+    pub fn context(&self) -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
         self.node_ctx.context
             .as_ref()
             .cloned()
@@ -255,7 +257,11 @@ impl TestNode {
                         .take()
                         .ok_or_else(|| anyhow!("node rpc missing"))?;
 
-                    let context = NodeContextBuilder::<MemoryStore, LiteSvmRpc>::new(config, keypair, store, rpc)
+                    let api = Arc::new(MemoryApi::noop());
+                    let peers = Arc::new(TrustedPeers::new());
+                    let peer_rpc = Arc::new(RpcClient::from_rpc(LiteSvmRpc::new()));
+                    let peer_manager = Arc::new(PeerManager::new(peer_rpc, api, peers));
+                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, store, rpc, peer_manager)
                         .build()
                         .await
                         .context("build node context")?;

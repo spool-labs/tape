@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_store::ops::{EventLogOps, MetaOps, SliceOps, SpoolOps};
@@ -30,8 +31,8 @@ use crate::TaskOutcome;
 
 /// Build snapshot: serialize event log, outer RS encode into 50 chunks,
 /// inner Clay encode each chunk into 20 slices, store commitments + slices.
-pub async fn run_build<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -236,8 +237,8 @@ pub async fn run_build<S: Store, R: Rpc>(
     TaskOutcome::Success
 }
 
-async fn broadcast_snapshot_signature<S: Store, R: Rpc>(
-    _context: &Arc<NodeContext<S, R>>,
+async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    _context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: &PeerHandle,
     committee: &[NodeInfo],
     our_member_index: usize,

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_core::bft::{is_supermajority, min_correct};
 use tape_core::cert::snapshot::SnapshotMessage;
@@ -20,8 +21,8 @@ use crate::snapshot::{
 use crate::TaskOutcome;
 
 /// Collect snapshot certifications from peer-submitted partial signatures.
-pub async fn run_collect<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run_collect<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -121,8 +122,8 @@ enum GroupResult {
     Fail(String),
 }
 
-async fn certify_group<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     committee: &[NodeInfo],
     local_epoch: EpochNumber,
     group: SpoolGroup,
@@ -235,8 +236,8 @@ async fn certify_group<S: Store, R: Rpc>(
     Ok(GroupResult::Cert)
 }
 
-fn store_group_cert<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+fn store_group_cert<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     chunk_index: ChunkIndex,
     signatures: &[BlsSignature],

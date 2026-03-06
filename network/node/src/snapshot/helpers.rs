@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::signature::Signer;
 use store::Store;
@@ -76,8 +77,8 @@ pub struct SnapshotGroupArtifacts {
 
 
 /// Build a typed snapshot task context from on-chain and local committee state.
-pub fn load_snapshot_task_context<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     need: SnapshotNeed,
     with_member: bool,
 ) -> Result<SnapshotTaskContext, TaskOutcome> {
@@ -136,8 +137,8 @@ pub fn load_snapshot_task_context<S: Store, R: Rpc>(
 }
 
 /// Check if all snapshot build artifacts exist for all groups.
-pub fn is_snapshot_build_complete<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub fn is_snapshot_build_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
 ) -> Result<bool, String> {
     for group in 0..SPOOL_GROUP_COUNT {
@@ -165,8 +166,8 @@ pub fn is_snapshot_build_complete<S: Store, R: Rpc>(
 }
 
 /// Check if a single snapshot chunk has both commitment and metadata.
-pub fn is_snapshot_chunk_ready<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub fn is_snapshot_chunk_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     group: SpoolGroup,
 ) -> Result<bool, String> {
@@ -194,8 +195,8 @@ pub fn is_snapshot_chunk_ready<S: Store, R: Rpc>(
 }
 
 /// Load commitment, metadata, and cert for a single snapshot group.
-pub fn load_group_artifacts<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub fn load_group_artifacts<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     group: SpoolGroup,
 ) -> Result<SnapshotGroupArtifacts, String> {

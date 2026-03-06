@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use solana_sdk::signer::Signer;
 use store::Store;
 use tape_core::system::EpochPhase;
@@ -42,9 +43,9 @@ pub enum Action {
 /// (what we've told the task_runner to run). Each tick, the diff between them
 /// produces Schedule and Cancel actions. State changes from the FSM mutate
 /// `desired`; task results from the task_runner remove keys from `scheduled`.
-pub struct TaskScheduler<S: Store, R: Rpc> {
+pub struct TaskScheduler<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Shared node state (store, RPC client, identity, config).
-    pub context: Arc<NodeContext<S, R>>,
+    pub context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     /// Tasks that SHOULD be running given current state.
     pub desired: HashSet<Task>,
     /// Tasks we've told the task_runner to schedule (and haven't completed/cancelled).
@@ -55,8 +56,8 @@ pub struct TaskScheduler<S: Store, R: Rpc> {
     pub snapshot: SnapshotPlanner,
 }
 
-impl<S: Store, R: Rpc> TaskScheduler<S, R> {
-    pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockchain> {
+    pub fn new(context: Arc<NodeContext<Db, Cluster, Blockchain>>) -> Self {
         Self {
             context,
             desired: HashSet::new(),
@@ -562,6 +563,7 @@ mod tests {
 
     use bytemuck::Zeroable;
     use rpc::Rpc;
+use tape_protocol::Api;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signer::Signer;
     use store::Store;
@@ -595,8 +597,8 @@ mod tests {
     use crate::core::test_utils::test_context;
     use crate::{Task, TaskResult};
 
-    fn seed_state<S: Store, R: Rpc>(
-        ctx: &Arc<NodeContext<S, R>>,
+    fn seed_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         phase: EpochPhase,
         status: NodeStatus,
@@ -612,8 +614,8 @@ mod tests {
         });
     }
 
-    fn mark_snapshot_build_complete<S: Store, R: Rpc>(
-        ctx: &Arc<NodeContext<S, R>>,
+    fn mark_snapshot_build_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         local_epoch: EpochNumber,
     ) {
         for group in 0..SPOOL_GROUP_COUNT {
@@ -637,8 +639,8 @@ mod tests {
         }
     }
 
-    fn mark_snapshot_group_ready<S: Store, R: Rpc>(
-        ctx: &Arc<NodeContext<S, R>>,
+    fn mark_snapshot_group_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         local_epoch: EpochNumber,
         group: u64,
     ) {
@@ -663,8 +665,8 @@ mod tests {
             .unwrap();
     }
 
-    fn put_our_committee<S: Store, R: Rpc>(
-        ctx: &Arc<NodeContext<S, R>>,
+    fn put_our_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         spools: Vec<u16>,
     ) {
@@ -682,8 +684,8 @@ mod tests {
         ctx.store.put_committee(epoch, members).unwrap();
     }
 
-    fn put_non_our_committee<S: Store, R: Rpc>(
-        ctx: &Arc<NodeContext<S, R>>,
+    fn put_non_our_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         spools: Vec<u16>,
     ) {

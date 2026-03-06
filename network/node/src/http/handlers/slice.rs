@@ -5,6 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::{COMMITMENT_TREE_HEIGHT, SPOOL_GROUP_SIZE};
@@ -18,8 +19,8 @@ use crate::http::state::{require_chain_epoch, AppState};
 
 /// GET /v1/tracks/:track_id/slices/:spool_id
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
-pub async fn get_slice<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, u16)>,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(track_id = %track_id, spool_id, "http get_slice start");
@@ -55,8 +56,8 @@ pub async fn get_slice<S: Store, R: Rpc>(
 
 /// PUT /v1/tracks/:track_id/slices/:spool_id — slice upload.
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
-pub async fn put_slice<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, u16)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -152,8 +153,8 @@ pub async fn put_slice<S: Store, R: Rpc>(
 }
 
 /// Verify the node owns the given spool.
-fn verify_spool_ownership<S: Store, R: Rpc>(
-    state: &AppState<S, R>,
+fn verify_spool_ownership<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
     spool_id: u16,
 ) -> Result<(), ApiError> {
     tracing::trace!(spool_id, "http slice ownership check");

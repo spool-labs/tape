@@ -4,6 +4,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_store::ops::TrackOps;
 
@@ -11,8 +12,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/metadata
-pub async fn get_metadata<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn get_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(track_id = %track_id, "http get_metadata start");

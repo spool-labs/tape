@@ -33,10 +33,12 @@ pub mod test_utils {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use peer_memory::MemoryApi;
     use rpc_client::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
+    use tape_protocol::peer::{PeerManager, TrustedPeers};
     use tape_store::{MemoryStore, TapeStore};
 
     use super::{NodeApiConfig, NodeConfig, NodeContext, RecoveryConfig, TlsConfig};
@@ -62,7 +64,11 @@ pub mod test_utils {
         }
     }
 
-    pub fn test_context() -> Arc<NodeContext<MemoryStore, LiteSvmRpc>> {
+    pub fn test_context() -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
+        let rpc = Arc::new(RpcClient::from_rpc(LiteSvmRpc::new()));
+        let api = Arc::new(MemoryApi::noop());
+        let peers = Arc::new(TrustedPeers::new());
+        let peer_manager = Arc::new(PeerManager::new(rpc.clone(), api, peers));
         let store = TapeStore::new(MemoryStore::new());
         NodeContext::new(
             test_config(),
@@ -70,6 +76,7 @@ pub mod test_utils {
             BlsPrivateKey::from_random(),
             store,
             RpcClient::from_rpc(LiteSvmRpc::new()),
+            peer_manager,
         )
     }
 }

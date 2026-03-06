@@ -6,6 +6,7 @@ use std::time::Duration;
 use rpc::{Rpc, RpcError};
 use solana_sdk::signature::Signer;
 use store::Store;
+use tape_protocol::Api;
 use tape_api::errors::TapeError;
 use tokio_util::sync::CancellationToken;
 
@@ -36,7 +37,7 @@ fn classify_join_network_error(
     }
 }
 
-async fn already_joined<S: Store, R: Rpc>(context: &NodeContext<S, R>) -> Result<bool, String> {
+async fn already_joined<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &NodeContext<Db, Cluster, Blockchain>) -> Result<bool, String> {
     let authority = context.keypair.pubkey();
     let node = context
         .rpc
@@ -51,8 +52,8 @@ async fn already_joined<S: Store, R: Rpc>(context: &NodeContext<S, R>) -> Result
     Ok(system.committee_next.index_of(&node.id).is_some())
 }
 
-pub async fn run<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let result = tokio::select! {

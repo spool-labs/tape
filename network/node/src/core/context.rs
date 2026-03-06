@@ -14,6 +14,8 @@ use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
+use tape_protocol::Api;
+use tape_protocol::peer::PeerManager;
 use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 
@@ -46,8 +48,8 @@ pub enum ContextError {
 
 /// Central context holding all shared node state.
 ///
-/// Generic over storage backend `S` and RPC implementation `R`.
-pub struct NodeContext<S: Store, R: Rpc> {
+/// Generic over storage backend `Db`, cluster API `Cluster`, and RPC `Blockchain`.
+pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Node configuration.
     pub config: Arc<NodeConfig>,
     /// This node's authority keypair.
@@ -55,20 +57,22 @@ pub struct NodeContext<S: Store, R: Rpc> {
     /// BLS private key for committee signing.
     pub bls_keypair: Arc<BlsPrivateKey>,
     /// Typed storage layer.
-    pub store: Arc<TapeStore<S>>,
+    pub store: Arc<TapeStore<Db>>,
     /// Runtime statistics (atomic counters).
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
-    pub rpc: Arc<RpcClient<R>>,
+    pub rpc: Arc<RpcClient<Blockchain>>,
     /// In-memory chain state (epoch, phase, committee, spools).
     pub chain_state: ChainStateHandle,
+    /// Peer manager for cluster communication.
+    pub peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
     /// Onchain unique id for this node after registration
     node_id: NodeId,
     /// PDA-derived node account address (cached from authority keypair).
     node_address: Pubkey,
 }
 
-impl<S: Store, R: Rpc> NodeContext<S, R> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
     /// Construct context without startup on-chain node-id resolution.
     ///
     /// Intended for tests/local fixtures. Runtime startup should use
@@ -77,12 +81,14 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
-        store: TapeStore<S>,
-        rpc: RpcClient<R>,
+        store: TapeStore<Db>,
+        rpc: RpcClient<Blockchain>,
+        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
     ) -> Arc<Self> {
-        Self::from_parts(config, keypair, bls_keypair, store, rpc, NodeId(0))
+        Self::from_parts(
+            config, keypair, bls_keypair, store, rpc, peer_manager, NodeId(0))
     }
-    
+
     /// This node's PDA-derived on-chain account address. Use this to compare
     /// against `NodeInfo.node_address` in committee lookups.
     pub fn node_address(&self) -> Pubkey {
@@ -93,11 +99,13 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
         config: NodeConfig,
         keypair: Keypair,
         bls_keypair: BlsPrivateKey,
-        store: TapeStore<S>,
-        rpc: RpcClient<R>,
+        store: TapeStore<Db>,
+        rpc: RpcClient<Blockchain>,
+        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
         node_id: NodeId,
     ) -> Arc<Self> {
         let (node_address, _) = node_pda(keypair.pubkey());
+
         Arc::new(Self {
             config: Arc::new(config),
             keypair: Arc::new(keypair),
@@ -106,6 +114,7 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
             chain_state: ChainStateHandle::new(),
+            peer_manager,
             node_id,
             node_address,
         })
@@ -123,28 +132,32 @@ impl<S: Store, R: Rpc> NodeContext<S, R> {
 
 }
 
-pub struct NodeContextBuilder<S: Store, R: Rpc> {
+pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
-    store: TapeStore<S>,
-    rpc: RpcClient<R>,
+    store: TapeStore<Db>,
+    rpc: RpcClient<Blockchain>,
+    peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
 }
 
-impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, Blockchain> {
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
-        store: TapeStore<S>,
-        rpc: RpcClient<R>,
+        store: TapeStore<Db>,
+        rpc: RpcClient<Blockchain>,
+        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
     ) -> Self {
         Self {
             config,
             keypair,
             store,
             rpc,
+            peer_manager,
         }
     }
 
+    //TODO: this is more than likely the wrong place for this and is likely duplicate code
     fn load_bls_keypair(config: &NodeConfig) -> Result<BlsPrivateKey, ContextError> {
         let path = expand_path(config.bls_keypair.to_string_lossy().as_ref());
         let bytes = std::fs::read(&path)
@@ -161,7 +174,7 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
     }
 
     pub async fn resolve_node_id(
-        rpc: &RpcClient<R>,
+        rpc: &RpcClient<Blockchain>,
         keypair: &Keypair,
     ) -> Result<NodeId, ContextError> {
         let authority = keypair.pubkey();
@@ -172,7 +185,7 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
         Ok(node.id)
     }
 
-    pub async fn build(self) -> Result<Arc<NodeContext<S, R>>, ContextError> {
+    pub async fn build(self) -> Result<Arc<NodeContext<Db, Cluster, Blockchain>>, ContextError> {
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         self.store
             .set_node_id(node_id)
@@ -185,6 +198,7 @@ impl<S: Store, R: Rpc> NodeContextBuilder<S, R> {
             bls_keypair,
             self.store,
             self.rpc,
+            self.peer_manager,
             node_id,
         ))
     }

@@ -71,7 +71,7 @@ mod tests {
     use crate::TaskOutcome;
 
     fn mark_snapshot_build_complete<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<Db, Cluster, Blockchain>>,
         local_epoch: EpochNumber,
     ) {
         for group in 0..SPOOL_GROUP_COUNT {
@@ -96,7 +96,7 @@ mod tests {
     }
 
     fn set_group_ready<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<Db, Cluster, Blockchain>>,
         local_epoch: EpochNumber,
         group: u64,
     ) {
@@ -120,7 +120,7 @@ mod tests {
     }
 
     fn set_group_commitment_only<S: crate::store::Store, R: crate::rpc::Rpc>(
-        ctx: &std::sync::Arc<crate::core::NodeContext<S, R>>,
+        ctx: &std::sync::Arc<crate::core::NodeContext<Db, Cluster, Blockchain>>,
         local_epoch: EpochNumber,
         group: u64,
     ) {

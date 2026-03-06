@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
@@ -43,9 +44,9 @@ const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 /// `Action::Schedule` / `Action::Cancel` commands; the task_runner manages
 /// the full lifecycle: spawn, track, retry on failure, cancel on request, and
 /// report outcomes back via `result_tx`.
-pub struct TaskRunner<S: Store, R: Rpc> {
+pub struct TaskRunner<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Shared node state (store, RPC client, identity, config).
-    context: Arc<NodeContext<S, R>>,
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
 
     /// Currently executing tasks, keyed for dedup and attempt tracking.
     running: HashMap<Task, RunningTask>,
@@ -68,9 +69,9 @@ pub struct TaskRunner<S: Store, R: Rpc> {
     result_tx: mpsc::Sender<TaskResult>,
 }
 
-impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
+impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> TaskRunner<Db, Cluster, Blockchain> {
     pub fn new(
-        context: Arc<NodeContext<S, R>>,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         peer_handle: PeerHandle,
         result_tx: mpsc::Sender<TaskResult>,
     ) -> Self {
@@ -389,8 +390,8 @@ impl<S: Store + 'static, R: Rpc + 'static> TaskRunner<S, R> {
 ///
 /// Acquires the concurrency semaphore, checks for cancellation, then
 /// dispatches to the appropriate task module.
-pub async fn execute_task<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: PeerHandle,
     key: Task,
     attempt: u32,

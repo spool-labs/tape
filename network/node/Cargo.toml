@@ -21,6 +21,7 @@ store = { workspace = true, features = ["metrics"] }
 store-rocks = { workspace = true }
 tape-protocol = { workspace = true }
 tape-node-client = { workspace = true }
+peer-http = { workspace = true }
 rpc = { workspace = true }
 rpc-client = { workspace = true }
 rpc-solana = { workspace = true }
@@ -52,3 +53,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 rpc-litesvm = { workspace = true }
+peer-memory = { workspace = true }

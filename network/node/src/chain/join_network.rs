@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
@@ -11,8 +12,8 @@ use tape_api::program::tapedrive::node_pda;
 
 use crate::core::NodeContext;
 
-pub async fn submit_join_network<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_join_network<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
 ) -> Result<Signature, RpcError> {
     let pubkey = context.keypair.pubkey();
     let (node_address, _) = node_pda(pubkey);

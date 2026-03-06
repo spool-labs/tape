@@ -3,6 +3,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_store::ops::{SliceOps, TrackOps};
 use tape_store::types::Pubkey;
@@ -12,8 +13,8 @@ use crate::http::state::AppState;
 
 /// GET /v1/tracks/:track_id/slices/:spool_id/status
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
-pub async fn slice_status<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn slice_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, u16)>,
 ) -> Result<StatusCode, ApiError> {
     tracing::trace!(track_id = %track_id, spool_id, "http slice_status start");
@@ -41,8 +42,8 @@ pub async fn slice_status<S: Store, R: Rpc>(
 }
 
 /// GET /v1/tracks/:track_id/metadata/status
-pub async fn metadata_status<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn metadata_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     tracing::trace!(track_id = %track_id, "http metadata_status start");
@@ -63,8 +64,8 @@ pub async fn metadata_status<S: Store, R: Rpc>(
 }
 
 /// GET /v1/tracks/:track_id/status — track lifecycle status.
-pub async fn track_status<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn track_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     tracing::trace!(track_id = %track_id, "http track_status start");

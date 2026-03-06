@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_core::types::ChunkIndex;
 use tape_store::ops::MetaOps;
@@ -16,8 +17,8 @@ use crate::snapshot::{
 use crate::TaskOutcome;
 
 /// Submit completed snapshot certifications on-chain.
-pub async fn run_submit<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run_submit<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -54,7 +55,7 @@ pub async fn run_submit<S: Store, R: Rpc>(
         }
 
         let _chunk_index = ChunkIndex(group.0);
-        let artifacts = match load_group_artifacts::<S, R>(&context, local_epoch, group) {
+        let artifacts = match load_group_artifacts::<Db, Cluster, Blockchain>(&context, local_epoch, group) {
             Ok(artifacts) => artifacts,
             Err(e) => return missing_state(format!("snapshot submit read artifacts for group {group}: {e}")),
         };

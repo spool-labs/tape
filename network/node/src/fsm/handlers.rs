@@ -1,4 +1,5 @@
 use rpc::Rpc;
+use tape_protocol::Api;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_api::event::{
@@ -12,7 +13,7 @@ use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo};
 
 use super::{Fsm, FsmError, StateChange};
 
-impl<S: Store, R: Rpc> Fsm<S, R> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
     pub fn handle_slice_accepted(&self, track: Pubkey, _spool: u16) -> Result<(), FsmError> {
         let key: StorePubkey = track.into();
         let Some(obj) = self.context.store.get_object_info(key)? else {

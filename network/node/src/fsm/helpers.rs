@@ -1,4 +1,5 @@
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_api::event::TrackRegistered;
 use tape_core::spooler::SpoolGroup;
@@ -8,7 +9,7 @@ use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TrackInfo};
 
 use super::{Fsm, FsmError};
 
-impl<S: Store, R: Rpc> Fsm<S, R> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
 
     pub fn put_track_obj(
         &self,

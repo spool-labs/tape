@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_store::ops::MetaOps;
@@ -11,8 +12,8 @@ use crate::ingestor::IngestedBlock;
 
 use super::{RuntimeEvent, Fsm, FsmError, StateChange};
 
-impl<S: Store, R: Rpc> Fsm<S, R> {
-    pub fn new(context: Arc<NodeContext<S, R>>) -> Self {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
+    pub fn new(context: Arc<NodeContext<Db, Cluster, Blockchain>>) -> Self {
         Self {
             context,
             state: super::FsmState {

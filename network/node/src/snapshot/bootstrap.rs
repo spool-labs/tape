@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_core::encoding::ClayParams;
@@ -22,8 +23,8 @@ use crate::snapshot::{
 };
 use crate::TaskOutcome;
 
-pub async fn run_bootstrap<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {

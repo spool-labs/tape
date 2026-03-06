@@ -9,6 +9,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::signature::Signer;
 use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
+use peer_memory::MemoryApi;
 use tape_node::core::NodeContext;
 use tape_store::MemoryStore;
 use tape_store::ops::SpoolOps;
@@ -24,7 +25,7 @@ use crate::log_layer::LogHistogram;
 pub type SnapshotHandle = Arc<ArcSwap<PollSnapshot>>;
 
 pub enum PollerUpdate {
-    AddNode(usize, Arc<NodeContext<MemoryStore, LiteSvmRpc>>),
+    AddNode(usize, Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>),
     RemoveNode(usize),
     StakeFuzzStatus {
         enabled: bool,
@@ -70,7 +71,7 @@ impl PollerHandle {
 
 struct TrackedNode {
     id: usize,
-    ctx: Arc<NodeContext<MemoryStore, LiteSvmRpc>>,
+    ctx: Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>,
     prev_sync: u64,
     prev_repair: u64,
     prev_recovery: u64,

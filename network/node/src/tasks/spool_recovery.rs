@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
@@ -35,8 +36,8 @@ struct GroupPeers {
     map: HashMap<SpoolIndex, NetworkAddress>,
 }
 
-pub async fn run<S: Store, R: Rpc>(
-    ctx: Arc<NodeContext<S, R>>,
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: PeerHandle,
     spool: SpoolIndex,
     cancel: CancellationToken,
@@ -186,8 +187,8 @@ fn build_peer_map(
 }
 
 /// Attempt Clay repair for a single track. Returns the outcome.
-async fn try_clay_repair<S: Store, R: Rpc>(
-    ctx: &Arc<NodeContext<S, R>>,
+async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     peers: &GroupPeers,
     track_addr: StorePubkey,
@@ -360,8 +361,8 @@ async fn try_clay_repair<S: Store, R: Rpc>(
     }
 }
 
-async fn recover_from_peers<S: Store, R: Rpc>(
-    ctx: &Arc<NodeContext<S, R>>,
+async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     peers: &GroupPeers,
     track_addr: StorePubkey,
@@ -478,8 +479,8 @@ fn reconstruct_slice(
         .ok_or_else(|| format!("lost slice index {} out of bounds", *lost))
 }
 
-fn persist_recovered_slice<S: Store, R: Rpc>(
-    ctx: &Arc<NodeContext<S, R>>,
+fn persist_recovered_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     track_addr: StorePubkey,
     track_info: &TrackInfo,

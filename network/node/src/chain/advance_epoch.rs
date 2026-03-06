@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
@@ -10,8 +11,8 @@ use tape_api::instruction::build_advance_epoch_ix;
 
 use crate::core::NodeContext;
 
-pub async fn submit_advance_epoch<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_advance_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
 ) -> Result<Signature, RpcError> {
     let pubkey = context.keypair.pubkey();
     let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_EPOCH_CU);

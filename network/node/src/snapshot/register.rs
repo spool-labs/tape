@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tokio_util::sync::CancellationToken;
 
@@ -14,8 +15,8 @@ use crate::snapshot::{
 use crate::TaskOutcome;
 
 /// Register built snapshot chunks on-chain once local artifacts are ready.
-pub async fn run_register<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
@@ -43,7 +44,7 @@ pub async fn run_register<S: Store, R: Rpc>(
             return outcome;
         }
 
-        let artifacts = match load_group_artifacts::<S, R>(&context, local_epoch, group) {
+        let artifacts = match load_group_artifacts::<Db, Cluster, Blockchain>(&context, local_epoch, group) {
             Ok(artifacts) => artifacts,
             Err(e) => return TaskOutcome::Retryable(e),
         };

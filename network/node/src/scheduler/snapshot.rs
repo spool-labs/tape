@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use solana_sdk::signer::Signer;
 use store::Store;
 
@@ -38,9 +39,9 @@ impl SnapshotPlanner {
     /// Drive the snapshot pipeline: Build -> Collect -> Register -> Submit.
     /// Reads per-group readiness from the store and advances tasks through the
     /// pipeline stages. Only schedules tasks for spool groups this node owns.
-    pub fn schedule<S: Store, R: Rpc>(
+    pub fn schedule<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &mut self,
-        context: &Arc<NodeContext<S, R>>,
+        context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         desired: &mut HashSet<Task>,
         scheduled: &mut HashSet<Task>,
@@ -191,9 +192,9 @@ impl SnapshotPlanner {
 
     /// Advance snapshot pipeline progress when a snapshot stage completes, then
     /// re-run `schedule` to unlock the next stage.
-    pub fn on_success<S: Store, R: Rpc>(
+    pub fn on_success<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &mut self,
-        context: &Arc<NodeContext<S, R>>,
+        context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         key: &Task,
         desired: &mut HashSet<Task>,
         scheduled: &mut HashSet<Task>,
@@ -235,8 +236,8 @@ impl SnapshotPlanner {
     }
 
     /// Snapshot spool groups this node owns for the given epoch's committee.
-    pub fn groups_for_epoch<S: Store, R: Rpc>(
-        context: &Arc<NodeContext<S, R>>,
+    pub fn groups_for_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
     ) -> HashSet<SpoolGroup> {
         let cs = context.chain_state.load();
@@ -247,9 +248,9 @@ impl SnapshotPlanner {
     }
 
     /// Advance snapshot progress for all groups this node owns.
-    pub fn mark_owned_groups<S: Store, R: Rpc>(
+    pub fn mark_owned_groups<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &mut self,
-        context: &Arc<NodeContext<S, R>>,
+        context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         state: GroupState,
     ) {
@@ -259,9 +260,9 @@ impl SnapshotPlanner {
     }
 
     /// Advance snapshot progress for owned groups that have a cert in the store.
-    pub fn mark_groups_store<S: Store, R: Rpc>(
+    pub fn mark_groups_store<Db: Store, Cluster: Api, Blockchain: Rpc>(
         &mut self,
-        context: &Arc<NodeContext<S, R>>,
+        context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
         state: GroupState,
     ) {

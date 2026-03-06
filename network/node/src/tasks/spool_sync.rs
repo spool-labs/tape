@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
 use tape_protocol::api::{SyncSpoolRequest, SyncSpoolResponse};
@@ -27,8 +28,8 @@ enum SyncSource {
     SyncFrom { client: NodeClient, peer_address: SocketAddr },
 }
 
-pub async fn run<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     peer_handle: PeerHandle,
     spool: SpoolIndex,
     attempt: u32,
@@ -174,8 +175,8 @@ pub async fn run<S: Store, R: Rpc>(
 }
 
 
-fn resolve_sync_source<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     spool_state: &SpoolState,
 ) -> Result<SyncSource, TaskOutcome> {

@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_protocol::api::{SyncSpoolEntry, SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT};
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -14,8 +15,8 @@ use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
 /// POST /v1/sync/spool — exchange spool data for sync.
-pub async fn sync_spool<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn sync_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(payload_bytes = body.len(), "http sync_spool start");

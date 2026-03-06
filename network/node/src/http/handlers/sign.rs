@@ -5,6 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_core::cert::snapshot::SnapshotMessage;
 use tape_core::cert::track::CertifyMessage;
@@ -19,8 +20,8 @@ use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
 /// GET /v1/tracks/:track_id/sign — BLS sign track certification.
-pub async fn get_signature<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(track_id = %track_id, "http get_signature start");
@@ -65,8 +66,8 @@ pub async fn get_signature<S: Store, R: Rpc>(
 }
 
 /// POST /v1/snapshots/:epoch/:chunk_index/partial_signature — accept partial BLS signatures.
-pub async fn post_snapshot_signature<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {

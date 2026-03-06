@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_core::types::SlotNumber;
@@ -43,8 +44,8 @@ impl BlockIngestor {
     /// Resumes from the sync cursor stored in the database. Polls for new blocks
     /// with a 400ms interval when caught up to the chain tip. Uses exponential
     /// backoff for RPC errors.
-    pub async fn run<S: Store, R: Rpc>(
-        context: Arc<NodeContext<S, R>>,
+    pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         sender: mpsc::Sender<IngestedBlock>,
         cancel: CancellationToken,
     ) -> Result<(), anyhow::Error> {
@@ -82,8 +83,8 @@ enum IngestStep {
     Stop,
 }
 
-async fn wait_bootstrap<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+async fn wait_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<Option<SlotNumber>, anyhow::Error> {
 
@@ -131,8 +132,8 @@ async fn wait_bootstrap<S: Store, R: Rpc>(
     }
 }
 
-async fn ingest_slot<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+async fn ingest_slot<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     sender: &mpsc::Sender<IngestedBlock>,
     cancel: &CancellationToken,
     next_slot: SlotNumber,

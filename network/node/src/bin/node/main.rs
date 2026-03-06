@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use clap::Parser;
+use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_solana::RpcConfig;
 use tape_node::core::NodeConfig;
 use tape_node::core::NodeContextBuilder;
 use tape_node::runtime::spawn_runtime;
+use tape_protocol::peer::{PeerManager, TrustedPeers};
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -72,10 +76,21 @@ async fn main() -> Result<()> {
         endpoints: vec![rpc_url.clone()],
         ..RpcConfig::default()
     };
+    let rpc_config_clone = RpcConfig {
+        endpoints: vec![rpc_url.clone()],
+        ..RpcConfig::default()
+    };
     let rpc = RpcClient::new(rpc_config)
         .with_context(|| format!("failed to create RPC client for {rpc_url}"))?;
+    let peer_rpc = RpcClient::new(rpc_config_clone)
+        .with_context(|| format!("failed to create peer RPC client for {rpc_url}"))?;
 
     tracing::info!(%rpc_url, "connected to RPC");
+
+    // Build peer manager
+    let api = Arc::new(HttpApi::new(Default::default()));
+    let peers = Arc::new(TrustedPeers::new());
+    let peer_manager = Arc::new(PeerManager::new(Arc::new(peer_rpc), api, peers));
 
     // Build context (includes startup node-id resolution from on-chain node account)
     let context = NodeContextBuilder::new(
@@ -83,6 +98,7 @@ async fn main() -> Result<()> {
         keypair,
         store,
         rpc,
+        peer_manager,
     )
     .build()
     .await

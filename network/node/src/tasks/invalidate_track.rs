@@ -7,6 +7,7 @@ use rpc::{Rpc, RpcError};
 use rpc_client::parse_tape_error;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
+use tape_protocol::Api;
 use tape_api::errors::TapeError;
 use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_crypto::Hash;
@@ -33,8 +34,8 @@ fn classify_invalidate_track_error(err: &RpcError) -> TaskOutcome {
     }
 }
 
-pub async fn run<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     track: Pubkey,
     cancel: CancellationToken,
 ) -> TaskOutcome {

@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -48,8 +49,8 @@ pub struct RuntimeHandles {
 ///
 /// Creates bounded channels between the ingestor and FSM, spawning both as
 /// tokio tasks. Returns a receiver for state changes and the task handles.
-pub async fn spawn_runtime_channels<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> (
     mpsc::Receiver<Vec<StateChange>>,
@@ -85,8 +86,8 @@ pub async fn spawn_runtime_channels<S: Store + 'static, R: Rpc + 'static>(
 /// Seeds the in-memory ChainState from RPC before spawning components.
 /// If the seed fetch fails, components start with default (empty) state
 /// and ChainState is populated on the first EpochAdvanced from the FSM.
-pub async fn spawn_runtime<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     // One time fetch of current on-chain state
@@ -166,8 +167,8 @@ fn build_channels() -> RuntimeChannels {
     }
 }
 
-fn spawn_ingestor<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+fn spawn_ingestor<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     block_tx: mpsc::Sender<IngestedBlock>,
 ) -> JoinHandle<()> {
@@ -183,8 +184,8 @@ fn spawn_ingestor<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-fn spawn_fsm<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+fn spawn_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     block_rx: mpsc::Receiver<IngestedBlock>,
     user_event_rx: mpsc::Receiver<UserEvent>,
@@ -204,8 +205,8 @@ fn spawn_fsm<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+fn spawn_scheduler<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     change_rx: mpsc::Receiver<Vec<StateChange>>,
     result_rx: mpsc::Receiver<TaskResult>,
@@ -224,8 +225,8 @@ fn spawn_scheduler<S: Store + 'static, R: Rpc + 'static>(
     )
 }
 
-fn spawn_task_runner<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+fn spawn_task_runner<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     action_rx: mpsc::Receiver<Action>,
     result_tx: mpsc::Sender<TaskResult>,
@@ -257,8 +258,8 @@ fn spawn_peer_service(
     )
 }
 
-fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+fn spawn_http_server<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     user_event_tx: mpsc::Sender<UserEvent>,
 ) -> JoinHandle<()> {
@@ -279,7 +280,7 @@ fn spawn_http_server<S: Store + 'static, R: Rpc + 'static>(
 ///
 /// Called before spawning FSM/scheduler. If it fails, components start with
 /// default state and ChainState is populated on the first EpochAdvanced.
-async fn boostrap_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>) {
+async fn boostrap_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &Arc<NodeContext<Db, Cluster, Blockchain>>) {
 
     let our_bls = match context.bls_keypair.public_key() {
         Ok(pk) => pk,
@@ -305,8 +306,8 @@ async fn boostrap_chain_state<S: Store, R: Rpc>(context: &Arc<NodeContext<S, R>>
     }
 }
 
-async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
-    context: Arc<NodeContext<S, R>>,
+async fn run_fsm_loop<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     mut block_rx: mpsc::Receiver<IngestedBlock>,
     mut user_event_rx: mpsc::Receiver<UserEvent>,
     change_tx: mpsc::Sender<Vec<StateChange>>,
@@ -335,9 +336,9 @@ async fn run_fsm_loop<S: Store + 'static, R: Rpc + 'static>(
     }
 }
 
-async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
-    fsm: &mut Fsm<S, R>,
-    context: &Arc<NodeContext<S, R>>,
+async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    fsm: &mut Fsm<Db, Cluster, Blockchain>,
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
     cancel: &CancellationToken,
@@ -384,8 +385,8 @@ async fn handle_block<S: Store + 'static, R: Rpc + 'static>(
 /// Retries with exponential backoff (500ms → 30s cap) until success or
 /// cancellation. Returns `Ok(())` on success or BLS key error (non-fatal),
 /// `Err(())` on cancellation.
-async fn refresh_chain_state<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
     let our_bls = match context.bls_keypair.public_key() {
@@ -439,8 +440,8 @@ mod tests {
     use crate::core::PeerService;
     use crate::core::test_utils::test_context;
 
-    async fn spawn_test_fsm<S: Store + 'static, R: Rpc + 'static>(
-        context: Arc<NodeContext<S, R>>,
+    async fn spawn_test_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         block_rx: mpsc::Receiver<IngestedBlock>,
         change_tx: mpsc::Sender<Vec<StateChange>>,
         cancel: CancellationToken,

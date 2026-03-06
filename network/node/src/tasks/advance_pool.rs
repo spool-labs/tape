@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use rpc::{Rpc, RpcError};
 use store::Store;
+use tape_protocol::Api;
 use tape_api::errors::TapeError;
 use tokio_util::sync::CancellationToken;
 
@@ -26,8 +27,8 @@ fn classify_advance_pool_error(err: &RpcError) -> TaskOutcome {
     }
 }
 
-pub async fn run<S: Store, R: Rpc>(
-    context: Arc<NodeContext<S, R>>,
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let result = tokio::select! {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
@@ -17,8 +18,8 @@ use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 
 use crate::core::NodeContext;
 
-pub async fn submit_register<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     group: SpoolGroup,
     commitment: Hash,
@@ -53,8 +54,8 @@ pub async fn submit_register<S: Store, R: Rpc>(
         .await
 }
 
-pub async fn submit_certify<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     committee_len: usize,
     local_epoch: EpochNumber,
     signing_epoch: EpochNumber,

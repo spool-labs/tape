@@ -6,6 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rpc::Rpc;
+use tape_protocol::Api;
 use store::Store;
 use tape_api::program::tapedrive::CommitteeBitmap;
 use tape_core::bft::is_supermajority;
@@ -20,8 +21,8 @@ use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
 /// POST /v1/tracks/:track_id/inconsistency — attest data inconsistency.
-pub async fn post_inconsistency<S: Store, R: Rpc>(
-    State(state): State<AppState<S, R>>,
+pub async fn post_inconsistency<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -85,8 +86,8 @@ fn verify_local_root_mismatch(
     Ok(())
 }
 
-fn verify_inconsistency_proof<S: Store, R: Rpc>(
-    context: &NodeContext<S, R>,
+fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
     proof: &tape_protocol::api::InconsistencyProof,
     track_info: &tape_store::types::TrackInfo,
     track_address: [u8; 32],

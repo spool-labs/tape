@@ -1,4 +1,5 @@
 use rpc::Rpc;
+use tape_protocol::Api;
 use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_api::event::TrackRegistered;
@@ -11,7 +12,7 @@ use tape_store::types::TapeInfo;
 
 use super::{Fsm, FsmError};
 
-impl<S: Store, R: Rpc> Fsm<S, R> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
     /// Replay a snapshot log into local state.
     ///
     /// This applies the same store operations as the live FSM handlers but

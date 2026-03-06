@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rpc::Rpc;
+use tape_protocol::Api;
 use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
@@ -12,8 +13,8 @@ use tape_core::types::EpochNumber;
 
 use crate::core::NodeContext;
 
-pub async fn submit_sync_epoch<S: Store, R: Rpc>(
-    context: &Arc<NodeContext<S, R>>,
+pub async fn submit_sync_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     owned_spools: &[u16],
 ) -> Result<Signature, RpcError> {
