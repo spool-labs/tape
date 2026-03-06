@@ -3,23 +3,24 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peer::{
+use tape_peer::{
     CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
     GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, Peer, PeerDirectory, PeerError, PeerReq, PeerRes, PutSliceReq,
+    InvalidateReq, InvalidateRes, Peer, PeerError, PeerReq, PeerRes, PutSliceReq,
     PutSliceRes, PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
+    TrustedPeers,
 };
 use tape_core::types::NodeId;
 
 pub struct MemoryPeerClient {
-    directory: PeerDirectory,
+    peers: TrustedPeers,
     handler: Arc<dyn Fn(NodeId, PeerReq) -> PeerRes + Send + Sync>,
 }
 
 impl MemoryPeerClient {
     pub fn new(handler: impl Fn(NodeId, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
         Self {
-            directory: PeerDirectory::new(),
+            peers: TrustedPeers::new(),
             handler: Arc::new(handler),
         }
     }
@@ -58,8 +59,8 @@ macro_rules! dispatch {
 
 #[async_trait]
 impl Peer for MemoryPeerClient {
-    fn directory(&self) -> &PeerDirectory {
-        &self.directory
+    fn peers(&self) -> &TrustedPeers {
+        &self.peers
     }
 
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, PeerError> {

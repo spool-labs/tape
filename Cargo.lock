@@ -3949,31 +3949,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "peer"
-version = "0.3.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "bytemuck",
- "tape-core",
- "tape-crypto",
- "tape-node-api",
- "tape-store",
- "thiserror 2.0.18",
- "wincode 0.1.2",
- "wincode-derive 0.1.1",
-]
-
-[[package]]
 name = "peer-http"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "peer",
  "reqwest",
  "tape-core",
  "tape-crypto",
  "tape-node-api",
+ "tape-peer",
  "tape-store",
  "wincode 0.1.2",
 ]
@@ -3983,8 +3967,8 @@ name = "peer-memory"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "peer",
  "tape-core",
+ "tape-peer",
  "tokio",
 ]
 
@@ -4673,6 +4657,7 @@ name = "rpc-client"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "bytemuck",
  "rpc",
  "rpc-solana",
@@ -4682,6 +4667,7 @@ dependencies = [
  "solana-transaction-status",
  "tape-api",
  "tape-core",
+ "tape-crypto",
  "tape-metrics",
  "thiserror 2.0.18",
  "tokio",
@@ -8841,9 +8827,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-peer"
+version = "0.3.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytemuck",
+ "tape-core",
+ "tape-crypto",
+ "tape-node-api",
+ "thiserror 2.0.18",
+ "wincode 0.1.2",
+ "wincode-derive 0.1.1",
+]
+
+[[package]]
 name = "tape-sdk"
 version = "0.3.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytemuck",
  "futures",
@@ -8863,6 +8865,7 @@ dependencies = [
  "tape-node",
  "tape-node-api",
  "tape-node-client",
+ "tape-peer",
  "tape-slicer",
  "tape-store",
  "thiserror 2.0.18",

@@ -1,5 +1,5 @@
 [package]
-name = "peer"
+name = "tape-peer"
 version.workspace = true
 edition.workspace = true
 description = "PeerClient trait and shared types for node-to-node communication"
@@ -8,7 +8,6 @@ description = "PeerClient trait and shared types for node-to-node communication"
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }
-tape-store = { workspace = true }
 async-trait.workspace = true
 arc-swap.workspace = true
 thiserror.workspace = true

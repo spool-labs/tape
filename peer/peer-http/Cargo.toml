@@ -5,7 +5,7 @@ edition.workspace = true
 description = "HTTP implementation of the Peer trait for production node-to-node communication"
 
 [dependencies]
-peer = { workspace = true }
+tape-peer = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }

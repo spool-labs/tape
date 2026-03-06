@@ -21,6 +21,7 @@ tape-node-api = { workspace = true }
 tape-node-client = { workspace = true }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
+tape-peer = { workspace = true }
 rpc-client = { path = "../rpc/rpc-client" }
 
 # Logging
@@ -41,6 +42,9 @@ futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
+
+# Concurrency
+arc-swap.workspace = true
 
 # Error handling
 thiserror = { workspace = true }

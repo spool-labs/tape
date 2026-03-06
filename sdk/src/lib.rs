@@ -43,6 +43,7 @@ pub mod downloader;
 pub mod encoder;
 pub mod error;
 pub mod helpers;
+pub mod network;
 pub mod routing;
 pub mod stake_key;
 pub mod staking;
@@ -51,6 +52,7 @@ pub mod tapedrive;
 pub mod uploader;
 
 // High-level SDK interface
+pub use network::{Network, NetworkError};
 pub use stake_key::StakeKey;
 pub use tape_key::TapeKey;
 pub use tapedrive::Tapedrive;

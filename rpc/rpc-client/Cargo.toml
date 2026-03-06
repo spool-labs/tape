@@ -16,6 +16,7 @@ rpc-solana = { version = "0.3.0", path = "../rpc-solana" }
 # Tape crates
 tape-api.workspace = true
 tape-core.workspace = true
+tape-crypto.workspace = true
 tape-metrics = { workspace = true, optional = true }
 
 # Solana dependencies
@@ -26,6 +27,9 @@ solana-transaction-status.workspace = true
 
 # Async runtime
 tokio.workspace = true
+
+# Concurrency
+arc-swap.workspace = true
 
 # Error handling
 thiserror.workspace = true

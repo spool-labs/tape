@@ -6,12 +6,12 @@
 //!
 //! All methods use the uniform `(NodeId, &Req) -> Result<Res, PeerError>` convention.
 
-mod directory;
 mod error;
+mod peers;
 mod types;
 
-pub use directory::PeerDirectory;
 pub use error::PeerError;
+pub use peers::TrustedPeers;
 pub use types::*;
 
 pub use async_trait::async_trait;
@@ -20,7 +20,7 @@ use tape_core::types::NodeId;
 
 #[async_trait]
 pub trait Peer: Send + Sync {
-    fn directory(&self) -> &PeerDirectory;
+    fn peers(&self) -> &TrustedPeers;
 
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, PeerError>;
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, PeerError>;

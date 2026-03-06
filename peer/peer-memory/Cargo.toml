@@ -5,7 +5,7 @@ edition.workspace = true
 description = "In-memory mock implementation of the Peer trait for testing"
 
 [dependencies]
-peer = { workspace = true }
+tape-peer = { workspace = true }
 tape-core = { workspace = true }
 async-trait.workspace = true
 

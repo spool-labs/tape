@@ -1,16 +1,31 @@
-//! Request/response types for PeerClient operations.
+//! Request/response types for peer operations.
 
-use tape_core::bls::BlsSignature;
+use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::network::NetworkAddress;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 use tape_node_api::{
     InconsistencyProof, NodeStats, SlicePayload, SnapshotSignatureSubmission,
     SyncSpoolEntry,
 };
-use tape_store::types::Pubkey;
+use tape_crypto::Pubkey;
 
 use crate::PeerError;
+
+// ---------------------------------------------------------------------------
+// PeerNode — identity record for a known peer
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct PeerNode {
+    pub node_id: NodeId,
+    pub authority: Pubkey,
+    pub state_address: Pubkey,
+    pub bls_pubkey: BlsPubkey,
+    pub tls_pubkey: Pubkey,
+    pub network_address: NetworkAddress,
+}
 
 // ---------------------------------------------------------------------------
 // Per-method Req/Res types

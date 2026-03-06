@@ -1,11 +1,11 @@
 //! HTTP implementation of the `Peer` trait for production node-to-node communication.
 
 use async_trait::async_trait;
-use peer::{
+use tape_peer::{
     CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
     GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, Peer, PeerDirectory, PeerError, PutSliceReq, PutSliceRes,
-    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
+    InvalidateReq, InvalidateRes, Peer, PeerError, PutSliceReq, PutSliceRes,
+    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes, TrustedPeers,
 };
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
@@ -15,14 +15,14 @@ use tape_node_api::{
 };
 
 pub struct HttpPeerClient {
-    directory: PeerDirectory,
+    peers: TrustedPeers,
     http: reqwest::Client,
 }
 
 impl HttpPeerClient {
     pub fn new(http: reqwest::Client) -> Self {
         Self {
-            directory: PeerDirectory::new(),
+            peers: TrustedPeers::new(),
             http,
         }
     }
@@ -35,8 +35,8 @@ fn base_url(addr: NetworkAddress) -> Result<String, PeerError> {
     Ok(format!("http://{sa}"))
 }
 
-fn resolve(dir: &PeerDirectory, node: NodeId) -> Result<String, PeerError> {
-    let addr = dir.resolve(node).ok_or(PeerError::NodeUnresolved(node))?;
+fn resolve(peers: &TrustedPeers, node: NodeId) -> Result<String, PeerError> {
+    let addr = peers.resolve(node).ok_or(PeerError::NodeUnresolved(node))?;
     base_url(addr)
 }
 
@@ -82,12 +82,12 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, Peer
 
 #[async_trait]
 impl Peer for HttpPeerClient {
-    fn directory(&self) -> &PeerDirectory {
-        &self.directory
+    fn peers(&self) -> &TrustedPeers {
+        &self.peers
     }
 
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::internal_slice_url(&track_id, req.spool));
         let body =
@@ -107,7 +107,7 @@ impl Peer for HttpPeerClient {
     }
 
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::slice_url(&track_id, req.spool));
 
@@ -130,7 +130,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         req: &GetMetadataReq,
     ) -> Result<GetMetadataRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::metadata_url(&track_id));
 
@@ -149,7 +149,7 @@ impl Peer for HttpPeerClient {
     }
 
     async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let url = format!("{base}{}", tape_node_api::SYNC_SPOOL_PATH);
         let wire_req = SyncSpoolRequest {
             spool_index: req.spool_index,
@@ -179,7 +179,7 @@ impl Peer for HttpPeerClient {
     }
 
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::repair_url(&track_id));
         let wire_req = RepairRequest {
@@ -206,7 +206,7 @@ impl Peer for HttpPeerClient {
     }
 
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::sign_url(&track_id));
 
@@ -233,7 +233,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         req: &InvalidateReq,
     ) -> Result<InvalidateRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
@@ -267,7 +267,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         req: &PutSnapshotReq,
     ) -> Result<PutSnapshotRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let url = format!(
             "{base}{}",
             tape_node_api::snapshot_signature_url(req.epoch.0, req.chunk_index)
@@ -293,7 +293,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         req: &GetSnapshotReq,
     ) -> Result<GetSnapshotRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let url = format!(
             "{base}{}",
             tape_node_api::snapshot_commitments_url(req.epoch.0)
@@ -318,7 +318,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let url = format!("{base}{}", tape_node_api::HEALTH_PATH);
 
         let resp = self
@@ -338,7 +338,7 @@ impl Peer for HttpPeerClient {
         node: NodeId,
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, PeerError> {
-        let base = resolve(&self.directory, node)?;
+        let base = resolve(&self.peers, node)?;
         let url = format!("{base}{}", tape_node_api::STATS_PATH);
 
         let resp = self
