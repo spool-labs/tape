@@ -7,7 +7,7 @@ use rpc::{Rpc, RpcError};
 use tape_api::program::MEMBER_COUNT;
 use tape_api::state::System;
 use tape_core::erasure::SPOOL_COUNT;
-use tape_core::spooler::{SpoolAssignment, SpoolIndex};
+use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
 use tape_core::system::{Committee, CommitteeMember, EpochPhase};
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
@@ -81,6 +81,63 @@ impl ProtocolState {
         }
         committee
     }
+
+    /// Map each spool in a group to its owning NodeId (current committee).
+    ///
+    /// Returns a vec of (global_spool_index, node_id) for all spools in the group.
+    /// Spools owned by members not in the committee are skipped.
+    pub fn group_peers(&self, group: SpoolGroup) -> Vec<(SpoolIndex, NodeId)> {
+        group_peers_inner(&self.spools, &self.committee, group)
+    }
+
+    /// Map each spool in a group to its owning NodeId (previous committee).
+    pub fn group_peers_prev(&self, group: SpoolGroup) -> Vec<(SpoolIndex, NodeId)> {
+        group_peers_inner(&self.spools_prev, &self.committee_prev, group)
+    }
+
+    /// Count unique members responsible for spools in a group (current committee).
+    pub fn group_member_count(&self, group: SpoolGroup) -> usize {
+        group_member_count_inner(&self.spools, group)
+    }
+
+    /// Count unique members responsible for spools in a group (previous committee).
+    pub fn group_member_count_prev(&self, group: SpoolGroup) -> usize {
+        group_member_count_inner(&self.spools_prev, group)
+    }
+}
+
+fn group_peers_inner(
+    spools: &SpoolAssignment<SPOOL_COUNT>,
+    committee: &[CommitteeMember],
+    group: SpoolGroup,
+) -> Vec<(SpoolIndex, NodeId)> {
+    let members = spools.members_in_group(group);
+    let base = group.base();
+    members
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &member_idx)| {
+            let spool = base + i as SpoolIndex;
+            let node_id = committee.get(member_idx as usize)?.id;
+            Some((spool, node_id))
+        })
+        .collect()
+}
+
+fn group_member_count_inner(
+    spools: &SpoolAssignment<SPOOL_COUNT>,
+    group: SpoolGroup,
+) -> usize {
+    let members = spools.members_in_group(group);
+    let mut seen = [false; 256]; // SpoolMapping is u8
+    let mut count = 0;
+    for &m in members {
+        if !seen[m as usize] {
+            seen[m as usize] = true;
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Thread-safe handle for sharing a `ProtocolState` across tasks.
@@ -190,5 +247,74 @@ mod tests {
     fn spool_owner_empty() {
         let state = empty_state();
         assert!(state.spool_owner(0).is_none());
+    }
+
+    use std::collections::HashMap;
+    use tape_core::types::coin::{Coin, TAPE};
+
+    fn state_with_3_members() -> ProtocolState {
+        let mut state = ProtocolState::default();
+        for i in 0..3u64 {
+            state.committee.push(CommitteeMember::new(
+                NodeId(i + 1),
+                Coin::<TAPE>::new(1000 - i),
+            ));
+        }
+        let mut spools = [0u8; SPOOL_COUNT];
+        for (i, s) in spools.iter_mut().enumerate() {
+            *s = (i % 3) as u8;
+        }
+        state.spools = SpoolAssignment::new(spools);
+        state
+    }
+
+    #[test]
+    fn group_peers_all_spools() {
+        let state = state_with_3_members();
+        let peers = state.group_peers(SpoolGroup(0));
+        assert_eq!(peers.len(), 20);
+        assert_eq!(peers[0], (0, NodeId(1)));
+        assert_eq!(peers[1], (1, NodeId(2)));
+    }
+
+    #[test]
+    fn group_peers_as_hashmap() {
+        let state = state_with_3_members();
+        let map: HashMap<SpoolIndex, NodeId> = state.group_peers(SpoolGroup(0)).into_iter().collect();
+        assert_eq!(map.len(), 20);
+        assert_eq!(map[&0], NodeId(1));
+    }
+
+    #[test]
+    fn group_peers_prev_uses_previous() {
+        let mut state = state_with_3_members();
+        state.committee_prev = vec![
+            CommitteeMember::new(NodeId(10), Coin::<TAPE>::new(500)),
+            CommitteeMember::new(NodeId(20), Coin::<TAPE>::new(400)),
+        ];
+        let mut prev_spools = [0u8; SPOOL_COUNT];
+        for (i, s) in prev_spools.iter_mut().enumerate() {
+            *s = (i % 2) as u8;
+        }
+        state.spools_prev = SpoolAssignment::new(prev_spools);
+
+        let peers = state.group_peers_prev(SpoolGroup(0));
+        assert_eq!(peers.len(), 20);
+        assert_eq!(peers[0].1, NodeId(10));
+        assert_eq!(peers[1].1, NodeId(20));
+    }
+
+    #[test]
+    fn group_member_count_3() {
+        let state = state_with_3_members();
+        assert_eq!(state.group_member_count(SpoolGroup(0)), 3);
+    }
+
+    #[test]
+    fn group_member_count_single() {
+        let mut state = ProtocolState::default();
+        state.committee.push(CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1000)));
+        state.spools = SpoolAssignment::new([0u8; SPOOL_COUNT]);
+        assert_eq!(state.group_member_count(SpoolGroup(0)), 1);
     }
 }

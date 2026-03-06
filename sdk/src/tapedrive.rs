@@ -17,12 +17,10 @@ use tape_api::instruction::{
     build_split_tape_by_size_ix,
 };
 use tape_api::program::tapedrive::track_pda;
-use tape_api::program::MEMBER_COUNT;
 use tape_api::state::{Tape, Track};
 use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::{group_start, spool_for_slice, SPOOL_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
-use tape_core::system::Committee;
+use tape_core::erasure::group_start;
+use tape_core::spooler::SpoolIndex;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
@@ -30,15 +28,14 @@ use peer_http::HttpPeerClient;
 use tape_peer::PeerClient;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
-use crate::certification::CertificationCollector;
-use crate::decoder::BlobDecoder;
-use crate::downloader::ParallelDownloader;
-use crate::encoder::BlobEncoder;
-use crate::error::TapedriveError;
+use crate::codec::decoder::BlobDecoder;
+use crate::codec::encoder::BlobEncoder;
+use crate::error::{ClientError, TapedriveError};
+use crate::keys::tape_key::TapeKey;
 use crate::network::Network;
-use crate::routing::SliceRouter;
-use crate::tape_key::TapeKey;
-use crate::uploader::DistributedUploader;
+use crate::transfer::certify::CertificationCollector;
+use crate::transfer::downloader::ParallelDownloader;
+use crate::transfer::uploader::DistributedUploader;
 
 /// Retries for certification when epoch advances between signature collection and submission.
 const CERTIFY_RETRIES: usize = 3;
@@ -126,11 +123,11 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
         let k = on_chain.data.profile.k() as usize;
 
         let state = self.network.state();
-        let slice_to_node = self.build_slice_to_node_map(spool_group, &state.spools, &state.committee_as_array());
+        let slice_to_node: HashMap<SpoolIndex, NodeId> = state.group_peers(spool_group).into_iter().collect();
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
         let slices = downloader.download_enough_slices(self.network.peer_client().as_ref()).await
-            .map_err(crate::error::ClientError::Download)?;
+            .map_err(ClientError::Download)?;
 
         // Convert global spool indices to local for decoder
         let base = group_start(spool_group);
@@ -141,7 +138,7 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
 
         let mut decoder = BlobDecoder::new();
         let data = decoder.decode(local_slices)
-            .map_err(|e| TapedriveError::Download(crate::error::ClientError::Decoding(e.to_string())))?;
+            .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())))?;
 
         Ok(data)
     }
@@ -486,14 +483,12 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             .map_err(TapedriveError::Network)?;
 
         let state = self.network.state();
-        let committee = state.committee_as_array();
-        let router = SliceRouter::new(state.spools, committee.clone());
 
         let uploader = DistributedUploader::new(
             track_address,
             spool_group,
             slices,
-            router,
+            &state,
         ).map_err(TapedriveError::Upload)?;
 
         uploader.upload_all(self.network.peer_client().as_ref()).await
@@ -564,26 +559,6 @@ impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
             .get_tracks_by_tape(tape)
             .await
             .map_err(TapedriveError::Rpc)
-    }
-
-    // Private helpers
-
-    /// Build a map of slice_index → NodeId for a spool group from protocol state.
-    fn build_slice_to_node_map(
-        &self,
-        spool_group: SpoolGroup,
-        spools: &SpoolAssignment<SPOOL_COUNT>,
-        committee: &Committee<MEMBER_COUNT>,
-    ) -> HashMap<SpoolIndex, NodeId> {
-        let router = SliceRouter::new(*spools, committee.clone());
-        let mut map = HashMap::new();
-        for local_idx in 0..SPOOL_GROUP_SIZE {
-            let global_spool = spool_for_slice(spool_group, local_idx);
-            if let Ok(node_id) = router.node_id_for_slice(global_spool) {
-                map.insert(global_spool, node_id);
-            }
-        }
-        map
     }
 
     /// Fetch a track by address with retries for RPC propagation delay.

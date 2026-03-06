@@ -18,7 +18,7 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_peer::PeerClient;
 
 use crate::error::TapedriveError;
-use crate::stake_key::StakeKey;
+use crate::keys::stake_key::StakeKey;
 use crate::tapedrive::Tapedrive;
 
 impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {

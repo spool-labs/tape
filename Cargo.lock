@@ -3953,6 +3953,8 @@ name = "peer-http"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "peer-tls",
+ "prometheus",
  "reqwest",
  "tape-core",
  "tape-crypto",
@@ -3970,6 +3972,18 @@ dependencies = [
  "tape-core",
  "tape-peer",
  "tokio",
+]
+
+[[package]]
+name = "peer-tls"
+version = "0.3.0"
+dependencies = [
+ "reqwest",
+ "rustls 0.23.36",
+ "rustls-pemfile",
+ "tape-crypto",
+ "thiserror 2.0.18",
+ "x509-parser 0.16.0",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ use tape_slicer::{
 };
 
 use crate::error::UploadError;
-use crate::uploader::SliceWithProof;
+use crate::transfer::uploader::SliceWithProof;
 
 /// Merkle proof for a single slice.
 ///
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_clay_roundtrip_with_decoder() {
-        use crate::decoder::BlobDecoder;
+        use crate::codec::decoder::BlobDecoder;
 
         let original = vec![0xAB; 10_000];
         let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);

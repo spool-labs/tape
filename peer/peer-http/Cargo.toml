@@ -10,6 +10,8 @@ tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }
 tape-store = { workspace = true }
+peer-tls = { workspace = true }
 async-trait.workspace = true
 reqwest = { workspace = true }
 wincode = { workspace = true }
+prometheus = { workspace = true }

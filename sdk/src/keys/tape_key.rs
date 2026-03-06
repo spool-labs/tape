@@ -8,7 +8,7 @@ use solana_sdk::signature::{Keypair, Signer};
 use tape_api::program::tapedrive::{tape_pda, track_pda};
 use tape_crypto::Hash;
 
-use crate::helpers::{load_solana_keypair, HelperError};
+use crate::keys::helpers::{load_solana_keypair, HelperError};
 
 /// A key that controls a tape on the Tapedrive network.
 ///

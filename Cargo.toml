@@ -28,6 +28,7 @@ members = [
   "peer/peer",
   "peer/peer-memory",
   "peer/peer-http",
+  "peer/peer-tls",
   "retry",
   "e2e/simnet",
   "e2e/fuzznet",
@@ -56,6 +57,7 @@ default-members = [
   "peer/peer",
   "peer/peer-memory",
   "peer/peer-http",
+  "peer/peer-tls",
   "retry",
 ]
 
@@ -96,6 +98,7 @@ tape-node = { version = "0.3.0", path = "./network/node" }
 tape-peer = { version = "0.3.0", path = "./peer/peer" }
 peer-memory = { version = "0.3.0", path = "./peer/peer-memory" }
 peer-http = { version = "0.3.0", path = "./peer/peer-http" }
+peer-tls = { version = "0.3.0", path = "./peer/peer-tls" }
 tape-retry = { version = "0.3.0", path = "./retry" }
 ratatui = "0.29"
 crossterm = "0.28"

@@ -5,7 +5,7 @@ use tape_core::types::StorageUnits;
 use tape_peer::PeerError;
 use thiserror::Error;
 
-use crate::certification::CertificationError;
+use crate::transfer::certify::CertificationError;
 use crate::network::NetworkError;
 
 /// Errors that can occur during client operations.

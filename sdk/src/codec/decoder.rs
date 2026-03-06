@@ -192,7 +192,7 @@ impl BlobDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoder::BlobEncoder;
+    use crate::codec::encoder::BlobEncoder;
 
     /// Create test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {

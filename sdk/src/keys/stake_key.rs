@@ -7,7 +7,7 @@ use solana_sdk::signature::{Keypair, Signer};
 
 use tape_api::program::tapedrive::stake_pda;
 
-use crate::helpers::{load_solana_keypair, HelperError};
+use crate::keys::helpers::{load_solana_keypair, HelperError};
 
 /// A key that controls a delegated stake account on the Tapedrive network.
 ///
