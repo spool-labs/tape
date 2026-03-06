@@ -1,5 +1,4 @@
 use rand::Rng;
-use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
@@ -49,7 +48,7 @@ impl StakeFuzzer {
             return;
         }
 
-        let sdk = Tapedrive::new(RpcClient::from_rpc(rpc.clone()), admin);
+        let sdk = Tapedrive::new(rpc.clone(), admin);
 
         // Advance all node pools (tolerate errors)
         for auth in node_authorities {

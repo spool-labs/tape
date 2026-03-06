@@ -6,8 +6,18 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
+use tape_core::bls::BlsPubkey;
+use tape_crypto::Pubkey;
 
-use crate::types::PeerNode;
+#[derive(Clone, Debug)]
+pub struct PeerNode {
+    pub node_id: NodeId,
+    pub authority: Pubkey,
+    pub state_address: Pubkey,
+    pub bls_pubkey: BlsPubkey,
+    pub tls_pubkey: Pubkey,
+    pub network_address: NetworkAddress,
+}
 
 /// Thread-safe address book of trusted peers.
 ///

@@ -1,4 +1,4 @@
-//! In-memory mock implementation of the `Peer` trait for testing.
+//! In-memory mock implementation of the `PeerClient` trait for testing.
 
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use tape_peer::{
     CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
     GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, Peer, PeerError, PeerReq, PeerRes, PutSliceReq,
+    InvalidateReq, InvalidateRes, PeerClient, PeerError, PeerReq, PeerRes, PutSliceReq,
     PutSliceRes, PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
     TrustedPeers,
 };
@@ -58,7 +58,7 @@ macro_rules! dispatch {
 }
 
 #[async_trait]
-impl Peer for MemoryPeerClient {
+impl PeerClient for MemoryPeerClient {
     fn peers(&self) -> &TrustedPeers {
         &self.peers
     }

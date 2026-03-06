@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use rpc::{Rpc, RpcError};
+use tape_api::program::MEMBER_COUNT;
 use tape_api::state::System;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::spooler::{SpoolAssignment, SpoolIndex};
-use tape_core::system::{CommitteeMember, EpochPhase};
+use tape_core::system::{Committee, CommitteeMember, EpochPhase};
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 
@@ -27,6 +28,20 @@ pub struct ProtocolState {
     pub committee_prev: Vec<CommitteeMember>,
     pub spools: SpoolAssignment<SPOOL_COUNT>,
     pub spools_prev: SpoolAssignment<SPOOL_COUNT>,
+}
+
+impl Default for ProtocolState {
+    fn default() -> Self {
+        Self {
+            epoch: EpochNumber(0),
+            phase: EpochPhase::Active,
+            nonce: Hash::default(),
+            committee: Vec::new(),
+            committee_prev: Vec::new(),
+            spools: bytemuck::Zeroable::zeroed(),
+            spools_prev: bytemuck::Zeroable::zeroed(),
+        }
+    }
 }
 
 impl ProtocolState {
@@ -56,6 +71,15 @@ impl ProtocolState {
             .iter()
             .enumerate()
             .find(|(_, m)| m.id == node_id)
+    }
+
+    /// Build a fixed-size Committee array from the current committee Vec.
+    pub fn committee_as_array(&self) -> Committee<MEMBER_COUNT> {
+        let mut committee = Committee::new();
+        for member in &self.committee {
+            let _ = committee.try_join(member);
+        }
+        committee
     }
 }
 
@@ -131,18 +155,9 @@ impl<R: Rpc> RpcClient<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytemuck::Zeroable;
 
     fn empty_state() -> ProtocolState {
-        ProtocolState {
-            epoch: EpochNumber(0),
-            phase: EpochPhase::Active,
-            nonce: Hash::zeroed(),
-            committee: Vec::new(),
-            committee_prev: Vec::new(),
-            spools: SpoolAssignment::zeroed(),
-            spools_prev: SpoolAssignment::zeroed(),
-        }
+        ProtocolState::default()
     }
 
     #[test]

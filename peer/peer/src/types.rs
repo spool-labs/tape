@@ -1,8 +1,7 @@
 //! Request/response types for peer operations.
 
-use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::bls::BlsSignature;
 use tape_core::spooler::SpoolIndex;
-use tape_core::types::network::NetworkAddress;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
 use tape_node_api::{
@@ -13,122 +12,123 @@ use tape_crypto::Pubkey;
 
 use crate::PeerError;
 
-// ---------------------------------------------------------------------------
-// PeerNode — identity record for a known peer
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug)]
-pub struct PeerNode {
-    pub node_id: NodeId,
-    pub authority: Pubkey,
-    pub state_address: Pubkey,
-    pub bls_pubkey: BlsPubkey,
-    pub tls_pubkey: Pubkey,
-    pub network_address: NetworkAddress,
-}
-
-// ---------------------------------------------------------------------------
-// Per-method Req/Res types
-// ---------------------------------------------------------------------------
-
 pub struct PutSliceReq {
     pub track: Pubkey,
     pub spool: SpoolIndex,
     pub payload: SlicePayload,
 }
 
+#[derive(Clone, Debug)]
 pub struct PutSliceRes;
 
+#[derive(Clone, Debug)]
 pub struct GetSliceReq {
     pub track: Pubkey,
     pub spool: SpoolIndex,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetSliceRes {
     pub data: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetMetadataReq {
     pub track: Pubkey,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetMetadataRes {
     pub data: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
 pub struct SyncReq {
     pub spool_index: u16,
     pub cursor: Option<[u8; 32]>,
     pub limit: u32,
 }
 
+#[derive(Clone, Debug)]
 pub struct SyncRes {
     pub entries: Vec<SyncSpoolEntry>,
     pub next_cursor: Option<[u8; 32]>,
 }
 
+#[derive(Clone, Debug)]
 pub struct RepairReq {
     pub track: Pubkey,
     pub helper_spool: SpoolIndex,
     pub stripes: Vec<tape_node_api::StripeSubChunkRequest>,
 }
 
+#[derive(Clone, Debug)]
 pub struct RepairRes {
     pub data: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
 pub struct CertifyReq {
     pub track: Pubkey,
 }
 
+#[derive(Clone, Debug)]
 pub struct CertifyRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
 }
 
+#[derive(Clone, Debug)]
 pub struct InvalidateReq {
     pub track: Pubkey,
     pub proof: InconsistencyProof,
 }
 
+#[derive(Clone, Debug)]
 pub struct InvalidateRes {
     pub signature: BlsSignature,
     pub node_id: NodeId,
     pub epoch: EpochNumber,
 }
 
+#[derive(Clone, Debug)]
 pub struct PutSnapshotReq {
     pub epoch: EpochNumber,
     pub chunk_index: u64,
     pub submission: SnapshotSignatureSubmission,
 }
 
+#[derive(Clone, Debug)]
 pub struct PutSnapshotRes;
 
+#[derive(Clone, Debug)]
 pub struct GetSnapshotReq {
     pub epoch: EpochNumber,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetSnapshotRes {
     pub commitments: Vec<Hash>,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetHealthReq;
 
+#[derive(Clone, Debug)]
 pub struct GetHealthRes {
     pub ok: bool,
 }
 
+#[derive(Clone, Debug)]
 pub struct GetStatsReq;
 
+#[derive(Clone, Debug)]
 pub struct GetStatsRes {
     pub stats: NodeStats,
 }
 
-// ---------------------------------------------------------------------------
-// Aggregate enums for MemoryPeerClient callback
-// ---------------------------------------------------------------------------
 
 pub enum PeerReq {
     PutSlice(PutSliceReq),

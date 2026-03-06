@@ -18,10 +18,10 @@ tape-api = { path = "../api" }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-node-api = { workspace = true }
-tape-node-client = { workspace = true }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-peer = { workspace = true }
+peer-http = { path = "../peer/peer-http" }
 rpc-client = { path = "../rpc/rpc-client" }
 
 # Logging
@@ -59,6 +59,7 @@ tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }
 rpc-litesvm = { path = "../rpc/rpc-litesvm" }
+peer-memory = { path = "../peer/peer-memory" }
 axum = { workspace = true }
 serial_test = "3.1"
 bytemuck = { workspace = true }

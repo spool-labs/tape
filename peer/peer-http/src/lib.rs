@@ -1,10 +1,10 @@
-//! HTTP implementation of the `Peer` trait for production node-to-node communication.
+//! HTTP implementation of the `PeerClient` trait for production node-to-node communication.
 
 use async_trait::async_trait;
 use tape_peer::{
     CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
     GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, Peer, PeerError, PutSliceReq, PutSliceRes,
+    InvalidateReq, InvalidateRes, PeerClient, PeerError, PutSliceReq, PutSliceRes,
     PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes, TrustedPeers,
 };
 use tape_core::types::NodeId;
@@ -17,6 +17,15 @@ use tape_node_api::{
 pub struct HttpPeerClient {
     peers: TrustedPeers,
     http: reqwest::Client,
+}
+
+impl Default for HttpPeerClient {
+    fn default() -> Self {
+        Self {
+            peers: TrustedPeers::new(),
+            http: reqwest::Client::new(),
+        }
+    }
 }
 
 impl HttpPeerClient {
@@ -81,7 +90,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, Peer
 }
 
 #[async_trait]
-impl Peer for HttpPeerClient {
+impl PeerClient for HttpPeerClient {
     fn peers(&self) -> &TrustedPeers {
         &self.peers
     }
@@ -91,7 +100,8 @@ impl Peer for HttpPeerClient {
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_node_api::internal_slice_url(&track_id, req.spool));
         let body =
-            wincode::serialize(&req.payload).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::serialize(&req.payload)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
 
         let resp = self
             .http
@@ -157,7 +167,8 @@ impl Peer for HttpPeerClient {
             limit: req.limit,
         };
         let body =
-            wincode::serialize(&wire_req).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::serialize(&wire_req)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
 
         let resp = self
             .http
@@ -171,7 +182,9 @@ impl Peer for HttpPeerClient {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         let wire_res: SyncSpoolResponse =
-            wincode::deserialize(&bytes).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::deserialize(&bytes)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
+
         Ok(SyncRes {
             entries: wire_res.entries,
             next_cursor: wire_res.next_cursor,
@@ -186,8 +199,10 @@ impl Peer for HttpPeerClient {
             helper_spool: req.helper_spool,
             stripes: req.stripes.clone(),
         };
+
         let body =
-            wincode::serialize(&wire_req).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::serialize(&wire_req)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
 
         let resp = self
             .http
@@ -220,7 +235,9 @@ impl Peer for HttpPeerClient {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         let wire: BlsSignResponse =
-            wincode::deserialize(&bytes).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::deserialize(&bytes)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
+
         Ok(CertifyRes {
             signature: wire.signature,
             node_id: wire.node_id,
@@ -240,7 +257,8 @@ impl Peer for HttpPeerClient {
             proof: req.proof.clone(),
         };
         let body =
-            wincode::serialize(&wire_req).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::serialize(&wire_req)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
 
         let resp = self
             .http
@@ -254,7 +272,9 @@ impl Peer for HttpPeerClient {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         let wire: BlsInconsistencyResponse =
-            wincode::deserialize(&bytes).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::deserialize(&bytes)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
+
         Ok(InvalidateRes {
             signature: wire.signature,
             node_id: wire.node_id,
@@ -309,7 +329,9 @@ impl Peer for HttpPeerClient {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         let commitments: Vec<tape_crypto::Hash> =
-            wincode::deserialize(&bytes).map_err(|e| PeerError::Serialization(e.to_string()))?;
+            wincode::deserialize(&bytes)
+            .map_err(|e| PeerError::Serialization(e.to_string()))?;
+
         Ok(GetSnapshotRes { commitments })
     }
 

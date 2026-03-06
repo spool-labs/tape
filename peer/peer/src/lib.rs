@@ -1,6 +1,6 @@
-//! Core peer trait and types for node-to-node communication.
+//! Core peer client trait and types for node-to-node communication.
 //!
-//! This crate defines the `Peer` trait which abstracts over different peer implementations:
+//! This crate defines the `PeerClient` trait which abstracts over different implementations:
 //! - `peer-http` — Production client (reqwest-based)
 //! - `peer-memory` — Test mock (callback-based)
 //!
@@ -19,7 +19,7 @@ pub use async_trait::async_trait;
 use tape_core::types::NodeId;
 
 #[async_trait]
-pub trait Peer: Send + Sync {
+pub trait PeerClient: Send + Sync {
     fn peers(&self) -> &TrustedPeers;
 
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, PeerError>;

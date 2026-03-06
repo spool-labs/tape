@@ -1,6 +1,7 @@
 //! High-level client for the Tapedrive storage network.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -17,20 +18,28 @@ use tape_api::instruction::{
     build_split_tape_by_size_ix,
 };
 use tape_api::program::tapedrive::track_pda;
-use tape_api::state::{System, Tape, Track};
+use tape_api::program::MEMBER_COUNT;
+use tape_api::state::{Tape, Track};
 use tape_core::encoding::EncodingProfile;
+use tape_core::erasure::{group_start, spool_for_slice, SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::spooler::{SpoolAssignment, SpoolGroup, SpoolIndex};
+use tape_core::system::Committee;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
+use peer_http::HttpPeerClient;
+use tape_peer::PeerClient;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
 use crate::certification::CertificationCollector;
-use crate::client::TapeClient;
-use crate::discovery::NetworkState;
+use crate::decoder::BlobDecoder;
+use crate::downloader::ParallelDownloader;
 use crate::encoder::BlobEncoder;
 use crate::error::TapedriveError;
+use crate::network::Network;
+use crate::routing::SliceRouter;
 use crate::tape_key::TapeKey;
-
+use crate::uploader::DistributedUploader;
 
 /// Retries for certification when epoch advances between signature collection and submission.
 const CERTIFY_RETRIES: usize = 3;
@@ -41,16 +50,11 @@ const RPC_PROPAGATION_DELAY_MS: u64 = 500;
 
 /// High-level client for the Tapedrive storage network.
 ///
-/// Provides a simple interface for storing and retrieving data. Most users
-/// only need [`write`](Tapedrive::write), [`read`](Tapedrive::read),
-/// [`delete`](Tapedrive::delete), and [`verify`](Tapedrive::verify).
-///
-/// For fine-grained control over storage allocations (tapes) and individual
-/// blobs (tracks), use the tape and track management methods directly.
+/// Generic over `R: Rpc` (on-chain) and `P: PeerClient` (storage nodes).
 ///
 /// # Example
 /// ```rust,ignore
-/// let sdk = Tapedrive::new(client, &payer);
+/// let sdk = Tapedrive::new(rpc, &payer);
 ///
 /// // Write data (creates a tape automatically)
 /// let (tape_key, track) = sdk.write(key, b"hello world", 4).await?;
@@ -58,29 +62,43 @@ const RPC_PROPAGATION_DELAY_MS: u64 = 500;
 ///
 /// // Read it back
 /// let data = sdk.read(&tape_key.track_address(&key)).await?;
-///
-/// // Verify integrity
-/// let ok = sdk.verify(&tape_key.track_address(&key), &data).await?;
-///
-/// // Delete when done
-/// sdk.delete(&tape_key, key).await?;
 /// ```
-pub struct Tapedrive<R: Rpc> {
-    pub client: RpcClient<R>,
+pub struct Tapedrive<R: Rpc, P: PeerClient> {
+    pub network: Network<R, P>,
     pub payer: Keypair,
 }
 
-impl<R: Rpc> Tapedrive<R> {
+/// Default constructor using `HttpPeerClient`.
+impl<R: Rpc> Tapedrive<R, HttpPeerClient> {
     /// Create a new Tapedrive client.
     ///
-    /// # Arguments
-    /// * `client` - An RPC client for Solana interactions
-    /// * `payer` - The keypair that pays for transactions (must hold TAPE and SOL)
-    pub fn new(client: RpcClient<R>, payer: &Keypair) -> Self {
+    /// Takes an RPC backend and a payer keypair. Uses the default HTTP
+    /// peer client for storage node communication.
+    pub fn new(rpc: R, payer: &Keypair) -> Self {
+        let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
+        let peer_client = Arc::new(HttpPeerClient::default());
         Self {
-            client,
+            network: Network::new(rpc_client, peer_client),
             payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
         }
+    }
+}
+
+impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
+    /// Create a Tapedrive client from an existing Network.
+    ///
+    /// Use this when you need a custom peer client (e.g. for testing)
+    /// or a pre-bootstrapped network.
+    pub fn from_network(network: Network<R, P>, payer: &Keypair) -> Self {
+        Self {
+            network,
+            payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
+        }
+    }
+
+    /// Access the underlying RPC client.
+    pub fn rpc(&self) -> &RpcClient<R> {
+        self.network.rpc()
     }
 
     // Data operations
@@ -92,8 +110,6 @@ impl<R: Rpc> Tapedrive<R> {
     /// track with BLS signatures.
     ///
     /// Returns the tape key (save it!) and the registered track.
-    /// For more control, use [`reserve`](Tapedrive::reserve) +
-    /// [`write_track`](Tapedrive::write_track) separately.
     pub async fn write(
         &self,
         key: Hash,
@@ -102,29 +118,37 @@ impl<R: Rpc> Tapedrive<R> {
     ) -> Result<(TapeKey, Track), TapedriveError> {
         let tape_key = TapeKey::generate();
         let capacity = StorageUnits::from_bytes(data.len() as u64);
-        let reserve_capacity = capacity + StorageUnits::mb(1); // 1 MB headroom
+        let reserve_capacity = capacity + StorageUnits::mb(1);
         self.reserve(&tape_key, reserve_capacity, epochs).await?;
         let track = self.write_track(&tape_key, key, data).await?;
         Ok((tape_key, track))
     }
 
     /// Read a track's data by address. No key needed — reads are public.
-    ///
-    /// Fetches on-chain track metadata, discovers storage nodes, downloads
-    /// enough slices, and decodes the original data.
     pub async fn read(&self, track: &Pubkey) -> Result<Vec<u8>, TapedriveError> {
-        let on_chain = self.client.get_track_by_address(track).await?;
+        let on_chain = self.rpc().get_track_by_address(track).await?;
         let spool_group = on_chain.data.spool_group();
         let k = on_chain.data.profile.k() as usize;
 
-        let network = self.discover_network().await?;
-        let tape_client = Self::build_tape_client(&network);
-        let node_track = tape_node_client::Pubkey(track.to_bytes());
+        let state = self.network.state();
+        let slice_to_node = self.build_slice_to_node_map(spool_group, &state.spools, &state.committee_as_array());
 
-        tape_client
-            .download_blob(node_track, spool_group, k)
-            .await
-            .map_err(|e| TapedriveError::Download(e))
+        let downloader = ParallelDownloader::new(*track, slice_to_node, k);
+        let slices = downloader.download_enough_slices(self.network.peer_client().as_ref()).await
+            .map_err(crate::error::ClientError::Download)?;
+
+        // Convert global spool indices to local for decoder
+        let base = group_start(spool_group);
+        let local_slices: Vec<(SpoolIndex, Vec<u8>)> = slices
+            .into_iter()
+            .map(|(global_idx, data)| ((global_idx - base) as SpoolIndex, data))
+            .collect();
+
+        let mut decoder = BlobDecoder::new();
+        let data = decoder.decode(local_slices)
+            .map_err(|e| TapedriveError::Download(crate::error::ClientError::Decoding(e.to_string())))?;
+
+        Ok(data)
     }
 
     /// Delete a track and free its capacity on the tape.
@@ -134,18 +158,15 @@ impl<R: Rpc> Tapedrive<R> {
         track_key: Hash,
     ) -> Result<(), TapedriveError> {
         let ix = build_delete_track_ix(self.payer.pubkey(), tape_key.pubkey(), track_key);
-        self.client
+        self.rpc()
             .send_instructions_with_signers(&self.payer, vec![ix], &[tape_key.as_keypair()])
             .await?;
         Ok(())
     }
 
     /// Verify that `data` matches the on-chain commitment for a track.
-    ///
-    /// Re-encodes the data locally and compares the merkle root against
-    /// what was registered on-chain. No storage node interaction needed.
     pub async fn verify(&self, track: &Pubkey, data: &[u8]) -> Result<bool, TapedriveError> {
-        let on_chain = self.client.get_track_by_address(track).await?;
+        let on_chain = self.rpc().get_track_by_address(track).await?;
         let mut encoder = BlobEncoder::with_profile(on_chain.data.profile);
         let (_, root) = encoder
             .encode_with_root(data.to_vec())
@@ -157,17 +178,14 @@ impl<R: Rpc> Tapedrive<R> {
     // Tape management
 
     /// Reserve a new tape (storage allocation).
-    ///
-    /// The payer must hold enough TAPE tokens to cover `capacity * epochs`.
-    /// Use [`estimate_cost`](Tapedrive::estimate_cost) to check the price first.
     pub async fn reserve(
         &self,
         tape_key: &TapeKey,
         capacity: StorageUnits,
         epochs: u64,
     ) -> Result<Tape, TapedriveError> {
-        let epoch = self.client.get_epoch().await?;
-        let archive = self.client.get_archive().await?;
+        let epoch = self.rpc().get_epoch().await?;
+        let archive = self.rpc().get_archive().await?;
 
         let activation = epoch.id;
         let expiry = EpochNumber(epoch.id.as_u64() + epochs);
@@ -190,11 +208,11 @@ impl<R: Rpc> Tapedrive<R> {
             expiry,
         ));
 
-        self.client
+        self.rpc()
             .send_instructions_with_signers(&self.payer, ixs, &[tape_key.as_keypair()])
             .await?;
 
-        self.client
+        self.rpc()
             .get_tape(&tape_key.pubkey())
             .await
             .map_err(TapedriveError::Rpc)
@@ -202,7 +220,7 @@ impl<R: Rpc> Tapedrive<R> {
 
     /// Fetch a tape's on-chain state.
     pub async fn get_tape(&self, tape: &Pubkey) -> Result<Tape, TapedriveError> {
-        self.client
+        self.rpc()
             .get_tape_by_address(tape)
             .await
             .map_err(TapedriveError::Rpc)
@@ -214,7 +232,7 @@ impl<R: Rpc> Tapedrive<R> {
         capacity: StorageUnits,
         epochs: u64,
     ) -> Result<Coin<TAPE>, TapedriveError> {
-        let archive = self.client.get_archive().await?;
+        let archive = self.rpc().get_archive().await?;
         Ok(Coin::<TAPE>::new(
             archive
                 .storage_price
@@ -225,16 +243,13 @@ impl<R: Rpc> Tapedrive<R> {
     }
 
     /// Add time to a tape's expiry.
-    ///
-    /// Internally reserves a temporary tape covering the extension period
-    /// and merges it into the existing tape.
     pub async fn extend_expiry(
         &self,
         tape_key: &TapeKey,
         extra_epochs: u64,
     ) -> Result<Tape, TapedriveError> {
-        let tape = self.client.get_tape(&tape_key.pubkey()).await?;
-        let archive = self.client.get_archive().await?;
+        let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
+        let archive = self.rpc().get_archive().await?;
 
         let temp = TapeKey::generate();
         let new_expiry = EpochNumber(tape.expiry_epoch.as_u64() + extra_epochs);
@@ -262,7 +277,7 @@ impl<R: Rpc> Tapedrive<R> {
             tape_key.pubkey(),
         ));
 
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 ixs,
@@ -270,23 +285,20 @@ impl<R: Rpc> Tapedrive<R> {
             )
             .await?;
 
-        self.client
+        self.rpc()
             .get_tape(&tape_key.pubkey())
             .await
             .map_err(TapedriveError::Rpc)
     }
 
     /// Add storage capacity to a tape.
-    ///
-    /// Internally reserves a temporary tape with the extra capacity
-    /// and merges it into the existing tape.
     pub async fn extend_capacity(
         &self,
         tape_key: &TapeKey,
         extra: StorageUnits,
     ) -> Result<Tape, TapedriveError> {
-        let tape = self.client.get_tape(&tape_key.pubkey()).await?;
-        let archive = self.client.get_archive().await?;
+        let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
+        let archive = self.rpc().get_archive().await?;
 
         let temp = TapeKey::generate();
         let duration = tape.expiry_epoch.as_u64().saturating_sub(tape.active_epoch.as_u64());
@@ -314,7 +326,7 @@ impl<R: Rpc> Tapedrive<R> {
             tape_key.pubkey(),
         ));
 
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 ixs,
@@ -322,16 +334,13 @@ impl<R: Rpc> Tapedrive<R> {
             )
             .await?;
 
-        self.client
+        self.rpc()
             .get_tape(&tape_key.pubkey())
             .await
             .map_err(TapedriveError::Rpc)
     }
 
     /// Split a tape at an epoch boundary.
-    ///
-    /// Source keeps everything before `at_epoch`.
-    /// Destination gets everything from `at_epoch` onward.
     pub async fn split_by_time(
         &self,
         source: &TapeKey,
@@ -344,7 +353,7 @@ impl<R: Rpc> Tapedrive<R> {
             destination.pubkey(),
             at_epoch,
         );
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![ix],
@@ -352,14 +361,12 @@ impl<R: Rpc> Tapedrive<R> {
             )
             .await?;
 
-        let src = self.client.get_tape(&source.pubkey()).await?;
-        let dst = self.client.get_tape(&destination.pubkey()).await?;
+        let src = self.rpc().get_tape(&source.pubkey()).await?;
+        let dst = self.rpc().get_tape(&destination.pubkey()).await?;
         Ok((src, dst))
     }
 
     /// Split a tape by capacity.
-    ///
-    /// Source keeps `keep` storage units. Destination gets the remainder.
     pub async fn split_by_capacity(
         &self,
         source: &TapeKey,
@@ -372,7 +379,7 @@ impl<R: Rpc> Tapedrive<R> {
             destination.pubkey(),
             keep,
         );
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![ix],
@@ -380,12 +387,12 @@ impl<R: Rpc> Tapedrive<R> {
             )
             .await?;
 
-        let src = self.client.get_tape(&source.pubkey()).await?;
-        let dst = self.client.get_tape(&destination.pubkey()).await?;
+        let src = self.rpc().get_tape(&source.pubkey()).await?;
+        let dst = self.rpc().get_tape(&destination.pubkey()).await?;
         Ok((src, dst))
     }
 
-    /// Merge source tape into destination. Source is closed after merge.
+    /// Merge source tape into destination.
     pub async fn merge(
         &self,
         source: &TapeKey,
@@ -396,7 +403,7 @@ impl<R: Rpc> Tapedrive<R> {
             source.pubkey(),
             destination.pubkey(),
         );
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![ix],
@@ -404,16 +411,16 @@ impl<R: Rpc> Tapedrive<R> {
             )
             .await?;
 
-        self.client
+        self.rpc()
             .get_tape(&destination.pubkey())
             .await
             .map_err(TapedriveError::Rpc)
     }
 
-    /// Destroy an empty, expired tape. Reclaims rent.
+    /// Destroy an empty, expired tape.
     pub async fn destroy(&self, tape_key: &TapeKey) -> Result<(), TapedriveError> {
         let ix = build_destroy_tape_ix(self.payer.pubkey(), tape_key.pubkey());
-        self.client
+        self.rpc()
             .send_instructions_with_signers(&self.payer, vec![ix], &[tape_key.as_keypair()])
             .await?;
         Ok(())
@@ -422,10 +429,6 @@ impl<R: Rpc> Tapedrive<R> {
     // Track management
 
     /// Write a track to an existing tape.
-    ///
-    /// Registers the track on-chain, encodes the data, uploads slices
-    /// to storage nodes, collects BLS signatures, and certifies.
-    /// The tape must have enough remaining capacity for the data.
     pub async fn write_track(
         &self,
         tape_key: &TapeKey,
@@ -442,11 +445,11 @@ impl<R: Rpc> Tapedrive<R> {
         let root_hash: Hash = merkle_root.into();
         let storage_units = StorageUnits::from_bytes(data.len() as u64);
 
-        // 2. Resume existing track if one already exists, otherwise register it on-chain.
+        // 2. Resume existing track or register on-chain
         let stripe_size = pick_stripe_size(data.len());
         let stripe_count = num_stripes(data.len(), stripe_size);
         let (track_address, _) = track_pda(tape_key.pubkey(), key);
-        let on_chain = match self.client.get_track_by_address(&track_address).await {
+        let on_chain = match self.rpc().get_track_by_address(&track_address).await {
             Ok(track) => track,
             Err(RpcError::AccountNotFound(_)) => {
                 let register_ix = build_register_track_ix(
@@ -462,7 +465,7 @@ impl<R: Rpc> Tapedrive<R> {
                     leaves,
                 );
 
-                self.client
+                self.rpc()
                     .send_instructions_with_signers(
                         &self.payer,
                         vec![register_ix],
@@ -470,7 +473,6 @@ impl<R: Rpc> Tapedrive<R> {
                     )
                     .await?;
 
-                // Fetch on-chain track (retry for RPC propagation)
                 self.retry_fetch_track(&track_address).await?
             }
             Err(error) => {
@@ -482,27 +484,38 @@ impl<R: Rpc> Tapedrive<R> {
             return Ok(on_chain);
         }
 
-        // 3. Fetch on-chain track (retry for RPC propagation)
         let spool_group = on_chain.data.spool_group();
 
-        // 4. Discover network and upload slices
-        let network = self.discover_network().await?;
-        let tape_client = Self::build_tape_client(&network);
-        let node_track = tape_node_client::Pubkey(track_address.to_bytes());
+        // 3. Bootstrap network if needed, upload slices
+        self.network.bootstrap().await
+            .map_err(TapedriveError::Network)?;
 
-        tape_client
-            .upload_slices(node_track, spool_group, slices)
-            .await
+        let state = self.network.state();
+        let committee = state.committee_as_array();
+        let router = SliceRouter::new(state.spools, committee.clone());
+
+        let uploader = DistributedUploader::new(
+            track_address,
+            spool_group,
+            slices,
+            router,
+        ).map_err(TapedriveError::Upload)?;
+
+        uploader.upload_all(self.network.peer_client().as_ref()).await
             .map_err(TapedriveError::Upload)?;
 
-        // 5+6. Collect BLS signatures and certify (retry on epoch race)
+        // 4. Collect BLS signatures and certify (retry on epoch race)
         for attempt in 0..CERTIFY_RETRIES {
-            let system = self.client.get_system().await?;
-            let node_address_map = self.build_node_address_map(&system).await;
+            let system = self.rpc().get_system().await?;
 
             let collector = CertificationCollector::with_defaults();
             let collected = collector
-                .collect_signatures(&track_address, spool_group, &system, &node_address_map)
+                .collect_signatures(
+                    self.network.peer_client().as_ref(),
+                    &track_address,
+                    spool_group,
+                    &system,
+                )
                 .await
                 .map_err(TapedriveError::Certification)?;
 
@@ -518,7 +531,7 @@ impl<R: Rpc> Tapedrive<R> {
             );
 
             match self
-                .client
+                .rpc()
                 .send_instructions_with_signers(
                     &self.payer,
                     vec![compute_ix, certify_ix],
@@ -535,8 +548,8 @@ impl<R: Rpc> Tapedrive<R> {
             }
         }
 
-        // 7. Return the certified track
-        self.client
+        // 5. Return the certified track
+        self.rpc()
             .get_track_by_address(&track_address)
             .await
             .map_err(TapedriveError::Rpc)
@@ -544,7 +557,7 @@ impl<R: Rpc> Tapedrive<R> {
 
     /// Fetch a track's on-chain state.
     pub async fn get_track(&self, track: &Pubkey) -> Result<Track, TapedriveError> {
-        self.client
+        self.rpc()
             .get_track_by_address(track)
             .await
             .map_err(TapedriveError::Rpc)
@@ -552,7 +565,7 @@ impl<R: Rpc> Tapedrive<R> {
 
     /// List all tracks on a tape.
     pub async fn list_tracks(&self, tape: &Pubkey) -> Result<Vec<(Pubkey, Track)>, TapedriveError> {
-        self.client
+        self.rpc()
             .get_tracks_by_tape(tape)
             .await
             .map_err(TapedriveError::Rpc)
@@ -560,55 +573,19 @@ impl<R: Rpc> Tapedrive<R> {
 
     // Private helpers
 
-    /// Discover network state (committee, spool assignment, node addresses)
-    /// using the existing RPC client.
-    async fn discover_network(&self) -> Result<NetworkState, TapedriveError> {
-        let system = self.client.get_system().await?;
-        let mut node_addresses = Vec::new();
-        let mut warnings = Vec::new();
-
-        for (member_idx, member) in system.committee.iter().enumerate() {
-            match self.client.get_node_by_id(member.id).await {
-                Ok((_pubkey, node)) => {
-                    node_addresses.push((member_idx, node.metadata.network_address));
-                }
-                Err(e) => {
-                    warnings.push(format!(
-                        "Failed to fetch node {} (member {}): {}",
-                        member.id, member_idx, e
-                    ));
-                }
-            }
-        }
-
-        Ok(NetworkState {
-            committee: system.committee,
-            spool_assignment: system.spools,
-            node_addresses,
-            warnings,
-        })
-    }
-
-    /// Build a TapeClient from discovered network state.
-    fn build_tape_client(network: &NetworkState) -> TapeClient {
-        TapeClient::builder()
-            .committee(network.committee.clone())
-            .spool_assignment(network.spool_assignment.clone())
-            .node_addresses(network.node_addresses.clone())
-            .build()
-    }
-
-    /// Build a map of NodeId → HTTP address for certification.
-    async fn build_node_address_map(
+    /// Build a map of slice_index → NodeId for a spool group from protocol state.
+    fn build_slice_to_node_map(
         &self,
-        system: &System,
-    ) -> HashMap<NodeId, String> {
+        spool_group: SpoolGroup,
+        spools: &SpoolAssignment<SPOOL_COUNT>,
+        committee: &Committee<MEMBER_COUNT>,
+    ) -> HashMap<SpoolIndex, NodeId> {
+        let router = SliceRouter::new(*spools, committee.clone());
         let mut map = HashMap::new();
-        for member in system.committee.iter() {
-            if let Ok((_, node)) = self.client.get_node_by_id(member.id).await {
-                if let Ok(addr) = node.metadata.network_address.to_socket_addr() {
-                    map.insert(member.id, format!("http://{}", addr));
-                }
+        for local_idx in 0..SPOOL_GROUP_SIZE {
+            let global_spool = spool_for_slice(spool_group, local_idx);
+            if let Ok(node_id) = router.node_id_for_slice(global_spool) {
+                map.insert(global_spool, node_id);
             }
         }
         map
@@ -618,7 +595,7 @@ impl<R: Rpc> Tapedrive<R> {
     async fn retry_fetch_track(&self, address: &Pubkey) -> Result<Track, TapedriveError> {
         let mut last_err = None;
         for attempt in 0..RPC_PROPAGATION_RETRIES {
-            match self.client.get_track_by_address(address).await {
+            match self.rpc().get_track_by_address(address).await {
                 Ok(track) => return Ok(track),
                 Err(e) => {
                     last_err = Some(e);
@@ -639,24 +616,29 @@ impl<R: Rpc> Tapedrive<R> {
 mod tests {
     use super::*;
 
+    use std::sync::Arc;
+
     use bytemuck::Zeroable;
+    use peer_memory::MemoryPeerClient;
     use rpc_client::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_api::program::tapedrive::{self, archive_pda, tape_pda, track_pda};
     use tape_api::state::{Archive, Tape, Track};
     use tape_core::encoding::EncodingProfile;
+    use tape_core::spooler::SpoolGroup;
     use tape_core::tape::TrackData;
     use tape_core::types::coin::{Coin, TAPE};
-    use tape_core::spooler::SpoolGroup;
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_crypto::hash;
 
-    fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc>) {
+    fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryPeerClient>) {
         let rpc = LiteSvmRpc::new();
         let payer = Keypair::new();
-        let client = RpcClient::from_rpc(rpc.clone());
-        let tapedrive = Tapedrive::new(client, &payer);
+        let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
+        let peer_client = Arc::new(MemoryPeerClient::noop());
+        let network = Network::new(rpc_client, peer_client);
+        let tapedrive = Tapedrive::from_network(network, &payer);
         (rpc, tapedrive)
     }
 
@@ -764,7 +746,6 @@ mod tests {
         pipe(&rpc, archive_address, &make_archive(100).pack());
 
         let cost = tapedrive.estimate_cost(StorageUnits::mb(50), 4).await.unwrap();
-        // 100 price * 50 MB * 4 epochs = 20000
         assert_eq!(cost.as_u64(), 20_000);
     }
 

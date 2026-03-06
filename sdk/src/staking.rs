@@ -15,11 +15,13 @@ use tape_api::instruction::{
 };
 use tape_core::types::coin::{Coin, TAPE};
 
+use tape_peer::PeerClient;
+
 use crate::error::TapedriveError;
 use crate::stake_key::StakeKey;
 use crate::tapedrive::Tapedrive;
 
-impl<R: Rpc> Tapedrive<R> {
+impl<R: Rpc, P: PeerClient> Tapedrive<R, P> {
     /// Delegate TAPE to a node's staking pool.
     ///
     /// Creates an ATA for the stake authority, transfers TAPE from the payer,
@@ -45,7 +47,7 @@ impl<R: Rpc> Tapedrive<R> {
             amount,
         ));
 
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 ixs,
@@ -57,9 +59,6 @@ impl<R: Rpc> Tapedrive<R> {
     }
 
     /// Advance a node's staking pool to the current epoch.
-    ///
-    /// Permissionless — only the payer signs. `node_authority` is passed as a
-    /// non-signer account reference.
     pub async fn advance_pool(
         &self,
         node_authority: Pubkey,
@@ -67,16 +66,13 @@ impl<R: Rpc> Tapedrive<R> {
     ) -> Result<(), TapedriveError> {
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_POOL_CU);
         let ix = build_advance_pool_ix(self.payer.pubkey(), node_authority, pool);
-        self.client
+        self.rpc()
             .send_instructions(&self.payer, vec![cu_ix, ix])
             .await?;
         Ok(())
     }
 
     /// Request unlock of a delegated stake from a pool.
-    ///
-    /// The stake authority must sign. After the unlock delay, call
-    /// [`unstake_from_pool`](Tapedrive::unstake_from_pool) to withdraw.
     pub async fn request_stake_unlock(
         &self,
         stake_key: &StakeKey,
@@ -88,7 +84,7 @@ impl<R: Rpc> Tapedrive<R> {
             stake_key.pubkey(),
             pool,
         );
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![cu_ix, ix],
@@ -99,8 +95,6 @@ impl<R: Rpc> Tapedrive<R> {
     }
 
     /// Withdraw a previously unlocked stake from a pool.
-    ///
-    /// The stake authority must sign. Tokens return to the authority's ATA.
     pub async fn unstake_from_pool(
         &self,
         stake_key: &StakeKey,
@@ -112,7 +106,7 @@ impl<R: Rpc> Tapedrive<R> {
             stake_key.pubkey(),
             pool,
         );
-        self.client
+        self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
                 vec![cu_ix, ix],
