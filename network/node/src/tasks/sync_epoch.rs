@@ -32,11 +32,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let cs = context.chain_state.load();
-    if cs.epoch.is_zero() {
+    let protocol_state = context.peer_manager.state();
+    if protocol_state.epoch.is_zero() {
         return TaskOutcome::Retryable("no current epoch".into());
     }
-    let epoch = cs.epoch;
+    let epoch = protocol_state.epoch;
 
     let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {
         Ok(spools) => spools

@@ -11,7 +11,7 @@ use tape_store::types::Pubkey;
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
-/// GET /v1/tracks/:track_id/slices/:spool_id/status
+/// GET /v1/tracks/{track_id}/slices/{spool_id}/status
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn slice_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -41,7 +41,7 @@ pub async fn slice_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// GET /v1/tracks/:track_id/metadata/status
+/// GET /v1/tracks/{track_id}/metadata/status
 pub async fn metadata_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
@@ -63,7 +63,7 @@ pub async fn metadata_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// GET /v1/tracks/:track_id/status — track lifecycle status.
+/// GET /v1/tracks/{track_id}/status — track lifecycle status.
 pub async fn track_status<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,

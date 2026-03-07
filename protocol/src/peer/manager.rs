@@ -177,10 +177,21 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
         self.status.clear();
     }
 
+    pub fn report_success(&self, node_id: NodeId) {
+        self.status.remove(&node_id);
+    }
+
     pub fn is_healthy(&self, node_id: NodeId) -> bool {
         match self.status.get(&node_id) {
             None => true,
-            Some(ref s) => matches!(**s, PeerStatus::Healthy),
+            Some(ref s) => match **s {
+                PeerStatus::Healthy => true,
+                PeerStatus::Hostile => false,
+                PeerStatus::Down { failures, last_failure } => {
+                    let cooldown_secs = 1u64 << failures.min(6);
+                    last_failure.elapsed().as_secs() >= cooldown_secs
+                }
+            },
         }
     }
 

@@ -19,7 +19,7 @@ use tape_store::types::SnapshotPartialSignature;
 use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
-/// GET /v1/tracks/:track_id/sign — BLS sign track certification.
+/// GET /v1/tracks/{track_id}/sign — BLS sign track certification.
 pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
@@ -65,7 +65,7 @@ pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ))
 }
 
-/// POST /v1/snapshots/:epoch/:chunk_index/partial_signature — accept partial BLS signatures.
+/// POST /v1/snapshots/{epoch}/{chunk_index}/partial_signature — accept partial BLS signatures.
 pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
@@ -89,23 +89,22 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let chunk_idx = ChunkIndex(chunk_index);
 
     let member_index = request.member_index as usize;
-    let cs = state.context.chain_state.load();
-    if epoch != cs.epoch {
+    let protocol_state = state.context.peer_manager.state();
+    if epoch != protocol_state.epoch {
         return Err(ApiError::NotFound);
     }
-    let validating_committee = &cs.committee;
-    if validating_committee.is_empty() {
+    if protocol_state.committee.is_empty() {
         return Err(ApiError::NotFound);
     }
 
-    if member_index >= validating_committee.len() {
+    if member_index >= protocol_state.committee.len() {
         return Err(ApiError::BadRequest("unknown member index".into()));
     }
 
-    let member = &validating_committee[member_index];
+    let member = &protocol_state.committee[member_index];
+    let member_spools = protocol_state.member_spools(member_index);
 
-    if !member
-        .spools
+    if !member_spools
         .iter()
         .any(|&spool| group_for_spool(spool) == group)
     {
@@ -122,7 +121,7 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = SnapshotMessage::new(epoch, commitment.into()).to_bytes();
     if request
         .signature
-        .verify_aggregate(message, &[member.bls_pubkey])
+        .verify_aggregate(message, &[member.key])
         .is_err()
     {
         return Err(ApiError::InvalidSignature);

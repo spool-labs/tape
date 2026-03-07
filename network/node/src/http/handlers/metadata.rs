@@ -11,7 +11,7 @@ use tape_store::ops::TrackOps;
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
-/// GET /v1/tracks/:track_id/metadata
+/// GET /v1/tracks/{track_id}/metadata
 pub async fn get_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,

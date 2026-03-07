@@ -20,7 +20,7 @@ use crate::core::NodeContext;
 use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
-/// POST /v1/tracks/:track_id/inconsistency — attest data inconsistency.
+/// POST /v1/tracks/{track_id}/inconsistency — attest data inconsistency.
 pub async fn post_inconsistency<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
@@ -93,11 +93,11 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_address: [u8; 32],
     epoch: EpochNumber,
 ) -> Result<(), ApiError> {
-    let cs = context.chain_state.load();
-    if epoch != cs.epoch {
+    let protocol_state = context.peer_manager.state();
+    if epoch != protocol_state.epoch {
         return Err(ApiError::BadRequest("committee missing".into()));
     }
-    let committee = &cs.committee;
+    let committee = &protocol_state.committee;
     if committee.is_empty() {
         return Err(ApiError::BadRequest("committee missing".into()));
     }
@@ -122,12 +122,12 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 "inconsistency bitmap has unknown signer".to_string(),
             ))?;
 
-        signer_weight += member
-            .spools
+        signer_weight += protocol_state
+            .member_spools(signer_index)
             .iter()
             .filter(|&&spool| group_for_spool(spool) == track_info.spool_group)
             .count() as u64;
-        signer_pubkeys.push(member.bls_pubkey);
+        signer_pubkeys.push(member.key);
     }
 
     if !is_supermajority(signer_weight, SPOOL_GROUP_SIZE as u64) {

@@ -140,7 +140,6 @@ async fn main() -> Result<()> {
     join_set.spawn(watch_handle("fsm", handles.fsm));
     join_set.spawn(watch_handle("scheduler", handles.scheduler));
     join_set.spawn(watch_handle("task_runner", handles.task_runner));
-    join_set.spawn(watch_handle("peer_service", handles.peer_service));
     join_set.spawn(watch_handle("http", handles.http));
 
     let mut first_failure = None;

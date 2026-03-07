@@ -17,7 +17,7 @@ use crate::fsm::UserEvent;
 use crate::http::error::ApiError;
 use crate::http::state::{require_chain_epoch, AppState};
 
-/// GET /v1/tracks/:track_id/slices/:spool_id
+/// GET /v1/tracks/{track_id}/slices/{spool_id}
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -54,7 +54,7 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ))
 }
 
-/// PUT /v1/tracks/:track_id/slices/:spool_id — slice upload.
+/// PUT /v1/tracks/{track_id}/slices/{spool_id} — slice upload.
 /// `spool_id` is a global spool index (0..SPOOL_COUNT-1), not group-relative.
 pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,

@@ -1,22 +1,21 @@
 //! SpoolSync — sync spool data from a peer that previously owned it.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
 use tape_protocol::Api;
+use tape_protocol::api::{SyncReq, SyncRes};
 use store::Store;
-use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
-use tape_protocol::api::{SyncSpoolRequest, SyncSpoolResponse};
 use tape_core::spooler::SpoolIndex;
+use tape_core::types::NodeId;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::{SpoolState, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{has_missing_slices, validate_slice_entry};
-use crate::core::{NodeContext, PeerHandle};
+use crate::core::NodeContext;
 use crate::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
@@ -24,12 +23,11 @@ const SYNC_FAILURE_THRESHOLD: u32 = 5;
 
 enum SyncSource {
     SkipSync,
-    SyncFrom { client: NodeClient, peer_address: SocketAddr },
+    SyncFrom { node_id: NodeId },
 }
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: PeerHandle,
     spool: SpoolIndex,
     attempt: u32,
     cancel: CancellationToken,
@@ -53,11 +51,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let mut synced: Vec<StorePubkey> = Vec::new();
 
-    if let SyncSource::SyncFrom { client, peer_address } = sync_source {
-        match peer_handle.is_cooling_down(peer_address).await {
-            Ok(true) => return TaskOutcome::Pending(Duration::from_secs(5)),
-            Ok(false) => {}
-            Err(e) => return TaskOutcome::Retryable(format!("peer tracker unavailable: {e}")),
+    if let SyncSource::SyncFrom { node_id } = sync_source {
+        if !context.peer_manager.is_healthy(node_id) {
+            return TaskOutcome::Pending(Duration::from_secs(5));
         }
 
         let mut cursor: Option<[u8; 32]> = match context.store.get_spool_sync_cursor(spool) {
@@ -65,24 +61,26 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Err(e) => return TaskOutcome::Retryable(format!("get cursor: {e}")),
         };
 
+        let api = context.peer_manager.api();
+
         loop {
             if cancel.is_cancelled() {
                 return TaskOutcome::Success;
             }
 
-            let request = SyncSpoolRequest {
+            let req = SyncReq {
                 spool_index: spool,
                 cursor,
                 limit: SYNC_BATCH_SIZE,
             };
 
-            let response: SyncSpoolResponse = match with_retry(&RetryConfig::three(), || client.sync_spool(&request)).await {
+            let response: SyncRes = match api.sync(node_id, &req).await {
                 Ok(r) => r,
                 Err(e) => {
                     return fail_peer(
-                        &peer_handle, peer_address, attempt_count,
+                        &context, node_id, attempt_count,
                         format!("sync_spool rpc: {e}"),
-                    ).await;
+                    );
                 }
             };
 
@@ -101,9 +99,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 if let Err(err) = validate_slice_entry(spool, &track_info, &entry.slice_data) {
                     return fail_peer(
-                        &peer_handle, peer_address, attempt_count,
+                        &context, node_id, attempt_count,
                         format!("sync validation failed: {err}"),
-                    ).await;
+                    );
                 }
 
                 if let Err(e) = context
@@ -122,9 +120,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     return TaskOutcome::Retryable(format!("set cursor: {e}"));
                 }
             }
-            if let Err(e) = peer_handle.record_success(peer_address).await {
-                tracing::warn!("failed to record peer success for {peer_address}: {e}");
-            }
+            context.peer_manager.report_success(node_id);
 
             match response.next_cursor {
                 Some(c) => cursor = Some(c),
@@ -196,34 +192,19 @@ fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Ok(SyncSource::SkipSync);
     }
 
-    let peer_address = context
-        .peer_manager
-        .peers()
-        .resolve(prev_owner_id)
-        .ok_or_else(|| TaskOutcome::Retryable("previous owner not in trusted peers".into()))?
-        .to_socket_addr()
-        .map_err(|e| TaskOutcome::Permanent(format!("parse network address: {e}")))?;
-
-    let client = NodeClientBuilder::new()
-        .build(&peer_address.to_string())
-        .map_err(|e| TaskOutcome::Retryable(format!("build client: {e}")))?;
-
-    Ok(SyncSource::SyncFrom { client, peer_address })
+    Ok(SyncSource::SyncFrom { node_id: prev_owner_id })
 }
 
-async fn fail_peer(
-    peer_handle: &PeerHandle,
-    peer_address: SocketAddr,
+fn fail_peer<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    node_id: NodeId,
     attempt_count: u32,
     msg: String,
 ) -> TaskOutcome {
-    if let Err(err) = peer_handle.record_failure(peer_address).await {
-        tracing::warn!("failed to record peer failure for {peer_address}: {err}");
-    }
+    context.peer_manager.report_failure(node_id);
     if attempt_count >= SYNC_FAILURE_THRESHOLD {
         TaskOutcome::Permanent(format!("{msg} after {attempt_count} attempts"))
     } else {
         TaskOutcome::Retryable(msg)
     }
 }
-

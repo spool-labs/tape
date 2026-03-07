@@ -87,13 +87,9 @@ impl SimnetScenario<'_> {
         trace!(index, "running manual refresh_node_state");
 
         let ctx = node.context();
-        let our_bls = ctx.bls_keypair.public_key()
-            .map_err(|e| anyhow::anyhow!("bls key: {e:?}"))?;
-        let state = tape_node::state::fetch_chain_state(&ctx.rpc, &our_bls)
+        ctx.peer_manager.refresh()
             .await
-            .map_err(|e| anyhow::anyhow!("fetch_chain_state: {e}"))?;
-
-        ctx.chain_state.store(state);
+            .map_err(|e| anyhow::anyhow!("refresh peer_manager: {e}"))?;
         trace!(index, "manual refresh_node_state complete");
         Ok(())
     }

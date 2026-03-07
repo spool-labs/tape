@@ -5,7 +5,6 @@ use std::time::Duration;
 use rpc::Rpc;
 use tape_protocol::Api;
 use rpc_client::RpcError;
-use solana_sdk::signature::Signer;
 use store::Store;
 use tape_api::errors::is_account_state_pending_error;
 use tape_core::encoding::ClayParams;
@@ -15,12 +14,12 @@ use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_store::ops::MetaOps;
 use tape_crypto::hash::Hash;
 use tape_slicer::{ClayCoder, ErasureCoder, OuterCoder, Slicer, DEFAULT_K_OUTER};
-use tape_store::types::{NodeInfo, SnapshotCertResult, SnapshotChunkMeta};
+use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::TaskOutcome;
-use crate::core::committee::{our_member, our_member_index, our_snapshot_groups};
+use crate::core::committee::{our_member_index, our_snapshot_groups};
 use rpc_client::parse_tape_error;
 
 /// Shared retry delay for snapshot collect and submit polling loops.
@@ -55,8 +54,8 @@ pub struct SnapshotTaskContext {
     pub current_chain_epoch: EpochNumber,
     /// Snapshot epoch for this local pipeline cycle.
     pub local_epoch: EpochNumber,
-    /// Committee members for the current chain epoch.
-    pub committee: Vec<NodeInfo>,
+    /// Committee size for the current chain epoch.
+    pub committee_len: usize,
     /// Spool groups owned by this node.
     pub owned_groups: HashSet<SpoolGroup>,
     /// Optional committee member index for the local node.
@@ -82,34 +81,28 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
     need: SnapshotNeed,
     with_member: bool,
 ) -> Result<SnapshotTaskContext, TaskOutcome> {
-    let current_chain_epoch = {
-        let cs = context.chain_state.load();
-        if cs.epoch.is_zero() {
-            return Err(TaskOutcome::Retryable("no current epoch".into()));
-        }
-        cs.epoch
-    };
+    let protocol_state = context.peer_manager.state();
+    let current_chain_epoch = protocol_state.epoch;
+    if current_chain_epoch.is_zero() {
+        return Err(TaskOutcome::Retryable("no current epoch".into()));
+    }
     let local_epoch = match load_snapshot_local_epoch(current_chain_epoch, need) {
         Ok(epoch) => epoch,
         Err(outcome) => return Err(outcome),
     };
 
-    let cs = context.chain_state.load();
-    if cs.epoch != current_chain_epoch {
+    if protocol_state.committee.is_empty() {
         return Err(TaskOutcome::Retryable("no committee".into()));
     }
-    if cs.committee.is_empty() {
-        return Err(TaskOutcome::Retryable("no committee".into()));
-    }
-    let committee = cs.committee.clone();
+    let committee_len = protocol_state.committee.len();
 
-    let owned_groups = match our_snapshot_groups(&committee, context.keypair.pubkey()) {
+    let owned_groups = match our_snapshot_groups(&protocol_state, context.node_id()) {
         Ok(groups) => groups,
         Err(e) => return Err(TaskOutcome::Retryable(e.into())),
     };
 
     let member_index = if with_member {
-        match our_member_index(&committee, context.keypair.pubkey()) {
+        match our_member_index(&protocol_state, context.node_id()) {
             Ok(index) => Some(index),
             Err(e) => return Err(TaskOutcome::Retryable(e.into())),
         }
@@ -117,19 +110,12 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
         None
     };
 
-    let owned_spools = if with_member {
-        match our_member(&committee, context.keypair.pubkey()) {
-            Ok(member) => Some(member.spools.len()),
-            Err(e) => return Err(TaskOutcome::Retryable(e.into())),
-        }
-    } else {
-        None
-    };
+    let owned_spools = member_index.map(|idx| protocol_state.member_spools(idx).len());
 
     Ok(SnapshotTaskContext {
         current_chain_epoch,
         local_epoch,
-        committee,
+        committee_len,
         owned_groups,
         member_index,
         owned_spools,

@@ -24,7 +24,7 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
 
 /// Load current chain epoch, rejecting requests if not yet initialized.
 pub fn require_chain_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(state: &AppState<Db, Cluster, Blockchain>) -> Result<EpochNumber, ApiError> {
-    let epoch = state.context.chain_state.load().epoch;
+    let epoch = state.context.peer_manager.state().epoch;
     if epoch.is_zero() {
         return Err(ApiError::BadRequest("chain epoch missing".into()));
     }

@@ -16,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::fsm::Fsm;
 use crate::core::NodeContext;
-use crate::core::PeerHandle;
 use crate::snapshot::{
     collect_group_slices, decode_group, decode_outer, fetch_commitments, load_snapshot_task_context,
     missing_state, skip_if_cancelled, SnapshotNeed,
@@ -25,7 +24,6 @@ use crate::TaskOutcome;
 
 pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     if let Some(outcome) = skip_if_cancelled(&cancel) {
@@ -75,14 +73,15 @@ pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    if snapshot.committee.is_empty() {
+    if snapshot.committee_len == 0 {
         return missing_state("snapshot bootstrap committee not available");
     }
 
+    let protocol_state = context.peer_manager.state();
+
     let commitments = match fetch_commitments(
         &context,
-        &peer_handle,
-        &snapshot.committee,
+        &protocol_state,
         local_epoch,
     )
     .await
@@ -105,8 +104,8 @@ pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
         let track_addr = Pubkey::new(track_pda.to_bytes());
 
         let slices = match collect_group_slices(
-            &peer_handle,
-            &snapshot.committee,
+            &context,
+            &protocol_state,
             SpoolGroup(group as u64),
             track_addr,
             clay_k,

@@ -46,7 +46,7 @@ pub enum Action {
 pub struct TaskScheduler<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// Shared node state (store, RPC client, identity, config).
     pub context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    /// Tasks that SHOULD be running given current state.
+    /// Tasks that should be running given current state.
     pub desired: HashSet<Task>,
     /// Tasks we've told the task_runner to schedule (and haven't completed/cancelled).
     pub scheduled: HashSet<Task>,
@@ -81,8 +81,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         // On startup, reconcile spools and schedule lifecycle from current ChainState
         // (seeded by runtime before scheduler starts).
         {
-            let cs = self.context.chain_state.load();
-            if !cs.epoch.is_zero() {
+            let protocol_state = self.context.peer_manager.state();
+            if !protocol_state.epoch.is_zero() {
                 SpoolPlanner::reconcile(
                     &*self.context.store,
                     self.node_status(),
@@ -91,7 +91,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 self.lifecycle.schedule(
                     self.chain_phase(),
                     self.node_status(),
-                    cs.epoch,
+                    protocol_state.epoch,
                     &mut self.desired,
                 );
                 if self.needs_bootstrap() {
@@ -158,10 +158,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 StateChange::EpochAdvanced { epoch } => {
                     tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
 
-                    let cs = self.context.chain_state.load();
+                    let protocol_state = self.context.peer_manager.state();
                     LifecyclePlanner::log_member_index(
-                        &cs.committee,
-                        self.context.keypair.pubkey(),
+                        &protocol_state,
+                        self.context.node_id(),
                         *epoch,
                     );
 
@@ -241,8 +241,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 
                 StateChange::PhaseAdvanced { phase } => {
                     tracing::trace!(?phase, "scheduler handling phase advance");
-                    let cs = self.context.chain_state.load();
-                    let epoch = cs.epoch;
+                    let protocol_state = self.context.peer_manager.state();
+                    let epoch = protocol_state.epoch;
                     if !epoch.is_zero() {
                         self.lifecycle.schedule(
                             Some(*phase),
@@ -341,34 +341,34 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Re-run lifecycle scheduling from current chain state.
     fn reschedule_lifecycle(&mut self) {
-        let cs = self.context.chain_state.load();
-        if !cs.epoch.is_zero() {
+        let protocol_state = self.context.peer_manager.state();
+        if !protocol_state.epoch.is_zero() {
             self.lifecycle.schedule(
                 self.chain_phase(),
                 self.node_status(),
-                cs.epoch,
+                protocol_state.epoch,
                 &mut self.desired,
             );
         }
     }
 
-    /// Current chain phase from in-memory ChainState. Returns None for Unknown.
+    /// Current chain phase from protocol state. Returns None for Unknown.
     fn chain_phase(&self) -> Option<EpochPhase> {
-        let cs = self.context.chain_state.load();
-        match cs.phase {
+        let protocol_state = self.context.peer_manager.state();
+        match protocol_state.phase {
             EpochPhase::Unknown => None,
             phase => Some(phase),
         }
     }
 
-    /// Read the node's current status from in-memory ChainState.
+    /// Read the node's current status derived from committee membership.
     pub fn node_status(&self) -> NodeStatus {
-        self.context.chain_state.load().node_status.clone()
+        self.context.node_status()
     }
 
     /// Whether the on-chain epoch phase is Active (all nodes synced/settled).
     fn is_onchain_phase_active(&self) -> bool {
-        matches!(self.context.chain_state.load().phase, EpochPhase::Active)
+        matches!(self.context.peer_manager.state().phase, EpochPhase::Active)
     }
 
     /// True if the task's epoch doesn't match the current chain epoch (the task
@@ -377,11 +377,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
         };
-        let cs = self.context.chain_state.load();
-        if cs.epoch.is_zero() {
+        let protocol_state = self.context.peer_manager.state();
+        if protocol_state.epoch.is_zero() {
             return true;
         }
-        task_epoch != cs.epoch
+        task_epoch != protocol_state.epoch
     }
 
     /// True if this node is Active, at epoch >= 2, and has no sync cursor yet
@@ -390,7 +390,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
         }
-        let current_epoch = self.context.chain_state.load().epoch;
+        let current_epoch = self.context.peer_manager.state().epoch;
         let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
         current_epoch >= EpochNumber(2) && sync_cursor.is_none()
     }
@@ -436,7 +436,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
     /// Remove epoch-scoped tasks older than the retention window from both
     /// `desired` and `scheduled`. Sends Cancel actions for scheduled ones.
     fn prune_stale(&mut self, tx: &mpsc::Sender<Action>) {
-        let current_epoch = self.context.chain_state.load().epoch;
+        let current_epoch = self.context.peer_manager.state().epoch;
         if current_epoch.is_zero() {
             return;
         }
@@ -563,24 +563,23 @@ mod tests {
 
     use bytemuck::Zeroable;
     use rpc::Rpc;
-use tape_protocol::Api;
+    use tape_protocol::Api;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signer::Signer;
     use store::Store;
-    use tape_api::program::tapedrive::node_pda;
-    use tape_core::erasure::SPOOL_GROUP_COUNT;
-    use tape_core::bls::{BlsPubkey, BlsSignature};
+    use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT};
+    use tape_core::bls::BlsSignature;
     use tape_core::snapshot::{ReplayableEvent, SnapshotEntry, SnapshotLog};
     use tape_core::spooler::{SpoolAssignment, SpoolGroup};
-    use tape_core::system::EpochPhase;
+    use tape_core::system::{CommitteeMember, EpochPhase};
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
-    use tape_core::types::network::NetworkAddress;
+    use tape_core::types::coin::{Coin, TAPE};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_crypto::Hash as CryptoHash;
+    use tape_protocol::state::ProtocolState;
     use tokio::sync::mpsc;
-    use tape_store::ops::{CommitteeOps, MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
+    use tape_store::ops::{MetaOps, ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
     use tape_store::types::{
-        NodeInfo,
         NodeStatus,
         ObjectInfo,
         Pubkey as StorePubkey,
@@ -590,8 +589,6 @@ use tape_protocol::Api;
         SpoolStatus,
         TrackInfo,
     };
-
-    use crate::state::ChainState;
     use crate::fsm::{Fsm, StateChange};
     use crate::core::NodeContext;
     use crate::core::test_utils::test_context;
@@ -603,15 +600,16 @@ use tape_protocol::Api;
         phase: EpochPhase,
         status: NodeStatus,
     ) {
-        ctx.chain_state.store(ChainState {
+        let mut state = ProtocolState {
             epoch,
             phase,
-            nonce: tape_crypto::Hash::default(),
-            committee: Vec::new(),
-            committee_prev: Vec::new(),
-            node_status: status,
-            spools: HashSet::new(),
-        });
+            spools: SpoolAssignment::new([255u8; SPOOL_COUNT]),
+            ..Default::default()
+        };
+        if matches!(status, NodeStatus::Active) {
+            state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
+        }
+        ctx.peer_manager.state_handle().store(state);
     }
 
     fn mark_snapshot_build_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -670,18 +668,16 @@ use tape_protocol::Api;
         epoch: EpochNumber,
         spools: Vec<u16>,
     ) {
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-
-        let members = vec![NodeInfo {
-            node_id: NodeId(0),
-            node_address: StorePubkey::new(node_address.to_bytes()),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: StorePubkey::new([0u8; 32]),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-            spools,
-        }];
-
-        ctx.store.put_committee(epoch, members).unwrap();
+        let mut spool_map = [255u8; SPOOL_COUNT];
+        for &s in &spools {
+            spool_map[s as usize] = 0;
+        }
+        ctx.peer_manager.state_handle().store(ProtocolState {
+            epoch,
+            committee: vec![CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000))],
+            spools: SpoolAssignment::new(spool_map),
+            ..Default::default()
+        });
     }
 
     fn put_non_our_committee<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -689,15 +685,16 @@ use tape_protocol::Api;
         epoch: EpochNumber,
         spools: Vec<u16>,
     ) {
-        let members = vec![NodeInfo {
-            node_id: NodeId(0),
-            node_address: StorePubkey::new([9u8; 32]),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: StorePubkey::new([0u8; 32]),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
-            spools,
-        }];
-        ctx.store.put_committee(epoch, members).unwrap();
+        let mut spool_map = [255u8; SPOOL_COUNT];
+        for &s in &spools {
+            spool_map[s as usize] = 0;
+        }
+        ctx.peer_manager.state_handle().store(ProtocolState {
+            epoch,
+            committee: vec![CommitteeMember::new(NodeId(999), Coin::<TAPE>::new(1000))],
+            spools: SpoolAssignment::new(spool_map),
+            ..Default::default()
+        });
     }
 
     #[tokio::test]
@@ -1126,7 +1123,7 @@ use tape_protocol::Api;
         assert!(scheduler.desired.contains(&Task::SyncEpoch { epoch }));
         assert!(!scheduler.desired.contains(&Task::AdvancePool { epoch }));
 
-        ctx.chain_state.update_phase(EpochPhase::Settling);
+        ctx.peer_manager.state_handle().update_phase(EpochPhase::Settling);
         scheduler.desired.insert(Task::SyncEpoch { epoch });
         scheduler.scheduled.insert(Task::SyncEpoch { epoch });
         scheduler.handle_result(&TaskResult::Success(Task::SyncEpoch { epoch }));

@@ -6,19 +6,18 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use tape_protocol::Api;
+use tape_protocol::api::{GetSliceReq, RepairReq};
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::network::NetworkAddress;
-use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
-use tape_node_client::{NodeClientBuilder, RetryConfig, with_retry};
+use tape_core::types::NodeId;
+use tape_protocol::api::StripeSubChunkRequest;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeInfo, Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
+use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::validate_slice_entry;
 use crate::core::NodeContext;
-use crate::core::PeerHandle;
 use crate::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
@@ -30,33 +29,29 @@ enum TrackResult {
     Failed,
 }
 
-/// Peer map + cooldown handle for a spool group, built once per recovery task.
+/// Peer map for a spool group, built once per recovery task.
 struct GroupPeers {
-    handle: PeerHandle,
-    map: HashMap<SpoolIndex, NetworkAddress>,
+    map: HashMap<SpoolIndex, NodeId>,
 }
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: PeerHandle,
     spool: SpoolIndex,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let chain = ctx.chain_state.load();
+    let protocol_state = ctx.peer_manager.state();
 
-    if chain.epoch.is_zero() {
+    if protocol_state.epoch.is_zero() {
         return TaskOutcome::Success;
     }
 
-    if chain.epoch.is_one() {
+    if protocol_state.epoch.is_one() {
         return TaskOutcome::Success;
     }
 
-    let committee = chain.committee_prev.clone();
     let spool_group = SpoolGroup::of(spool);
     let peers = GroupPeers {
-        handle: peer_handle,
-        map: build_peer_map(&committee, spool, spool_group),
+        map: build_peer_map(&protocol_state, spool, spool_group),
     };
 
     let mut any_failed = false;
@@ -168,20 +163,18 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// Build a map from SpoolIndex → peer NetworkAddress for a spool group.
+/// Build a map from SpoolIndex → peer NodeId for a spool group.
 fn build_peer_map(
-    committee: &[NodeInfo],
+    state: &tape_protocol::state::ProtocolState,
     our_spool: SpoolIndex,
     spool_group: SpoolGroup,
-) -> HashMap<SpoolIndex, NetworkAddress> {
-    let mut peer_map: HashMap<SpoolIndex, NetworkAddress> = HashMap::new();
-    for node in committee.iter() {
-        for &s in &node.spools {
-            if s == our_spool || !spool_group.contains(s) {
-                continue;
-            }
-            peer_map.entry(s).or_insert(node.network_address);
+) -> HashMap<SpoolIndex, NodeId> {
+    let mut peer_map: HashMap<SpoolIndex, NodeId> = HashMap::new();
+    for (s, node_id) in state.group_peers(spool_group) {
+        if s == our_spool {
+            continue;
         }
+        peer_map.entry(s).or_insert(node_id);
     }
     peer_map
 }
@@ -273,62 +266,38 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
+    let api = ctx.peer_manager.api();
+    let track_pubkey: tape_crypto::Pubkey = track_addr.into();
     let mut helper_data: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
     for (slice_idx, request) in &per_helper {
         let peer_spool = spool_group.spool_at(**slice_idx);
-        let peer_addr = match peers.map.get(&peer_spool) {
-            Some(addr) => *addr,
+        let peer_node = match peers.map.get(&peer_spool) {
+            Some(&node_id) => node_id,
             None => continue,
         };
 
-        let addr = match peer_addr.to_socket_addr() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!(?track_addr, "parse peer address: {e}");
-                continue;
-            }
-        };
-
-        match peers.handle.is_cooling_down(addr).await {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(?track_addr, spool, "peer tracker unavailable: {e}");
-                continue;
-            }
+        if !ctx.peer_manager.is_healthy(peer_node) {
+            continue;
         }
 
-        let client = match NodeClientBuilder::new().build(&addr.to_string()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(?track_addr, "build peer client: {e}");
-                continue;
-            }
+        let req = RepairReq {
+            track: track_pubkey,
+            helper_spool: request.helper_spool,
+            stripes: request.stripes.clone(),
         };
-
-        match with_retry(&RetryConfig::three(), || {
-            client.request_repair(track_addr, request)
-        })
-        .await
-        {
-            Ok(data) if !data.is_empty() => {
-                ctx.stats.add_repair_received(data.len() as u64);
-                if let Err(e) = peers.handle.record_success(addr).await {
-                    tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
-                }
-                helper_data.insert(*slice_idx, data);
+        match api.repair(peer_node, &req).await {
+            Ok(res) if !res.data.is_empty() => {
+                ctx.stats.add_repair_received(res.data.len() as u64);
+                ctx.peer_manager.report_success(peer_node);
+                helper_data.insert(*slice_idx, res.data);
             }
             Ok(_) => {
-                if let Err(e) = peers.handle.record_success(addr).await {
-                    tracing::warn!(?track_addr, spool, "failed to record peer success for {addr}: {e}");
-                }
-                tracing::debug!(?track_addr, spool, peer = ?peer_addr, "empty repair response");
+                ctx.peer_manager.report_success(peer_node);
+                tracing::debug!(?track_addr, spool, node = peer_node.0, "empty repair response");
             }
             Err(e) => {
-                if let Err(err) = peers.handle.record_failure(addr).await {
-                    tracing::warn!(?track_addr, spool, "failed to record peer failure for {addr}: {err}");
-                }
-                tracing::debug!(?track_addr, spool, peer = ?peer_addr, "repair error: {e}");
+                ctx.peer_manager.report_failure(peer_node);
+                tracing::debug!(?track_addr, spool, node = peer_node.0, "repair error: {e}");
             }
         }
     }
@@ -375,65 +344,39 @@ async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut peer_spools: Vec<SpoolIndex> = peers.map.keys().copied().collect();
     peer_spools.sort_unstable();
 
+    let api = ctx.peer_manager.api();
+    let track_pubkey: tape_crypto::Pubkey = track_addr.into();
+
     let mut full_slices: Vec<(SliceIndex, Vec<u8>)> = Vec::with_capacity(needed);
     for peer_spool in peer_spools {
         if full_slices.len() >= needed {
             break;
         }
 
-        let peer_addr = match peers.map.get(&peer_spool) {
-            Some(addr) => *addr,
+        let peer_node = match peers.map.get(&peer_spool) {
+            Some(&node_id) => node_id,
             None => continue,
         };
-        let addr = match peer_addr.to_socket_addr() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!(?track_addr, "parse peer address: {e}");
-                continue;
-            }
-        };
 
-        match peers.handle.is_cooling_down(addr).await {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(?track_addr, "peer tracker unavailable: {e}");
-                continue;
-            }
+        if !ctx.peer_manager.is_healthy(peer_node) {
+            continue;
         }
 
-        let client = match NodeClientBuilder::new().build(&addr.to_string()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(?track_addr, "build peer client: {e}");
-                continue;
-            }
-        };
-
-        match with_retry(&RetryConfig::three(), || {
-            client.get_slice(track_addr, peer_spool)
-        })
-        .await
-        {
-            Ok(data) if !data.is_empty() => {
-                ctx.stats.add_recovery_received(data.len() as u64);
-                if let Err(e) = peers.handle.record_success(addr).await {
-                    tracing::warn!(?track_addr, "failed to record peer success for {addr}: {e}");
-                }
+        let req = GetSliceReq { track: track_pubkey, spool: peer_spool };
+        match api.get_slice(peer_node, &req).await {
+            Ok(res) if !res.data.is_empty() => {
+                ctx.stats.add_recovery_received(res.data.len() as u64);
+                ctx.peer_manager.report_success(peer_node);
                 let slice_idx = SliceIndex::new(spool_group.slice_of(peer_spool).unwrap());
-                full_slices.push((slice_idx, data));
+                full_slices.push((slice_idx, res.data));
             }
             Ok(_) => {
-                if let Err(e) = peers.handle.record_success(addr).await {
-                    tracing::warn!(?track_addr, "failed to record peer success for {addr}: {e}");
-                }
-                tracing::debug!(?track_addr, peer = ?peer_addr, "empty full-slice response");
+                ctx.peer_manager.report_success(peer_node);
+                tracing::debug!(?track_addr, node = peer_node.0, "empty full-slice response");
             }
             Err(e) => {
-                if let Err(err) = peers.handle.record_failure(addr).await {
-                    tracing::warn!(?track_addr, "failed to record peer failure for {addr}: {err}");
-                }
-                tracing::debug!(?track_addr, peer = ?peer_addr, "full-slice fetch error: {e}");
+                ctx.peer_manager.report_failure(peer_node);
+                tracing::debug!(?track_addr, node = peer_node.0, "full-slice fetch error: {e}");
             }
         }
     }
@@ -500,7 +443,7 @@ fn persist_recovered_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn build_per_helper_requests(
     plan: &RepairPlan,
     spool_group: SpoolGroup,
-) -> HashMap<SliceIndex, RepairRequest> {
+) -> HashMap<SliceIndex, tape_protocol::api::RepairRequest> {
     let mut map: HashMap<SliceIndex, Vec<StripeSubChunkRequest>> = HashMap::new();
     for stripe_repair in &plan.stripes {
         for hp in &stripe_repair.helpers {
@@ -516,7 +459,7 @@ fn build_per_helper_requests(
     map.into_iter()
         .map(|(slice_idx, stripes)| {
             let helper_spool = spool_group.spool_at(*slice_idx);
-            (slice_idx, RepairRequest { helper_spool, stripes })
+            (slice_idx, tape_protocol::api::RepairRequest { helper_spool, stripes })
         })
         .collect()
 }
@@ -526,38 +469,32 @@ mod tests {
     use super::*;
 
     use tape_core::types::EpochNumber;
-    use tape_core::system::EpochPhase;
+    use tape_protocol::state::ProtocolState;
     use tape_store::types::TrackInfo;
     use tokio_util::sync::CancellationToken;
 
-    use crate::state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]
     async fn recovery_empty_queue() {
         let ctx = test_context();
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(2),
-            phase: EpochPhase::Active,
-            committee: vec![],
             ..Default::default()
         });
 
         ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::core::PeerService::new();
-        let result = run(ctx, peer_handle, 5, cancel).await;
+        let result = run(ctx, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
     #[tokio::test]
     async fn recovery_partial_failure() {
         let ctx = test_context();
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(2),
-            phase: EpochPhase::Active,
-            committee: vec![],
             ..Default::default()
         });
 
@@ -580,34 +517,28 @@ mod tests {
         ctx.store.add_pending_recovery(5, track).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::core::PeerService::new();
-        let result = run(ctx, peer_handle, 5, cancel).await;
+        let result = run(ctx, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
     #[tokio::test]
     async fn recovery_gate_on_scan() {
         let ctx = test_context();
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(2),
-            phase: EpochPhase::Active,
-            committee: vec![],
             ..Default::default()
         });
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::core::PeerService::new();
-        let result = run(ctx, peer_handle, 5, cancel).await;
+        let result = run(ctx, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Pending(_)));
     }
 
     #[tokio::test]
     async fn recovery_promotes_active() {
         let ctx = test_context();
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(2),
-            phase: EpochPhase::Active,
-            committee: vec![],
             ..Default::default()
         });
 
@@ -616,8 +547,7 @@ mod tests {
         ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = crate::core::PeerService::new();
-        let result = run(ctx.clone(), peer_handle, 5, cancel).await;
+        let result = run(ctx.clone(), 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
         assert_eq!(
             ctx.store.get_spool_state(5).unwrap().unwrap().status,

@@ -334,9 +334,10 @@ impl SimnetScenario<'_> {
     }
 
     pub fn node_status(&self, index: usize) -> Option<NodeStatus> {
-        let cs = self.harness.nodes()[index].context().chain_state.load();
-        if !cs.epoch.is_zero() {
-            Some(cs.node_status.clone())
+        let ctx = self.harness.nodes()[index].context();
+        let protocol_state = ctx.peer_manager.state();
+        if !protocol_state.epoch.is_zero() {
+            Some(ctx.node_status())
         } else {
             None
         }

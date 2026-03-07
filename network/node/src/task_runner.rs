@@ -26,10 +26,13 @@ use tracing::Instrument;
 
 
 use tape_retry::RetryConfig;
-use crate::core::{NodeContext, PeerHandle};
+use crate::core::NodeContext;
 use crate::{TaskCategory, TaskResult};
 use crate::task_scheduler::Action;
-use crate::tasks;
+use crate::tasks::{
+    advance_epoch, advance_pool, invalidate_track, join_network,
+    recovery_scan, spool_recovery, spool_sync, sync_epoch,
+};
 
 pub use crate::{Task, TaskOutcome};
 
@@ -55,8 +58,6 @@ pub struct TaskRunner<Db: Store, Cluster: Api, Blockchain: Rpc> {
 
     /// Per-category concurrency semaphores.
     limits: ConcurrencyLimits,
-    /// Handle for making peer HTTP requests.
-    peers: PeerHandle,
 
     /// Tasks waiting to be retried after backoff.
     retry: RetryQueue,
@@ -69,15 +70,14 @@ pub struct TaskRunner<Db: Store, Cluster: Api, Blockchain: Rpc> {
     result_tx: mpsc::Sender<TaskResult>,
 }
 
-impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> TaskRunner<Db, Cluster, Blockchain> {
+impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> 
+TaskRunner<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        peer_handle: PeerHandle,
         result_tx: mpsc::Sender<TaskResult>,
     ) -> Self {
         Self {
             context,
-            peers: peer_handle,
             running: HashMap::new(),
             canceled: HashSet::new(),
             retry: RetryQueue::new(),
@@ -342,7 +342,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Tas
         let token = CancellationToken::new();
         let sem = self.limits.get(key.category());
         let ctx = self.context.clone();
-        let peers = self.peers.clone();
         let token_clone = token.clone();
         let category = key.category();
         let key_to_run = key.clone();
@@ -365,7 +364,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Tas
         self.futures.spawn(
             execute_task(
                 ctx,
-                peers,
                 key_to_run.clone(),
                 attempt,
                 token_clone,
@@ -392,7 +390,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Tas
 /// dispatches to the appropriate task module.
 pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: PeerHandle,
     key: Task,
     attempt: u32,
     cancel: CancellationToken,
@@ -423,7 +420,7 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
         // TODO: this feels broken, using what is potentially a future epoch to decide if a task
         // should be skipped. I'm not sure this belongs here. Definitely needs to be reviewed.
 
-        let chain_epoch = context.chain_state.load().epoch;
+        let chain_epoch = context.peer_manager.state().epoch;
         if !chain_epoch.is_zero() {
             if task_epoch != chain_epoch {
                 tracing::trace!(
@@ -439,43 +436,43 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let outcome = match &key {
         Task::AdvanceEpoch { .. } => {
-            tasks::advance_epoch::run(context, cancel).await
+            advance_epoch::run(context, cancel).await
         }
         Task::SyncEpoch { .. } => {
-            tasks::sync_epoch::run(context, cancel).await
+            sync_epoch::run(context, cancel).await
         }
         Task::JoinNetwork { .. } => {
-            tasks::join_network::run(context, cancel).await
+            join_network::run(context, cancel).await
         }
         Task::AdvancePool { .. } => {
-            tasks::advance_pool::run(context, cancel).await
+            advance_pool::run(context, cancel).await
         }
         Task::SpoolSync { spool } => {
-            tasks::spool_sync::run(context, peer_handle, *spool, attempt, cancel).await
+            spool_sync::run(context, *spool, attempt, cancel).await
         }
         Task::SpoolRecovery { spool } => {
-            tasks::spool_recovery::run(context, peer_handle, *spool, cancel).await
+            spool_recovery::run(context, *spool, cancel).await
         }
         Task::RecoveryScan { spool } => {
-            tasks::recovery_scan::run(context, *spool, cancel).await
+            recovery_scan::run(context, *spool, cancel).await
         }
         Task::InvalidateTrack { track } => {
-            tasks::invalidate_track::run(context, *track, cancel).await
+            invalidate_track::run(context, *track, cancel).await
         }
         Task::SnapshotBuild { .. } => {
-            crate::snapshot::run_build(context, peer_handle, cancel).await
+            crate::snapshot::run_build(context, cancel).await
         }
         Task::SnapshotCollect { .. } => {
-            crate::snapshot::run_collect(context, peer_handle, cancel).await
+            crate::snapshot::run_collect(context, cancel).await
         }
         Task::RegisterSnapshot { .. } => {
-            crate::snapshot::run_register(context, peer_handle, cancel).await
+            crate::snapshot::run_register(context, cancel).await
         }
         Task::SnapshotSubmit { .. } => {
-            crate::snapshot::run_submit(context, peer_handle, cancel).await
+            crate::snapshot::run_submit(context, cancel).await
         }
         Task::SnapshotBootstrap => {
-            crate::snapshot::run_bootstrap(context, peer_handle, cancel).await
+            crate::snapshot::run_bootstrap(context, cancel).await
         }
     };
 
@@ -693,7 +690,6 @@ fn far_future() -> Instant {
 mod tests {
     use super::*;
 
-    use crate::core::PeerService;
     use crate::core::test_utils::test_context;
     use tape_core::types::EpochNumber;
     use tokio::time::sleep;
@@ -704,9 +700,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (action_tx, action_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-
-        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             task_runner.run(action_rx, cancel_clone).await;
@@ -731,9 +725,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (action_tx, action_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-
-        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             task_runner.run(action_rx, cancel_clone).await;
@@ -768,8 +760,7 @@ mod tests {
     async fn cancel_result() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::SnapshotBuild { epoch: EpochNumber(0) };
         task_runner.running.insert(
@@ -797,8 +788,7 @@ mod tests {
     async fn retry_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::SyncEpoch { epoch: EpochNumber(1) };
 
@@ -833,8 +823,7 @@ mod tests {
     async fn pending_retry() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::SnapshotSubmit { epoch: EpochNumber(0) };
         task_runner.running.insert(
@@ -865,8 +854,7 @@ mod tests {
     async fn permanent_failure() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::AdvanceEpoch { epoch: EpochNumber(0) };
 
@@ -899,9 +887,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let (action_tx, action_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-
-        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             task_runner.run(action_rx, cancel_clone).await;
@@ -937,9 +923,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, _result_rx) = mpsc::channel(16);
         let (action_tx, action_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-
-        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, result_tx);
         let cancel_clone = cancel.clone();
         let handle = tokio::spawn(async move {
             task_runner.run(action_rx, cancel_clone).await;
@@ -965,9 +949,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let (result_tx, _result_rx) = mpsc::channel(16);
         let (action_tx, action_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-
-        let task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx, result_tx);
         let handle = tokio::spawn(async move {
             task_runner.run(action_rx, cancel).await;
         });
@@ -1056,8 +1038,7 @@ mod tests {
     async fn retries_exhausted() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
-        let (_peer_service, peer_handle) = PeerService::new();
-        let mut task_runner = TaskRunner::new(ctx, peer_handle, result_tx);
+        let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::SyncEpoch { epoch: EpochNumber(1) };
 

@@ -17,10 +17,7 @@ use tracing::Instrument;
 
 use tape_retry::RetryConfig;
 
-use crate::state::fetch_chain_state;
 use crate::core::NodeContext;
-use tape_core::types::NodeId;
-use crate::core::{PeerHandle, PeerService};
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
@@ -41,7 +38,6 @@ pub struct RuntimeHandles {
     pub fsm: JoinHandle<()>,
     pub scheduler: JoinHandle<()>,
     pub task_runner: JoinHandle<()>,
-    pub peer_service: JoinHandle<()>,
     pub http: JoinHandle<()>,
 }
 
@@ -90,15 +86,16 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
-    // One time fetch of current on-chain state
-    boostrap_chain_state(&context).await;
+    // One-time fetch of current on-chain state
+    if let Err(e) = context.peer_manager.bootstrap().await {
+        tracing::warn!(error = %e, "peer manager bootstrap failed, starting with defaults");
+    }
 
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
         spawn_runtime_channels(context.clone(), cancel.clone()).await;
 
     let (action_tx, action_rx) = mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
-    let (peer_service, peer_handle) = PeerService::new();
 
     let scheduler_handle = spawn_scheduler(
         context.clone(),
@@ -113,13 +110,6 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
         cancel.clone(),
         action_rx,
         result_tx,
-        peer_handle,
-    );
-
-    let peer_service_handle = spawn_peer_service(
-        cancel.clone(),
-        peer_service,
-        context.node_id(),
     );
 
     let http_handle = spawn_http_server(
@@ -133,7 +123,6 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
         fsm: fsm_handle,
         scheduler: scheduler_handle,
         task_runner: task_runner_handle,
-        peer_service: peer_service_handle,
         http: http_handle,
     }
 }
@@ -230,9 +219,8 @@ fn spawn_task_runner<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rp
     cancel: CancellationToken,
     action_rx: mpsc::Receiver<Action>,
     result_tx: mpsc::Sender<TaskResult>,
-    peer_handle: PeerHandle,
 ) -> JoinHandle<()> {
-    let task_runner = TaskRunner::new(context.clone(), peer_handle, result_tx);
+    let task_runner = TaskRunner::new(context.clone(), result_tx);
     let task_runner_span = tracing::info_span!("", node_id = context.node_id().0);
 
     tokio::spawn(
@@ -240,21 +228,6 @@ fn spawn_task_runner<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rp
             task_runner.run(action_rx, cancel).await;
         }
         .instrument(task_runner_span),
-    )
-}
-
-fn spawn_peer_service(
-    cancel: CancellationToken,
-    peer_service: PeerService,
-    node_id: NodeId,
-) -> JoinHandle<()> {
-    let peer_service_span = tracing::info_span!("", node_id = node_id.0);
-
-    tokio::spawn(
-        async move {
-            peer_service.run(cancel).await;
-        }
-        .instrument(peer_service_span),
     )
 }
 
@@ -274,36 +247,6 @@ fn spawn_http_server<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rp
         }
         .instrument(http_span),
     )
-}
-
-/// One-time RPC fetch to seed ChainState on startup.
-///
-/// Called before spawning FSM/scheduler. If it fails, components start with
-/// default state and ChainState is populated on the first EpochAdvanced.
-async fn boostrap_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &Arc<NodeContext<Db, Cluster, Blockchain>>) {
-
-    let our_bls = match context.bls_keypair.public_key() {
-        Ok(pk) => pk,
-        Err(e) => {
-            tracing::warn!("chain state seed: bls key error: {e:?}");
-            return;
-        }
-    };
-
-    match fetch_chain_state(&context.rpc, &our_bls).await {
-        Ok(state) => {
-            tracing::info!(
-                epoch = state.epoch.0,
-                phase = ?state.phase,
-                committee_size = state.committee.len(),
-                "chain state: seeded from RPC"
-            );
-            context.chain_state.store(state);
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "chain state seed failed, starting with defaults");
-        }
-    }
 }
 
 async fn run_fsm_loop<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -353,8 +296,8 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
             for change in &changes {
                 if let StateChange::PhaseAdvanced { phase } = change {
-                    context.chain_state.update_phase(*phase);
-                    tracing::trace!(?phase, "chain state: phase updated");
+                    context.peer_manager.state_handle().update_phase(*phase);
+                    tracing::trace!(?phase, "protocol state: phase updated");
                 }
             }
 
@@ -364,15 +307,15 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                     return LoopControl::Break;
                 }
 
-                let cs = context.chain_state.load();
-                let ps = context.peer_manager.state();
-                SpoolPlanner::cleanup_locked(&*context.store, cs.epoch);
+                let protocol_state = context.peer_manager.state();
+                SpoolPlanner::cleanup_locked(&*context.store, protocol_state.epoch);
+                let my_spools = context.my_spools();
                 if SpoolPlanner::reconcile_ownership(
                     &*context.store,
-                    &cs.spools,
-                    cs.epoch,
-                    &ps.spools_prev,
-                    &ps.committee_prev,
+                    &my_spools,
+                    protocol_state.epoch,
+                    &protocol_state.spools_prev,
+                    &protocol_state.committee_prev,
                 ) {
                     changes.push(StateChange::SpoolAssignmentChanged);
                 }
@@ -387,39 +330,29 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
     LoopControl::Continue
 }
 
-/// Fetch chain state from RPC inline, blocking the FSM loop until complete.
+/// Fetch protocol state from RPC inline, blocking the FSM loop until complete.
 ///
 /// Retries with exponential backoff (500ms → 30s cap) until success or
-/// cancellation. Returns `Ok(())` on success or BLS key error (non-fatal),
-/// `Err(())` on cancellation.
+/// cancellation. Returns `Ok(())` on success, `Err(())` on cancellation.
 async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
-    let our_bls = match context.bls_keypair.public_key() {
-        Ok(pk) => pk,
-        Err(e) => {
-            tracing::error!("chain state fetch: bls key error: {e:?}");
-            return Ok(());
-        }
-    };
-
     match tape_retry::retry(chain_state_backoff(), Some(cancel), || {
-        fetch_chain_state(&context.rpc, &our_bls)
+        context.peer_manager.refresh()
     }).await {
-        Ok(state) => {
+        Ok(()) => {
+            let protocol_state = context.peer_manager.state();
             tracing::info!(
-                epoch = state.epoch.0,
-                phase = ?state.phase,
-                committee_size = state.committee.len(),
-                spools = state.spools.len(),
-                "chain state: updated from RPC"
+                epoch = protocol_state.epoch.0,
+                phase = ?protocol_state.phase,
+                committee_size = protocol_state.committee.len(),
+                "protocol state: updated from RPC"
             );
-            context.chain_state.store(state);
             Ok(())
         }
         Err(_) => {
-            tracing::debug!("chain state fetch cancelled");
+            tracing::debug!("protocol state fetch cancelled");
             Err(())
         }
     }
@@ -440,11 +373,13 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_store::ops::{MetaOps, SpoolOps};
-    use tape_store::types::{NodeStatus, SpoolState, SpoolStatus};
+    use tape_store::types::{SpoolState, SpoolStatus};
+
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_protocol::state::ProtocolState;
 
     use crate::ingestor::IngestedBlock;
-    use crate::state::ChainState;
-    use crate::core::PeerService;
     use crate::core::test_utils::test_context;
 
     async fn spawn_test_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -538,12 +473,7 @@ mod tests {
                 .await;
         });
 
-        let (peer_service, peer_handle) = PeerService::new();
-        let peer_cancel = cancel.clone();
-        let peer_service_handle = tokio::spawn(async move {
-            peer_service.run(peer_cancel).await;
-        });
-        let task_runner = TaskRunner::new(ctx.clone(), peer_handle, result_tx);
+        let task_runner = TaskRunner::new(ctx.clone(), result_tx);
         let task_runner_cancel = cancel.clone();
         let task_runner_handle = tokio::spawn(async move {
             task_runner.run(action_rx, task_runner_cancel).await;
@@ -556,7 +486,6 @@ mod tests {
         cancel.cancel();
         scheduler_handle.await.unwrap();
         task_runner_handle.await.unwrap();
-        peer_service_handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -565,11 +494,12 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Active at epoch 5, no cursor → bootstrap needed
-        ctx.chain_state.store(ChainState {
-            node_status: NodeStatus::Active,
+        let mut state = ProtocolState {
             epoch: EpochNumber(5),
-            ..ChainState::default()
-        });
+            ..Default::default()
+        };
+        state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
+        ctx.peer_manager.state_handle().store(state);
 
         let (block_tx, _block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 

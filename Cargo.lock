@@ -8763,7 +8763,6 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-node",
- "tape-node-client",
  "tape-protocol",
  "tape-sdk",
  "tape-store",
@@ -8812,7 +8811,6 @@ dependencies = [
  "tape-blocks",
  "tape-core",
  "tape-crypto",
- "tape-node-client",
  "tape-protocol",
  "tape-retry",
  "tape-slicer",
@@ -8825,29 +8823,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wincode 0.1.2",
-]
-
-[[package]]
-name = "tape-node-client"
-version = "0.3.0"
-dependencies = [
- "prometheus",
- "reqwest",
- "rustls 0.23.36",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "tape-crypto",
- "tape-metrics",
- "tape-protocol",
- "tape-retry",
- "tape-store",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "wincode 0.1.2",
- "x509-parser 0.16.0",
 ]
 
 [[package]]

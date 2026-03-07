@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chain::submit_certify;
 use crate::core::NodeContext;
-use crate::core::PeerHandle;
 use crate::snapshot::{
     classify_submit_error, load_group_artifacts, load_snapshot_task_context, missing_state,
     skip_if_cancelled, SNAPSHOT_PENDING_DELAY, SnapshotNeed, SubmitClass,
@@ -19,7 +18,6 @@ use crate::TaskOutcome;
 /// Submit completed snapshot certifications on-chain.
 pub async fn run_submit<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     if let Some(outcome) = skip_if_cancelled(&cancel) {
@@ -33,7 +31,7 @@ pub async fn run_submit<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let local_epoch = snapshot.local_epoch;
     let current = snapshot.current_chain_epoch;
-    let committee_len = snapshot.committee.len();
+    let committee_len = snapshot.committee_len;
     let mut groups: Vec<_> = snapshot.owned_groups.into_iter().collect();
     groups.sort_unstable();
 

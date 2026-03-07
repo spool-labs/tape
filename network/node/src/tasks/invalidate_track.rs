@@ -65,7 +65,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let tape_address: Pubkey = track_info.tape_address.into();
 
-    let epoch = context.chain_state.load().epoch;
+    let epoch = context.peer_manager.state().epoch;
 
     let bitmap: CommitteeBitmap = bytemuck::cast(proof.bitmap);
     let signature = proof.signature;

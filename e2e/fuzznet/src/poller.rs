@@ -365,10 +365,10 @@ async fn poll_once(
         total_recovery_delta += recovery_delta;
         total_upload_delta += upload_delta;
 
-        let cs = tracked.ctx.chain_state.load();
-        let spool_count = cs.spools.len();
-        let node_status = if !cs.epoch.is_zero() {
-            Some(cs.node_status.clone())
+        let protocol_state = tracked.ctx.peer_manager.state();
+        let spool_count = tracked.ctx.my_spools().len();
+        let node_status = if !protocol_state.epoch.is_zero() {
+            Some(tracked.ctx.node_status())
         } else {
             None
         };

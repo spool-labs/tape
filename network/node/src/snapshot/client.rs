@@ -1,70 +1,66 @@
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use rpc::Rpc;
 use tape_protocol::Api;
+use tape_protocol::api::{GetSliceReq, GetSnapshotReq};
 use store::Store;
 use tape_api::program::tapedrive::snapshot_pda;
 use tape_api::state::Track;
 use tape_core::bft::min_correct;
 use tape_core::erasure::{SPOOL_GROUP_COUNT, group_for_spool, slice_for_spool};
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::hash::Hash;
-use tape_node_client::{NodeClient, NodeClientBuilder, RetryConfig, with_retry};
-use tape_store::types::{NodeInfo, Pubkey};
+use tape_protocol::state::ProtocolState;
+use tape_store::types::Pubkey;
 
 use crate::core::NodeContext;
-use crate::core::PeerHandle;
 use crate::TaskOutcome;
 
 pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: &PeerHandle,
-    committee: &[NodeInfo],
+    state: &ProtocolState,
     local_epoch: EpochNumber,
 ) -> Result<Vec<Hash>, TaskOutcome> {
-    let config = RetryConfig::three();
-    if committee.is_empty() {
+    if state.committee.is_empty() {
         return Err(TaskOutcome::Retryable(
             "snapshot committee is empty".into(),
         ));
     }
 
-    let total = committee.len() as u64;
+    let total = state.committee.len() as u64;
     let quorum = min_correct(total) as usize;
-    let mut ballots: HashMap<Vec<Hash>, (usize, Vec<SocketAddr>)> = HashMap::new();
+    let mut ballots: HashMap<Vec<Hash>, (usize, Vec<NodeId>)> = HashMap::new();
     let mut valid_peer_answers = 0usize;
 
-    for member in committee {
-        let Some((addr, client)) = peer_client(peer_handle, member).await? else {
-            continue;
-        };
+    let api = context.peer_manager.api();
 
-        let result = with_retry(&config, || client.get_snapshot_commitments(local_epoch.0)).await;
+    for member in &state.committee {
+        if !context.peer_manager.is_healthy(member.id) {
+            continue;
+        }
+
+        let req = GetSnapshotReq { epoch: local_epoch };
+        let result = api.get_snapshot(member.id, &req).await;
         match result {
-            Ok(commitments) if commitments.len() == SPOOL_GROUP_COUNT => {
-                let entry = ballots.entry(commitments.clone()).or_insert((0, Vec::new()));
+            Ok(res) if res.commitments.len() == SPOOL_GROUP_COUNT => {
+                let entry = ballots.entry(res.commitments.clone()).or_insert((0, Vec::new()));
                 entry.0 += 1;
-                entry.1.push(addr);
+                entry.1.push(member.id);
                 valid_peer_answers += 1;
             }
             Ok(_) => {
-                if let Err(e) = peer_handle.record_failure(addr).await {
-                    tracing::warn!("failed to record peer failure for {addr}: {e}");
-                }
+                context.peer_manager.report_failure(member.id);
             }
             Err(e) => {
-                if let Err(err) = peer_handle.record_failure(addr).await {
-                    tracing::warn!("failed to record peer failure for {addr}: {err}");
-                }
-                tracing::debug!("fetch commitments failed from {addr}: {e}");
+                context.peer_manager.report_failure(member.id);
+                tracing::debug!(node = member.id.0, "fetch commitments failed: {e}");
             }
         }
     }
 
-    let (consensus_commitments, peer_addrs, votes) = match ballots
+    let (consensus_commitments, peer_ids, votes) = match ballots
         .into_iter()
         .max_by_key(|(_, (count, _))| *count)
     {
@@ -85,10 +81,8 @@ pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     verify_commitments(context, local_epoch, &consensus_commitments).await?;
 
-    for addr in peer_addrs {
-        if let Err(e) = peer_handle.record_success(addr).await {
-            tracing::warn!("failed to record peer success for {addr}: {e}");
-        }
+    for node_id in peer_ids {
+        context.peer_manager.report_success(node_id);
     }
 
     tracing::debug!(
@@ -189,14 +183,14 @@ async fn verify_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(())
 }
 
-pub async fn collect_group_slices(
-    peer_handle: &PeerHandle,
-    committee: &[NodeInfo],
+pub async fn collect_group_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     group: SpoolGroup,
     track: Pubkey,
     needed: usize,
 ) -> Result<Vec<(usize, Vec<u8>)>, TaskOutcome> {
-    let group_total_weight = group_total_weight(committee, group);
+    let group_total_weight = compute_group_total_weight(state, group);
     if group_total_weight == 0 {
         return Err(TaskOutcome::Retryable(format!(
             "snapshot group {group} has no weighted committee members",
@@ -205,20 +199,27 @@ pub async fn collect_group_slices(
 
     let quorum = min_correct(group_total_weight);
     let mut seen_peer_slice_indices = HashSet::new();
-    let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<SocketAddr>)>> =
+    let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<NodeId>)>> =
         HashMap::new();
 
-    for member in committee {
-        let member_weight = group_weight(member, group);
+    let api = context.peer_manager.api();
+    let track_pubkey: tape_crypto::Pubkey = track.into();
+
+    for (member_index, member) in state.committee.iter().enumerate() {
+        let member_spools = state.member_spools(member_index);
+        let member_weight = member_spools
+            .iter()
+            .filter(|&&spool| group_for_spool(spool) == group)
+            .count() as u64;
         if member_weight == 0 {
             continue;
         }
 
-        let Some((addr, client)) = peer_client(peer_handle, member).await? else {
+        if !context.peer_manager.is_healthy(member.id) {
             continue;
-        };
+        }
 
-        for &spool in &member.spools {
+        for &spool in &member_spools {
             if group_for_spool(spool) != group {
                 continue;
             }
@@ -226,32 +227,28 @@ pub async fn collect_group_slices(
             let Some(slice_index) = slice_for_spool(group, spool) else {
                 continue;
             };
-            if !seen_peer_slice_indices.insert((addr, slice_index)) {
+            if !seen_peer_slice_indices.insert((member.id, slice_index)) {
                 continue;
             }
 
-            // get_slice expects a global spool ID, not a group-relative index.
-            match client.get_slice(track, spool).await {
-                Ok(data) if !data.is_empty() => {
+            let req = GetSliceReq { track: track_pubkey, spool };
+            match api.get_slice(member.id, &req).await {
+                Ok(res) if !res.data.is_empty() => {
                     let (weight, peers) = index_votes
                         .entry(slice_index)
                         .or_default()
-                        .entry(data)
+                        .entry(res.data)
                         .or_insert_with(|| (0, HashSet::new()));
                     *weight += member_weight;
-                    peers.insert(addr);
+                    peers.insert(member.id);
                 }
-                Ok(_data) => {
-                    tracing::debug!("snapshot slice empty for {addr}: group {group}, slice {slice_index}");
-                    if let Err(e) = peer_handle.record_failure(addr).await {
-                        tracing::warn!("failed to record peer failure for {addr}: {e}");
-                    }
+                Ok(_) => {
+                    tracing::debug!(node = member.id.0, "snapshot slice empty: group {group}, slice {slice_index}");
+                    context.peer_manager.report_failure(member.id);
                 }
                 Err(e) => {
-                    if let Err(err) = peer_handle.record_failure(addr).await {
-                        tracing::warn!("failed to record peer failure for {addr}: {err}");
-                    }
-                    tracing::trace!("fetch slice failed from {addr}: {e}");
+                    context.peer_manager.report_failure(member.id);
+                    tracing::trace!(node = member.id.0, "fetch slice failed: {e}");
                 }
             }
         }
@@ -262,10 +259,8 @@ pub async fn collect_group_slices(
         return Err(TaskOutcome::Retryable("snapshot collect no slices reached consensus".into()));
     }
 
-    for addr in successful_peers {
-        if let Err(e) = peer_handle.record_success(addr).await {
-            tracing::warn!("failed to record peer success for {addr}: {e}");
-        }
+    for node_id in successful_peers {
+        context.peer_manager.report_success(node_id);
     }
 
     if slices.len() < needed {
@@ -281,27 +276,26 @@ pub async fn collect_group_slices(
     Ok(slices)
 }
 
-fn group_weight(member: &NodeInfo, group: SpoolGroup) -> u64 {
-    member
-        .spools
-        .iter()
-        .filter(|&&spool| group_for_spool(spool) == group)
-        .count() as u64
-}
-
-fn group_total_weight(committee: &[NodeInfo], group: SpoolGroup) -> u64 {
-    committee.iter().map(|member| group_weight(member, group)).sum()
+fn compute_group_total_weight(state: &ProtocolState, group: SpoolGroup) -> u64 {
+    (0..state.committee.len())
+        .map(|i| {
+            state.member_spools(i)
+                .iter()
+                .filter(|&&spool| group_for_spool(spool) == group)
+                .count() as u64
+        })
+        .sum()
 }
 
 fn select_quorum_slices(
-    index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<SocketAddr>)>>,
+    index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<NodeId>)>>,
     quorum: u64,
-) -> (Vec<(usize, Vec<u8>)>, HashSet<SocketAddr>) {
+) -> (Vec<(usize, Vec<u8>)>, HashSet<NodeId>) {
     let mut slices = Vec::new();
     let mut successful_peers = HashSet::new();
 
     for (slice_index, mut values) in index_votes {
-        let mut winner: Option<(u64, Vec<u8>, HashSet<SocketAddr>)> = None;
+        let mut winner: Option<(u64, Vec<u8>, HashSet<NodeId>)> = None;
 
         for (data, (weight, peers)) in values.drain() {
             match winner {
@@ -326,48 +320,21 @@ fn select_quorum_slices(
     (slices, successful_peers)
 }
 
-pub async fn peer_client(
-    peer_handle: &PeerHandle,
-    member: &NodeInfo,
-) -> Result<Option<(SocketAddr, NodeClient)>, TaskOutcome> {
-    let addr = match member.network_address.to_socket_addr() {
-        Ok(addr) => addr,
-        Err(_) => return Ok(None),
-    };
-
-    match peer_handle.is_cooling_down(addr).await {
-        Ok(true) => return Ok(None),
-        Ok(false) => {}
-        Err(e) => return Err(TaskOutcome::Retryable(format!("peer tracker unavailable: {e}"))),
-    }
-
-    let client = match NodeClientBuilder::new().build(&addr.to_string()) {
-        Ok(client) => client,
-        Err(_) => return Ok(None),
-    };
-
-    Ok(Some((addr, client)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-
-    fn addr_for_octet(value: u8) -> SocketAddr {
-        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), value.into()))
-    }
+    use tape_core::types::NodeId;
 
     #[test]
     fn select_quorum_slices_prefers_max_weight_candidate() {
-        let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<SocketAddr>)>> =
+        let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<NodeId>)>> =
             HashMap::new();
 
         index_votes.insert(
             0,
             HashMap::from([
-                (vec![0x01], (1, HashSet::from([addr_for_octet(1)]))),
-                (vec![0x02], (2, HashSet::from([addr_for_octet(2), addr_for_octet(3)]))),
+                (vec![0x01], (1, HashSet::from([NodeId(1)]))),
+                (vec![0x02], (2, HashSet::from([NodeId(2), NodeId(3)]))),
             ]),
         );
 
@@ -380,46 +347,18 @@ mod tests {
 
     #[test]
     fn select_quorum_slices_rejects_conflict_without_quorum() {
-        let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<SocketAddr>)>> =
+        let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<NodeId>)>> =
             HashMap::new();
         index_votes.insert(
             0,
             HashMap::from([
-                (vec![0x01], (1, HashSet::from([addr_for_octet(1)]))),
-                (vec![0x02], (1, HashSet::from([addr_for_octet(2)]))),
+                (vec![0x01], (1, HashSet::from([NodeId(1)]))),
+                (vec![0x02], (1, HashSet::from([NodeId(2)]))),
             ]),
         );
 
         let (slices, peers) = select_quorum_slices(index_votes, 2);
         assert!(slices.is_empty());
         assert!(peers.is_empty());
-    }
-
-    #[test]
-    fn group_weight_counts_group_spools() {
-        let committee = vec![
-            NodeInfo {
-                node_id: tape_core::types::NodeId(1),
-                node_address: tape_store::types::Pubkey::new([0u8; 32]),
-                bls_pubkey: tape_core::bls::BlsPubkey::new_unique(),
-                tls_pubkey: tape_store::types::Pubkey::new([0u8; 32]),
-                network_address: tape_core::types::network::NetworkAddress::from("127.0.0.1:10001")
-                    .unwrap(),
-                spools: vec![0, 1, 2],
-            },
-            NodeInfo {
-                node_id: tape_core::types::NodeId(2),
-                node_address: tape_store::types::Pubkey::new([1u8; 32]),
-                bls_pubkey: tape_core::bls::BlsPubkey::new_unique(),
-                tls_pubkey: tape_store::types::Pubkey::new([1u8; 32]),
-                network_address: tape_core::types::network::NetworkAddress::from("127.0.0.1:10002")
-                    .unwrap(),
-                spools: vec![100, 101],
-            },
-        ];
-
-        assert_eq!(group_weight(&committee[0], SpoolGroup(0)), 3);
-        assert_eq!(group_weight(&committee[1], SpoolGroup(0)), 0);
-        assert_eq!(group_total_weight(&committee, SpoolGroup(0)), 3);
     }
 }

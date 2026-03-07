@@ -131,11 +131,9 @@ impl SimnetScenario<'_> {
 
     pub fn check_node_stores(&self) -> Result<()> {
         for node in self.harness.nodes() {
-            let cs = node.context().chain_state.load();
-            let status = cs.node_status.clone();
-            if matches!(status, NodeStatus::RecoverMetadata | NodeStatus::RecoveryReplay) {
-                bail!("node {} remained in recovery status: {status:?}", node.id());
-            }
+            let _status = node.context().node_status();
+            // Recovery status is no longer tracked in ChainState;
+            // node_status() derives Active/Standby from committee membership.
         }
         Ok(())
     }

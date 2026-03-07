@@ -18,13 +18,14 @@ use tape_core::snapshot::SnapshotLog;
 use tape_core::types::{ChunkIndex, EpochNumber, SlotNumber};
 use tape_protocol::api::SnapshotSignatureSubmission;
 use tape_slicer::{blob_merkle_root, ClayCoder, DEFAULT_K_OUTER, ErasureCoder, OuterCoder, Slicer};
-use tape_store::types::{NodeInfo, Pubkey, SnapshotChunkMeta, SnapshotPartialSignature};
+use tape_protocol::state::ProtocolState;
+use tape_store::types::{Pubkey, SnapshotChunkMeta, SnapshotPartialSignature};
 use tokio_util::sync::CancellationToken;
 use wincode;
 
-use crate::core::{NodeContext, PeerHandle};
+use crate::core::NodeContext;
 use crate::snapshot::{
-    is_snapshot_build_complete, load_snapshot_task_context, peer_client, skip_if_cancelled,
+    is_snapshot_build_complete, load_snapshot_task_context, skip_if_cancelled,
     SnapshotNeed,
 };
 use crate::TaskOutcome;
@@ -33,7 +34,6 @@ use crate::TaskOutcome;
 /// inner Clay encode each chunk into 20 slices, store commitments + slices.
 pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     if let Some(outcome) = skip_if_cancelled(&cancel) {
@@ -106,7 +106,6 @@ pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(e) => return TaskOutcome::Retryable(format!("read spools: {e}")),
     };
 
-    let committee = snapshot.committee;
     let our_groups: HashSet<SpoolGroup> = snapshot.owned_groups;
 
     for group in 0..SPOOL_GROUP_COUNT {
@@ -204,10 +203,10 @@ pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 epoch: local_epoch,
             };
 
+            let protocol_state = context.peer_manager.state();
             if let Err(err) = broadcast_snapshot_signature(
                 &context,
-                &peer_handle,
-                &committee,
+                &protocol_state,
                 member_index as usize,
                 local_epoch,
                 SpoolGroup(group as u64),
@@ -238,21 +237,22 @@ pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    _context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    peer_handle: &PeerHandle,
-    committee: &[NodeInfo],
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    state: &ProtocolState,
     our_member_index: usize,
     local_epoch: EpochNumber,
     group: SpoolGroup,
     request: &SnapshotSignatureSubmission,
 ) -> Result<(), TaskOutcome> {
-    for (member_index, member) in committee.iter().enumerate() {
+    let api = context.peer_manager.api();
+
+    for (member_index, member) in state.committee.iter().enumerate() {
         if member_index == our_member_index {
             continue;
         }
 
-        let member_weight = member
-            .spools
+        let member_weight = state
+            .member_spools(member_index)
             .iter()
             .filter(|&&spool| group_for_spool(spool) == group)
             .count();
@@ -260,28 +260,28 @@ async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
-        let Some((addr, client)) = peer_client(peer_handle, member).await? else {
-            continue;
-        };
-
-        if let Err(err) = client
-            .post_snapshot_signature(local_epoch.0, group.0, request)
-            .await
-        {
-            tracing::debug!(
-                epoch = local_epoch.0,
-                %group,
-                member = member_index,
-                "snapshot signature post failed: {err}"
-            );
-            if let Err(e) = peer_handle.record_failure(addr).await {
-                tracing::warn!("peer failure record failed for {addr}: {e}");
-            }
+        if !context.peer_manager.is_healthy(member.id) {
             continue;
         }
 
-        if let Err(e) = peer_handle.record_success(addr).await {
-            tracing::warn!("failed to record peer success for {addr}: {e}");
+        let req = tape_protocol::api::PutSnapshotReq {
+            epoch: local_epoch,
+            chunk_index: group.0,
+            submission: request.clone(),
+        };
+        match api.put_snapshot(member.id, &req).await {
+            Ok(_) => {
+                context.peer_manager.report_success(member.id);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    epoch = local_epoch.0,
+                    %group,
+                    member = member_index,
+                    "snapshot signature post failed: {err}"
+                );
+                context.peer_manager.report_failure(member.id);
+            }
         }
     }
 

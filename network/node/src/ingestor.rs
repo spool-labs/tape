@@ -94,9 +94,9 @@ async fn wait_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .store
             .get_sync_cursor()?;
 
-        let cs = context.chain_state.load();
-        let epoch = if !cs.epoch.is_zero() { Some(cs.epoch) } else { None };
-        let status = cs.node_status.clone();
+        let protocol_state = context.peer_manager.state();
+        let epoch = if !protocol_state.epoch.is_zero() { Some(protocol_state.epoch) } else { None };
+        let status = context.node_status();
 
         let _cursor_slot = cursor.map(|slot| slot.0);
 
@@ -258,13 +258,12 @@ async fn sleep_or_active(delay: Duration, cancel: &CancellationToken) -> bool {
 mod tests {
     use super::*;
 
-    use std::collections::HashSet;
-
     use tape_core::types::EpochNumber;
-    use tape_core::system::EpochPhase;
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_protocol::state::ProtocolState;
     use tokio::time::sleep;
 
-    use crate::state::ChainState;
     use crate::core::test_utils::test_context;
 
     #[tokio::test]
@@ -273,15 +272,12 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Active at epoch 5 with no cursor → needs bootstrap
-        ctx.chain_state.store(ChainState {
+        let mut state = ProtocolState {
             epoch: EpochNumber(5),
-            phase: EpochPhase::Active,
-            nonce: tape_crypto::Hash::default(),
-            committee: Vec::new(),
-            committee_prev: Vec::new(),
-            node_status: NodeStatus::Active,
-            spools: HashSet::new(),
-        });
+            ..Default::default()
+        };
+        state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
+        ctx.peer_manager.state_handle().store(state);
 
         let (tx, _rx) = mpsc::channel(4);
 
@@ -312,14 +308,9 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Standby with no cursor → no bootstrap needed, start from 0
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(0),
-            phase: EpochPhase::Unknown,
-            nonce: tape_crypto::Hash::default(),
-            committee: Vec::new(),
-            committee_prev: Vec::new(),
-            node_status: NodeStatus::Standby,
-            spools: HashSet::new(),
+            ..Default::default()
         });
 
         let (tx, _rx) = mpsc::channel(4);

@@ -9,6 +9,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use axum::Router;
 use rpc::Rpc;
+use tape_protocol::api::routes;
 use tape_protocol::Api;
 use store::Store;
 use tokio::sync::mpsc;
@@ -17,7 +18,9 @@ use tower::limit::ConcurrencyLimitLayer;
 
 use crate::core::NodeContext;
 use crate::fsm::UserEvent;
-use crate::http::handlers;
+use crate::http::handlers::{
+    health, inconsistency, metadata, metrics, repair, sign, slice, snapshot, status, sync,
+};
 use crate::http::state::AppState;
 
 /// The HTTP server serving the node API.
@@ -41,64 +44,64 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Htt
 
         // Observability routes (no body limits needed)
         let observability = Router::new()
-            .route("/v1/health", get(handlers::health::health::<Db, Cluster, Blockchain>))
-            .route("/v1/info", get(handlers::health::info::<Db, Cluster, Blockchain>))
-            .route("/v1/stats", get(handlers::health::stats::<Db, Cluster, Blockchain>))
-            .route("/v1/metrics", get(handlers::metrics::get_metrics))
+            .route(routes::HEALTH_PATH, get(health::health::<Db, Cluster, Blockchain>))
+            .route(routes::INFO_PATH, get(health::info::<Db, Cluster, Blockchain>))
+            .route(routes::STATS_PATH, get(health::stats::<Db, Cluster, Blockchain>))
+            .route(routes::METRICS_PATH, get(metrics::get_metrics))
             .route(
-                "/v1/snapshots/{epoch}/commitments",
-                get(handlers::snapshot::get_commitments::<Db, Cluster, Blockchain>),
+                routes::SNAPSHOT_COMMITMENTS_PATH,
+                get(snapshot::get_commitments::<Db, Cluster, Blockchain>),
             );
 
         // Status routes (lightweight checks)
         let status = Router::new()
             .route(
-                "/v1/tracks/{track_id}/slices/{spool_id}/status",
-                get(handlers::status::slice_status::<Db, Cluster, Blockchain>),
+                routes::SLICE_STATUS_PATH,
+                get(status::slice_status::<Db, Cluster, Blockchain>),
             )
             .route(
-                "/v1/tracks/{track_id}/metadata/status",
-                get(handlers::status::metadata_status::<Db, Cluster, Blockchain>),
+                routes::METADATA_STATUS_PATH,
+                get(status::metadata_status::<Db, Cluster, Blockchain>),
             )
             .route(
-                "/v1/tracks/{track_id}/status",
-                get(handlers::status::track_status::<Db, Cluster, Blockchain>),
+                routes::TRACK_STATUS_PATH,
+                get(status::track_status::<Db, Cluster, Blockchain>),
             );
 
         // Slice read
         let slice_read = Router::new().route(
-            "/v1/tracks/{track_id}/slices/{spool_id}",
-            get(handlers::slice::get_slice::<Db, Cluster, Blockchain>),
+            routes::SLICE_PATH,
+            get(slice::get_slice::<Db, Cluster, Blockchain>),
         );
 
         // Sign routes (read-only BLS signing)
         let sign = Router::new()
             .route(
-                "/v1/tracks/{track_id}/sign",
-                get(handlers::sign::get_signature::<Db, Cluster, Blockchain>),
+                routes::SIGN_PATH,
+                get(sign::get_signature::<Db, Cluster, Blockchain>),
             )
             .route(
-                "/v1/snapshots/{epoch}/{chunk_index}/partial_signature",
-                post(handlers::sign::post_snapshot_signature::<Db, Cluster, Blockchain>),
+                routes::SNAPSHOT_SIG_PATH,
+                post(sign::post_snapshot_signature::<Db, Cluster, Blockchain>),
             );
 
         // Metadata read
         let metadata_read = Router::new().route(
-            "/v1/tracks/{track_id}/metadata",
-            get(handlers::metadata::get_metadata::<Db, Cluster, Blockchain>),
+            routes::METADATA_PATH,
+            get(metadata::get_metadata::<Db, Cluster, Blockchain>),
         );
 
         // Slice ingestion
         let slice_ingest = Router::new()
             .route(
-                "/v1/tracks/{track_id}/slices/{spool_id}",
-                put(handlers::slice::put_slice::<Db, Cluster, Blockchain>),
+                routes::SLICE_PATH,
+                put(slice::put_slice::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(limits.slice_body_max));
 
         // Sync spool
         let mut sync = Router::new()
-            .route("/v1/sync/spool", post(handlers::sync::sync_spool::<Db, Cluster, Blockchain>))
+            .route(routes::SYNC_SPOOL_PATH, post(sync::sync_spool::<Db, Cluster, Blockchain>))
             .layer(DefaultBodyLimit::max(limits.sync_body_max));
 
         if let Some(limit) = limits.sync_spool_limit {
@@ -108,8 +111,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Htt
         // Repair
         let mut repair = Router::new()
             .route(
-                "/v1/tracks/{track_id}/repair",
-                post(handlers::repair::post_repair::<Db, Cluster, Blockchain>),
+                routes::REPAIR_PATH,
+                post(repair::post_repair::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(limits.repair_body_max));
 
@@ -120,8 +123,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Htt
         // Inconsistency
         let mut inconsistency = Router::new()
             .route(
-                "/v1/tracks/{track_id}/inconsistency",
-                post(handlers::inconsistency::post_inconsistency::<Db, Cluster, Blockchain>),
+                routes::INCONSISTENCY_PATH,
+                post(inconsistency::post_inconsistency::<Db, Cluster, Blockchain>),
             )
             .layer(DefaultBodyLimit::max(limits.inconsistency_body_max));
 
@@ -172,11 +175,13 @@ mod tests {
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::erasure::{spool_for_slice, COMMITMENT_TREE_HEIGHT};
     use tape_core::spooler::SpoolGroup;
-    use tape_core::system::EpochPhase;
-    use tape_core::types::network::NetworkAddress;
     use tape_core::types::{EpochNumber, NodeId};
 
-    use crate::state::ChainState;
+    use tape_core::erasure::SPOOL_COUNT;
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_core::spooler::SpoolAssignment;
+    use tape_protocol::state::ProtocolState;
     use peer_memory::MemoryApi;
     use tape_crypto::merkle::{create_merkle_proof, hash_leaf};
     use tape_crypto::Hash;
@@ -184,8 +189,8 @@ mod tests {
         RepairRequest, SnapshotSignatureSubmission, SlicePayload, StripeSubChunkRequest,
         SyncSpoolRequest, SyncSpoolResponse,
     };
-    use tape_store::ops::{CommitteeOps, MetaOps, SliceOps, SpoolOps, TrackOps};
-    use tape_store::types::{ChunkIndex, NodeInfo, Pubkey, SpoolState, SpoolStatus, TrackInfo};
+    use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+    use tape_store::types::{ChunkIndex, Pubkey, SpoolState, SpoolStatus, TrackInfo};
     use tape_core::cert::snapshot::SnapshotMessage;
     use tape_store::{MemoryStore, TapeStore};
     use tower::ServiceExt;
@@ -274,9 +279,8 @@ mod tests {
         ctx.store
             .put_track(track_address, track_info.clone())
             .unwrap();
-        ctx.chain_state.store(ChainState {
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(1),
-            phase: EpochPhase::Active,
             ..Default::default()
         });
 
@@ -744,33 +748,23 @@ mod tests {
         let epoch = 12;
         let chunk = 0u64;
         let committee_epoch = EpochNumber(epoch);
-        let committee = [NodeInfo {
-            node_id: NodeId(0),
-            node_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::new_unique(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
-            spools: vec![0],
-        }];
-
         let signer = BlsPrivateKey::from_random();
         let signer_pk = signer.public_key().unwrap();
-        let mut committee_for_epoch = committee.to_vec();
-        committee_for_epoch[0].bls_pubkey = signer_pk;
+        let mut member = CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000));
+        member.key = signer_pk;
+        let mut spool_map = [255u8; SPOOL_COUNT];
+        spool_map[0] = 0;
+        ctx.peer_manager.state_handle().store(ProtocolState {
+            epoch: EpochNumber(epoch),
+            committee: vec![member],
+            spools: SpoolAssignment::new(spool_map),
+            ..Default::default()
+        });
 
         let commitment = Hash::new_unique();
         ctx.store
             .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
             .unwrap();
-        ctx.store
-            .put_committee(committee_epoch, committee_for_epoch.clone())
-            .unwrap();
-        ctx.chain_state.store(ChainState {
-            epoch: EpochNumber(epoch),
-            phase: EpochPhase::Active,
-            committee: committee_for_epoch,
-            ..Default::default()
-        });
 
         let msg = SnapshotMessage::new(committee_epoch, commitment.0).to_bytes();
         let signature = signer.sign(msg).unwrap();
@@ -814,22 +808,14 @@ mod tests {
         ctx.store
             .set_snapshot_commitment(committee_epoch, ChunkIndex(chunk), commitment)
             .unwrap();
-        let dummy_member = NodeInfo {
-            node_id: NodeId(0),
-            node_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::new_unique(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 9000),
-            spools: vec![0],
-        };
-        let committee_members = vec![dummy_member];
-        ctx.store
-            .put_committee(committee_epoch, committee_members.clone())
-            .unwrap();
-        ctx.chain_state.store(ChainState {
+        let mut member = CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000));
+        member.key = BlsPubkey::new_unique();
+        let mut spool_map = [255u8; SPOOL_COUNT];
+        spool_map[0] = 0;
+        ctx.peer_manager.state_handle().store(ProtocolState {
             epoch: EpochNumber(epoch),
-            phase: EpochPhase::Active,
-            committee: committee_members,
+            committee: vec![member],
+            spools: SpoolAssignment::new(spool_map),
             ..Default::default()
         });
 

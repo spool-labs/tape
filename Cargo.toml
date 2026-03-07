@@ -22,7 +22,6 @@ members = [
   "rpc/rpc-client",
   "rpc/rpc-litesvm",
   "metrics",
-  "network/client",
   "network/node",
   "peer/peer-memory",
   "peer/peer-http",
@@ -50,7 +49,6 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "metrics",
-  "network/client",
   "network/node",
   "peer/peer-memory",
   "peer/peer-http",
@@ -90,7 +88,6 @@ store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
 tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
 tape-metrics = { version = "0.3.0", path = "./metrics" }
-tape-node-client = { version = "0.3.0", path = "./network/client" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 peer-memory = { version = "0.3.0", path = "./peer/peer-memory" }
 peer-http = { version = "0.3.0", path = "./peer/peer-http" }

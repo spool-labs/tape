@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use tape_protocol::Api;
-use solana_sdk::signer::Signer;
 use store::Store;
 
 use tape_core::spooler::SpoolGroup;
@@ -86,12 +85,12 @@ impl SnapshotPlanner {
             desired.insert(snapshot_build.clone());
         }
 
-        let cs = context.chain_state.load();
-        let owned_groups: HashSet<SpoolGroup> = if cs.epoch != epoch || cs.committee.is_empty() {
+        let protocol_state = context.peer_manager.state();
+        let owned_groups: HashSet<SpoolGroup> = if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
             tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
             HashSet::new()
         } else {
-            match our_snapshot_groups(&cs.committee, context.keypair.pubkey()) {
+            match our_snapshot_groups(&protocol_state, context.node_id()) {
                 Ok(groups) => groups,
                 Err(e) => {
                     tracing::warn!("snapshot pipeline: {e}");
@@ -240,11 +239,11 @@ impl SnapshotPlanner {
         context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
     ) -> HashSet<SpoolGroup> {
-        let cs = context.chain_state.load();
-        if cs.epoch != epoch || cs.committee.is_empty() {
+        let protocol_state = context.peer_manager.state();
+        if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
             return HashSet::new();
         }
-        our_snapshot_groups(&cs.committee, context.keypair.pubkey()).unwrap_or_default()
+        our_snapshot_groups(&protocol_state, context.node_id()).unwrap_or_default()
     }
 
     /// Advance snapshot progress for all groups this node owns.

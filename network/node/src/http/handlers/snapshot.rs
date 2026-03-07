@@ -14,7 +14,7 @@ use tape_store::ops::MetaOps;
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
-/// GET /v1/snapshots/:epoch/commitments — return snapshot chunk commitments.
+/// GET /v1/snapshots/{epoch}/commitments — return snapshot chunk commitments.
 pub async fn get_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(epoch): Path<u64>,

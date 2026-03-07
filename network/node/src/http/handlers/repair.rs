@@ -15,7 +15,7 @@ use tape_store::ops::{SliceOps, TrackOps};
 use crate::http::error::ApiError;
 use crate::http::state::AppState;
 
-/// POST /v1/tracks/:track_id/repair — extract sub-chunks for repair.
+/// POST /v1/tracks/{track_id}/repair — extract sub-chunks for repair.
 pub async fn post_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,

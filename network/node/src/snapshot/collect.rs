@@ -10,11 +10,11 @@ use tape_core::erasure::group_for_spool;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_core::bls::BlsSignature;
-use tape_store::types::{NodeInfo, SnapshotCertResult};
+use tape_store::types::SnapshotCertResult;
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{NodeContext, PeerHandle};
+use crate::core::NodeContext;
 use crate::snapshot::{
     load_snapshot_task_context, missing_state, skip_if_cancelled, SnapshotNeed, SNAPSHOT_PENDING_DELAY,
 };
@@ -23,7 +23,6 @@ use crate::TaskOutcome;
 /// Collect snapshot certifications from peer-submitted partial signatures.
 pub async fn run_collect<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    _peer_handle: PeerHandle,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     if let Some(outcome) = skip_if_cancelled(&cancel) {
@@ -73,7 +72,7 @@ pub async fn run_collect<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         groups_attempted += 1;
-        match certify_group(&context, &snapshot.committee, local_epoch, group, &cancel).await {
+        match certify_group(&context, local_epoch, group, &cancel).await {
             Ok(GroupResult::Skip) => pending_quorum += 1,
             Ok(GroupResult::Pending) => pending_quorum += 1,
             Ok(GroupResult::Cert) => certified_groups += 1,
@@ -124,7 +123,6 @@ enum GroupResult {
 
 async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    committee: &[NodeInfo],
     local_epoch: EpochNumber,
     group: SpoolGroup,
     cancel: &CancellationToken,
@@ -144,6 +142,8 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(e) => return Err(TaskOutcome::Retryable(format!("read partial sigs: {e}"))),
     };
 
+    let protocol_state = context.peer_manager.state();
+
     let mut signatures = Vec::new();
     let mut member_indices = Vec::new();
     let mut gathered_weight = 0u64;
@@ -158,7 +158,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let member_index = partial.member_index as usize;
-        let member = match committee.get(member_index) {
+        let member = match protocol_state.committee.get(member_index) {
             Some(member) => member,
             None => {
                 tracing::debug!(%group, member_index, "partial signature for unknown member");
@@ -166,8 +166,8 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        let member_weight = member
-            .spools
+        let member_weight = protocol_state
+            .member_spools(member_index)
             .iter()
             .filter(|&&spool| group_for_spool(spool) == group)
             .count() as u64;
@@ -177,7 +177,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         if partial
             .signature
-            .verify_aggregate(message, &[member.bls_pubkey])
+            .verify_aggregate(message, &[member.key])
             .is_err()
         {
             tracing::debug!(%group, member_index, "invalid snapshot partial signature");
@@ -189,11 +189,9 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         gathered_weight += member_weight;
     }
 
-    let group_total_weight: u64 = committee
-        .iter()
-        .map(|member| {
-            member
-                .spools
+    let group_total_weight: u64 = (0..protocol_state.committee.len())
+        .map(|i| {
+            protocol_state.member_spools(i)
                 .iter()
                 .filter(|&&spool| group_for_spool(spool) == group)
                 .count() as u64

@@ -14,7 +14,6 @@ pub use progress::{GroupState, SnapshotProgress};
 pub use client::{
     collect_group_slices,
     fetch_commitments,
-    peer_client,
 };
 pub use register::run_register;
 pub use submit::run_submit;
@@ -66,7 +65,6 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    use crate::core::PeerService;
     use crate::core::test_utils::test_context;
     use crate::TaskOutcome;
 
@@ -135,8 +133,7 @@ mod tests {
         let ctx = test_context();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_build(ctx, peer_handle, cancel).await;
+        let result = run_build(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
@@ -146,8 +143,7 @@ mod tests {
         let local_epoch = EpochNumber(2);
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_build(ctx.clone(), peer_handle, cancel).await;
+        let result = run_build(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
         assert!(crate::snapshot::is_snapshot_build_complete(&ctx, local_epoch).unwrap());
     }
@@ -170,8 +166,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_build(ctx.clone(), peer_handle, cancel).await;
+        let result = run_build(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
         // All 50 commitments stored
@@ -205,8 +200,7 @@ mod tests {
         let ctx = test_context();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_bootstrap(ctx, peer_handle, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -218,8 +212,7 @@ mod tests {
         ctx.store.set_bootstrap_target_epoch(EpochNumber(2)).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_bootstrap(ctx, peer_handle, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -232,8 +225,7 @@ mod tests {
         ctx.store.set_bootstrap_target_epoch(EpochNumber(4)).unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_bootstrap(ctx, peer_handle, cancel).await;
+        let result = run_bootstrap(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Retryable(_)));
     }
 
@@ -257,8 +249,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_build(ctx.clone(), peer_handle, cancel).await;
+        let result = run_build(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
         // Build was skipped entirely
@@ -314,13 +305,11 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_collect(ctx.clone(), peer_handle, cancel).await;
+        let result = run_collect(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_collect(ctx.clone(), peer_handle, cancel).await;
+        let result = run_collect(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
@@ -369,8 +358,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_collect(ctx.clone(), peer_handle, cancel).await;
+        let result = run_collect(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
         let cert = ctx
@@ -407,8 +395,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_register(ctx, peer_handle, cancel).await;
+        let result = run_register(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Permanent(_)));
     }
 
@@ -447,8 +434,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_submit(ctx, peer_handle, cancel).await;
+        let result = run_submit(ctx, cancel).await;
         assert!(matches!(result, TaskOutcome::Permanent(_)));
     }
 
@@ -489,8 +475,7 @@ mod tests {
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let (_peer_service, peer_handle) = PeerService::new();
-        let result = run_build(ctx.clone(), peer_handle, cancel).await;
+        let result = run_build(ctx.clone(), cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
         let signature = ctx

@@ -18,7 +18,6 @@ rpc-litesvm.workspace = true
 rpc-client.workspace = true
 tape-api.workspace = true
 tape-node.workspace = true
-tape-node-client.workspace = true
 tape-store.workspace = true
 tape-protocol.workspace = true
 peer-memory.workspace = true

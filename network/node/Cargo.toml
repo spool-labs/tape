@@ -20,7 +20,6 @@ tape-spooler = { workspace = true }
 store = { workspace = true, features = ["metrics"] }
 store-rocks = { workspace = true }
 tape-protocol = { workspace = true }
-tape-node-client = { workspace = true }
 peer-http = { workspace = true }
 rpc = { workspace = true }
 rpc-client = { workspace = true }

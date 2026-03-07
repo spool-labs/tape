@@ -12,7 +12,6 @@ pub mod helpers;
 pub mod committee;
 pub mod config;
 pub mod context;
-pub mod peer;
 pub mod stats;
 pub mod throttle;
 
@@ -22,7 +21,6 @@ pub use config::{
 };
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
 pub use helpers::{expand_path, has_missing_slices, validate_slice_entry};
-pub use peer::{PeerHandle, PeerService, PeerServiceError};
 pub use stats::RuntimeStats;
 pub use throttle::RefreshThrottle;
 

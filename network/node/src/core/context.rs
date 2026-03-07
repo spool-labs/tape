@@ -3,6 +3,7 @@
 //! `NodeContext` holds all shared dependencies that runtime components need.
 //! Every component receives `Arc<NodeContext>` instead of individual dependencies.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
@@ -14,12 +15,13 @@ use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
+use tape_core::spooler::SpoolIndex;
 use tape_protocol::Api;
 use tape_protocol::peer::PeerManager;
 use tape_store::ops::MetaOps;
+use tape_store::types::NodeStatus;
 use tape_store::TapeStore;
 
-use crate::state::ChainStateHandle;
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
 use crate::core::expand_path;
@@ -38,9 +40,6 @@ pub enum ContextError {
 
     #[error("failed to open storage: {0}")]
     Storage(String),
-
-    #[error("failed to fetch on-chain state: {0}")]
-    ChainState(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -62,8 +61,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<Blockchain>>,
-    /// In-memory chain state (epoch, phase, committee, spools).
-    pub chain_state: ChainStateHandle,
     /// Peer manager for cluster communication.
     pub peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
     /// Onchain unique id for this node after registration
@@ -113,7 +110,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
             store: Arc::new(store),
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
-            chain_state: ChainStateHandle::new(),
             peer_manager,
             node_id,
             node_address,
@@ -130,6 +126,23 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.node_id
     }
 
+    /// Derive node status from current committee membership.
+    pub fn node_status(&self) -> NodeStatus {
+        if self.peer_manager.state().find_member(self.node_id).is_some() {
+            NodeStatus::Active
+        } else {
+            NodeStatus::Standby
+        }
+    }
+
+    /// Spool indices assigned to this node in the current epoch.
+    pub fn my_spools(&self) -> HashSet<SpoolIndex> {
+        let state = self.peer_manager.state();
+        match state.find_member(self.node_id) {
+            Some((idx, _)) => state.member_spools(idx).into_iter().collect(),
+            None => HashSet::new(),
+        }
+    }
 }
 
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -181,7 +194,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let node = rpc
             .get_node(&authority)
             .await
-            .map_err(|e| ContextError::ChainState(format!("get_node({authority}): {e}")))?;
+            .map_err(|e| ContextError::RpcClient(format!("get_node({authority}): {e}")))?;
         Ok(node.id)
     }
 
