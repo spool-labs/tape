@@ -87,7 +87,7 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     // One-time fetch of current on-chain state
-    if let Err(e) = context.peer_manager.bootstrap().await {
+    if let Err(e) = context.peer_manager.bootstrap(&context.rpc).await {
         tracing::warn!(error = %e, "peer manager bootstrap failed, starting with defaults");
     }
 
@@ -339,7 +339,7 @@ async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
     match tape_retry::retry(chain_state_backoff(), Some(cancel), || {
-        context.peer_manager.refresh()
+        context.peer_manager.refresh(&context.rpc)
     }).await {
         Ok(()) => {
             let protocol_state = context.peer_manager.state();

@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::{GetSliceReq, RepairReq};
-use store::Store;
+use tape_protocol::api::StripeSubChunkRequest;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
-use tape_protocol::api::StripeSubChunkRequest;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
@@ -266,9 +266,11 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    let api = ctx.peer_manager.api();
+    let api = &ctx.api;
+
     let track_pubkey: tape_crypto::Pubkey = track_addr.into();
     let mut helper_data: HashMap<SliceIndex, Vec<u8>> = HashMap::new();
+
     for (slice_idx, request) in &per_helper {
         let peer_spool = spool_group.spool_at(**slice_idx);
         let peer_node = match peers.map.get(&peer_spool) {
@@ -285,6 +287,7 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
             helper_spool: request.helper_spool,
             stripes: request.stripes.clone(),
         };
+
         match api.repair(peer_node, &req).await {
             Ok(res) if !res.data.is_empty() => {
                 ctx.stats.add_repair_received(res.data.len() as u64);
@@ -344,7 +347,7 @@ async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut peer_spools: Vec<SpoolIndex> = peers.map.keys().copied().collect();
     peer_spools.sort_unstable();
 
-    let api = ctx.peer_manager.api();
+    let api = &ctx.api;
     let track_pubkey: tape_crypto::Pubkey = track_addr.into();
 
     let mut full_slices: Vec<(SliceIndex, Vec<u8>)> = Vec::with_capacity(needed);

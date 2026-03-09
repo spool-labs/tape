@@ -87,7 +87,7 @@ impl SimnetScenario<'_> {
         trace!(index, "running manual refresh_node_state");
 
         let ctx = node.context();
-        ctx.peer_manager.refresh()
+        ctx.peer_manager.refresh(&ctx.rpc)
             .await
             .map_err(|e| anyhow::anyhow!("refresh peer_manager: {e}"))?;
         trace!(index, "manual refresh_node_state complete");

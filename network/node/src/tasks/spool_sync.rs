@@ -61,7 +61,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Err(e) => return TaskOutcome::Retryable(format!("get cursor: {e}")),
         };
 
-        let api = context.peer_manager.api();
+        let api = &context.api;
 
         loop {
             if cancel.is_cancelled() {

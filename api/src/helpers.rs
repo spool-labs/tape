@@ -33,6 +33,7 @@ pub fn build_authority_with_tokens_ix(
     let authority_ata = ata(&authority);
 
     vec![
+
         // Create ATA for authority (fee_payer pays rent)
         create_associated_token_account(
             &fee_payer,
@@ -40,6 +41,7 @@ pub fn build_authority_with_tokens_ix(
             &MINT_ADDRESS,
             &spl_token::ID,
         ),
+
         // Transfer TAPE from fee_payer's ATA to authority's ATA
         transfer_checked(
             &spl_token::ID,

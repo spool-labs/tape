@@ -2,24 +2,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError,
-    CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
-    GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, PeerReq, PeerRes, PutSliceReq,
-    PutSliceRes, PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
+    Api, ApiError, CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq,
+    GetMetadataRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
+    GetStatsRes, InvalidateReq, InvalidateRes, PeerReq, PeerRes, PutSliceReq, PutSliceRes,
+    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
 };
-use tape_protocol::peer::TrustedPeers;
 use tape_core::types::NodeId;
 
 pub struct MemoryApi {
-    peers: TrustedPeers,
     handler: Arc<dyn Fn(NodeId, PeerReq) -> PeerRes + Send + Sync>,
 }
 
 impl MemoryApi {
     pub fn new(handler: impl Fn(NodeId, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
         Self {
-            peers: TrustedPeers::new(),
             handler: Arc::new(handler),
         }
     }
@@ -39,10 +35,6 @@ impl MemoryApi {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
-    }
-
-    pub fn peers(&self) -> &TrustedPeers {
-        &self.peers
     }
 }
 

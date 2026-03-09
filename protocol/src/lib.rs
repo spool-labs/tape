@@ -4,4 +4,4 @@ pub mod peer;
 
 pub use api::{Api, ApiError};
 pub use state::{ProtocolState, StateHandle};
-pub use peer::{PeerNode, TrustedPeers};
+pub use peer::PeerNode;

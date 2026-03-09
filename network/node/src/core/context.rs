@@ -61,9 +61,11 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub stats: RuntimeStats,
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<Blockchain>>,
-    /// Peer manager for cluster communication.
-    pub peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
-    /// Onchain unique id for this node after registration
+    /// Peer manager for peer lookup, health tracking, routing, and protocol state.
+    pub peer_manager: Arc<PeerManager>,
+    /// Tape network API.
+    pub api: Arc<Cluster>,
+    /// Onchain unique id for this node after registration.
     node_id: NodeId,
     /// PDA-derived node account address (cached from authority keypair).
     node_address: Pubkey,
@@ -80,10 +82,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
+        peer_manager: Arc<PeerManager>,
+        api: Arc<Cluster>,
     ) -> Arc<Self> {
         Self::from_parts(
-            config, keypair, bls_keypair, store, rpc, peer_manager, NodeId(0))
+            config, keypair, bls_keypair, store, rpc, peer_manager, api, NodeId(0))
     }
 
     /// This node's PDA-derived on-chain account address. Use this to compare
@@ -98,7 +101,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
+        peer_manager: Arc<PeerManager>,
+        api: Arc<Cluster>,
         node_id: NodeId,
     ) -> Arc<Self> {
         let (node_address, _) = node_pda(keypair.pubkey());
@@ -111,6 +115,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
             peer_manager,
+            api,
             node_id,
             node_address,
         })
@@ -150,7 +155,8 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     keypair: Keypair,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
-    peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
+    peer_manager: Arc<PeerManager>,
+    api: Arc<Cluster>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, Blockchain> {
@@ -159,7 +165,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         keypair: Keypair,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        peer_manager: Arc<PeerManager<Blockchain, Cluster>>,
+        peer_manager: Arc<PeerManager>,
+        api: Arc<Cluster>,
     ) -> Self {
         Self {
             config,
@@ -167,6 +174,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             store,
             rpc,
             peer_manager,
+            api,
         }
     }
 
@@ -212,6 +220,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             self.store,
             self.rpc,
             self.peer_manager,
+            self.api,
             node_id,
         ))
     }

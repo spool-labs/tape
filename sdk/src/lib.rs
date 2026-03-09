@@ -7,7 +7,7 @@ pub mod staking;
 pub mod tapedrive;
 pub mod transfer;
 
-pub use tape_protocol::peer::{PeerManager, PeerManagerError};
+pub use tape_protocol::peer::{PeerManager, PeerManagerError, PeerNode};
 pub use keys::stake_key::StakeKey;
 pub use keys::tape_key::TapeKey;
 pub use tapedrive::Tapedrive;

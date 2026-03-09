@@ -1,16 +1,18 @@
 //! PeerManager — peer lifecycle, health tracking, and routing.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
+use tape_core::types::network::NetworkAddress;
 
-use crate::api::Api;
-use crate::peer::{PeerNode, TrustedPeers};
+use crate::peer::PeerNode;
 use crate::state::{fetch_state, ProtocolState, StateHandle};
 
 #[derive(Debug, Clone)]
@@ -29,35 +31,24 @@ pub enum PeerManagerError {
     NodeNotFound(NodeId),
 }
 
-pub struct PeerManager<R: Rpc, A: Api> {
-    rpc: Arc<RpcClient<R>>,
-    api: Arc<A>,
-    peers: Arc<TrustedPeers>,
+pub struct PeerManager {
+    peers: ArcSwap<HashMap<NodeId, PeerNode>>,
     state: StateHandle,
     status: DashMap<NodeId, PeerStatus>,
 }
 
-impl<R: Rpc, A: Api> PeerManager<R, A> {
-    pub fn new(rpc: Arc<RpcClient<R>>, api: Arc<A>, peers: Arc<TrustedPeers>) -> Self {
+impl PeerManager {
+    pub fn new() -> Self {
         Self {
-            rpc,
-            api,
-            peers,
+            peers: ArcSwap::from_pointee(HashMap::new()),
             state: StateHandle::new(ProtocolState::default()),
             status: DashMap::new(),
         }
     }
 
-    pub fn with_state(
-        rpc: Arc<RpcClient<R>>,
-        api: Arc<A>,
-        peers: Arc<TrustedPeers>,
-        state: ProtocolState,
-    ) -> Self {
+    pub fn with_state(state: ProtocolState) -> Self {
         Self {
-            rpc,
-            api,
-            peers,
+            peers: ArcSwap::from_pointee(HashMap::new()),
             state: StateHandle::new(state),
             status: DashMap::new(),
         }
@@ -71,17 +62,9 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
         &self.state
     }
 
-    pub fn peers(&self) -> &Arc<TrustedPeers> {
-        &self.peers
-    }
-
-    pub fn api(&self) -> &Arc<A> {
-        &self.api
-    }
-
     /// Cold start: fetch protocol state and resolve all committee members.
-    pub async fn bootstrap(&self) -> Result<(), PeerManagerError> {
-        let state = fetch_state(&*self.rpc).await?;
+    pub async fn bootstrap<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
+        let state = fetch_state(rpc).await?;
 
         let all_members = state
             .committee
@@ -89,9 +72,9 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
             .chain(state.committee_prev.iter());
 
         for member in all_members {
-            if !self.peers.contains(member.id) {
-                if let Ok(peer_node) = self.resolve_peer_inner(member.id).await {
-                    self.peers.add(peer_node);
+            if !self.contains(member.id) {
+                if let Ok(peer_node) = self.resolve_peer_inner(rpc, member.id).await {
+                    self.add_peer(peer_node);
                 }
             }
         }
@@ -101,8 +84,8 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
     }
 
     /// Incremental update: fetch new state, resolve only unknown peers.
-    pub async fn refresh(&self) -> Result<(), PeerManagerError> {
-        let state = fetch_state(&*self.rpc).await?;
+    pub async fn refresh<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
+        let state = fetch_state(rpc).await?;
 
         let all_members = state
             .committee
@@ -110,9 +93,9 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
             .chain(state.committee_prev.iter());
 
         for member in all_members {
-            if !self.peers.contains(member.id) {
-                if let Ok(peer_node) = self.resolve_peer_inner(member.id).await {
-                    self.peers.add(peer_node);
+            if !self.contains(member.id) {
+                if let Ok(peer_node) = self.resolve_peer_inner(rpc, member.id).await {
+                    self.add_peer(peer_node);
                 }
             }
         }
@@ -122,15 +105,14 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
     }
 
     /// Resolve a single peer's current network address from on-chain data.
-    pub async fn resolve_peer(&self, node_id: NodeId) -> Result<PeerNode, PeerManagerError> {
-        let peer_node = self.resolve_peer_inner(node_id).await?;
-        self.peers.add(peer_node.clone());
+    pub async fn resolve_peer<R: Rpc>(&self, rpc: &RpcClient<R>, node_id: NodeId) -> Result<PeerNode, PeerManagerError> {
+        let peer_node = self.resolve_peer_inner(rpc, node_id).await?;
+        self.add_peer(peer_node.clone());
         Ok(peer_node)
     }
 
-    async fn resolve_peer_inner(&self, node_id: NodeId) -> Result<PeerNode, PeerManagerError> {
-        let (pda, node) = self
-            .rpc
+    async fn resolve_peer_inner<R: Rpc>(&self, rpc: &RpcClient<R>, node_id: NodeId) -> Result<PeerNode, PeerManagerError> {
+        let (pda, node) = rpc
             .get_node_by_id(node_id)
             .await
             .map_err(|_| PeerManagerError::NodeNotFound(node_id))?;
@@ -144,6 +126,38 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
             network_address: node.metadata.network_address,
         })
     }
+
+    // Peer lookup
+
+    /// Resolve a node's network address.
+    pub fn resolve(&self, node_id: NodeId) -> Option<NetworkAddress> {
+        self.peers.load().get(&node_id).map(|p| p.network_address)
+    }
+
+    /// Get a full PeerNode by NodeId.
+    pub fn get(&self, node_id: NodeId) -> Option<PeerNode> {
+        self.peers.load().get(&node_id).cloned()
+    }
+
+    /// Check if a node is in the trusted set.
+    pub fn contains(&self, node_id: NodeId) -> bool {
+        self.peers.load().contains_key(&node_id)
+    }
+
+    /// Return all trusted peers.
+    pub fn all(&self) -> Vec<PeerNode> {
+        self.peers.load().values().cloned().collect()
+    }
+
+    /// Insert or update a peer.
+    pub fn add_peer(&self, peer: PeerNode) {
+        let guard = self.peers.load();
+        let mut map = (**guard).clone();
+        map.insert(peer.node_id, peer);
+        self.peers.store(Arc::new(map));
+    }
+
+    // Health tracking
 
     pub fn report_failure(&self, node_id: NodeId) {
         self.status
@@ -169,14 +183,6 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
         self.status.insert(node_id, PeerStatus::Hostile);
     }
 
-    pub fn reset_status(&self, node_id: NodeId) {
-        self.status.remove(&node_id);
-    }
-
-    pub fn reset_all_status(&self) {
-        self.status.clear();
-    }
-
     pub fn report_success(&self, node_id: NodeId) {
         self.status.remove(&node_id);
     }
@@ -194,6 +200,8 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
             },
         }
     }
+
+    // Routing
 
     /// Find a healthy peer that owns the given spool in the current committee.
     pub fn healthy_peer_for_spool(&self, spool: SpoolIndex) -> Option<NodeId> {
@@ -215,9 +223,55 @@ impl<R: Rpc, A: Api> PeerManager<R, A> {
             .filter(|(_, node_id)| self.is_healthy(*node_id))
             .collect()
     }
+}
 
-    /// Add a peer to the trusted set.
-    pub fn add_peer(&self, peer: PeerNode) {
-        self.peers.add(peer);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+    use tape_core::bls::BlsPubkey;
+    use tape_crypto::Pubkey;
+
+    fn make_peer(id: u64, port: u16) -> PeerNode {
+        PeerNode {
+            node_id: NodeId(id),
+            authority: Pubkey::new_unique(),
+            state_address: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::zeroed(),
+            tls_pubkey: Pubkey::new_unique(),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
+        }
+    }
+
+    #[test]
+    fn add_and_resolve() {
+        let pm = PeerManager::new();
+        assert!(pm.resolve(NodeId(1)).is_none());
+
+        pm.add_peer(make_peer(1, 8001));
+        assert!(pm.resolve(NodeId(1)).is_some());
+    }
+
+    #[test]
+    fn add_overwrites() {
+        let pm = PeerManager::new();
+        pm.add_peer(make_peer(1, 8001));
+        pm.add_peer(make_peer(1, 9001));
+        let addr = pm.resolve(NodeId(1)).unwrap();
+        assert_eq!(
+            addr,
+            NetworkAddress::new_ipv4([127, 0, 0, 1], 9001)
+        );
+    }
+
+    #[test]
+    fn contains_and_get() {
+        let pm = PeerManager::new();
+        pm.add_peer(make_peer(5, 8005));
+        assert!(pm.contains(NodeId(5)));
+        assert!(!pm.contains(NodeId(6)));
+
+        let node = pm.get(NodeId(5)).unwrap();
+        assert_eq!(node.node_id, NodeId(5));
     }
 }

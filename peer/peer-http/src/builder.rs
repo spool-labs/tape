@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peer_tls::TlsConfig;
-use tape_protocol::peer::TrustedPeers;
+use tape_protocol::peer::PeerManager;
 
 use crate::metrics::ApiMetrics;
 use crate::HttpApi;
@@ -50,7 +50,7 @@ impl HttpApiBuilder {
         self
     }
 
-    pub fn build(self) -> Result<HttpApi, peer_tls::TlsError> {
+    pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, peer_tls::TlsError> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
@@ -69,7 +69,7 @@ impl HttpApiBuilder {
         let scheme = if has_tls_keys { "https" } else { "http" };
 
         Ok(HttpApi {
-            peers: TrustedPeers::new(),
+            peer_manager,
             client,
             metrics: self.metrics,
             scheme,

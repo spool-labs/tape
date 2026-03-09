@@ -16,7 +16,7 @@ use tape_node::core::{
     NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig,
 };
 use tape_node::runtime::{spawn_runtime, RuntimeHandles};
-use tape_protocol::peer::{PeerManager, TrustedPeers};
+use tape_protocol::peer::PeerManager;
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -257,11 +257,9 @@ impl TestNode {
                         .take()
                         .ok_or_else(|| anyhow!("node rpc missing"))?;
 
+                    let peer_manager = Arc::new(PeerManager::new());
                     let api = Arc::new(MemoryApi::noop());
-                    let peers = Arc::new(TrustedPeers::new());
-                    let peer_rpc = Arc::new(RpcClient::from_rpc(LiteSvmRpc::new()));
-                    let peer_manager = Arc::new(PeerManager::new(peer_rpc, api, peers));
-                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, store, rpc, peer_manager)
+                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, store, rpc, peer_manager, api)
                         .build()
                         .await
                         .context("build node context")?;

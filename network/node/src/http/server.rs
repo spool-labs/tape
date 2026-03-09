@@ -847,11 +847,9 @@ mod tests {
     async fn body_limit() {
         let mut config = test_config();
         config.node_api.ingress_limits.slice_body_max = 10;
-        use tape_protocol::peer::{PeerManager, TrustedPeers};
-        let rpc = std::sync::Arc::new(RpcClient::from_rpc(LiteSvmRpc::new()));
+        use tape_protocol::peer::PeerManager;
+        let peer_manager = std::sync::Arc::new(PeerManager::new());
         let api = std::sync::Arc::new(MemoryApi::noop());
-        let peers = std::sync::Arc::new(TrustedPeers::new());
-        let peer_manager = std::sync::Arc::new(PeerManager::new(rpc.clone(), api, peers));
         let ctx = NodeContext::new(
             config,
             Keypair::new(),
@@ -859,6 +857,7 @@ mod tests {
             TapeStore::new(MemoryStore::new()),
             RpcClient::from_rpc(LiteSvmRpc::new()),
             peer_manager,
+            api,
         );
         let track_address = Pubkey::new_unique();
         let track_b58 = solana_sdk::pubkey::Pubkey::from(track_address.0).to_string();

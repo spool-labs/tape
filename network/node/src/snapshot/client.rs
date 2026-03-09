@@ -34,7 +34,7 @@ pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut ballots: HashMap<Vec<Hash>, (usize, Vec<NodeId>)> = HashMap::new();
     let mut valid_peer_answers = 0usize;
 
-    let api = context.peer_manager.api();
+    let api = &context.api;
 
     for member in &state.committee {
         if !context.peer_manager.is_healthy(member.id) {
@@ -202,7 +202,7 @@ pub async fn collect_group_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut index_votes: HashMap<usize, HashMap<Vec<u8>, (u64, HashSet<NodeId>)>> =
         HashMap::new();
 
-    let api = context.peer_manager.api();
+    let api = &context.api;
     let track_pubkey: tape_crypto::Pubkey = track.into();
 
     for (member_index, member) in state.committee.iter().enumerate() {

@@ -21,7 +21,9 @@ use crate::error::TapedriveError;
 use crate::keys::stake_key::StakeKey;
 use crate::tapedrive::Tapedrive;
 
-impl<R: Rpc, P: Api> Tapedrive<R, P> {
+impl<Blockchain: Rpc, Cluster: Api> 
+    Tapedrive<Blockchain, Cluster> {
+
     /// Delegate TAPE to a node's staking pool.
     ///
     /// Creates an ATA for the stake authority, transfers TAPE from the payer,
@@ -32,20 +34,24 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
         pool: Pubkey,
         amount: Coin<TAPE>,
     ) -> Result<(), TapedriveError> {
-        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(
-            STAKE_WITH_POOL_CU,
-        )];
-        ixs.extend(build_authority_with_tokens_ix(
-            self.payer.pubkey(),
-            stake_key.pubkey(),
-            amount,
-        ));
-        ixs.push(build_stake_with_pool_ix(
-            self.payer.pubkey(),
-            stake_key.pubkey(),
-            pool,
-            amount,
-        ));
+
+        let mut ixs = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(
+                STAKE_WITH_POOL_CU),
+
+            build_authority_with_tokens_ix(
+                self.payer.pubkey(),
+                stake_key.pubkey(),
+                amount,
+            ),
+
+            build_stake_with_pool_ix(
+                self.payer.pubkey(),
+                stake_key.pubkey(),
+                pool,
+                amount,
+            )
+        ];
 
         self.rpc()
             .send_instructions_with_signers(
@@ -64,11 +70,15 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
         node_authority: Pubkey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(ADVANCE_POOL_CU);
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+            ADVANCE_POOL_CU);
+
         let ix = build_advance_pool_ix(self.payer.pubkey(), node_authority, pool);
+
         self.rpc()
             .send_instructions(&self.payer, vec![cu_ix, ix])
             .await?;
+
         Ok(())
     }
 
@@ -79,11 +89,13 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REQUEST_STAKE_UNLOCK_CU);
+
         let ix = build_request_stake_unlock_ix(
             self.payer.pubkey(),
             stake_key.pubkey(),
             pool,
         );
+
         self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
@@ -91,6 +103,7 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
                 &[stake_key.as_keypair()],
             )
             .await?;
+
         Ok(())
     }
 
@@ -101,11 +114,13 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNSTAKE_FROM_POOL_CU);
+
         let ix = build_unstake_from_pool_ix(
             self.payer.pubkey(),
             stake_key.pubkey(),
             pool,
         );
+
         self.rpc()
             .send_instructions_with_signers(
                 &self.payer,
@@ -113,6 +128,7 @@ impl<R: Rpc, P: Api> Tapedrive<R, P> {
                 &[stake_key.as_keypair()],
             )
             .await?;
+
         Ok(())
     }
 }

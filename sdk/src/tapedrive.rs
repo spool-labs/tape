@@ -42,62 +42,51 @@ const CERTIFY_RETRIES: usize = 3;
 
 /// High-level client for the Tapedrive storage network.
 ///
-/// Generic over `R: Rpc` (on-chain) and `A: Api` (storage nodes).
-///
-/// # Example
-/// ```rust,ignore
-/// let sdk = Tapedrive::new(rpc, &payer);
-///
-/// // Write data (creates a tape automatically)
-/// let (tape_key, track) = sdk.write(key, b"hello world", 4).await?;
-/// tape_key.save("my-tape.json")?;
-///
-/// // Read it back
-/// let data = sdk.read(&tape_key.track_address(&key)).await?;
-/// ```
-pub struct Tapedrive<R: Rpc, A: Api> {
-    pub peer_manager: Arc<PeerManager<R, A>>,
-    pub rpc: Arc<RpcClient<R>>,
+/// Generic over `Blockchain: Rpc` (on-chain) and `Cluster: Api` (storage nodes).
+pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
+    pub peer_manager: Arc<PeerManager>,
+    pub api: Arc<Cluster>,
+    pub rpc: Arc<RpcClient<Blockchain>>,
     pub payer: Keypair,
 }
 
 /// Default constructor using `HttpApi`.
-impl<R: Rpc> Tapedrive<R, HttpApi> {
+impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     /// Create a new Tapedrive client.
     ///
     /// Takes an RPC backend and a payer keypair. Uses the default HTTP
     /// peer client for storage node communication.
-    pub fn new(rpc: R, payer: &Keypair) -> Self {
+    pub fn new(rpc: Blockchain, payer: &Keypair) -> Self {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
-        let api = Arc::new(HttpApi::default());
-        let peers = Arc::new(tape_protocol::peer::TrustedPeers::new());
+        let peer_manager = Arc::new(PeerManager::new());
+        let api = Arc::new(HttpApi::new(Default::default(), peer_manager.clone()));
         Self {
-            peer_manager: Arc::new(PeerManager::new(rpc_client.clone(), api, peers)),
+            peer_manager,
+            api,
             rpc: rpc_client,
             payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
         }
     }
 }
 
-impl<R: Rpc, A: Api> Tapedrive<R, A> {
-    /// Create a Tapedrive client from an existing PeerManager.
-    ///
-    /// Use this when you need a custom Api implementation (e.g. for testing)
-    /// or a pre-bootstrapped peer manager.
-    pub fn from_peer_manager(
-        peer_manager: Arc<PeerManager<R, A>>,
-        rpc: Arc<RpcClient<R>>,
+impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
+    /// Create a Tapedrive client from existing parts.
+    pub fn from_parts(
+        peer_manager: Arc<PeerManager>,
+        api: Arc<Cluster>,
+        rpc: Arc<RpcClient<Blockchain>>,
         payer: &Keypair,
     ) -> Self {
         Self {
             peer_manager,
+            api,
             rpc,
             payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
         }
     }
 
     /// Access the underlying RPC client.
-    pub fn rpc(&self) -> &RpcClient<R> {
+    pub fn rpc(&self) -> &RpcClient<Blockchain> {
         &self.rpc
     }
 
@@ -129,9 +118,11 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
 
     /// Read a track's data by address. No key needed — reads are public.
     pub async fn read(&self, track: &Pubkey) -> Result<Vec<u8>, TapedriveError> {
-        let on_chain = self.rpc().get_track_by_address(track).await?;
-        let spool_group = on_chain.data.spool_group();
-        let k = on_chain.data.profile.k() as usize;
+        let onchain = self.rpc()
+            .get_track_by_address(track).await?;
+
+        let spool_group = onchain.data.spool_group();
+        let k = onchain.data.profile.k() as usize;
 
         let state = self.peer_manager.state();
         let slice_to_node: HashMap<SpoolIndex, NodeId> =
@@ -139,7 +130,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
 
         let downloader = ParallelDownloader::new(*track, slice_to_node, k);
         let slices = downloader
-            .download_enough_slices(self.peer_manager.api().as_ref()).await
+            .download_enough_slices(self.api.as_ref()).await
             .map_err(ClientError::Download)?;
 
         // Convert global spool indices to local for decoder
@@ -163,15 +154,15 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         track_key: Hash,
     ) -> Result<(), TapedriveError> {
         let ix = build_delete_track_ix(
-            self.payer.pubkey(), 
-            tape_key.pubkey(), 
+            self.payer.pubkey(),
+            tape_key.pubkey(),
             track_key
         );
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer, 
-                vec![ix], 
+                &self.payer,
+                vec![ix],
                 &[tape_key.as_keypair()]
             ).await?;
 
@@ -180,8 +171,9 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
 
     /// Verify that `data` matches the on-chain commitment for a track.
     pub async fn verify(&self, track: &Pubkey, data: &[u8]) -> Result<bool, TapedriveError> {
-        let on_chain = self.rpc().get_track_by_address(track).await?;
-        let mut encoder = BlobEncoder::with_profile(on_chain.data.profile);
+        let onchain = self.rpc().get_track_by_address(track).await?;
+
+        let mut encoder = BlobEncoder::with_profile(onchain.data.profile);
 
         let (_, root) = encoder
             .encode_with_root(data.to_vec())
@@ -189,7 +181,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
 
         let computed: Hash = root.into();
 
-        Ok(computed == on_chain.data.commitment_hash)
+        Ok(computed == onchain.data.commitment_hash)
     }
 
     // Tape management
@@ -216,7 +208,9 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         );
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), tape_key.pubkey(), cost);
+            build_authority_with_tokens_ix(
+                self.payer.pubkey(), tape_key.pubkey(), cost);
+
         ixs.push(build_reserve_tape_ix(
             self.payer.pubkey(),
             tape_key.pubkey(),
@@ -266,11 +260,15 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         tape_key: &TapeKey,
         extra_epochs: u64,
     ) -> Result<Tape, TapedriveError> {
-        let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
-        let archive = self.rpc().get_archive().await?;
-
         let temp = TapeKey::generate();
-        let new_expiry = EpochNumber(tape.expiry_epoch.as_u64() + extra_epochs);
+
+        let tape = self.rpc()
+            .get_tape(&tape_key.pubkey()).await?;
+
+        let archive = self.rpc()
+            .get_archive().await?;
+
+        let new_expiry = tape.expiry_epoch + EpochNumber(extra_epochs);
 
         let cost = Coin::<TAPE>::new(
             archive
@@ -281,7 +279,8 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         );
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), temp.pubkey(), cost);
+            build_authority_with_tokens_ix(
+                self.payer.pubkey(), temp.pubkey(), cost);
 
         ixs.push(build_reserve_tape_ix(
             self.payer.pubkey(),
@@ -317,10 +316,14 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         tape_key: &TapeKey,
         extra: StorageUnits,
     ) -> Result<Tape, TapedriveError> {
-        let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
-        let archive = self.rpc().get_archive().await?;
-
         let temp = TapeKey::generate();
+
+        let tape = self.rpc()
+            .get_tape(&tape_key.pubkey()).await?;
+
+        let archive = self.rpc()
+            .get_archive().await?;
+
         let duration = tape.expiry_epoch.as_u64()
             .saturating_sub(tape.active_epoch.as_u64());
 
@@ -333,7 +336,9 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         );
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), temp.pubkey(), cost);
+            build_authority_with_tokens_ix(
+                self.payer.pubkey(), temp.pubkey(), cost);
+
         ixs.push(build_reserve_tape_ix(
             self.payer.pubkey(),
             temp.pubkey(),
@@ -382,8 +387,12 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
             )
             .await?;
 
-        let src = self.rpc().get_tape(&source.pubkey()).await?;
-        let dst = self.rpc().get_tape(&destination.pubkey()).await?;
+        let src = self.rpc()
+            .get_tape(&source.pubkey()).await?;
+
+        let dst = self.rpc()
+            .get_tape(&destination.pubkey()).await?;
+
         Ok((src, dst))
     }
 
@@ -409,8 +418,12 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
                 &[source.as_keypair(), destination.as_keypair()],
             ).await?;
 
-        let src = self.rpc().get_tape(&source.pubkey()).await?;
-        let dst = self.rpc().get_tape(&destination.pubkey()).await?;
+        let src = self.rpc()
+            .get_tape(&source.pubkey()).await?;
+
+        let dst = self.rpc()
+            .get_tape(&destination.pubkey()).await?;
+
         Ok((src, dst))
     }
 
@@ -420,6 +433,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         source: &TapeKey,
         destination: &TapeKey,
     ) -> Result<Tape, TapedriveError> {
+
         let ix = build_merge_tape_ix(
             self.payer.pubkey(),
             source.pubkey(),
@@ -446,8 +460,8 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer, 
-                vec![ix], 
+                &self.payer,
+                vec![ix],
                 &[tape_key.as_keypair()]
             ).await?;
 
@@ -478,7 +492,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
         let stripe_count = num_stripes(data.len(), stripe_size);
         let (track_address, _) = track_pda(tape_key.pubkey(), key);
 
-        let on_chain = match self.rpc()
+        let onchain = match self.rpc()
             .get_track_by_address(&track_address).await {
 
             Ok(track) => track,
@@ -512,14 +526,14 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
             }
         };
 
-        if on_chain.data.is_certified() {
-            return Ok(on_chain);
+        if onchain.data.is_certified() {
+            return Ok(onchain);
         }
 
-        let spool_group = on_chain.data.spool_group();
+        let spool_group = onchain.data.spool_group();
 
         // 3. Bootstrap network if needed, upload slices
-        self.peer_manager.bootstrap().await
+        self.peer_manager.bootstrap(&self.rpc).await
             .map_err(TapedriveError::Network)?;
 
         let state = self.peer_manager.state();
@@ -531,7 +545,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
             &state,
         ).map_err(TapedriveError::Upload)?;
 
-        uploader.upload_all(self.peer_manager.api().as_ref()).await
+        uploader.upload_all(self.api.as_ref()).await
             .map_err(TapedriveError::Upload)?;
 
         // 4. Collect BLS signatures and certify (retry on epoch race)
@@ -541,7 +555,7 @@ impl<R: Rpc, A: Api> Tapedrive<R, A> {
             let collector = CertificationCollector::with_defaults();
             let collected = collector
                 .collect_signatures(
-                    self.peer_manager.api().as_ref(),
+                    self.api.as_ref(),
                     &track_address,
                     spool_group,
                     &system,
@@ -633,16 +647,15 @@ mod tests {
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_crypto::hash;
-    use tape_protocol::peer::{PeerManager, TrustedPeers};
+    use tape_protocol::peer::PeerManager;
 
     fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryApi>) {
         let rpc = LiteSvmRpc::new();
         let payer = Keypair::new();
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
+        let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(MemoryApi::noop());
-        let peers = Arc::new(TrustedPeers::new());
-        let peer_manager = Arc::new(PeerManager::new(rpc_client.clone(), api, peers));
-        let tapedrive = Tapedrive::from_peer_manager(peer_manager, rpc_client, &payer);
+        let tapedrive = Tapedrive::from_parts(peer_manager, api, rpc_client, &payer);
         (rpc, tapedrive)
     }
 

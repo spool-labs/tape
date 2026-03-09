@@ -9,7 +9,7 @@ use tape_crypto::Hash;
 /// Snapshot of on-chain protocol state.
 ///
 /// Contains committee membership, spool assignments, and epoch info.
-/// Does not include network addresses — those live in `TrustedPeers`.
+/// Does not include network addresses — those live in `PeerManager`.
 #[derive(Debug, Clone)]
 pub struct ProtocolState {
     pub epoch: EpochNumber,

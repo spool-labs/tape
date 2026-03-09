@@ -244,7 +244,7 @@ async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     group: SpoolGroup,
     request: &SnapshotSignatureSubmission,
 ) -> Result<(), TaskOutcome> {
-    let api = context.peer_manager.api();
+    let api = &context.api;
 
     for (member_index, member) in state.committee.iter().enumerate() {
         if member_index == our_member_index {

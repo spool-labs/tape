@@ -11,42 +11,27 @@ use tape_protocol::api::{
     BlsInconsistencyResponse, BlsSignResponse, InconsistencyRequest, RepairRequest,
     SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT, CONTENT_TYPE_JSON,
 };
-use tape_protocol::peer::TrustedPeers;
+use tape_protocol::peer::PeerManager;
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 
 use crate::metrics::ApiMetrics;
 
 pub struct HttpApi {
-    pub(crate) peers: TrustedPeers,
-    pub(crate) client: reqwest::Client,
-    pub(crate) metrics: Option<Arc<ApiMetrics>>,
-    pub(crate) scheme: &'static str,
-}
-
-impl Default for HttpApi {
-    fn default() -> Self {
-        Self {
-            peers: TrustedPeers::new(),
-            client: reqwest::Client::new(),
-            metrics: None,
-            scheme: "http",
-        }
-    }
+    pub peer_manager: Arc<PeerManager>,
+    pub client: reqwest::Client,
+    pub metrics: Option<Arc<ApiMetrics>>,
+    pub scheme: &'static str,
 }
 
 impl HttpApi {
-    pub fn new(http: reqwest::Client) -> Self {
+    pub fn new(http: reqwest::Client, peer_manager: Arc<PeerManager>) -> Self {
         Self {
-            peers: TrustedPeers::new(),
+            peer_manager,
             client: http,
             metrics: None,
             scheme: "http",
         }
-    }
-
-    pub fn peers(&self) -> &TrustedPeers {
-        &self.peers
     }
 
     fn record(&self, op: &str, resp: &reqwest::Response, start: Instant, bytes_sent: u64) {
@@ -74,8 +59,8 @@ fn base_url(scheme: &str, addr: NetworkAddress) -> Result<String, ApiError> {
     Ok(format!("{scheme}://{sa}"))
 }
 
-fn resolve(scheme: &str, peers: &TrustedPeers, node: NodeId) -> Result<String, ApiError> {
-    let addr = peers.resolve(node).ok_or(ApiError::NodeUnresolved(node))?;
+fn resolve(scheme: &str, pm: &PeerManager, node: NodeId) -> Result<String, ApiError> {
+    let addr = pm.resolve(node).ok_or(ApiError::NodeUnresolved(node))?;
     base_url(scheme, addr)
 }
 
@@ -122,7 +107,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
 #[async_trait]
 impl Api for HttpApi {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::slice_url(&track_id, req.spool));
         let body =
@@ -148,7 +133,7 @@ impl Api for HttpApi {
     }
 
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::slice_url(&track_id, req.spool));
 
@@ -174,7 +159,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &GetMetadataReq,
     ) -> Result<GetMetadataRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::metadata_url(&track_id));
 
@@ -196,7 +181,7 @@ impl Api for HttpApi {
     }
 
     async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", tape_protocol::api::SYNC_SPOOL_PATH);
         let wire_req = SyncSpoolRequest {
             spool_index: req.spool_index,
@@ -233,7 +218,7 @@ impl Api for HttpApi {
     }
 
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::repair_url(&track_id));
         let wire_req = RepairRequest {
@@ -266,7 +251,7 @@ impl Api for HttpApi {
     }
 
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::sign_url(&track_id));
 
@@ -298,7 +283,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &InvalidateReq,
     ) -> Result<InvalidateRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", tape_protocol::api::inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
@@ -339,7 +324,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &PutSnapshotReq,
     ) -> Result<PutSnapshotRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!(
             "{base}{}",
             tape_protocol::api::snapshot_signature_url(req.epoch.0, req.chunk_index)
@@ -368,7 +353,7 @@ impl Api for HttpApi {
         node: NodeId,
         req: &GetSnapshotReq,
     ) -> Result<GetSnapshotRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!(
             "{base}{}",
             tape_protocol::api::snapshot_commitments_url(req.epoch.0)
@@ -398,7 +383,7 @@ impl Api for HttpApi {
         node: NodeId,
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", tape_protocol::api::HEALTH_PATH);
 
         let start = Instant::now();
@@ -420,7 +405,7 @@ impl Api for HttpApi {
         node: NodeId,
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, ApiError> {
-        let base = resolve(self.scheme, &self.peers, node)?;
+        let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!("{base}{}", tape_protocol::api::STATS_PATH);
 
         let start = Instant::now();

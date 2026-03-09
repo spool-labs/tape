@@ -36,7 +36,7 @@ pub mod test_utils {
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
-    use tape_protocol::peer::{PeerManager, TrustedPeers};
+    use tape_protocol::peer::PeerManager;
     use tape_store::{MemoryStore, TapeStore};
 
     use super::{NodeApiConfig, NodeConfig, NodeContext, RecoveryConfig, TlsConfig};
@@ -63,10 +63,8 @@ pub mod test_utils {
     }
 
     pub fn test_context() -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
-        let rpc = Arc::new(RpcClient::from_rpc(LiteSvmRpc::new()));
+        let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(MemoryApi::noop());
-        let peers = Arc::new(TrustedPeers::new());
-        let peer_manager = Arc::new(PeerManager::new(rpc.clone(), api, peers));
         let store = TapeStore::new(MemoryStore::new());
         NodeContext::new(
             test_config(),
@@ -75,6 +73,7 @@ pub mod test_utils {
             store,
             RpcClient::from_rpc(LiteSvmRpc::new()),
             peer_manager,
+            api,
         )
     }
 }
