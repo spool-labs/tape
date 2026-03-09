@@ -104,6 +104,44 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use tape_core::bls::BlsPubkey;
+    use tape_crypto::Pubkey;
+    use tape_protocol::peer::PeerNode;
+
+    fn make_peer(id: u64, port: u16) -> PeerNode {
+        PeerNode {
+            node_id: NodeId(id),
+            authority: Pubkey::new_unique(),
+            state_address: Pubkey::new_unique(),
+            bls_pubkey: BlsPubkey::new_unique(),
+            tls_pubkey: Pubkey::new_unique(),
+            network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], port),
+        }
+    }
+
+    #[test]
+    fn resolves_peers_added_after_api_construction() {
+        let peer_manager = Arc::new(PeerManager::new());
+        let api = HttpApi::new(reqwest::Client::new(), peer_manager.clone());
+        let node_id = NodeId(7);
+
+        assert!(matches!(
+            resolve(api.scheme, api.peer_manager.as_ref(), node_id),
+            Err(ApiError::NodeUnresolved(id)) if id == node_id
+        ));
+
+        peer_manager.add_peer(make_peer(7, 8080));
+
+        let base = resolve(api.scheme, api.peer_manager.as_ref(), node_id).unwrap();
+        assert_eq!(base, "http://127.0.0.1:8080");
+    }
+}
+
 #[async_trait]
 impl Api for HttpApi {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
