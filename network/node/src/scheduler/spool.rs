@@ -5,9 +5,9 @@ use store::Store;
 use tape_store::TapeStore;
 
 use tape_core::erasure::{spool_in_group, SPOOL_COUNT};
-use tape_core::spooler::SpoolAssignment;
+use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::CommitteeMember;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, NodeId};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState, SpoolStatus};
 
@@ -16,6 +16,18 @@ use crate::Task;
 pub struct SpoolPlanner;
 
 impl SpoolPlanner {
+    fn prev_owner_for(
+        spool: SpoolIndex,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> Option<NodeId> {
+        prev_spools
+            .0
+            .get(spool as usize)
+            .and_then(|&member_idx| prev_committee.get(member_idx as usize))
+            .map(|member| member.id)
+    }
+
     /// Sync the desired set with current spool ownership. Removes tasks for
     /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
     pub fn reconcile<S: Store>(
@@ -202,6 +214,7 @@ impl SpoolPlanner {
         store: &TapeStore<S>,
         chain_spools: &HashSet<u16>,
         epoch: EpochNumber,
+        self_node_id: NodeId,
         prev_spools: &SpoolAssignment<SPOOL_COUNT>,
         prev_committee: &[CommitteeMember],
     ) -> bool {
@@ -220,9 +233,7 @@ impl SpoolPlanner {
         // New assignments → ActiveSync
         for &spool in chain_spools {
             if !existing_ids.contains(&spool) {
-                let prev_owner = prev_spools.0.get(spool as usize).and_then(|&mapping| {
-                    prev_committee.get(mapping as usize).map(|m| m.id)
-                });
+                let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
                 let state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner };
                 if let Err(e) = store.set_spool_state(spool, state) {
                     tracing::error!(spool, "reconcile_ownership: failed to create spool: {e}");
@@ -252,7 +263,11 @@ impl SpoolPlanner {
 
             // Reacquired: spool was LockedToMove but is back in chain_spools
             if chain_spools.contains(&spool) && state.is_locked() {
-                let new_state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner: None };
+                let new_state = SpoolState {
+                    status: SpoolStatus::ActiveSync,
+                    epoch,
+                    prev_owner: Some(self_node_id),
+                };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "reconcile_ownership: failed to reactivate spool: {e}");
                 } else {

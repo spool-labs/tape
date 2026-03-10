@@ -14,27 +14,26 @@ use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::{SpoolState, SpoolStatus};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{has_missing_slices, validate_slice_entry};
+use crate::core::{call_peer, has_missing_slices, validate_slice_entry};
 use crate::core::NodeContext;
 use crate::TaskOutcome;
 
 const SYNC_BATCH_SIZE: u32 = 100;
-const SYNC_FAILURE_THRESHOLD: u32 = 5;
 
 enum SyncSource {
-    SkipSync,
+    VerifyLocal,
     SyncFrom { node_id: NodeId },
 }
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     attempt: u32,
     cancel: CancellationToken,
 ) -> TaskOutcome {
     let attempt_count = attempt.saturating_add(1);
 
-    let spool_state = match context.store.get_spool_state(spool) {
+    let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(s)) => s,
         Ok(None) => return TaskOutcome::Success,
         Err(e) => return TaskOutcome::Retryable(format!("read spool state: {e}")),
@@ -44,7 +43,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return TaskOutcome::Success;
     }
 
-    let sync_source = match resolve_sync_source(&context, spool, &spool_state) {
+    let sync_source = match resolve_sync_source(&ctx, spool, &spool_state) {
         Ok(source) => source,
         Err(outcome) => return outcome,
     };
@@ -52,16 +51,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut synced: Vec<StorePubkey> = Vec::new();
 
     if let SyncSource::SyncFrom { node_id } = sync_source {
-        if !context.peer_manager.is_healthy(node_id) {
+        if !ctx.peer_manager.is_healthy(node_id) {
             return TaskOutcome::Pending(Duration::from_secs(5));
         }
 
-        let mut cursor: Option<[u8; 32]> = match context.store.get_spool_sync_cursor(spool) {
+        let mut cursor: Option<[u8; 32]> = match ctx.store.get_spool_sync_cursor(spool) {
             Ok(cursor) => cursor.map(|p| p.0),
             Err(e) => return TaskOutcome::Retryable(format!("get cursor: {e}")),
         };
 
-        let api = &context.api;
+        let api = &ctx.api;
 
         loop {
             if cancel.is_cancelled() {
@@ -74,20 +73,26 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 limit: SYNC_BATCH_SIZE,
             };
 
-            let response: SyncRes = match api.sync(node_id, &req).await {
+            let response: SyncRes = match call_peer(&ctx.peer_manager, node_id, Some(&cancel), || {
+                let api = api.clone();
+                let req = req.clone();
+                async move { api.sync(node_id, &req).await }
+            }).await {
                 Ok(r) => r,
                 Err(e) => {
-                    return fail_peer(
-                        &context, node_id, attempt_count,
-                        format!("sync_spool rpc: {e}"),
-                    );
+                    if attempt_count >= 5 {
+                        return TaskOutcome::Permanent(format!(
+                            "sync_spool rpc: {e} after {attempt_count} attempts"
+                        ));
+                    }
+                    return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
                 }
             };
 
             for entry in &response.entries {
                 let track_address = StorePubkey::new(entry.track_address);
 
-                let track_info = match context.store.get_track(track_address) {
+                let track_info = match ctx.store.get_track(track_address) {
                     Ok(Some(i)) => i,
                     Ok(None) => {
                         return TaskOutcome::Retryable(format!(
@@ -98,13 +103,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 };
 
                 if let Err(err) = validate_slice_entry(spool, &track_info, &entry.slice_data) {
-                    return fail_peer(
-                        &context, node_id, attempt_count,
-                        format!("sync validation failed: {err}"),
-                    );
+                    ctx.peer_manager.report_hostile(node_id);
+                    return TaskOutcome::Permanent(format!("sync validation failed: {err}"));
                 }
 
-                if let Err(e) = context
+                if let Err(e) = ctx
                     .store
                     .put_slice(spool, track_address, entry.slice_data.clone())
                 {
@@ -116,12 +119,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
             if let Some(last) = response.entries.last() {
                 let last_addr = StorePubkey::new(last.track_address);
-                if let Err(e) = context.store.set_spool_sync_cursor(spool, last_addr) {
+                if let Err(e) = ctx.store.set_spool_sync_cursor(spool, last_addr) {
                     return TaskOutcome::Retryable(format!("set cursor: {e}"));
                 }
             }
-            context.peer_manager.report_success(node_id);
-
             match response.next_cursor {
                 Some(c) => cursor = Some(c),
                 None => break,
@@ -130,7 +131,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     // State transition — single site, mirrors spool_recovery.rs pattern.
-    let state = match context.store.get_spool_state(spool) {
+    let state = match ctx.store.get_spool_state(spool) {
         Ok(Some(s)) => s,
         Ok(None) => return TaskOutcome::Success,
         Err(e) => return TaskOutcome::Retryable(format!("read spool state: {e}")),
@@ -141,24 +142,24 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     if !synced.is_empty() {
-        let _ = context.store.remove_spool_sync_cursor(spool);
+        let _ = ctx.store.remove_spool_sync_cursor(spool);
         let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
-        if let Err(e) = context.store.set_spool_state(spool, new_state) {
+        if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
             return TaskOutcome::Retryable(format!("set spool active: {e}"));
         }
         tracing::info!(spool, synced = synced.len(), "spool sync complete");
     } else {
-        match has_missing_slices(&*context.store, spool) {
+        match has_missing_slices(&*ctx.store, spool) {
             Ok(false) => {
                 let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
-                if let Err(e) = context.store.set_spool_state(spool, new_state) {
+                if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
             }
             Ok(true) => {
                 tracing::info!(spool, "missing slices detected, transitioning to recovery");
                 let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch, prev_owner: None };
-                if let Err(e) = context.store.set_spool_state(spool, new_state) {
+                if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool recovering: {e}"));
                 }
             }
@@ -171,41 +172,50 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 
 fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     spool_state: &SpoolState,
 ) -> Result<SyncSource, TaskOutcome> {
     if spool_state.epoch.is_zero() {
-        return Ok(SyncSource::SkipSync);
+        return Ok(SyncSource::VerifyLocal);
     }
 
     let prev_owner_id = match spool_state.prev_owner {
         Some(id) => id,
-        None => {
-            tracing::info!(spool, "no previous owner, verifying data");
-            return Ok(SyncSource::SkipSync);
-        }
+        None => return Err(TaskOutcome::Permanent(
+            format!("invalid ActiveSync state for spool {spool}: missing prev_owner"),
+        )),
     };
 
-    if prev_owner_id == context.node_id() {
+    if prev_owner_id == ctx.node_id() {
         tracing::info!(spool, "we owned this spool last epoch, verifying data");
-        return Ok(SyncSource::SkipSync);
+        return Ok(SyncSource::VerifyLocal);
     }
 
     Ok(SyncSource::SyncFrom { node_id: prev_owner_id })
 }
 
-fn fail_peer<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    node_id: NodeId,
-    attempt_count: u32,
-    msg: String,
-) -> TaskOutcome {
-    context.peer_manager.report_failure(node_id);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if attempt_count >= SYNC_FAILURE_THRESHOLD {
-        TaskOutcome::Permanent(format!("{msg} after {attempt_count} attempts"))
-    } else {
-        TaskOutcome::Retryable(msg)
+    use crate::core::test_utils::test_context;
+    use tape_core::types::EpochNumber;
+    use tape_store::types::{SpoolState, SpoolStatus};
+
+    #[tokio::test]
+    async fn active_sync_requires_prev_owner() {
+        let ctx = test_context();
+        ctx.store.set_spool_state(
+            5,
+            SpoolState {
+                status: SpoolStatus::ActiveSync,
+                epoch: EpochNumber(2),
+                prev_owner: None,
+            },
+        ).unwrap();
+
+        let outcome = run(ctx, 5, 0, CancellationToken::new()).await;
+        assert!(matches!(outcome, TaskOutcome::Permanent(msg) if msg.contains("missing prev_owner")));
     }
 }

@@ -14,7 +14,7 @@ use tape_crypto::Hash;
 use crate::core::NodeContext;
 
 pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     tape_address: Pubkey,
     track: Pubkey,
     epoch: tape_core::types::EpochNumber,
@@ -22,11 +22,14 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     signature: tape_core::bls::BlsSignature,
     observed_root: Hash,
 ) -> Result<Signature, RpcError> {
-    let fee_payer = context.keypair.pubkey();
+
+    let fee_payer = ctx.pubkey();
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();
 
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(INVALIDATE_TRACK_CU);
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        INVALIDATE_TRACK_CU);
+
     let ix = build_invalidate_track_ix(
         fee_payer,
         system_address,
@@ -39,5 +42,9 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
         observed_root,
     );
 
-    context.rpc.send_instructions(&context.keypair, vec![cu_ix, ix]).await
+    ctx.rpc
+        .send_instructions(
+            &ctx.keypair,
+            vec![cu_ix, ix]
+    ).await
 }

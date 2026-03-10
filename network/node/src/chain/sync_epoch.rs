@@ -13,13 +13,28 @@ use tape_core::types::EpochNumber;
 use crate::core::NodeContext;
 
 pub async fn submit_sync_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     epoch: EpochNumber,
     owned_spools: &[u16],
 ) -> Result<Signature, RpcError> {
-    let pubkey = context.keypair.pubkey();
+    let fee_payer = ctx.pubkey();
+    let authority = ctx.pubkey();
+
     let (node_address, _) = node_pda(pubkey);
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(SYNC_EPOCH_CU);
-    let ix = build_epoch_sync_ix(pubkey, pubkey, node_address, epoch, owned_spools);
-    context.rpc.send_instructions(&context.keypair, vec![cu_ix, ix]).await
+
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        SYNC_EPOCH_CU);
+
+    let ix = build_epoch_sync_ix(
+        fee_payer, 
+        authority, 
+        node_address, 
+        epoch, 
+        owned_spools);
+
+    ctx.rpc
+        .send_instructions(
+            &ctx.keypair,
+            vec![cu_ix, ix]
+    ).await
 }

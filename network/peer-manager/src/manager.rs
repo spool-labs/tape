@@ -1,6 +1,6 @@
 //! PeerManager — peer lifecycle, health tracking, and routing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,6 +30,9 @@ pub enum PeerManagerError {
 
     #[error("node {0:?} not found on-chain")]
     NodeNotFound(NodeId),
+
+    #[error("required peers unresolved: {0:?}")]
+    UnresolvedPeers(Vec<NodeId>),
 }
 
 pub struct PeerManager {
@@ -63,46 +66,65 @@ impl PeerManager {
         &self.state
     }
 
-    /// Cold start: fetch protocol state and resolve all committee members.
-    pub async fn bootstrap<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
-        let state = fetch_state(rpc).await?;
-
-        let all_members = state
-            .committee
+    fn committee_ids(state: &ProtocolState) -> Vec<NodeId> {
+        let mut seen = HashSet::new();
+        state.committee
             .iter()
             .chain(state.committee_prev.iter())
-            .chain(state.committee_next.iter());
+            .chain(state.committee_next.iter())
+            .filter_map(|member| seen.insert(member.id).then_some(member.id))
+            .collect()
+    }
 
-        for member in all_members {
-            if !self.contains(member.id) {
-                if let Ok(peer_node) = self.resolve_peer_inner(rpc, member.id).await {
-                    self.add_peer(peer_node);
+    fn required_ids(state: &ProtocolState) -> HashSet<NodeId> {
+        state.committee.iter().map(|member| member.id).collect()
+    }
+
+    async fn resolve_peer_map<R: Rpc>(
+        &self,
+        rpc: &RpcClient<R>,
+        state: &ProtocolState,
+    ) -> Result<HashMap<NodeId, PeerNode>, PeerManagerError> {
+        let mut peers = HashMap::new();
+        let required = Self::required_ids(state);
+        let mut unresolved_required = Vec::new();
+
+        for node_id in Self::committee_ids(state) {
+            match self.resolve_peer_inner(rpc, node_id).await {
+                Ok(peer) => {
+                    peers.insert(node_id, peer);
+                }
+                Err(err) => {
+                    if required.contains(&node_id) {
+                        unresolved_required.push(node_id);
+                    } else {
+                        tracing::warn!(node = node_id.0, "best-effort peer resolve failed: {err}");
+                    }
                 }
             }
         }
 
+        if !unresolved_required.is_empty() {
+            return Err(PeerManagerError::UnresolvedPeers(unresolved_required));
+        }
+
+        Ok(peers)
+    }
+
+    /// Cold start: fetch protocol state and resolve all committee members.
+    pub async fn bootstrap<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
+        let state = fetch_state(rpc).await?;
+        let peers = self.resolve_peer_map(rpc, &state).await?;
+        self.peers.store(Arc::new(peers));
         self.state.store(state);
         Ok(())
     }
 
-    /// Incremental update: fetch new state, resolve only unknown peers.
+    /// Incremental update: fetch new state and atomically rebuild committee peers.
     pub async fn refresh<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
         let state = fetch_state(rpc).await?;
-
-        let all_members = state
-            .committee
-            .iter()
-            .chain(state.committee_prev.iter())
-            .chain(state.committee_next.iter());
-
-        for member in all_members {
-            if !self.contains(member.id) {
-                if let Ok(peer_node) = self.resolve_peer_inner(rpc, member.id).await {
-                    self.add_peer(peer_node);
-                }
-            }
-        }
-
+        let peers = self.resolve_peer_map(rpc, &state).await?;
+        self.peers.store(Arc::new(peers));
         self.state.store(state);
         Ok(())
     }

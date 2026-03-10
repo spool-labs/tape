@@ -46,7 +46,7 @@ pub struct RuntimeHandles {
 /// Creates bounded channels between the ingestor and FSM, spawning both as
 /// tokio tasks. Returns a receiver for state changes and the task handles.
 pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> (
     mpsc::Receiver<Vec<StateChange>>,
@@ -56,13 +56,13 @@ pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static,
 ) {
     let channels = build_channels();
     let ingestor_handle = spawn_ingestor(
-        context.clone(),
+        ctx.clone(),
         cancel.clone(),
         channels.block_tx
     );
 
     let fsm_handle = spawn_fsm(
-        context,
+        ctx,
         cancel,
         channels.block_rx,
         channels.user_event_rx,
@@ -83,22 +83,22 @@ pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static,
 /// If the seed fetch fails, components start with default (empty) state
 /// and ChainState is populated on the first EpochAdvanced from the FSM.
 pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     // One-time fetch of current on-chain state
-    if let Err(e) = context.peer_manager.bootstrap(&context.rpc).await {
+    if let Err(e) = ctx.peer_manager.bootstrap(&ctx.rpc).await {
         tracing::warn!(error = %e, "peer manager bootstrap failed, starting with defaults");
     }
 
     let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
-        spawn_runtime_channels(context.clone(), cancel.clone()).await;
+        spawn_runtime_channels(ctx.clone(), cancel.clone()).await;
 
     let (action_tx, action_rx) = mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
 
     let scheduler_handle = spawn_scheduler(
-        context.clone(),
+        ctx.clone(),
         cancel.clone(),
         change_rx,
         result_rx,
@@ -106,14 +106,14 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     );
 
     let task_runner_handle = spawn_task_runner(
-        context.clone(),
+        ctx.clone(),
         cancel.clone(),
         action_rx,
         result_tx,
     );
 
     let http_handle = spawn_http_server(
-        context,
+        ctx,
         cancel,
         user_event_tx
     );
@@ -157,15 +157,15 @@ fn build_channels() -> RuntimeChannels {
 }
 
 fn spawn_ingestor<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     block_tx: mpsc::Sender<IngestedBlock>,
 ) -> JoinHandle<()> {
-    let ingestor_span = tracing::info_span!("", node_id = context.node_id().0);
+    let ingestor_span = tracing::info_span!("", node_id = ctx.node_id().0);
 
     tokio::spawn(
         async move {
-            if let Err(e) = BlockIngestor::run(context, block_tx, cancel).await {
+            if let Err(e) = BlockIngestor::run(ctx, block_tx, cancel).await {
                 tracing::error!("Ingestor error: {e}");
             }
         }
@@ -174,17 +174,17 @@ fn spawn_ingestor<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc +
 }
 
 fn spawn_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     block_rx: mpsc::Receiver<IngestedBlock>,
     user_event_rx: mpsc::Receiver<UserEvent>,
     change_tx: mpsc::Sender<Vec<StateChange>>,
 ) -> JoinHandle<()> {
-    let fsm_span = tracing::info_span!("", node_id = context.node_id().0);
+    let fsm_span = tracing::info_span!("", node_id = ctx.node_id().0);
 
     tokio::spawn(
         run_fsm_loop(
-            context,
+            ctx,
             block_rx,
             user_event_rx,
             change_tx,
@@ -195,14 +195,14 @@ fn spawn_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'sta
 }
 
 fn spawn_scheduler<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     change_rx: mpsc::Receiver<Vec<StateChange>>,
     result_rx: mpsc::Receiver<TaskResult>,
     action_tx: mpsc::Sender<Action>,
 ) -> JoinHandle<()> {
-    let scheduler = TaskScheduler::new(context.clone());
-    let scheduler_span = tracing::info_span!("", node_id = context.node_id().0);
+    let scheduler = TaskScheduler::new(ctx.clone());
+    let scheduler_span = tracing::info_span!("", node_id = ctx.node_id().0);
 
     tokio::spawn(
         async move {
@@ -215,13 +215,13 @@ fn spawn_scheduler<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc 
 }
 
 fn spawn_task_runner<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     action_rx: mpsc::Receiver<Action>,
     result_tx: mpsc::Sender<TaskResult>,
 ) -> JoinHandle<()> {
-    let task_runner = TaskRunner::new(context.clone(), result_tx);
-    let task_runner_span = tracing::info_span!("", node_id = context.node_id().0);
+    let task_runner = TaskRunner::new(ctx.clone(), result_tx);
+    let task_runner_span = tracing::info_span!("", node_id = ctx.node_id().0);
 
     tokio::spawn(
         async move {
@@ -232,15 +232,15 @@ fn spawn_task_runner<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rp
 }
 
 fn spawn_http_server<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
     user_event_tx: mpsc::Sender<UserEvent>,
 ) -> JoinHandle<()> {
-    let http_span = tracing::info_span!("", node_id = context.node_id().0);
+    let http_span = tracing::info_span!("", node_id = ctx.node_id().0);
 
     tokio::spawn(
         async move {
-            let server = HttpServer::new(context, Some(user_event_tx));
+            let server = HttpServer::new(ctx, Some(user_event_tx));
             if let Err(e) = server.serve(cancel).await {
                 tracing::error!("HTTP server error: {e}");
             }
@@ -250,20 +250,20 @@ fn spawn_http_server<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rp
 }
 
 async fn run_fsm_loop<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     mut block_rx: mpsc::Receiver<IngestedBlock>,
     mut user_event_rx: mpsc::Receiver<UserEvent>,
     change_tx: mpsc::Sender<Vec<StateChange>>,
     cancel: CancellationToken,
 ) {
-    let mut fsm = Fsm::new(context.clone());
+    let mut fsm = Fsm::new(ctx.clone());
 
     loop {
         tokio::select! {
             maybe_block = block_rx.recv() => {
                 let Some(block) = maybe_block else { break };
                 if let LoopControl::Break = handle_block(
-                    &mut fsm, &context, block, &change_tx, &cancel,
+                    &mut fsm, &ctx, block, &change_tx, &cancel,
                 ).await {
                     break;
                 }
@@ -281,14 +281,14 @@ async fn run_fsm_loop<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
 async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     fsm: &mut Fsm<Db, Cluster, Blockchain>,
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
     cancel: &CancellationToken,
 ) -> LoopControl {
     match fsm.apply(&block) {
         Ok(mut changes) => {
-            context.stats.inc_blocks();
+            ctx.stats.inc_blocks();
 
             if changes.is_empty() {
                 return LoopControl::Continue;
@@ -296,24 +296,25 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
             for change in &changes {
                 if let StateChange::PhaseAdvanced { phase } = change {
-                    context.peer_manager.state_handle().update_phase(*phase);
+                    ctx.peer_manager.state_handle().update_phase(*phase);
                     tracing::trace!(?phase, "protocol state: phase updated");
                 }
             }
 
             let has_epoch = changes.iter().any(|c| matches!(c, StateChange::EpochAdvanced { .. }));
             if has_epoch {
-                if refresh_chain_state(context, cancel).await.is_err() {
+                if refresh_chain_state(ctx, cancel).await.is_err() {
                     return LoopControl::Break;
                 }
 
-                let protocol_state = context.peer_manager.state();
-                SpoolPlanner::cleanup_locked(&*context.store, protocol_state.epoch);
-                let my_spools = context.my_spools();
+                let protocol_state = ctx.peer_manager.state();
+                SpoolPlanner::cleanup_locked(&*ctx.store, protocol_state.epoch);
+                let my_spools = ctx.my_spools();
                 if SpoolPlanner::reconcile_ownership(
-                    &*context.store,
+                    &*ctx.store,
                     &my_spools,
                     protocol_state.epoch,
+                    ctx.node_id(),
                     &protocol_state.spools_prev,
                     &protocol_state.committee_prev,
                 ) {
@@ -335,14 +336,14 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 /// Retries with exponential backoff (500ms → 30s cap) until success or
 /// cancellation. Returns `Ok(())` on success, `Err(())` on cancellation.
 async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
     match tape_retry::retry(chain_state_backoff(), Some(cancel), || {
-        context.peer_manager.refresh(&context.rpc)
+        ctx.peer_manager.refresh(&ctx.rpc)
     }).await {
         Ok(()) => {
-            let protocol_state = context.peer_manager.state();
+            let protocol_state = ctx.peer_manager.state();
             tracing::info!(
                 epoch = protocol_state.epoch.0,
                 phase = ?protocol_state.phase,
@@ -383,7 +384,7 @@ mod tests {
     use crate::core::test_utils::test_context;
 
     async fn spawn_test_fsm<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
         block_rx: mpsc::Receiver<IngestedBlock>,
         change_tx: mpsc::Sender<Vec<StateChange>>,
         cancel: CancellationToken,
@@ -391,7 +392,7 @@ mod tests {
         let (user_event_tx, user_event_rx) = mpsc::channel::<UserEvent>(USER_EVENT_CHANNEL_CAPACITY);
         tokio::spawn(async move {
             let _keepalive = user_event_tx;
-            run_fsm_loop(context, block_rx, user_event_rx, change_tx, cancel).await;
+            run_fsm_loop(ctx, block_rx, user_event_rx, change_tx, cancel).await;
         })
     }
 

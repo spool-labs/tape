@@ -5,13 +5,14 @@
 //! - `committee`: Helpers for committee membership and membership lookups
 //! - `config`: Node/runtime configuration structs and helpers
 //! - `context`: Shared node context and builder
-//! - `peer`: Peer cooldown and peer service primitives
+//! - `peer_call`: Shared peer retry/report helper
 //! - `stats`: Runtime statistics counters
 
 pub mod helpers;
 pub mod committee;
 pub mod config;
 pub mod context;
+pub mod peer_call;
 pub mod stats;
 pub mod throttle;
 
@@ -21,6 +22,7 @@ pub use config::{
 };
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
 pub use helpers::{expand_path, has_missing_slices, validate_slice_entry};
+pub use peer_call::call_peer;
 pub use stats::RuntimeStats;
 pub use throttle::RefreshThrottle;
 

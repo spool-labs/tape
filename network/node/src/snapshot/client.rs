@@ -15,7 +15,7 @@ use tape_crypto::hash::Hash;
 use tape_protocol::state::ProtocolState;
 use tape_store::types::Pubkey;
 
-use crate::core::NodeContext;
+use crate::core::{NodeContext, call_peer};
 use crate::TaskOutcome;
 
 pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -42,7 +42,11 @@ pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let req = GetSnapshotReq { epoch: local_epoch };
-        let result = api.get_snapshot(member.id, &req).await;
+        let result = call_peer(&context.peer_manager, member.id, None, || {
+            let api = api.clone();
+            let req = req.clone();
+            async move { api.get_snapshot(member.id, &req).await }
+        }).await;
         match result {
             Ok(res) if res.commitments.len() == SPOOL_GROUP_COUNT => {
                 let entry = ballots.entry(res.commitments.clone()).or_insert((0, Vec::new()));
@@ -51,16 +55,15 @@ pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 valid_peer_answers += 1;
             }
             Ok(_) => {
-                context.peer_manager.report_failure(member.id);
+                context.peer_manager.report_hostile(member.id);
             }
             Err(e) => {
-                context.peer_manager.report_failure(member.id);
                 tracing::debug!(node = member.id.0, "fetch commitments failed: {e}");
             }
         }
     }
 
-    let (consensus_commitments, peer_ids, votes) = match ballots
+    let (consensus_commitments, _peer_ids, votes) = match ballots
         .into_iter()
         .max_by_key(|(_, (count, _))| *count)
     {
@@ -80,10 +83,6 @@ pub async fn fetch_commitments<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     verify_commitments(context, local_epoch, &consensus_commitments).await?;
-
-    for node_id in peer_ids {
-        context.peer_manager.report_success(node_id);
-    }
 
     tracing::debug!(
         local_epoch = local_epoch.0,
@@ -232,7 +231,11 @@ pub async fn collect_group_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
 
             let req = GetSliceReq { track: track_pubkey, spool };
-            match api.get_slice(member.id, &req).await {
+            match call_peer(&context.peer_manager, member.id, None, || {
+                let api = api.clone();
+                let req = req.clone();
+                async move { api.get_slice(member.id, &req).await }
+            }).await {
                 Ok(res) if !res.data.is_empty() => {
                     let (weight, peers) = index_votes
                         .entry(slice_index)
@@ -244,10 +247,9 @@ pub async fn collect_group_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 }
                 Ok(_) => {
                     tracing::debug!(node = member.id.0, "snapshot slice empty: group {group}, slice {slice_index}");
-                    context.peer_manager.report_failure(member.id);
+                    context.peer_manager.report_hostile(member.id);
                 }
                 Err(e) => {
-                    context.peer_manager.report_failure(member.id);
                     tracing::trace!(node = member.id.0, "fetch slice failed: {e}");
                 }
             }
@@ -257,10 +259,6 @@ pub async fn collect_group_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let (mut slices, successful_peers) = select_quorum_slices(index_votes, quorum);
     if successful_peers.is_empty() {
         return Err(TaskOutcome::Retryable("snapshot collect no slices reached consensus".into()));
-    }
-
-    for node_id in successful_peers {
-        context.peer_manager.report_success(node_id);
     }
 
     if slices.len() < needed {

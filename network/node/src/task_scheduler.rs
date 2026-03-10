@@ -1776,7 +1776,14 @@ mod tests {
         chain_spools.insert(10u16);
         chain_spools.insert(20u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
+        let changed = SpoolPlanner::reconcile_ownership(
+            &*ctx.store,
+            &chain_spools,
+            EpochNumber(5),
+            ctx.node_id(),
+            &SpoolAssignment::zeroed(),
+            &[],
+        );
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
@@ -1786,6 +1793,31 @@ mod tests {
         let s20 = ctx.store.get_spool_state(20).unwrap().unwrap();
         assert_eq!(s20.status, SpoolStatus::ActiveSync);
         assert_eq!(s20.epoch, EpochNumber(5));
+    }
+
+    #[tokio::test]
+    async fn reconcile_sets_prev_owner_from_prev_committee() {
+        let ctx = test_context();
+        let mut chain_spools = HashSet::new();
+        chain_spools.insert(10u16);
+
+        let mut prev_map = [255u8; SPOOL_COUNT];
+        prev_map[10] = 0;
+        let prev_spools = SpoolAssignment::new(prev_map);
+        let prev_committee = vec![CommitteeMember::new(NodeId(99), Coin::<TAPE>::new(1000))];
+
+        let changed = SpoolPlanner::reconcile_ownership(
+            &*ctx.store,
+            &chain_spools,
+            EpochNumber(5),
+            ctx.node_id(),
+            &prev_spools,
+            &prev_committee,
+        );
+        assert!(changed);
+
+        let state = ctx.store.get_spool_state(10).unwrap().unwrap();
+        assert_eq!(state.prev_owner, Some(NodeId(99)));
     }
 
     #[tokio::test]
@@ -1802,12 +1834,20 @@ mod tests {
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
+        let changed = SpoolPlanner::reconcile_ownership(
+            &*ctx.store,
+            &chain_spools,
+            EpochNumber(5),
+            ctx.node_id(),
+            &SpoolAssignment::zeroed(),
+            &[],
+        );
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
         assert_eq!(s10.status, SpoolStatus::ActiveSync);
         assert_eq!(s10.epoch, EpochNumber(5));
+        assert_eq!(s10.prev_owner, Some(ctx.node_id()));
     }
 
     #[tokio::test]
@@ -1823,7 +1863,14 @@ mod tests {
         // Chain does not include spool 10 at epoch 5
         let chain_spools = HashSet::new();
 
-        let changed = SpoolPlanner::reconcile_ownership(&*ctx.store, &chain_spools, EpochNumber(5), &SpoolAssignment::zeroed(), &[]);
+        let changed = SpoolPlanner::reconcile_ownership(
+            &*ctx.store,
+            &chain_spools,
+            EpochNumber(5),
+            ctx.node_id(),
+            &SpoolAssignment::zeroed(),
+            &[],
+        );
         // No change — spool already locked
         assert!(!changed);
 

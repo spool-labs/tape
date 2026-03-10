@@ -18,12 +18,13 @@ use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 use crate::core::NodeContext;
 
 pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     local_epoch: EpochNumber,
     group: SpoolGroup,
     commitment: Hash,
     meta: &SnapshotChunkMeta,
 ) -> Result<Signature, RpcError> {
+
     let mut leaves = [Hash::default(); SPOOL_GROUP_SIZE];
     for (index, hash) in meta.leaves.iter().enumerate().take(SPOOL_GROUP_SIZE) {
         leaves[index] = *hash;
@@ -34,10 +35,12 @@ pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
         params: meta.encoding_params,
     };
 
-    let pubkey = context.keypair.pubkey();
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REGISTER_SNAPSHOT_CU);
+    let fee_payer = ctx.pubkey();
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        REGISTER_SNAPSHOT_CU);
+
     let ix = build_register_snapshot_ix(
-        pubkey,
+        fee_payer,
         local_epoch,
         group,
         commitment,
@@ -47,14 +50,15 @@ pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
         leaves,
     );
 
-    context
-        .rpc
-        .send_instructions(&context.keypair, vec![cu_ix, ix])
-        .await
+    ctx.rpc
+        .send_instructions(
+            &ctx.keypair,
+            vec![cu_ix, ix]
+    ).await
 }
 
 pub async fn submit_certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     committee_len: usize,
     local_epoch: EpochNumber,
     signing_epoch: EpochNumber,
@@ -68,12 +72,21 @@ pub async fn submit_certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect::<Vec<_>>();
     let bitmap = CommitteeBitmap::from_indices(&member_indices, committee_len);
 
-    let pubkey = context.keypair.pubkey();
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_SNAPSHOT_CU);
-    let ix = build_certify_snapshot_ix(pubkey, local_epoch, signing_epoch, commitment, bitmap, cert.signature);
+    let fee_payer = ctx.pubkey();
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        CERTIFY_SNAPSHOT_CU);
 
-    context
-        .rpc
-        .send_instructions(&context.keypair, vec![cu_ix, ix])
-        .await
+    let ix = build_certify_snapshot_ix(
+        fee_payer, 
+        local_epoch, 
+        signing_epoch, 
+        commitment, 
+        bitmap, 
+        cert.signature);
+
+    ctx.rpc
+        .send_instructions(
+            &ctx.keypair,
+            vec![cu_ix, ix]
+    ).await
 }

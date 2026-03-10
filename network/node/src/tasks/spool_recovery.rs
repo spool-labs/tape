@@ -16,8 +16,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::validate_slice_entry;
-use crate::core::NodeContext;
+use crate::core::{NodeContext, call_peer, validate_slice_entry};
 use crate::TaskOutcome;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
@@ -288,18 +287,19 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
             stripes: request.stripes.clone(),
         };
 
-        match api.repair(peer_node, &req).await {
+        match call_peer(&ctx.peer_manager, peer_node, None, || {
+            let api = api.clone();
+            let req = req.clone();
+            async move { api.repair(peer_node, &req).await }
+        }).await {
             Ok(res) if !res.data.is_empty() => {
                 ctx.stats.add_repair_received(res.data.len() as u64);
-                ctx.peer_manager.report_success(peer_node);
                 helper_data.insert(*slice_idx, res.data);
             }
             Ok(_) => {
-                ctx.peer_manager.report_success(peer_node);
                 tracing::debug!(?track_addr, spool, node = peer_node.0, "empty repair response");
             }
             Err(e) => {
-                ctx.peer_manager.report_failure(peer_node);
                 tracing::debug!(?track_addr, spool, node = peer_node.0, "repair error: {e}");
             }
         }
@@ -366,19 +366,20 @@ async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let req = GetSliceReq { track: track_pubkey, spool: peer_spool };
-        match api.get_slice(peer_node, &req).await {
+        match call_peer(&ctx.peer_manager, peer_node, None, || {
+            let api = api.clone();
+            let req = req.clone();
+            async move { api.get_slice(peer_node, &req).await }
+        }).await {
             Ok(res) if !res.data.is_empty() => {
                 ctx.stats.add_recovery_received(res.data.len() as u64);
-                ctx.peer_manager.report_success(peer_node);
                 let slice_idx = SliceIndex::new(spool_group.slice_of(peer_spool).unwrap());
                 full_slices.push((slice_idx, res.data));
             }
             Ok(_) => {
-                ctx.peer_manager.report_success(peer_node);
                 tracing::debug!(?track_addr, node = peer_node.0, "empty full-slice response");
             }
             Err(e) => {
-                ctx.peer_manager.report_failure(peer_node);
                 tracing::debug!(?track_addr, node = peer_node.0, "full-slice fetch error: {e}");
             }
         }

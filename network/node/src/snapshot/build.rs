@@ -23,7 +23,7 @@ use tape_store::types::{Pubkey, SnapshotChunkMeta, SnapshotPartialSignature};
 use tokio_util::sync::CancellationToken;
 use wincode;
 
-use crate::core::NodeContext;
+use crate::core::{NodeContext, call_peer};
 use crate::snapshot::{
     is_snapshot_build_complete, load_snapshot_task_context, skip_if_cancelled,
     SnapshotNeed,
@@ -269,9 +269,12 @@ async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
             chunk_index: group.0,
             submission: request.clone(),
         };
-        match api.put_snapshot(member.id, &req).await {
+        match call_peer(&context.peer_manager, member.id, None, || {
+            let api = api.clone();
+            let req = req.clone();
+            async move { api.put_snapshot(member.id, &req).await }
+        }).await {
             Ok(_) => {
-                context.peer_manager.report_success(member.id);
             }
             Err(err) => {
                 tracing::debug!(
@@ -280,7 +283,6 @@ async fn broadcast_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     member = member_index,
                     "snapshot signature post failed: {err}"
                 );
-                context.peer_manager.report_failure(member.id);
             }
         }
     }

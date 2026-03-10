@@ -12,11 +12,22 @@ use tape_api::program::tapedrive::node_pda;
 use crate::core::NodeContext;
 
 pub async fn submit_join_network<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
 ) -> Result<Signature, RpcError> {
-    let pubkey = context.keypair.pubkey();
-    let (node_address, _) = node_pda(pubkey);
-    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(JOIN_NETWORK_CU);
-    let ix = build_join_network_ix(pubkey, pubkey, node_address);
-    context.rpc.send_instructions(&context.keypair, vec![cu_ix, ix]).await
+
+    let fee_payer = ctx.pubkey();
+    let authority = ctx.pubkey();
+
+    let (node_address, _) = node_pda(authority);
+
+    let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
+        JOIN_NETWORK_CU);
+
+    let ix = build_join_network_ix(fee_payer, authority, node_address);
+
+    ctx.rpc
+        .send_instructions(
+            &ctx.keypair,
+            vec![cu_ix, ix]
+    ).await
 }
