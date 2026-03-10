@@ -5,7 +5,7 @@ use tape_core::system::EpochPhase;
 use tape_protocol::state::ProtocolState;
 use tape_store::types::NodeStatus;
 
-use crate::core::committee::our_member_index;
+use crate::snapshot::committee::our_member_index;
 use crate::Task;
 
 pub struct LifecycleState {

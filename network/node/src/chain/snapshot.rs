@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use tape_protocol::Api;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::signature::{Signature, Signer};
+use solana_sdk::signature::Signature;
 use store::Store;
 use tape_api::compute::{REGISTER_SNAPSHOT_CU, CERTIFY_SNAPSHOT_CU};
 use tape_api::prelude::{build_certify_snapshot_ix, build_register_snapshot_ix};
@@ -14,6 +13,7 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
+use tape_protocol::Api;
 
 use crate::core::NodeContext;
 
@@ -24,7 +24,6 @@ pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
     commitment: Hash,
     meta: &SnapshotChunkMeta,
 ) -> Result<Signature, RpcError> {
-
     let mut leaves = [Hash::default(); SPOOL_GROUP_SIZE];
     for (index, hash) in meta.leaves.iter().enumerate().take(SPOOL_GROUP_SIZE) {
         leaves[index] = *hash;
@@ -77,12 +76,13 @@ pub async fn submit_certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         CERTIFY_SNAPSHOT_CU);
 
     let ix = build_certify_snapshot_ix(
-        fee_payer, 
-        local_epoch, 
-        signing_epoch, 
-        commitment, 
-        bitmap, 
-        cert.signature);
+        fee_payer,
+        local_epoch,
+        signing_epoch,
+        commitment,
+        bitmap,
+        cert.signature,
+    );
 
     ctx.rpc
         .send_instructions(

@@ -16,8 +16,9 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::{NodeContext, call_peer, validate_slice_entry};
+use crate::core::{NodeContext, call_peer};
 use crate::TaskOutcome;
+use crate::tasks::spool_support::validate_slice_entry;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 

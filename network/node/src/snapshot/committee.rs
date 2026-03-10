@@ -5,14 +5,17 @@ use tape_core::spooler::SpoolGroup;
 use tape_core::types::NodeId;
 use tape_protocol::state::ProtocolState;
 
-pub fn our_member_index(state: &ProtocolState, node_id: NodeId) -> Result<usize, &'static str> {
+pub(crate) fn our_member_index(
+    state: &ProtocolState,
+    node_id: NodeId,
+) -> Result<usize, &'static str> {
     state
         .find_member(node_id)
         .map(|(idx, _)| idx)
         .ok_or("our node not present in committee")
 }
 
-pub fn our_snapshot_groups(
+pub(crate) fn our_snapshot_groups(
     state: &ProtocolState,
     node_id: NodeId,
 ) -> Result<HashSet<SpoolGroup>, &'static str> {

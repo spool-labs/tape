@@ -11,8 +11,8 @@ use tape_store::ops::MetaOps;
 use tape_store::types::ChunkIndex;
 
 use crate::core::NodeContext;
-use crate::core::committee::our_snapshot_groups;
 use crate::scheduler::lifecycle::LifecycleState;
+use crate::snapshot::committee::our_snapshot_groups;
 use crate::snapshot::{
     derive_snapshot_local_epoch, is_snapshot_build_complete, is_snapshot_chunk_ready, GroupState,
     SnapshotProgress,

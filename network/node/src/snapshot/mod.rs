@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod build;
+pub(crate) mod committee;
 pub mod collect;
 pub mod client;
 pub mod progress;

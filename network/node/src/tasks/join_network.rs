@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::{Rpc, RpcError};
-use solana_sdk::signature::Signer;
 use store::Store;
 use tape_protocol::Api;
 use tape_api::errors::TapeError;
@@ -38,7 +37,7 @@ fn classify_join_network_error(
 }
 
 async fn already_joined<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &NodeContext<Db, Cluster, Blockchain>) -> Result<bool, String> {
-    let authority = context.keypair.pubkey();
+    let authority = context.pubkey();
     let node = context
         .rpc
         .get_node(&authority)

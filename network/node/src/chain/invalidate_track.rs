@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use rpc::{Rpc, RpcError};
-use tape_protocol::Api;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::{Signature, Signer};
+use solana_sdk::signature::Signature;
 use store::Store;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda};
 use tape_crypto::Hash;
+use tape_protocol::Api;
 
 use crate::core::NodeContext;
 
@@ -22,7 +22,6 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     signature: tape_core::bls::BlsSignature,
     observed_root: Hash,
 ) -> Result<Signature, RpcError> {
-
     let fee_payer = ctx.pubkey();
     let (system_address, _) = system_pda();
     let (epoch_address, _) = epoch_pda();

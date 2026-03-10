@@ -1,30 +1,22 @@
 //! Core module — shared utilities and runtime primitives for the storage node.
 //!
 //! This module centralizes code that is used across multiple components:
-//! - `helpers`: Shared helper functions (path expansion, epoch helpers, etc)
-//! - `committee`: Helpers for committee membership and membership lookups
 //! - `config`: Node/runtime configuration structs and helpers
 //! - `context`: Shared node context and builder
 //! - `peer_call`: Shared peer retry/report helper
 //! - `stats`: Runtime statistics counters
 
-pub mod helpers;
-pub mod committee;
-pub mod config;
-pub mod context;
-pub mod peer_call;
-pub mod stats;
-pub mod throttle;
+mod config;
+mod context;
+mod peer_call;
+mod stats;
 
 pub use config::{
     ConfigError, IngressLimitsConfig, NodeApiConfig, NodeConfig, RecoveryConfig, TlsConfig,
-    TransportSecurityConfig, default_config_content, default_config_path,
+    TransportSecurityConfig, default_config_path,
 };
 pub use context::{ContextError, NodeContext, NodeContextBuilder};
-pub use helpers::{expand_path, has_missing_slices, validate_slice_entry};
 pub use peer_call::call_peer;
-pub use stats::RuntimeStats;
-pub use throttle::RefreshThrottle;
 
 #[cfg(test)]
 pub mod test_utils {

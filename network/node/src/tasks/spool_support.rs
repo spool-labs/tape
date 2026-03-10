@@ -1,17 +1,6 @@
-//! Shared helpers for runtime task implementations.
-
-use std::path::PathBuf;
-
-use tape_core::erasure::{spool_in_group, slice_for_spool};
+use tape_core::erasure::{slice_for_spool, spool_in_group};
 use tape_store::ops::{ObjectInfoOps, SliceOps, TrackOps};
 use tape_store::types::{ObjectInfo, TrackInfo};
-
-/// Expand `~` and environment variables in a path.
-pub fn expand_path(path: &str) -> PathBuf {
-    shellexpand::full(path)
-        .map(|s| PathBuf::from(s.as_ref()))
-        .unwrap_or_else(|_| PathBuf::from(path))
-}
 
 /// Validate an untrusted slice before local persistence.
 pub fn validate_slice_entry(
@@ -42,10 +31,10 @@ pub fn validate_slice_entry(
 }
 
 /// Check whether any certified track in this spool's group is missing its slice.
-///
-/// Returns `true` on the first missing slice (early exit). Used by SpoolSync
-/// fast-paths to verify data completeness before promoting to Active.
-pub fn has_missing_slices(store: &(impl TrackOps + ObjectInfoOps + SliceOps), spool: u16) -> Result<bool, String> {
+pub fn has_missing_slices(
+    store: &(impl TrackOps + ObjectInfoOps + SliceOps),
+    spool: u16,
+) -> Result<bool, String> {
     let mut cursor = None;
     const BATCH: usize = 100;
 
@@ -64,7 +53,10 @@ pub fn has_missing_slices(store: &(impl TrackOps + ObjectInfoOps + SliceOps), sp
             }
 
             let certified = match store.get_object_info(*track_addr) {
-                Ok(Some(ObjectInfo::Valid { certified_epoch: Some(_), .. })) => true,
+                Ok(Some(ObjectInfo::Valid {
+                    certified_epoch: Some(_),
+                    ..
+                })) => true,
                 Ok(_) => false,
                 Err(e) => return Err(format!("get_object_info: {e}")),
             };
@@ -85,22 +77,4 @@ pub fn has_missing_slices(store: &(impl TrackOps + ObjectInfoOps + SliceOps), sp
     }
 
     Ok(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_expand_path_no_expansion() {
-        let path = "/absolute/path/to/file";
-        assert_eq!(expand_path(path), PathBuf::from(path));
-    }
-
-    #[test]
-    fn test_expand_path_with_tilde() {
-        let expanded = expand_path("~/test");
-        // Should not start with ~ after expansion
-        assert!(!expanded.to_string_lossy().starts_with('~'));
-    }
 }

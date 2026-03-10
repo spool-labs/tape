@@ -5,8 +5,7 @@ use clap::Parser;
 use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_solana::RpcConfig;
-use tape_node::core::NodeConfig;
-use tape_node::core::NodeContextBuilder;
+use tape_node::core::{NodeConfig, NodeContextBuilder, default_config_path};
 use tape_node::runtime::spawn_runtime;
 use peer_manager::PeerManager;
 use tape_store::TapeStore;
@@ -18,16 +17,12 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "tape-node", about = "Tapedrive storage node")]
 struct Cli {
     /// Path to node configuration YAML file
-    #[arg(short, long, default_value = "~/.tape/config.yaml")]
+    #[arg(short, long, default_value_t = default_config_path().to_string_lossy().into_owned())]
     config: String,
 
     /// RPC endpoint URL (overrides config)
     #[arg(long)]
     rpc_url: Option<String>,
-}
-
-fn expand_path(path: &str) -> std::path::PathBuf {
-    shellexpand::tilde(path).to_string().into()
 }
 
 async fn watch_handle(
@@ -49,9 +44,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load config
-    let config_path = expand_path(&cli.config);
-    let config = NodeConfig::from_yaml_file(&config_path)
-        .with_context(|| format!("failed to load config from {}", config_path.display()))?;
+    let config = NodeConfig::from_yaml_file(&cli.config)
+        .with_context(|| format!("failed to load config from {}", cli.config))?;
 
     // Load Solana keypair
     let keypair_path = &config.node_keypair;
@@ -60,7 +54,7 @@ async fn main() -> Result<()> {
     tracing::info!(name = %config.name, "starting node");
 
     // Open RocksDB
-    let db_path = expand_path(&config.storage_path);
+    let db_path = std::path::PathBuf::from(&config.storage_path);
     tracing::info!(path = %db_path.display(), "opening database");
     let store = TapeStore::open_primary(&db_path)
         .with_context(|| format!("failed to open database at {}", db_path.display()))?;

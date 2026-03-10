@@ -24,14 +24,10 @@ use tape_store::TapeStore;
 
 use super::config::NodeConfig;
 use super::stats::RuntimeStats;
-use crate::core::expand_path;
 
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
-    #[error("failed to load keypair: {0}")]
-    Keypair(String),
-
     #[error("failed to load BLS keypair: {0}")]
     BlsKeypair(String),
 
@@ -40,9 +36,6 @@ pub enum ContextError {
 
     #[error("failed to open storage: {0}")]
     Storage(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
 }
 
 /// Central context holding all shared node state.
@@ -185,7 +178,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
 
     //TODO: this is more than likely the wrong place for this and is likely duplicate code
     fn load_bls_keypair(config: &NodeConfig) -> Result<BlsPrivateKey, ContextError> {
-        let path = expand_path(config.bls_keypair.to_string_lossy().as_ref());
+        let path = &config.bls_keypair;
         let bytes = std::fs::read(&path)
             .map_err(|e| ContextError::BlsKeypair(format!("read {}: {e}", path.display())))?;
         if bytes.len() != std::mem::size_of::<BlsPrivateKey>() {
@@ -199,7 +192,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         Ok(*bytemuck::from_bytes::<BlsPrivateKey>(&bytes))
     }
 
-    pub async fn resolve_node_id(
+    async fn resolve_node_id(
         rpc: &RpcClient<Blockchain>,
         keypair: &Keypair,
     ) -> Result<NodeId, ContextError> {

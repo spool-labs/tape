@@ -1,5 +1,7 @@
 //! Task implementations — each submodule handles one `Task` variant.
 
+mod spool_support;
+
 pub mod advance_epoch;
 pub mod advance_pool;
 pub mod invalidate_track;
