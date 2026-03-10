@@ -16,18 +16,6 @@ use crate::TaskOutcome;
 
 const ADVANCE_EPOCH_PENDING_DELAY: Duration = Duration::from_secs(5);
 
-fn classify_advance_epoch_error(err: &RpcError) -> TaskOutcome {
-    match parse_tape_error(err) {
-        Some(TapeError::TooSoon)
-        | Some(TapeError::InsufficientCommittee)
-        | Some(TapeError::SnapshotIncomplete)
-        | Some(TapeError::BadEpochState)
-        | Some(TapeError::UnexpectedState) => TaskOutcome::Pending(ADVANCE_EPOCH_PENDING_DELAY),
-        Some(TapeError::BadSchedule) => TaskOutcome::Permanent(format!("advance_epoch: {err}")),
-        _ => TaskOutcome::Retryable(format!("advance_epoch: {err}")),
-    }
-}
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
@@ -42,6 +30,18 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             TaskOutcome::Success
         }
         Err(ref e) => classify_advance_epoch_error(e),
+    }
+}
+
+fn classify_advance_epoch_error(err: &RpcError) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::TooSoon)
+        | Some(TapeError::InsufficientCommittee)
+        | Some(TapeError::SnapshotIncomplete)
+        | Some(TapeError::BadEpochState)
+        | Some(TapeError::UnexpectedState) => TaskOutcome::Pending(ADVANCE_EPOCH_PENDING_DELAY),
+        Some(TapeError::BadSchedule) => TaskOutcome::Permanent(format!("advance_epoch: {err}")),
+        _ => TaskOutcome::Retryable(format!("advance_epoch: {err}")),
     }
 }
 

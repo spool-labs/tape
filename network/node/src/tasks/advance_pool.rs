@@ -16,17 +16,6 @@ use rpc_client::parse_tape_error;
 
 const ADVANCE_POOL_PENDING_DELAY: Duration = Duration::from_secs(5);
 
-fn classify_advance_pool_error(err: &RpcError) -> TaskOutcome {
-    match parse_tape_error(err) {
-        Some(TapeError::AlreadyAdvanced) => TaskOutcome::Success,
-        Some(TapeError::BadEpochState) => TaskOutcome::Pending(ADVANCE_POOL_PENDING_DELAY),
-        Some(TapeError::NoRewards) | Some(TapeError::RewardsOverflow) => {
-            TaskOutcome::Permanent(format!("advance_pool: {err}"))
-        }
-        _ => TaskOutcome::Retryable(format!("advance_pool: {err}")),
-    }
-}
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
@@ -50,6 +39,18 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     outcome
 }
+
+fn classify_advance_pool_error(err: &RpcError) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::AlreadyAdvanced) => TaskOutcome::Success,
+        Some(TapeError::BadEpochState) => TaskOutcome::Pending(ADVANCE_POOL_PENDING_DELAY),
+        Some(TapeError::NoRewards) | Some(TapeError::RewardsOverflow) => {
+            TaskOutcome::Permanent(format!("advance_pool: {err}"))
+        }
+        _ => TaskOutcome::Retryable(format!("advance_pool: {err}")),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

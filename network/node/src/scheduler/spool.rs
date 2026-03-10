@@ -30,16 +30,16 @@ impl SpoolPlanner {
 
     /// Sync the desired set with current spool ownership. Removes tasks for
     /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
-    pub fn reconcile<S: Store>(
+    pub fn plan_spool_tasks<S: Store>(
         store: &TapeStore<S>,
         node_status: NodeStatus,
         desired: &mut HashSet<Task>,
     ) {
         if matches!(node_status, NodeStatus::Standby) {
-            tracing::trace!("reconcile_spools skipped for standby node");
+            tracing::trace!("plan_spool_tasks skipped for standby node");
             return;
         }
-        tracing::trace!("reconciling spools in active execution path");
+        tracing::trace!("planning spool tasks");
 
         let owned_spools = match store.iter_all_spools() {
             Ok(spools) => spools,
@@ -48,7 +48,7 @@ impl SpoolPlanner {
                 return;
             }
         };
-        tracing::trace!(owned_spools = owned_spools.len(), "reconciling spool tasks");
+        tracing::trace!(owned_spools = owned_spools.len(), "planning spool tasks");
 
         let schedulable_spools = Self::schedulable_spools(&owned_spools);
         Self::prune_desired_spool_tasks(desired, &schedulable_spools);
@@ -210,7 +210,7 @@ impl SpoolPlanner {
     /// serving data until the new owner completes sync.
     ///
     /// Returns true if any spool rows changed.
-    pub fn reconcile_ownership<S: Store>(
+    pub fn apply_ownership_changes<S: Store>(
         store: &TapeStore<S>,
         chain_spools: &HashSet<u16>,
         epoch: EpochNumber,
@@ -221,7 +221,7 @@ impl SpoolPlanner {
         let existing = match store.iter_all_spools() {
             Ok(spools) => spools,
             Err(e) => {
-                tracing::error!("reconcile_ownership: failed to read spools: {e}");
+                tracing::error!("apply_ownership_changes: failed to read spools: {e}");
                 return false;
             }
         };
@@ -236,7 +236,7 @@ impl SpoolPlanner {
                 let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
                 let state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner };
                 if let Err(e) = store.set_spool_state(spool, state) {
-                    tracing::error!(spool, "reconcile_ownership: failed to create spool: {e}");
+                    tracing::error!(spool, "apply_ownership_changes: failed to create spool: {e}");
                 } else {
                     tracing::info!(spool, ?prev_owner, "spool assigned, marked ActiveSync");
                     changed = true;
@@ -253,7 +253,7 @@ impl SpoolPlanner {
                 }
                 let new_state = SpoolState { status: SpoolStatus::LockedToMove, epoch, prev_owner: None };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
-                    tracing::error!(spool, "reconcile_ownership: failed to lock spool: {e}");
+                    tracing::error!(spool, "apply_ownership_changes: failed to lock spool: {e}");
                 } else {
                     let _ = store.clear_scan_done(spool);
                     tracing::info!(spool, "spool lost, marked LockedToMove");
@@ -269,7 +269,7 @@ impl SpoolPlanner {
                     prev_owner: Some(self_node_id),
                 };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
-                    tracing::error!(spool, "reconcile_ownership: failed to reactivate spool: {e}");
+                    tracing::error!(spool, "apply_ownership_changes: failed to reactivate spool: {e}");
                 } else {
                     tracing::info!(spool, "locked spool reacquired, marked ActiveSync");
                     changed = true;

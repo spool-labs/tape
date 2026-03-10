@@ -93,11 +93,11 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_address: [u8; 32],
     epoch: EpochNumber,
 ) -> Result<(), ApiError> {
-    let protocol_state = context.state();
-    if epoch != protocol_state.epoch {
+    let state = context.state();
+    if epoch != state.epoch {
         return Err(ApiError::BadRequest("committee missing".into()));
     }
-    let committee = &protocol_state.committee;
+    let committee = &state.committee;
     if committee.is_empty() {
         return Err(ApiError::BadRequest("committee missing".into()));
     }
@@ -122,7 +122,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 "inconsistency bitmap has unknown signer".to_string(),
             ))?;
 
-        signer_weight += protocol_state
+        signer_weight += state
             .member_spools(signer_index)
             .iter()
             .filter(|&&spool| group_for_spool(spool) == track_info.spool_group)

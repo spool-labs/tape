@@ -203,10 +203,10 @@ pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 epoch: local_epoch,
             };
 
-            let protocol_state = context.state();
+            let state = context.state();
             if let Err(err) = broadcast_snapshot_signature(
                 &context,
-                &protocol_state,
+                &state,
                 member_index as usize,
                 local_epoch,
                 SpoolGroup(group as u64),

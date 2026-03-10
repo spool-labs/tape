@@ -24,6 +24,7 @@ use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
+use crate::scheduler::SpoolPlanner;
 use crate::TaskResult;
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
@@ -313,9 +314,19 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                     return ControlFlow::Break(());
                 }
 
-                let protocol_state = ctx.state();
+                let state = ctx.state();
                 let my_spools = ctx.my_spools();
-                crate::epoch_transition::apply(&*ctx.store, &my_spools, &protocol_state, ctx.node_id(), &mut changes);
+                SpoolPlanner::cleanup_locked(&*ctx.store, state.epoch);
+                if SpoolPlanner::apply_ownership_changes(
+                    &*ctx.store,
+                    &my_spools,
+                    state.epoch,
+                    ctx.node_id(),
+                    &state.spools_prev,
+                    &state.committee_prev,
+                ) {
+                    changes.push(StateChange::SpoolAssignmentChanged);
+                }
             }
 
             if change_tx.send(changes).await.is_err() {

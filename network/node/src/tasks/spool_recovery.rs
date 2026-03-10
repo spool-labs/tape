@@ -39,19 +39,19 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let protocol_state = ctx.state();
+    let state = ctx.state();
 
-    if protocol_state.epoch.is_zero() {
+    if state.epoch.is_zero() {
         return TaskOutcome::Success;
     }
 
-    if protocol_state.epoch.is_one() {
+    if state.epoch.is_one() {
         return TaskOutcome::Success;
     }
 
     let spool_group = SpoolGroup::of(spool);
     let peers = GroupPeers {
-        map: build_peer_map(&protocol_state, spool, spool_group),
+        map: build_peer_map(&state, spool, spool_group),
     };
 
     let mut any_failed = false;

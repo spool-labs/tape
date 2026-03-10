@@ -21,24 +21,24 @@ use crate::http::state::{require_chain_epoch, AppState};
 
 /// GET /v1/tracks/{track_id}/sign — BLS sign track certification.
 pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    State(app): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     tracing::trace!(track_id = %track_id, "http get_signature start");
     let track_address = super::status::parse_track_address(&track_id)?;
 
-    let track_info = state
+    let track_info = app
         .context
         .store
         .get_track(track_address)
         .map_err(|e| ApiError::InternalError(e.to_string()))?
         .ok_or(ApiError::NotFound)?;
 
-    let epoch = require_chain_epoch(&state)?;
+    let epoch = require_chain_epoch(&app)?;
 
     let root = track_info.commitment_root();
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());
-    let sig = state
+    let sig = app
         .context
         .bls_keypair
         .sign(&msg.to_bytes())
@@ -46,7 +46,7 @@ pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let resp = BlsSignResponse {
         signature: sig,
-        node_id: state.context.node_id(),
+        node_id: app.context.node_id(),
         epoch,
     };
 
@@ -67,7 +67,7 @@ pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// POST /v1/snapshots/{epoch}/{chunk_index}/partial_signature — accept partial BLS signatures.
 pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    State(app): State<AppState<Db, Cluster, Blockchain>>,
     Path((epoch, chunk_index)): Path<(u64, u64)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -89,20 +89,20 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let chunk_idx = ChunkIndex(chunk_index);
 
     let member_index = request.member_index as usize;
-    let protocol_state = state.context.state();
-    if epoch != protocol_state.epoch {
+    let state = app.context.state();
+    if epoch != state.epoch {
         return Err(ApiError::NotFound);
     }
-    if protocol_state.committee.is_empty() {
+    if state.committee.is_empty() {
         return Err(ApiError::NotFound);
     }
 
-    if member_index >= protocol_state.committee.len() {
+    if member_index >= state.committee.len() {
         return Err(ApiError::BadRequest("unknown member index".into()));
     }
 
-    let member = &protocol_state.committee[member_index];
-    let member_spools = protocol_state.member_spools(member_index);
+    let member = &state.committee[member_index];
+    let member_spools = state.member_spools(member_index);
 
     if !member_spools
         .iter()
@@ -111,7 +111,7 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(ApiError::NotInCommittee);
     }
 
-    let commitment = state
+    let commitment = app
         .context
         .store
         .get_snapshot_commitment(epoch, chunk_idx)
@@ -127,7 +127,7 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(ApiError::InvalidSignature);
     }
 
-    state
+    app
         .context
         .store
         .set_snapshot_partial_signature(

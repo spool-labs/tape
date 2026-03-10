@@ -85,12 +85,12 @@ impl SnapshotPlanner {
             desired.insert(snapshot_build.clone());
         }
 
-        let protocol_state = context.state();
-        let owned_groups: HashSet<SpoolGroup> = if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
+        let state = context.state();
+        let owned_groups: HashSet<SpoolGroup> = if state.epoch != epoch || state.committee.is_empty() {
             tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
             HashSet::new()
         } else {
-            match our_snapshot_groups(&protocol_state, context.node_id()) {
+            match our_snapshot_groups(&state, context.node_id()) {
                 Ok(groups) => groups,
                 Err(e) => {
                     tracing::warn!("snapshot pipeline: {e}");
@@ -239,11 +239,11 @@ impl SnapshotPlanner {
         context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
     ) -> HashSet<SpoolGroup> {
-        let protocol_state = context.state();
-        if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
+        let state = context.state();
+        if state.epoch != epoch || state.committee.is_empty() {
             return HashSet::new();
         }
-        our_snapshot_groups(&protocol_state, context.node_id()).unwrap_or_default()
+        our_snapshot_groups(&state, context.node_id()).unwrap_or_default()
     }
 
     /// Advance snapshot progress for all groups this node owns.

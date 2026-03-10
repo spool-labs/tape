@@ -4,7 +4,7 @@ use tape_store::types::{ObjectInfo, TrackInfo};
 
 /// Validate an untrusted slice before local persistence.
 pub fn validate_slice_entry(
-    spool: u16,
+    spool: SpoolIndex,
     track_info: &TrackInfo,
     data: &[u8],
 ) -> Result<(), String> {
@@ -33,7 +33,7 @@ pub fn validate_slice_entry(
 /// Check whether any certified track in this spool's group is missing its slice.
 pub fn has_missing_slices(
     store: &(impl TrackOps + ObjectInfoOps + SliceOps),
-    spool: u16,
+    spool: SpoolIndex,
 ) -> Result<bool, String> {
     let mut cursor = None;
     const BATCH: usize = 100;

@@ -20,20 +20,6 @@ use crate::TaskOutcome;
 
 const INVALIDATE_TRACK_PENDING_DELAY: Duration = Duration::from_secs(5);
 
-fn classify_invalidate_track_error(err: &RpcError) -> TaskOutcome {
-    match parse_tape_error(err) {
-        Some(TapeError::AlreadyInvalidated) => TaskOutcome::Success,
-        Some(TapeError::BadEpochId) => TaskOutcome::Pending(INVALIDATE_TRACK_PENDING_DELAY),
-        Some(TapeError::NoQuorum)
-        | Some(TapeError::NoSigners)
-        | Some(TapeError::BadMember)
-        | Some(TapeError::BadSignature) => {
-            TaskOutcome::Permanent(format!("invalidate_track: {err}"))
-        }
-        _ => TaskOutcome::Retryable(format!("invalidate_track: {err}")),
-    }
-}
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     track: Pubkey,
@@ -96,6 +82,20 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
             outcome
         }
+    }
+}
+
+fn classify_invalidate_track_error(err: &RpcError) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::AlreadyInvalidated) => TaskOutcome::Success,
+        Some(TapeError::BadEpochId) => TaskOutcome::Pending(INVALIDATE_TRACK_PENDING_DELAY),
+        Some(TapeError::NoQuorum)
+        | Some(TapeError::NoSigners)
+        | Some(TapeError::BadMember)
+        | Some(TapeError::BadSignature) => {
+            TaskOutcome::Permanent(format!("invalidate_track: {err}"))
+        }
+        _ => TaskOutcome::Retryable(format!("invalidate_track: {err}")),
     }
 }
 

@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use tape_protocol::Api;
-use solana_sdk::signer::Signer;
 use store::Store;
 use tape_core::system::EpochPhase;
 use tokio::sync::mpsc;
@@ -26,6 +25,8 @@ use crate::{Task, TaskResult};
 use crate::scheduler::LifecyclePlanner;
 use crate::scheduler::SnapshotPlanner;
 use crate::scheduler::SpoolPlanner;
+
+const EPOCH_TASK_RETENTION_WINDOW: u64 = 2;
 
 /// An action from the scheduler to the task_runner.
 #[derive(Debug, Clone)]
@@ -77,28 +78,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         action_tx: mpsc::Sender<Action>,
         cancel: CancellationToken,
     ) {
-
-        // On startup, reconcile spools and schedule lifecycle from current ChainState
-        // (seeded by runtime before scheduler starts).
-        {
-            let protocol_state = self.context.state();
-            if !protocol_state.epoch.is_zero() {
-                SpoolPlanner::reconcile(
-                    &*self.context.store,
-                    self.node_status(),
-                    &mut self.desired,
-                );
-                self.lifecycle.schedule(
-                    self.chain_phase(),
-                    self.node_status(),
-                    protocol_state.epoch,
-                    &mut self.desired,
-                );
-                if self.needs_bootstrap() {
-                    self.desired.insert(Task::SnapshotBootstrap);
-                }
-            }
-        }
+        // On startup, rebuild desired work from the current context-owned protocol state.
+        self.bootstrap_desired();
 
         self.flush(&action_tx);
         tracing::trace!("scheduler bootstrapped");
@@ -150,117 +131,24 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Translate FSM state changes into additions/removals in the `desired` set.
     pub fn update_desired(&mut self, changes: &[StateChange]) {
-
         for change in changes {
             tracing::trace!(change = ?change, "scheduler applying state change");
 
             match change {
-                StateChange::EpochAdvanced { epoch } => {
-                    tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
-
-                    let protocol_state = self.context.state();
-                    LifecyclePlanner::log_member_index(
-                        &protocol_state,
-                        self.context.node_id(),
-                        *epoch,
-                    );
-
-                    self.lifecycle.state_mut().reset(*epoch);
-                    self.snapshot.progress_mut().reset(*epoch);
-
-                    tracing::trace!(epoch = epoch.0, "scheduler reconciling spools after epoch advance");
-
-                    SpoolPlanner::reconcile(
-                        &*self.context.store,
-                        self.node_status(),
-                        &mut self.desired,
-                    );
-
-                    SpoolPlanner::prune_recoveries(&*self.context.store, &mut self.desired);
-
-                    if self.needs_bootstrap() {
-                        self.desired.insert(Task::SnapshotBootstrap);
-                    }
-
-                    self.scheduled.retain(|key| !matches!(key.scheduled_epoch(), Some(e) if e != *epoch));
-
-                    tracing::trace!(epoch = epoch.0, "scheduler scheduling lifecycle for new epoch");
-
-                    self.lifecycle.schedule(
-                        self.chain_phase(),
-                        self.node_status(),
-                        *epoch,
-                        &mut self.desired,
-                    );
-
-                }
-
-                StateChange::SpoolAssignmentChanged => {
-                    tracing::trace!("scheduler reconciling spools after spool assignment change");
-                    SpoolPlanner::reconcile(
-                        &*self.context.store,
-                        self.node_status(),
-                        &mut self.desired,
-                    );
-                }
-
-                StateChange::TrackCertified { track } => {
-                    tracing::trace!(track = %track, "scheduler checking slices after track certified");
-                    SpoolPlanner::check_slices(
-                        &*self.context.store,
-                        self.node_status(),
-                        track,
-                        &mut self.desired,
-                    );
-                }
-
-                StateChange::NodeJoinedCommittee { node } => {
-                    if *node == self.context.keypair.pubkey() {
-                        tracing::trace!(node = %node, "scheduler handling join event for local node");
-                        SpoolPlanner::reconcile(
-                            &*self.context.store,
-                            self.node_status(),
-                            &mut self.desired,
-                        );
-                    }
-                }
-
-                StateChange::NodeSynced { node } => {
-                    if *node == self.context.keypair.pubkey() {
-                        tracing::trace!(node = %node, "scheduler dropping local sync task after local node synced");
-                        self.desired
-                            .retain(|key| !matches!(key, Task::SyncEpoch { .. }));
-                    }
-                }
+                StateChange::EpochAdvanced { epoch } => self.handle_epoch_advanced(*epoch),
+                StateChange::SpoolAssignmentChanged => self.handle_spool_assignment_changed(),
+                StateChange::TrackCertified { track } => self.handle_track_certified(track),
+                StateChange::NodeJoinedCommittee { node } => self.handle_node_joined(node),
+                StateChange::NodeSynced { node } => self.handle_node_synced(node),
 
                 StateChange::TrackDeleted { track }
                 | StateChange::TrackInvalidated { track } => {
                     tracing::trace!(track = %track, "scheduler removing recoveries for deleted/invalidated track");
                     SpoolPlanner::remove_recoveries(&*self.context.store, track);
                 }
-                
-                StateChange::PhaseAdvanced { phase } => {
-                    tracing::trace!(?phase, "scheduler handling phase advance");
-                    let protocol_state = self.context.state();
-                    let epoch = protocol_state.epoch;
-                    if !epoch.is_zero() {
-                        self.lifecycle.schedule(
-                            Some(*phase),
-                            self.node_status(),
-                            epoch,
-                            &mut self.desired,
-                        );
 
-                    }
-                }
-
-                StateChange::PoolAdvanced { node } => {
-                    if *node == self.context.keypair.pubkey() {
-                        tracing::trace!(node = %node, "scheduler dropping local advance task after local node advanced");
-                        self.desired
-                            .retain(|key| !matches!(key, Task::AdvancePool { .. }));
-                    }
-                }
+                StateChange::PhaseAdvanced { phase } => self.handle_phase_advanced(*phase),
+                StateChange::PoolAdvanced { node } => self.handle_pool_advanced(node),
 
                 StateChange::TrackRegistered { .. }
                 | StateChange::TapeReserved { .. }
@@ -268,6 +156,121 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 | StateChange::NodeRegistered { .. } => {}
             }
         }
+    }
+
+    fn bootstrap_desired(&mut self) {
+        let epoch = self.context.state().epoch;
+        if epoch.is_zero() {
+            return;
+        }
+
+        self.rebuild_epoch_desired(epoch, false);
+    }
+
+    fn rebuild_epoch_desired(&mut self, epoch: EpochNumber, reset_planners: bool) {
+        if reset_planners {
+            self.lifecycle.state_mut().reset(epoch);
+            self.snapshot.progress_mut().reset(epoch);
+        }
+
+        self.plan_spool_tasks();
+        SpoolPlanner::prune_recoveries(&*self.context.store, &mut self.desired);
+        self.schedule_snapshot_bootstrap_if_needed();
+        self.lifecycle.schedule(
+            self.chain_phase(),
+            self.node_status(),
+            epoch,
+            &mut self.desired,
+        );
+    }
+
+    fn plan_spool_tasks(&mut self) {
+        SpoolPlanner::plan_spool_tasks(
+            &*self.context.store,
+            self.node_status(),
+            &mut self.desired,
+        );
+    }
+
+    fn schedule_snapshot_bootstrap_if_needed(&mut self) {
+        if self.needs_bootstrap() {
+            self.desired.insert(Task::SnapshotBootstrap);
+        }
+    }
+
+    fn handle_epoch_advanced(&mut self, epoch: EpochNumber) {
+        tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
+
+        let state = self.context.state();
+        LifecyclePlanner::log_member_index(
+            &state,
+            self.context.node_id(),
+            epoch,
+        );
+
+        self.scheduled
+            .retain(|key| !matches!(key.scheduled_epoch(), Some(e) if e != epoch));
+
+        self.rebuild_epoch_desired(epoch, true);
+    }
+
+    fn handle_spool_assignment_changed(&mut self) {
+        tracing::trace!("scheduler planning spool tasks after assignment change");
+        self.plan_spool_tasks();
+    }
+
+    fn handle_track_certified(&mut self, track: &solana_sdk::pubkey::Pubkey) {
+        tracing::trace!(track = %track, "scheduler checking slices after track certified");
+        SpoolPlanner::check_slices(
+            &*self.context.store,
+            self.node_status(),
+            track,
+            &mut self.desired,
+        );
+    }
+
+    fn handle_phase_advanced(&mut self, phase: EpochPhase) {
+        tracing::trace!(?phase, "scheduler handling phase advance");
+        let epoch = self.context.state().epoch;
+        if epoch.is_zero() {
+            return;
+        }
+
+        self.lifecycle.schedule(
+            Some(phase),
+            self.node_status(),
+            epoch,
+            &mut self.desired,
+        );
+    }
+
+    fn handle_node_joined(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+        if *node != self.context.pubkey() {
+            return;
+        }
+
+        tracing::trace!(node = %node, "scheduler handling join event for local node");
+        self.plan_spool_tasks();
+    }
+
+    fn handle_node_synced(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+        if *node != self.context.pubkey() {
+            return;
+        }
+
+        tracing::trace!(node = %node, "scheduler dropping local sync task after local node synced");
+        self.desired
+            .retain(|key| !matches!(key, Task::SyncEpoch { .. }));
+    }
+
+    fn handle_pool_advanced(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+        if *node != self.context.pubkey() {
+            return;
+        }
+
+        tracing::trace!(node = %node, "scheduler dropping local advance task after local node advanced");
+        self.desired
+            .retain(|key| !matches!(key, Task::AdvancePool { .. }));
     }
 
     /// Process a task completion from the task_runner. Stale epoch results are
@@ -313,7 +316,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         match key {
             Task::SyncEpoch { .. } | Task::AdvancePool { .. } | Task::SnapshotBootstrap => {
                 if matches!(key, Task::SnapshotBootstrap) {
-                    SpoolPlanner::reconcile(
+                    SpoolPlanner::plan_spool_tasks(
                         &*self.context.store,
                         self.node_status(),
                         &mut self.desired,
@@ -341,12 +344,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Re-run lifecycle scheduling from current chain state.
     fn reschedule_lifecycle(&mut self) {
-        let protocol_state = self.context.state();
-        if !protocol_state.epoch.is_zero() {
+        let state = self.context.state();
+        if !state.epoch.is_zero() {
             self.lifecycle.schedule(
                 self.chain_phase(),
                 self.node_status(),
-                protocol_state.epoch,
+                state.epoch,
                 &mut self.desired,
             );
         }
@@ -354,8 +357,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Current chain phase from protocol state. Returns None for Unknown.
     fn chain_phase(&self) -> Option<EpochPhase> {
-        let protocol_state = self.context.state();
-        match protocol_state.phase {
+        let state = self.context.state();
+        match state.phase {
             EpochPhase::Unknown => None,
             phase => Some(phase),
         }
@@ -377,11 +380,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
         };
-        let protocol_state = self.context.state();
-        if protocol_state.epoch.is_zero() {
+        let state = self.context.state();
+        if state.epoch.is_zero() {
             return true;
         }
-        task_epoch != protocol_state.epoch
+        task_epoch != state.epoch
     }
 
     /// True if this node is Active, at epoch >= 2, and has no sync cursor yet
@@ -396,7 +399,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
     }
 
     fn should_drop_epoch_task(&self, current_epoch: EpochNumber, task_epoch: EpochNumber) -> bool {
-        task_epoch.0.saturating_add(2) < current_epoch.0
+        task_epoch.0.saturating_add(EPOCH_TASK_RETENTION_WINDOW) < current_epoch.0
     }
 
     fn task_below_retention(&self, current_epoch: EpochNumber, key: &Task) -> bool {
@@ -539,7 +542,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
     }
 
     /// Task failed permanently — remove from both sets so it is never retried.
-    /// For SpoolSync failures, transitions the spool to recovery and reconciles.
+    /// For SpoolSync failures, transitions the spool to recovery and re-plans.
     fn handle_permanent(&mut self, key: &Task) {
         tracing::trace!(task = ?key, "scheduler dropping permanent failure task");
         self.scheduled.remove(key);
@@ -549,7 +552,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
             SpoolPlanner::transition_to_recovery(&*self.context.store, *spool);
         }
         if key.spool_id().is_some() {
-            SpoolPlanner::reconcile(&*self.context.store, self.node_status(), &mut self.desired);
+            SpoolPlanner::plan_spool_tasks(&*self.context.store, self.node_status(), &mut self.desired);
         }
     }
 }
@@ -1279,7 +1282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn epoch_reconcile() {
+    async fn epoch_plans_spool_tasks() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store.set_spool_state(10, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None }).unwrap();
@@ -1629,7 +1632,7 @@ mod tests {
             ctx.store.get_spool_state(42).unwrap().unwrap().status,
             SpoolStatus::ActiveRecover
         );
-        // Reconcile re-adds both recovery tasks
+        // Planner re-adds both recovery tasks
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
     }
@@ -1654,13 +1657,13 @@ mod tests {
             ctx.store.get_spool_state(42).unwrap().unwrap().status,
             SpoolStatus::ActiveRecover
         );
-        // Reconcile re-adds scan (not done) and recovery
+        // Planner re-adds scan (not done) and recovery
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
     }
 
     #[tokio::test]
-    async fn reconcile_active_recover() {
+    async fn plan_active_recover() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
@@ -1685,7 +1688,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_scan_done() {
+    async fn plan_scan_done() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store.set_spool_state(30, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
@@ -1770,13 +1773,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_sets_epoch() {
+    async fn ownership_sets_epoch() {
         let ctx = test_context();
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
         chain_spools.insert(20u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(
+        let changed = SpoolPlanner::apply_ownership_changes(
             &*ctx.store,
             &chain_spools,
             EpochNumber(5),
@@ -1796,7 +1799,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_sets_prev_owner_from_prev_committee() {
+    async fn ownership_sets_prev_owner() {
         let ctx = test_context();
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
@@ -1806,7 +1809,7 @@ mod tests {
         let prev_spools = SpoolAssignment::new(prev_map);
         let prev_committee = vec![CommitteeMember::new(NodeId(99), Coin::<TAPE>::new(1000))];
 
-        let changed = SpoolPlanner::reconcile_ownership(
+        let changed = SpoolPlanner::apply_ownership_changes(
             &*ctx.store,
             &chain_spools,
             EpochNumber(5),
@@ -1821,7 +1824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_reactivates_locked() {
+    async fn ownership_reactivates_locked() {
         let ctx = test_context();
         // Spool 10 locked at epoch 3
         ctx.store.set_spool_state(10, SpoolState {
@@ -1834,7 +1837,7 @@ mod tests {
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
 
-        let changed = SpoolPlanner::reconcile_ownership(
+        let changed = SpoolPlanner::apply_ownership_changes(
             &*ctx.store,
             &chain_spools,
             EpochNumber(5),
@@ -1851,7 +1854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_skips_existing_lock() {
+    async fn ownership_skips_existing_lock() {
         let ctx = test_context();
         // Spool 10 locked at epoch 3
         ctx.store.set_spool_state(10, SpoolState {
@@ -1863,7 +1866,7 @@ mod tests {
         // Chain does not include spool 10 at epoch 5
         let chain_spools = HashSet::new();
 
-        let changed = SpoolPlanner::reconcile_ownership(
+        let changed = SpoolPlanner::apply_ownership_changes(
             &*ctx.store,
             &chain_spools,
             EpochNumber(5),

@@ -86,5 +86,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     tracing::info!(spool, "recovery scan complete");
+
     TaskOutcome::Success
 }

@@ -81,8 +81,8 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
     need: SnapshotNeed,
     with_member: bool,
 ) -> Result<SnapshotTaskContext, TaskOutcome> {
-    let protocol_state = context.state();
-    let current_chain_epoch = protocol_state.epoch;
+    let state = context.state();
+    let current_chain_epoch = state.epoch;
     if current_chain_epoch.is_zero() {
         return Err(TaskOutcome::Retryable("no current epoch".into()));
     }
@@ -91,18 +91,18 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(outcome) => return Err(outcome),
     };
 
-    if protocol_state.committee.is_empty() {
+    if state.committee.is_empty() {
         return Err(TaskOutcome::Retryable("no committee".into()));
     }
-    let committee_len = protocol_state.committee.len();
+    let committee_len = state.committee.len();
 
-    let owned_groups = match our_snapshot_groups(&protocol_state, context.node_id()) {
+    let owned_groups = match our_snapshot_groups(&state, context.node_id()) {
         Ok(groups) => groups,
         Err(e) => return Err(TaskOutcome::Retryable(e.into())),
     };
 
     let member_index = if with_member {
-        match our_member_index(&protocol_state, context.node_id()) {
+        match our_member_index(&state, context.node_id()) {
             Ok(index) => Some(index),
             Err(e) => return Err(TaskOutcome::Retryable(e.into())),
         }
@@ -110,7 +110,7 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
         None
     };
 
-    let owned_spools = member_index.map(|idx| protocol_state.member_spools(idx).len());
+    let owned_spools = member_index.map(|idx| state.member_spools(idx).len());
 
     Ok(SnapshotTaskContext {
         current_chain_epoch,

@@ -246,6 +246,7 @@ TaskRunner<Db, Cluster, Blockchain> {
         } else {
             Some(tape_retry::compute_delay(&config, attempt))
         };
+
         match delay {
             Some(delay) => {
                 tracing::warn!(
@@ -415,19 +416,16 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Each epoch-scoped key is pinned to its scheduled chain epoch.
     // If the node has already advanced/lagged, skip stale tx/submission.
     if let Some(task_epoch) = key.scheduled_epoch() {
-
-        // TODO: this feels broken, using what is potentially a future epoch to decide if a task
-        // should be skipped. I'm not sure this belongs here. Definitely needs to be reviewed.
-
-        let chain_epoch = context.state().epoch;
-        if !chain_epoch.is_zero() {
-            if task_epoch != chain_epoch {
-                tracing::trace!(
+        let epoch = context.state().epoch;
+        if !epoch.is_zero() {
+            if task_epoch != epoch {
+                tracing::warn!(
                     task = ?key,
                     scheduled_epoch = task_epoch.0,
-                    chain_epoch = chain_epoch.0,
+                    epoch = epoch.0,
                     "task execution skipped: stale epoch"
                 );
+
                 return (key, TaskOutcome::Success);
             }
         }

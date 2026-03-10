@@ -94,8 +94,8 @@ async fn wait_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .store
             .get_sync_cursor()?;
 
-        let protocol_state = context.state();
-        let epoch = if !protocol_state.epoch.is_zero() { Some(protocol_state.epoch) } else { None };
+        let state = context.state();
+        let epoch = if !state.epoch.is_zero() { Some(state.epoch) } else { None };
         let status = context.node_status();
 
         let _cursor_slot = cursor.map(|slot| slot.0);

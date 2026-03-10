@@ -73,7 +73,7 @@ async fn spool_node_drop() {
         .await
         .expect("alive nodes active at epoch 3");
 
-    // Wait for nodes to process the epoch change and reconcile spools
+    // Wait for nodes to process the epoch change and apply spool ownership changes
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify spool redistribution: alive nodes have at least SPOOL_COUNT spools.

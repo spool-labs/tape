@@ -16,41 +16,6 @@ use rpc_client::parse_tape_error;
 
 const JOIN_NETWORK_PENDING_DELAY: Duration = Duration::from_secs(5);
 
-fn classify_join_network_error(
-    err: &RpcError,
-    joined_check: Option<Result<bool, String>>,
-) -> TaskOutcome {
-    match parse_tape_error(err) {
-        Some(TapeError::UnexpectedState) => match joined_check {
-            Some(Ok(true)) => TaskOutcome::Success,
-            Some(Ok(false)) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
-            Some(Err(check_err)) => TaskOutcome::Retryable(format!(
-                "join_network: {err}; verify committee_next failed: {check_err}"
-            )),
-            None => TaskOutcome::Retryable(format!("join_network: {err}")),
-        },
-        Some(TapeError::NodeStale)
-        | Some(TapeError::NotStaked)
-        | Some(TapeError::BadEpochState) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
-        _ => TaskOutcome::Retryable(format!("join_network: {err}")),
-    }
-}
-
-async fn already_joined<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &NodeContext<Db, Cluster, Blockchain>) -> Result<bool, String> {
-    let authority = context.pubkey();
-    let node = context
-        .rpc
-        .get_node(&authority)
-        .await
-        .map_err(|e| format!("get_node: {e}"))?;
-    let system = context
-        .rpc
-        .get_system()
-        .await
-        .map_err(|e| format!("get_system: {e}"))?;
-    Ok(system.committee_next.index_of(&node.id).is_some())
-}
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
@@ -73,6 +38,44 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             classify_join_network_error(e, joined_check)
         }
     }
+}
+
+fn classify_join_network_error(
+    err: &RpcError,
+    joined_check: Option<Result<bool, String>>,
+) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::UnexpectedState) => match joined_check {
+            Some(Ok(true)) => TaskOutcome::Success,
+            Some(Ok(false)) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
+            Some(Err(check_err)) => TaskOutcome::Retryable(format!(
+                "join_network: {err}; verify committee_next failed: {check_err}"
+            )),
+            None => TaskOutcome::Retryable(format!("join_network: {err}")),
+        },
+        Some(TapeError::NodeStale)
+        | Some(TapeError::NotStaked)
+        | Some(TapeError::BadEpochState) => TaskOutcome::Pending(JOIN_NETWORK_PENDING_DELAY),
+        _ => TaskOutcome::Retryable(format!("join_network: {err}")),
+    }
+}
+
+async fn already_joined<Db: Store, Cluster: Api, Blockchain: Rpc>(context: &NodeContext<Db, Cluster, Blockchain>) -> Result<bool, String> {
+    let authority = context.pubkey();
+
+    let node = context
+        .rpc
+        .get_node(&authority)
+        .await
+        .map_err(|e| format!("get_node: {e}"))?;
+
+    let system = context
+        .rpc
+        .get_system()
+        .await
+        .map_err(|e| format!("get_system: {e}"))?;
+
+    Ok(system.committee_next.index_of(&node.id).is_some())
 }
 
 #[cfg(test)]

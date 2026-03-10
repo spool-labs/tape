@@ -142,7 +142,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(e) => return Err(TaskOutcome::Retryable(format!("read partial sigs: {e}"))),
     };
 
-    let protocol_state = context.state();
+    let state = context.state();
 
     let mut signatures = Vec::new();
     let mut member_indices = Vec::new();
@@ -158,7 +158,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let member_index = partial.member_index as usize;
-        let member = match protocol_state.committee.get(member_index) {
+        let member = match state.committee.get(member_index) {
             Some(member) => member,
             None => {
                 tracing::debug!(%group, member_index, "partial signature for unknown member");
@@ -166,7 +166,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        let member_weight = protocol_state
+        let member_weight = state
             .member_spools(member_index)
             .iter()
             .filter(|&&spool| group_for_spool(spool) == group)
@@ -189,9 +189,9 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         gathered_weight += member_weight;
     }
 
-    let group_total_weight: u64 = (0..protocol_state.committee.len())
+    let group_total_weight: u64 = (0..state.committee.len())
         .map(|i| {
-            protocol_state.member_spools(i)
+            state.member_spools(i)
                 .iter()
                 .filter(|&&spool| group_for_spool(spool) == group)
                 .count() as u64

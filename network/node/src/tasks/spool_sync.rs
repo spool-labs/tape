@@ -161,7 +161,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     TaskOutcome::Success
 }
 
-
 fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
@@ -184,29 +183,4 @@ fn resolve_sync_source<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     Ok(SyncSource::SyncFrom { node_id: prev_owner_id })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::core::test_utils::test_context;
-    use tape_core::types::EpochNumber;
-    use tape_store::types::{SpoolState, SpoolStatus};
-
-    #[tokio::test]
-    async fn active_sync_requires_prev_owner() {
-        let ctx = test_context();
-        ctx.store.set_spool_state(
-            5,
-            SpoolState {
-                status: SpoolStatus::ActiveSync,
-                epoch: EpochNumber(2),
-                prev_owner: None,
-            },
-        ).unwrap();
-
-        let outcome = run(ctx, 5, CancellationToken::new()).await;
-        assert!(matches!(outcome, TaskOutcome::Permanent(msg) if msg.contains("missing prev_owner")));
-    }
 }

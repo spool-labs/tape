@@ -77,11 +77,11 @@ pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return missing_state("snapshot bootstrap committee not available");
     }
 
-    let protocol_state = context.state();
+    let state = context.state();
 
     let commitments = match fetch_commitments(
         &context,
-        &protocol_state,
+        &state,
         local_epoch,
     )
     .await
@@ -105,7 +105,7 @@ pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         let slices = match collect_group_slices(
             &context,
-            &protocol_state,
+            &state,
             SpoolGroup(group as u64),
             track_addr,
             clay_k,
