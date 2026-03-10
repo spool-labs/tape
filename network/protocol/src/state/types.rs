@@ -17,6 +17,7 @@ pub struct ProtocolState {
     pub nonce: Hash,
     pub committee: Vec<CommitteeMember>,
     pub committee_prev: Vec<CommitteeMember>,
+    pub committee_next: Vec<CommitteeMember>,
     pub spools: SpoolAssignment<SPOOL_COUNT>,
     pub spools_prev: SpoolAssignment<SPOOL_COUNT>,
 }
@@ -29,6 +30,7 @@ impl Default for ProtocolState {
             nonce: Hash::default(),
             committee: Vec::new(),
             committee_prev: Vec::new(),
+            committee_next: Vec::new(),
             spools: bytemuck::Zeroable::zeroed(),
             spools_prev: bytemuck::Zeroable::zeroed(),
         }
@@ -59,6 +61,15 @@ impl ProtocolState {
     /// Returns (member_index, &CommitteeMember).
     pub fn find_member(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
         self.committee
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.id == node_id)
+    }
+
+    /// Find a member in the next committee by NodeId.
+    /// Returns (member_index, &CommitteeMember).
+    pub fn find_member_next(&self, node_id: NodeId) -> Option<(usize, &CommitteeMember)> {
+        self.committee_next
             .iter()
             .enumerate()
             .find(|(_, m)| m.id == node_id)
@@ -145,6 +156,7 @@ mod tests {
     fn find_member_empty() {
         let state = empty_state();
         assert!(state.find_member(NodeId(1)).is_none());
+        assert!(state.find_member_next(NodeId(1)).is_none());
     }
 
     #[test]
@@ -217,5 +229,15 @@ mod tests {
         state.committee.push(CommitteeMember::new(NodeId(1), Coin::<TAPE>::new(1000)));
         state.spools = SpoolAssignment::new([0u8; SPOOL_COUNT]);
         assert_eq!(state.group_member_count(SpoolGroup(0)), 1);
+    }
+
+    #[test]
+    fn find_member_next_uses_next_committee() {
+        let mut state = ProtocolState::default();
+        state.committee_next.push(CommitteeMember::new(NodeId(7), Coin::<TAPE>::new(1000)));
+
+        let member = state.find_member_next(NodeId(7)).unwrap();
+        assert_eq!(member.0, 0);
+        assert_eq!(member.1.id, NodeId(7));
     }
 }

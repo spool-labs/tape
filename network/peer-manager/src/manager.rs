@@ -70,7 +70,8 @@ impl PeerManager {
         let all_members = state
             .committee
             .iter()
-            .chain(state.committee_prev.iter());
+            .chain(state.committee_prev.iter())
+            .chain(state.committee_next.iter());
 
         for member in all_members {
             if !self.contains(member.id) {
@@ -91,7 +92,8 @@ impl PeerManager {
         let all_members = state
             .committee
             .iter()
-            .chain(state.committee_prev.iter());
+            .chain(state.committee_prev.iter())
+            .chain(state.committee_next.iter());
 
         for member in all_members {
             if !self.contains(member.id) {

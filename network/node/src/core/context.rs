@@ -133,7 +133,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     /// Derive node status from current committee membership.
     pub fn node_status(&self) -> NodeStatus {
-        if self.peer_manager.state().find_member(self.node_id).is_some() {
+        let state = self.peer_manager.state();
+        let in_committee = state.find_member(self.node_id).is_some();
+        let bootstrap_in_next =
+            state.committee.is_empty() && state.find_member_next(self.node_id).is_some();
+
+        if in_committee || bootstrap_in_next {
             NodeStatus::Active
         } else {
             NodeStatus::Standby
@@ -228,6 +233,50 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use peer_memory::MemoryApi;
+    use rpc_client::RpcClient;
+    use rpc_litesvm::LiteSvmRpc;
+    use solana_sdk::signature::Keypair;
+    use tape_core::bls::BlsPrivateKey;
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_core::types::NodeId;
+    use tape_protocol::ProtocolState;
+    use tape_store::{MemoryStore, TapeStore};
+    use tape_store::types::NodeStatus;
+
+    use crate::core::test_utils::test_config;
+
+    use super::NodeContext;
+
     #[test]
     fn context_builder_compiles() {}
+
+    #[test]
+    fn bootstrap_active() {
+        let node_id = NodeId(42);
+        let peer_manager = Arc::new(peer_manager::PeerManager::new());
+        let api = Arc::new(MemoryApi::noop());
+        let context = NodeContext::from_parts(
+            test_config(),
+            Keypair::new(),
+            BlsPrivateKey::from_random(),
+            TapeStore::new(MemoryStore::new()),
+            RpcClient::from_rpc(LiteSvmRpc::new()),
+            peer_manager.clone(),
+            api,
+            node_id,
+        );
+
+        let mut state = ProtocolState::default();
+        state.committee_next.push(tape_core::system::CommitteeMember::new(
+            node_id,
+            Coin::<TAPE>::new(1000),
+        ));
+        peer_manager.state_handle().store(state);
+
+        assert_eq!(context.node_status(), NodeStatus::Active);
+        assert!(context.my_spools().is_empty());
+    }
 }

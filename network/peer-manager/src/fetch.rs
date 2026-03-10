@@ -20,6 +20,7 @@ pub async fn fetch_state<R: Rpc>(rpc: &RpcClient<R>)
 
     let committee = system.committee.iter().cloned().collect();
     let committee_prev = system.committee_prev.iter().cloned().collect();
+    let committee_next = system.committee_next.iter().cloned().collect();
 
     Ok(ProtocolState {
         epoch: epoch.id,
@@ -27,6 +28,7 @@ pub async fn fetch_state<R: Rpc>(rpc: &RpcClient<R>)
         nonce: epoch.nonce,
         committee,
         committee_prev,
+        committee_next,
         spools: system.spools,
         spools_prev: system.spools_prev,
     })
