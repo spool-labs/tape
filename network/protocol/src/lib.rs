@@ -1,4 +1,5 @@
 pub mod api;
+pub mod fetch;
 pub mod state;
 
 pub use api::{Api, ApiError};

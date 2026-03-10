@@ -544,7 +544,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let spool_group = onchain.data.spool_group();
 
         // 3. Bootstrap network if needed, upload slices
-        self.peer_manager.bootstrap(&self.rpc).await
+        let state = tape_protocol::fetch::fetch_state(&self.rpc).await?;
+        self.state.store(Arc::new(state));
+        self.peer_manager.resolve_peers(&self.rpc).await
             .map_err(TapedriveError::Network)?;
 
         let state = self.state();

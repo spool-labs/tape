@@ -609,7 +609,7 @@ mod tests {
         if matches!(status, NodeStatus::Active) {
             state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
         }
-        ctx.store_state(state);
+        ctx.set_state(state);
     }
 
     fn mark_snapshot_build_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -672,7 +672,7 @@ mod tests {
         for &s in &spools {
             spool_map[s as usize] = 0;
         }
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch,
             committee: vec![CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000))],
             spools: SpoolAssignment::new(spool_map),
@@ -689,7 +689,7 @@ mod tests {
         for &s in &spools {
             spool_map[s as usize] = 0;
         }
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch,
             committee: vec![CommitteeMember::new(NodeId(999), Coin::<TAPE>::new(1000))],
             spools: SpoolAssignment::new(spool_map),

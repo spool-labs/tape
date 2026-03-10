@@ -87,9 +87,13 @@ impl SimnetScenario<'_> {
         trace!(index, "running manual refresh_node_state");
 
         let ctx = node.context();
-        ctx.peer_manager.refresh(&ctx.rpc)
+        let state = tape_protocol::fetch::fetch_state(&ctx.rpc)
             .await
-            .map_err(|e| anyhow::anyhow!("refresh peer_manager: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("fetch protocol state: {e}"))?;
+        ctx.set_state(state);
+        ctx.peer_manager.resolve_peers(&ctx.rpc)
+            .await
+            .map_err(|e| anyhow::anyhow!("resolve peers: {e}"))?;
         trace!(index, "manual refresh_node_state complete");
         Ok(())
     }

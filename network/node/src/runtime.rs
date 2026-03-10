@@ -5,6 +5,7 @@
 //! scheduler. The scheduler diffs desired vs running tasks and sends actions
 //! to the task_runner. Channel backpressure ensures no component outpaces another.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use rpc::Rpc;
@@ -21,10 +22,9 @@ use crate::core::NodeContext;
 use crate::fsm::{Fsm, StateChange, UserEvent};
 use crate::http::HttpServer;
 use crate::ingestor::{BlockIngestor, IngestedBlock};
-use crate::scheduler::SpoolPlanner;
-use crate::TaskResult;
 use crate::task_scheduler::{Action, TaskScheduler};
 use crate::task_runner::TaskRunner;
+use crate::TaskResult;
 
 const INGESTOR_CHANNEL_CAPACITY: usize = 4;
 const STATE_CHANGE_CHANNEL_CAPACITY: usize = 16;
@@ -41,27 +41,31 @@ pub struct RuntimeHandles {
     pub http: JoinHandle<()>,
 }
 
+/// Handles for the ingestor + FSM pair, plus channels to wire into
+/// the scheduler and HTTP layers.
+pub struct FsmBootstrap {
+    pub change_rx: mpsc::Receiver<Vec<StateChange>>,
+    pub user_event_tx: mpsc::Sender<UserEvent>,
+    pub ingestor: JoinHandle<()>,
+    pub fsm: JoinHandle<()>,
+}
+
 /// Spawn the runtime component channels.
 ///
 /// Creates bounded channels between the ingestor and FSM, spawning both as
 /// tokio tasks. Returns a receiver for state changes and the task handles.
-pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+pub fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
-) -> (
-    mpsc::Receiver<Vec<StateChange>>,
-    mpsc::Sender<UserEvent>,
-    JoinHandle<()>,
-    JoinHandle<()>,
-) {
+) -> FsmBootstrap {
     let channels = build_channels();
-    let ingestor_handle = spawn_ingestor(
+    let ingestor = spawn_ingestor(
         ctx.clone(),
         cancel.clone(),
         channels.block_tx
     );
 
-    let fsm_handle = spawn_fsm(
+    let fsm = spawn_fsm(
         ctx,
         cancel,
         channels.block_rx,
@@ -69,12 +73,12 @@ pub async fn spawn_runtime_channels<Db: Store + 'static, Cluster: Api + 'static,
         channels.change_tx,
     );
 
-    (
-        channels.change_rx,
-        channels.user_event_tx,
-        ingestor_handle,
-        fsm_handle,
-    )
+    FsmBootstrap {
+        change_rx: channels.change_rx,
+        user_event_tx: channels.user_event_tx,
+        ingestor,
+        fsm,
+    }
 }
 
 /// Spawn the full runtime: ingestor, FSM, scheduler, and task_runner.
@@ -87,12 +91,18 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     // One-time fetch of current on-chain state
-    if let Err(e) = ctx.peer_manager.bootstrap(&ctx.rpc).await {
-        tracing::warn!(error = %e, "peer manager bootstrap failed, starting with defaults");
+    match tape_protocol::fetch::fetch_state(&ctx.rpc).await {
+        Ok(state) => {
+            ctx.set_state(state);
+            if let Err(e) = ctx.peer_manager.resolve_peers(&ctx.rpc).await {
+                tracing::warn!(error = %e, "peer resolve failed during bootstrap");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "bootstrap state fetch failed, starting with defaults"),
     }
 
-    let (change_rx, user_event_tx, ingestor_handle, fsm_handle) =
-        spawn_runtime_channels(ctx.clone(), cancel.clone()).await;
+    let FsmBootstrap { change_rx, user_event_tx, ingestor: ingestor_handle, fsm: fsm_handle } =
+        spawn_runtime_channels(ctx.clone(), cancel.clone());
 
     let (action_tx, action_rx) = mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
     let (result_tx, result_rx) = mpsc::channel::<TaskResult>(RESULT_CHANNEL_CAPACITY);
@@ -136,10 +146,6 @@ struct RuntimeChannels {
     user_event_rx: mpsc::Receiver<UserEvent>,
 }
 
-enum LoopControl {
-    Continue,
-    Break,
-}
 
 fn build_channels() -> RuntimeChannels {
     let (block_tx, block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
@@ -262,7 +268,7 @@ async fn run_fsm_loop<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
         tokio::select! {
             maybe_block = block_rx.recv() => {
                 let Some(block) = maybe_block else { break };
-                if let LoopControl::Break = handle_block(
+                if let ControlFlow::Break(()) = handle_block(
                     &mut fsm, &ctx, block, &change_tx, &cancel,
                 ).await {
                     break;
@@ -285,13 +291,13 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
     block: IngestedBlock,
     change_tx: &mpsc::Sender<Vec<StateChange>>,
     cancel: &CancellationToken,
-) -> LoopControl {
+) -> ControlFlow<()> {
     match fsm.apply(&block) {
         Ok(mut changes) => {
             ctx.stats.inc_blocks();
 
             if changes.is_empty() {
-                return LoopControl::Continue;
+                return ControlFlow::Continue(());
             }
 
             for change in &changes {
@@ -303,62 +309,57 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
             let has_epoch = changes.iter().any(|c| matches!(c, StateChange::EpochAdvanced { .. }));
             if has_epoch {
-                if refresh_chain_state(ctx, cancel).await.is_err() {
-                    return LoopControl::Break;
+                if fetch_solana_state(ctx, cancel).await.is_err() {
+                    return ControlFlow::Break(());
                 }
 
                 let protocol_state = ctx.state();
-                SpoolPlanner::cleanup_locked(&*ctx.store, protocol_state.epoch);
                 let my_spools = ctx.my_spools();
-
-                if SpoolPlanner::reconcile_ownership(
-                    &*ctx.store,
-                    &my_spools,
-                    protocol_state.epoch,
-                    ctx.node_id(),
-                    &protocol_state.spools_prev,
-                    &protocol_state.committee_prev,
-                ) {
-                    changes.push(StateChange::SpoolAssignmentChanged);
-                }
+                crate::epoch_transition::apply(&*ctx.store, &my_spools, &protocol_state, ctx.node_id(), &mut changes);
             }
 
             if change_tx.send(changes).await.is_err() {
-                return LoopControl::Break;
+                return ControlFlow::Break(());
             }
         }
         Err(e) => tracing::error!("FSM error: {e}"),
     }
-    LoopControl::Continue
+    ControlFlow::Continue(())
 }
 
 /// Fetch protocol state from RPC inline, blocking the FSM loop until complete.
 ///
 /// Retries with exponential backoff (500ms → 30s cap) until success or
 /// cancellation. Returns `Ok(())` on success, `Err(())` on cancellation.
-async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn fetch_solana_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
-    match tape_retry::retry(
-        RetryConfig::infinite(), 
-        Some(cancel), || { ctx.peer_manager.refresh(&ctx.rpc) }
+    let state = match tape_retry::retry(
+        RetryConfig::infinite(),
+        Some(cancel),
+        || tape_protocol::fetch::fetch_state(&ctx.rpc),
     ).await {
-        Ok(()) => {
-            let protocol_state = ctx.state();
-            tracing::info!(
-                epoch = protocol_state.epoch.0,
-                phase = ?protocol_state.phase,
-                committee_size = protocol_state.committee.len(),
-                "protocol state: updated from RPC"
-            );
-            Ok(())
-        }
+        Ok(s) => s,
         Err(_) => {
             tracing::debug!("protocol state fetch cancelled");
-            Err(())
+            return Err(());
         }
+    };
+
+    tracing::info!(
+        epoch = state.epoch.0,
+        phase = ?state.phase,
+        committee_size = state.committee.len(),
+        "protocol state: updated from RPC"
+    );
+    ctx.set_state(state);
+
+    if let Err(e) = ctx.peer_manager.resolve_peers(&ctx.rpc).await {
+        tracing::warn!(error = %e, "peer resolve failed after state update");
     }
+
+    Ok(())
 }
 
 
@@ -406,7 +407,7 @@ mod tests {
         let fsm_handle = spawn_test_fsm(ctx.clone(), block_rx, change_tx, cancel.clone()).await;
 
         // Send a block that produces a StateChange (RegisterNode avoids
-        // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
+        // the fetch_solana_state retry loop that AdvanceEpoch would trigger)
         let node_pk = Pubkey::new_unique();
             let block1 = IngestedBlock {
                 slot: SlotNumber(10),
@@ -455,9 +456,8 @@ mod tests {
 
         // We use spawn_runtime_channels + manual wiring since LiteSvmRpc
         // doesn't produce real blocks with Tapedrive instructions.
-        let (change_rx, _user_event_tx, _ingestor_handle, _fsm_handle) =
-            spawn_runtime_channels(ctx.clone(), cancel.clone())
-                .await;
+        let FsmBootstrap { change_rx, user_event_tx: _user_event_tx, ingestor: _ingestor_handle, fsm: _fsm_handle } =
+            spawn_runtime_channels(ctx.clone(), cancel.clone());
 
         let (action_tx, action_rx) =
         mpsc::channel::<Action>(ACTION_CHANNEL_CAPACITY);
@@ -498,7 +498,7 @@ mod tests {
             ..Default::default()
         };
         state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
-        ctx.store_state(state);
+        ctx.set_state(state);
 
         let (block_tx, _block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 
@@ -541,7 +541,7 @@ mod tests {
         drop(change_rx);
 
         // Send a block that produces a StateChange (RegisterNode avoids
-        // the refresh_chain_state retry loop that AdvanceEpoch would trigger)
+        // the fetch_solana_state retry loop that AdvanceEpoch would trigger)
         let node_pk = Pubkey::new_unique();
             let block = IngestedBlock {
                 slot: SlotNumber(10),

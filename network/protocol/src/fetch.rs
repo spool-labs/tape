@@ -3,7 +3,8 @@
 use rpc::{Rpc, RpcError};
 use rpc_client::RpcClient;
 use tape_core::system::EpochPhase;
-use tape_protocol::ProtocolState;
+
+use crate::ProtocolState;
 
 /// Fetch current protocol state from on-chain accounts.
 ///

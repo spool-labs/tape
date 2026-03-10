@@ -8856,6 +8856,8 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytemuck",
+ "rpc",
+ "rpc-client",
  "serde",
  "tape-core",
  "tape-crypto",

@@ -1,4 +1,3 @@
-mod fetch;
 mod manager;
 mod node;
 

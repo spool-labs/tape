@@ -13,7 +13,6 @@ use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
 use tape_protocol::{ProtocolState, SharedState};
 
-use crate::fetch::fetch_state;
 use crate::PeerNode;
 
 #[derive(Debug, Clone)]
@@ -48,10 +47,6 @@ impl PeerManager {
             state,
             status: DashMap::new(),
         }
-    }
-
-    fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
-        self.state.load()
     }
 
     fn committee_ids(state: &ProtocolState) -> Vec<NodeId> {
@@ -99,21 +94,15 @@ impl PeerManager {
         Ok(peers)
     }
 
-    /// Cold start: fetch protocol state and resolve all committee members.
-    pub async fn bootstrap<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
-        let state = fetch_state(rpc).await?;
+    /// Resolve all committee peers from the current shared state.
+    ///
+    /// Reads state from `SharedState` (caller must update it first),
+    /// resolves network addresses for all committee members, and stores
+    /// the peer map.
+    pub async fn resolve_peers<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
+        let state = self.state.load();
         let peers = self.resolve_peer_map(rpc, &state).await?;
         self.peers.store(Arc::new(peers));
-        self.state.store(Arc::new(state));
-        Ok(())
-    }
-
-    /// Incremental update: fetch new state and atomically rebuild committee peers.
-    pub async fn refresh<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
-        let state = fetch_state(rpc).await?;
-        let peers = self.resolve_peer_map(rpc, &state).await?;
-        self.peers.store(Arc::new(peers));
-        self.state.store(Arc::new(state));
         Ok(())
     }
 

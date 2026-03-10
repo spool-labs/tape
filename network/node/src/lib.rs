@@ -11,6 +11,7 @@
 //! - **`http`**: Axum-based HTTP server for node-to-node and public APIs
 
 pub mod core;
+pub mod epoch_transition;
 pub mod task;
 pub mod chain;
 pub mod fsm;

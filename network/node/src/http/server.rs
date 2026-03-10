@@ -279,7 +279,7 @@ mod tests {
         ctx.store
             .put_track(track_address, track_info.clone())
             .unwrap();
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(1),
             ..Default::default()
         });
@@ -754,7 +754,7 @@ mod tests {
         member.key = signer_pk;
         let mut spool_map = [255u8; SPOOL_COUNT];
         spool_map[0] = 0;
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(epoch),
             committee: vec![member],
             spools: SpoolAssignment::new(spool_map),
@@ -812,7 +812,7 @@ mod tests {
         member.key = BlsPubkey::new_unique();
         let mut spool_map = [255u8; SPOOL_COUNT];
         spool_map[0] = 0;
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(epoch),
             committee: vec![member],
             spools: SpoolAssignment::new(spool_map),

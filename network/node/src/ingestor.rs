@@ -277,7 +277,7 @@ mod tests {
             ..Default::default()
         };
         state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
-        ctx.store_state(state);
+        ctx.set_state(state);
 
         let (tx, _rx) = mpsc::channel(4);
 
@@ -308,7 +308,7 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Standby with no cursor → no bootstrap needed, start from 0
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(0),
             ..Default::default()
         });

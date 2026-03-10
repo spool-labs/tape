@@ -133,7 +133,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     /// Replace the protocol state atomically.
-    pub fn store_state(&self, s: ProtocolState) {
+    pub fn set_state(&self, s: ProtocolState) {
         self.shared_state.store(Arc::new(s));
     }
 
@@ -280,7 +280,7 @@ mod tests {
             node_id,
             Coin::<TAPE>::new(1000),
         ));
-        context.store_state(state);
+        context.set_state(state);
 
         assert_eq!(context.node_status(), NodeStatus::Active);
         assert!(context.my_spools().is_empty());

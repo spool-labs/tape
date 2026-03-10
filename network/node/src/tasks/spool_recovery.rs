@@ -483,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_empty_queue() {
         let ctx = test_context();
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(2),
             ..Default::default()
         });
@@ -498,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_partial_failure() {
         let ctx = test_context();
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(2),
             ..Default::default()
         });
@@ -529,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_gate_on_scan() {
         let ctx = test_context();
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(2),
             ..Default::default()
         });
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn recovery_promotes_active() {
         let ctx = test_context();
-        ctx.store_state(ProtocolState {
+        ctx.set_state(ProtocolState {
             epoch: EpochNumber(2),
             ..Default::default()
         });
