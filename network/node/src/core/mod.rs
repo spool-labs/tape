@@ -1,16 +1,21 @@
 //! Core module — shared utilities and runtime primitives for the storage node.
 //!
 //! This module centralizes code that is used across multiple components:
+//! - `bootstrap`: Config-derived startup I/O helpers
 //! - `config`: Node/runtime configuration structs and helpers
 //! - `context`: Shared node context and builder
 //! - `peer_call`: Shared peer retry/report helper
 //! - `stats`: Runtime statistics counters
 
+mod bootstrap;
 mod config;
 mod context;
 mod peer_call;
 mod stats;
 
+pub use bootstrap::{
+    BootstrapError, load_bls_keypair_from_config, load_node_keypair, open_primary_store,
+};
 pub use config::{
     ConfigError, IngressLimitsConfig, NodeApiConfig, NodeConfig, RecoveryConfig, TlsConfig,
     TransportSecurityConfig, default_config_path,

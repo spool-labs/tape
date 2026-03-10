@@ -5,11 +5,13 @@ use clap::Parser;
 use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_solana::RpcConfig;
-use tape_node::core::{NodeConfig, NodeContextBuilder, default_config_path};
+use tape_node::core::{
+    NodeConfig, NodeContextBuilder, default_config_path, load_bls_keypair_from_config,
+    load_node_keypair, open_primary_store,
+};
 use tape_node::runtime::spawn_runtime;
 use peer_manager::PeerManager;
 use tape_protocol::{ProtocolState, new_shared_state};
-use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
@@ -49,16 +51,13 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to load config from {}", cli.config))?;
 
     // Load Solana keypair
-    let keypair_path = &config.node_keypair;
-    let keypair = solana_sdk::signature::read_keypair_file(keypair_path)
-        .map_err(|e| anyhow::anyhow!("failed to read keypair from {keypair_path}: {e}"))?;
+    let keypair = load_node_keypair(&config).context("load node keypair")?;
+    let bls_keypair = load_bls_keypair_from_config(&config).context("load BLS keypair")?;
     tracing::info!(name = %config.name, "starting node");
 
     // Open RocksDB
-    let db_path = std::path::PathBuf::from(&config.storage_path);
-    tracing::info!(path = %db_path.display(), "opening database");
-    let store = TapeStore::open_primary(&db_path)
-        .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+    tracing::info!(path = %config.storage_path, "opening database");
+    let store = open_primary_store(&config).context("open primary store")?;
 
     // Initialize store metrics (registers tape_store_* families with prometheus)
     store::init_metrics();
@@ -85,6 +84,7 @@ async fn main() -> Result<()> {
     let context = NodeContextBuilder::new(
         config,
         keypair,
+        bls_keypair,
         store,
         rpc,
         shared_state,

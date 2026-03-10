@@ -17,7 +17,6 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
-use tape_sdk::load_bls_keypair;
 use tape_protocol::{Api, ProtocolState, SharedState};
 use peer_manager::PeerManager;
 use tape_store::ops::MetaOps;
@@ -30,9 +29,6 @@ use super::stats::RuntimeStats;
 /// Error type for context initialization.
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
-    #[error("failed to load BLS keypair: {0}")]
-    BlsKeypair(String),
-
     #[error("failed to initialize RPC client: {0}")]
     RpcClient(String),
 
@@ -176,6 +172,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
+    bls_keypair: BlsPrivateKey,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
     shared_state: SharedState,
@@ -187,6 +184,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
     pub fn new(
         config: NodeConfig,
         keypair: Keypair,
+        bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
         shared_state: SharedState,
@@ -196,17 +194,13 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         Self {
             config,
             keypair,
+            bls_keypair,
             store,
             rpc,
             shared_state,
             peer_manager,
             api,
         }
-    }
-
-    fn load_bls_keypair(config: &NodeConfig) -> Result<BlsPrivateKey, ContextError> {
-        let path = &config.bls_keypair;
-        load_bls_keypair(path).map_err(|e| ContextError::BlsKeypair(format!("{}: {e}", path.display())))
     }
 
     async fn resolve_node_id(
@@ -226,12 +220,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         self.store
             .set_node_id(node_id)
             .map_err(|e| ContextError::Storage(format!("set_node_id: {e}")))?;
-        let bls_keypair = Self::load_bls_keypair(&self.config)?;
 
         Ok(NodeContext::from_parts(
             self.config,
             self.keypair,
-            bls_keypair,
+            self.bls_keypair,
             self.store,
             self.rpc,
             self.shared_state,
