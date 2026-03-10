@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use rpc::Rpc;
+use rpc::{Rpc, RpcError};
 use tape_protocol::Api;
-use rpc_client::RpcError;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::signature::{Signature, Signer};
 use store::Store;

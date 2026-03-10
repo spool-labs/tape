@@ -11,7 +11,8 @@ use std::path::Path;
 use solana_sdk::signature::Keypair;
 use thiserror::Error;
 
-use rpc_client::{RpcConfig, RpcClient, SolanaRpc};
+use rpc_client::RpcClient;
+use rpc_solana::{RpcConfig, SolanaRpc};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::Committee;

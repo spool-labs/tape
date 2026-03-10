@@ -4,9 +4,10 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::types::StorageUnits;
 use tape_protocol::ApiError;
 use thiserror::Error;
+use rpc::RpcError;
 
 use crate::transfer::certify::CertificationError;
-use tape_protocol::peer::PeerManagerError;
+use peer_manager::PeerManagerError;
 
 /// Errors that can occur during client operations.
 #[derive(Debug, Error)]
@@ -90,7 +91,7 @@ pub enum DownloadError {
 #[derive(Debug, Error)]
 pub enum TapedriveError {
     #[error("RPC error: {0}")]
-    Rpc(#[from] rpc_client::RpcError),
+    Rpc(#[from] RpcError),
 
     #[error("upload failed: {0}")]
     Upload(#[from] UploadError),

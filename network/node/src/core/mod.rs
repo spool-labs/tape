@@ -36,7 +36,7 @@ pub mod test_utils {
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
-    use tape_protocol::peer::PeerManager;
+    use peer_manager::PeerManager;
     use tape_store::{MemoryStore, TapeStore};
 
     use super::{NodeApiConfig, NodeConfig, NodeContext, RecoveryConfig, TlsConfig};

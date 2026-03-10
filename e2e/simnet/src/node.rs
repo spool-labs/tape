@@ -16,7 +16,7 @@ use tape_node::core::{
     NodeApiConfig, NodeConfig, NodeContext, NodeContextBuilder, RecoveryConfig, TlsConfig,
 };
 use tape_node::runtime::{spawn_runtime, RuntimeHandles};
-use tape_protocol::peer::PeerManager;
+use peer_manager::PeerManager;
 use tape_store::{MemoryStore, TapeStore};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;

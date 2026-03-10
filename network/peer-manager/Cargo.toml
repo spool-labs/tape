@@ -1,0 +1,19 @@
+[package]
+name = "peer-manager"
+version.workspace = true
+edition.workspace = true
+description = "Peer lifecycle, health tracking, and routing"
+
+[dependencies]
+tape-protocol = { workspace = true }
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+rpc.workspace = true
+rpc-client.workspace = true
+arc-swap.workspace = true
+dashmap = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+bytemuck.workspace = true
+tokio.workspace = true

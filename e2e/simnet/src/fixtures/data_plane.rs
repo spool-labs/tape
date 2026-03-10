@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
+use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
-use tape_sdk::{HttpApi, TapeKey, Tapedrive};
+use tape_sdk::{TapeKey, Tapedrive};
 use tape_store::ops::{SliceOps, SpoolOps};
 
 use crate::scenario::SimnetScenario;

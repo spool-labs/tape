@@ -1,0 +1,20 @@
+[package]
+name = "tape-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tape-core = { workspace = true, features = ["wincode"] }
+tape-crypto = { workspace = true, features = ["wincode"] }
+tape-retry.workspace = true
+arc-swap.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+wincode.workspace = true
+wincode-derive.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+bytemuck.workspace = true
+tokio.workspace = true

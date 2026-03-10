@@ -4,7 +4,7 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signer;
 
-use rpc_client::Rpc;
+use rpc::Rpc;
 use tape_api::compute::{
     ADVANCE_POOL_CU, REQUEST_STAKE_UNLOCK_CU, STAKE_WITH_POOL_CU, UNSTAKE_FROM_POOL_CU,
 };
@@ -36,22 +36,25 @@ impl<Blockchain: Rpc, Cluster: Api>
     ) -> Result<(), TapedriveError> {
 
         let mut ixs = vec![
-            ComputeBudgetInstruction::set_compute_unit_limit(
-                STAKE_WITH_POOL_CU),
+            ComputeBudgetInstruction::set_compute_unit_limit(STAKE_WITH_POOL_CU),
+        ];
 
+        ixs.extend(
             build_authority_with_tokens_ix(
                 self.payer.pubkey(),
                 stake_key.pubkey(),
                 amount,
             ),
+        );
 
+        ixs.push(
             build_stake_with_pool_ix(
                 self.payer.pubkey(),
                 stake_key.pubkey(),
                 pool,
                 amount,
-            )
-        ];
+            ),
+        );
 
         self.rpc()
             .send_instructions_with_signers(

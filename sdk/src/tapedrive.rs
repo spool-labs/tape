@@ -7,7 +7,8 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
 
-use rpc_client::{parse_tape_error, Rpc, RpcClient, RpcError};
+use rpc::{Rpc, RpcError};
+use rpc_client::{parse_tape_error, RpcClient};
 use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
 use tape_api::helpers::build_authority_with_tokens_ix;
@@ -26,7 +27,7 @@ use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
 use peer_http::HttpApi;
 use tape_protocol::Api;
-use tape_protocol::peer::PeerManager;
+use peer_manager::PeerManager;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
 use crate::codec::decoder::BlobDecoder;
@@ -647,7 +648,7 @@ mod tests {
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_crypto::hash;
-    use tape_protocol::peer::PeerManager;
+    use peer_manager::PeerManager;
 
     fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryApi>) {
         let rpc = LiteSvmRpc::new();

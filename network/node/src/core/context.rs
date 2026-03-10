@@ -17,7 +17,7 @@ use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
 use tape_core::spooler::SpoolIndex;
 use tape_protocol::Api;
-use tape_protocol::peer::PeerManager;
+use peer_manager::PeerManager;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 use tape_store::TapeStore;

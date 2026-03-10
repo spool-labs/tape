@@ -1,33 +1,34 @@
 [workspace]
 resolver = "2"
 members = [
-  "api",
-  "core",
-  "crypto",
-  "solana",
-  "blocks",
-  "programs/exchange",
-  "programs/staking",
-  "programs/tapedrive",
-  "programs/token",
-  "slicer",
-  "spooler",
+  "solana/api",
+  "lib/core",
+  "lib/crypto",
+  "solana/framework",
+  "lib/blocks",
+  "solana/programs/exchange",
+  "solana/programs/staking",
+  "solana/programs/tapedrive",
+  "solana/programs/token",
+  "lib/slicer",
+  "lib/spooler",
   "sdk",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
   "store/tape-store",
-  "rpc/rpc",
-  "rpc/rpc-solana",
-  "rpc/rpc-client",
-  "rpc/rpc-litesvm",
-  "metrics",
+  "solana/rpc",
+  "solana/rpc-solana",
+  "solana/rpc-client",
+  "solana/rpc-litesvm",
+  "lib/metrics",
   "network/node",
-  "peer/peer-memory",
-  "peer/peer-http",
-  "peer/peer-tls",
-  "protocol",
-  "retry",
+  "network/peer-manager",
+  "network/peer-memory",
+  "network/peer-http",
+  "network/peer-tls",
+  "network/protocol",
+  "lib/retry",
   "e2e/simnet",
   "e2e/fuzznet",
 ]
@@ -37,24 +38,25 @@ members = [
 # - e2e: validator-backed end-to-end tests (disabled by default)
 # - sdk, rpc/*: not yet created
 default-members = [
-  "api",
-  "core",
-  "crypto",
-  "solana",
-  "blocks",
-  "slicer",
-  "spooler",
+  "solana/api",
+  "lib/core",
+  "lib/crypto",
+  "solana/framework",
+  "lib/blocks",
+  "lib/slicer",
+  "lib/spooler",
   "store/store",
   "store/store-memory",
   "store/store-rocks",
   "store/tape-store",
-  "metrics",
+  "lib/metrics",
   "network/node",
-  "peer/peer-memory",
-  "peer/peer-http",
-  "peer/peer-tls",
-  "protocol",
-  "retry",
+  "network/peer-manager",
+  "network/peer-memory",
+  "network/peer-http",
+  "network/peer-tls",
+  "network/protocol",
+  "lib/retry",
 ]
 
 [workspace.package]
@@ -68,32 +70,33 @@ readme = "./README.md"
 keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
-tape-api = { version = "0.3.0", path = "./api" }
-tape-blocks = { version = "0.3.0", path = "./blocks" }
-tape-core = { version = "0.3.0", path = "./core" }
-tape-crypto = { version = "0.3.0", path = "./crypto" }
-tape-solana = { version = "0.3.0", path = "./solana" }
+tape-api = { version = "0.3.0", path = "./solana/api" }
+tape-blocks = { version = "0.3.0", path = "./lib/blocks" }
+tape-core = { version = "0.3.0", path = "./lib/core" }
+tape-crypto = { version = "0.3.0", path = "./lib/crypto" }
+tape-solana = { version = "0.3.0", path = "./solana/framework" }
 
-rpc = { version = "0.3.0", path = "./rpc/rpc" }
-rpc-solana = { version = "0.3.0", path = "./rpc/rpc-solana" }
-rpc-client = { version = "0.3.0", path = "./rpc/rpc-client" }
-rpc-litesvm = { version = "0.1.0", path = "./rpc/rpc-litesvm" }
+rpc = { version = "0.3.0", path = "./solana/rpc" }
+rpc-solana = { version = "0.3.0", path = "./solana/rpc-solana" }
+rpc-client = { version = "0.3.0", path = "./solana/rpc-client" }
+rpc-litesvm = { version = "0.1.0", path = "./solana/rpc-litesvm" }
 
 tape-store = { version = "0.3.0", path = "./store/tape-store" }
-tape-slicer = { version = "0.3.0", path = "./slicer" }
-tape-spooler = { version = "0.3.0", path = "./spooler" }
+tape-slicer = { version = "0.3.0", path = "./lib/slicer" }
+tape-spooler = { version = "0.3.0", path = "./lib/spooler" }
 store = { version = "0.3.0", path = "./store/store" }
 store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
 tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
-tape-metrics = { version = "0.3.0", path = "./metrics" }
+tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
 tape-node = { version = "0.3.0", path = "./network/node" }
-peer-memory = { version = "0.3.0", path = "./peer/peer-memory" }
-peer-http = { version = "0.3.0", path = "./peer/peer-http" }
-peer-tls = { version = "0.3.0", path = "./peer/peer-tls" }
-tape-protocol = { version = "0.3.0", path = "./protocol" }
-tape-retry = { version = "0.3.0", path = "./retry" }
+peer-manager = { version = "0.3.0", path = "./network/peer-manager" }
+peer-memory = { version = "0.3.0", path = "./network/peer-memory" }
+peer-http = { version = "0.3.0", path = "./network/peer-http" }
+peer-tls = { version = "0.3.0", path = "./network/peer-tls" }
+tape-protocol = { version = "0.3.0", path = "./network/protocol" }
+tape-retry = { version = "0.3.0", path = "./lib/retry" }
 dashmap = "6"
 ratatui = "0.29"
 crossterm = "0.28"

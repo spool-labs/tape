@@ -847,7 +847,7 @@ mod tests {
     async fn body_limit() {
         let mut config = test_config();
         config.node_api.ingress_limits.slice_body_max = 10;
-        use tape_protocol::peer::PeerManager;
+        use peer_manager::PeerManager;
         let peer_manager = std::sync::Arc::new(PeerManager::new());
         let api = std::sync::Arc::new(MemoryApi::noop());
         let ctx = NodeContext::new(

@@ -14,15 +14,18 @@ metrics = ["tape-metrics/metrics"]
 
 [dependencies]
 # Internal crates
-tape-api = { path = "../api" }
+tape-api = { path = "../solana/api" }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-protocol = { workspace = true }
+peer-manager = { workspace = true }
 tape-retry = { workspace = true }
-peer-http = { path = "../peer/peer-http" }
-rpc-client = { path = "../rpc/rpc-client" }
+peer-http = { path = "../network/peer-http" }
+rpc.workspace = true
+rpc-solana.workspace = true
+rpc-client = { path = "../solana/rpc-client" }
 
 # Logging
 tracing = "0.1"
@@ -58,8 +61,8 @@ tape-node = { path = "../network/node" }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 store-memory = { path = "../store/store-memory" }
-rpc-litesvm = { path = "../rpc/rpc-litesvm" }
-peer-memory = { path = "../peer/peer-memory" }
+rpc-litesvm = { path = "../solana/rpc-litesvm" }
+peer-memory = { path = "../network/peer-memory" }
 axum = { workspace = true }
 serial_test = "3.1"
 bytemuck = { workspace = true }

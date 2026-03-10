@@ -3967,6 +3967,7 @@ name = "peer-http"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "peer-manager",
  "peer-tls",
  "prometheus",
  "reqwest",
@@ -3975,6 +3976,22 @@ dependencies = [
  "tape-protocol",
  "tape-store",
  "wincode 0.1.2",
+]
+
+[[package]]
+name = "peer-manager"
+version = "0.3.0"
+dependencies = [
+ "arc-swap",
+ "bytemuck",
+ "dashmap 6.1.0",
+ "rpc",
+ "rpc-client",
+ "tape-core",
+ "tape-crypto",
+ "tape-protocol",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -4712,6 +4729,7 @@ dependencies = [
  "solana-client",
  "solana-sdk",
  "solana-transaction-status",
+ "tape-api",
  "tape-blocks",
  "tokio",
 ]
@@ -8657,6 +8675,7 @@ dependencies = [
  "spl-associated-token-account",
  "spl-token 4.0.2",
  "tape-core",
+ "tape-crypto",
  "tape-solana",
  "thiserror 2.0.18",
 ]
@@ -8750,6 +8769,8 @@ name = "tape-e2e-simnet"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "peer-http",
+ "peer-manager",
  "peer-memory",
  "rand 0.8.5",
  "rcgen",
@@ -8792,6 +8813,7 @@ dependencies = [
  "clap",
  "dirs 5.0.1",
  "peer-http",
+ "peer-manager",
  "peer-memory",
  "prometheus",
  "rand 0.8.5",
@@ -8832,11 +8854,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytemuck",
- "dashmap 6.1.0",
- "rpc",
- "rpc-client",
  "serde",
- "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-retry",
@@ -8866,10 +8884,13 @@ dependencies = [
  "futures",
  "hex",
  "peer-http",
+ "peer-manager",
  "peer-memory",
  "rand 0.8.5",
+ "rpc",
  "rpc-client",
  "rpc-litesvm",
+ "rpc-solana",
  "serde",
  "serde_json",
  "serial_test",

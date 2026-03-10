@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rpc::Rpc;
+use rpc::RpcError;
 use tape_protocol::Api;
-use rpc_client::RpcError;
 use store::Store;
 use tape_api::errors::is_account_state_pending_error;
 use tape_core::encoding::ClayParams;

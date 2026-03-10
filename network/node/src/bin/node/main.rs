@@ -8,7 +8,7 @@ use rpc_solana::RpcConfig;
 use tape_node::core::NodeConfig;
 use tape_node::core::NodeContextBuilder;
 use tape_node::runtime::spawn_runtime;
-use tape_protocol::peer::PeerManager;
+use peer_manager::PeerManager;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
