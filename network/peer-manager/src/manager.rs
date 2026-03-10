@@ -11,7 +11,7 @@ use rpc_client::RpcClient;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_protocol::{ProtocolState, StateHandle};
+use tape_protocol::{ProtocolState, SharedState};
 
 use crate::fetch::fetch_state;
 use crate::PeerNode;
@@ -37,33 +37,21 @@ pub enum PeerManagerError {
 
 pub struct PeerManager {
     peers: ArcSwap<HashMap<NodeId, PeerNode>>,
-    state: StateHandle,
+    state: SharedState,
     status: DashMap<NodeId, PeerStatus>,
 }
 
 impl PeerManager {
-    pub fn new() -> Self {
+    pub fn new(state: SharedState) -> Self {
         Self {
             peers: ArcSwap::from_pointee(HashMap::new()),
-            state: StateHandle::new(ProtocolState::default()),
+            state,
             status: DashMap::new(),
         }
     }
 
-    pub fn with_state(state: ProtocolState) -> Self {
-        Self {
-            peers: ArcSwap::from_pointee(HashMap::new()),
-            state: StateHandle::new(state),
-            status: DashMap::new(),
-        }
-    }
-
-    pub fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
+    fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
         self.state.load()
-    }
-
-    pub fn state_handle(&self) -> &StateHandle {
-        &self.state
     }
 
     fn committee_ids(state: &ProtocolState) -> Vec<NodeId> {
@@ -116,7 +104,7 @@ impl PeerManager {
         let state = fetch_state(rpc).await?;
         let peers = self.resolve_peer_map(rpc, &state).await?;
         self.peers.store(Arc::new(peers));
-        self.state.store(state);
+        self.state.store(Arc::new(state));
         Ok(())
     }
 
@@ -125,7 +113,7 @@ impl PeerManager {
         let state = fetch_state(rpc).await?;
         let peers = self.resolve_peer_map(rpc, &state).await?;
         self.peers.store(Arc::new(peers));
-        self.state.store(state);
+        self.state.store(Arc::new(state));
         Ok(())
     }
 
@@ -256,6 +244,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_core::bls::BlsPubkey;
     use tape_crypto::Pubkey;
+    use tape_protocol::new_shared_state;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
         PeerNode {
@@ -270,7 +259,7 @@ mod tests {
 
     #[test]
     fn add_and_resolve() {
-        let pm = PeerManager::new();
+        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
         assert!(pm.resolve(NodeId(1)).is_none());
 
         pm.add_peer(make_peer(1, 8001));
@@ -279,7 +268,7 @@ mod tests {
 
     #[test]
     fn add_overwrites() {
-        let pm = PeerManager::new();
+        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
         pm.add_peer(make_peer(1, 8001));
         pm.add_peer(make_peer(1, 9001));
         let addr = pm.resolve(NodeId(1)).unwrap();
@@ -291,7 +280,7 @@ mod tests {
 
     #[test]
     fn contains_and_get() {
-        let pm = PeerManager::new();
+        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
         pm.add_peer(make_peer(5, 8005));
         assert!(pm.contains(NodeId(5)));
         assert!(!pm.contains(NodeId(6)));

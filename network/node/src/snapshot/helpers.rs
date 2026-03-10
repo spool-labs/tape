@@ -81,7 +81,7 @@ pub fn load_snapshot_task_context<Db: Store, Cluster: Api, Blockchain: Rpc>(
     need: SnapshotNeed,
     with_member: bool,
 ) -> Result<SnapshotTaskContext, TaskOutcome> {
-    let protocol_state = context.peer_manager.state();
+    let protocol_state = context.state();
     let current_chain_epoch = protocol_state.epoch;
     if current_chain_epoch.is_zero() {
         return Err(TaskOutcome::Retryable("no current epoch".into()));

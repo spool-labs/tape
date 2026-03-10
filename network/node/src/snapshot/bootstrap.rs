@@ -77,7 +77,7 @@ pub async fn run_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return missing_state("snapshot bootstrap committee not available");
     }
 
-    let protocol_state = context.peer_manager.state();
+    let protocol_state = context.state();
 
     let commitments = match fetch_commitments(
         &context,

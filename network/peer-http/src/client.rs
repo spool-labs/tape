@@ -111,6 +111,7 @@ mod tests {
 
     use tape_core::bls::BlsPubkey;
     use tape_crypto::Pubkey;
+    use tape_protocol::{ProtocolState, new_shared_state};
     use peer_manager::PeerNode;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
@@ -126,7 +127,7 @@ mod tests {
 
     #[test]
     fn resolves_peers_added_after_api_construction() {
-        let peer_manager = Arc::new(PeerManager::new());
+        let peer_manager = Arc::new(PeerManager::new(new_shared_state(ProtocolState::default())));
         let api = HttpApi::new(reqwest::Client::new(), peer_manager.clone());
         let node_id = NodeId(7);
 

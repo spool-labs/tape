@@ -203,7 +203,7 @@ pub async fn run_build<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 epoch: local_epoch,
             };
 
-            let protocol_state = context.peer_manager.state();
+            let protocol_state = context.state();
             if let Err(err) = broadcast_snapshot_signature(
                 &context,
                 &protocol_state,

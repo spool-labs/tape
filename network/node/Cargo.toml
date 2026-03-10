@@ -13,6 +13,7 @@ path = "src/bin/node/main.rs"
 tape-api = { workspace = true, features = ["wincode"] }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
+tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 tape-blocks = { workspace = true }
 tape-slicer = { workspace = true }

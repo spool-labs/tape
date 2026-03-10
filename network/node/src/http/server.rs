@@ -279,7 +279,7 @@ mod tests {
         ctx.store
             .put_track(track_address, track_info.clone())
             .unwrap();
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch: EpochNumber(1),
             ..Default::default()
         });
@@ -754,7 +754,7 @@ mod tests {
         member.key = signer_pk;
         let mut spool_map = [255u8; SPOOL_COUNT];
         spool_map[0] = 0;
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch: EpochNumber(epoch),
             committee: vec![member],
             spools: SpoolAssignment::new(spool_map),
@@ -812,7 +812,7 @@ mod tests {
         member.key = BlsPubkey::new_unique();
         let mut spool_map = [255u8; SPOOL_COUNT];
         spool_map[0] = 0;
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch: EpochNumber(epoch),
             committee: vec![member],
             spools: SpoolAssignment::new(spool_map),
@@ -848,7 +848,9 @@ mod tests {
         let mut config = test_config();
         config.node_api.ingress_limits.slice_body_max = 10;
         use peer_manager::PeerManager;
-        let peer_manager = std::sync::Arc::new(PeerManager::new());
+        use tape_protocol::new_shared_state;
+        let shared_state = new_shared_state(ProtocolState::default());
+        let peer_manager = std::sync::Arc::new(PeerManager::new(shared_state.clone()));
         let api = std::sync::Arc::new(MemoryApi::noop());
         let ctx = NodeContext::new(
             config,
@@ -856,6 +858,7 @@ mod tests {
             BlsPrivateKey::from_random(),
             TapeStore::new(MemoryStore::new()),
             RpcClient::from_rpc(LiteSvmRpc::new()),
+            shared_state,
             peer_manager,
             api,
         );

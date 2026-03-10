@@ -89,7 +89,7 @@ pub async fn post_snapshot_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let chunk_idx = ChunkIndex(chunk_index);
 
     let member_index = request.member_index as usize;
-    let protocol_state = state.context.peer_manager.state();
+    let protocol_state = state.context.state();
     if epoch != protocol_state.epoch {
         return Err(ApiError::NotFound);
     }

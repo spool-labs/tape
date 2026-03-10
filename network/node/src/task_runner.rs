@@ -420,7 +420,7 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
         // TODO: this feels broken, using what is potentially a future epoch to decide if a task
         // should be skipped. I'm not sure this belongs here. Definitely needs to be reviewed.
 
-        let chain_epoch = context.peer_manager.state().epoch;
+        let chain_epoch = context.state().epoch;
         if !chain_epoch.is_zero() {
             if task_epoch != chain_epoch {
                 tracing::trace!(

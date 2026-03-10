@@ -8836,6 +8836,7 @@ dependencies = [
  "tape-crypto",
  "tape-protocol",
  "tape-retry",
+ "tape-sdk",
  "tape-slicer",
  "tape-spooler",
  "tape-store",

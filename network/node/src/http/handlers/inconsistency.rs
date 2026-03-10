@@ -93,7 +93,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_address: [u8; 32],
     epoch: EpochNumber,
 ) -> Result<(), ApiError> {
-    let protocol_state = context.peer_manager.state();
+    let protocol_state = context.state();
     if epoch != protocol_state.epoch {
         return Err(ApiError::BadRequest("committee missing".into()));
     }

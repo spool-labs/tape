@@ -142,7 +142,7 @@ async fn certify_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
         Err(e) => return Err(TaskOutcome::Retryable(format!("read partial sigs: {e}"))),
     };
 
-    let protocol_state = context.peer_manager.state();
+    let protocol_state = context.state();
 
     let mut signatures = Vec::new();
     let mut member_indices = Vec::new();

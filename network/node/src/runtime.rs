@@ -296,7 +296,7 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
             for change in &changes {
                 if let StateChange::PhaseAdvanced { phase } = change {
-                    ctx.peer_manager.state_handle().update_phase(*phase);
+                    ctx.update_phase(*phase);
                     tracing::trace!(?phase, "protocol state: phase updated");
                 }
             }
@@ -307,7 +307,7 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                     return LoopControl::Break;
                 }
 
-                let protocol_state = ctx.peer_manager.state();
+                let protocol_state = ctx.state();
                 SpoolPlanner::cleanup_locked(&*ctx.store, protocol_state.epoch);
                 let my_spools = ctx.my_spools();
                 if SpoolPlanner::reconcile_ownership(
@@ -343,7 +343,7 @@ async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ctx.peer_manager.refresh(&ctx.rpc)
     }).await {
         Ok(()) => {
-            let protocol_state = ctx.peer_manager.state();
+            let protocol_state = ctx.state();
             tracing::info!(
                 epoch = protocol_state.epoch.0,
                 phase = ?protocol_state.phase,
@@ -500,7 +500,7 @@ mod tests {
             ..Default::default()
         };
         state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
-        ctx.peer_manager.state_handle().store(state);
+        ctx.store_state(state);
 
         let (block_tx, _block_rx) = mpsc::channel::<IngestedBlock>(INGESTOR_CHANNEL_CAPACITY);
 

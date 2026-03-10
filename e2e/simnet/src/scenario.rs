@@ -241,7 +241,7 @@ impl<'a> SimnetScenario<'a> {
                     .harness
                     .node(i)
                     .with_context(|| format!("node {i} missing"))?;
-                let got = Some(node.context().peer_manager.state().epoch);
+                let got = Some(node.context().state().epoch);
                 last_seen.push(got);
 
                 match expected {

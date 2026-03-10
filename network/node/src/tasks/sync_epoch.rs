@@ -32,7 +32,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let protocol_state = context.peer_manager.state();
+    let protocol_state = context.state();
     if protocol_state.epoch.is_zero() {
         return TaskOutcome::Retryable("no current epoch".into());
     }

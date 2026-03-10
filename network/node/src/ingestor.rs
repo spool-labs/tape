@@ -94,7 +94,7 @@ async fn wait_bootstrap<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .store
             .get_sync_cursor()?;
 
-        let protocol_state = context.peer_manager.state();
+        let protocol_state = context.state();
         let epoch = if !protocol_state.epoch.is_zero() { Some(protocol_state.epoch) } else { None };
         let status = context.node_status();
 
@@ -277,7 +277,7 @@ mod tests {
             ..Default::default()
         };
         state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
-        ctx.peer_manager.state_handle().store(state);
+        ctx.store_state(state);
 
         let (tx, _rx) = mpsc::channel(4);
 
@@ -308,7 +308,7 @@ mod tests {
         let cancel = CancellationToken::new();
 
         // Standby with no cursor → no bootstrap needed, start from 0
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch: EpochNumber(0),
             ..Default::default()
         });

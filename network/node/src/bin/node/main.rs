@@ -8,6 +8,7 @@ use rpc_solana::RpcConfig;
 use tape_node::core::{NodeConfig, NodeContextBuilder, default_config_path};
 use tape_node::runtime::spawn_runtime;
 use peer_manager::PeerManager;
+use tape_protocol::{ProtocolState, new_shared_state};
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -76,7 +77,8 @@ async fn main() -> Result<()> {
     tracing::info!(%rpc_url, "connected to RPC");
 
     // Build peer manager and API
-    let peer_manager = Arc::new(PeerManager::new());
+    let shared_state = new_shared_state(ProtocolState::default());
+    let peer_manager = Arc::new(PeerManager::new(shared_state.clone()));
     let api = Arc::new(HttpApi::new(Default::default(), peer_manager.clone()));
 
     // Build context (includes startup node-id resolution from on-chain node account)
@@ -85,6 +87,7 @@ async fn main() -> Result<()> {
         keypair,
         store,
         rpc,
+        shared_state,
         peer_manager,
         api,
     )

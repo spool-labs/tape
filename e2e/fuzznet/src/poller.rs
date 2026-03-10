@@ -365,7 +365,7 @@ async fn poll_once(
         total_recovery_delta += recovery_delta;
         total_upload_delta += upload_delta;
 
-        let protocol_state = tracked.ctx.peer_manager.state();
+        let protocol_state = tracked.ctx.state();
         let spool_count = tracked.ctx.my_spools().len();
         let node_status = if !protocol_state.epoch.is_zero() {
             Some(tracked.ctx.node_status())

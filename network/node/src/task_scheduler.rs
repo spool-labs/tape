@@ -81,7 +81,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         // On startup, reconcile spools and schedule lifecycle from current ChainState
         // (seeded by runtime before scheduler starts).
         {
-            let protocol_state = self.context.peer_manager.state();
+            let protocol_state = self.context.state();
             if !protocol_state.epoch.is_zero() {
                 SpoolPlanner::reconcile(
                     &*self.context.store,
@@ -158,7 +158,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 StateChange::EpochAdvanced { epoch } => {
                     tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
 
-                    let protocol_state = self.context.peer_manager.state();
+                    let protocol_state = self.context.state();
                     LifecyclePlanner::log_member_index(
                         &protocol_state,
                         self.context.node_id(),
@@ -241,7 +241,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 
                 StateChange::PhaseAdvanced { phase } => {
                     tracing::trace!(?phase, "scheduler handling phase advance");
-                    let protocol_state = self.context.peer_manager.state();
+                    let protocol_state = self.context.state();
                     let epoch = protocol_state.epoch;
                     if !epoch.is_zero() {
                         self.lifecycle.schedule(
@@ -341,7 +341,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Re-run lifecycle scheduling from current chain state.
     fn reschedule_lifecycle(&mut self) {
-        let protocol_state = self.context.peer_manager.state();
+        let protocol_state = self.context.state();
         if !protocol_state.epoch.is_zero() {
             self.lifecycle.schedule(
                 self.chain_phase(),
@@ -354,7 +354,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Current chain phase from protocol state. Returns None for Unknown.
     fn chain_phase(&self) -> Option<EpochPhase> {
-        let protocol_state = self.context.peer_manager.state();
+        let protocol_state = self.context.state();
         match protocol_state.phase {
             EpochPhase::Unknown => None,
             phase => Some(phase),
@@ -368,7 +368,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
 
     /// Whether the on-chain epoch phase is Active (all nodes synced/settled).
     fn is_onchain_phase_active(&self) -> bool {
-        matches!(self.context.peer_manager.state().phase, EpochPhase::Active)
+        matches!(self.context.state().phase, EpochPhase::Active)
     }
 
     /// True if the task's epoch doesn't match the current chain epoch (the task
@@ -377,7 +377,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         let Some(task_epoch) = key.scheduled_epoch() else {
             return false;
         };
-        let protocol_state = self.context.peer_manager.state();
+        let protocol_state = self.context.state();
         if protocol_state.epoch.is_zero() {
             return true;
         }
@@ -390,7 +390,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         if !matches!(self.node_status(), NodeStatus::Active) {
             return false;
         }
-        let current_epoch = self.context.peer_manager.state().epoch;
+        let current_epoch = self.context.state().epoch;
         let sync_cursor = self.context.store.get_sync_cursor().ok().flatten();
         current_epoch >= EpochNumber(2) && sync_cursor.is_none()
     }
@@ -436,7 +436,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
     /// Remove epoch-scoped tasks older than the retention window from both
     /// `desired` and `scheduled`. Sends Cancel actions for scheduled ones.
     fn prune_stale(&mut self, tx: &mpsc::Sender<Action>) {
-        let current_epoch = self.context.peer_manager.state().epoch;
+        let current_epoch = self.context.state().epoch;
         if current_epoch.is_zero() {
             return;
         }
@@ -609,7 +609,7 @@ mod tests {
         if matches!(status, NodeStatus::Active) {
             state.committee.push(CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000)));
         }
-        ctx.peer_manager.state_handle().store(state);
+        ctx.store_state(state);
     }
 
     fn mark_snapshot_build_complete<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -672,7 +672,7 @@ mod tests {
         for &s in &spools {
             spool_map[s as usize] = 0;
         }
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch,
             committee: vec![CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000))],
             spools: SpoolAssignment::new(spool_map),
@@ -689,7 +689,7 @@ mod tests {
         for &s in &spools {
             spool_map[s as usize] = 0;
         }
-        ctx.peer_manager.state_handle().store(ProtocolState {
+        ctx.store_state(ProtocolState {
             epoch,
             committee: vec![CommitteeMember::new(NodeId(999), Coin::<TAPE>::new(1000))],
             spools: SpoolAssignment::new(spool_map),
@@ -1123,7 +1123,7 @@ mod tests {
         assert!(scheduler.desired.contains(&Task::SyncEpoch { epoch }));
         assert!(!scheduler.desired.contains(&Task::AdvancePool { epoch }));
 
-        ctx.peer_manager.state_handle().update_phase(EpochPhase::Settling);
+        ctx.update_phase(EpochPhase::Settling);
         scheduler.desired.insert(Task::SyncEpoch { epoch });
         scheduler.scheduled.insert(Task::SyncEpoch { epoch });
         scheduler.handle_result(&TaskResult::Success(Task::SyncEpoch { epoch }));

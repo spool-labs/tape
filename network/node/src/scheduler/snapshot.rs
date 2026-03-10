@@ -85,7 +85,7 @@ impl SnapshotPlanner {
             desired.insert(snapshot_build.clone());
         }
 
-        let protocol_state = context.peer_manager.state();
+        let protocol_state = context.state();
         let owned_groups: HashSet<SpoolGroup> = if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
             tracing::trace!(epoch = epoch.0, "snapshot ownership unknown: missing committee");
             HashSet::new()
@@ -239,7 +239,7 @@ impl SnapshotPlanner {
         context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
         epoch: EpochNumber,
     ) -> HashSet<SpoolGroup> {
-        let protocol_state = context.peer_manager.state();
+        let protocol_state = context.state();
         if protocol_state.epoch != epoch || protocol_state.committee.is_empty() {
             return HashSet::new();
         }
