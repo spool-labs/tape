@@ -202,6 +202,7 @@ fn fail_peer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     msg: String,
 ) -> TaskOutcome {
     context.peer_manager.report_failure(node_id);
+
     if attempt_count >= SYNC_FAILURE_THRESHOLD {
         TaskOutcome::Permanent(format!("{msg} after {attempt_count} attempts"))
     } else {
