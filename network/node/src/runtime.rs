@@ -310,6 +310,7 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                 let protocol_state = ctx.state();
                 SpoolPlanner::cleanup_locked(&*ctx.store, protocol_state.epoch);
                 let my_spools = ctx.my_spools();
+
                 if SpoolPlanner::reconcile_ownership(
                     &*ctx.store,
                     &my_spools,
@@ -339,9 +340,10 @@ async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
-    match tape_retry::retry(chain_state_backoff(), Some(cancel), || {
-        ctx.peer_manager.refresh(&ctx.rpc)
-    }).await {
+    match tape_retry::retry(
+        RetryConfig::infinite(), 
+        Some(cancel), || { ctx.peer_manager.refresh(&ctx.rpc) }
+    ).await {
         Ok(()) => {
             let protocol_state = ctx.state();
             tracing::info!(
@@ -357,10 +359,6 @@ async fn refresh_chain_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Err(())
         }
     }
-}
-
-fn chain_state_backoff() -> RetryConfig {
-    RetryConfig::infinite()
 }
 
 

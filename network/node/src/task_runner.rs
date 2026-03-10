@@ -12,6 +12,7 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::future::pending;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,11 +36,6 @@ use crate::tasks::{
 };
 
 pub use crate::{Task, TaskOutcome};
-
-/// Fallback sleep target when no retries are pending.
-const FAR_FUTURE_SECS: u64 = 365 * 24 * 3600;
-/// How long to wait for in-flight tasks during shutdown before giving up.
-const SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
 /// Centralized task runner with retry, cancellation, and per-category concurrency limits.
 ///
@@ -102,6 +98,12 @@ TaskRunner<Db, Cluster, Blockchain> {
     ) {
         loop {
             let next_retry = self.retry.next_due_instant();
+            let retry_wait = async {
+                match next_retry {
+                    Some(deadline) => sleep_until(deadline).await,
+                    None => pending::<()>().await,
+                }
+            };
 
             tokio::select! {
                 action = action_rx.recv() => {
@@ -136,7 +138,7 @@ TaskRunner<Db, Cluster, Blockchain> {
                     }
                 }
 
-                _ = sleep_until(next_retry) => {
+                _ = retry_wait => {
                     tracing::trace!("task_runner processing retry queue");
                     self.process_retries();
                 }
@@ -295,15 +297,14 @@ TaskRunner<Db, Cluster, Blockchain> {
         }
     }
 
-    /// Cancel all tasks and drain the JoinSet, giving in-flight futures up to
-    /// `SHUTDOWN_TIMEOUT_SECS` to finish before abandoning them.
+    /// Cancel all tasks and drain the JoinSet
     async fn shutdown(&mut self) {
         tracing::trace!("task_runner shutdown start");
         for token in self.cancel_tokens.values() {
             token.cancel();
         }
 
-        let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_TIMEOUT_SECS);
+        let deadline = Instant::now() + Duration::from_secs(10);
 
         loop {
             tokio::select! {
@@ -365,7 +366,6 @@ TaskRunner<Db, Cluster, Blockchain> {
             execute_task(
                 ctx,
                 key_to_run.clone(),
-                attempt,
                 token_clone,
                 sem
             ).instrument(span),
@@ -391,7 +391,6 @@ TaskRunner<Db, Cluster, Blockchain> {
 pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     key: Task,
-    attempt: u32,
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
 ) -> (Task, TaskOutcome) {
@@ -448,7 +447,7 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
             advance_pool::run(context, cancel).await
         }
         Task::SpoolSync { spool } => {
-            spool_sync::run(context, *spool, attempt, cancel).await
+            spool_sync::run(context, *spool, cancel).await
         }
         Task::SpoolRecovery { spool } => {
             spool_recovery::run(context, *spool, cancel).await
@@ -615,12 +614,11 @@ impl RetryQueue {
         due
     }
 
-    /// Earliest due time in the heap, or far-future if empty.
-    fn next_due_instant(&self) -> Instant {
+    /// Earliest due time in the heap, if any.
+    fn next_due_instant(&self) -> Option<Instant> {
         self.heap
             .peek()
             .map(|e| e.0.due)
-            .unwrap_or_else(far_future)
     }
 
     #[cfg(test)]
@@ -679,11 +677,6 @@ struct RunningTask {
     started_at: Instant,
     /// Current attempt number (0-based). Incremented on retryable failure.
     attempt: u32,
-}
-
-/// Returns an `Instant` ~1 year in the future, used as a no-op sleep target.
-fn far_future() -> Instant {
-    Instant::now() + Duration::from_secs(FAR_FUTURE_SECS)
 }
 
 #[cfg(test)]

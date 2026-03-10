@@ -29,11 +29,8 @@ enum SyncSource {
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
-    attempt: u32,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let attempt_count = attempt.saturating_add(1);
-
     let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(s)) => s,
         Ok(None) => return TaskOutcome::Success,
@@ -80,14 +77,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 async move { api.sync(node_id, &req).await }
             }).await {
                 Ok(r) => r,
-                Err(e) => {
-                    if attempt_count >= 5 {
-                        return TaskOutcome::Permanent(format!(
-                            "sync_spool rpc: {e} after {attempt_count} attempts"
-                        ));
-                    }
-                    return TaskOutcome::Retryable(format!("sync_spool rpc: {e}"));
-                }
+                Err(e) => return TaskOutcome::Retryable(format!("sync_spool rpc: {e}")),
             };
 
             for entry in &response.entries {
@@ -216,7 +206,7 @@ mod tests {
             },
         ).unwrap();
 
-        let outcome = run(ctx, 5, 0, CancellationToken::new()).await;
+        let outcome = run(ctx, 5, CancellationToken::new()).await;
         assert!(matches!(outcome, TaskOutcome::Permanent(msg) if msg.contains("missing prev_owner")));
     }
 }
