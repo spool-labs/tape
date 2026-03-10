@@ -10,6 +10,7 @@ use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::ops::{EventLogOps, ObjectInfoOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TapeInfo};
+use tape_core::snapshot::ReplayableEvent;
 
 use super::{Fsm, FsmError, StateChange};
 
@@ -60,7 +61,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             event.new_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::AdvanceEpoch {
+            &ReplayableEvent::AdvanceEpoch {
                 old_epoch,
                 new_epoch: event.new_epoch,
             },
@@ -83,7 +84,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::SyncEpoch {
+            &ReplayableEvent::SyncEpoch {
                 node: event.node.to_bytes(),
                 node_id: event.id,
                 epoch: event.epoch,
@@ -132,7 +133,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::RegisterTrack {
+            &ReplayableEvent::RegisterTrack {
                 track: track.to_bytes(),
                 event_data,
             },
@@ -155,7 +156,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::CertifyTrack {
+            &ReplayableEvent::CertifyTrack {
                 track: track.to_bytes(),
                 epoch: event.epoch,
             },
@@ -185,7 +186,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::DeleteTrack {
+            &ReplayableEvent::DeleteTrack {
                 track: track.to_bytes(),
                 epoch: current_epoch,
             },
@@ -218,7 +219,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::InvalidateTrack {
+            &ReplayableEvent::InvalidateTrack {
                 track: track.to_bytes(),
                 epoch: event.epoch,
             },
@@ -244,7 +245,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::ReserveTape {
+            &ReplayableEvent::ReserveTape {
                 tape: tape.to_bytes(),
                 authority: event.authority.to_bytes(),
                 active_epoch: event.active_epoch,
@@ -273,7 +274,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::DestroyTape {
+            &ReplayableEvent::DestroyTape {
                 tape: tape.to_bytes(),
                 epoch: current_epoch,
             },
@@ -295,7 +296,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::RegisterNode {
+            &ReplayableEvent::RegisterNode {
                 authority: authority.to_bytes(),
                 node: node.to_bytes(),
             },
@@ -316,7 +317,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.append_event(
             current_epoch,
             slot,
-            &tape_core::snapshot::ReplayableEvent::JoinNetwork {
+            &ReplayableEvent::JoinNetwork {
                 node: node.to_bytes(),
             },
         )?;

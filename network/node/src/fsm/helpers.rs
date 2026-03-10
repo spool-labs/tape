@@ -17,6 +17,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         event: &TrackRegistered,
         slot: SlotNumber,
     ) -> Result<(), FsmError> {
+
         let mut info = TrackInfo {
             tape_address: event.tape.into(),
             spool_group: SpoolGroup(u64::from_le_bytes(event.spool_group)),
@@ -27,6 +28,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
             encoding_params: 0,
             commitment: event.leaves.to_vec(),
         };
+
         info.set_profile(event.profile);
 
         self.context.store.put_track(track, info)?;
@@ -40,6 +42,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
                 slot,
             },
         )?;
+
         Ok(())
     }
 
@@ -58,8 +61,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
             registered_epoch,
             slot,
             ..
-        } = obj
-        {
+        } = obj {
             self.context.store.put_object_info(
                 track,
                 ObjectInfo::Valid {
@@ -71,6 +73,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
                 },
             )?;
         }
+
         Ok(())
     }
 
@@ -79,6 +82,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         track: StorePubkey,
         spool_group: SpoolGroup,
     ) -> Result<(), FsmError> {
+
         let owned_spools = self.context.store.iter_all_spools()?;
         for (spool_id, _status) in &owned_spools {
             if spool_group.contains(*spool_id) {
@@ -86,6 +90,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
                 let _ = self.context.store.remove_pending_recovery(*spool_id, track);
             }
         }
+
         Ok(())
     }
 
@@ -95,10 +100,13 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
     ) -> Result<(), FsmError> {
         let mut cursor = None;
         loop {
-            let tracks = self.context.store.iter_tracks_from(cursor, 100)?;
+            let tracks = self.context.store
+                .iter_tracks_from(cursor, 100)?;
+
             if tracks.is_empty() {
                 break;
             }
+
             for (track_addr, track_info) in &tracks {
                 if track_info.tape_address == tape {
                     self.cleanup_slices_for_track(*track_addr, track_info.spool_group)?;
@@ -108,6 +116,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
             }
             cursor = tracks.last().map(|(addr, _)| *addr);
         }
+
         Ok(())
     }
 
@@ -119,6 +128,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
                 self.context.store.delete_tape(*tape_addr)?;
             }
         }
+
         Ok(())
     }
 

@@ -6,6 +6,7 @@ use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_store::ops::MetaOps;
 use tape_core::types::{EpochNumber, SlotNumber};
+use tape_core::system::EpochPhase;
 
 use crate::core::NodeContext;
 use crate::ingestor::IngestedBlock;
@@ -18,7 +19,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
             context,
             state: super::FsmState {
                 epoch: EpochNumber(0),
-                phase: tape_core::system::EpochPhase::Unknown,
+                phase: EpochPhase::Unknown,
             },
         }
     }
