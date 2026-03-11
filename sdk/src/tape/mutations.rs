@@ -22,6 +22,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         capacity: StorageUnits,
         epochs: u64,
     ) -> Result<Tape, TapedriveError> {
+        let payer = self.payer()?;
         let epoch = self.rpc().get_epoch().await?;
         let archive = self.rpc().get_archive().await?;
 
@@ -30,10 +31,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let cost = reservation_cost(archive.storage_price, capacity, epochs)?;
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), tape_key.pubkey(), cost);
+            build_authority_with_tokens_ix(payer.pubkey(), tape_key.pubkey(), cost);
 
         ixs.push(build_reserve_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             tape_key.pubkey(),
             capacity,
             activation,
@@ -41,7 +42,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         ));
 
         self.rpc()
-            .send_instructions_with_signers(&self.payer, ixs, &[tape_key.as_keypair()])
+            .send_instructions_with_signers(payer, ixs, &[tape_key.as_keypair()])
             .await?;
 
         self.rpc()
@@ -56,6 +57,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         tape_key: &TapeKey,
         extra_epochs: u64,
     ) -> Result<Tape, TapedriveError> {
+        let payer = self.payer()?;
         let temp = TapeKey::generate();
         let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
         let archive = self.rpc().get_archive().await?;
@@ -64,10 +66,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let cost = reservation_cost(archive.storage_price, tape.capacity, extra_epochs)?;
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), temp.pubkey(), cost);
+            build_authority_with_tokens_ix(payer.pubkey(), temp.pubkey(), cost);
 
         ixs.push(build_reserve_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             temp.pubkey(),
             tape.capacity,
             tape.expiry_epoch,
@@ -75,14 +77,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         ));
 
         ixs.push(build_merge_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             temp.pubkey(),
             tape_key.pubkey(),
         ));
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 ixs,
                 &[temp.as_keypair(), tape_key.as_keypair()],
             )
@@ -100,6 +102,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         tape_key: &TapeKey,
         extra: StorageUnits,
     ) -> Result<Tape, TapedriveError> {
+        let payer = self.payer()?;
         let temp = TapeKey::generate();
         let tape = self.rpc().get_tape(&tape_key.pubkey()).await?;
         let archive = self.rpc().get_archive().await?;
@@ -110,24 +113,24 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let cost = reservation_cost(archive.storage_price, extra, duration)?;
 
         let mut ixs =
-            build_authority_with_tokens_ix(self.payer.pubkey(), temp.pubkey(), cost);
+            build_authority_with_tokens_ix(payer.pubkey(), temp.pubkey(), cost);
 
         ixs.push(build_reserve_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             temp.pubkey(),
             extra,
             activation,
             tape.expiry_epoch,
         ));
         ixs.push(build_merge_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             temp.pubkey(),
             tape_key.pubkey(),
         ));
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 ixs,
                 &[temp.as_keypair(), tape_key.as_keypair()],
             )
@@ -146,8 +149,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         destination: &TapeKey,
         at_epoch: EpochNumber,
     ) -> Result<(Tape, Tape), TapedriveError> {
+        let payer = self.payer()?;
         let ix = build_split_tape_by_epoch_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             source.pubkey(),
             destination.pubkey(),
             at_epoch,
@@ -155,7 +159,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![ix],
                 &[source.as_keypair(), destination.as_keypair()],
             )
@@ -174,8 +178,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         destination: &TapeKey,
         keep: StorageUnits,
     ) -> Result<(Tape, Tape), TapedriveError> {
+        let payer = self.payer()?;
         let ix = build_split_tape_by_size_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             source.pubkey(),
             destination.pubkey(),
             keep,
@@ -183,7 +188,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![ix],
                 &[source.as_keypair(), destination.as_keypair()],
             )
@@ -201,15 +206,16 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         source: &TapeKey,
         destination: &TapeKey,
     ) -> Result<Tape, TapedriveError> {
+        let payer = self.payer()?;
         let ix = build_merge_tape_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             source.pubkey(),
             destination.pubkey(),
         );
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![ix],
                 &[source.as_keypair(), destination.as_keypair()],
             )
@@ -223,11 +229,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Destroy an empty, expired tape.
     pub async fn destroy(&self, tape_key: &TapeKey) -> Result<(), TapedriveError> {
-        let ix = build_destroy_tape_ix(self.payer.pubkey(), tape_key.pubkey());
+        let payer = self.payer()?;
+        let ix = build_destroy_tape_ix(payer.pubkey(), tape_key.pubkey());
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![ix],
                 &[tape_key.as_keypair()],
             )

@@ -34,6 +34,7 @@ impl<Blockchain: Rpc, Cluster: Api>
         pool: Pubkey,
         amount: Coin<TAPE>,
     ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
 
         let mut ixs = vec![
             ComputeBudgetInstruction::set_compute_unit_limit(STAKE_WITH_POOL_CU),
@@ -41,7 +42,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         ixs.extend(
             build_authority_with_tokens_ix(
-                self.payer.pubkey(),
+                payer.pubkey(),
                 stake_key.pubkey(),
                 amount,
             ),
@@ -49,7 +50,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         ixs.push(
             build_stake_with_pool_ix(
-                self.payer.pubkey(),
+                payer.pubkey(),
                 stake_key.pubkey(),
                 pool,
                 amount,
@@ -58,7 +59,7 @@ impl<Blockchain: Rpc, Cluster: Api>
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 ixs,
                 &[stake_key.as_keypair()],
             )
@@ -73,13 +74,14 @@ impl<Blockchain: Rpc, Cluster: Api>
         node_authority: Pubkey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(
             ADVANCE_POOL_CU);
 
-        let ix = build_advance_pool_ix(self.payer.pubkey(), node_authority, pool);
+        let ix = build_advance_pool_ix(payer.pubkey(), node_authority, pool);
 
         self.rpc()
-            .send_instructions(&self.payer, vec![cu_ix, ix])
+            .send_instructions(payer, vec![cu_ix, ix])
             .await?;
 
         Ok(())
@@ -91,17 +93,18 @@ impl<Blockchain: Rpc, Cluster: Api>
         stake_key: &StakeKey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(REQUEST_STAKE_UNLOCK_CU);
 
         let ix = build_request_stake_unlock_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             stake_key.pubkey(),
             pool,
         );
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![cu_ix, ix],
                 &[stake_key.as_keypair()],
             )
@@ -116,17 +119,18 @@ impl<Blockchain: Rpc, Cluster: Api>
         stake_key: &StakeKey,
         pool: Pubkey,
     ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
         let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(UNSTAKE_FROM_POOL_CU);
 
         let ix = build_unstake_from_pool_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             stake_key.pubkey(),
             pool,
         );
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![cu_ix, ix],
                 &[stake_key.as_keypair()],
             )

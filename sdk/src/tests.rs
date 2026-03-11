@@ -31,7 +31,7 @@ fn setup() -> (LiteSvmRpc, Tapedrive<LiteSvmRpc, MemoryApi>) {
     let peer_manager = Arc::new(PeerManager::new());
     let api = Arc::new(MemoryApi::noop());
     let state = ArcSwap::from_pointee(ProtocolState::default());
-    let tapedrive = Tapedrive::from_parts(state, peer_manager, api, rpc_client, &payer);
+    let tapedrive = Tapedrive::from_parts(state, peer_manager, api, rpc_client, Some(&payer));
     (rpc, tapedrive)
 }
 

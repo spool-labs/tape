@@ -24,7 +24,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub rpc: Arc<RpcClient<Blockchain>>,
-    pub payer: Keypair,
+    pub payer: Option<Keypair>,
 }
 
 /// Default constructor using `HttpApi`.
@@ -34,6 +34,11 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     /// Takes an RPC backend and a payer keypair. Uses the default HTTP
     /// peer client for storage node communication.
     pub fn new(rpc: Blockchain, payer: &Keypair) -> Self {
+        Self::new_read_only(rpc).with_payer(payer)
+    }
+
+    /// Create a read-only Tapedrive client.
+    pub fn new_read_only(rpc: Blockchain) -> Self {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
         let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
@@ -42,7 +47,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
             peer_manager,
             api,
             rpc: rpc_client,
-            payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
+            payer: None,
         }
     }
 }
@@ -54,15 +59,21 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
         rpc: Arc<RpcClient<Blockchain>>,
-        payer: &Keypair,
+        payer: Option<&Keypair>,
     ) -> Self {
         Self {
             state,
             peer_manager,
             api,
             rpc,
-            payer: Keypair::try_from(payer.to_bytes().as_ref()).unwrap(),
+            payer: payer.map(clone_keypair),
         }
+    }
+
+    /// Attach or replace the payer used for mutating operations.
+    pub fn with_payer(mut self, payer: &Keypair) -> Self {
+        self.payer = Some(clone_keypair(payer));
+        self
     }
 
     /// Access the underlying RPC client.
@@ -73,6 +84,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Load the current protocol state (lock-free).
     pub fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
         self.state.load()
+    }
+
+    /// Return the payer keypair required for mutating operations.
+    pub fn payer(&self) -> Result<&Keypair, TapedriveError> {
+        self.payer.as_ref().ok_or(TapedriveError::MissingPayer)
     }
 
     /// Write data to the network in one call.
@@ -98,4 +114,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         Ok((tape_key, track))
     }
+}
+
+fn clone_keypair(payer: &Keypair) -> Keypair {
+    Keypair::try_from(payer.to_bytes().as_ref()).unwrap()
 }

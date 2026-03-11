@@ -90,6 +90,9 @@ pub enum DownloadError {
 /// Errors from the high-level [`Tapedrive`](crate::Tapedrive) client.
 #[derive(Debug, Error)]
 pub enum TapedriveError {
+    #[error("a payer keypair is required for this operation")]
+    MissingPayer,
+
     #[error("RPC error: {0}")]
     Rpc(#[from] RpcError),
 

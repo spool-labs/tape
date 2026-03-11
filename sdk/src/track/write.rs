@@ -76,13 +76,14 @@ pub async fn register_or_resume_track<Blockchain: Rpc, Cluster: Api>(
     key: Hash,
     plan: &UploadPlan,
 ) -> Result<RegisteredTrack, TapedriveError> {
+    let payer = client.payer()?;
     let (track_address, _) = track_pda(tape_key.pubkey(), key);
 
     let track = match client.rpc().get_track_by_address(&track_address).await {
         Ok(track) => track,
         Err(RpcError::AccountNotFound(_)) => {
             let register_ix = build_register_track_ix(
-                client.payer.pubkey(),
+                payer.pubkey(),
                 tape_key.pubkey(),
                 plan.storage_units,
                 plan.root_hash,
@@ -97,7 +98,7 @@ pub async fn register_or_resume_track<Blockchain: Rpc, Cluster: Api>(
             client
                 .rpc()
                 .send_instructions_with_signers(
-                    &client.payer,
+                    payer,
                     vec![register_ix],
                     &[tape_key.as_keypair()],
                 )
@@ -148,6 +149,7 @@ pub async fn certify_registered_track<Blockchain: Rpc, Cluster: Api>(
     track_address: Pubkey,
     spool_group: tape_core::spooler::SpoolGroup,
 ) -> Result<(), TapedriveError> {
+    let payer = client.payer()?;
     tape_retry::retry_if(
         tape_retry::RetryConfig::infinite(),
         None,
@@ -169,7 +171,7 @@ pub async fn certify_registered_track<Blockchain: Rpc, Cluster: Api>(
                 ComputeBudgetInstruction::set_compute_unit_limit(CERTIFY_TRACK_CU);
 
             let certify_ix = build_certify_track_ix(
-                client.payer.pubkey(),
+                payer.pubkey(),
                 tape_key.pubkey(),
                 key,
                 EpochNumber(collected.epoch),
@@ -180,7 +182,7 @@ pub async fn certify_registered_track<Blockchain: Rpc, Cluster: Api>(
             match client
                 .rpc()
                 .send_instructions_with_signers(
-                    &client.payer,
+                    payer,
                     vec![compute_ix, certify_ix],
                     &[tape_key.as_keypair()],
                 )

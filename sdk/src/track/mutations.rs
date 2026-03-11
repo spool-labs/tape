@@ -15,15 +15,16 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         tape_key: &TapeKey,
         track_key: Hash,
     ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
         let ix = build_delete_track_ix(
-            self.payer.pubkey(),
+            payer.pubkey(),
             tape_key.pubkey(),
             track_key,
         );
 
         self.rpc()
             .send_instructions_with_signers(
-                &self.payer,
+                payer,
                 vec![ix],
                 &[tape_key.as_keypair()],
             )
