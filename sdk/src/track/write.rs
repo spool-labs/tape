@@ -14,7 +14,7 @@ use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, StorageUnits};
-use tape_crypto::{Hash, Pubkey as CryptoPubkey};
+use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_protocol::api::GetMetadataReq;
 use tape_retry::RetryConfig;
@@ -145,7 +145,7 @@ pub async fn wait_for_track_visibility<Blockchain: Rpc, Cluster: Api>(
     let state = bootstrap_network_state(client).await?;
     let group_peers = state.group_peers(spool_group);
     let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
-    let track: CryptoPubkey = track_address.into();
+    let track: tape_crypto::Pubkey = track_address.into();
 
     tape_retry::retry_if(
         RetryConfig::ten(),

@@ -9,6 +9,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::signature::Signer;
 use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
+use tape_core::system::EpochPhase;
 use peer_http::HttpApi;
 use tape_node::core::NodeContext;
 use tape_store::MemoryStore;
@@ -261,10 +262,10 @@ async fn poll_once(
     let epoch = epoch_account.map(|e| e.id.as_u64()).unwrap_or(0);
     let (epoch_phase, epoch_phase_weight) = match &epoch_account {
         Some(e) => {
-            let phase = match tape_core::system::EpochPhase::try_from(e.state.phase) {
-                Ok(tape_core::system::EpochPhase::Syncing) => "Syncing",
-                Ok(tape_core::system::EpochPhase::Settling) => "Settling",
-                Ok(tape_core::system::EpochPhase::Active) => "Active",
+            let phase = match EpochPhase::try_from(e.state.phase) {
+                Ok(EpochPhase::Syncing) => "Syncing",
+                Ok(EpochPhase::Settling) => "Settling",
+                Ok(EpochPhase::Active) => "Active",
                 _ => "?",
             };
             (phase.to_string(), e.state.weight())

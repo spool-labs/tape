@@ -1,4 +1,5 @@
 use tape_solana::*;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use crate::program::token::*;
 
@@ -21,7 +22,7 @@ pub fn build_create_system_ix(
     let (system_address, _) = system_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -40,7 +41,7 @@ pub fn build_expand_system_ix(
     let (system_address, _) = system_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -64,7 +65,7 @@ pub fn build_initialize_ix(
     let (mint_address, _) = mint_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),

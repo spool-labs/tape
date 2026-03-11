@@ -5,8 +5,10 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::keypair::Keypair;
 use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
+use tape_api::state::Track;
 use tape_sdk::{TapeKey, Tapedrive};
 use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::types::Pubkey as StorePubkey;
 
 use crate::scenario::SimnetScenario;
 
@@ -24,7 +26,7 @@ impl SimnetScenario<'_> {
         key: tape_crypto::Hash,
         data: &[u8],
         epochs: u64,
-    ) -> Result<(TapeKey, tape_api::state::Track)> {
+    ) -> Result<(TapeKey, Track)> {
         let sdk = self.sdk(keypair);
         let (tape_key, track) = sdk
             .write(key, data, epochs)
@@ -43,7 +45,7 @@ impl SimnetScenario<'_> {
 
     /// Count slices stored across all nodes for a track's spool group.
     pub fn count_slices(&self, track: &Pubkey, group: SpoolGroup) -> Result<usize> {
-        let track_store_key = tape_store::types::Pubkey::new(track.to_bytes());
+        let track_store_key = StorePubkey::new(track.to_bytes());
         let mut count = 0usize;
 
         for i in 0..SPOOL_GROUP_SIZE {

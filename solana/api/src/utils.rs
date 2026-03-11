@@ -3,6 +3,7 @@ use tape_solana::*;
 use tape_core::types::EpochNumber;
 use crate::state::Epoch;
 use crate::consts::NAME_LENGTH;
+use crate::program::token;
 
 use spl_associated_token_account::get_associated_token_address;
 
@@ -62,5 +63,5 @@ pub fn prev_epoch(epoch: &Epoch) -> EpochNumber {
 /// Helper: get the associated token account
 #[inline(always)]
 pub fn ata(owner: &Pubkey) -> Pubkey {
-    get_associated_token_address(owner, &crate::program::token::MINT_ADDRESS)
+    get_associated_token_address(owner, &token::MINT_ADDRESS)
 }

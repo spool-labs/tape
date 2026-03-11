@@ -1,6 +1,7 @@
 use tape_core::prelude::*;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_crypto::Hash;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_solana::*;
 
@@ -62,7 +63,7 @@ pub fn build_register_track_ix(
     let profile = profile.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -98,7 +99,7 @@ pub fn build_delete_track_ix(
     let (track_address, _) = track_pda(authority, id);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -126,7 +127,7 @@ pub fn build_certify_track_ix(
     let (track_address, _) = track_pda(authority, id);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -156,7 +157,7 @@ pub fn build_invalidate_track_ix(
     computed_root: Hash,
 ) -> Instruction {
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
 

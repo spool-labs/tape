@@ -1,5 +1,6 @@
 use tape_solana::*;
 use crate::utils::ata;
+use crate::program::token;
 use crate::program::token::*;
 
 #[repr(C)]
@@ -18,7 +19,7 @@ pub fn build_initialize_mint_ix(
     let authority_ata = ata(&authority);
 
     Instruction {
-        program_id: crate::program::token::ID,
+        program_id: token::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -37,4 +38,3 @@ pub fn build_initialize_mint_ix(
         data: InitializeMint {}.to_bytes(),
     }
 }
-

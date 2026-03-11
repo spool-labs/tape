@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_core::prelude::*;
 use crate::utils::ata;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 
 #[repr(C)]
@@ -52,7 +53,7 @@ pub fn build_reserve_tape_ix(
     let expiry_epoch = expiry_epoch.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -88,7 +89,7 @@ pub fn build_split_tape_by_size_ix(
     let size = size.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -118,7 +119,7 @@ pub fn build_split_tape_by_epoch_ix(
     let epoch = split_epoch.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -145,7 +146,7 @@ pub fn build_merge_tape_ix(
     let (archive_address, _) = archive_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -170,7 +171,7 @@ pub fn build_destroy_tape_ix(
     let (archive_address, _) = archive_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),

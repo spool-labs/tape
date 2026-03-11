@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use rpc::Rpc;
+use solana_sdk::pubkey::Pubkey;
 use tape_protocol::Api;
 use store::Store;
 use tape_core::system::EpochPhase;
@@ -219,7 +220,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         self.plan_spool_tasks();
     }
 
-    fn handle_track_certified(&mut self, track: &solana_sdk::pubkey::Pubkey) {
+    fn handle_track_certified(&mut self, track: &Pubkey) {
         tracing::trace!(track = %track, "scheduler checking slices after track certified");
         SpoolPlanner::check_slices(
             &*self.context.store,
@@ -244,7 +245,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         );
     }
 
-    fn handle_node_joined(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+    fn handle_node_joined(&mut self, node: &Pubkey) {
         if *node != self.context.pubkey() {
             return;
         }
@@ -253,7 +254,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         self.plan_spool_tasks();
     }
 
-    fn handle_node_synced(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+    fn handle_node_synced(&mut self, node: &Pubkey) {
         if *node != self.context.pubkey() {
             return;
         }
@@ -263,7 +264,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
             .retain(|key| !matches!(key, Task::SyncEpoch { .. }));
     }
 
-    fn handle_pool_advanced(&mut self, node: &solana_sdk::pubkey::Pubkey) {
+    fn handle_pool_advanced(&mut self, node: &Pubkey) {
         if *node != self.context.pubkey() {
             return;
         }

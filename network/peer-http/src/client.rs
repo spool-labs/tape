@@ -3,18 +3,19 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError,
-    CertifyReq, CertifyRes, GetHealthReq, GetHealthRes, GetMetadataReq, GetMetadataRes,
-    GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq, GetStatsRes,
-    InvalidateReq, InvalidateRes, PutSliceReq, PutSliceRes,
-    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRes, SyncReq, SyncRes,
-    BlsInconsistencyResponse, BlsSignResponse, InconsistencyRequest, RepairRequest,
-    SyncSpoolRequest, SyncSpoolResponse, BINARY_CONTENT, CONTENT_TYPE_JSON,
+    self, Api, ApiError, BlsInconsistencyResponse, BlsSignResponse, CertifyReq, CertifyRes,
+    CONTENT_TYPE_JSON, BINARY_CONTENT, GetHealthReq, GetHealthRes, GetMetadataReq,
+    GetMetadataRes, GetSliceReq, GetSliceRes, GetSnapshotReq, GetSnapshotRes, GetStatsReq,
+    GetStatsRes, InconsistencyRequest, InvalidateReq, InvalidateRes, PutSliceReq, PutSliceRes,
+    PutSnapshotReq, PutSnapshotRes, RepairReq, RepairRequest, RepairRes, SyncReq, SyncRes,
+    SyncSpoolRequest, SyncSpoolResponse,
 };
 use peer_manager::PeerManager;
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
+use tape_crypto::Hash;
 
+use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
 
 pub struct HttpApi {
@@ -35,7 +36,7 @@ impl HttpApi {
     }
 
     pub fn with_default_timeouts(peer_manager: Arc<PeerManager>) -> Self {
-        crate::HttpApiBuilder::new()
+        HttpApiBuilder::new()
             .build(peer_manager)
             .expect("default peer HTTP client config should build")
     }
@@ -161,7 +162,7 @@ impl Api for HttpApi {
     async fn put_slice(&self, node: NodeId, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::slice_url(&track_id, req.spool));
+        let url = format!("{base}{}", api::slice_url(&track_id, req.spool));
         let body =
             wincode::serialize(&req.payload)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -187,7 +188,7 @@ impl Api for HttpApi {
     async fn get_slice(&self, node: NodeId, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::slice_url(&track_id, req.spool));
+        let url = format!("{base}{}", api::slice_url(&track_id, req.spool));
 
         let start = Instant::now();
         let resp = self
@@ -213,7 +214,7 @@ impl Api for HttpApi {
     ) -> Result<GetMetadataRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::metadata_url(&track_id));
+        let url = format!("{base}{}", api::metadata_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -234,7 +235,7 @@ impl Api for HttpApi {
 
     async fn sync(&self, node: NodeId, req: &SyncReq) -> Result<SyncRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", tape_protocol::api::SYNC_SPOOL_PATH);
+        let url = format!("{base}{}", api::SYNC_SPOOL_PATH);
         let wire_req = SyncSpoolRequest {
             spool_index: req.spool_index,
             cursor: req.cursor,
@@ -272,7 +273,7 @@ impl Api for HttpApi {
     async fn repair(&self, node: NodeId, req: &RepairReq) -> Result<RepairRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::repair_url(&track_id));
+        let url = format!("{base}{}", api::repair_url(&track_id));
         let wire_req = RepairRequest {
             helper_spool: req.helper_spool,
             stripes: req.stripes.clone(),
@@ -305,7 +306,7 @@ impl Api for HttpApi {
     async fn certify(&self, node: NodeId, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::sign_url(&track_id));
+        let url = format!("{base}{}", api::sign_url(&track_id));
 
         let start = Instant::now();
         let resp = self
@@ -337,7 +338,7 @@ impl Api for HttpApi {
     ) -> Result<InvalidateRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let track_id = req.track.to_string();
-        let url = format!("{base}{}", tape_protocol::api::inconsistency_url(&track_id));
+        let url = format!("{base}{}", api::inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
             proof: req.proof.clone(),
         };
@@ -379,7 +380,7 @@ impl Api for HttpApi {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!(
             "{base}{}",
-            tape_protocol::api::snapshot_signature_url(req.epoch.0, req.chunk_index)
+            api::snapshot_signature_url(req.epoch.0, req.chunk_index)
         );
         let body = wincode::serialize(&req.submission)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
@@ -408,7 +409,7 @@ impl Api for HttpApi {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
         let url = format!(
             "{base}{}",
-            tape_protocol::api::snapshot_commitments_url(req.epoch.0)
+            api::snapshot_commitments_url(req.epoch.0)
         );
 
         let start = Instant::now();
@@ -423,7 +424,7 @@ impl Api for HttpApi {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx("get_snapshot", bytes.len() as u64);
-        let commitments: Vec<tape_crypto::Hash> =
+        let commitments: Vec<Hash> =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
@@ -436,7 +437,7 @@ impl Api for HttpApi {
         _req: &GetHealthReq,
     ) -> Result<GetHealthRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", tape_protocol::api::HEALTH_PATH);
+        let url = format!("{base}{}", api::HEALTH_PATH);
 
         let start = Instant::now();
         let resp = self
@@ -458,7 +459,7 @@ impl Api for HttpApi {
         _req: &GetStatsReq,
     ) -> Result<GetStatsRes, ApiError> {
         let base = resolve(self.scheme, &self.peer_manager, node)?;
-        let url = format!("{base}{}", tape_protocol::api::STATS_PATH);
+        let url = format!("{base}{}", api::STATS_PATH);
 
         let start = Instant::now();
         let resp = self

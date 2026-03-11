@@ -7,8 +7,8 @@ use std::time::Duration;
 use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
-use tape_protocol::api::{GetSliceReq, RepairReq};
-use tape_protocol::api::StripeSubChunkRequest;
+use tape_protocol::api::{GetSliceReq, RepairReq, RepairRequest, StripeSubChunkRequest};
+use tape_protocol::state::ProtocolState;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
@@ -165,7 +165,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// Build a map from SpoolIndex → peer NodeId for a spool group.
 fn build_peer_map(
-    state: &tape_protocol::state::ProtocolState,
+    state: &ProtocolState,
     our_spool: SpoolIndex,
     spool_group: SpoolGroup,
 ) -> HashMap<SpoolIndex, NodeId> {
@@ -464,7 +464,7 @@ fn build_per_helper_requests(
     map.into_iter()
         .map(|(slice_idx, stripes)| {
             let helper_spool = spool_group.spool_at(*slice_idx);
-            (slice_idx, tape_protocol::api::RepairRequest { helper_spool, stripes })
+            (slice_idx, RepairRequest { helper_spool, stripes })
         })
         .collect()
 }

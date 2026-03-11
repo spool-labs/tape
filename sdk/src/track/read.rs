@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rpc::Rpc;
 use solana_sdk::pubkey::Pubkey;
 use tape_core::erasure::group_start;
-use tape_core::spooler::SpoolIndex;
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_protocol::Api;
 
@@ -12,6 +12,7 @@ use crate::codec::encoder::BlobEncoder;
 use crate::error::{ClientError, TapedriveError};
 use crate::tapedrive::Tapedrive;
 use crate::track::bootstrap_network_state;
+use crate::transfer::downloader::ParallelDownloader;
 use tape_crypto::Hash;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
@@ -27,7 +28,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 }
 
 pub fn localize_slices(
-    spool_group: tape_core::spooler::SpoolGroup,
+    spool_group: SpoolGroup,
     slices: Vec<(SpoolIndex, Vec<u8>)>,
 ) -> Vec<(SpoolIndex, Vec<u8>)> {
     let base = group_start(spool_group);
@@ -49,7 +50,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
     let slice_to_node: HashMap<SpoolIndex, NodeId> =
         state.group_peers(spool_group).into_iter().collect();
 
-    let downloader = crate::transfer::downloader::ParallelDownloader::new(
+    let downloader = ParallelDownloader::new(
         *track,
         slice_to_node,
         k,
@@ -82,4 +83,3 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     let computed: Hash = root.into();
     Ok(computed == onchain.data.commitment_hash)
 }
-

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::errors::is_account_state_pending_error;
@@ -15,12 +16,13 @@ use tape_api::utils::to_name;
 use solana_sdk::signer::Signer;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::{BasisPoints, EpochNumber};
+use crate::chain::ChainFixture;
 use crate::simnet::SimnetHarness;
 
 #[derive(Debug, Clone)]
 pub struct JoinResult {
     pub node_id: usize,
-    pub authority: solana_sdk::pubkey::Pubkey,
+    pub authority: Pubkey,
     pub result: Result<Signature, String>,
 }
 
@@ -35,7 +37,7 @@ impl<'a> SimnetScenario<'a> {
 
     pub fn workspace_root(&self) -> Result<PathBuf> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        crate::ChainFixture::workspace_root_from_manifest(&manifest_dir)
+        ChainFixture::workspace_root_from_manifest(&manifest_dir)
     }
 
     pub async fn init_system(&self) -> Result<()> {

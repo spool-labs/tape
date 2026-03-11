@@ -9,7 +9,7 @@
 //!    enforcing group constraints (1 spool per group per node).
 
 use tape_core::erasure::{SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::spooler::{SpoolCount, SpoolerError};
+use tape_core::spooler::{SpoolAssignment, SpoolCount, SpoolerError};
 use tape_core::system::Committee;
 use tape_crypto::hash::Hash;
 
@@ -46,7 +46,7 @@ pub fn cap_spools(node_count: u64, spool_count: u64) -> u64 {
 
 /// Allocate + migrate in one call using D'Hondt.
 pub fn migrate_dhondt<const SPOOLS: usize, const N: usize>(
-    assignment: &mut tape_core::spooler::SpoolAssignment<SPOOLS>,
+    assignment: &mut SpoolAssignment<SPOOLS>,
     current: &Committee<N>,
     next: &Committee<N>,
     seed: &Hash,
@@ -71,7 +71,7 @@ pub fn migrate_dhondt<const SPOOLS: usize, const N: usize>(
 
 /// Allocate + migrate in one call using Sainte-Lague.
 pub fn migrate_sainte_lague<const SPOOLS: usize, const N: usize>(
-    assignment: &mut tape_core::spooler::SpoolAssignment<SPOOLS>,
+    assignment: &mut SpoolAssignment<SPOOLS>,
     current: &Committee<N>,
     next: &Committee<N>,
     seed: &Hash,

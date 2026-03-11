@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_core::prelude::*;
+use crate::program::{staking, tapedrive};
 use crate::utils::ata;
 use crate::program::*;
 
@@ -43,7 +44,7 @@ pub fn build_advance_pool_ix(
     let (history_address, _) = history_pda(pool);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             // authority is NOT a signer - AdvancePool is permissionless
@@ -76,7 +77,7 @@ pub fn build_stake_with_pool_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -91,7 +92,7 @@ pub fn build_stake_with_pool_ix(
             AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(crate::program::staking::ID, false),
+            AccountMeta::new_readonly(staking::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: StakeWithPool { amount }.to_bytes(),
@@ -109,7 +110,7 @@ pub fn build_request_stake_unlock_ix(
     let (history_address, _) = history_pda(pool);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -139,7 +140,7 @@ pub fn build_unstake_from_pool_ix(
     let (history_address, _) = history_pda(pool);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),  // writable: receives vault rent refund via CPI
@@ -155,7 +156,7 @@ pub fn build_unstake_from_pool_ix(
             AccountMeta::new_readonly(history_address, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(crate::program::staking::ID, false),
+            AccountMeta::new_readonly(staking::ID, false),
         ],
         data: UnstakeFromPool {}.to_bytes(),
     }
@@ -178,7 +179,7 @@ pub fn build_split_pool_stake_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -193,7 +194,7 @@ pub fn build_split_pool_stake_ix(
             AccountMeta::new_readonly(mint_address, false),
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            AccountMeta::new_readonly(crate::program::staking::ID, false),
+            AccountMeta::new_readonly(staking::ID, false),
         ],
         data: SplitPoolStake { amount }.to_bytes(),
     }
@@ -212,7 +213,7 @@ pub fn build_merge_pool_stake_ix(
     let (dest_vault, _)   = vault_pda(dest_stake);
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),  // writable: receives vault rent refund via CPI
@@ -225,7 +226,7 @@ pub fn build_merge_pool_stake_ix(
             AccountMeta::new(dest_vault, false),
 
             AccountMeta::new_readonly(spl_token::ID, false),
-            AccountMeta::new_readonly(crate::program::staking::ID, false),
+            AccountMeta::new_readonly(staking::ID, false),
         ],
         data: MergePoolStake {}.to_bytes(),
     }

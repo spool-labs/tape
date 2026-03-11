@@ -1,4 +1,5 @@
 use tape_solana::*;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 
 #[repr(C)]
@@ -15,7 +16,7 @@ pub fn build_advance_epoch_ix(
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -28,4 +29,3 @@ pub fn build_advance_epoch_ix(
         data: AdvanceEpoch {}.to_bytes(),
     }
 }
-

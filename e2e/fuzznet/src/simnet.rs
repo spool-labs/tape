@@ -24,13 +24,13 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::{init_tls, pick_bind};
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
-use tape_sdk::{Tapedrive, TapeKey};
+use tape_sdk::{TapeKey, Tapedrive, TapedriveError};
 
 use tokio::sync::mpsc;
 
 use crate::app::Command;
 use crate::log_layer::LogHistogram;
-use crate::poller::{PollerHandle, PollerUpdate};
+use crate::poller::{PollerHandle, PollerUpdate, SnapshotHandle};
 use crate::stake_fuzzer::StakeFuzzer;
 
 const SLOT_BUMP: u64 = 1;
@@ -84,7 +84,7 @@ fn is_join_done(error: &anyhow::Error) -> bool {
 
 pub fn run(
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
-    snapshot: crate::poller::SnapshotHandle,
+    snapshot: SnapshotHandle,
     histogram: LogHistogram,
 ) {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -98,7 +98,7 @@ pub fn run(
 
 async fn async_run(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<Command>,
-    snapshot: crate::poller::SnapshotHandle,
+    snapshot: SnapshotHandle,
     histogram: LogHistogram,
 ) {
     tracing::info!("initializing tls");
@@ -834,12 +834,12 @@ async fn upload_random_blob(
     unreachable!()
 }
 
-fn is_retriable_upload_error(error: &tape_sdk::TapedriveError) -> bool {
+fn is_retriable_upload_error(error: &TapedriveError) -> bool {
     !matches!(
         error,
-        tape_sdk::TapedriveError::CommitmentMismatch
-            | tape_sdk::TapedriveError::InvalidArgument(_)
-            | tape_sdk::TapedriveError::InsufficientCapacity { .. }
+        TapedriveError::CommitmentMismatch
+            | TapedriveError::InvalidArgument(_)
+            | TapedriveError::InsufficientCapacity { .. }
     )
 }
 

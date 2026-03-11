@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use rpc_client::RpcClient;
+use tape_protocol::fetch::fetch_state;
 use tape_api::prelude::{Archive, Epoch, SnapshotState, System};
 use tracing::trace;
 
@@ -8,22 +10,22 @@ use crate::scenario::SimnetScenario;
 
 impl SimnetScenario<'_> {
     pub async fn read_system(&self) -> Result<System> {
-        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_system().await.context("read system")
     }
 
     pub async fn read_epoch(&self) -> Result<Epoch> {
-        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_epoch().await.context("read epoch")
     }
 
     pub async fn read_archive(&self) -> Result<Archive> {
-        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client.get_archive().await.context("read archive")
     }
 
     pub async fn read_snapshot_state(&self) -> Result<SnapshotState> {
-        let client = rpc_client::RpcClient::from_rpc(self.harness.chain().rpc().clone());
+        let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         client
             .get_snapshot_state()
             .await
@@ -87,7 +89,7 @@ impl SimnetScenario<'_> {
         trace!(index, "running manual refresh_node_state");
 
         let ctx = node.context();
-        let state = tape_protocol::fetch::fetch_state(&ctx.rpc)
+        let state = fetch_state(&ctx.rpc)
             .await
             .map_err(|e| anyhow::anyhow!("fetch protocol state: {e}"))?;
         ctx.set_state(state);

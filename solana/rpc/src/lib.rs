@@ -45,5 +45,5 @@ pub use solana_sdk::signature::Signature;
 pub mod prelude {
     pub use crate::error::RpcError;
     pub use crate::rpc::Rpc;
-    pub use solana_sdk::commitment_config::CommitmentLevel;
+    pub use crate::CommitmentLevel;
 }

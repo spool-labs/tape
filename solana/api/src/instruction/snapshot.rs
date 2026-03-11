@@ -5,6 +5,7 @@
 use tape_core::prelude::*;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_crypto::Hash;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_solana::*;
 
@@ -86,7 +87,7 @@ pub fn build_register_snapshot_ix(
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(node_address, false),
@@ -130,7 +131,7 @@ pub fn build_certify_snapshot_ix(
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(system_address, false),
@@ -162,7 +163,7 @@ pub fn build_reserve_snapshot_tape_ix(fee_payer: Pubkey) -> Instruction {
     let (snapshot_state_address, _) = snapshot_state_pda();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(system_address, false),

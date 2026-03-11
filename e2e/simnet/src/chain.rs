@@ -9,6 +9,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature, Signer};
+use tape_api::program::{exchange, staking, tapedrive, token};
 use tracing::trace;
 
 /// Shared chain fixture backed by LiteSVM.
@@ -59,28 +60,28 @@ impl ChainFixture {
     pub fn load_default_programs(&self, workspace_root: &Path) -> Result<()> {
         self.rpc
             .add_program_from_file(
-                tape_api::program::tapedrive::ID,
+                tapedrive::ID,
                 Self::deploy_path(workspace_root, "tapedrive"),
             )
             .context("load tapedrive program")?;
 
         self.rpc
             .add_program_from_file(
-                tape_api::program::token::ID,
+                token::ID,
                 Self::deploy_path(workspace_root, "token"),
             )
             .context("load token program")?;
 
         self.rpc
             .add_program_from_file(
-                tape_api::program::exchange::ID,
+                exchange::ID,
                 Self::deploy_path(workspace_root, "exchange"),
             )
             .context("load exchange program")?;
 
         self.rpc
             .add_program_from_file(
-                tape_api::program::staking::ID,
+                staking::ID,
                 Self::deploy_path(workspace_root, "staking"),
             )
             .context("load staking program")?;

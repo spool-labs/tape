@@ -1,4 +1,5 @@
 use tape_solana::*;
+use crate::program::tapedrive;
 use crate::program::tapedrive::*;
 use tape_core::prelude::*;
 use tape_crypto::Hash;
@@ -24,7 +25,7 @@ pub fn build_add_to_blacklist_ix(
 ) -> Instruction {
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -49,7 +50,7 @@ pub fn build_remove_from_blacklist_ix(
     let index = index.to_le_bytes();
 
     Instruction {
-        program_id: crate::program::tapedrive::ID,
+        program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),

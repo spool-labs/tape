@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_core::prelude::*;
+use crate::program::exchange;
 use crate::program::*;
 
 #[repr(C)]
@@ -60,7 +61,7 @@ pub fn build_register_exchange_ix(
     let (exchange_ata, _) = exchange_ata(exchange_address);
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -85,7 +86,7 @@ pub fn build_deposit_sol_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),
@@ -107,7 +108,7 @@ pub fn build_withdraw_sol_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),
@@ -131,7 +132,7 @@ pub fn build_deposit_tape_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -157,7 +158,7 @@ pub fn build_withdraw_tape_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -180,7 +181,7 @@ pub fn build_set_exchange_rate_ix(
     sol: u64,
 ) -> Instruction {
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -205,7 +206,7 @@ pub fn build_swap_for_tape_ix(
     let amount_sol = amount_sol.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),
@@ -230,7 +231,7 @@ pub fn build_swap_for_sol_ix(
     let amount_tape = amount_tape.pack();
 
     Instruction {
-        program_id: crate::program::exchange::ID,
+        program_id: exchange::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),

@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_core::prelude::*;
+use crate::program::staking;
 use crate::utils::ata;
 use crate::program::*;
 
@@ -39,7 +40,7 @@ pub fn build_stake_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::staking::ID,
+        program_id: staking::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -66,7 +67,7 @@ pub fn build_unstake_ix(
     let authority_ata      = ata(&authority);
 
     Instruction {
-        program_id: crate::program::staking::ID,
+        program_id: staking::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),  // writable: receives vault rent refund
@@ -98,7 +99,7 @@ pub fn build_split_stake_ix(
     let amount = amount.pack();
 
     Instruction {
-        program_id: crate::program::staking::ID,
+        program_id: staking::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new_readonly(authority, true),
@@ -130,7 +131,7 @@ pub fn build_merge_stake_ix(
     let (dest_vault_address, _)   = vault_pda(dest_stake_address);
 
     Instruction {
-        program_id: crate::program::staking::ID,
+        program_id: staking::ID,
         accounts: vec![
             AccountMeta::new(fee_payer, true),
             AccountMeta::new(authority, true),  // writable: receives vault rent refund
