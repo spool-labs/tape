@@ -1,4 +1,4 @@
-use tape_node::core::helpers::validate_slice_entry;
+use tape_node::tasks::spool_support::validate_slice_entry;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_e2e_simnet::TestNode;
 

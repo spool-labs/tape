@@ -46,6 +46,26 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // TODO:
+    // NodeConfig exposes a large set of knobs that are not actually wired into runtime behavior.
+    // poll_interval_ms, sync_concurrency, sync_batch_size, commission, and the entire recovery
+    // subtree are parsed into network/node/src/ core/config/node.rs:59 and
+    // network/node/src/core/config/recovery.rs:5, but the ingestor, spool sync task, and task
+    // runner still use hardcoded values like TIP_POLL_MS = 400, SYNC_BATCH_SIZE = 100, and fixed
+    // semaphore/backoff settings in network/node/src/ingestor.rs:25,
+    // network/node/src/tasks/spool_sync.rs:22, and network/node/src/task_runner.rs:491.
+
+    // TODO:
+    // TLS and transport-security config is largely declarative only. NodeConfig includes
+    // tls_keypair and tls, and NodeApiConfig includes transport_security in
+    // network/node/src/core/config/node.rs:35 and network/node/src/core/ config/api.rs:5, but
+    // startup only loads the Solana and BLS keys in network/node/src/bin/node/main.rs:53, and the
+    // HTTP server binds a plain TcpListener and calls axum::serve with no TLS or peer identity
+    // enforcement in network/ node/src/http/server.rs:150. Even within ingress limits, only a
+    // subset is used; metadata_body_max, public_ingest, public_slice_limit, and
+    // public_metadata_limit are defined but not applied in the router built in
+    // network/node/src/http/server.rs:37.
+
     // Load config
     let config = NodeConfig::from_yaml_file(&cli.config)
         .with_context(|| format!("failed to load config from {}", cli.config))?;

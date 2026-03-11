@@ -247,6 +247,7 @@ impl TestNode {
                         .keypair
                         .take()
                         .ok_or_else(|| anyhow!("node keypair missing"))?;
+                    let bls_keypair = self.node_ctx.bls_keypair;
                     let store = self
                         .node_store
                         .store
@@ -261,7 +262,7 @@ impl TestNode {
                     let shared_state = new_shared_state(ProtocolState::default());
                     let peer_manager = Arc::new(PeerManager::new(shared_state.clone()));
                     let api = Arc::new(MemoryApi::noop());
-                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, store, rpc, shared_state, peer_manager, api)
+                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, bls_keypair, store, rpc, shared_state, peer_manager, api)
                         .build()
                         .await
                         .context("build node context")?;

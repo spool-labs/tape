@@ -1,6 +1,6 @@
-use tape_core::erasure::{slice_for_spool, spool_in_group};
-use tape_store::ops::{ObjectInfoOps, SliceOps, TrackOps};
-use tape_store::types::{ObjectInfo, TrackInfo};
+use tape_core::erasure::slice_for_spool;
+use tape_core::spooler::SpoolIndex;
+use tape_store::types::TrackInfo;
 
 /// Validate an untrusted slice before local persistence.
 pub fn validate_slice_entry(
@@ -28,53 +28,4 @@ pub fn validate_slice_entry(
     }
 
     Ok(())
-}
-
-/// Check whether any certified track in this spool's group is missing its slice.
-pub fn has_missing_slices(
-    store: &(impl TrackOps + ObjectInfoOps + SliceOps),
-    spool: SpoolIndex,
-) -> Result<bool, String> {
-    let mut cursor = None;
-    const BATCH: usize = 100;
-
-    loop {
-        let tracks = store
-            .iter_tracks_from(cursor, BATCH)
-            .map_err(|e| format!("iter_tracks: {e}"))?;
-
-        if tracks.is_empty() {
-            break;
-        }
-
-        for (track_addr, track_info) in &tracks {
-            if !spool_in_group(spool, track_info.spool_group) {
-                continue;
-            }
-
-            let certified = match store.get_object_info(*track_addr) {
-                Ok(Some(ObjectInfo::Valid {
-                    certified_epoch: Some(_),
-                    ..
-                })) => true,
-                Ok(_) => false,
-                Err(e) => return Err(format!("get_object_info: {e}")),
-            };
-            if !certified {
-                continue;
-            }
-
-            let has = store
-                .has_slice(spool, *track_addr)
-                .map_err(|e| format!("has_slice: {e}"))?;
-
-            if !has {
-                return Ok(true);
-            }
-        }
-
-        cursor = tracks.last().map(|(addr, _)| *addr);
-    }
-
-    Ok(false)
 }
