@@ -22,7 +22,6 @@ tape-store.workspace = true
 tape-protocol.workspace = true
 peer-manager.workspace = true
 peer-http.workspace = true
-peer-memory.workspace = true
 rpc.workspace = true
 tape-core.workspace = true
 tokio-util = "0.7"

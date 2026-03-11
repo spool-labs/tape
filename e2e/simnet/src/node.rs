@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::{fs, io};
 
 use anyhow::{anyhow, Context, Result};
-use peer_memory::MemoryApi;
+use peer_http::HttpApi;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::pubkey::Pubkey;
@@ -48,7 +48,7 @@ struct TestNodeCtx {
     keypair: Option<Keypair>,
     bls_keypair: BlsPrivateKey,
     rpc: Option<RpcClient<LiteSvmRpc>>,
-    context: Option<Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>>,
+    context: Option<Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>>,
 }
 
 impl TestNodeCtx {
@@ -169,7 +169,7 @@ impl TestNode {
         self.id
     }
 
-    pub fn context(&self) -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
+    pub fn context(&self) -> Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>> {
         self.node_ctx.context
             .as_ref()
             .cloned()
@@ -259,8 +259,8 @@ impl TestNode {
                         .ok_or_else(|| anyhow!("node rpc missing"))?;
 
                     let peer_manager = Arc::new(PeerManager::new());
-                    let api = Arc::new(MemoryApi::noop());
-                    let context = NodeContextBuilder::<MemoryStore, MemoryApi, LiteSvmRpc>::new(config, keypair, bls_keypair, store, rpc, peer_manager, api)
+                    let api = Arc::new(HttpApi::new(reqwest::Client::new(), peer_manager.clone()));
+                    let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(config, keypair, bls_keypair, store, rpc, peer_manager, api)
                         .build()
                         .await
                         .context("build node context")?;

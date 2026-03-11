@@ -69,8 +69,10 @@ pub fn process_register_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     )?;
 
     let track_number = tape.track_count;
+    let tape_number  = tape.id.into();
     let seed = slot_hash_seed(slot_hashes_info)?;
     let mixed = u64::from_le_bytes(seed.0[..8].try_into().unwrap())
+        .wrapping_add(tape_number)
         .wrapping_add(track_number);
 
     let spool_group = SpoolGroup(mixed % SPOOL_GROUP_COUNT as u64);
@@ -190,6 +192,7 @@ mod tests {
 
         let epoch = Epoch::zeroed();
         let tape = Tape {
+            id: TapeNumber(1),
             authority: authority,
             capacity: StorageUnits::mb(1000),
             active_epoch: EpochNumber(0),
@@ -211,9 +214,11 @@ mod tests {
             rent_sysvar(),
         ];
 
-        // Build expected track data with profile
-        // seed=0 (zeroed slot hash), mixed = 0 + 100 = 100, spool_group = 100 % 50 = 0
-        let mut expected_data = TrackData::new(EpochNumber(0), commitment, SpoolGroup(0));
+        // Build expected track data with profile.
+        // seed=0 (zeroed slot hash), mixed = tape.id(1) + track_count(100) = 101,
+        // spool_group = 101 % 50 = 1
+        let mut expected_data = TrackData::new(
+            EpochNumber(0), commitment, SpoolGroup(1));
         expected_data.profile = profile;
 
         let env = test_env();
@@ -233,6 +238,7 @@ mod tests {
                 ).build(),
                 Check::account(&tape_address).data(
                     Tape {
+                        id: tape.id,
                         authority: authority,
                         capacity: tape.capacity,
                         used: storage_units,
