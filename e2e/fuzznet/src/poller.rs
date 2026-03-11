@@ -38,6 +38,9 @@ pub enum PollerUpdate {
         expired: u64,
         failed: u64,
         retries: u64,
+        running: u64,
+        waiting_retry: u64,
+        stalled: u64,
         last_retry_error: Option<String>,
         next_retry_in_ms: Option<u64>,
         retry_in_progress: bool,
@@ -110,6 +113,9 @@ struct PollerState {
     uploads_expired: u64,
     uploads_failed: u64,
     uploads_retries: u64,
+    uploads_running: u64,
+    uploads_waiting_retry: u64,
+    uploads_stalled: u64,
     uploads_last_retry_error: Option<String>,
     uploads_next_retry_in_ms: Option<u64>,
     uploads_retry_in_progress: bool,
@@ -167,6 +173,9 @@ async fn poller_task(
         uploads_expired: 0,
         uploads_failed: 0,
         uploads_retries: 0,
+        uploads_running: 0,
+        uploads_waiting_retry: 0,
+        uploads_stalled: 0,
         uploads_last_retry_error: None,
         uploads_next_retry_in_ms: None,
         uploads_retry_in_progress: false,
@@ -216,6 +225,9 @@ async fn poller_task(
                         expired,
                         failed,
                         retries,
+                        running,
+                        waiting_retry,
+                        stalled,
                         last_retry_error,
                         next_retry_in_ms,
                         retry_in_progress,
@@ -225,6 +237,9 @@ async fn poller_task(
                         state.uploads_expired = expired;
                         state.uploads_failed = failed;
                         state.uploads_retries = retries;
+                        state.uploads_running = running;
+                        state.uploads_waiting_retry = waiting_retry;
+                        state.uploads_stalled = stalled;
                         state.uploads_last_retry_error = last_retry_error;
                         state.uploads_next_retry_in_ms = next_retry_in_ms;
                         state.uploads_retry_in_progress = retry_in_progress;
@@ -479,6 +494,9 @@ async fn poll_once(
         uploads_expired: state.track_expired,
         uploads_failed: state.track_failed,
         uploads_retries: state.uploads_retries,
+        uploads_running: state.uploads_running,
+        uploads_waiting_retry: state.uploads_waiting_retry,
+        uploads_stalled: state.uploads_stalled,
         uploads_last_retry_error: state.uploads_last_retry_error.clone(),
         uploads_next_retry_in_ms: state.uploads_next_retry_in_ms,
         uploads_retry_in_progress: state.uploads_retry_in_progress,

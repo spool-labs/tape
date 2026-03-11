@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
 
     // Build peer manager and API
     let peer_manager = Arc::new(PeerManager::new());
-    let api = Arc::new(HttpApi::new(Default::default(), peer_manager.clone()));
+    let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
 
     // Build context (includes startup node-id resolution from on-chain node account)
     let context = NodeContextBuilder::new(

@@ -62,7 +62,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     pub fn new(rpc: Blockchain, payer: &Keypair) -> Self {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
         let peer_manager = Arc::new(PeerManager::new());
-        let api = Arc::new(HttpApi::new(Default::default(), peer_manager.clone()));
+        let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
         Self {
             state: ArcSwap::from_pointee(ProtocolState::default()),
             peer_manager,

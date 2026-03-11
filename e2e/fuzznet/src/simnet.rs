@@ -40,8 +40,12 @@ const UPLOAD_EPOCHS: u64 = 100;
 const UPLOAD_MAX_RETRIES: u32 = 8;
 const UPLOAD_RETRY_BASE_MS: u64 = 500;
 const UPLOAD_RETRY_MAX_MS: u64 = 30_000;
+const UPLOAD_STALL_THRESHOLD_SECS: u64 = 20;
 
 enum UploadResult {
+    AttemptStarted {
+        upload_id: Pubkey,
+    },
     Success {
         upload_id: Pubkey,
         expiry_epoch: u64,
@@ -137,6 +141,7 @@ async fn async_run(
         upload_completed: Vec::new(),
         upload_failed: 0,
         upload_retries: 0,
+        upload_running: HashMap::new(),
         upload_last_retry_error: None,
         upload_next_retry_in_ms: None,
         upload_next_retry_deadlines: HashMap::new(),
@@ -175,6 +180,7 @@ async fn async_run(
                         let tape_key = TapeKey::generate();
                         let upload_id = tape_key.pubkey();
                         state.upload_pending += 1;
+                        state.upload_running.insert(upload_id, Instant::now());
                         let rpc = state.chain.rpc().clone();
                         let admin_bytes = state.admin.to_bytes();
                         let tx = state.upload_tx.clone();
@@ -224,12 +230,17 @@ async fn async_run(
             }
             result = state.upload_rx.recv() => {
                 match result {
+                    Some(UploadResult::AttemptStarted { upload_id }) => {
+                        state.upload_running.insert(upload_id, Instant::now());
+                        state.upload_next_retry_deadlines.remove(&upload_id);
+                    }
                     Some(UploadResult::Success {
                         upload_id,
                         expiry_epoch,
                     }) => {
                         state.upload_pending -= 1;
                         state.upload_completed.push(expiry_epoch);
+                        state.upload_running.remove(&upload_id);
                         state.upload_next_retry_deadlines.remove(&upload_id);
                     }
                     Some(UploadResult::Retrying {
@@ -239,6 +250,7 @@ async fn async_run(
                     }) => {
                         state.upload_retries += 1;
                         state.upload_last_retry_error = Some(error);
+                        state.upload_running.remove(&upload_id);
                         let deadline = Instant::now() + Duration::from_millis(next_retry_in_ms);
                         state
                             .upload_next_retry_deadlines
@@ -247,6 +259,7 @@ async fn async_run(
                     Some(UploadResult::Failed { upload_id }) => {
                         state.upload_pending -= 1;
                         state.upload_failed += 1;
+                        state.upload_running.remove(&upload_id);
                         state.upload_next_retry_deadlines.remove(&upload_id);
                     }
                     None => {}
@@ -261,6 +274,9 @@ async fn async_run(
                     expired,
                     failed: state.upload_failed,
                     retries: state.upload_retries,
+                    running: state.running_upload_count(),
+                    waiting_retry: state.waiting_retry_count(),
+                    stalled: state.stalled_upload_count(),
                     last_retry_error: state.upload_last_retry_error.clone(),
                     next_retry_in_ms: state.upload_next_retry_in_ms,
                     retry_in_progress: state.upload_retry_in_progress,
@@ -284,6 +300,9 @@ async fn async_run(
                     expired,
                     failed: state.upload_failed,
                     retries: state.upload_retries,
+                    running: state.running_upload_count(),
+                    waiting_retry: state.waiting_retry_count(),
+                    stalled: state.stalled_upload_count(),
                     last_retry_error: state.upload_last_retry_error.clone(),
                     next_retry_in_ms: state.upload_next_retry_in_ms,
                     retry_in_progress: state.upload_retry_in_progress,
@@ -317,6 +336,9 @@ async fn async_run(
                     expired,
                     failed: state.upload_failed,
                     retries: state.upload_retries,
+                    running: state.running_upload_count(),
+                    waiting_retry: state.waiting_retry_count(),
+                    stalled: state.stalled_upload_count(),
                     last_retry_error: state.upload_last_retry_error.clone(),
                     next_retry_in_ms: state.upload_next_retry_in_ms,
                     retry_in_progress: state.upload_retry_in_progress,
@@ -420,6 +442,7 @@ struct SimnetState {
     upload_completed: Vec<u64>,
     upload_failed: u64,
     upload_retries: u64,
+    upload_running: HashMap<Pubkey, Instant>,
     upload_last_retry_error: Option<String>,
     upload_next_retry_in_ms: Option<u64>,
     upload_next_retry_deadlines: HashMap<Pubkey, Instant>,
@@ -708,6 +731,23 @@ impl SimnetState {
         self.upload_next_retry_in_ms = next_retry_ms;
     }
 
+    fn running_upload_count(&self) -> u64 {
+        self.upload_running.len() as u64
+    }
+
+    fn waiting_retry_count(&self) -> u64 {
+        self.upload_next_retry_deadlines.len() as u64
+    }
+
+    fn stalled_upload_count(&self) -> u64 {
+        let threshold = Duration::from_secs(UPLOAD_STALL_THRESHOLD_SECS);
+        let now = Instant::now();
+        self.upload_running
+            .values()
+            .filter(|started_at| now.duration_since(**started_at) >= threshold)
+            .count() as u64
+    }
+
 }
 
 async fn upload_random_blob(
@@ -732,6 +772,7 @@ async fn upload_random_blob(
     let mut is_reserved = false;
 
     for attempt in 0..=UPLOAD_MAX_RETRIES {
+        let _ = tx.send(UploadResult::AttemptStarted { upload_id });
         if !is_reserved {
             match sdk.reserve(&tape_key, reserve_capacity, UPLOAD_EPOCHS).await {
                 Ok(_) => {
@@ -841,6 +882,7 @@ mod tests {
                         upload_completed: Vec::new(),
                         upload_failed: 0,
                         upload_retries: 0,
+                        upload_running: HashMap::new(),
                         upload_last_retry_error: None,
                         upload_next_retry_in_ms: None,
                         upload_next_retry_deadlines: HashMap::new(),

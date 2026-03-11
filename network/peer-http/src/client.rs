@@ -34,6 +34,12 @@ impl HttpApi {
         }
     }
 
+    pub fn with_default_timeouts(peer_manager: Arc<PeerManager>) -> Self {
+        crate::HttpApiBuilder::new()
+            .build(peer_manager)
+            .expect("default peer HTTP client config should build")
+    }
+
     fn record(&self, op: &str, resp: &reqwest::Response, start: Instant, bytes_sent: u64) {
         if let Some(m) = &self.metrics {
             let duration = start.elapsed().as_secs_f64();
@@ -139,6 +145,14 @@ mod tests {
 
         let base = resolve(api.scheme, api.peer_manager.as_ref(), node_id).unwrap();
         assert_eq!(base, "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn default_timeout_builder_constructs_http_api() {
+        let peer_manager = Arc::new(PeerManager::new());
+        let api = HttpApi::with_default_timeouts(peer_manager.clone());
+        assert_eq!(api.scheme, "http");
+        assert!(Arc::ptr_eq(&api.peer_manager, &peer_manager));
     }
 }
 

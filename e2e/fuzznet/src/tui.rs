@@ -433,8 +433,15 @@ fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     frame.render_widget(block, area);
 
     let line1 = format!(
-        " pending: {}  cert: {}  exp: {}  fail: {}  retry: {}",
-        snap.uploads_pending, snap.uploads_certified, snap.uploads_expired, snap.uploads_failed, snap.uploads_retries
+        " pending: {}  cert: {}  exp: {}  fail: {}  retry: {}  run: {}  wait: {}  stall: {}",
+        snap.uploads_pending,
+        snap.uploads_certified,
+        snap.uploads_expired,
+        snap.uploads_failed,
+        snap.uploads_retries,
+        snap.uploads_running,
+        snap.uploads_waiting_retry,
+        snap.uploads_stalled,
     );
 
     let line2 = if let Some(last_retry_error) = snap.uploads_last_retry_error.as_ref() {
@@ -459,6 +466,10 @@ fn render_tapes(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
             }
         } else if snap.uploads_retry_in_progress {
             " retrying now".to_string()
+        } else if snap.uploads_stalled > 0 {
+            format!(" stalled uploads: {}", snap.uploads_stalled)
+        } else if snap.uploads_running > 0 {
+            format!(" uploads in flight: {}", snap.uploads_running)
         } else {
             " no retry yet".to_string()
         }

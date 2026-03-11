@@ -259,7 +259,7 @@ impl TestNode {
                         .ok_or_else(|| anyhow!("node rpc missing"))?;
 
                     let peer_manager = Arc::new(PeerManager::new());
-                    let api = Arc::new(HttpApi::new(reqwest::Client::new(), peer_manager.clone()));
+                    let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
                     let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(config, keypair, bls_keypair, store, rpc, peer_manager, api)
                         .build()
                         .await
