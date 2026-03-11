@@ -13,7 +13,7 @@ use tape_core::erasure::group_for_spool;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
 use tape_protocol::api::{BlsSignResponse, SnapshotSignatureSubmission, BINARY_CONTENT};
-use tape_store::ops::{MetaOps, TrackOps};
+use tape_store::ops::{MetaOps, SliceOps, TrackOps};
 use tape_store::types::SnapshotPartialSignature;
 
 use crate::http::error::ApiError;
@@ -35,6 +35,23 @@ pub async fn get_signature<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(ApiError::NotFound)?;
 
     let epoch = require_chain_epoch(&app)?;
+    let spool_group = track_info.spool_group;
+    let state = app.context.state();
+
+    let has_local_slice = state
+        .group_peers(spool_group)
+        .into_iter()
+        .filter(|(_, node_id)| *node_id == app.context.node_id())
+        .any(|(spool, _)| {
+            app.context
+                .store
+                .has_slice(spool, track_address)
+                .unwrap_or(false)
+        });
+
+    if !has_local_slice {
+        return Err(ApiError::NotFound);
+    }
 
     let root = track_info.commitment_root();
     let msg = CertifyMessage::new(epoch, track_address.0, root.into());

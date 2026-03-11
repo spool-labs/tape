@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use tape_protocol::Api;
+use tape_protocol::api::ApiError;
 use tape_protocol::api::SyncReq;
 use tape_retry::Retryable;
 use store::Store;
@@ -83,7 +84,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 let res = match res {
                     Ok(res) => res,
-                    Err(e) if e.is_retryable() => {
+                    Err(e) if e.is_retryable() || is_transient_sync_source_error(&e) => {
                         return TaskOutcome::Retryable(format!("sync peer {}: {e}", peer.0));
                     }
                     Err(e) => {
@@ -169,6 +170,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // Phase 3: Finish.
     finish_sync(&ctx, spool)
+}
+
+fn is_transient_sync_source_error(err: &ApiError) -> bool {
+    matches!(err, ApiError::NotResponsible | ApiError::NotFound)
 }
 
 fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(

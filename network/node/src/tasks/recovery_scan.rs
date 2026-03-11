@@ -42,10 +42,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            // Only scan certified tracks — uncertified tracks have no on-chain
-            // commitment and helpers may not have the slice data.
-            let certified = match context.store.get_object_info(*track_addr) {
-                Ok(Some(ObjectInfo::Valid { certified_epoch: Some(_), .. })) => true,
+            // Registered tracks may still need recovery before certification can complete.
+            let recoverable = match context.store.get_object_info(*track_addr) {
+                Ok(Some(ObjectInfo::Valid { .. })) => true,
                 Ok(_) => false,
                 Err(e) => {
                     tracing::warn!(?track_addr, spool, "get_object_info error: {e}");
@@ -53,7 +52,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     continue;
                 }
             };
-            if !certified {
+            if !recoverable {
                 continue;
             }
 

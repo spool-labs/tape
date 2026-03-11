@@ -1,4 +1,5 @@
 use rpc::{Rpc, RpcError};
+use std::collections::HashSet;
 use rpc_client::parse_tape_error;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
@@ -8,14 +9,19 @@ use tape_api::errors::TapeError;
 use tape_api::instruction::{build_certify_track_ix, build_register_track_ix};
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Track;
+use tape_core::bft::min_correct;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, StorageUnits};
-use tape_crypto::Hash;
+use tape_crypto::{Hash, Pubkey as CryptoPubkey};
 use tape_protocol::Api;
+use tape_protocol::api::GetMetadataReq;
+use tape_retry::RetryConfig;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
 use crate::codec::encoder::BlobEncoder;
+use crate::error::UploadError;
 use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::tapedrive::Tapedrive;
@@ -118,7 +124,7 @@ pub async fn register_or_resume_track<Blockchain: Rpc, Cluster: Api>(
 pub async fn upload_registered_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track_address: Pubkey,
-    spool_group: tape_core::spooler::SpoolGroup,
+    spool_group: SpoolGroup,
     slices: Vec<SliceWithProof>,
 ) -> Result<(), TapedriveError> {
     let state = bootstrap_network_state(client).await?;
@@ -129,6 +135,53 @@ pub async fn upload_registered_track<Blockchain: Rpc, Cluster: Api>(
         .upload_all(client.api.as_ref())
         .await
         .map_err(TapedriveError::Upload)
+}
+
+pub async fn wait_for_track_visibility<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    track_address: Pubkey,
+    spool_group: SpoolGroup,
+) -> Result<(), TapedriveError> {
+    let state = bootstrap_network_state(client).await?;
+    let group_peers = state.group_peers(spool_group);
+    let required = min_correct(state.group_member_count(spool_group) as u64) as usize;
+    let track: CryptoPubkey = track_address.into();
+
+    tape_retry::retry_if(
+        RetryConfig::ten(),
+        None,
+        || {
+            let group_peers = group_peers.clone();
+            let api = client.api.clone();
+            let mut seen = HashSet::new();
+            async move {
+                let mut visible = 0usize;
+
+                for (_, node_id) in &group_peers {
+                    if !seen.insert(*node_id) {
+                        continue;
+                    }
+
+                    let req = GetMetadataReq { track };
+                    if api.get_metadata(*node_id, &req).await.is_ok() {
+                        visible += 1;
+                    }
+                }
+
+                if visible >= required {
+                    Ok(())
+                } else {
+                    Err(TapedriveError::Upload(UploadError::Network(
+                        format!("track metadata visible on {visible}/{required} required nodes"),
+                    )))
+                }
+            }
+        },
+        |_| true,
+    )
+    .await?;
+
+    Ok(())
 }
 
 pub fn should_retry_certification(err: &TapedriveError) -> bool {
@@ -147,11 +200,11 @@ pub async fn certify_registered_track<Blockchain: Rpc, Cluster: Api>(
     tape_key: &TapeKey,
     key: Hash,
     track_address: Pubkey,
-    spool_group: tape_core::spooler::SpoolGroup,
+    spool_group: SpoolGroup,
 ) -> Result<(), TapedriveError> {
     let payer = client.payer()?;
     tape_retry::retry_if(
-        tape_retry::RetryConfig::infinite(),
+        RetryConfig::infinite(),
         None,
         || async {
             let system = client.rpc().get_system().await?;
@@ -212,6 +265,13 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     if registered.track.data.is_certified() {
         return Ok(registered.track);
     }
+
+    wait_for_track_visibility(
+        client,
+        registered.address,
+        registered.track.data.spool_group(),
+    )
+    .await?;
 
     upload_registered_track(
         client,

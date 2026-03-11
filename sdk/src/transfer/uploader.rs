@@ -4,10 +4,12 @@
 //! on-chain committee. Each slice goes to the node that owns that spool.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
-use tape_core::erasure::spool_for_slice;
+use tape_core::bft::min_correct;
+use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::Hash;
@@ -59,6 +61,11 @@ pub struct DistributedUploader {
     /// Unique member count in this group (for quorum checks).
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
+}
+
+struct NodeUploadResult {
+    stored: Vec<SpoolIndex>,
+    failed: Vec<SpoolIndex>,
 }
 
 impl DistributedUploader {
@@ -140,7 +147,8 @@ impl DistributedUploader {
                         .await
                         .map_err(|_| UploadError::Semaphore)?;
 
-                    let mut failed_slices = Vec::new();
+                    let mut stored = Vec::new();
+                    let mut failed = Vec::new();
 
                     for (global_spool, slice) in slices {
                         let payload = slice.to_payload();
@@ -161,29 +169,37 @@ impl DistributedUploader {
                                 error = %e,
                                 "Slice upload failed after retries, left for recovery"
                             );
-                            failed_slices.push(global_spool);
+                            failed.push(global_spool);
+                        } else {
+                            stored.push(global_spool);
                         }
                     }
 
-                    Ok::<_, UploadError>(failed_slices)
+                    Ok::<_, UploadError>(NodeUploadResult { stored, failed })
                 }
             })
             .collect();
 
         // Wait for all uploads
-        let results: Vec<Result<Vec<SpoolIndex>, UploadError>> = stream::iter(upload_futures)
+        let results: Vec<Result<NodeUploadResult, UploadError>> = stream::iter(upload_futures)
             .buffer_unordered(DEFAULT_CONCURRENCY)
             .collect()
             .await;
 
-        // Count successful members (those with no errors, may have failed individual slices)
+        // Count members that stored all assigned slices and total landed slices.
         let mut total_failed_slices = 0;
         let mut member_failures = 0;
+        let mut fully_successful_members = 0;
+        let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
 
         for result in &results {
             match result {
-                Ok(failed) => {
-                    total_failed_slices += failed.len();
+                Ok(node) => {
+                    total_failed_slices += node.failed.len();
+                    stored_slices.extend(node.stored.iter().copied());
+                    if node.failed.is_empty() {
+                        fully_successful_members += 1;
+                    }
                 }
                 Err(_) => {
                     member_failures += 1;
@@ -191,14 +207,22 @@ impl DistributedUploader {
             }
         }
 
-        // Check quorum - need 2f+1 of group members to acknowledge
+        // Check quorum - need 2f+1 fully successful group members and 2f+1 landed slices.
         let successful_members = self.group_member_count - member_failures;
-        let required = tape_core::bft::min_correct(self.group_member_count as u64) as usize;
+        let required_members = min_correct(self.group_member_count as u64) as usize;
+        let required_slices = min_correct(SPOOL_GROUP_SIZE as u64) as usize;
 
-        if successful_members < required {
+        if successful_members < required_members || fully_successful_members < required_members {
             return Err(UploadError::InsufficientQuorum {
-                got: successful_members,
-                need: required,
+                got: fully_successful_members.min(successful_members),
+                need: required_members,
+            });
+        }
+
+        if stored_slices.len() < required_slices {
+            return Err(UploadError::InsufficientSlices {
+                got: stored_slices.len(),
+                need: required_slices,
             });
         }
 

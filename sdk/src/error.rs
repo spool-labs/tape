@@ -43,6 +43,9 @@ pub enum UploadError {
     #[error("insufficient quorum: got {got}, need {need}")]
     InsufficientQuorum { got: usize, need: usize },
 
+    #[error("insufficient slices: got {got}, need {need}")]
+    InsufficientSlices { got: usize, need: usize },
+
     #[error("peer error: {0}")]
     Peer(#[from] ApiError),
 

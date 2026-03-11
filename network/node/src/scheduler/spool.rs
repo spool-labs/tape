@@ -15,6 +15,8 @@ use crate::Task;
 
 pub struct SpoolPlanner;
 
+const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
+
 impl SpoolPlanner {
     fn prev_owner_for(
         spool: SpoolIndex,
@@ -280,7 +282,8 @@ impl SpoolPlanner {
         changed
     }
 
-    /// Remove spools marked `LockedToMove` that were locked at least 2 epochs ago.
+    /// Remove spools marked `LockedToMove` that were locked at least
+    /// `LOCKED_SPOOL_RETENTION_EPOCHS` epochs ago.
     /// Called at `EpochAdvanced` so old owners keep serving data long enough for
     /// new owners to complete sync.
     pub fn cleanup_locked<S: Store>(store: &TapeStore<S>, current_epoch: EpochNumber) {
@@ -289,7 +292,9 @@ impl SpoolPlanner {
             Err(_) => return,
         };
         for (spool_id, state) in &spools {
-            if state.is_locked() && state.epoch.0 + 2 <= current_epoch.0 {
+            if state.is_locked()
+                && state.epoch.0 + LOCKED_SPOOL_RETENTION_EPOCHS <= current_epoch.0
+            {
                 match store.delete_all_slices_for_spool(*spool_id) {
                     Ok(count) => {
                         if count > 0 {
