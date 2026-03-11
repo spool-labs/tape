@@ -91,7 +91,7 @@ impl SimnetScenario<'_> {
             .await
             .map_err(|e| anyhow::anyhow!("fetch protocol state: {e}"))?;
         ctx.set_state(state);
-        ctx.peer_manager.resolve_peers(&ctx.rpc)
+        ctx.refresh_peers()
             .await
             .map_err(|e| anyhow::anyhow!("resolve peers: {e}"))?;
         trace!(index, "manual refresh_node_state complete");

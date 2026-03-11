@@ -848,9 +848,7 @@ mod tests {
         let mut config = test_config();
         config.node_api.ingress_limits.slice_body_max = 10;
         use peer_manager::PeerManager;
-        use tape_protocol::new_shared_state;
-        let shared_state = new_shared_state(ProtocolState::default());
-        let peer_manager = std::sync::Arc::new(PeerManager::new(shared_state.clone()));
+        let peer_manager = std::sync::Arc::new(PeerManager::new());
         let api = std::sync::Arc::new(MemoryApi::noop());
         let ctx = NodeContext::new(
             config,
@@ -858,7 +856,6 @@ mod tests {
             BlsPrivateKey::from_random(),
             TapeStore::new(MemoryStore::new()),
             RpcClient::from_rpc(LiteSvmRpc::new()),
-            shared_state,
             peer_manager,
             api,
         );

@@ -95,7 +95,7 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     match tape_protocol::fetch::fetch_state(&ctx.rpc).await {
         Ok(state) => {
             ctx.set_state(state);
-            if let Err(e) = ctx.peer_manager.resolve_peers(&ctx.rpc).await {
+            if let Err(e) = ctx.refresh_peers().await {
                 tracing::warn!(error = %e, "peer resolve failed during bootstrap");
             }
         }
@@ -366,7 +366,7 @@ async fn fetch_solana_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
     ctx.set_state(state);
 
-    if let Err(e) = ctx.peer_manager.resolve_peers(&ctx.rpc).await {
+    if let Err(e) = ctx.refresh_peers().await {
         tracing::warn!(error = %e, "peer resolve failed after state update");
     }
 

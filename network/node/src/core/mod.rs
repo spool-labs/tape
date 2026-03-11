@@ -35,7 +35,6 @@ pub mod test_utils {
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_core::bls::BlsPrivateKey;
-    use tape_protocol::{ProtocolState, new_shared_state};
     use peer_manager::PeerManager;
     use tape_store::{MemoryStore, TapeStore};
 
@@ -63,8 +62,7 @@ pub mod test_utils {
     }
 
     pub fn test_context() -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
-        let shared_state = new_shared_state(ProtocolState::default());
-        let peer_manager = Arc::new(PeerManager::new(shared_state.clone()));
+        let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(MemoryApi::noop());
         let store = TapeStore::new(MemoryStore::new());
         NodeContext::new(
@@ -73,7 +71,6 @@ pub mod test_utils {
             BlsPrivateKey::from_random(),
             store,
             RpcClient::from_rpc(LiteSvmRpc::new()),
-            shared_state,
             peer_manager,
             api,
         )

@@ -17,28 +17,17 @@ use rpc_client::parse_tape_error;
 
 const SYNC_EPOCH_PENDING_DELAY: Duration = Duration::from_secs(5);
 
-fn classify_sync_epoch_error(err: &RpcError) -> TaskOutcome {
-    match parse_tape_error(err) {
-        Some(TapeError::AlreadySynced) => TaskOutcome::Success,
-        Some(TapeError::BadEpochState) => TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY),
-        Some(TapeError::NotInCommittee)
-        | Some(TapeError::BadSpoolHash)
-        | Some(TapeError::BadEpochId) => TaskOutcome::Permanent(format!("sync_epoch: {err}")),
-        _ => TaskOutcome::Retryable(format!("sync_epoch: {err}")),
-    }
-}
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    let state = context.state();
+    let state = ctx.state();
     if state.epoch.is_zero() {
         return TaskOutcome::Retryable("no current epoch".into());
     }
     let epoch = state.epoch;
 
-    let mut owned_spools: Vec<u16> = match context.store.iter_all_spools() {
+    let mut owned_spools: Vec<u16> = match ctx.store.iter_all_spools() {
         Ok(spools) => spools
             .into_iter()
             .filter(|(_, state)| !state.is_locked())
@@ -53,9 +42,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let result = tokio::select! {
-        r = submit_sync_epoch(&context, epoch, &owned_spools) => r,
+        r = submit_sync_epoch(&ctx, epoch, &owned_spools) => r,
         _ = cancel.cancelled() => return TaskOutcome::Success,
     };
+
     let had_error = result.is_err();
     let outcome = match result {
         Ok(sig) => {
@@ -80,6 +70,18 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     outcome
 }
+
+fn classify_sync_epoch_error(err: &RpcError) -> TaskOutcome {
+    match parse_tape_error(err) {
+        Some(TapeError::AlreadySynced) => TaskOutcome::Success,
+        Some(TapeError::BadEpochState) => TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY),
+        Some(TapeError::NotInCommittee)
+        | Some(TapeError::BadSpoolHash)
+        | Some(TapeError::BadEpochId) => TaskOutcome::Permanent(format!("sync_epoch: {err}")),
+        _ => TaskOutcome::Retryable(format!("sync_epoch: {err}")),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

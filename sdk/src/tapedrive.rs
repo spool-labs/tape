@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signer};
@@ -26,7 +27,7 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
 use peer_http::HttpApi;
-use tape_protocol::{Api, ProtocolState, SharedState, new_shared_state};
+use tape_protocol::{Api, ProtocolState};
 use peer_manager::PeerManager;
 use tape_slicer::{num_stripes, pick_stripe_size};
 
@@ -45,7 +46,7 @@ const CERTIFY_RETRIES: usize = 3;
 ///
 /// Generic over `Blockchain: Rpc` (on-chain) and `Cluster: Api` (storage nodes).
 pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
-    pub state: SharedState,
+    pub state: ArcSwap<ProtocolState>,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub rpc: Arc<RpcClient<Blockchain>>,
@@ -60,11 +61,10 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     /// peer client for storage node communication.
     pub fn new(rpc: Blockchain, payer: &Keypair) -> Self {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
-        let shared_state = new_shared_state(ProtocolState::default());
-        let peer_manager = Arc::new(PeerManager::new(shared_state.clone()));
+        let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(HttpApi::new(Default::default(), peer_manager.clone()));
         Self {
-            state: shared_state,
+            state: ArcSwap::from_pointee(ProtocolState::default()),
             peer_manager,
             api,
             rpc: rpc_client,
@@ -76,7 +76,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Create a Tapedrive client from existing parts.
     pub fn from_parts(
-        state: SharedState,
+        state: ArcSwap<ProtocolState>,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
         rpc: Arc<RpcClient<Blockchain>>,
@@ -97,7 +97,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 
     /// Load the current protocol state (lock-free).
-    pub fn state(&self) -> arc_swap::Guard<std::sync::Arc<ProtocolState>> {
+    pub fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
         self.state.load()
     }
 
@@ -546,10 +546,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         // 3. Bootstrap network if needed, upload slices
         let state = tape_protocol::fetch::fetch_state(&self.rpc).await?;
         self.state.store(Arc::new(state));
-        self.peer_manager.resolve_peers(&self.rpc).await
-            .map_err(TapedriveError::Network)?;
-
         let state = self.state();
+        self.peer_manager.resolve_peers(&self.rpc, &state).await
+            .map_err(TapedriveError::Network)?;
 
         let uploader = DistributedUploader::new(
             track_address,
@@ -666,10 +665,10 @@ mod tests {
         let rpc = LiteSvmRpc::new();
         let payer = Keypair::new();
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc.clone()));
-        let shared_state = new_shared_state(ProtocolState::default());
-        let peer_manager = Arc::new(PeerManager::new(shared_state.clone()));
+        let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(MemoryApi::noop());
-        let tapedrive = Tapedrive::from_parts(shared_state, peer_manager, api, rpc_client, &payer);
+        let state = ArcSwap::from_pointee(ProtocolState::default());
+        let tapedrive = Tapedrive::from_parts(state, peer_manager, api, rpc_client, &payer);
         (rpc, tapedrive)
     }
 

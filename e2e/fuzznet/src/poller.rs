@@ -374,7 +374,7 @@ async fn poll_once(
         };
 
         let authority = tracked.ctx.keypair.pubkey();
-        if let Ok(node) = state.rpc.get_node(&authority).await {
+        if let Ok(node) = tracked.ctx.rpc.get_node(&authority).await {
             tracked.pool_stake = node.pool.stake.as_u64();
         }
 

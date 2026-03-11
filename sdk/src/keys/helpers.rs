@@ -75,7 +75,7 @@ pub fn load_solana_keypair(path: &Path) -> Result<Keypair, HelperError> {
         message: e.to_string(),
     })?;
 
-    Keypair::from_bytes(&bytes).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
+    Keypair::try_from(bytes.as_slice()).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
 }
 
 /// Load a BLS private key from a JSON file.
@@ -139,7 +139,7 @@ pub fn load_tls_keypair(path: &Path) -> Result<Keypair, HelperError> {
         });
     }
 
-    Keypair::from_bytes(&bytes).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
+    Keypair::try_from(bytes.as_slice()).map_err(|e| HelperError::InvalidKeypair(e.to_string()))
 }
 
 // ============================================================================

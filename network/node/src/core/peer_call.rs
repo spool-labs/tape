@@ -38,13 +38,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tape_protocol::{ProtocolState, new_shared_state};
-
     use super::*;
 
     #[tokio::test]
     async fn retries_before_success() {
-        let peer_manager = PeerManager::new(new_shared_state(ProtocolState::default()));
+        let peer_manager = PeerManager::new();
         let attempts = Arc::new(AtomicUsize::new(0));
         let attempts_clone = attempts.clone();
 

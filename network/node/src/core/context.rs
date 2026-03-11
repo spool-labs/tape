@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use rpc::Rpc;
 use rpc_client::RpcClient;
 use solana_sdk::signature::Keypair;
@@ -17,8 +18,8 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
-use tape_protocol::{Api, ProtocolState, SharedState};
-use peer_manager::PeerManager;
+use tape_protocol::{Api, ProtocolState};
+use peer_manager::{PeerManager, PeerManagerError};
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 use tape_store::TapeStore;
@@ -53,7 +54,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// RPC client for on-chain operations.
     pub rpc: Arc<RpcClient<Blockchain>>,
     /// Shared protocol state (epoch, phase, committees, spools).
-    pub shared_state: SharedState,
+    pub state: ArcSwap<ProtocolState>,
     /// Peer manager for peer lookup, health tracking, and routing.
     pub peer_manager: Arc<PeerManager>,
     /// Tape network API.
@@ -75,12 +76,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        shared_state: SharedState,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
     ) -> Arc<Self> {
         Self::from_parts(
-            config, keypair, bls_keypair, store, rpc, shared_state, peer_manager, api, NodeId(0))
+            config, keypair, bls_keypair, store, rpc, peer_manager, api, NodeId(0))
     }
 
     /// This node's PDA-derived on-chain account address. Use this to compare
@@ -95,12 +95,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        shared_state: SharedState,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
         node_id: NodeId,
     ) -> Arc<Self> {
         let (node_address, _) = node_pda(keypair.pubkey());
+        let state = ArcSwap::from_pointee(ProtocolState::default());
 
         Arc::new(Self {
             config: Arc::new(config),
@@ -109,7 +109,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
             store: Arc::new(store),
             stats: RuntimeStats::default(),
             rpc: Arc::new(rpc),
-            shared_state,
+            state,
             peer_manager,
             api,
             node_id,
@@ -129,20 +129,26 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     /// Load the current protocol state (lock-free).
     pub fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
-        self.shared_state.load()
+        self.state.load()
     }
 
     /// Replace the protocol state atomically.
     pub fn set_state(&self, s: ProtocolState) {
-        self.shared_state.store(Arc::new(s));
+        self.state.store(Arc::new(s));
+    }
+
+    /// Rebuild the peer map from the current protocol state.
+    pub async fn refresh_peers(&self) -> Result<(), PeerManagerError> {
+        let state = (*self.state()).clone();
+        self.peer_manager.resolve_peers(&self.rpc, &state).await
     }
 
     /// Update just the epoch phase (read-modify-write).
     pub fn update_phase(&self, phase: EpochPhase) {
-        let current = self.shared_state.load();
+        let current = self.state();
         let mut updated = (**current).clone();
         updated.phase = phase;
-        self.shared_state.store(Arc::new(updated));
+        self.state.store(Arc::new(updated));
     }
 
     /// Derive node status from current committee membership.
@@ -175,7 +181,6 @@ pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     bls_keypair: BlsPrivateKey,
     store: TapeStore<Db>,
     rpc: RpcClient<Blockchain>,
-    shared_state: SharedState,
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
 }
@@ -187,7 +192,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         bls_keypair: BlsPrivateKey,
         store: TapeStore<Db>,
         rpc: RpcClient<Blockchain>,
-        shared_state: SharedState,
         peer_manager: Arc<PeerManager>,
         api: Arc<Cluster>,
     ) -> Self {
@@ -197,7 +201,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             bls_keypair,
             store,
             rpc,
-            shared_state,
             peer_manager,
             api,
         }
@@ -227,7 +230,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             self.bls_keypair,
             self.store,
             self.rpc,
-            self.shared_state,
             self.peer_manager,
             self.api,
             node_id,
@@ -246,7 +248,7 @@ mod tests {
     use tape_core::bls::BlsPrivateKey;
     use tape_core::types::coin::{Coin, TAPE};
     use tape_core::types::NodeId;
-    use tape_protocol::{ProtocolState, new_shared_state};
+    use tape_protocol::ProtocolState;
     use tape_store::{MemoryStore, TapeStore};
     use tape_store::types::NodeStatus;
 
@@ -260,8 +262,7 @@ mod tests {
     #[test]
     fn bootstrap_active() {
         let node_id = NodeId(42);
-        let shared_state = new_shared_state(ProtocolState::default());
-        let peer_manager = Arc::new(peer_manager::PeerManager::new(shared_state.clone()));
+        let peer_manager = Arc::new(peer_manager::PeerManager::new());
         let api = Arc::new(MemoryApi::noop());
         let context = NodeContext::from_parts(
             test_config(),
@@ -269,7 +270,6 @@ mod tests {
             BlsPrivateKey::from_random(),
             TapeStore::new(MemoryStore::new()),
             RpcClient::from_rpc(LiteSvmRpc::new()),
-            shared_state.clone(),
             peer_manager.clone(),
             api,
             node_id,

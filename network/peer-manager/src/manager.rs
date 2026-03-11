@@ -11,7 +11,7 @@ use rpc_client::RpcClient;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_protocol::{ProtocolState, SharedState};
+use tape_protocol::ProtocolState;
 
 use crate::PeerNode;
 
@@ -36,15 +36,13 @@ pub enum PeerManagerError {
 
 pub struct PeerManager {
     peers: ArcSwap<HashMap<NodeId, PeerNode>>,
-    state: SharedState,
     status: DashMap<NodeId, PeerStatus>,
 }
 
 impl PeerManager {
-    pub fn new(state: SharedState) -> Self {
+    pub fn new() -> Self {
         Self {
             peers: ArcSwap::from_pointee(HashMap::new()),
-            state,
             status: DashMap::new(),
         }
     }
@@ -94,14 +92,13 @@ impl PeerManager {
         Ok(peers)
     }
 
-    /// Resolve all committee peers from the current shared state.
-    ///
-    /// Reads state from `SharedState` (caller must update it first),
-    /// resolves network addresses for all committee members, and stores
-    /// the peer map.
-    pub async fn resolve_peers<R: Rpc>(&self, rpc: &RpcClient<R>) -> Result<(), PeerManagerError> {
-        let state = self.state.load();
-        let peers = self.resolve_peer_map(rpc, &state).await?;
+    /// Resolve all committee peers from the provided protocol state.
+    pub async fn resolve_peers<R: Rpc>(
+        &self,
+        rpc: &RpcClient<R>,
+        state: &ProtocolState,
+    ) -> Result<(), PeerManagerError> {
+        let peers = self.resolve_peer_map(rpc, state).await?;
         self.peers.store(Arc::new(peers));
         Ok(())
     }
@@ -206,8 +203,7 @@ impl PeerManager {
     // Routing
 
     /// Find a healthy peer that owns the given spool in the current committee.
-    pub fn healthy_peer_for_spool(&self, spool: SpoolIndex) -> Option<NodeId> {
-        let state = self.state.load();
+    pub fn healthy_peer_for_spool(&self, state: &ProtocolState, spool: SpoolIndex) -> Option<NodeId> {
         let owner = state.spool_owner(spool)?;
         if self.is_healthy(owner) {
             Some(owner)
@@ -217,8 +213,11 @@ impl PeerManager {
     }
 
     /// Return all healthy peers in a spool group.
-    pub fn healthy_peers_for_group(&self, group: SpoolGroup) -> Vec<(SpoolIndex, NodeId)> {
-        let state = self.state.load();
+    pub fn healthy_peers_for_group(
+        &self,
+        state: &ProtocolState,
+        group: SpoolGroup,
+    ) -> Vec<(SpoolIndex, NodeId)> {
         state
             .group_peers(group)
             .into_iter()
@@ -233,7 +232,6 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_core::bls::BlsPubkey;
     use tape_crypto::Pubkey;
-    use tape_protocol::new_shared_state;
 
     fn make_peer(id: u64, port: u16) -> PeerNode {
         PeerNode {
@@ -248,7 +246,7 @@ mod tests {
 
     #[test]
     fn add_and_resolve() {
-        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
+        let pm = PeerManager::new();
         assert!(pm.resolve(NodeId(1)).is_none());
 
         pm.add_peer(make_peer(1, 8001));
@@ -257,7 +255,7 @@ mod tests {
 
     #[test]
     fn add_overwrites() {
-        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
+        let pm = PeerManager::new();
         pm.add_peer(make_peer(1, 8001));
         pm.add_peer(make_peer(1, 9001));
         let addr = pm.resolve(NodeId(1)).unwrap();
@@ -269,7 +267,7 @@ mod tests {
 
     #[test]
     fn contains_and_get() {
-        let pm = PeerManager::new(new_shared_state(ProtocolState::default()));
+        let pm = PeerManager::new();
         pm.add_peer(make_peer(5, 8005));
         assert!(pm.contains(NodeId(5)));
         assert!(!pm.contains(NodeId(6)));
