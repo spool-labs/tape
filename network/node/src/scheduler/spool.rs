@@ -4,12 +4,12 @@ use solana_sdk::pubkey::Pubkey;
 use store::Store;
 use tape_store::TapeStore;
 
-use tape_core::erasure::{spool_in_group, SPOOL_COUNT};
+use tape_core::erasure::{spool_in_group, SPOOL_COUNT, SPOOL_GROUP_SIZE};
 use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::CommitteeMember;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState, SpoolStatus};
+use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState};
 
 use crate::Task;
 
@@ -18,17 +18,6 @@ pub struct SpoolPlanner;
 const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
 
 impl SpoolPlanner {
-    fn prev_owner_for(
-        spool: SpoolIndex,
-        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
-        prev_committee: &[CommitteeMember],
-    ) -> Option<NodeId> {
-        prev_spools
-            .0
-            .get(spool as usize)
-            .and_then(|&member_idx| prev_committee.get(member_idx as usize))
-            .map(|member| member.id)
-    }
 
     /// Sync the desired set with current spool ownership. Removes tasks for
     /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
@@ -88,11 +77,11 @@ impl SpoolPlanner {
     ) {
         for (spool_id, state) in owned_spools {
             if state.is_syncing() {
-                tracing::trace!(spool_id, status = ?state.status, "scheduling spool sync");
+                tracing::trace!(spool_id, ?state, "scheduling spool sync");
                 desired.insert(Task::SpoolSync { spool: *spool_id });
             }
             if state.is_recovering() {
-                tracing::trace!(spool_id, status = ?state.status, "scheduling spool recovery");
+                tracing::trace!(spool_id, ?state, "scheduling spool recovery");
                 desired.insert(Task::SpoolRecovery { spool: *spool_id });
                 if !store.is_scan_done(*spool_id).unwrap_or(false) {
                     desired.insert(Task::RecoveryScan { spool: *spool_id });
@@ -110,12 +99,17 @@ impl SpoolPlanner {
             return;
         };
         if !state.is_syncing() {
-            tracing::debug!(spool, status = ?state.status, "ignoring stale spool sync failure");
+            tracing::debug!(spool, ?state, "ignoring stale spool sync failure");
             return;
         }
-        let new_state = SpoolState { status: SpoolStatus::ActiveRecover, epoch: state.epoch, prev_owner: state.prev_owner };
+        let new_state = match state {
+            SpoolState::Sync { epoch, prev_owner, prev_helpers } => {
+                SpoolState::Recover { epoch, prev_owner, prev_helpers }
+            }
+            _ => return,
+        };
         if let Err(e) = store.set_spool_state(spool, new_state) {
-            tracing::error!(spool, "failed to set ActiveRecover: {e}");
+            tracing::error!(spool, "failed to set Recover: {e}");
             return;
         }
         let _ = store.remove_spool_sync_cursor(spool);
@@ -171,7 +165,7 @@ impl SpoolPlanner {
             tracing::trace!(
                 track = %track,
                 spool_id,
-                spool_status = ?state.status,
+                spool_state = ?state,
                 "evaluating spool recovery scheduling"
             );
             if !state.is_active() && !state.is_recovering() {
@@ -216,7 +210,6 @@ impl SpoolPlanner {
         store: &TapeStore<S>,
         chain_spools: &HashSet<u16>,
         epoch: EpochNumber,
-        self_node_id: NodeId,
         prev_spools: &SpoolAssignment<SPOOL_COUNT>,
         prev_committee: &[CommitteeMember],
     ) -> bool {
@@ -236,11 +229,12 @@ impl SpoolPlanner {
         for &spool in chain_spools {
             if !existing_ids.contains(&spool) {
                 let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
-                let state = SpoolState { status: SpoolStatus::ActiveSync, epoch, prev_owner };
+                let prev_helpers = Self::prev_helpers_for(spool, prev_spools, prev_committee);
+                let state = SpoolState::Sync { epoch, prev_owner, prev_helpers };
                 if let Err(e) = store.set_spool_state(spool, state) {
                     tracing::error!(spool, "apply_ownership_changes: failed to create spool: {e}");
                 } else {
-                    tracing::info!(spool, ?prev_owner, "spool assigned, marked ActiveSync");
+                    tracing::info!(spool, ?prev_owner, "spool assigned, marked Sync");
                     changed = true;
                 }
             }
@@ -253,10 +247,12 @@ impl SpoolPlanner {
                 if state.is_locked() {
                     continue;
                 }
-                let new_state = SpoolState { status: SpoolStatus::LockedToMove, epoch, prev_owner: None };
+                let new_state = SpoolState::LockedToMove { epoch };
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "apply_ownership_changes: failed to lock spool: {e}");
                 } else {
+                    let _ = store.clear_all_pending_recoveries(spool);
+                    let _ = store.remove_spool_sync_cursor(spool);
                     let _ = store.clear_scan_done(spool);
                     tracing::info!(spool, "spool lost, marked LockedToMove");
                     changed = true;
@@ -265,15 +261,24 @@ impl SpoolPlanner {
 
             // Reacquired: spool was LockedToMove but is back in chain_spools
             if chain_spools.contains(&spool) && state.is_locked() {
-                let new_state = SpoolState {
-                    status: SpoolStatus::ActiveSync,
+                let prev_owner =
+                    Self::prev_owner_for(spool, prev_spools, prev_committee);
+                let prev_helpers =
+                    Self::prev_helpers_for(spool, prev_spools, prev_committee);
+
+                let new_state = SpoolState::Sync {
                     epoch,
-                    prev_owner: Some(self_node_id),
+                    prev_owner,
+                    prev_helpers,
                 };
+
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "apply_ownership_changes: failed to reactivate spool: {e}");
                 } else {
-                    tracing::info!(spool, "locked spool reacquired, marked ActiveSync");
+                    let _ = store.clear_all_pending_recoveries(spool);
+                    let _ = store.remove_spool_sync_cursor(spool);
+                    let _ = store.clear_scan_done(spool);
+                    tracing::info!(spool, "locked spool reacquired, marked Sync");
                     changed = true;
                 }
             }
@@ -293,7 +298,7 @@ impl SpoolPlanner {
         };
         for (spool_id, state) in &spools {
             if state.is_locked()
-                && state.epoch.0 + LOCKED_SPOOL_RETENTION_EPOCHS <= current_epoch.0
+                && state.epoch().0 + LOCKED_SPOOL_RETENTION_EPOCHS <= current_epoch.0
             {
                 match store.delete_all_slices_for_spool(*spool_id) {
                     Ok(count) => {
@@ -348,5 +353,37 @@ impl SpoolPlanner {
                 desired.remove(&Task::SpoolRecovery { spool: *spool });
             }
         }
+    }
+
+    fn prev_owner_for(
+        spool: SpoolIndex,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> Option<NodeId> {
+        prev_spools
+            .0
+            .get(spool as usize)
+            .and_then(|&member_idx| prev_committee.get(member_idx as usize))
+            .map(|member| member.id)
+    }
+
+    fn prev_helpers_for(
+        spool: SpoolIndex,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> [Option<NodeId>; SPOOL_GROUP_SIZE] {
+        let group = tape_core::spooler::SpoolGroup::of(spool);
+        let mut out = [None; SPOOL_GROUP_SIZE];
+
+        for (slot, owner) in out.iter_mut().enumerate() {
+            let peer_spool = group.base() + slot as u16;
+            *owner = prev_spools
+                .0
+                .get(peer_spool as usize)
+                .and_then(|&member_idx| prev_committee.get(member_idx as usize))
+                .map(|member| member.id);
+        }
+
+        out
     }
 }

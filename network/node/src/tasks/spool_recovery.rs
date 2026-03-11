@@ -9,11 +9,12 @@ use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::{GetSliceReq, RepairReq, RepairRequest, StripeSubChunkRequest};
 use tape_protocol::state::ProtocolState;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
+use tape_store::types::{Pubkey as StorePubkey, SpoolState, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{NodeContext, call_peer};
@@ -31,7 +32,8 @@ enum TrackResult {
 
 /// Peer map for a spool group, built once per recovery task.
 struct GroupPeers {
-    map: HashMap<SpoolIndex, NodeId>,
+    current: HashMap<SpoolIndex, NodeId>,
+    previous: HashMap<SpoolIndex, NodeId>,
 }
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -49,10 +51,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return TaskOutcome::Success;
     }
 
-    let spool_group = SpoolGroup::of(spool);
-    let peers = GroupPeers {
-        map: build_peer_map(&state, spool, spool_group),
+    let spool_state = match ctx.store.get_spool_state(spool) {
+        Ok(Some(s)) => s,
+        Ok(None) => return TaskOutcome::Success,
+        Err(e) => return TaskOutcome::Retryable(format!("get_spool_state: {e}")),
     };
+
+    let spool_group = SpoolGroup::of(spool);
+    let peers = build_peer_maps(&state, &spool_state, spool_group, spool);
 
     let mut any_failed = false;
 
@@ -149,7 +155,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
         match ctx.store.get_spool_state(spool) {
             Ok(Some(state)) if state.is_recovering() => {
-                let new_state = SpoolState { status: SpoolStatus::Active, epoch: state.epoch, prev_owner: None };
+                let new_state = SpoolState::Active { epoch: state.epoch() };
                 if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
@@ -163,20 +169,47 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// Build a map from SpoolIndex → peer NodeId for a spool group.
-fn build_peer_map(
-    state: &ProtocolState,
-    our_spool: SpoolIndex,
+fn build_peer_maps(
+    protocol: &ProtocolState,
+    spool_state: &SpoolState,
     spool_group: SpoolGroup,
-) -> HashMap<SpoolIndex, NodeId> {
-    let mut peer_map: HashMap<SpoolIndex, NodeId> = HashMap::new();
-    for (s, node_id) in state.group_peers(spool_group) {
-        if s == our_spool {
-            continue;
+    our_spool: SpoolIndex,
+) -> GroupPeers {
+    let current = protocol
+        .group_peers(spool_group)
+        .into_iter()
+        .filter(|(s, _)| *s != our_spool)
+        .collect();
+
+    let mut previous = HashMap::new();
+    if let Some(prev_helpers) = spool_state.prev_helpers() {
+        for (slot, helper) in prev_helpers.iter().enumerate().take(SPOOL_GROUP_SIZE) {
+            let peer_spool = spool_group.base() + slot as u16;
+            if peer_spool == our_spool {
+                continue;
+            }
+            if let Some(node_id) = helper {
+                previous.insert(peer_spool, *node_id);
+            }
         }
-        peer_map.entry(s).or_insert(node_id);
     }
-    peer_map
+
+    GroupPeers { current, previous }
+}
+
+fn peer_candidates(peers: &GroupPeers, peer_spool: SpoolIndex) -> Vec<NodeId> {
+    let mut out = Vec::new();
+
+    if let Some(node_id) = peers.previous.get(&peer_spool) {
+        out.push(*node_id);
+    }
+
+    if let Some(node_id) = peers.current.get(&peer_spool) {
+        if out.last().copied() != Some(*node_id) {
+            out.push(*node_id);
+        }
+    }
+    out
 }
 
 /// Attempt Clay repair for a single track. Returns the outcome.
@@ -227,9 +260,12 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let lost = SliceIndex::new(spool_group.slice_of(spool).unwrap());
 
     // Build available slice indices from peer map.
-    let available: Vec<SliceIndex> = peers.map.keys()
+    let mut available: Vec<SliceIndex> = peers.current.keys()
+        .chain(peers.previous.keys())
         .map(|&s| SliceIndex::new(spool_group.slice_of(s).unwrap()))
         .collect();
+    available.sort_unstable();
+    available.dedup();
     if available.is_empty() {
         tracing::warn!(?track_addr, spool, "no peers found for repair");
         return TrackResult::Failed;
@@ -273,35 +309,33 @@ async fn try_clay_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     for (slice_idx, request) in &per_helper {
         let peer_spool = spool_group.spool_at(**slice_idx);
-        let peer_node = match peers.map.get(&peer_spool) {
-            Some(&node_id) => node_id,
-            None => continue,
-        };
-
-        if !ctx.peer_manager.is_healthy(peer_node) {
-            continue;
-        }
-
         let req = RepairReq {
             track: track_pubkey,
             helper_spool: request.helper_spool,
             stripes: request.stripes.clone(),
         };
 
-        match call_peer(&ctx.peer_manager, peer_node, None, || {
-            let api = api.clone();
-            let req = req.clone();
-            async move { api.repair(peer_node, &req).await }
-        }).await {
-            Ok(res) if !res.data.is_empty() => {
-                ctx.stats.add_repair_received(res.data.len() as u64);
-                helper_data.insert(*slice_idx, res.data);
+        for peer_node in peer_candidates(peers, peer_spool) {
+            if !ctx.peer_manager.is_healthy(peer_node) {
+                continue;
             }
-            Ok(_) => {
-                tracing::debug!(?track_addr, spool, node = peer_node.0, "empty repair response");
-            }
-            Err(e) => {
-                tracing::debug!(?track_addr, spool, node = peer_node.0, "repair error: {e}");
+
+            match call_peer(&ctx.peer_manager, peer_node, None, || {
+                let api = api.clone();
+                let req = req.clone();
+                async move { api.repair(peer_node, &req).await }
+            }).await {
+                Ok(res) if !res.data.is_empty() => {
+                    ctx.stats.add_repair_received(res.data.len() as u64);
+                    helper_data.insert(*slice_idx, res.data);
+                    break;
+                }
+                Ok(_) => {
+                    tracing::debug!(?track_addr, spool, node = peer_node.0, "empty repair response");
+                }
+                Err(e) => {
+                    tracing::debug!(?track_addr, spool, node = peer_node.0, "repair error: {e}");
+                }
             }
         }
     }
@@ -345,8 +379,13 @@ async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let lost = SliceIndex::new(spool_group.slice_of(spool).unwrap());
     let needed = slicer.k();
 
-    let mut peer_spools: Vec<SpoolIndex> = peers.map.keys().copied().collect();
+    let mut peer_spools: Vec<SpoolIndex> = peers.current.keys()
+        .chain(peers.previous.keys())
+        .copied()
+        .collect();
+
     peer_spools.sort_unstable();
+    peer_spools.dedup();
 
     let api = &ctx.api;
     let track_pubkey: tape_crypto::Pubkey = track_addr.into();
@@ -357,36 +396,43 @@ async fn recover_from_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
             break;
         }
 
-        let peer_node = match peers.map.get(&peer_spool) {
-            Some(&node_id) => node_id,
-            None => continue,
-        };
-
-        if !ctx.peer_manager.is_healthy(peer_node) {
-            continue;
-        }
-
         let req = GetSliceReq { track: track_pubkey, spool: peer_spool };
-        match call_peer(&ctx.peer_manager, peer_node, None, || {
-            let api = api.clone();
-            let req = req.clone();
-            async move { api.get_slice(peer_node, &req).await }
-        }).await {
-            Ok(res) if !res.data.is_empty() => {
-                ctx.stats.add_recovery_received(res.data.len() as u64);
-                let slice_idx = SliceIndex::new(spool_group.slice_of(peer_spool).unwrap());
-                full_slices.push((slice_idx, res.data));
+        for peer_node in peer_candidates(peers, peer_spool) {
+            if !ctx.peer_manager.is_healthy(peer_node) {
+                continue;
             }
-            Ok(_) => {
-                tracing::debug!(?track_addr, node = peer_node.0, "empty full-slice response");
-            }
-            Err(e) => {
-                tracing::debug!(?track_addr, node = peer_node.0, "full-slice fetch error: {e}");
+
+            match call_peer(&ctx.peer_manager, peer_node, None, || {
+                let api = api.clone();
+                let req = req.clone();
+                async move { api.get_slice(peer_node, &req).await }
+            }).await {
+                Ok(res) if !res.data.is_empty() => {
+                    ctx.stats.add_recovery_received(res.data.len() as u64);
+                    let slice_idx = SliceIndex::new(spool_group.slice_of(peer_spool).unwrap());
+                    full_slices.push((slice_idx, res.data));
+                    break;
+                }
+                Ok(_) => {
+                    tracing::debug!(?track_addr, node = peer_node.0, "empty full-slice response");
+                }
+                Err(e) => {
+                    tracing::debug!(?track_addr, node = peer_node.0, "full-slice fetch error: {e}");
+                }
             }
         }
     }
 
     if full_slices.len() < needed {
+        tracing::warn!(
+            ?track_addr,
+            spool,
+            got = full_slices.len(),
+            need = needed,
+            current_candidates = peers.current.len(),
+            previous_candidates = peers.previous.len(),
+            "insufficient full slices for fallback"
+        );
         return Err(format!(
             "insufficient full slices for fallback: got {} need {}",
             full_slices.len(),
@@ -547,17 +593,25 @@ mod tests {
             ..Default::default()
         });
 
-        use tape_store::types::SpoolState;
-        ctx.store.set_spool_state(5, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
+        ctx.store
+            .set_spool_state(
+                5,
+                SpoolState::Recover {
+                    epoch: EpochNumber(0),
+                    prev_owner: None,
+                    prev_helpers: [None; SPOOL_GROUP_SIZE],
+                },
+            )
+            .unwrap();
         ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run(ctx.clone(), 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
-        assert_eq!(
-            ctx.store.get_spool_state(5).unwrap().unwrap().status,
-            SpoolStatus::Active,
-        );
+        assert!(matches!(
+            ctx.store.get_spool_state(5).unwrap().unwrap(),
+            SpoolState::Active { epoch } if epoch == EpochNumber(0)
+        ));
         assert!(!ctx.store.is_scan_done(5).unwrap());
     }
 

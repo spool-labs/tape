@@ -12,7 +12,7 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
-use tape_store::types::{SpoolState, SpoolStatus};
+use tape_store::types::SpoolState;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
@@ -43,7 +43,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return TaskOutcome::Success;
     }
 
-    let source = match state.prev_owner {
+    let source = match state.prev_owner() {
         None => SyncSource::VerifyLocal,
         Some(id) if id == ctx.node_id() => SyncSource::VerifyLocal,
         Some(id) => SyncSource::SyncFrom { node_id: id },
@@ -190,14 +190,15 @@ fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
     };
 
     if !state.is_syncing() {
-        tracing::debug!(spool, status = ?state.status, "finish_sync: not syncing, skipping");
+        tracing::debug!(spool, ?state, "finish_sync: not syncing, skipping");
         return TaskOutcome::Success;
     }
 
-    let new_state = SpoolState {
-        status: SpoolStatus::ActiveRecover,
-        epoch: state.epoch,
-        prev_owner: state.prev_owner,
+    let new_state = match state {
+        SpoolState::Sync { epoch, prev_owner, prev_helpers } => {
+            SpoolState::Recover { epoch, prev_owner, prev_helpers }
+        }
+        _ => return TaskOutcome::Success,
     };
 
     if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
@@ -207,7 +208,7 @@ fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let _ = ctx.store.remove_spool_sync_cursor(spool);
     let _ = ctx.store.clear_scan_done(spool);
 
-    tracing::info!(spool, "spool sync complete, transitioning to ActiveRecover");
+    tracing::info!(spool, "spool sync complete, transitioning to Recover");
 
     TaskOutcome::Success
 }
@@ -216,10 +217,23 @@ fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
 
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::types::EpochNumber;
     use tokio_util::sync::CancellationToken;
 
     use crate::core::test_utils::test_context;
+
+    fn sync_state(epoch: EpochNumber, prev_owner: Option<NodeId>) -> SpoolState {
+        SpoolState::Sync {
+            epoch,
+            prev_owner,
+            prev_helpers: [None; SPOOL_GROUP_SIZE],
+        }
+    }
+
+    fn active_state(epoch: EpochNumber) -> SpoolState {
+        SpoolState::Active { epoch }
+    }
 
     #[tokio::test]
     async fn sync_self_owner() {
@@ -227,14 +241,7 @@ mod tests {
         let node_id = ctx.node_id();
 
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState {
-                    status: SpoolStatus::ActiveSync,
-                    epoch: EpochNumber(3),
-                    prev_owner: Some(node_id),
-                },
-            )
+            .set_spool_state(5, sync_state(EpochNumber(3), Some(node_id)))
             .unwrap();
 
         let cancel = CancellationToken::new();
@@ -242,8 +249,14 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(5).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::ActiveRecover);
-        assert_eq!(state.epoch, EpochNumber(3));
+        assert!(matches!(
+            state,
+            SpoolState::Recover {
+                epoch,
+                prev_owner: Some(owner),
+                ..
+            } if epoch == EpochNumber(3) && owner == node_id
+        ));
     }
 
     #[tokio::test]
@@ -251,14 +264,7 @@ mod tests {
         let ctx = test_context();
 
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState {
-                    status: SpoolStatus::ActiveSync,
-                    epoch: EpochNumber(3),
-                    prev_owner: None,
-                },
-            )
+            .set_spool_state(5, sync_state(EpochNumber(3), None))
             .unwrap();
 
         let cancel = CancellationToken::new();
@@ -266,7 +272,7 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(5).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::ActiveRecover);
+        assert!(matches!(state, SpoolState::Recover { epoch, prev_owner: None, .. } if epoch == EpochNumber(3)));
     }
 
     #[tokio::test]
@@ -274,14 +280,7 @@ mod tests {
         let ctx = test_context();
 
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState {
-                    status: SpoolStatus::Active,
-                    epoch: EpochNumber(3),
-                    prev_owner: None,
-                },
-            )
+            .set_spool_state(5, active_state(EpochNumber(3)))
             .unwrap();
 
         let cancel = CancellationToken::new();
@@ -290,7 +289,7 @@ mod tests {
 
         // Should remain Active, not transition.
         let state = ctx.store.get_spool_state(5).unwrap().unwrap();
-        assert_eq!(state.status, SpoolStatus::Active);
+        assert!(matches!(state, SpoolState::Active { epoch } if epoch == EpochNumber(3)));
     }
 
     #[tokio::test]
@@ -308,14 +307,7 @@ mod tests {
         let peer = NodeId(99);
 
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState {
-                    status: SpoolStatus::ActiveSync,
-                    epoch: EpochNumber(3),
-                    prev_owner: Some(peer),
-                },
-            )
+            .set_spool_state(5, sync_state(EpochNumber(3), Some(peer)))
             .unwrap();
 
         // Mark peer as unhealthy by reporting failures.

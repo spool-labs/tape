@@ -305,7 +305,10 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
                 }
             }
 
-            let has_epoch = changes.iter().any(|c| matches!(c, StateChange::EpochAdvanced { .. }));
+            let has_epoch = changes
+                .iter()
+                .any(|c| matches!(c, StateChange::EpochAdvanced { .. }));
+
             if has_epoch {
                 if fetch_solana_state(ctx, cancel).await.is_err() {
                     return ControlFlow::Break(());
@@ -313,12 +316,12 @@ async fn handle_block<Db: Store + 'static, Cluster: Api + 'static, Blockchain: R
 
                 let state = ctx.state();
                 let my_spools = ctx.my_spools();
+
                 SpoolPlanner::cleanup_locked(&*ctx.store, state.epoch);
                 if SpoolPlanner::apply_ownership_changes(
                     &*ctx.store,
                     &my_spools,
                     state.epoch,
-                    ctx.node_id(),
                     &state.spools_prev,
                     &state.committee_prev,
                 ) {
@@ -381,7 +384,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_store::ops::{MetaOps, SpoolOps};
-    use tape_store::types::{SpoolState, SpoolStatus};
+    use tape_store::types::SpoolState;
 
     use tape_core::system::CommitteeMember;
     use tape_core::types::coin::{Coin, TAPE};
@@ -459,7 +462,14 @@ mod tests {
 
         // Pre-populate spool state so scheduler has work to do
         ctx.store
-            .set_spool_state(5, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
+            .set_spool_state(
+                5,
+                SpoolState::Sync {
+                    epoch: EpochNumber(0),
+                    prev_owner: None,
+                    prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
+                },
+            )
             .unwrap();
 
         // We use spawn_runtime_channels + manual wiring since LiteSvmRpc

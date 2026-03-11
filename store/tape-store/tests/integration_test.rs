@@ -104,7 +104,7 @@ fn all_column_families() {
 
     // Spool status (NOT epoch-namespaced)
     store
-        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
+        .set_spool_state(42, SpoolState::Active { epoch: EpochNumber(0) })
         .unwrap();
 
     // Sync progress
@@ -143,10 +143,10 @@ fn all_column_families() {
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());
-    assert_eq!(
-        store.get_spool_state(42).unwrap().unwrap().status,
-        SpoolStatus::Active
-    );
+    assert!(matches!(
+        store.get_spool_state(42).unwrap().unwrap(),
+        SpoolState::Active { .. }
+    ));
     assert_eq!(
         store.get_spool_sync_cursor(42).unwrap(),
         Some(progress_track)
@@ -278,20 +278,27 @@ fn spool_ops() {
 
     // Set status (NOT epoch-namespaced)
     store
-        .set_spool_state(42, SpoolState { status: SpoolStatus::Active, epoch: EpochNumber(0), prev_owner: None })
+        .set_spool_state(42, SpoolState::Active { epoch: EpochNumber(0) })
         .unwrap();
     store
-        .set_spool_state(43, SpoolState { status: SpoolStatus::ActiveSync, epoch: EpochNumber(0), prev_owner: None })
+        .set_spool_state(
+            43,
+            SpoolState::Sync {
+                epoch: EpochNumber(0),
+                prev_owner: None,
+                prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
+            },
+        )
         .unwrap();
 
-    assert_eq!(
-        store.get_spool_state(42).unwrap().unwrap().status,
-        SpoolStatus::Active
-    );
-    assert_eq!(
-        store.get_spool_state(43).unwrap().unwrap().status,
-        SpoolStatus::ActiveSync
-    );
+    assert!(matches!(
+        store.get_spool_state(42).unwrap().unwrap(),
+        SpoolState::Active { .. }
+    ));
+    assert!(matches!(
+        store.get_spool_state(43).unwrap().unwrap(),
+        SpoolState::Sync { .. }
+    ));
 
     // Iterate all spools
     let spools = store.iter_all_spools().unwrap();

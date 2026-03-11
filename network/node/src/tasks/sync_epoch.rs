@@ -27,15 +27,34 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
     let epoch = state.epoch;
 
-    let mut owned_spools: Vec<u16> = match ctx.store.iter_all_spools() {
-        Ok(spools) => spools
-            .into_iter()
-            .filter(|(_, state)| !state.is_locked())
-            .map(|(id, _)| id)
-            .collect(),
+    let spool_states = match ctx.store.iter_all_spools() {
+        Ok(spools) => spools,
         Err(e) => return TaskOutcome::Retryable(format!("iter spools: {e}")),
     };
+
+    let mut owned_spools: Vec<u16> = Vec::new();
+    let mut pending_spools = Vec::new();
+
+    for (id, state) in spool_states {
+        if state.is_locked() {
+            continue;
+        }
+        if state.is_active() {
+            owned_spools.push(id);
+        } else {
+            pending_spools.push((id, state));
+        }
+    }
     owned_spools.sort_unstable();
+
+    if !pending_spools.is_empty() {
+        tracing::debug!(
+            pending = pending_spools.len(),
+            ?pending_spools,
+            "sync_epoch waiting for spool handoff to complete"
+        );
+        return TaskOutcome::Pending(SYNC_EPOCH_PENDING_DELAY);
+    }
 
     if cancel.is_cancelled() {
         return TaskOutcome::Success;

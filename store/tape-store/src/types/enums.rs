@@ -1,8 +1,11 @@
 //! Enum types for tape-store
 
 use serde::{Deserialize, Serialize};
-use tape_core::types::{EpochNumber, NodeId};
 use wincode_derive::{SchemaRead, SchemaWrite};
+
+use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::types::{EpochNumber, NodeId, SlotNumber};
+use crate::types::Pubkey;
 
 /// Node status in the network
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -30,54 +33,69 @@ impl Default for NodeStatus {
     }
 }
 
-/// Status of a spool assignment
+/// Spool lifecycle state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[repr(u8)]
-pub enum SpoolStatus {
-    /// Not assigned
-    None = 0,
-    /// Fully synced and serving requests
-    Active = 1,
-    /// Currently syncing data from peers
-    ActiveSync = 2,
-    /// Recovering missing slices
-    ActiveRecover = 3,
-    /// Locked for handoff to another node
-    LockedToMove = 4,
-}
-
-impl Default for SpoolStatus {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-/// Spool status with the epoch it entered this state.
-///
-/// Used to defer garbage collection of `LockedToMove` spools so old owners
-/// keep serving data until new owners complete sync.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SpoolState {
-    pub status: SpoolStatus,
-    pub epoch: EpochNumber,
-    pub prev_owner: Option<NodeId>,
+pub enum SpoolState {
+    /// Fully synced and serving requests.
+    Active {
+        epoch: EpochNumber,
+    },
+    /// Syncing data from the prior owner into the newly assigned spool.
+    Sync {
+        epoch: EpochNumber,
+        prev_owner: Option<NodeId>,
+        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
+    },
+    /// Recovering missing slices after the initial sync pass.
+    Recover {
+        epoch: EpochNumber,
+        prev_owner: Option<NodeId>,
+        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
+    },
+    /// Locked on the former owner while the new owner completes handoff.
+    LockedToMove {
+        epoch: EpochNumber,
+    },
 }
 
 impl SpoolState {
+    pub fn epoch(&self) -> EpochNumber {
+        match self {
+            Self::Active { epoch }
+            | Self::Sync { epoch, .. }
+            | Self::Recover { epoch, .. }
+            | Self::LockedToMove { epoch } => *epoch,
+        }
+    }
+
     pub fn is_locked(&self) -> bool {
-        self.status == SpoolStatus::LockedToMove
+        matches!(self, Self::LockedToMove { .. })
     }
 
     pub fn is_active(&self) -> bool {
-        self.status == SpoolStatus::Active
+        matches!(self, Self::Active { .. })
     }
 
     pub fn is_syncing(&self) -> bool {
-        self.status == SpoolStatus::ActiveSync
+        matches!(self, Self::Sync { .. })
     }
 
     pub fn is_recovering(&self) -> bool {
-        self.status == SpoolStatus::ActiveRecover
+        matches!(self, Self::Recover { .. })
+    }
+
+    pub fn prev_owner(&self) -> Option<NodeId> {
+        match self {
+            Self::Sync { prev_owner, .. } | Self::Recover { prev_owner, .. } => *prev_owner,
+            _ => None,
+        }
+    }
+
+    pub fn prev_helpers(&self) -> Option<&[Option<NodeId>; SPOOL_GROUP_SIZE]> {
+        match self {
+            Self::Sync { prev_helpers, .. } | Self::Recover { prev_helpers, .. } => Some(prev_helpers),
+            _ => None,
+        }
     }
 }
 
@@ -89,15 +107,15 @@ pub enum ObjectInfo {
     /// Object is invalid
     Invalid {
         epoch: EpochNumber,
-        slot: tape_core::types::SlotNumber,
+        slot: SlotNumber,
     },
     /// Object is valid
     Valid {
         is_stored: bool,
-        track_address: crate::types::Pubkey,
+        track_address: Pubkey,
         registered_epoch: EpochNumber,
         certified_epoch: Option<EpochNumber>,
-        slot: tape_core::types::SlotNumber,
+        slot: SlotNumber,
     },
 }
 
@@ -111,39 +129,26 @@ mod tests {
     }
 
     #[test]
-    fn test_spool_status_default() {
-        assert_eq!(SpoolStatus::default(), SpoolStatus::None);
-    }
-
-    #[test]
     fn spool_state_roundtrip() {
         let states = vec![
-            super::SpoolState {
-                status: SpoolStatus::Active,
+            SpoolState::Active {
                 epoch: EpochNumber(0),
-                prev_owner: None,
             },
-            super::SpoolState {
-                status: SpoolStatus::LockedToMove,
+            SpoolState::LockedToMove {
                 epoch: EpochNumber(42),
+            },
+            SpoolState::Sync {
+                epoch: EpochNumber(5),
                 prev_owner: Some(NodeId(7)),
+                prev_helpers: [Some(NodeId(7)); SPOOL_GROUP_SIZE],
             },
         ];
 
         for state in states {
             let bytes = wincode::serialize(&state).unwrap();
-            let decoded: super::SpoolState = wincode::deserialize(&bytes).unwrap();
+            let decoded: SpoolState = wincode::deserialize(&bytes).unwrap();
             assert_eq!(state, decoded);
         }
-    }
-
-    #[test]
-    fn test_repr_values() {
-        assert_eq!(SpoolStatus::None as u8, 0);
-        assert_eq!(SpoolStatus::Active as u8, 1);
-        assert_eq!(SpoolStatus::ActiveSync as u8, 2);
-        assert_eq!(SpoolStatus::ActiveRecover as u8, 3);
-        assert_eq!(SpoolStatus::LockedToMove as u8, 4);
     }
 
     #[test]

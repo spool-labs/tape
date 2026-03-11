@@ -83,15 +83,13 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         archive.storage_price,
         total_units,
         1,
-    )
-    .ok_or(ProgramError::InvalidArgument)?;
+    ).ok_or(ProgramError::InvalidArgument)?;
 
     let total_cost = tape_reservation_cost(
         archive.storage_price,
         total_units,
         num_epochs.as_u64(),
-    )
-        .ok_or(ProgramError::InvalidArgument)?;
+    ).ok_or(ProgramError::InvalidArgument)?;
 
     let current_epoch = current_epoch(epoch);
     let current_capacity = archive.storage_capacity;

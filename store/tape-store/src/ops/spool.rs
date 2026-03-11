@@ -162,7 +162,6 @@ impl<S: Store> SpoolOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::SpoolStatus;
     use store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
 
@@ -170,8 +169,24 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    fn state(status: SpoolStatus) -> SpoolState {
-        SpoolState { status, epoch: EpochNumber(0), prev_owner: None }
+    fn active_state() -> SpoolState {
+        SpoolState::Active { epoch: EpochNumber(0) }
+    }
+
+    fn sync_state() -> SpoolState {
+        SpoolState::Sync {
+            epoch: EpochNumber(0),
+            prev_owner: None,
+            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
+        }
+    }
+
+    fn recover_state() -> SpoolState {
+        SpoolState::Recover {
+            epoch: EpochNumber(0),
+            prev_owner: None,
+            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
+        }
     }
 
     #[test]
@@ -182,13 +197,13 @@ mod tests {
         assert!(store.get_spool_state(spool_id).unwrap().is_none());
 
         store
-            .set_spool_state(spool_id, state(SpoolStatus::Active))
+            .set_spool_state(spool_id, active_state())
             .unwrap();
 
-        assert_eq!(
-            store.get_spool_state(spool_id).unwrap().unwrap().status,
-            SpoolStatus::Active,
-        );
+        assert!(matches!(
+            store.get_spool_state(spool_id).unwrap().unwrap(),
+            SpoolState::Active { .. }
+        ));
     }
 
     #[test]
@@ -196,13 +211,13 @@ mod tests {
         let store = test_store();
 
         store
-            .set_spool_state(10, state(SpoolStatus::Active))
+            .set_spool_state(10, active_state())
             .unwrap();
         store
-            .set_spool_state(20, state(SpoolStatus::ActiveSync))
+            .set_spool_state(20, sync_state())
             .unwrap();
         store
-            .set_spool_state(30, state(SpoolStatus::ActiveRecover))
+            .set_spool_state(30, recover_state())
             .unwrap();
 
         let spools = store.iter_all_spools().unwrap();
