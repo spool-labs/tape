@@ -11,7 +11,7 @@ use rpc_client::RpcClient;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_core::types::network::NetworkAddress;
-use tape_protocol::ProtocolState;
+use tape_protocol::{ProtocolState, fetch::fetch_state};
 
 use crate::PeerNode;
 
@@ -101,6 +101,16 @@ impl PeerManager {
         let peers = self.resolve_peer_map(rpc, state).await?;
         self.peers.store(Arc::new(peers));
         Ok(())
+    }
+
+    /// Fetch current protocol state and resolve the committee peer map.
+    pub async fn bootstrap<R: Rpc>(
+        &self,
+        rpc: &RpcClient<R>,
+    ) -> Result<ProtocolState, PeerManagerError> {
+        let state = fetch_state(rpc).await?;
+        self.resolve_peers(rpc, &state).await?;
+        Ok(state)
     }
 
     /// Resolve a single peer's current network address from on-chain data.

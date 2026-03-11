@@ -324,6 +324,13 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                 }
                 self.reschedule_lifecycle();
             }
+            Task::SpoolSync { .. } => {
+                SpoolPlanner::plan_spool_tasks(
+                    &*self.context.store,
+                    self.node_status(),
+                    &mut self.desired,
+                );
+            }
             Task::SpoolRecovery { spool } => {
                 self.desired.remove(&Task::RecoveryScan { spool: *spool });
             }
@@ -1607,6 +1614,23 @@ mod tests {
             ctx.store.get_spool_state(42).unwrap().unwrap().status,
             SpoolStatus::ActiveRecover
         );
+        assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
+        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
+        assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));
+    }
+
+    #[tokio::test]
+    async fn sync_success_replans_recovery_tasks() {
+        let ctx = test_context();
+        seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
+        ctx.store.set_spool_state(42, SpoolState { status: SpoolStatus::ActiveRecover, epoch: EpochNumber(0), prev_owner: None }).unwrap();
+
+        let mut scheduler = TaskScheduler::new(ctx);
+        scheduler.desired.insert(Task::SpoolSync { spool: 42 });
+        scheduler.scheduled.insert(Task::SpoolSync { spool: 42 });
+
+        scheduler.handle_result(&TaskResult::Success(Task::SpoolSync { spool: 42 }));
+
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
         assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));

@@ -92,14 +92,11 @@ pub async fn spawn_runtime<Db: Store + 'static, Cluster: Api + 'static, Blockcha
     cancel: CancellationToken,
 ) -> RuntimeHandles {
     // One-time fetch of current on-chain state
-    match tape_protocol::fetch::fetch_state(&ctx.rpc).await {
+    match ctx.peer_manager.bootstrap(&ctx.rpc).await {
         Ok(state) => {
             ctx.set_state(state);
-            if let Err(e) = ctx.refresh_peers().await {
-                tracing::warn!(error = %e, "peer resolve failed during bootstrap");
-            }
         }
-        Err(e) => tracing::warn!(error = %e, "bootstrap state fetch failed, starting with defaults"),
+        Err(e) => tracing::warn!(error = %e, "peer bootstrap failed, starting with defaults"),
     }
 
     let FsmBootstrap { change_rx, user_event_tx, ingestor: ingestor_handle, fsm: fsm_handle } =

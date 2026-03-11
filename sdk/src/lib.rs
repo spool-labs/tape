@@ -6,6 +6,11 @@ pub mod keys;
 pub mod staking;
 pub mod tapedrive;
 pub mod transfer;
+mod tape;
+mod track;
+
+#[cfg(test)]
+mod tests;
 
 pub use keys::stake_key::StakeKey;
 pub use keys::tape_key::TapeKey;

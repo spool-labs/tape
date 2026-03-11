@@ -236,38 +236,21 @@ TaskRunner<Db, Cluster, Blockchain> {
         self.retry.enqueue(key, attempt, delay);
     }
 
-    /// Compute backoff delay and re-enqueue, or escalate to permanent failure
-    /// if max retries for this category have been exhausted.
+    /// Compute a bounded backoff delay and re-enqueue indefinitely.
+    /// Terminal failure must come from task code via `TaskOutcome::Permanent`.
     async fn complete_retry(&mut self, key: Task, attempt: u32, err: String) {
-
         let config = backoff_for(key.category());
-        let delay = if let Some(max) = config.max_retries {
-            if attempt >= max { None } else { Some(tape_retry::compute_delay(&config, attempt)) }
-        } else {
-            Some(tape_retry::compute_delay(&config, attempt))
-        };
+        let delay = retry_delay_for(&config, attempt);
 
-        match delay {
-            Some(delay) => {
-                tracing::warn!(
-                    task = ?key,
-                    attempt,
-                    delay_secs = delay.as_secs(),
-                    error = %err,
-                    "scheduling retry"
-                );
-                self.retry.enqueue(key.clone(), attempt + 1, delay);
-                self.send_result(TaskResult::RetryableError(key, err)).await;
-            }
-            None => {
-                tracing::error!(
-                    task = ?key,
-                    attempt,
-                    "max retry exceeded, treating as permanent failure"
-                );
-                self.complete_permanent(key, err).await;
-            }
-        }
+        tracing::warn!(
+            task = ?key,
+            attempt,
+            delay_ms = delay.as_millis() as u64,
+            error = %err,
+            "scheduling retry"
+        );
+        self.retry.enqueue(key.clone(), attempt.saturating_add(1), delay);
+        self.send_result(TaskResult::RetryableError(key, err)).await;
     }
 
     /// Report an unrecoverable failure. The task will not be retried.
@@ -492,26 +475,34 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub fn backoff_for(category: TaskCategory) -> RetryConfig {
     match category {
         TaskCategory::SolanaTx => RetryConfig {
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            max_retries: Some(20),
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(1),
+            max_retries: None,
         },
         TaskCategory::PeerHttp => RetryConfig {
-            base_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(300),
-            max_retries: Some(50),
+            base_delay: Duration::from_millis(200),
+            max_delay: Duration::from_secs(1),
+            max_retries: None,
         },
         TaskCategory::CpuHeavy => RetryConfig {
-            base_delay: Duration::from_secs(30),
-            max_delay: Duration::from_secs(300),
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(1),
             max_retries: None,
         },
         TaskCategory::Internal => RetryConfig {
-            base_delay: Duration::from_secs(5),
-            max_delay: Duration::from_secs(60),
-            max_retries: Some(10),
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(1),
+            max_retries: None,
         },
     }
+}
+
+fn retry_delay_for(config: &RetryConfig, attempt: u32) -> Duration {
+    // Keep the exponent bounded so infinitely retried tasks stay on the capped
+    // delay curve rather than growing an unbounded attempt counter into the
+    // timing calculation.
+    let effective_attempt = attempt.min(8);
+    tape_retry::compute_delay(config, effective_attempt)
 }
 
 /// Per-category concurrency limits.
@@ -952,24 +943,24 @@ mod tests {
     #[test]
     fn backoff_config() {
         let solana = backoff_for(TaskCategory::SolanaTx);
-        assert_eq!(solana.base_delay, Duration::from_secs(1));
-        assert_eq!(solana.max_delay, Duration::from_secs(60));
-        assert_eq!(solana.max_retries, Some(20));
+        assert_eq!(solana.base_delay, Duration::from_millis(500));
+        assert_eq!(solana.max_delay, Duration::from_secs(10));
+        assert_eq!(solana.max_retries, None);
 
         let peer = backoff_for(TaskCategory::PeerHttp);
-        assert_eq!(peer.base_delay, Duration::from_secs(2));
-        assert_eq!(peer.max_delay, Duration::from_secs(300));
-        assert_eq!(peer.max_retries, Some(50));
+        assert_eq!(peer.base_delay, Duration::from_millis(200));
+        assert_eq!(peer.max_delay, Duration::from_secs(5));
+        assert_eq!(peer.max_retries, None);
 
         let cpu = backoff_for(TaskCategory::CpuHeavy);
-        assert_eq!(cpu.base_delay, Duration::from_secs(30));
-        assert_eq!(cpu.max_delay, Duration::from_secs(300));
+        assert_eq!(cpu.base_delay, Duration::from_secs(5));
+        assert_eq!(cpu.max_delay, Duration::from_secs(60));
         assert_eq!(cpu.max_retries, None);
 
         let internal = backoff_for(TaskCategory::Internal);
-        assert_eq!(internal.base_delay, Duration::from_secs(5));
-        assert_eq!(internal.max_delay, Duration::from_secs(60));
-        assert_eq!(internal.max_retries, Some(10));
+        assert_eq!(internal.base_delay, Duration::from_secs(1));
+        assert_eq!(internal.max_delay, Duration::from_secs(5));
+        assert_eq!(internal.max_retries, None);
     }
 
     #[test]
@@ -1026,21 +1017,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_exhausted() {
+    async fn retries_requeue_indefinitely() {
         let ctx = test_context();
         let (result_tx, mut result_rx) = mpsc::channel(16);
         let mut task_runner = TaskRunner::new(ctx, result_tx);
 
         let key = Task::SyncEpoch { epoch: EpochNumber(1) };
 
-        // SolanaTx category has max_retries: Some(20)
-        // Simulate attempt 20 (already at max)
         task_runner.running.insert(
             key.clone(),
             RunningTask {
                 category: TaskCategory::SolanaTx,
                 started_at: Instant::now(),
-                attempt: 20,
+                attempt: 10_000,
             },
         );
         task_runner
@@ -1051,11 +1040,28 @@ mod tests {
             .handle_completion(key.clone(), TaskOutcome::Retryable("transient".into()))
             .await;
 
-        // Should NOT be in retry queue — max retries exceeded
-        assert!(!task_runner.retry.contains(&key));
+        assert!(task_runner.retry.contains(&key));
 
-        // Should get PermanentError
+        let queued = &task_runner.retry.peek().unwrap().0;
+        assert_eq!(queued.key, key);
+        assert_eq!(queued.attempt, 10_001);
+
         let result = result_rx.try_recv().unwrap();
-        assert!(matches!(result, TaskResult::PermanentError(..)));
+        assert!(matches!(result, TaskResult::RetryableError(..)));
+    }
+
+    #[test]
+    fn retry_delay_caps_attempt_exponent() {
+        let config = RetryConfig {
+            base_delay: Duration::from_millis(200),
+            max_delay: Duration::from_secs(5),
+            max_retries: None,
+        };
+
+        for attempt in [8, 9, 100, 10_000] {
+            let delay = retry_delay_for(&config, attempt);
+            assert!(delay >= Duration::from_millis(2500));
+            assert!(delay <= Duration::from_secs(5));
+        }
     }
 }

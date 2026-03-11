@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_api::prelude::*;
 use tape_api::event::TapeReserved;
+use tape_core::tape::tape_reservation_cost;
 use crate::error::*;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -78,20 +79,22 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     let total_units = StorageUnits::unpack(args.storage_units);
 
-    let price_per_unit = archive.storage_price
-        .as_u64();
+    let fee_per_epoch = tape_reservation_cost(
+        archive.storage_price,
+        total_units,
+        1,
+    )
+    .ok_or(ProgramError::InvalidArgument)?;
 
-    let single_epoch_price = price_per_unit
-        .checked_mul(total_units.to_mb())
-        .ok_or(ProgramError::InvalidArgument)?;
-
-    let total_cost = single_epoch_price
-        .checked_mul(num_epochs.as_u64())
+    let total_cost = tape_reservation_cost(
+        archive.storage_price,
+        total_units,
+        num_epochs.as_u64(),
+    )
         .ok_or(ProgramError::InvalidArgument)?;
 
     let current_epoch = current_epoch(epoch);
     let current_capacity = archive.storage_capacity;
-    let fee_per_epoch = TAPE(single_epoch_price);
 
     if archive.schedule.current_epoch() != current_epoch {
         return Err(TapeError::UnexpectedState.into());
@@ -135,7 +138,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         authority_ata_info,
         archive_ata_info,
         token_program_info,
-        total_cost,
+        total_cost.as_u64(),
     )?;
 
     TapeReserved {
@@ -144,7 +147,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         capacity: total_units,
         active_epoch: start_epoch,
         expiry_epoch: end_epoch,
-        cost: total_cost.to_le_bytes(),
+        cost: total_cost.as_u64().to_le_bytes(),
     }.log();
 
     Ok(())
