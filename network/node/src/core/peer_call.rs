@@ -21,8 +21,7 @@ where
         cancel,
         f,
         ApiError::is_retryable,
-    )
-    .await;
+    ).await;
 
     match &result {
         Ok(_) => peer_manager.report_success(node_id),

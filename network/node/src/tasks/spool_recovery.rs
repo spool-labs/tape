@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_protocol::Api;
-use tape_protocol::api::{GetSliceReq, RepairReq, RepairRequest, StripeSubChunkRequest};
-use tape_protocol::state::ProtocolState;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
+use tape_protocol::Api;
+use tape_protocol::api::{GetSliceReq, RepairReq, RepairRequest, StripeSubChunkRequest};
+use tape_protocol::state::ProtocolState;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey as StorePubkey, SpoolState, TrackInfo};
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::{NodeContext, call_peer};
 use crate::TaskOutcome;
-use crate::tasks::spool_support::validate_slice_entry;
+use crate::scheduler::spool::validate_slice_entry;
 
 const RECOVERY_BATCH_SIZE: usize = 10;
 
@@ -41,6 +41,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: CancellationToken,
 ) -> TaskOutcome {
+
     let state = ctx.state();
 
     if state.epoch.is_zero() {
@@ -53,8 +54,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(s)) => s,
-        Ok(None) => return TaskOutcome::Success,
-        Err(e) => return TaskOutcome::Retryable(format!("get_spool_state: {e}")),
+        Ok(None) => {
+            tracing::warn!(spool, "received spool recovery task for spool with no state, skipping");
+            return TaskOutcome::Success
+        },
+        Err(e) => {
+            tracing::warn!(spool, "get_spool_state: {e}");
+            return TaskOutcome::Retryable(format!("get_spool_state: {e}"))
+        },
     };
 
     let spool_group = SpoolGroup::of(spool);
@@ -175,6 +182,7 @@ fn build_peer_maps(
     spool_group: SpoolGroup,
     our_spool: SpoolIndex,
 ) -> GroupPeers {
+
     let current = protocol
         .group_peers(spool_group)
         .into_iter()

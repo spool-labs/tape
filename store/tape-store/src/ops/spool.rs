@@ -1,4 +1,4 @@
-//! Spool operations (NOT epoch-namespaced)
+//! Spool operations
 
 use crate::columns::{SpoolPendingRecoveryCol, SpoolScanDoneCol, SpoolStatusCol, SpoolSyncCursorCol};
 use crate::error::{Result, TapeStoreError};
@@ -7,7 +7,7 @@ use crate::TapeStore;
 use store::{Column, Store};
 use tape_core::spooler::SpoolIndex;
 
-/// Operations for spool management (NOT epoch-namespaced)
+/// Operations for spool management
 pub trait SpoolOps {
     // Spool state (status + epoch entered)
     fn get_spool_state(&self, spool_id: SpoolIndex) -> Result<Option<SpoolState>>;

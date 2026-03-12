@@ -1,24 +1,24 @@
 //! SpoolSync — sync spool data from a peer that previously owned it.
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use rpc::Rpc;
+use store::Store;
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::NodeId;
 use tape_protocol::Api;
 use tape_protocol::api::ApiError;
 use tape_protocol::api::SyncReq;
 use tape_retry::Retryable;
-use store::Store;
-use tape_core::spooler::SpoolIndex;
-use tape_core::types::NodeId;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
 use tape_store::types::SpoolState;
-use tokio_util::sync::CancellationToken;
 
 use crate::core::NodeContext;
 use crate::TaskOutcome;
 use crate::core::call_peer;
-use crate::tasks::spool_support::validate_slice_entry;
+use crate::scheduler::spool::validate_slice_entry;
 
 const SYNC_BATCH_SIZE: u32 = 100;
 
@@ -27,37 +27,57 @@ enum SyncSource {
     SyncFrom { node_id: NodeId },
 }
 
-
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
     cancel: CancellationToken,
 ) -> TaskOutcome {
-    // Phase 1: Resolve source.
+
     let state = match ctx.store.get_spool_state(spool) {
         Ok(Some(s)) => s,
-        Ok(None) => return TaskOutcome::Success,
-        Err(e) => return TaskOutcome::Retryable(format!("get_spool_state: {e}")),
+        Ok(None) => {
+            tracing::warn!(spool, "received spool sync task for spool with no state, skipping");
+            return TaskOutcome::Success
+        },
+        Err(e) => {
+            tracing::warn!(spool, "get_spool_state: {e}");
+            return TaskOutcome::Retryable(format!("get_spool_state: {e}"))
+        },
     };
 
-    if !state.is_syncing() {
-        return TaskOutcome::Success;
-    }
+    let (epoch, prev_owner, prev_helpers) = match state {
+        SpoolState::Sync { epoch, prev_owner, prev_helpers } => (epoch, prev_owner, prev_helpers),
+        _ => {
+            tracing::warn!(spool, ?state, "received spool sync task for non-syncing spool, skipping");
+            return TaskOutcome::Success;
+        },
+    };
 
-    let source = match state.prev_owner() {
+    let source = match prev_owner {
         None => SyncSource::VerifyLocal,
         Some(id) if id == ctx.node_id() => SyncSource::VerifyLocal,
         Some(id) => SyncSource::SyncFrom { node_id: id },
     };
 
     match source {
+
+        // If the task is running on the same node that previously owned the spool, we can skip
+        // the sync loop and directly transition to Recover. The recover task will verify the
+        // local data and either transition to Active or re-enter Sync if data is
+        // missing/corrupted.
         SyncSource::VerifyLocal => {
-            return finish_sync(&ctx, spool);
+            // no-op, just transition to Recover to trigger local verification in the next step.
         }
+
+        // If the previous owner is a different node, we need to sync data from that peer. This is
+        // the common case for normal spool handovers. We enter a sync loop where we fetch batches
+        // of slices from the peer until we reach the end of the spool. After each batch, we
+        // persist a cursor so that if the task is interrupted, we can resume from where we left
+        // off.
         SyncSource::SyncFrom { node_id: peer } => {
-            // Phase 2: Sync loop.
-            let mut cursor: Option<[u8; 32]> = match ctx.store.get_spool_sync_cursor(spool) {
-                Ok(Some(pubkey)) => Some(pubkey.0),
+
+            let mut cursor = match ctx.store.get_spool_sync_cursor(spool) {
+                Ok(Some(val)) => Some(val.0),
                 Ok(None) => None,
                 Err(e) => return TaskOutcome::Retryable(format!("get_spool_sync_cursor: {e}")),
             };
@@ -70,26 +90,26 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 }
 
                 let req = SyncReq {
-                    spool_index: spool,
                     cursor,
+                    spool_index: spool,
                     limit: SYNC_BATCH_SIZE,
                 };
 
-                let api = ctx.api.clone();
-                let res = call_peer(&ctx.peer_manager, peer, Some(&cancel), move || {
-                    let api = api.clone();
+                let res = call_peer(&ctx.peer_manager, peer, Some(&cancel), || {
+                    let api = ctx.api.clone();
                     let req = req.clone();
                     async move { api.sync(peer, &req).await }
-                })
-                .await;
+                }).await;
 
                 let res = match res {
                     Ok(res) => res,
                     Err(e) if e.is_retryable() || is_transient_error(&e) => {
-                        return TaskOutcome::Retryable(format!("sync peer {}: {e}", peer.0));
+                        tracing::warn!(spool, "failed api call for peer sync {}, retryable: {e}", peer.0);
+                        return TaskOutcome::Retryable(format!("sync peer {}, retryable: {e}", peer.0));
                     }
                     Err(e) => {
-                        return TaskOutcome::Permanent(format!("sync peer {}: {e}", peer.0));
+                        tracing::warn!(spool, "failed api call for peer sync {}, permanent: {e}", peer.0);
+                        return TaskOutcome::Permanent(format!("sync peer {}, permanent: {e}", peer.0));
                     }
                 };
 
@@ -101,17 +121,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 for entry in &res.entries {
                     let track_addr = StorePubkey(entry.track_address);
+                    last_track = Some(track_addr);
 
                     // Skip if we already have this slice.
                     match ctx.store.has_slice(spool, track_addr) {
                         Ok(true) => {
-                            last_track = Some(track_addr);
                             continue;
                         }
                         Ok(false) => {}
                         Err(e) => {
                             tracing::warn!(?track_addr, spool, "has_slice: {e}");
-                            last_track = Some(track_addr);
                             continue;
                         }
                     }
@@ -123,16 +142,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                                 validate_slice_entry(spool, &track_info, &entry.slice_data)
                             {
                                 tracing::warn!(?track_addr, spool, "skipping invalid slice: {reason}");
-                                last_track = Some(track_addr);
                                 continue;
                             }
                         }
                         Ok(None) => {
-                            // No track metadata yet — accept the slice on trust.
+                            // No track metadata yet, accept the slice for now.
                         }
                         Err(e) => {
                             tracing::warn!(?track_addr, spool, "get_track: {e}");
-                            last_track = Some(track_addr);
                             continue;
                         }
                     }
@@ -146,8 +163,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                             tracing::warn!(?track_addr, spool, "put_slice: {e}");
                         }
                     }
-
-                    last_track = Some(track_addr);
                 }
 
                 // Persist cursor after each batch.
@@ -169,43 +184,24 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    // Phase 3: Finish.
-    finish_sync(&ctx, spool)
-}
+    // After successfully syncing (or if no sync was needed), transition to Recover to trigger
+    // local verification and potential transition to Active.
 
-fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    spool: SpoolIndex,
-) -> TaskOutcome {
-    let state = match ctx.store.get_spool_state(spool) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            tracing::debug!(spool, "finish_sync: no spool state, skipping");
-            return TaskOutcome::Success;
-        }
-        Err(e) => return TaskOutcome::Retryable(format!("finish_sync get_spool_state: {e}")),
-    };
-
-    if !state.is_syncing() {
-        tracing::debug!(spool, ?state, "finish_sync: not syncing, skipping");
-        return TaskOutcome::Success;
-    }
-
-    let new_state = match state {
-        SpoolState::Sync { epoch, prev_owner, prev_helpers } => {
-            SpoolState::Recover { epoch, prev_owner, prev_helpers }
-        }
-        _ => return TaskOutcome::Success,
+    let new_state = SpoolState::Recover { 
+        epoch, prev_owner, prev_helpers 
     };
 
     if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
-        return TaskOutcome::Retryable(format!("finish_sync set_spool_state: {e}"));
+        return TaskOutcome::Retryable(format!("set_spool_state: {e}"));
     }
 
-    let _ = ctx.store.remove_spool_sync_cursor(spool);
-    let _ = ctx.store.clear_scan_done(spool);
+    if let Err(e) = ctx.store.remove_spool_sync_cursor(spool) {
+        return TaskOutcome::Retryable(format!("remove_spool_sync_cursor: {e}"));
+    }
 
-    tracing::info!(spool, "spool sync complete, transitioning to Recover");
+    if let Err(e) = ctx.store.clear_scan_done(spool) {
+        return TaskOutcome::Retryable(format!("clear_scan_done: {e}"));
+    }
 
     TaskOutcome::Success
 }
@@ -218,11 +214,28 @@ fn is_transient_error(err: &ApiError) -> bool {
 mod tests {
     use super::*;
 
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
-    use tape_core::types::EpochNumber;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio_util::sync::CancellationToken;
+    use solana_sdk::signature::Keypair;
 
-    use crate::core::test_utils::test_context;
+    use peer_manager::PeerManager;
+    use peer_memory::MemoryApi;
+    use rpc_client::RpcClient;
+    use rpc_litesvm::LiteSvmRpc;
+    use tape_core::bls::BlsPrivateKey;
+    use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::EpochNumber;
+    use tape_protocol::api::{PeerReq, PeerRes, SyncRes, SyncSpoolEntry};
+    use tape_store::ops::TrackOps;
+    use tape_store::types::TrackInfo;
+    use tape_store::{MemoryStore, TapeStore};
+
+    use crate::core::test_utils::{test_config, test_context};
+    use crate::core::NodeContext;
+
+    const SPOOL: SpoolIndex = 5;
+    const PEER: NodeId = NodeId(99);
 
     fn sync_state(epoch: EpochNumber, prev_owner: Option<NodeId>) -> SpoolState {
         SpoolState::Sync {
@@ -236,20 +249,66 @@ mod tests {
         SpoolState::Active { epoch }
     }
 
+    fn track_addr(n: u8) -> StorePubkey {
+        let mut bytes = [0u8; 32];
+        bytes[0] = n;
+        StorePubkey(bytes)
+    }
+
+    fn entry(addr: StorePubkey, data: &[u8]) -> SyncSpoolEntry {
+        SyncSpoolEntry {
+            track_address: addr.0,
+            slice_data: data.to_vec(),
+        }
+    }
+
+    fn sync_ctx(
+        api: MemoryApi,
+    ) -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
+        let peer_manager = Arc::new(PeerManager::new());
+        let store = TapeStore::new(MemoryStore::new());
+
+        NodeContext::new(
+            test_config(),
+            Keypair::new(),
+            BlsPrivateKey::from_random(),
+            store,
+            RpcClient::from_rpc(LiteSvmRpc::new()),
+            peer_manager,
+            Arc::new(api),
+        )
+    }
+
+    /// Build a TrackInfo whose spool_group maps to SPOOL.
+    fn track_info_for_spool() -> TrackInfo {
+        TrackInfo {
+            tape_address: StorePubkey::new_unique(),
+            spool_group: SpoolGroup::of(SPOOL),
+            original_size: 1024,
+            stripe_size: 1024,
+            stripe_count: 1,
+            encoding_type: 0,
+            encoding_params: 0,
+            commitment: vec![],
+        }
+    }
+
+    // early-exit tests 
+
     #[tokio::test]
     async fn sync_self_owner() {
         let ctx = test_context();
         let node_id = ctx.node_id();
 
         ctx.store
-            .set_spool_state(5, sync_state(EpochNumber(3), Some(node_id)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(node_id)))
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx.clone(), 5, cancel).await;
+        let result = run(ctx.clone(), SPOOL, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert!(matches!(
             state,
             SpoolState::Recover {
@@ -265,14 +324,14 @@ mod tests {
         let ctx = test_context();
 
         ctx.store
-            .set_spool_state(5, sync_state(EpochNumber(3), None))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), None))
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx.clone(), 5, cancel).await;
+        let result = run(ctx.clone(), SPOOL, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert!(matches!(state, SpoolState::Recover { epoch, prev_owner: None, .. } if epoch == EpochNumber(3)));
     }
 
@@ -281,15 +340,14 @@ mod tests {
         let ctx = test_context();
 
         ctx.store
-            .set_spool_state(5, active_state(EpochNumber(3)))
+            .set_spool_state(SPOOL, active_state(EpochNumber(3)))
             .unwrap();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx.clone(), 5, cancel).await;
+        let result = run(ctx.clone(), SPOOL, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
-        // Should remain Active, not transition.
-        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert!(matches!(state, SpoolState::Active { epoch } if epoch == EpochNumber(3)));
     }
 
@@ -298,32 +356,294 @@ mod tests {
         let ctx = test_context();
 
         let cancel = CancellationToken::new();
-        let result = run(ctx, 5, cancel).await;
+        let result = run(ctx, SPOOL, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
     }
 
     #[tokio::test]
     async fn sync_unhealthy_peer() {
         let ctx = test_context();
-        let peer = NodeId(99);
 
         ctx.store
-            .set_spool_state(5, sync_state(EpochNumber(3), Some(peer)))
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
 
-        // Mark peer as unhealthy by reporting failures.
         for _ in 0..10 {
-            ctx.peer_manager.report_failure(peer);
+            ctx.peer_manager.report_failure(PEER);
         }
 
         let cancel = CancellationToken::new();
-        let result = run(ctx.clone(), 5, cancel).await;
+        let result = run(ctx.clone(), SPOOL, cancel).await;
 
-        // MemoryApi returns NotFound for unknown nodes → non-retryable after retries exhaust.
-        // The exact outcome depends on MemoryApi behavior, but it should not panic.
         assert!(matches!(
             result,
             TaskOutcome::Retryable(_) | TaskOutcome::Permanent(_)
         ));
+    }
+
+    // sync loop tests
+
+    #[tokio::test]
+    async fn sync_one_batch() {
+        let addr = track_addr(1);
+        let data = vec![0xAB; 64];
+
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                entries: vec![entry(addr, &data)],
+                next_cursor: None,
+            })),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        // Slice was persisted.
+        assert!(ctx.store.has_slice(SPOOL, addr).unwrap());
+
+        // State transitioned to Recover.
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
+        assert!(matches!(state, SpoolState::Recover { epoch, .. } if epoch == EpochNumber(3)));
+
+        // Cursor was cleaned up.
+        assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
+
+        // Stats recorded.
+        assert_eq!(ctx.stats.sync_bytes_received.load(Ordering::Relaxed), 64);
+    }
+
+    #[tokio::test]
+    async fn sync_multi_batch() {
+        let addr1 = track_addr(1);
+        let addr2 = track_addr(2);
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counter = call_count.clone();
+
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    PeerRes::Sync(Ok(SyncRes {
+                        entries: vec![entry(addr1, &[1; 32])],
+                        next_cursor: Some(addr1.0),
+                    }))
+                } else {
+                    PeerRes::Sync(Ok(SyncRes {
+                        entries: vec![entry(addr2, &[2; 32])],
+                        next_cursor: None,
+                    }))
+                }
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        assert!(ctx.store.has_slice(SPOOL, addr1).unwrap());
+        assert!(ctx.store.has_slice(SPOOL, addr2).unwrap());
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(ctx.stats.sync_bytes_received.load(Ordering::Relaxed), 64);
+    }
+
+    #[tokio::test]
+    async fn sync_resume_cursor() {
+        let existing = track_addr(1);
+        let addr2 = track_addr(2);
+        let captured_cursor = Arc::new(std::sync::Mutex::new(None));
+        let cursor_ref = captured_cursor.clone();
+
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(ref r) => {
+                *cursor_ref.lock().unwrap() = r.cursor;
+                PeerRes::Sync(Ok(SyncRes {
+                    entries: vec![entry(addr2, &[2; 16])],
+                    next_cursor: None,
+                }))
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+        ctx.store.set_spool_sync_cursor(SPOOL, existing).unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        // Verify the request carried the pre-existing cursor.
+        assert_eq!(captured_cursor.lock().unwrap().unwrap(), existing.0);
+    }
+
+    #[tokio::test]
+    async fn sync_skip_existing() {
+        let addr = track_addr(1);
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                entries: vec![entry(addr, &[0xCC; 32])],
+                next_cursor: None,
+            })),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        // Pre-populate the slice so has_slice returns true.
+        ctx.store.put_slice(SPOOL, addr, vec![0xDD; 32]).unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        // Original data preserved, not overwritten.
+        let stored = ctx.store.get_slice(SPOOL, addr).unwrap().unwrap();
+        assert_eq!(stored, vec![0xDD; 32]);
+
+        // No bytes counted (skip path).
+        assert_eq!(ctx.stats.sync_bytes_received.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_skip_invalid() {
+        let addr = track_addr(1);
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                entries: vec![entry(addr, &[])], // empty data for non-empty track
+                next_cursor: None,
+            })),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        // Store track metadata so validation runs — empty slice for a non-empty
+        // track triggers the "empty slice for non-empty track" rejection.
+        ctx.store.put_track(addr, track_info_for_spool()).unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        // Slice was NOT persisted.
+        assert!(!ctx.store.has_slice(SPOOL, addr).unwrap());
+    }
+
+    #[tokio::test]
+    async fn sync_accept_unknown_track() {
+        let addr = track_addr(1);
+        let data = vec![0xFF; 48];
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                entries: vec![entry(addr, &data)],
+                next_cursor: None,
+            })),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+        // No track metadata stored — should accept on trust.
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        assert!(ctx.store.has_slice(SPOOL, addr).unwrap());
+    }
+
+
+    #[tokio::test]
+    async fn sync_retryable_error() {
+        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Timeout)),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx, SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Retryable(_)));
+    }
+
+    #[tokio::test]
+    async fn sync_transient_error() {
+        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::NotResponsible)),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx, SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Retryable(_)));
+    }
+
+    #[tokio::test]
+    async fn sync_permanent_error() {
+        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
+            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Serialization("bad".into()))),
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx, SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Permanent(_)));
+    }
+
+    #[tokio::test]
+    async fn sync_cursor_persisted() {
+        let addr1 = track_addr(1);
+        let addr2 = track_addr(2);
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counter = call_count.clone();
+
+        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
+            PeerReq::Sync(_) => {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    PeerRes::Sync(Ok(SyncRes {
+                        entries: vec![entry(addr1, &[1; 8]), entry(addr2, &[2; 8])],
+                        next_cursor: Some(addr2.0),
+                    }))
+                } else {
+                    PeerRes::Sync(Ok(SyncRes {
+                        entries: vec![],
+                        next_cursor: None,
+                    }))
+                }
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
+            .unwrap();
+
+        let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
+        assert!(matches!(result, TaskOutcome::Success));
+
+        // After successful completion the cursor is cleaned up, but the slices
+        // prove that the batch was processed. The cursor is only visible
+        // mid-sync (between batches). Since we completed, it should be removed.
+        assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
     }
 }

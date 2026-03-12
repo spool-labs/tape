@@ -40,18 +40,21 @@ pub enum SpoolState {
     Active {
         epoch: EpochNumber,
     },
+
     /// Syncing data from the prior owner into the newly assigned spool.
     Sync {
         epoch: EpochNumber,
         prev_owner: Option<NodeId>,
         prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
     },
+
     /// Recovering missing slices after the initial sync pass.
     Recover {
         epoch: EpochNumber,
         prev_owner: Option<NodeId>,
         prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
     },
+
     /// Locked on the former owner while the new owner completes handoff.
     LockedToMove {
         epoch: EpochNumber,
