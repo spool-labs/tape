@@ -27,6 +27,7 @@ enum SyncSource {
     SyncFrom { node_id: NodeId },
 }
 
+
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
@@ -84,7 +85,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
                 let res = match res {
                     Ok(res) => res,
-                    Err(e) if e.is_retryable() || is_transient_sync_source_error(&e) => {
+                    Err(e) if e.is_retryable() || is_transient_error(&e) => {
                         return TaskOutcome::Retryable(format!("sync peer {}: {e}", peer.0));
                     }
                     Err(e) => {
@@ -172,10 +173,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     finish_sync(&ctx, spool)
 }
 
-fn is_transient_sync_source_error(err: &ApiError) -> bool {
-    matches!(err, ApiError::NotResponsible | ApiError::NotFound)
-}
-
 fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
@@ -211,6 +208,10 @@ fn finish_sync<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tracing::info!(spool, "spool sync complete, transitioning to Recover");
 
     TaskOutcome::Success
+}
+
+fn is_transient_error(err: &ApiError) -> bool {
+    matches!(err, ApiError::NotResponsible | ApiError::NotFound)
 }
 
 #[cfg(test)]

@@ -5,62 +5,67 @@ use crate::error::{Result, TapeStoreError};
 use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use crate::TapeStore;
 use store::{Column, Store};
+use tape_core::spooler::SpoolIndex;
 
 /// Operations for spool management (NOT epoch-namespaced)
 pub trait SpoolOps {
     // Spool state (status + epoch entered)
-    fn get_spool_state(&self, spool_id: u16) -> Result<Option<SpoolState>>;
-    fn set_spool_state(&self, spool_id: u16, state: SpoolState) -> Result<()>;
-    fn remove_spool_state(&self, spool_id: u16) -> Result<()>;
+    fn get_spool_state(&self, spool_id: SpoolIndex) -> Result<Option<SpoolState>>;
+    fn set_spool_state(&self, spool_id: SpoolIndex, state: SpoolState) -> Result<()>;
+    fn remove_spool_state(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Iterate all spools
-    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolState)>>;
+    fn iter_all_spools(&self) -> Result<Vec<(SpoolIndex, SpoolState)>>;
 
     // Pending recovery
-    fn add_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()>;
-    fn remove_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()>;
-    fn has_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<bool>;
+    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
+    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()>;
+    fn has_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<bool>;
 
     // Iterate pending recoveries for a spool (up to `limit`)
     fn iter_pending_recoveries(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
         limit: usize,
     ) -> Result<Vec<Pubkey>>;
 
     // Sync progress
-    fn get_spool_sync_cursor(&self, spool_id: u16) -> Result<Option<Pubkey>>;
-    fn set_spool_sync_cursor(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()>;
-    fn remove_spool_sync_cursor(&self, spool_id: u16) -> Result<()>;
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Pubkey>>;
+    fn set_spool_sync_cursor(
+        &self,
+        spool_id: SpoolIndex,
+        last_synced_track: Pubkey,
+    ) -> Result<()>;
+    fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Bulk clear all pending recoveries for a spool
-    fn clear_all_pending_recoveries(&self, spool_id: u16) -> Result<()>;
+    fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Recovery scan completion flag
-    fn set_scan_done(&self, spool_id: u16) -> Result<()>;
-    fn is_scan_done(&self, spool_id: u16) -> Result<bool>;
-    fn clear_scan_done(&self, spool_id: u16) -> Result<()>;
+    fn set_scan_done(&self, spool_id: SpoolIndex) -> Result<()>;
+    fn is_scan_done(&self, spool_id: SpoolIndex) -> Result<bool>;
+    fn clear_scan_done(&self, spool_id: SpoolIndex) -> Result<()>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
-    fn get_spool_state(&self, spool_id: u16) -> Result<Option<SpoolState>> {
+    fn get_spool_state(&self, spool_id: SpoolIndex) -> Result<Option<SpoolState>> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.get::<SpoolStatusCol>(&key)?)
     }
 
-    fn set_spool_state(&self, spool_id: u16, state: SpoolState) -> Result<()> {
+    fn set_spool_state(&self, spool_id: SpoolIndex, state: SpoolState) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.put::<SpoolStatusCol>(&key, &state)?;
         Ok(())
     }
 
-    fn remove_spool_state(&self, spool_id: u16) -> Result<()> {
+    fn remove_spool_state(&self, spool_id: SpoolIndex) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.delete::<SpoolStatusCol>(&key)?;
         Ok(())
     }
 
-    fn iter_all_spools(&self) -> Result<Vec<(u16, SpoolState)>> {
+    fn iter_all_spools(&self) -> Result<Vec<(SpoolIndex, SpoolState)>> {
         let iter = self.iter::<SpoolStatusCol>()?;
         Ok(iter
             .into_iter()
@@ -68,26 +73,30 @@ impl<S: Store> SpoolOps for TapeStore<S> {
             .collect())
     }
 
-    fn add_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()> {
+    fn add_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.put::<SpoolPendingRecoveryCol>(&key, &())?;
         Ok(())
     }
 
-    fn remove_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<()> {
+    fn remove_pending_recovery(&self, spool_id: SpoolIndex, track_address: Pubkey) -> Result<()> {
         let key = SliceKey::new(spool_id, track_address);
         self.delete::<SpoolPendingRecoveryCol>(&key)?;
         Ok(())
     }
 
-    fn has_pending_recovery(&self, spool_id: u16, track_address: Pubkey) -> Result<bool> {
+    fn has_pending_recovery(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Pubkey,
+    ) -> Result<bool> {
         let key = SliceKey::new(spool_id, track_address);
         Ok(self.contains::<SpoolPendingRecoveryCol>(&key)?)
     }
 
     fn iter_pending_recoveries(
         &self,
-        spool_id: u16,
+        spool_id: SpoolIndex,
         limit: usize,
     ) -> Result<Vec<Pubkey>> {
         let prefix = SliceKey::spool_prefix(spool_id);
@@ -108,7 +117,7 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(results)
     }
 
-    fn clear_all_pending_recoveries(&self, spool_id: u16) -> Result<()> {
+    fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()> {
         let raw = self.inner().inner();
         let prefix = SliceKey::spool_prefix(spool_id);
 
@@ -124,35 +133,39 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(())
     }
 
-    fn get_spool_sync_cursor(&self, spool_id: u16) -> Result<Option<Pubkey>> {
+    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Pubkey>> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.get::<SpoolSyncCursorCol>(&key)?)
     }
 
-    fn set_spool_sync_cursor(&self, spool_id: u16, last_synced_track: Pubkey) -> Result<()> {
+    fn set_spool_sync_cursor(
+        &self,
+        spool_id: SpoolIndex,
+        last_synced_track: Pubkey,
+    ) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.put::<SpoolSyncCursorCol>(&key, &last_synced_track)?;
         Ok(())
     }
 
-    fn remove_spool_sync_cursor(&self, spool_id: u16) -> Result<()> {
+    fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.delete::<SpoolSyncCursorCol>(&key)?;
         Ok(())
     }
 
-    fn set_scan_done(&self, spool_id: u16) -> Result<()> {
+    fn set_scan_done(&self, spool_id: SpoolIndex) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.put::<SpoolScanDoneCol>(&key, &())?;
         Ok(())
     }
 
-    fn is_scan_done(&self, spool_id: u16) -> Result<bool> {
+    fn is_scan_done(&self, spool_id: SpoolIndex) -> Result<bool> {
         let key = SpoolIndexKey::new(spool_id);
         Ok(self.contains::<SpoolScanDoneCol>(&key)?)
     }
 
-    fn clear_scan_done(&self, spool_id: u16) -> Result<()> {
+    fn clear_scan_done(&self, spool_id: SpoolIndex) -> Result<()> {
         let key = SpoolIndexKey::new(spool_id);
         self.delete::<SpoolScanDoneCol>(&key)?;
         Ok(())

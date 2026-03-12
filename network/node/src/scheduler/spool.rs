@@ -13,14 +13,16 @@ use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState};
 
 use crate::Task;
 
-pub struct SpoolPlanner;
-
 const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
 
-impl SpoolPlanner {
+pub struct SpoolPlanner;
 
-    /// Sync the desired set with current spool ownership. Removes tasks for
-    /// spools we no longer own and adds SpoolSync/SpoolRecovery for new ones.
+impl SpoolPlanner {
+    /// Recompute desired spool-scoped tasks from durable spool store state.
+    ///
+    /// This keeps the scheduler aligned with the node's current owned spools by
+    /// pruning tasks for unschedulable spools and adding `SpoolSync`,
+    /// `RecoveryScan`, and `SpoolRecovery` for spools in `Sync` / `Recover`.
     pub fn plan_spool_tasks<S: Store>(
         store: &TapeStore<S>,
         node_status: NodeStatus,
@@ -48,7 +50,9 @@ impl SpoolPlanner {
 
     /// Build the spool-id set that may have active spool tasks scheduled.
     /// `LockedToMove` spools are intentionally excluded.
-    fn schedulable_spools(owned_spools: &[(u16, SpoolState)]) -> HashSet<u16> {
+    fn schedulable_spools(
+        owned_spools: &[(SpoolIndex, SpoolState)],
+    ) -> HashSet<SpoolIndex> {
         owned_spools
             .iter()
             .filter_map(|(spool_id, state)| {
@@ -62,7 +66,10 @@ impl SpoolPlanner {
     }
 
     /// Remove spool-scoped tasks for spools that are no longer schedulable.
-    fn prune_desired_spool_tasks(desired: &mut HashSet<Task>, schedulable_spools: &HashSet<u16>) {
+    fn prune_desired_spool_tasks(
+        desired: &mut HashSet<Task>,
+        schedulable_spools: &HashSet<SpoolIndex>,
+    ) {
         desired.retain(|task| match task.spool_id() {
             Some(spool_id) => schedulable_spools.contains(&spool_id),
             None => true,
@@ -72,7 +79,7 @@ impl SpoolPlanner {
     /// Add spool tasks based on each spool's current status.
     fn add_spool_tasks<S: Store>(
         store: &TapeStore<S>,
-        owned_spools: &[(u16, SpoolState)],
+        owned_spools: &[(SpoolIndex, SpoolState)],
         desired: &mut HashSet<Task>,
     ) {
         for (spool_id, state) in owned_spools {
@@ -90,9 +97,11 @@ impl SpoolPlanner {
         }
     }
 
-    /// Transition a spool from ActiveSync to ActiveRecover when sync has failed.
-    /// Called from the scheduler when a SpoolSync task fails permanently.
-    pub fn transition_to_recovery<S: Store>(store: &TapeStore<S>, spool: u16) {
+    /// Move a spool from `Sync` to `Recover` after sync permanently fails.
+    ///
+    /// This preserves frozen handoff metadata while clearing sync-specific
+    /// runtime markers so recovery starts from a clean lifecycle boundary.
+    pub fn transition_to_recovery<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
         let current_state = store.get_spool_state(spool).ok().flatten();
         let Some(state) = current_state else {
             tracing::debug!(spool, "ignoring stale spool sync failure: no state");
@@ -112,13 +121,15 @@ impl SpoolPlanner {
             tracing::error!(spool, "failed to set Recover: {e}");
             return;
         }
-        let _ = store.remove_spool_sync_cursor(spool);
-        let _ = store.clear_scan_done(spool);
+        Self::reset_spool_task_state(store, spool);
         tracing::info!(spool, "spool sync failed, transitioning to recovery");
     }
 
-    /// After a track is certified, check owned spools for missing slices and
-    /// enqueue SpoolRecovery tasks for any gaps.
+    /// Scan owned spools for a certified track and enqueue recovery for gaps.
+    ///
+    /// Only `Active` and `Recover` spools are eligible. `Sync` spools are still
+    /// converging via handoff, and `LockedToMove` spools are old-owner retention
+    /// state that should not schedule new recovery work.
     pub fn check_slices<S: Store>(
         store: &TapeStore<S>,
         node_status: NodeStatus,
@@ -181,12 +192,22 @@ impl SpoolPlanner {
                     let _ = store.add_pending_recovery(*spool_id, store_track);
                     desired.insert(Task::SpoolRecovery { spool: *spool_id });
                 }
-                Err(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        spool_id,
+                        track = %track,
+                        error = ?error,
+                        "check_slices skipped: failed to read local slice presence"
+                    );
+                }
             }
         }
     }
 
-    /// Remove pending recovery entries for a track that was deleted or invalidated.
+    /// Remove pending recovery entries for a track that no longer needs repair.
+    ///
+    /// Called after delete/invalidate flows so stale recovery work does not
+    /// linger on any locally retained spool state.
     pub fn remove_recoveries<S: Store>(store: &TapeStore<S>, track: &Pubkey) {
         let store_track: StorePubkey = track.into();
         let owned_spools = match store.iter_all_spools() {
@@ -198,17 +219,17 @@ impl SpoolPlanner {
         }
     }
 
-    /// Create store rows for newly assigned spools, lock lost ones.
+    /// Reconcile durable spool rows against the spools assigned to this node.
     ///
     /// Compares `chain_spools` against existing store rows.
-    /// New assignments get `ActiveSync` status, triggering `SpoolSync` tasks.
+    /// New assignments get `Sync` state, triggering `SpoolSync` tasks.
     /// Lost spools transition to `LockedToMove` — the old owner must keep
     /// serving data until the new owner completes sync.
     ///
     /// Returns true if any spool rows changed.
     pub fn apply_ownership_changes<S: Store>(
         store: &TapeStore<S>,
-        chain_spools: &HashSet<u16>,
+        chain_spools: &HashSet<SpoolIndex>,
         epoch: EpochNumber,
         prev_spools: &SpoolAssignment<SPOOL_COUNT>,
         prev_committee: &[CommitteeMember],
@@ -221,76 +242,35 @@ impl SpoolPlanner {
             }
         };
 
-        let existing_ids: HashSet<u16> = existing.iter().map(|(id, _)| *id).collect();
-
+        let existing_ids: HashSet<SpoolIndex> =
+            existing.iter().map(|(id, _)| *id).collect();
         let mut changed = false;
 
-        // New assignments → ActiveSync
-        for &spool in chain_spools {
-            if !existing_ids.contains(&spool) {
-                let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
-                let prev_helpers = Self::prev_helpers_for(spool, prev_spools, prev_committee);
-                let state = SpoolState::Sync { epoch, prev_owner, prev_helpers };
-                if let Err(e) = store.set_spool_state(spool, state) {
-                    tracing::error!(spool, "apply_ownership_changes: failed to create spool: {e}");
-                } else {
-                    tracing::info!(spool, ?prev_owner, "spool assigned, marked Sync");
-                    changed = true;
-                }
-            }
-        }
-
-        // Lost assignments → LockedToMove (keep data for new owner to sync)
-        // Skip if already LockedToMove to preserve original lock epoch.
-        for &(spool, ref state) in &existing {
-            if !chain_spools.contains(&spool) {
-                if state.is_locked() {
-                    continue;
-                }
-                let new_state = SpoolState::LockedToMove { epoch };
-                if let Err(e) = store.set_spool_state(spool, new_state) {
-                    tracing::error!(spool, "apply_ownership_changes: failed to lock spool: {e}");
-                } else {
-                    let _ = store.clear_all_pending_recoveries(spool);
-                    let _ = store.remove_spool_sync_cursor(spool);
-                    let _ = store.clear_scan_done(spool);
-                    tracing::info!(spool, "spool lost, marked LockedToMove");
-                    changed = true;
-                }
-            }
-
-            // Reacquired: spool was LockedToMove but is back in chain_spools
-            if chain_spools.contains(&spool) && state.is_locked() {
-                let prev_owner =
-                    Self::prev_owner_for(spool, prev_spools, prev_committee);
-                let prev_helpers =
-                    Self::prev_helpers_for(spool, prev_spools, prev_committee);
-
-                let new_state = SpoolState::Sync {
-                    epoch,
-                    prev_owner,
-                    prev_helpers,
-                };
-
-                if let Err(e) = store.set_spool_state(spool, new_state) {
-                    tracing::error!(spool, "apply_ownership_changes: failed to reactivate spool: {e}");
-                } else {
-                    let _ = store.clear_all_pending_recoveries(spool);
-                    let _ = store.remove_spool_sync_cursor(spool);
-                    let _ = store.clear_scan_done(spool);
-                    tracing::info!(spool, "locked spool reacquired, marked Sync");
-                    changed = true;
-                }
-            }
-        }
+        changed |= Self::apply_new_assignments(
+            store,
+            chain_spools,
+            &existing_ids,
+            epoch,
+            prev_spools,
+            prev_committee,
+        );
+        changed |= Self::apply_losses_and_reacquires(
+            store,
+            chain_spools,
+            &existing,
+            epoch,
+            prev_spools,
+            prev_committee,
+        );
 
         changed
     }
 
-    /// Remove spools marked `LockedToMove` that were locked at least
-    /// `LOCKED_SPOOL_RETENTION_EPOCHS` epochs ago.
-    /// Called at `EpochAdvanced` so old owners keep serving data long enough for
-    /// new owners to complete sync.
+    /// Delete expired `LockedToMove` spool rows and their retained local state.
+    ///
+    /// Called at epoch boundaries so old owners keep serving long enough for new
+    /// owners to complete `Sync`, but are eventually purged once the retention
+    /// window has elapsed.
     pub fn cleanup_locked<S: Store>(store: &TapeStore<S>, current_epoch: EpochNumber) {
         let spools = match store.iter_all_spools() {
             Ok(s) => s,
@@ -298,31 +278,20 @@ impl SpoolPlanner {
         };
         for (spool_id, state) in &spools {
             if state.is_locked()
-                && state.epoch().0 + LOCKED_SPOOL_RETENTION_EPOCHS <= current_epoch.0
+                && state
+                    .epoch().0
+                    .saturating_add(LOCKED_SPOOL_RETENTION_EPOCHS)
+                    <= current_epoch.0
             {
-                match store.delete_all_slices_for_spool(*spool_id) {
-                    Ok(count) => {
-                        if count > 0 {
-                            tracing::info!(spool_id, count, "deleted orphaned slices");
-                        }
-                    }
-                    Err(e) => tracing::error!(spool_id, "delete slices: {e}"),
-                }
-                let _ = store.clear_all_pending_recoveries(*spool_id);
-                let _ = store.remove_spool_sync_cursor(*spool_id);
-                let _ = store.clear_scan_done(*spool_id);
-                if let Err(e) = store.remove_spool_state(*spool_id) {
-                    tracing::error!(spool_id, "cleanup_locked: {e}");
-                } else {
-                    tracing::info!(spool_id, "locked spool cleaned up");
-                }
+                Self::purge_locked_spool(store, *spool_id);
             }
         }
     }
 
-    /// Remove pending recovery entries whose tracks no longer exist in the store
-    /// (e.g. deleted or invalidated). Clears SpoolRecovery from desired when a
-    /// spool has no remaining pending recoveries.
+    /// Remove stale pending recovery entries for tracks no longer in the store.
+    ///
+    /// This keeps `SpoolRecovery` scheduling aligned with actual recoverable
+    /// work after delete/invalidate flows or store cleanup.
     pub fn prune_recoveries<S: Store>(store: &TapeStore<S>, desired: &mut HashSet<Task>) {
         let spools = match store.iter_all_spools() {
             Ok(spools) => spools,
@@ -332,14 +301,29 @@ impl SpoolPlanner {
         for (spool, state) in &spools {
             let pending = match store.iter_pending_recoveries(*spool, 1024) {
                 Ok(pending) => pending,
-                Err(_) => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        spool,
+                        error = ?error,
+                        "prune_recoveries skipped: failed to enumerate pending recoveries"
+                    );
+                    continue;
+                }
             };
 
             let mut remaining = pending.len();
             for track in &pending {
                 let missing = match store.get_track(*track) {
                     Ok(track_info) => track_info.is_none(),
-                    Err(_) => false,
+                    Err(error) => {
+                        tracing::warn!(
+                            spool,
+                            track = ?track,
+                            error = ?error,
+                            "prune_recoveries skipped: failed to read track"
+                        );
+                        false
+                    }
                 };
                 if missing {
                     let _ = store.remove_pending_recovery(*spool, *track);
@@ -355,13 +339,121 @@ impl SpoolPlanner {
         }
     }
 
+    fn apply_new_assignments<S: Store>(
+        store: &TapeStore<S>,
+        chain_spools: &HashSet<SpoolIndex>,
+        existing_ids: &HashSet<SpoolIndex>,
+        epoch: EpochNumber,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> bool {
+        let mut changed = false;
+
+        for &spool in chain_spools {
+            if existing_ids.contains(&spool) {
+                continue;
+            }
+
+            let state = Self::make_sync_state(spool, epoch, prev_spools, prev_committee);
+            let prev_owner = state.prev_owner();
+            if let Err(e) = store.set_spool_state(spool, state) {
+                tracing::error!(spool, "apply_ownership_changes: failed to create spool: {e}");
+            } else {
+                tracing::info!(spool, ?prev_owner, "spool assigned, marked Sync");
+                changed = true;
+            }
+        }
+
+        changed
+    }
+
+    fn apply_losses_and_reacquires<S: Store>(
+        store: &TapeStore<S>,
+        chain_spools: &HashSet<SpoolIndex>,
+        existing: &[(SpoolIndex, SpoolState)],
+        epoch: EpochNumber,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> bool {
+        let mut changed = false;
+
+        for &(spool, ref state) in existing {
+            if !chain_spools.contains(&spool) {
+                if state.is_locked() {
+                    continue;
+                }
+
+                let new_state = SpoolState::LockedToMove { epoch };
+                if let Err(e) = store.set_spool_state(spool, new_state) {
+                    tracing::error!(spool, "apply_ownership_changes: failed to lock spool: {e}");
+                } else {
+                    Self::reset_spool_task_state(store, spool);
+                    tracing::info!(spool, "spool lost, marked LockedToMove");
+                    changed = true;
+                }
+                continue;
+            }
+
+            if state.is_locked() {
+                let new_state = Self::make_sync_state(spool, epoch, prev_spools, prev_committee);
+                if let Err(e) = store.set_spool_state(spool, new_state) {
+                    tracing::error!(spool, "apply_ownership_changes: failed to reactivate spool: {e}");
+                } else {
+                    Self::reset_spool_task_state(store, spool);
+                    tracing::info!(spool, "locked spool reacquired, marked Sync");
+                    changed = true;
+                }
+            }
+        }
+
+        changed
+    }
+
+    fn make_sync_state(
+        spool: SpoolIndex,
+        epoch: EpochNumber,
+        prev_spools: &SpoolAssignment<SPOOL_COUNT>,
+        prev_committee: &[CommitteeMember],
+    ) -> SpoolState {
+        let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
+        let prev_helpers = Self::prev_helpers_for(spool, prev_spools, prev_committee);
+
+        SpoolState::Sync {
+            epoch,
+            prev_owner,
+            prev_helpers,
+        }
+    }
+
+    fn reset_spool_task_state<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
+        let _ = store.clear_all_pending_recoveries(spool);
+        let _ = store.remove_spool_sync_cursor(spool);
+        let _ = store.clear_scan_done(spool);
+    }
+
+    fn purge_locked_spool<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
+        match store.delete_all_slices_for_spool(spool) {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(spool, count, "deleted orphaned slices");
+                }
+            }
+            Err(e) => tracing::error!(spool, "delete slices: {e}"),
+        }
+        Self::reset_spool_task_state(store, spool);
+        if let Err(e) = store.remove_spool_state(spool) {
+            tracing::error!(spool, "cleanup_locked: {e}");
+        } else {
+            tracing::info!(spool, "locked spool cleaned up");
+        }
+    }
+
     fn prev_owner_for(
         spool: SpoolIndex,
         prev_spools: &SpoolAssignment<SPOOL_COUNT>,
         prev_committee: &[CommitteeMember],
     ) -> Option<NodeId> {
-        prev_spools
-            .0
+        prev_spools.0
             .get(spool as usize)
             .and_then(|&member_idx| prev_committee.get(member_idx as usize))
             .map(|member| member.id)
