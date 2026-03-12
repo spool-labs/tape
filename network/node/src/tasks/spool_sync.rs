@@ -211,23 +211,16 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio_util::sync::CancellationToken;
-    use solana_sdk::signature::Keypair;
 
-    use peer_manager::PeerManager;
     use peer_memory::MemoryApi;
-    use rpc_client::RpcClient;
-    use rpc_litesvm::LiteSvmRpc;
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::EpochNumber;
     use tape_protocol::api::{PeerReq, PeerRes, SyncRes, SyncSpoolEntry};
     use tape_store::ops::TrackOps;
     use tape_store::types::TrackInfo;
-    use tape_store::{MemoryStore, TapeStore};
 
-    use crate::core::test_utils::{test_config, test_context};
-    use crate::core::NodeContext;
+    use crate::core::test_utils::{test_context, test_context_with_api};
 
     const SPOOL: SpoolIndex = 5;
     const PEER: NodeId = NodeId(99);
@@ -255,23 +248,6 @@ mod tests {
             track_address: addr.0,
             slice_data: data.to_vec(),
         }
-    }
-
-    fn sync_ctx(
-        api: MemoryApi,
-    ) -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
-        let peer_manager = Arc::new(PeerManager::new());
-        let store = TapeStore::new(MemoryStore::new());
-
-        NodeContext::new(
-            test_config(),
-            Keypair::new(),
-            BlsPrivateKey::from_random(),
-            store,
-            RpcClient::from_rpc(LiteSvmRpc::new()),
-            peer_manager,
-            Arc::new(api),
-        )
     }
 
     /// Build a TrackInfo whose spool_group maps to SPOOL.
@@ -383,12 +359,13 @@ mod tests {
         let addr = track_addr(1);
         let data = vec![0xAB; 64];
 
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
-                entries: vec![entry(addr, &data)],
-                next_cursor: None,
-            })),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                    entries: vec![entry(addr, &data)],
+                    next_cursor: None,
+                })),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -419,22 +396,23 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let counter = call_count.clone();
 
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => {
-                let n = counter.fetch_add(1, Ordering::SeqCst);
-                if n == 0 {
-                    PeerRes::Sync(Ok(SyncRes {
-                        entries: vec![entry(addr1, &[1; 32])],
-                        next_cursor: Some(addr1.0),
-                    }))
-                } else {
-                    PeerRes::Sync(Ok(SyncRes {
-                        entries: vec![entry(addr2, &[2; 32])],
-                        next_cursor: None,
-                    }))
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        PeerRes::Sync(Ok(SyncRes {
+                            entries: vec![entry(addr1, &[1; 32])],
+                            next_cursor: Some(addr1.0),
+                        }))
+                    } else {
+                        PeerRes::Sync(Ok(SyncRes {
+                            entries: vec![entry(addr2, &[2; 32])],
+                            next_cursor: None,
+                        }))
+                    }
                 }
-            }
-            _ => panic!("unexpected request"),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -457,15 +435,16 @@ mod tests {
         let captured_cursor = Arc::new(std::sync::Mutex::new(None));
         let cursor_ref = captured_cursor.clone();
 
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(ref r) => {
-                *cursor_ref.lock().unwrap() = r.cursor;
-                PeerRes::Sync(Ok(SyncRes {
-                    entries: vec![entry(addr2, &[2; 16])],
-                    next_cursor: None,
-                }))
-            }
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(ref r) => {
+                    *cursor_ref.lock().unwrap() = r.cursor;
+                    PeerRes::Sync(Ok(SyncRes {
+                        entries: vec![entry(addr2, &[2; 16])],
+                        next_cursor: None,
+                    }))
+                }
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -483,12 +462,13 @@ mod tests {
     #[tokio::test]
     async fn sync_skip_existing() {
         let addr = track_addr(1);
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
-                entries: vec![entry(addr, &[0xCC; 32])],
-                next_cursor: None,
-            })),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                    entries: vec![entry(addr, &[0xCC; 32])],
+                    next_cursor: None,
+                })),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -512,12 +492,13 @@ mod tests {
     #[tokio::test]
     async fn sync_skip_invalid() {
         let addr = track_addr(1);
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
-                entries: vec![entry(addr, &[])], // empty data for non-empty track
-                next_cursor: None,
-            })),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                    entries: vec![entry(addr, &[])], // empty data for non-empty track
+                    next_cursor: None,
+                })),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -539,12 +520,13 @@ mod tests {
     async fn sync_accept_unknown_track() {
         let addr = track_addr(1);
         let data = vec![0xFF; 48];
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
-                entries: vec![entry(addr, &data)],
-                next_cursor: None,
-            })),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Ok(SyncRes {
+                    entries: vec![entry(addr, &data)],
+                    next_cursor: None,
+                })),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -561,9 +543,10 @@ mod tests {
 
     #[tokio::test]
     async fn sync_retryable_error() {
-        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Timeout)),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(|_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Timeout)),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -576,9 +559,10 @@ mod tests {
 
     #[tokio::test]
     async fn sync_transient_error() {
-        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::NotResponsible)),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(|_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::NotResponsible)),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -591,9 +575,10 @@ mod tests {
 
     #[tokio::test]
     async fn sync_permanent_error() {
-        let ctx = sync_ctx(MemoryApi::new(|_, req| match req {
-            PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Serialization("bad".into()))),
-            _ => panic!("unexpected request"),
+        let ctx = test_context_with_api(
+            MemoryApi::new(|_, req| match req {
+                PeerReq::Sync(_) => PeerRes::Sync(Err(ApiError::Serialization("bad".into()))),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store
@@ -611,22 +596,23 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let counter = call_count.clone();
 
-        let ctx = sync_ctx(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(_) => {
-                let n = counter.fetch_add(1, Ordering::SeqCst);
-                if n == 0 {
-                    PeerRes::Sync(Ok(SyncRes {
-                        entries: vec![entry(addr1, &[1; 8]), entry(addr2, &[2; 8])],
-                        next_cursor: Some(addr2.0),
-                    }))
-                } else {
-                    PeerRes::Sync(Ok(SyncRes {
-                        entries: vec![],
-                        next_cursor: None,
-                    }))
+        let ctx = test_context_with_api(
+            MemoryApi::new(move |_, req| match req {
+                PeerReq::Sync(_) => {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        PeerRes::Sync(Ok(SyncRes {
+                            entries: vec![entry(addr1, &[1; 8]), entry(addr2, &[2; 8])],
+                            next_cursor: Some(addr2.0),
+                        }))
+                    } else {
+                        PeerRes::Sync(Ok(SyncRes {
+                            entries: vec![],
+                            next_cursor: None,
+                        }))
+                    }
                 }
-            }
-            _ => panic!("unexpected request"),
+                _ => panic!("unexpected request"),
         }));
 
         ctx.store

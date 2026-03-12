@@ -62,17 +62,23 @@ pub mod test_utils {
     }
 
     pub fn test_context() -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
+        let api = MemoryApi::noop();
+        test_context_with_api(api)
+    }
+
+    pub fn test_context_with_api(
+        api: MemoryApi,
+    ) -> Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>> {
+        let payer = Keypair::new();
+        let bls = BlsPrivateKey::from_random();
+        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
         let peer_manager = Arc::new(PeerManager::new());
-        let api = Arc::new(MemoryApi::noop());
         let store = TapeStore::new(MemoryStore::new());
+        let api = Arc::new(api);
+
         NodeContext::new(
             test_config(),
-            Keypair::new(),
-            BlsPrivateKey::from_random(),
-            store,
-            RpcClient::from_rpc(LiteSvmRpc::new()),
-            peer_manager,
-            api,
+            payer, bls, store, rpc, peer_manager, api,
         )
     }
 }
