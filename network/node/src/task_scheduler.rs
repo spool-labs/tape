@@ -593,7 +593,7 @@ mod tests {
         Pubkey as StorePubkey,
         SnapshotCertResult,
         SnapshotChunkMeta,
-        SpoolState,
+        SpoolState, SpoolStatus,
         TrackInfo,
     };
     use crate::fsm::{Fsm, StateChange};
@@ -705,35 +705,23 @@ mod tests {
     }
 
     fn active_spool(epoch: EpochNumber) -> SpoolState {
-        SpoolState::Active { epoch }
+        SpoolState::new(SpoolStatus::Active, epoch)
     }
 
     fn sync_spool(epoch: EpochNumber) -> SpoolState {
-        SpoolState::Sync {
-            epoch,
-            prev_owner: None,
-            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Sync, epoch)
     }
 
     fn scan_spool(epoch: EpochNumber) -> SpoolState {
-        SpoolState::Scan {
-            epoch,
-            prev_owner: None,
-            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Scan, epoch)
     }
 
     fn recover_spool(epoch: EpochNumber) -> SpoolState {
-        SpoolState::Recover {
-            epoch,
-            prev_owner: None,
-            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Recover, epoch)
     }
 
     fn locked_spool(epoch: EpochNumber) -> SpoolState {
-        SpoolState::LockedToMove { epoch }
+        SpoolState::new(SpoolStatus::LockedToMove, epoch)
     }
 
     #[tokio::test]
@@ -1643,7 +1631,7 @@ mod tests {
 
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
-            SpoolState::Scan { epoch, .. } if epoch == EpochNumber(0)
+            s if s.is_scanning() && s.epoch == EpochNumber(0)
         ));
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
         assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));
@@ -1686,7 +1674,7 @@ mod tests {
 
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
-            SpoolState::Recover { epoch, .. } if epoch == EpochNumber(0)
+            s if s.is_recovering() && s.epoch == EpochNumber(0)
         ));
         // Planner re-adds recovery for Recover state
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
@@ -1711,7 +1699,7 @@ mod tests {
 
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
-            SpoolState::Scan { epoch, .. } if epoch == EpochNumber(0)
+            s if s.is_scanning() && s.epoch == EpochNumber(0)
         ));
         // Planner re-adds scan for Scan state
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
@@ -1847,10 +1835,10 @@ mod tests {
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
-        assert!(matches!(s10, SpoolState::Sync { epoch, .. } if epoch == EpochNumber(5)));
+        assert!(s10.is_syncing() && s10.epoch == EpochNumber(5));
 
         let s20 = ctx.store.get_spool_state(20).unwrap().unwrap();
-        assert!(matches!(s20, SpoolState::Sync { epoch, .. } if epoch == EpochNumber(5)));
+        assert!(s20.is_syncing() && s20.epoch == EpochNumber(5));
     }
 
     #[tokio::test]
@@ -1874,13 +1862,8 @@ mod tests {
         assert!(changed);
 
         let state = ctx.store.get_spool_state(10).unwrap().unwrap();
-        assert!(matches!(
-            state,
-            SpoolState::Sync {
-                prev_owner: Some(node),
-                ..
-            } if node == NodeId(99)
-        ));
+        assert!(state.is_syncing());
+        assert_eq!(state.prev_owner, Some(NodeId(99)));
     }
 
     #[tokio::test]
@@ -1905,14 +1888,9 @@ mod tests {
         assert!(changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
-        assert!(matches!(
-            s10,
-            SpoolState::Sync {
-                epoch,
-                prev_owner: Some(owner),
-                ..
-            } if epoch == EpochNumber(5) && owner == ctx.node_id()
-        ));
+        assert!(s10.is_syncing());
+        assert_eq!(s10.epoch, EpochNumber(5));
+        assert_eq!(s10.prev_owner, Some(ctx.node_id()));
     }
 
     #[tokio::test]
@@ -1937,6 +1915,7 @@ mod tests {
         assert!(!changed);
 
         let s10 = ctx.store.get_spool_state(10).unwrap().unwrap();
-        assert!(matches!(s10, SpoolState::LockedToMove { epoch } if epoch == EpochNumber(3)));
+        assert!(s10.is_locked());
+        assert_eq!(s10.epoch, EpochNumber(3));
     }
 }

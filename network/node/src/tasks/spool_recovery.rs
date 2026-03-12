@@ -13,7 +13,7 @@ use tape_protocol::api::{GetSliceReq, RepairReq, RepairRequest, StripeSubChunkRe
 use tape_protocol::state::ProtocolState;
 use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{Pubkey as StorePubkey, SpoolState, TrackInfo};
+use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 use tokio_util::sync::CancellationToken;
 
 use crate::core::{NodeContext, call_peer};
@@ -154,7 +154,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     } else {
         match ctx.store.get_spool_state(spool) {
             Ok(Some(state)) if state.is_recovering() => {
-                let new_state = SpoolState::Active { epoch: state.epoch() };
+                let new_state = SpoolState::new(SpoolStatus::Active, state.epoch);
                 if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
@@ -181,15 +181,13 @@ fn build_peer_maps(
         .collect();
 
     let mut previous = HashMap::new();
-    if let Some(prev_helpers) = spool_state.prev_helpers() {
-        for (slot, helper) in prev_helpers.iter().enumerate().take(SPOOL_GROUP_SIZE) {
-            let peer_spool = spool_group.base() + slot as u16;
-            if peer_spool == our_spool {
-                continue;
-            }
-            if let Some(node_id) = helper {
-                previous.insert(peer_spool, *node_id);
-            }
+    for (slot, helper) in spool_state.prev_helpers.iter().enumerate().take(SPOOL_GROUP_SIZE) {
+        let peer_spool = spool_group.base() + slot as u16;
+        if peer_spool == our_spool {
+            continue;
+        }
+        if let Some(node_id) = helper {
+            previous.insert(peer_spool, *node_id);
         }
     }
 
@@ -549,11 +547,7 @@ mod tests {
         ctx.store
             .set_spool_state(
                 5,
-                SpoolState::Recover {
-                    epoch: EpochNumber(2),
-                    prev_owner: None,
-                    prev_helpers: [None; SPOOL_GROUP_SIZE],
-                },
+                SpoolState::new(SpoolStatus::Recover, EpochNumber(2)),
             )
             .unwrap();
 
@@ -589,23 +583,15 @@ mod tests {
         });
 
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState::Recover {
-                    epoch: EpochNumber(0),
-                    prev_owner: None,
-                    prev_helpers: [None; SPOOL_GROUP_SIZE],
-                },
-            )
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Recover, EpochNumber(0)))
             .unwrap();
 
         let cancel = CancellationToken::new();
         let result = run(ctx.clone(), 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
-        assert!(matches!(
-            ctx.store.get_spool_state(5).unwrap().unwrap(),
-            SpoolState::Active { epoch } if epoch == EpochNumber(0)
-        ));
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert!(state.is_active());
+        assert_eq!(state.epoch, EpochNumber(0));
     }
 
     #[test]

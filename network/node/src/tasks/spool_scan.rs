@@ -17,7 +17,7 @@ use tape_api::prelude::SpoolIndex;
 use tape_core::erasure::spool_in_group;
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{ObjectInfo, SpoolState};
+use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::TaskOutcome;
@@ -116,13 +116,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     };
 
     let new_state = if has_pending {
-        SpoolState::Recover {
-            epoch: current.epoch(),
-            prev_owner: current.prev_owner(),
-            prev_helpers: *current.prev_helpers().unwrap(),
-        }
+        SpoolState { status: SpoolStatus::Recover, ..current }
     } else {
-        SpoolState::Active { epoch: current.epoch() }
+        SpoolState::new(SpoolStatus::Active, current.epoch)
     };
 
     if let Err(e) = context.store.set_spool_state(spool, new_state) {
@@ -138,11 +134,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
 
-    use tape_core::erasure::SPOOL_GROUP_SIZE;
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::EpochNumber;
     use tape_store::ops::{ObjectInfoOps, SpoolOps, TrackOps};
-    use tape_store::types::{Pubkey as StorePubkey, SpoolState, TrackInfo};
+    use tape_store::types::{Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
     use tokio_util::sync::CancellationToken;
 
     use crate::core::test_utils::test_context;
@@ -150,11 +145,7 @@ mod tests {
     const SPOOL: SpoolIndex = 5;
 
     fn scan_state() -> SpoolState {
-        SpoolState::Scan {
-            epoch: EpochNumber(3),
-            prev_owner: None,
-            prev_helpers: [None; SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Scan, EpochNumber(3))
     }
 
     fn track_addr(n: u8) -> StorePubkey {

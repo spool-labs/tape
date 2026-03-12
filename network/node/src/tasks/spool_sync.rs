@@ -13,7 +13,7 @@ use tape_protocol::api::SyncReq;
 use tape_retry::Retryable;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey as StorePubkey;
-use tape_store::types::SpoolState;
+use tape_store::types::{SpoolState, SpoolStatus};
 
 use crate::core::NodeContext;
 use crate::TaskOutcome;
@@ -45,15 +45,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         },
     };
 
-    let (epoch, prev_owner, prev_helpers) = match state {
-        SpoolState::Sync { epoch, prev_owner, prev_helpers } => (epoch, prev_owner, prev_helpers),
-        _ => {
-            tracing::warn!(spool, ?state, "received spool sync task for non-syncing spool, skipping");
-            return TaskOutcome::Success;
-        },
-    };
+    if !state.is_syncing() {
+        tracing::warn!(spool, ?state, "received spool sync task for non-syncing spool, skipping");
+        return TaskOutcome::Success;
+    }
 
-    let source = match prev_owner {
+    let source = match state.prev_owner {
         None => SyncSource::VerifyLocal,
         Some(id) if id == ctx.node_id() => SyncSource::VerifyLocal,
         Some(id) => SyncSource::SyncFrom { node_id: id },
@@ -186,9 +183,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // After successfully syncing (or if no sync was needed), transition to Scan to find
     // any missing slices before potentially entering recovery or going active.
 
-    let new_state = SpoolState::Scan {
-        epoch, prev_owner, prev_helpers
-    };
+    let new_state = SpoolState { status: SpoolStatus::Scan, ..state };
 
     if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
         return TaskOutcome::Retryable(format!("set_spool_state: {e}"));
@@ -218,7 +213,7 @@ mod tests {
     use tape_core::types::EpochNumber;
     use tape_protocol::api::{PeerReq, PeerRes, SyncRes, SyncSpoolEntry};
     use tape_store::ops::TrackOps;
-    use tape_store::types::TrackInfo;
+    use tape_store::types::{SpoolStatus, TrackInfo};
 
     use crate::core::test_utils::{test_context, test_context_with_api};
 
@@ -226,7 +221,8 @@ mod tests {
     const PEER: NodeId = NodeId(99);
 
     fn sync_state(epoch: EpochNumber, prev_owner: Option<NodeId>) -> SpoolState {
-        SpoolState::Sync {
+        SpoolState {
+            status: SpoolStatus::Sync,
             epoch,
             prev_owner,
             prev_helpers: [None; SPOOL_GROUP_SIZE],
@@ -234,7 +230,7 @@ mod tests {
     }
 
     fn active_state(epoch: EpochNumber) -> SpoolState {
-        SpoolState::Active { epoch }
+        SpoolState::new(SpoolStatus::Active, epoch)
     }
 
     fn track_addr(n: u8) -> StorePubkey {
@@ -280,14 +276,9 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(
-            state,
-            SpoolState::Scan {
-                epoch,
-                prev_owner: Some(owner),
-                ..
-            } if epoch == EpochNumber(3) && owner == node_id
-        ));
+        assert!(state.is_scanning());
+        assert_eq!(state.epoch, EpochNumber(3));
+        assert_eq!(state.prev_owner, Some(node_id));
     }
 
     #[tokio::test]
@@ -303,7 +294,9 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(state, SpoolState::Scan { epoch, prev_owner: None, .. } if epoch == EpochNumber(3)));
+        assert!(state.is_scanning());
+        assert_eq!(state.epoch, EpochNumber(3));
+        assert_eq!(state.prev_owner, None);
     }
 
     #[tokio::test]
@@ -319,7 +312,8 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(state, SpoolState::Active { epoch } if epoch == EpochNumber(3)));
+        assert!(state.is_active());
+        assert_eq!(state.epoch, EpochNumber(3));
     }
 
     #[tokio::test]
@@ -380,7 +374,8 @@ mod tests {
 
         // State transitioned to Scan.
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(state, SpoolState::Scan { epoch, .. } if epoch == EpochNumber(3)));
+        assert!(state.is_scanning());
+        assert_eq!(state.epoch, EpochNumber(3));
 
         // Cursor was cleaned up.
         assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());

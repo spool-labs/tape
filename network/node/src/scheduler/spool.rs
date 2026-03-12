@@ -9,7 +9,7 @@ use tape_core::spooler::{SpoolAssignment, SpoolIndex};
 use tape_core::system::CommitteeMember;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState, TrackInfo};
+use tape_store::types::{NodeStatus, Pubkey as StorePubkey, SpoolState, SpoolStatus, TrackInfo};
 
 use crate::Task;
 
@@ -142,12 +142,7 @@ impl SpoolPlanner {
             tracing::debug!(spool, ?state, "ignoring stale spool sync failure");
             return;
         }
-        let new_state = match state {
-            SpoolState::Sync { epoch, prev_owner, prev_helpers } => {
-                SpoolState::Scan { epoch, prev_owner, prev_helpers }
-            }
-            _ => return,
-        };
+        let new_state = SpoolState { status: SpoolStatus::Scan, ..state };
         if let Err(e) = store.set_spool_state(spool, new_state) {
             tracing::error!(spool, "failed to set Scan: {e}");
             return;
@@ -310,7 +305,7 @@ impl SpoolPlanner {
         for (spool_id, state) in &spools {
             if state.is_locked()
                 && state
-                    .epoch().0
+                    .epoch.0
                     .saturating_add(LOCKED_SPOOL_RETENTION_EPOCHS)
                     <= current_epoch.0
             {
@@ -386,7 +381,7 @@ impl SpoolPlanner {
             }
 
             let state = Self::make_sync_state(spool, epoch, prev_spools, prev_committee);
-            let prev_owner = state.prev_owner();
+            let prev_owner = state.prev_owner;
             if let Err(e) = store.set_spool_state(spool, state) {
                 tracing::error!(spool, "apply_ownership_changes: failed to create spool: {e}");
             } else {
@@ -414,7 +409,7 @@ impl SpoolPlanner {
                     continue;
                 }
 
-                let new_state = SpoolState::LockedToMove { epoch };
+                let new_state = SpoolState::new(SpoolStatus::LockedToMove, epoch);
                 if let Err(e) = store.set_spool_state(spool, new_state) {
                     tracing::error!(spool, "apply_ownership_changes: failed to lock spool: {e}");
                 } else {
@@ -449,7 +444,8 @@ impl SpoolPlanner {
         let prev_owner = Self::prev_owner_for(spool, prev_spools, prev_committee);
         let prev_helpers = Self::prev_helpers_for(spool, prev_spools, prev_committee);
 
-        SpoolState::Sync {
+        SpoolState {
+            status: SpoolStatus::Sync,
             epoch,
             prev_owner,
             prev_helpers,

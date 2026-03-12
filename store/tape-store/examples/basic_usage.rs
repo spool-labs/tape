@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spool status (NOT epoch-namespaced)
     for spool_id in 0..3u16 {
-        store.set_spool_state(spool_id, SpoolState::Active { epoch: EpochNumber(0) })?;
+        store.set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))?;
     }
 
     // Iterate all spools

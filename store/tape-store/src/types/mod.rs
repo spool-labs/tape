@@ -17,7 +17,7 @@ pub use tape_core::types::{ChunkIndex, EpochNumber, NodeId, SlotNumber};
 pub use tape_crypto::Hash;
 
 // Re-export enum types
-pub use enums::{NodeStatus, ObjectInfo, SpoolState};
+pub use enums::{NodeStatus, ObjectInfo, SpoolState, SpoolStatus};
 
 // Re-export key types
 pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, UnitKey};

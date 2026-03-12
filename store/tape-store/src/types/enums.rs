@@ -33,89 +33,35 @@ impl Default for NodeStatus {
     }
 }
 
-/// Spool lifecycle state.
+/// Pure lifecycle status for a spool — no associated data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub enum SpoolState {
-    /// Fully synced and serving requests.
-    Active {
-        epoch: EpochNumber,
-    },
+pub enum SpoolStatus {
+    Active,
+    Sync,
+    Scan,
+    Recover,
+    LockedToMove,
+}
 
-    /// Syncing data from the prior owner into the newly assigned spool.
-    Sync {
-        epoch: EpochNumber,
-        prev_owner: Option<NodeId>,
-        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
-    },
-
-    /// Scanning local store for missing slices after the initial sync pass.
-    Scan {
-        epoch: EpochNumber,
-        prev_owner: Option<NodeId>,
-        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
-    },
-
-    /// Recovering missing slices found by the scan.
-    Recover {
-        epoch: EpochNumber,
-        prev_owner: Option<NodeId>,
-        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
-    },
-
-    /// Locked on the former owner while the new owner completes handoff.
-    LockedToMove {
-        epoch: EpochNumber,
-    },
+/// Full spool state: status + epoch + optional handoff context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct SpoolState {
+    pub status: SpoolStatus,
+    pub epoch: EpochNumber,
+    pub prev_owner: Option<NodeId>,
+    pub prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
 }
 
 impl SpoolState {
-    pub fn epoch(&self) -> EpochNumber {
-        match self {
-            Self::Active { epoch }
-            | Self::Sync { epoch, .. }
-            | Self::Scan { epoch, .. }
-            | Self::Recover { epoch, .. }
-            | Self::LockedToMove { epoch } => *epoch,
-        }
+    pub fn new(status: SpoolStatus, epoch: EpochNumber) -> Self {
+        Self { status, epoch, prev_owner: None, prev_helpers: [None; SPOOL_GROUP_SIZE] }
     }
 
-    pub fn is_locked(&self) -> bool {
-        matches!(self, Self::LockedToMove { .. })
-    }
-
-    pub fn is_active(&self) -> bool {
-        matches!(self, Self::Active { .. })
-    }
-
-    pub fn is_syncing(&self) -> bool {
-        matches!(self, Self::Sync { .. })
-    }
-
-    pub fn is_scanning(&self) -> bool {
-        matches!(self, Self::Scan { .. })
-    }
-
-    pub fn is_recovering(&self) -> bool {
-        matches!(self, Self::Recover { .. })
-    }
-
-    pub fn prev_owner(&self) -> Option<NodeId> {
-        match self {
-            Self::Sync { prev_owner, .. }
-            | Self::Scan { prev_owner, .. }
-            | Self::Recover { prev_owner, .. } => *prev_owner,
-            _ => None,
-        }
-    }
-
-    pub fn prev_helpers(&self) -> Option<&[Option<NodeId>; SPOOL_GROUP_SIZE]> {
-        match self {
-            Self::Sync { prev_helpers, .. }
-            | Self::Scan { prev_helpers, .. }
-            | Self::Recover { prev_helpers, .. } => Some(prev_helpers),
-            _ => None,
-        }
-    }
+    pub fn is_locked(&self) -> bool { self.status == SpoolStatus::LockedToMove }
+    pub fn is_active(&self) -> bool { self.status == SpoolStatus::Active }
+    pub fn is_syncing(&self) -> bool { self.status == SpoolStatus::Sync }
+    pub fn is_scanning(&self) -> bool { self.status == SpoolStatus::Scan }
+    pub fn is_recovering(&self) -> bool { self.status == SpoolStatus::Recover }
 }
 
 /// Information about a tracked object
@@ -150,23 +96,17 @@ mod tests {
     #[test]
     fn spool_state_roundtrip() {
         let states = vec![
-            SpoolState::Active {
-                epoch: EpochNumber(0),
-            },
-            SpoolState::LockedToMove {
-                epoch: EpochNumber(42),
-            },
-            SpoolState::Sync {
+            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
+            SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(42)),
+            SpoolState {
+                status: SpoolStatus::Sync,
                 epoch: EpochNumber(5),
                 prev_owner: Some(NodeId(7)),
                 prev_helpers: [Some(NodeId(7)); SPOOL_GROUP_SIZE],
             },
-            SpoolState::Scan {
-                epoch: EpochNumber(6),
-                prev_owner: None,
-                prev_helpers: [None; SPOOL_GROUP_SIZE],
-            },
-            SpoolState::Recover {
+            SpoolState::new(SpoolStatus::Scan, EpochNumber(6)),
+            SpoolState {
+                status: SpoolStatus::Recover,
                 epoch: EpochNumber(7),
                 prev_owner: Some(NodeId(3)),
                 prev_helpers: [None; SPOOL_GROUP_SIZE],

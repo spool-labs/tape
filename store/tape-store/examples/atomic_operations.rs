@@ -52,7 +52,7 @@ fn main() -> Result<()> {
 
     // SpoolOps - NOT epoch-namespaced
     for spool_id in [0u16, 5, 10] {
-        store.set_spool_state(spool_id, SpoolState::Active { epoch: EpochNumber(0) })?;
+        store.set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))?;
     }
     println!("Set 3 spools as Active");
 

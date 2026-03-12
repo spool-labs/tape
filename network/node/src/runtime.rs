@@ -384,7 +384,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
     use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_store::ops::{MetaOps, SpoolOps};
-    use tape_store::types::SpoolState;
+    use tape_store::types::{SpoolState, SpoolStatus};
 
     use tape_core::system::CommitteeMember;
     use tape_core::types::coin::{Coin, TAPE};
@@ -462,14 +462,7 @@ mod tests {
 
         // Pre-populate spool state so scheduler has work to do
         ctx.store
-            .set_spool_state(
-                5,
-                SpoolState::Sync {
-                    epoch: EpochNumber(0),
-                    prev_owner: None,
-                    prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-                },
-            )
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Sync, EpochNumber(0)))
             .unwrap();
 
         // We use spawn_runtime_channels + manual wiring since LiteSvmRpc

@@ -161,24 +161,18 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
+    use crate::types::SpoolStatus;
+
     fn active_state() -> SpoolState {
-        SpoolState::Active { epoch: EpochNumber(0) }
+        SpoolState::new(SpoolStatus::Active, EpochNumber(0))
     }
 
     fn sync_state() -> SpoolState {
-        SpoolState::Sync {
-            epoch: EpochNumber(0),
-            prev_owner: None,
-            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Sync, EpochNumber(0))
     }
 
     fn recover_state() -> SpoolState {
-        SpoolState::Recover {
-            epoch: EpochNumber(0),
-            prev_owner: None,
-            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
-        }
+        SpoolState::new(SpoolStatus::Recover, EpochNumber(0))
     }
 
     #[test]
@@ -192,10 +186,7 @@ mod tests {
             .set_spool_state(spool_id, active_state())
             .unwrap();
 
-        assert!(matches!(
-            store.get_spool_state(spool_id).unwrap().unwrap(),
-            SpoolState::Active { .. }
-        ));
+        assert!(store.get_spool_state(spool_id).unwrap().unwrap().is_active());
     }
 
     #[test]
