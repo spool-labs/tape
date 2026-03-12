@@ -48,7 +48,14 @@ pub enum SpoolState {
         prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
     },
 
-    /// Recovering missing slices after the initial sync pass.
+    /// Scanning local store for missing slices after the initial sync pass.
+    Scan {
+        epoch: EpochNumber,
+        prev_owner: Option<NodeId>,
+        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
+    },
+
+    /// Recovering missing slices found by the scan.
     Recover {
         epoch: EpochNumber,
         prev_owner: Option<NodeId>,
@@ -66,6 +73,7 @@ impl SpoolState {
         match self {
             Self::Active { epoch }
             | Self::Sync { epoch, .. }
+            | Self::Scan { epoch, .. }
             | Self::Recover { epoch, .. }
             | Self::LockedToMove { epoch } => *epoch,
         }
@@ -83,20 +91,28 @@ impl SpoolState {
         matches!(self, Self::Sync { .. })
     }
 
+    pub fn is_scanning(&self) -> bool {
+        matches!(self, Self::Scan { .. })
+    }
+
     pub fn is_recovering(&self) -> bool {
         matches!(self, Self::Recover { .. })
     }
 
     pub fn prev_owner(&self) -> Option<NodeId> {
         match self {
-            Self::Sync { prev_owner, .. } | Self::Recover { prev_owner, .. } => *prev_owner,
+            Self::Sync { prev_owner, .. }
+            | Self::Scan { prev_owner, .. }
+            | Self::Recover { prev_owner, .. } => *prev_owner,
             _ => None,
         }
     }
 
     pub fn prev_helpers(&self) -> Option<&[Option<NodeId>; SPOOL_GROUP_SIZE]> {
         match self {
-            Self::Sync { prev_helpers, .. } | Self::Recover { prev_helpers, .. } => Some(prev_helpers),
+            Self::Sync { prev_helpers, .. }
+            | Self::Scan { prev_helpers, .. }
+            | Self::Recover { prev_helpers, .. } => Some(prev_helpers),
             _ => None,
         }
     }
@@ -144,6 +160,16 @@ mod tests {
                 epoch: EpochNumber(5),
                 prev_owner: Some(NodeId(7)),
                 prev_helpers: [Some(NodeId(7)); SPOOL_GROUP_SIZE],
+            },
+            SpoolState::Scan {
+                epoch: EpochNumber(6),
+                prev_owner: None,
+                prev_helpers: [None; SPOOL_GROUP_SIZE],
+            },
+            SpoolState::Recover {
+                epoch: EpochNumber(7),
+                prev_owner: Some(NodeId(3)),
+                prev_helpers: [None; SPOOL_GROUP_SIZE],
             },
         ];
 

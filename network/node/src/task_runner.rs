@@ -32,7 +32,7 @@ use crate::{TaskCategory, TaskResult};
 use crate::task_scheduler::Action;
 use crate::tasks::{
     advance_epoch, advance_pool, invalidate_track, join_network,
-    recovery_scan, spool_recovery, spool_sync, sync_epoch,
+    spool_scan, spool_recovery, spool_sync, sync_epoch,
 };
 
 pub use crate::{Task, TaskOutcome};
@@ -434,7 +434,7 @@ pub async fn execute_task<Db: Store, Cluster: Api, Blockchain: Rpc>(
             spool_recovery::run(context, *spool, cancel).await
         }
         Task::RecoveryScan { spool } => {
-            recovery_scan::run(context, *spool, cancel).await
+            spool_scan::run(context, *spool, cancel).await
         }
         Task::InvalidateTrack { track } => {
             invalidate_track::run(context, *track, cancel).await

@@ -1,6 +1,6 @@
 //! Spool operations
 
-use crate::columns::{SpoolPendingRecoveryCol, SpoolScanDoneCol, SpoolStatusCol, SpoolSyncCursorCol};
+use crate::columns::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use crate::TapeStore;
@@ -40,11 +40,6 @@ pub trait SpoolOps {
 
     // Bulk clear all pending recoveries for a spool
     fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()>;
-
-    // Recovery scan completion flag
-    fn set_scan_done(&self, spool_id: SpoolIndex) -> Result<()>;
-    fn is_scan_done(&self, spool_id: SpoolIndex) -> Result<bool>;
-    fn clear_scan_done(&self, spool_id: SpoolIndex) -> Result<()>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
@@ -154,22 +149,6 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(())
     }
 
-    fn set_scan_done(&self, spool_id: SpoolIndex) -> Result<()> {
-        let key = SpoolIndexKey::new(spool_id);
-        self.put::<SpoolScanDoneCol>(&key, &())?;
-        Ok(())
-    }
-
-    fn is_scan_done(&self, spool_id: SpoolIndex) -> Result<bool> {
-        let key = SpoolIndexKey::new(spool_id);
-        Ok(self.contains::<SpoolScanDoneCol>(&key)?)
-    }
-
-    fn clear_scan_done(&self, spool_id: SpoolIndex) -> Result<()> {
-        let key = SpoolIndexKey::new(spool_id);
-        self.delete::<SpoolScanDoneCol>(&key)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -290,20 +269,6 @@ mod tests {
 
         assert!(store.iter_pending_recoveries(42, 100).unwrap().is_empty());
         assert_eq!(store.iter_pending_recoveries(99, 100).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn scan_done_flag() {
-        let store = test_store();
-        let spool_id = 42;
-
-        assert!(!store.is_scan_done(spool_id).unwrap());
-
-        store.set_scan_done(spool_id).unwrap();
-        assert!(store.is_scan_done(spool_id).unwrap());
-
-        store.clear_scan_done(spool_id).unwrap();
-        assert!(!store.is_scan_done(spool_id).unwrap());
     }
 
     #[test]

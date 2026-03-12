@@ -62,11 +62,10 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     match source {
 
         // If the task is running on the same node that previously owned the spool, we can skip
-        // the sync loop and directly transition to Recover. The recover task will verify the
-        // local data and either transition to Active or re-enter Sync if data is
-        // missing/corrupted.
+        // the sync loop and directly transition to Scan. The scan task will find any missing
+        // slices and either transition to Active or Recover depending on gaps.
         SyncSource::VerifyLocal => {
-            // no-op, just transition to Recover to trigger local verification in the next step.
+            // no-op, just transition to Scan to trigger local verification in the next step.
         }
 
         // If the previous owner is a different node, we need to sync data from that peer. This is
@@ -184,11 +183,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    // After successfully syncing (or if no sync was needed), transition to Recover to trigger
-    // local verification and potential transition to Active.
+    // After successfully syncing (or if no sync was needed), transition to Scan to find
+    // any missing slices before potentially entering recovery or going active.
 
-    let new_state = SpoolState::Recover { 
-        epoch, prev_owner, prev_helpers 
+    let new_state = SpoolState::Scan {
+        epoch, prev_owner, prev_helpers
     };
 
     if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
@@ -197,10 +196,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if let Err(e) = ctx.store.remove_spool_sync_cursor(spool) {
         return TaskOutcome::Retryable(format!("remove_spool_sync_cursor: {e}"));
-    }
-
-    if let Err(e) = ctx.store.clear_scan_done(spool) {
-        return TaskOutcome::Retryable(format!("clear_scan_done: {e}"));
     }
 
     TaskOutcome::Success
@@ -311,7 +306,7 @@ mod tests {
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert!(matches!(
             state,
-            SpoolState::Recover {
+            SpoolState::Scan {
                 epoch,
                 prev_owner: Some(owner),
                 ..
@@ -332,7 +327,7 @@ mod tests {
         assert!(matches!(result, TaskOutcome::Success));
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(state, SpoolState::Recover { epoch, prev_owner: None, .. } if epoch == EpochNumber(3)));
+        assert!(matches!(state, SpoolState::Scan { epoch, prev_owner: None, .. } if epoch == EpochNumber(3)));
     }
 
     #[tokio::test]
@@ -406,9 +401,9 @@ mod tests {
         // Slice was persisted.
         assert!(ctx.store.has_slice(SPOOL, addr).unwrap());
 
-        // State transitioned to Recover.
+        // State transitioned to Scan.
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
-        assert!(matches!(state, SpoolState::Recover { epoch, .. } if epoch == EpochNumber(3)));
+        assert!(matches!(state, SpoolState::Scan { epoch, .. } if epoch == EpochNumber(3)));
 
         // Cursor was cleaned up.
         assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());

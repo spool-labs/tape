@@ -52,7 +52,7 @@ impl SpoolPlanner {
     ///
     /// This keeps the scheduler aligned with the node's current owned spools by
     /// pruning tasks for unschedulable spools and adding `SpoolSync`,
-    /// `RecoveryScan`, and `SpoolRecovery` for spools in `Sync` / `Recover`.
+    /// `RecoveryScan`, and `SpoolRecovery` for spools in `Sync` / `Scan` / `Recover`.
     pub fn plan_spool_tasks<S: Store>(
         store: &TapeStore<S>,
         node_status: NodeStatus,
@@ -108,7 +108,7 @@ impl SpoolPlanner {
 
     /// Add spool tasks based on each spool's current status.
     fn add_spool_tasks<S: Store>(
-        store: &TapeStore<S>,
+        _store: &TapeStore<S>,
         owned_spools: &[(SpoolIndex, SpoolState)],
         desired: &mut HashSet<Task>,
     ) {
@@ -117,21 +117,22 @@ impl SpoolPlanner {
                 tracing::trace!(spool_id, ?state, "scheduling spool sync");
                 desired.insert(Task::SpoolSync { spool: *spool_id });
             }
+            if state.is_scanning() {
+                tracing::trace!(spool_id, ?state, "scheduling recovery scan");
+                desired.insert(Task::RecoveryScan { spool: *spool_id });
+            }
             if state.is_recovering() {
                 tracing::trace!(spool_id, ?state, "scheduling spool recovery");
                 desired.insert(Task::SpoolRecovery { spool: *spool_id });
-                if !store.is_scan_done(*spool_id).unwrap_or(false) {
-                    desired.insert(Task::RecoveryScan { spool: *spool_id });
-                }
             }
         }
     }
 
-    /// Move a spool from `Sync` to `Recover` after sync permanently fails.
+    /// Move a spool from `Sync` to `Scan` after sync permanently fails.
     ///
     /// This preserves frozen handoff metadata while clearing sync-specific
-    /// runtime markers so recovery starts from a clean lifecycle boundary.
-    pub fn transition_to_recovery<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
+    /// runtime markers so the scan phase starts from a clean lifecycle boundary.
+    pub fn transition_to_scan<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
         let current_state = store.get_spool_state(spool).ok().flatten();
         let Some(state) = current_state else {
             tracing::debug!(spool, "ignoring stale spool sync failure: no state");
@@ -143,16 +144,16 @@ impl SpoolPlanner {
         }
         let new_state = match state {
             SpoolState::Sync { epoch, prev_owner, prev_helpers } => {
-                SpoolState::Recover { epoch, prev_owner, prev_helpers }
+                SpoolState::Scan { epoch, prev_owner, prev_helpers }
             }
             _ => return,
         };
         if let Err(e) = store.set_spool_state(spool, new_state) {
-            tracing::error!(spool, "failed to set Recover: {e}");
+            tracing::error!(spool, "failed to set Scan: {e}");
             return;
         }
         Self::reset_spool_task_state(store, spool);
-        tracing::info!(spool, "spool sync failed, transitioning to recovery");
+        tracing::info!(spool, "spool sync failed, transitioning to scan");
     }
 
     /// Scan owned spools for a certified track and enqueue recovery for gaps.
@@ -458,7 +459,6 @@ impl SpoolPlanner {
     fn reset_spool_task_state<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {
         let _ = store.clear_all_pending_recoveries(spool);
         let _ = store.remove_spool_sync_cursor(spool);
-        let _ = store.clear_scan_done(spool);
     }
 
     fn purge_locked_spool<S: Store>(store: &TapeStore<S>, spool: SpoolIndex) {

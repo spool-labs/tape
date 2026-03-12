@@ -202,13 +202,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
     fn handle_epoch_advanced(&mut self, epoch: EpochNumber) {
         tracing::trace!(epoch = epoch.0, "scheduler handling epoch advanced");
 
-        let state = self.context.state();
-        LifecyclePlanner::log_member_index(
-            &state,
-            self.context.node_id(),
-            epoch,
-        );
-
         self.scheduled
             .retain(|key| !matches!(key.scheduled_epoch(), Some(e) if e != epoch));
 
@@ -332,8 +325,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
                     &mut self.desired,
                 );
             }
-            Task::SpoolRecovery { spool } => {
-                self.desired.remove(&Task::RecoveryScan { spool: *spool });
+            Task::RecoveryScan { .. } => {
+                SpoolPlanner::plan_spool_tasks(
+                    &*self.context.store,
+                    self.node_status(),
+                    &mut self.desired,
+                );
             }
             _ => {}
         }
@@ -557,7 +554,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> TaskScheduler<Db, Cluster, Blockc
         self.desired.remove(key);
 
         if let Task::SpoolSync { spool } = key {
-            SpoolPlanner::transition_to_recovery(&*self.context.store, *spool);
+            SpoolPlanner::transition_to_scan(&*self.context.store, *spool);
         }
         if key.spool_id().is_some() {
             SpoolPlanner::plan_spool_tasks(&*self.context.store, self.node_status(), &mut self.desired);
@@ -713,6 +710,14 @@ mod tests {
 
     fn sync_spool(epoch: EpochNumber) -> SpoolState {
         SpoolState::Sync {
+            epoch,
+            prev_owner: None,
+            prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
+        }
+    }
+
+    fn scan_spool(epoch: EpochNumber) -> SpoolState {
+        SpoolState::Scan {
             epoch,
             prev_owner: None,
             prev_helpers: [None; tape_core::erasure::SPOOL_GROUP_SIZE],
@@ -1620,7 +1625,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_permanent_to_recover() {
+    async fn sync_permanent_to_scan() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
@@ -1638,19 +1643,18 @@ mod tests {
 
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
-            SpoolState::Recover { epoch, .. } if epoch == EpochNumber(0)
+            SpoolState::Scan { epoch, .. } if epoch == EpochNumber(0)
         ));
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
-        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
         assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));
     }
 
     #[tokio::test]
-    async fn sync_success_replans_recovery_tasks() {
+    async fn sync_success_replans_scan() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_state(42, recover_spool(EpochNumber(0)))
+            .set_spool_state(42, scan_spool(EpochNumber(0)))
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
@@ -1660,7 +1664,6 @@ mod tests {
         scheduler.handle_result(&TaskResult::Success(Task::SpoolSync { spool: 42 }));
 
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
-        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
         assert!(!scheduler.desired.contains(&Task::SpoolSync { spool: 42 }));
     }
 
@@ -1681,14 +1684,12 @@ mod tests {
             "exhausted retries".into(),
         ));
 
-        // Spool stays ActiveRecover
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
             SpoolState::Recover { epoch, .. } if epoch == EpochNumber(0)
         ));
-        // Planner re-adds both recovery tasks
+        // Planner re-adds recovery for Recover state
         assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
-        assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
     }
 
     #[tokio::test]
@@ -1696,7 +1697,7 @@ mod tests {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_state(42, recover_spool(EpochNumber(0)))
+            .set_spool_state(42, scan_spool(EpochNumber(0)))
             .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx.clone());
@@ -1708,14 +1709,12 @@ mod tests {
             "exhausted retries".into(),
         ));
 
-        // Spool stays ActiveRecover
         assert!(matches!(
             ctx.store.get_spool_state(42).unwrap().unwrap(),
-            SpoolState::Recover { epoch, .. } if epoch == EpochNumber(0)
+            SpoolState::Scan { epoch, .. } if epoch == EpochNumber(0)
         ));
-        // Planner re-adds scan (not done) and recovery
+        // Planner re-adds scan for Scan state
         assert!(scheduler.desired.contains(&Task::RecoveryScan { spool: 42 }));
-        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 42 }));
     }
 
     #[tokio::test]
@@ -1742,17 +1741,16 @@ mod tests {
         }
 
         assert!(scheduled.contains(&Task::SpoolRecovery { spool: 30 }));
-        assert!(scheduled.contains(&Task::RecoveryScan { spool: 30 }));
+        assert!(!scheduled.contains(&Task::RecoveryScan { spool: 30 }));
     }
 
     #[tokio::test]
-    async fn plan_scan_done() {
+    async fn plan_scan_schedules_scan() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(0), EpochPhase::Unknown, NodeStatus::Active);
         ctx.store
-            .set_spool_state(30, recover_spool(EpochNumber(0)))
+            .set_spool_state(30, scan_spool(EpochNumber(0)))
             .unwrap();
-        ctx.store.set_scan_done(30).unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
         let (action_tx, mut action_rx) = mpsc::channel(16);
@@ -1769,23 +1767,27 @@ mod tests {
             }
         }
 
-        assert!(scheduled.contains(&Task::SpoolRecovery { spool: 30 }));
-        assert!(!scheduled.contains(&Task::RecoveryScan { spool: 30 }));
+        assert!(scheduled.contains(&Task::RecoveryScan { spool: 30 }));
+        assert!(!scheduled.contains(&Task::SpoolRecovery { spool: 30 }));
     }
 
     #[tokio::test]
-    async fn recovery_cleanup() {
+    async fn scan_success_replans() {
         let ctx = test_context();
         seed_state(&ctx, EpochNumber(1), EpochPhase::Unknown, NodeStatus::Active);
+        // After scan completes, spool transitions to Recover (done by spool_scan task).
+        ctx.store
+            .set_spool_state(30, recover_spool(EpochNumber(0)))
+            .unwrap();
 
         let mut scheduler = TaskScheduler::new(ctx);
-        scheduler.desired.insert(Task::SpoolRecovery { spool: 30 });
         scheduler.desired.insert(Task::RecoveryScan { spool: 30 });
-        scheduler.scheduled.insert(Task::SpoolRecovery { spool: 30 });
         scheduler.scheduled.insert(Task::RecoveryScan { spool: 30 });
 
-        scheduler.handle_result(&TaskResult::Success(Task::SpoolRecovery { spool: 30 }));
+        scheduler.handle_result(&TaskResult::Success(Task::RecoveryScan { spool: 30 }));
 
+        // Planner picks up the new Recover state and schedules SpoolRecovery.
+        assert!(scheduler.desired.contains(&Task::SpoolRecovery { spool: 30 }));
         assert!(!scheduler.desired.contains(&Task::RecoveryScan { spool: 30 }));
     }
 

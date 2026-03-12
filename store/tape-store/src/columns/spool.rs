@@ -3,7 +3,6 @@
 //! - SpoolStatusCol: spool_id -> SpoolStatus
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
 //! - SpoolSyncCursorCol: spool_id -> Pubkey (last synced track)
-//! - SpoolScanDoneCol: spool_id -> () (recovery scan completion flag)
 
 use crate::types::{Pubkey, SliceKey, SpoolIndexKey, SpoolState};
 use store::Column;
@@ -29,18 +28,6 @@ pub struct SpoolPendingRecoveryCol;
 impl Column for SpoolPendingRecoveryCol {
     const CF_NAME: &'static str = "spool_pending_recovery";
     type Key = SliceKey;
-    type Value = ();
-}
-
-/// Recovery scan completion flag (presence-only)
-///
-/// Key: SpoolIndexKey (2 bytes: spool_id BE)
-/// Value: () (presence indicates scan complete)
-pub struct SpoolScanDoneCol;
-
-impl Column for SpoolScanDoneCol {
-    const CF_NAME: &'static str = "spool_scan_done";
-    type Key = SpoolIndexKey;
     type Value = ();
 }
 

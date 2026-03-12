@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
-use tape_core::types::{EpochNumber, NodeId};
+use tape_core::types::EpochNumber;
 use tape_core::system::EpochPhase;
-use tape_protocol::state::ProtocolState;
 use tape_store::types::NodeStatus;
 
-use crate::snapshot::committee::our_member_index;
 use crate::Task;
 
 pub struct LifecycleState {
@@ -144,40 +142,6 @@ impl LifecyclePlanner {
             desired.insert(Task::AdvanceEpoch { epoch });
         }
     }
-
-    /// Log this node's committee index for the epoch when available.
-    pub fn log_member_index(
-        state: &ProtocolState,
-        node_id: NodeId,
-        epoch: EpochNumber,
-    ) {
-        if state.committee.is_empty() {
-            tracing::warn!(
-                epoch = epoch.0,
-                "cannot resolve committee when logging member index"
-            );
-            return;
-        }
-
-        match our_member_index(state, node_id) {
-            Ok(member_index) => {
-                tracing::info!(
-                    epoch = epoch.0,
-                    member_index,
-                    committee_size = state.committee.len(),
-                    "node member index for epoch"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    epoch = epoch.0,
-                    error = %error,
-                    "node not found in committee for epoch"
-                );
-            }
-        }
-    }
-
 }
 
 #[cfg(test)]

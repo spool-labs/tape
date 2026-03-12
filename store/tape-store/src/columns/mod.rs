@@ -1,6 +1,6 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 11 column families:
+//! This module defines 12 column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
@@ -41,12 +41,12 @@ pub use gc::GcCol;
 pub use meta::MetaCol;
 pub use object_info::ObjectInfoCol;
 pub use slice::SliceCol;
-pub use spool::{SpoolPendingRecoveryCol, SpoolScanDoneCol, SpoolStatusCol, SpoolSyncCursorCol};
+pub use spool::{SpoolPendingRecoveryCol, SpoolStatusCol, SpoolSyncCursorCol};
 pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 
-/// List of all column family names in the store (13 total)
+/// List of all column family names in the store (12 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
     "committee",
@@ -60,5 +60,4 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "slice",
     "spool_sync_cursor",
     "event_log",
-    "spool_scan_done",
 ];

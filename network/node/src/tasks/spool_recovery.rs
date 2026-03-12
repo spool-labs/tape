@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -153,20 +152,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if any_failed {
         TaskOutcome::Retryable("some tracks could not be recovered".into())
     } else {
-        let scan_done = match ctx.store.is_scan_done(spool) {
-            Ok(done) => done,
-            Err(e) => return TaskOutcome::Retryable(format!("read scan_done: {e}")),
-        };
-        if !scan_done {
-            return TaskOutcome::Pending(Duration::from_secs(5));
-        }
         match ctx.store.get_spool_state(spool) {
             Ok(Some(state)) if state.is_recovering() => {
                 let new_state = SpoolState::Active { epoch: state.epoch() };
                 if let Err(e) = ctx.store.set_spool_state(spool, new_state) {
                     return TaskOutcome::Retryable(format!("set spool active: {e}"));
                 }
-                let _ = ctx.store.clear_scan_done(spool);
                 tracing::info!(spool, "spool recovery complete, marked active");
             }
             Ok(_) => {}
@@ -542,8 +533,6 @@ mod tests {
             ..Default::default()
         });
 
-        ctx.store.set_scan_done(5).unwrap();
-
         let cancel = CancellationToken::new();
         let result = run(ctx, 5, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
@@ -556,6 +545,17 @@ mod tests {
             epoch: EpochNumber(2),
             ..Default::default()
         });
+
+        ctx.store
+            .set_spool_state(
+                5,
+                SpoolState::Recover {
+                    epoch: EpochNumber(2),
+                    prev_owner: None,
+                    prev_helpers: [None; SPOOL_GROUP_SIZE],
+                },
+            )
+            .unwrap();
 
         let track = tape_store::types::Pubkey([1u8; 32]);
         ctx.store
@@ -581,19 +581,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_gate_on_scan() {
-        let ctx = test_context();
-        ctx.set_state(ProtocolState {
-            epoch: EpochNumber(2),
-            ..Default::default()
-        });
-
-        let cancel = CancellationToken::new();
-        let result = run(ctx, 5, cancel).await;
-        assert!(matches!(result, TaskOutcome::Pending(_)));
-    }
-
-    #[tokio::test]
     async fn recovery_promotes_active() {
         let ctx = test_context();
         ctx.set_state(ProtocolState {
@@ -611,7 +598,6 @@ mod tests {
                 },
             )
             .unwrap();
-        ctx.store.set_scan_done(5).unwrap();
 
         let cancel = CancellationToken::new();
         let result = run(ctx.clone(), 5, cancel).await;
@@ -620,7 +606,6 @@ mod tests {
             ctx.store.get_spool_state(5).unwrap().unwrap(),
             SpoolState::Active { epoch } if epoch == EpochNumber(0)
         ));
-        assert!(!ctx.store.is_scan_done(5).unwrap());
     }
 
     #[test]

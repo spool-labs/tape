@@ -1,14 +1,12 @@
 //! RecoveryScan — scan all tracks to find missing slices for a spool.
 //!
-//! After a spool transitions to Recover (either from sync or from a local verification path),
-//! the scheduler runs RecoveryScan alongside SpoolRecovery. This task walks every track in the
-//! store, checks whether the track belongs to this spool's group, and if the slice is missing,
-//! enqueues it into the pending_recovery queue. SpoolRecovery then drains that queue by fetching
-//! the actual data from peers (via repair or full recovery).
+//! After a spool transitions to Scan (from sync or from a local verification path),
+//! the scheduler runs RecoveryScan. This task walks every track in the store, checks
+//! whether the track belongs to this spool's group, and if the slice is missing,
+//! enqueues it into the pending_recovery queue.
 //!
-//! The scan iterates in batches using a cursor, so cancellation between batches is cheap. Once
-//! the full scan completes without errors, it sets scan_done for the spool so the scheduler
-//! knows not to re-schedule another scan.
+//! On completion the scan decides the next state: if any pending recoveries exist,
+//! the spool moves to Recover; otherwise it goes directly to Active.
 
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -19,7 +17,7 @@ use tape_api::prelude::SpoolIndex;
 use tape_core::erasure::spool_in_group;
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::ObjectInfo;
+use tape_store::types::{ObjectInfo, SpoolState};
 
 use crate::core::NodeContext;
 use crate::TaskOutcome;
@@ -101,12 +99,37 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return TaskOutcome::Retryable("scan encountered store errors".into());
     }
 
-    // Mark scan complete so the scheduler stops re-scheduling RecoveryScan for this spool.
-    if let Err(e) = context.store.set_scan_done(spool) {
-        return TaskOutcome::Retryable(format!("set scan_done: {e}"));
+    // Verify the spool is still in Scan state before transitioning.
+    let current = match context.store.get_spool_state(spool) {
+        Ok(Some(s)) if s.is_scanning() => s,
+        Ok(_) => {
+            tracing::warn!(spool, "spool no longer in Scan state, skipping transition");
+            return TaskOutcome::Success;
+        }
+        Err(e) => return TaskOutcome::Retryable(format!("get_spool_state: {e}")),
+    };
+
+    // Decide next state: if pending recoveries exist, move to Recover; otherwise Active.
+    let has_pending = match context.store.iter_pending_recoveries(spool, 1) {
+        Ok(p) => !p.is_empty(),
+        Err(e) => return TaskOutcome::Retryable(format!("iter_pending_recoveries: {e}")),
+    };
+
+    let new_state = if has_pending {
+        SpoolState::Recover {
+            epoch: current.epoch(),
+            prev_owner: current.prev_owner(),
+            prev_helpers: *current.prev_helpers().unwrap(),
+        }
+    } else {
+        SpoolState::Active { epoch: current.epoch() }
+    };
+
+    if let Err(e) = context.store.set_spool_state(spool, new_state) {
+        return TaskOutcome::Retryable(format!("set_spool_state: {e}"));
     }
 
-    tracing::info!(spool, "recovery scan complete");
+    tracing::info!(spool, ?new_state, "recovery scan complete");
 
     TaskOutcome::Success
 }
@@ -126,8 +149,8 @@ mod tests {
 
     const SPOOL: SpoolIndex = 5;
 
-    fn recover_state() -> SpoolState {
-        SpoolState::Recover {
+    fn scan_state() -> SpoolState {
+        SpoolState::Scan {
             epoch: EpochNumber(3),
             prev_owner: None,
             prev_helpers: [None; SPOOL_GROUP_SIZE],
@@ -180,17 +203,17 @@ mod tests {
     #[tokio::test]
     async fn scan_empty_store() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
         assert!(matches!(result, TaskOutcome::Success));
-        assert!(ctx.store.is_scan_done(SPOOL).unwrap());
+        assert!(ctx.store.get_spool_state(SPOOL).unwrap().unwrap().is_active());
     }
 
     #[tokio::test]
     async fn scan_enqueues_missing() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -200,12 +223,13 @@ mod tests {
         let result = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
         assert!(matches!(result, TaskOutcome::Success));
         assert!(ctx.store.has_pending_recovery(SPOOL, addr).unwrap());
+        assert!(ctx.store.get_spool_state(SPOOL).unwrap().unwrap().is_recovering());
     }
 
     #[tokio::test]
     async fn scan_skips_existing() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -220,7 +244,7 @@ mod tests {
     #[tokio::test]
     async fn scan_skips_wrong_group() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_wrong_group()).unwrap();
@@ -234,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn scan_skips_invalid_object() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -251,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn scan_skips_no_object_info() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -265,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn scan_cancel() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -277,14 +301,14 @@ mod tests {
         let result = run(ctx.clone(), SPOOL, cancel).await;
         assert!(matches!(result, TaskOutcome::Success));
 
-        // scan_done should NOT be set on cancel.
-        assert!(!ctx.store.is_scan_done(SPOOL).unwrap());
+        // State should remain Scan on cancel.
+        assert!(ctx.store.get_spool_state(SPOOL).unwrap().unwrap().is_scanning());
     }
 
     #[tokio::test]
     async fn scan_idempotent() {
         let ctx = test_context();
-        ctx.store.set_spool_state(SPOOL, recover_state()).unwrap();
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let addr = track_addr(1);
         ctx.store.put_track(addr, track_in_group()).unwrap();
@@ -292,9 +316,10 @@ mod tests {
 
         let r1 = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
         assert!(matches!(r1, TaskOutcome::Success));
+        assert!(ctx.store.get_spool_state(SPOOL).unwrap().unwrap().is_recovering());
 
-        // Clear scan_done so the second run actually scans again.
-        ctx.store.clear_scan_done(SPOOL).unwrap();
+        // Reset to Scan so the second run actually scans again.
+        ctx.store.set_spool_state(SPOOL, scan_state()).unwrap();
 
         let r2 = run(ctx.clone(), SPOOL, CancellationToken::new()).await;
         assert!(matches!(r2, TaskOutcome::Success));
