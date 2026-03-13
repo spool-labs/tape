@@ -1,6 +1,6 @@
 //! Column family definitions for tape-store
 //!
-//! This module defines 12 column families:
+//! This module defines 11 column families:
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
@@ -19,11 +19,7 @@
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data (SliceKey -> Vec<u8>)
-//!
-//! ## Committee Column
-//! - `committee`: Committee by epoch (EpochKey -> Vec<NodeInfo>)
 
-pub mod committee;
 pub mod event_log;
 pub mod gc;
 pub mod meta;
@@ -35,7 +31,6 @@ pub mod tape;
 pub mod track;
 
 // Re-export all column types
-pub use committee::CommitteeCol;
 pub use event_log::EventLogCol;
 pub use gc::GcCol;
 pub use meta::MetaCol;
@@ -46,10 +41,9 @@ pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 
-/// List of all column family names in the store (12 total)
+/// List of all column family names in the store (11 total)
 pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "meta",
-    "committee",
     "tape",
     "track",
     "object_info",

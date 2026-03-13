@@ -1787,12 +1787,12 @@ mod tests {
             .set_spool_state(10, locked_spool(EpochNumber(3)))
             .unwrap();
 
-        // At epoch 4, should NOT be cleaned (3 + 2 > 4)
-        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(4));
+        // At epoch 6, should NOT be cleaned (3 + 4 > 6)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(6));
         assert!(ctx.store.get_spool_state(10).unwrap().is_some());
 
-        // At epoch 5, should be cleaned (3 + 2 <= 5)
-        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(5));
+        // At epoch 7, should be cleaned (3 + 4 <= 7)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(7));
         assert!(ctx.store.get_spool_state(10).unwrap().is_none());
     }
 
@@ -1810,8 +1810,8 @@ mod tests {
         ctx.store.put_slice(10, track, vec![0xAB; 64]).unwrap();
         ctx.store.add_pending_recovery(10, track).unwrap();
 
-        // Cleanup at epoch 5 (3 + 2 <= 5)
-        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(5));
+        // Cleanup at epoch 7 (3 + 4 <= 7)
+        SpoolPlanner::cleanup_locked(&*ctx.store, EpochNumber(7));
 
         assert!(ctx.store.get_spool_state(10).unwrap().is_none());
         assert_eq!(ctx.store.count_slices_by_spool(10).unwrap(), 0);
@@ -1874,16 +1874,22 @@ mod tests {
             .set_spool_state(10, locked_spool(EpochNumber(3)))
             .unwrap();
 
-        // Chain says we own spool 10 again at epoch 5
+        // Chain says we own spool 10 again at epoch 5.
+        // Previous epoch had us (member 0) owning spool 10.
         let mut chain_spools = HashSet::new();
         chain_spools.insert(10u16);
+
+        let mut prev_map = [255u8; SPOOL_COUNT];
+        prev_map[10] = 0;
+        let prev_spools = SpoolAssignment::new(prev_map);
+        let prev_committee = vec![CommitteeMember::new(ctx.node_id(), Coin::<TAPE>::new(1000))];
 
         let changed = SpoolPlanner::apply_ownership_changes(
             &*ctx.store,
             &chain_spools,
             EpochNumber(5),
-            &SpoolAssignment::zeroed(),
-            &[],
+            &prev_spools,
+            &prev_committee,
         );
         assert!(changed);
 

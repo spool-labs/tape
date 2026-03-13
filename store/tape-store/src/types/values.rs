@@ -2,11 +2,10 @@
 
 use crate::types::Pubkey;
 use serde::{Deserialize, Serialize};
-use tape_core::bls::{BlsPubkey, BlsSignature};
+use tape_core::bls::BlsSignature;
 use tape_core::encoding::EncodingProfile;
 use tape_core::spooler::SpoolGroup;
-use tape_core::types::{EpochNumber, NodeId};
-use tape_core::types::network::NetworkAddress;
+use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -69,21 +68,6 @@ impl TrackInfo {
     }
 }
 
-/// Serde helper for NetworkAddress (Pod type without native serde support)
-mod network_address_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tape_core::types::network::NetworkAddress;
-
-    pub fn serialize<S: Serializer>(addr: &NetworkAddress, s: S) -> Result<S::Ok, S::Error> {
-        addr.as_bytes().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<NetworkAddress, D::Error> {
-        let bytes = <[u8; 24]>::deserialize(d)?;
-        Ok(NetworkAddress::from_bytes(bytes))
-    }
-}
-
 /// Proof data needed to submit an on-chain track invalidation
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct InvalidationProof {
@@ -134,28 +118,9 @@ pub struct SnapshotPartialSignature {
     pub epoch: u64,
 }
 
-/// Information about a single committee member
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct NodeInfo {
-    /// Unique on-chain node identifier
-    pub node_id: NodeId,
-    /// Node's on-chain account pubkey
-    pub node_address: Pubkey,
-    /// BLS public key for signatures
-    pub bls_pubkey: BlsPubkey,
-    /// TLS public key for secure communication
-    pub tls_pubkey: Pubkey,
-    /// Network address for P2P communication
-    #[serde(with = "network_address_serde")]
-    pub network_address: NetworkAddress,
-    /// Spools assigned to this node
-    pub spools: Vec<u16>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytemuck::Zeroable;
 
     #[test]
     fn test_tape_info_roundtrip() {
@@ -229,22 +194,6 @@ mod tests {
         assert_eq!(retrieved.clay_params().n(), 20);
         assert_eq!(retrieved.clay_params().k(), 7);
         assert_eq!(retrieved.clay_params().d(), 16);
-    }
-
-    #[test]
-    fn test_node_info_roundtrip() {
-        let info = NodeInfo {
-            node_id: NodeId(1),
-            node_address: Pubkey::new([1u8; 32]),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Pubkey::new([2u8; 32]),
-            network_address: NetworkAddress::new_ipv4([192, 168, 1, 1], 8080),
-            spools: vec![0, 10, 20, 30],
-        };
-
-        let bytes = wincode::serialize(&info).unwrap();
-        let decoded: NodeInfo = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(info, decoded);
     }
 
     #[test]

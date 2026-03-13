@@ -121,24 +121,6 @@ fn all_column_families() {
         .put_slice(42, track_address, vec![0u8; 1024])
         .unwrap();
 
-    // Committee
-    use bytemuck::Zeroable;
-    use tape_core::bls::BlsPubkey;
-    use tape_core::types::network::NetworkAddress;
-
-    let member = NodeInfo {
-        node_id: NodeId(1),
-        node_address: Pubkey::new_unique(),
-        bls_pubkey: BlsPubkey::zeroed(),
-        tls_pubkey: Pubkey::new_unique(),
-        network_address: NetworkAddress::new_ipv4([192, 168, 1, 1], 8080),
-        spools: vec![0, 2],
-    };
-
-    store
-        .put_committee(EpochNumber(1), vec![member])
-        .unwrap();
-
     // Verify we can read everything back
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
@@ -150,7 +132,6 @@ fn all_column_families() {
     );
     assert!(store.has_pending_recovery(42, track_address).unwrap());
     assert!(store.get_slice(42, track_address).unwrap().is_some());
-    assert!(store.get_committee(EpochNumber(1)).unwrap().is_some());
 }
 
 #[test]
@@ -229,41 +210,6 @@ fn track_operations() {
 
     store.delete_track(track).unwrap();
     assert!(store.get_track(track).unwrap().is_none());
-}
-
-#[test]
-fn committee_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let db_path = temp_dir.path().join("test_db");
-
-    let store = TapeStore::open_primary(&db_path).unwrap();
-
-    use bytemuck::Zeroable;
-    use tape_core::bls::BlsPubkey;
-    use tape_core::types::network::NetworkAddress;
-
-    // Add committees for multiple epochs
-    for epoch in [95u64, 100, 98] {
-        let members = vec![NodeInfo {
-            node_id: NodeId(epoch),
-            node_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([192, 168, 1, epoch as u8], 8080),
-            spools: vec![0],
-        }];
-        store
-            .put_committee(EpochNumber(epoch), members)
-            .unwrap();
-    }
-
-    // Get specific epoch
-    let members = store.get_committee(EpochNumber(98)).unwrap().unwrap();
-    assert_eq!(members.len(), 1);
-
-    // Delete committee
-    store.delete_committee(EpochNumber(95)).unwrap();
-    assert!(store.get_committee(EpochNumber(95)).unwrap().is_none());
 }
 
 #[test]

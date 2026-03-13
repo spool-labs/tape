@@ -53,32 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spools = store.iter_all_spools()?;
     println!("Active spools: {:?}", spools);
 
-    // Store committee
-    use bytemuck::Zeroable;
-    use tape_core::bls::BlsPubkey;
-    use tape_core::types::network::NetworkAddress;
-
-    let member1 = NodeInfo {
-        node_id: NodeId(1),
-        node_address: Pubkey::new_unique(),
-        bls_pubkey: BlsPubkey::zeroed(),
-        tls_pubkey: Pubkey::new_unique(),
-        network_address: NetworkAddress::new_ipv4([192, 168, 1, 1], 8080),
-        spools: vec![0, 2],
-    };
-
-    let member2 = NodeInfo {
-        node_id: NodeId(2),
-        node_address: Pubkey::new_unique(),
-        bls_pubkey: BlsPubkey::zeroed(),
-        tls_pubkey: Pubkey::new_unique(),
-        network_address: NetworkAddress::new_ipv4([192, 168, 1, 2], 8080),
-        spools: vec![1, 3],
-    };
-
-    store.put_committee(EpochNumber(100), vec![member1, member2])?;
-    println!("Stored committee for epoch 100");
-
     // Tape info
     let tape_info = TapeInfo {
         end_epoch: EpochNumber(200),
@@ -106,10 +80,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  Has tape info: {}",
         store.get_tape(tape_address)?.is_some()
     );
-    println!(
-        "  Committee for epoch 100: {}",
-        store.get_committee(EpochNumber(100))?.is_some()
-    );
-
     Ok(())
 }

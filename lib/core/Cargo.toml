@@ -23,6 +23,7 @@ wincode-derive = { workspace = true, optional = true }
 
 [dev-dependencies]
 solana-keypair.workspace = true
+wincode.workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]

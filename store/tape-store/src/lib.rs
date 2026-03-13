@@ -8,9 +8,8 @@
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
 //! - Spool state: Spool status, sync progress, pending recovery
-//! - Committee: Committee members for routing and verification
 //!
-//! # Column Families (11 total)
+//! # Column Families (10 total)
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata
@@ -29,9 +28,6 @@
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Erasure-coded slice data
-//!
-//! ## Committee Column
-//! - `committee`: Committee by epoch
 
 pub mod columns;
 pub mod config;
@@ -188,41 +184,6 @@ mod tests {
             .unwrap();
         let state = store.get_spool_state(spool_id).unwrap();
         assert!(state.unwrap().is_active());
-    }
-
-    #[test]
-    fn test_committee_roundtrip() {
-        use bytemuck::Zeroable;
-        use tape_core::bls::BlsPubkey;
-        use tape_core::types::network::NetworkAddress;
-
-        let store = TapeStore::new(MemoryStore::new());
-
-        let member1 = NodeInfo {
-            node_id: NodeId(1),
-            node_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([192, 168, 1, 1], 8080),
-            spools: vec![0, 2],
-        };
-
-        let member2 = NodeInfo {
-            node_id: NodeId(2),
-            node_address: Pubkey::new_unique(),
-            bls_pubkey: BlsPubkey::zeroed(),
-            tls_pubkey: Pubkey::new_unique(),
-            network_address: NetworkAddress::new_ipv4([192, 168, 1, 2], 8080),
-            spools: vec![1, 3],
-        };
-
-        let members = vec![member1, member2];
-
-        store
-            .put_committee(EpochNumber(100), members.clone())
-            .unwrap();
-        let retrieved = store.get_committee(EpochNumber(100)).unwrap();
-        assert_eq!(retrieved, Some(members));
     }
 
     #[test]

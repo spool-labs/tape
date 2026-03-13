@@ -57,7 +57,6 @@ mod tests {
     use tape_crypto::Hash;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_store::types::{
-        NodeInfo,
         Pubkey as StorePubkey,
         SnapshotCertResult,
         SnapshotChunkMeta,
@@ -275,20 +274,7 @@ mod tests {
         let current = EpochNumber(3);
         let local_epoch = EpochNumber(2);
 
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-        ctx.store
-            .put_committee(
-                current,
-                vec![NodeInfo {
-                    node_id: NodeId(0),
-                    node_address: StorePubkey::new(node_address.to_bytes()),
-                    bls_pubkey: BlsPubkey::zeroed(),
-                    tls_pubkey: StorePubkey::new([0u8; 32]),
-                    network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-                    spools: vec![5],
-                }],
-            )
-            .unwrap();
+        // TODO: rewrite to seed committee via ProtocolState / test_context()
         mark_snapshot_build_complete(&ctx, local_epoch);
 
         let group = group_for_spool(5);
@@ -323,21 +309,7 @@ mod tests {
         let group = group_for_spool(5);
         set_group_ready(&ctx, local_epoch, group);
 
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-        let bls_pubkey = ctx.bls_keypair.public_key().unwrap();
-        ctx.store
-            .put_committee(
-                current,
-                vec![NodeInfo {
-                    node_id: NodeId(0),
-                    node_address: StorePubkey::new(node_address.to_bytes()),
-                    bls_pubkey,
-                    tls_pubkey: StorePubkey::new([0u8; 32]),
-                    network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-                    spools: vec![5],
-                }],
-            )
-            .unwrap();
+        // TODO: rewrite to seed committee via ProtocolState / test_context()
 
         let commitment = ctx
             .store
@@ -380,20 +352,7 @@ mod tests {
         let group = group_for_spool(5);
         set_group_commitment_only(&ctx, local_epoch, group);
 
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-        ctx.store
-            .put_committee(
-                current,
-                vec![NodeInfo {
-                    node_id: NodeId(0),
-                    node_address: StorePubkey::new(node_address.to_bytes()),
-                    bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
-                    tls_pubkey: StorePubkey::new([0u8; 32]),
-                    network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-                    spools: vec![5],
-                }],
-            )
-            .unwrap();
+        // TODO: rewrite to seed committee via ProtocolState / test_context()
 
         let cancel = CancellationToken::new();
         let result = run_register(ctx, cancel).await;
@@ -419,20 +378,7 @@ mod tests {
             )
             .unwrap();
 
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-        ctx.store
-            .put_committee(
-                current,
-                vec![NodeInfo {
-                    node_id: NodeId(0),
-                    node_address: StorePubkey::new(node_address.to_bytes()),
-                    bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
-                    tls_pubkey: StorePubkey::new([0u8; 32]),
-                    network_address: NetworkAddress::new_ipv4([127, 0, 0, 1], 8000),
-                    spools: vec![5],
-                }],
-            )
-            .unwrap();
+        // TODO: rewrite to seed committee via ProtocolState / test_context()
 
         let cancel = CancellationToken::new();
         let result = run_submit(ctx, cancel).await;
@@ -450,30 +396,7 @@ mod tests {
         dead_addr.set_flags(2);
         let own_addr = NetworkAddress::new_ipv4([127, 0, 0, 1], 8000);
 
-        let (node_address, _) = node_pda(ctx.keypair.pubkey());
-        ctx.store
-            .put_committee(
-                current,
-                vec![
-                    NodeInfo {
-                        node_id: NodeId(0),
-                        node_address: StorePubkey::new(node_address.to_bytes()),
-                        bls_pubkey: ctx.bls_keypair.public_key().unwrap(),
-                        tls_pubkey: StorePubkey::new([0u8; 32]),
-                        network_address: own_addr,
-                        spools: vec![5],
-                    },
-                    NodeInfo {
-                        node_id: NodeId(1),
-                        node_address: StorePubkey::new_unique(),
-                        bls_pubkey: BlsPrivateKey::from_random().public_key().unwrap(),
-                        tls_pubkey: StorePubkey::new([1u8; 32]),
-                        network_address: dead_addr,
-                        spools: vec![6],
-                    },
-                ],
-            )
-            .unwrap();
+        // TODO: rewrite to seed committee via ProtocolState / test_context()
 
         let cancel = CancellationToken::new();
         let result = run_build(ctx.clone(), cancel).await;

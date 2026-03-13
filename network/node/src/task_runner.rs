@@ -943,23 +943,23 @@ mod tests {
     #[test]
     fn backoff_config() {
         let solana = backoff_for(TaskCategory::SolanaTx);
-        assert_eq!(solana.base_delay, Duration::from_millis(500));
-        assert_eq!(solana.max_delay, Duration::from_secs(10));
+        assert_eq!(solana.base_delay, Duration::from_millis(100));
+        assert_eq!(solana.max_delay, Duration::from_secs(1));
         assert_eq!(solana.max_retries, None);
 
         let peer = backoff_for(TaskCategory::PeerHttp);
         assert_eq!(peer.base_delay, Duration::from_millis(200));
-        assert_eq!(peer.max_delay, Duration::from_secs(5));
+        assert_eq!(peer.max_delay, Duration::from_secs(1));
         assert_eq!(peer.max_retries, None);
 
         let cpu = backoff_for(TaskCategory::CpuHeavy);
-        assert_eq!(cpu.base_delay, Duration::from_secs(5));
-        assert_eq!(cpu.max_delay, Duration::from_secs(60));
+        assert_eq!(cpu.base_delay, Duration::from_secs(1));
+        assert_eq!(cpu.max_delay, Duration::from_secs(1));
         assert_eq!(cpu.max_retries, None);
 
         let internal = backoff_for(TaskCategory::Internal);
-        assert_eq!(internal.base_delay, Duration::from_secs(1));
-        assert_eq!(internal.max_delay, Duration::from_secs(5));
+        assert_eq!(internal.base_delay, Duration::from_millis(100));
+        assert_eq!(internal.max_delay, Duration::from_secs(1));
         assert_eq!(internal.max_retries, None);
     }
 

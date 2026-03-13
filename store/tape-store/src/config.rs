@@ -18,7 +18,7 @@ use rocksdb;
 /// Returns a vector of `ColumnFamilyDescriptor` instances, one for each column family
 /// in the tape-store. Each CF is configured based on its access patterns and data characteristics.
 ///
-/// # Column Family Configurations (12 total)
+/// # Column Family Configurations (11 total)
 ///
 /// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
@@ -37,19 +37,11 @@ use rocksdb;
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
-///
-/// ## Committee Column
-/// - `committee` - 8-byte EpochKey (PlainTable)
 pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
     vec![
         // Meta - variable-size keys and values, infrequent access
         ColumnFamilyConfig::new("meta")
             .with_block_based()
-            .build(),
-
-        // Committee - 8-byte EpochKey, Vec<NodeInfo> values
-        ColumnFamilyConfig::new("committee")
-            .with_plain_table(8)
             .build(),
 
         // Tape - 32-byte Pubkey keys, small TapeInfo values
@@ -157,7 +149,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 12);
+        assert_eq!(configs.len(), 11);
     }
 
     #[test]
@@ -167,7 +159,6 @@ mod tests {
 
         let expected = vec![
             "meta",
-            "committee",
             "tape",
             "track",
             "object_info",

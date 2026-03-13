@@ -3,7 +3,7 @@
 //! This module provides all the types used throughout the tape-store crate:
 //! - Enums: NodeStatus, SpoolState, ObjectInfo
 //! - Keys: EpochKey, UnitKey, SpoolIndexKey, SliceKey
-//! - Values: TapeInfo, TrackInfo, NodeInfo
+//! - Values: TapeInfo, TrackInfo
 //! - Wrappers: Pubkey
 
 mod enums;
@@ -17,15 +17,16 @@ pub use tape_core::types::{ChunkIndex, EpochNumber, NodeId, SlotNumber};
 pub use tape_crypto::Hash;
 
 // Re-export enum types
-pub use enums::{NodeStatus, ObjectInfo, SpoolState, SpoolStatus};
+pub use enums::ObjectInfo;
+pub use tape_core::system::{NodeStatus, SpoolState, SpoolStatus};
 
 // Re-export key types
 pub use keys::{EpochKey, EventLogKey, SliceKey, SpoolIndexKey, UnitKey};
 
 // Re-export value types
 pub use values::{
-    InvalidationProof, NodeInfo, SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature,
-    TapeInfo, TrackInfo,
+    InvalidationProof, SnapshotCertResult, SnapshotChunkMeta, SnapshotPartialSignature, TapeInfo,
+    TrackInfo,
 };
 
 // Re-export wrapper types
