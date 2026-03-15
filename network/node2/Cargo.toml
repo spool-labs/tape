@@ -40,6 +40,9 @@ dirs = { workspace = true }
 axum = { workspace = true }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 tower-http = { version = "0.6", features = ["trace"] }
+bytemuck = { workspace = true }
+tape-slicer = { workspace = true }
+wincode = { workspace = true }
 
 [dev-dependencies]
 rpc-litesvm = { workspace = true }

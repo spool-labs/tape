@@ -5,8 +5,10 @@ use rpc::Rpc;
 use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_core::spooler::SpoolIndex;
+use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
+use tape_store::ops::SpoolOps;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -61,6 +63,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             "spool manager started"
         );
 
+        self.initialize_store_state()?;
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
@@ -100,7 +104,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     if *node == self.context.node_address() {
                         let state = self.context.state();
                         if let Some((index, _)) = state.find_member(self.context.node_id()) {
-                            for spool_id in state.member_spools(index) {
+                            let owned = state.member_spools(index);
+                            self.update_store_spools(state.epoch, state.phase, &owned)?;
+                            for spool_id in owned {
                                 self.ensure_spool_running(spool_id).await?;
                             }
                         }
@@ -136,9 +142,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             None => Vec::new(),
         };
 
-        for spool_id in owned {
-            self.spawn_worker(state.epoch, spool_id);
-        }
+        self.replace_owned_spools(state.epoch, state.phase, &owned)?;
 
         Ok(())
     }
@@ -158,6 +162,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             );
             return Ok(());
         }
+
+        self.context
+            .store
+            .set_spool_state(
+                spool_id,
+                SpoolState::new(spool_status_for_phase(state.phase), state.epoch),
+            )
+            .map_err(store_error)?;
 
         self.spawn_worker(state.epoch, spool_id);
 
@@ -227,4 +239,70 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             }),
         }
     }
+
+    fn initialize_store_state(&mut self) -> Result<(), NodeError> {
+        let state = self.context.state();
+        let owned = match state.find_member(self.context.node_id()) {
+            Some((index, _)) => state.member_spools(index),
+            None => Vec::new(),
+        };
+
+        self.replace_owned_spools(state.epoch, state.phase, &owned)
+    }
+
+    fn replace_owned_spools(
+        &mut self,
+        epoch: EpochNumber,
+        phase: EpochPhase,
+        owned: &[SpoolIndex],
+    ) -> Result<(), NodeError> {
+        self.reset_store_spools()?;
+        self.update_store_spools(epoch, phase, owned)?;
+
+        for &spool_id in owned {
+            self.spawn_worker(epoch, spool_id);
+        }
+
+        Ok(())
+    }
+
+    fn update_store_spools(
+        &self,
+        epoch: EpochNumber,
+        phase: EpochPhase,
+        owned: &[SpoolIndex],
+    ) -> Result<(), NodeError> {
+        let state = SpoolState::new(spool_status_for_phase(phase), epoch);
+        for &spool_id in owned {
+            self.context
+                .store
+                .set_spool_state(spool_id, state)
+                .map_err(store_error)?;
+        }
+
+        Ok(())
+    }
+
+    fn reset_store_spools(&self) -> Result<(), NodeError> {
+        let current = self.context.store.iter_all_spools().map_err(store_error)?;
+        for (spool_id, _) in current {
+            self.context
+                .store
+                .remove_spool_state(spool_id)
+                .map_err(store_error)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn spool_status_for_phase(phase: EpochPhase) -> SpoolStatus {
+    match phase {
+        EpochPhase::Settling | EpochPhase::Active => SpoolStatus::Active,
+        EpochPhase::Unknown | EpochPhase::Syncing => SpoolStatus::Sync,
+    }
+}
+
+fn store_error(error: impl std::fmt::Display) -> NodeError {
+    NodeError::Store(error.to_string())
 }

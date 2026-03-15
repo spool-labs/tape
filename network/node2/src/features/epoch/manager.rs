@@ -75,10 +75,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochManager<Db, Cluster, Blockch
                     handlers.handle_advance_epoch(event.new_epoch).await?;
                 }
                 ParsedInstruction::SyncEpoch { event } => {
-                    handlers.handle_sync_epoch(event.epoch).await?;
+                    handlers.handle_sync_epoch(event.epoch, event.phase).await?;
                 }
                 ParsedInstruction::AdvancePool { node, event } => {
-                    handlers.handle_advance_pool(*node, event.epoch).await?;
+                    handlers
+                        .handle_advance_pool(*node, event.epoch, event.phase)
+                        .await?;
                 }
                 ParsedInstruction::JoinNetwork { event, .. } => {
                     handlers.handle_join_network(event.id).await?;

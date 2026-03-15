@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Pubkey;
 use tape_protocol::{Api, fetch::fetch_state};
@@ -62,12 +63,35 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         Ok(())
     }
 
-    pub async fn handle_sync_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+    pub async fn handle_sync_epoch(&self, epoch: EpochNumber, phase: u64) -> Result<(), NodeError> {
+        let state = self.context.state();
+        if state.epoch == epoch {
+            if let Ok(phase) = EpochPhase::try_from(phase) {
+                if phase != state.phase {
+                    self.context.update_phase(phase)?;
+                }
+            }
+        }
+
         debug!(epoch = epoch.0, "received sync epoch");
         Ok(())
     }
 
-    pub async fn handle_advance_pool(&self, node: Pubkey, epoch: EpochNumber) -> Result<(), NodeError> {
+    pub async fn handle_advance_pool(
+        &self,
+        node: Pubkey,
+        epoch: EpochNumber,
+        phase: u64,
+    ) -> Result<(), NodeError> {
+        let state = self.context.state();
+        if state.epoch == epoch {
+            if let Ok(phase) = EpochPhase::try_from(phase) {
+                if phase != state.phase {
+                    self.context.update_phase(phase)?;
+                }
+            }
+        }
+
         debug!(node = %node, epoch = epoch.0, "received advance pool");
         Ok(())
     }

@@ -77,7 +77,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     supervisor.spawn(
         ServiceName::HttpServer,
-        HttpServer::new(config.http.clone(), cancel.clone()).run(),
+        HttpServer::new(context.clone(), config.http.clone(), cancel.clone()).run(),
     );
 
     supervisor.spawn(

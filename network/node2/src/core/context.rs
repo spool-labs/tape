@@ -13,6 +13,7 @@ use store_rocks::RocksStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::spooler::SpoolIndex;
+use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
 use tape_protocol::{Api, ProtocolState};
@@ -58,6 +59,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
         self.state.publish(state)
+    }
+
+    pub fn update_phase(&self, phase: EpochPhase) -> Result<(), NodeError> {
+        let mut state = (*self.state()).clone();
+        state.phase = phase;
+        self.set_state(state)
     }
 
     pub fn subscribe_state(&self) -> tokio::sync::watch::Receiver<Arc<ProtocolState>> {

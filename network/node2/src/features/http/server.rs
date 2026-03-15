@@ -1,7 +1,15 @@
+use std::sync::Arc;
+
 use axum::error_handling::HandleErrorLayer;
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{BoxError, Router};
+
+use rpc::Rpc;
+use store::Store;
+use tape_protocol::Api;
+use tape_protocol::api::routes as api_routes;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
@@ -12,34 +20,99 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 
 use crate::core::config::HttpConfig;
+use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::http::routes;
+use crate::features::http::handlers;
+use crate::features::http::state::AppState;
 
-pub struct HttpServer {
+pub struct HttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: HttpConfig,
     cancel: CancellationToken,
 }
 
-impl HttpServer {
-    pub fn new(config: HttpConfig, cancel: CancellationToken) -> Self {
-        Self { config, cancel }
+impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
+    HttpServer<Db, Cluster, Blockchain>
+{
+    pub fn new(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        config: HttpConfig,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            context,
+            config,
+            cancel,
+        }
+    }
+
+    fn build_router(&self) -> Router {
+        let state = AppState {
+            context: self.context.clone(),
+        };
+
+        Router::new()
+            .route(
+                api_routes::HEALTH_PATH,
+                get(handlers::health::health::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::STATS_PATH,
+                get(handlers::health::stats::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SLICE_PATH,
+                get(handlers::slice::get_slice::<Db, Cluster, Blockchain>)
+                    .put(handlers::slice::put_slice::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::METADATA_PATH,
+                get(handlers::metadata::get_metadata::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SYNC_SPOOL_PATH,
+                post(handlers::sync::sync_spool::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::REPAIR_PATH,
+                post(handlers::repair::repair::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SIGN_PATH,
+                get(handlers::sign::certify::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::INCONSISTENCY_PATH,
+                post(handlers::inconsistency::invalidate::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SNAPSHOT_COMMITMENTS_PATH,
+                get(handlers::snapshot::get_snapshot::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SNAPSHOT_SIG_PATH,
+                post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
+            )
+            .with_state(state)
+            .layer(DefaultBodyLimit::disable())
+            .layer(
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(handle_http_error))
+                    .layer(TraceLayer::new_for_http())
+                    .layer(LoadShedLayer::new())
+                    .layer(ConcurrencyLimitLayer::new(self.config.concurrency_limit))
+                    .layer(TimeoutLayer::new(self.config.request_timeout)),
+            )
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
         debug!(bind_addr = %self.config.bind_addr, "http server starting");
 
-        let app = Router::new().route("/health", get(routes::health)).layer(
-            ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(handle_http_error))
-                .layer(TraceLayer::new_for_http())
-                .layer(LoadShedLayer::new())
-                .layer(ConcurrencyLimitLayer::new(self.config.concurrency_limit))
-                .layer(TimeoutLayer::new(self.config.request_timeout)),
-        );
-
+        let app = self.build_router();
         let listener = TcpListener::bind(self.config.bind_addr)
             .await
             .map_err(NodeError::Io)?;
+
         info!(address = %self.config.bind_addr, "http server listening");
 
         let cancel = self.cancel.clone();

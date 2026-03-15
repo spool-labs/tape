@@ -8853,6 +8853,7 @@ name = "tape-node2"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "bytemuck",
  "clap",
  "dirs 5.0.1",
  "peer-http",
@@ -8875,6 +8876,7 @@ dependencies = [
  "tape-protocol",
  "tape-retry",
  "tape-sdk",
+ "tape-slicer",
  "tape-store",
  "thiserror 2.0.18",
  "tokio",
@@ -8883,6 +8885,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wincode 0.1.2",
 ]
 
 [[package]]

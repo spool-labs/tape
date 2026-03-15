@@ -54,6 +54,18 @@ impl SpoolGroup {
         assert!((self.0 as usize) < SPOOL_GROUP_COUNT);
         SpoolGroup::of(spool) == *self
     }
+
+    /// Unpack from little-endian bytes.
+    #[inline]
+    pub fn unpack(bytes: [u8; 8]) -> Self {
+        Self(u64::from_le_bytes(bytes))
+    }
+
+    /// Pack into little-endian bytes.
+    #[inline]
+    pub fn pack(&self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
 }
 
 impl From<u64> for SpoolGroup {
