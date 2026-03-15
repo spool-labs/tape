@@ -1,16 +1,29 @@
 use std::sync::Arc;
 
-use tokio::sync::OwnedSemaphorePermit;
+use rpc::Rpc;
+use store::Store;
+use tape_protocol::Api;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info};
 
+use crate::core::config::SpoolManagerConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ServiceName;
+use crate::features::spool::types::{SpoolAssignment, SpoolWorkerExit};
 
-pub async fn run_spool_worker(
-    context: AppContext,
+pub async fn run_spool_worker<Db, Cluster, Blockchain>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SpoolManagerConfig,
     assignment: SpoolAssignment,
-    semaphore: Arc<tokio::sync::Semaphore>,
-) -> Result<SpoolWorkerExit, NodeError> {
+    semaphore: Arc<Semaphore>,
+) -> Result<SpoolWorkerExit, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
     let permit = match acquire_slot(semaphore, &assignment.cancel).await? {
         Some(permit) => permit,
         None => {
@@ -21,7 +34,7 @@ pub async fn run_spool_worker(
     };
 
     info!(
-        spool_id = assignment.spool_id.0,
+        spool_id = assignment.spool_id,
         epoch = assignment.epoch.0,
         "spool worker started"
     );
@@ -30,7 +43,7 @@ pub async fn run_spool_worker(
 
     if result.is_ok() {
         info!(
-            spool_id = assignment.spool_id.0,
+            spool_id = assignment.spool_id,
             epoch = assignment.epoch.0,
             "spool worker stopped"
         );
@@ -39,7 +52,7 @@ pub async fn run_spool_worker(
 }
 
 async fn acquire_slot(
-    semaphore: Arc<tokio::sync::Semaphore>,
+    semaphore: Arc<Semaphore>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<Option<OwnedSemaphorePermit>, NodeError> {
     tokio::select! {
@@ -55,15 +68,19 @@ async fn acquire_slot(
     }
 }
 
-async fn worker_loop(
-    context: AppContext,
+async fn worker_loop<Db, Cluster, Blockchain>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SpoolManagerConfig,
     assignment: SpoolAssignment,
     _permit: OwnedSemaphorePermit,
-) -> Result<SpoolWorkerExit, NodeError> {
+) -> Result<SpoolWorkerExit, NodeError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
     let mut interval = tokio::time::interval(config.worker_heartbeat);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
 
     loop {
         tokio::select! {
@@ -71,12 +88,13 @@ async fn worker_loop(
                 return Ok(SpoolWorkerExit { spool_id: assignment.spool_id });
             }
             _ = interval.tick() => {
-
-                // <todo>
-
-                debug!(spool_id = assignment.spool_id.0, "spool heartbeat");
+                debug!(
+                    node_id = context.node_id().0,
+                    spool_id = assignment.spool_id,
+                    epoch = assignment.epoch.0,
+                    "spool heartbeat"
+                );
             }
         }
     }
 }
-

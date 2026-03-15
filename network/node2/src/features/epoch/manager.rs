@@ -1,23 +1,32 @@
 use std::sync::Arc;
-use mpsc::Receiver;
 
+use rpc::Rpc;
+use store::Store;
+use tape_blocks::ParsedInstruction;
+use tape_protocol::Api;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use crate::core::config::EpochManagerConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ChannelName;
+use crate::features::block::ingestor::ParsedBlock;
+use crate::features::epoch::handlers::EpochHandlers;
 
-pub struct EpochManager {
-    context: AppContext,
+pub struct EpochManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: EpochManagerConfig,
-    rx: Receiver<Arc<ParsedBlock>>,
+    rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
 }
 
-impl EpochManager {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochManager<Db, Cluster, Blockchain> {
     pub fn new(
-        context: AppContext,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: EpochManagerConfig,
-        rx: Receiver<Arc<ParsedBlock>>,
+        rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -55,24 +64,24 @@ impl EpochManager {
 
     async fn handle_block(
         &self,
-        handlers: &EpochHandlers,
+        handlers: &EpochHandlers<Db, Cluster, Blockchain>,
         block: Arc<ParsedBlock>,
     ) -> Result<(), NodeError> {
-        debug!(height = block.height.0, "epoch manager received block");
+        debug!(slot = block.slot.0, "epoch manager received block");
 
-        for parsed in &block.extracted {
-            match parsed.instruction {
-                ProtocolInstruction::AdvanceEpoch { epoch, .. } => {
-                    handlers.handle_advance_epoch(epoch).await?;
+        for instruction in &block.instructions {
+            match instruction {
+                ParsedInstruction::AdvanceEpoch { event } => {
+                    handlers.handle_advance_epoch(event.new_epoch).await?;
                 }
-                ProtocolInstruction::SyncEpoch { epoch, .. } => {
-                    handlers.handle_sync_epoch(epoch).await?;
+                ParsedInstruction::SyncEpoch { event } => {
+                    handlers.handle_sync_epoch(event.epoch).await?;
                 }
-                ProtocolInstruction::AdvancePool { spool_id, .. } => {
-                    handlers.handle_advance_pool(spool_id).await?;
+                ParsedInstruction::AdvancePool { node, event } => {
+                    handlers.handle_advance_pool(*node, event.epoch).await?;
                 }
-                ProtocolInstruction::JoinNetwork { node_id, .. } => {
-                    handlers.handle_join_network(node_id).await?;
+                ParsedInstruction::JoinNetwork { event, .. } => {
+                    handlers.handle_join_network(event.id).await?;
                 }
                 _ => {}
             }

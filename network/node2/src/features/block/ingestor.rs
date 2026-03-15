@@ -1,18 +1,38 @@
 use std::sync::Arc;
 
+use rpc::Rpc;
+use store::Store;
+use tape_blocks::ParsedInstruction;
+use tape_core::types::SlotNumber;
+use tape_protocol::Api;
+use tape_retry::retry_if;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-pub struct BlockIngestor {
-    context: AppContext,
+use crate::core::channels::{DownstreamSenders, send_block};
+use crate::core::config::BlockIngestorConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ChannelName;
+
+#[derive(Debug)]
+pub struct ParsedBlock {
+    pub slot: SlotNumber,
+    pub instructions: Vec<ParsedInstruction>,
+}
+
+pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: BlockIngestorConfig,
     senders: DownstreamSenders,
     cancel: CancellationToken,
 }
 
-impl BlockIngestor {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> 
+    BlockIngestor<Db, Cluster, Blockchain> {
+
     pub fn new(
-        context: AppContext,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: BlockIngestorConfig,
         senders: DownstreamSenders,
         cancel: CancellationToken,
@@ -26,37 +46,48 @@ impl BlockIngestor {
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
-        let mut next_height = self.config.start_height;
+        let mut next_slot = self.config.start_slot;
 
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
-                result = self.fetch_parse_and_dispatch(next_height) => {
+                result = self.fetch_parse_and_dispatch(next_slot) => {
                     result?;
-                    next_height = next_height.next();
+                    next_slot = SlotNumber(next_slot.0.saturating_add(1));
                 }
             }
         }
     }
 
-    async fn fetch_parse_and_dispatch(&self, height: BlockHeight) -> Result<(), NodeError> {
+    async fn fetch_parse_and_dispatch(&self, slot: SlotNumber) -> Result<(), NodeError> {
         let context = self.context.clone();
-        let bytes = retry_if(
+
+        let block = retry_if(
             self.config.fetch_retry.clone(),
             Some(&self.cancel),
             move || {
                 let context = context.clone();
-                async move { context.rpc.get_block_binary(height).await }
+                async move { context.rpc.get_block(slot.0).await }
             },
-            NodeError::is_retryable,
+            |error| error.is_retriable() && !error.is_skipped_slot(),
         )
-        .await?;
+        .await;
 
-        let block = Arc::new(parse_block_bytes(&bytes)?);
+        let block = match block {
+            Ok(block) => block,
+            Err(error) if error.is_skipped_slot() => {
+                debug!(slot = slot.0, "slot skipped");
+                return Ok(());
+            }
+            Err(error) => return Err(NodeError::from(error)),
+        };
+
+        let instructions = tape_blocks::parse_and_merge(&block)?;
+        let block = Arc::new(ParsedBlock { slot, instructions });
 
         debug!(
-            height = block.height.0,
-            extracted = block.extracted.len(),
+            slot = block.slot.0,
+            extracted = block.instructions.len(),
             "parsed block"
         );
 
@@ -84,10 +115,10 @@ impl BlockIngestor {
         send_block(
             &self.senders.replay, 
             ChannelName::ReplayManager, 
-            block
+            Arc::clone(&block)
         ).await?;
 
-        info!(height = height.0, "dispatched parsed block");
+        info!(slot = slot.0, "dispatched parsed block");
         Ok(())
     }
 }

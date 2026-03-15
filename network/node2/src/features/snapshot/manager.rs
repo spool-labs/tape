@@ -1,22 +1,30 @@
 use std::sync::Arc;
 
-use mpsc::Receiver;
+use rpc::Rpc;
+use store::Store;
+use tape_protocol::Api;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
+use crate::core::config::SnapshotConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ChannelName;
+use crate::features::block::ingestor::ParsedBlock;
 
-pub struct SnapshotManager {
-    context: AppContext,
+pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SnapshotConfig,
-    rx: Receiver<Arc<ParsedBlock>>,
+    rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
 }
 
-impl SnapshotManager {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Blockchain> {
     pub fn new(
-        context: AppContext,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: SnapshotConfig,
-        rx: Receiver<Arc<ParsedBlock>>,
+        rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -28,6 +36,12 @@ impl SnapshotManager {
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        debug!(
+            node_id = self.context.node_id().0,
+            config = ?self.config,
+            "snapshot manager started"
+        );
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
@@ -48,8 +62,9 @@ impl SnapshotManager {
 
     async fn handle_block(&self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         info!(
-            height = block.height.0,
-            entries = block.extracted.len(),
+            node_id = self.context.node_id().0,
+            slot = block.slot.0,
+            entries = block.instructions.len(),
             "snapshot state persisted"
         );
 

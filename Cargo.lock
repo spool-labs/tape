@@ -8849,6 +8849,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-node2"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "clap",
+ "dirs 5.0.1",
+ "peer-http",
+ "peer-manager",
+ "peer-memory",
+ "rpc",
+ "rpc-client",
+ "rpc-litesvm",
+ "rpc-solana",
+ "serde",
+ "serde_yaml",
+ "solana-sdk",
+ "store",
+ "store-memory",
+ "store-rocks",
+ "tape-api",
+ "tape-blocks",
+ "tape-core",
+ "tape-crypto",
+ "tape-protocol",
+ "tape-retry",
+ "tape-sdk",
+ "tape-store",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tape-protocol"
 version = "0.3.0"
 dependencies = [
@@ -9360,6 +9397,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

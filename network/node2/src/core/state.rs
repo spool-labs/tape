@@ -1,3 +1,11 @@
+use std::sync::Arc;
+
+use tape_core::types::EpochNumber;
+use tape_protocol::ProtocolState;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+
+use crate::core::error::NodeError;
 
 #[derive(Debug)]
 pub struct StateBus {
@@ -27,14 +35,14 @@ impl StateBus {
 
     pub async fn wait_for_epoch(
         &self,
-        epoch: EpochId,
+        epoch: EpochNumber,
         cancel: &CancellationToken,
     ) -> Result<Arc<ProtocolState>, NodeError> {
         let mut rx = self.subscribe();
 
         loop {
             let current = rx.borrow().clone();
-            if current.epoch.0 >= epoch.0 {
+            if current.epoch >= epoch {
                 return Ok(current);
             }
 
@@ -56,3 +64,8 @@ impl StateBus {
     }
 }
 
+impl Default for StateBus {
+    fn default() -> Self {
+        Self::new(ProtocolState::default())
+    }
+}

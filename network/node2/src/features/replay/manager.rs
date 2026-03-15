@@ -1,17 +1,30 @@
-use mpsc::Receiver;
+use std::sync::Arc;
 
-pub struct ReplayManager {
-    context: AppContext,
+use rpc::Rpc;
+use store::Store;
+use tape_protocol::Api;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::core::config::ReplayConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ChannelName;
+use crate::features::block::ingestor::ParsedBlock;
+
+pub struct ReplayManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: ReplayConfig,
-    rx: Receiver<Arc<ParsedBlock>>,
+    rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
 }
 
-impl ReplayManager {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockchain> {
     pub fn new(
-        context: AppContext,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: ReplayConfig,
-        rx: Receiver<Arc<ParsedBlock>>,
+        rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -23,6 +36,12 @@ impl ReplayManager {
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        debug!(
+            node_id = self.context.node_id().0,
+            config = ?self.config,
+            "replay manager started"
+        );
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
@@ -42,10 +61,10 @@ impl ReplayManager {
     }
 
     async fn persist_block(&self, block: Arc<ParsedBlock>) {
-
         debug!(
-            height = block.height.0,
-            entries = block.extracted.len(),
+            node_id = self.context.node_id().0,
+            slot = block.slot.0,
+            entries = block.instructions.len(),
             "replay state persisted"
         );
     }

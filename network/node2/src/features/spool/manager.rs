@@ -1,29 +1,43 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mpsc::Receiver;
+use rpc::Rpc;
+use store::Store;
+use tape_blocks::ParsedInstruction;
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::EpochNumber;
+use tape_protocol::Api;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+use crate::core::config::SpoolManagerConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::{ChannelName, ServiceName};
+use crate::features::block::ingestor::ParsedBlock;
+use crate::features::spool::types::{SpoolAssignment, SpoolWorkerExit};
+use crate::features::spool::worker::run_spool_worker;
 
-pub struct SpoolManager {
-    context: AppContext,
+pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SpoolManagerConfig,
-    rx: Receiver<Arc<ParsedBlock>>,
+    rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
     semaphore: Arc<Semaphore>,
     workers: JoinSet<Result<SpoolWorkerExit, NodeError>>,
-    active: BTreeMap<SpoolId, CancellationToken>,
+    active: BTreeMap<SpoolIndex, CancellationToken>,
     epoch_cancel: CancellationToken,
 }
 
-impl SpoolManager {
+impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
+    SpoolManager<Db, Cluster, Blockchain>
+{
     pub fn new(
-        context: AppContext,
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: SpoolManagerConfig,
-        rx: Receiver<Arc<ParsedBlock>>,
+        rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_parallel_spools));
@@ -41,6 +55,12 @@ impl SpoolManager {
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        debug!(
+            node_id = self.context.node_id().0,
+            max_parallel_spools = self.config.max_parallel_spools,
+            "spool manager started"
+        );
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
@@ -69,15 +89,28 @@ impl SpoolManager {
     }
 
     async fn handle_block(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
-        debug!(height = block.height.0, "spool manager received block");
+        debug!(slot = block.slot.0, "spool manager received block");
 
-        for parsed in &block.extracted {
-            match parsed.instruction {
-                ProtocolInstruction::AdvanceEpoch { epoch, .. } => {
-                    self.handle_advance_epoch(epoch).await?;
+        for instruction in &block.instructions {
+            match instruction {
+                ParsedInstruction::AdvanceEpoch { event } => {
+                    self.handle_advance_epoch(event.new_epoch).await?;
                 }
-                ProtocolInstruction::AdvancePool { spool_id } => {
-                    self.ensure_spool_running(spool_id).await?;
+                ParsedInstruction::AdvancePool { node, event } => {
+                    if *node == self.context.node_address() {
+                        let state = self.context.state();
+                        if let Some((index, _)) = state.find_member(self.context.node_id()) {
+                            for spool_id in state.member_spools(index) {
+                                self.ensure_spool_running(spool_id).await?;
+                            }
+                        }
+                    }
+
+                    debug!(
+                        node = %node,
+                        epoch = event.epoch.0,
+                        "advance pool observed; spool lifecycle unchanged"
+                    );
                 }
                 _ => {}
             }
@@ -86,7 +119,7 @@ impl SpoolManager {
         Ok(())
     }
 
-    async fn handle_advance_epoch(&mut self, epoch: EpochId) -> Result<(), NodeError> {
+    async fn handle_advance_epoch(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
         self.cancel_epoch_workers().await?;
         self.epoch_cancel = self.cancel.child_token();
 
@@ -98,31 +131,40 @@ impl SpoolManager {
 
         info!(epoch = epoch.0, "re-evaluating owned spools");
 
-        // <todo>
-        // let owned = owned_spools(&state, self.context.local_node);
+        let owned = match state.find_member(self.context.node_id()) {
+            Some((index, _)) => state.member_spools(index),
+            None => Vec::new(),
+        };
 
         for spool_id in owned {
-            self.spawn_worker(epoch, spool_id);
+            self.spawn_worker(state.epoch, spool_id);
         }
 
         Ok(())
     }
 
-    async fn ensure_spool_running(&mut self, spool_id: SpoolId) -> Result<(), NodeError> {
+    async fn ensure_spool_running(&mut self, spool_id: SpoolIndex) -> Result<(), NodeError> {
         if self.active.contains_key(&spool_id) {
             return Ok(());
         }
 
-        let state = self.context.state.current();
-
-        // <todo>
+        let state = self.context.state();
+        let owner = state.spool_owner(spool_id);
+        if owner != Some(self.context.node_id()) {
+            debug!(
+                spool_id,
+                owner = owner.map(|node_id| node_id.0),
+                "skipping worker spawn for unowned spool"
+            );
+            return Ok(());
+        }
 
         self.spawn_worker(state.epoch, spool_id);
 
         Ok(())
     }
 
-    fn spawn_worker(&mut self, epoch: EpochId, spool_id: SpoolId) {
+    fn spawn_worker(&mut self, epoch: EpochNumber, spool_id: SpoolIndex) {
         if self.active.contains_key(&spool_id) {
             return;
         }

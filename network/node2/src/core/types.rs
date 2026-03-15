@@ -1,9 +1,4 @@
-use std::net::SocketAddr;
-use std::time::Duration;
-
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceName {
     Unknown,
     HttpServer,
@@ -27,4 +22,3 @@ pub enum ShutdownSignal {
     CtrlC,
     SigTerm,
 }
-
