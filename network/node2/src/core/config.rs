@@ -70,6 +70,7 @@ pub struct HttpConfig {
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
     pub parsed_block_capacity: usize,
+    pub replay_batch_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +101,9 @@ pub struct SnapshotConfig {
 pub struct ReplayConfig;
 
 #[derive(Debug, Clone)]
+pub struct StateConfig;
+
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub runtime: RuntimeConfig,
     pub node: NodeConfig,
@@ -110,6 +114,7 @@ pub struct AppConfig {
     pub spool: SpoolManagerConfig,
     pub snapshot: SnapshotConfig,
     pub replay: ReplayConfig,
+    pub state: StateConfig,
 }
 
 impl AppConfig {
@@ -133,6 +138,7 @@ impl AppConfig {
             },
             channels: ChannelConfig {
                 parsed_block_capacity: 256,
+                replay_batch_capacity: 256,
             },
             block: BlockIngestorConfig {
                 start_slot: node.start_slot,
@@ -151,6 +157,7 @@ impl AppConfig {
                 max_snapshot_items: 10_000,
             },
             replay: ReplayConfig,
+            state: StateConfig,
         })
     }
 }

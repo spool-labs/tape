@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::core::bootstrap::build_context;
-use crate::core::channels::downstream_channels;
+use crate::core::channels::{downstream_channels, state_channel};
 use crate::core::config::{AppConfig, RuntimeConfig};
 use crate::core::error::NodeError;
 use crate::core::supervisor::Supervisor;
@@ -18,6 +18,7 @@ use crate::features::http::server::HttpServer;
 use crate::features::replay::manager::ReplayManager;
 use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
+use crate::features::state::manager::StateManager;
 
 pub fn init_tracing() -> Result<(), NodeError> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -73,6 +74,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     }
 
     let (senders, receivers) = downstream_channels(&config.channels);
+    let (state_tx, state_rx) = state_channel(&config.channels);
     let mut supervisor = Supervisor::new(cancel.clone());
 
     supervisor.spawn(
@@ -110,7 +112,19 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     supervisor.spawn(
         ServiceName::ReplayManager,
-        ReplayManager::new(context, config.replay.clone(), receivers.replay, cancel).run(),
+        ReplayManager::new(
+            context.clone(),
+            config.replay.clone(),
+            receivers.replay,
+            state_tx,
+            cancel.clone(),
+        )
+        .run(),
+    );
+
+    supervisor.spawn(
+        ServiceName::StateManager,
+        StateManager::new(context, config.state.clone(), state_rx, cancel).run(),
     );
 
     supervisor.supervise().await

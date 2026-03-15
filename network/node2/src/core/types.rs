@@ -7,6 +7,7 @@ pub enum ServiceName {
     SpoolManager,
     SnapshotManager,
     ReplayManager,
+    StateManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub enum ChannelName {
     SpoolManager,
     SnapshotManager,
     ReplayManager,
+    StateManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

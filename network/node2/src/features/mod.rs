@@ -4,3 +4,4 @@ pub mod http;
 pub mod replay;
 pub mod snapshot;
 pub mod spool;
+pub mod state;

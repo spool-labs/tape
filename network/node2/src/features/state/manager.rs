@@ -1,0 +1,115 @@
+use std::sync::Arc;
+
+use rpc::Rpc;
+use store::Store;
+use tape_store::ops::MetaOps;
+use tape_protocol::Api;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
+use crate::core::config::StateConfig;
+use crate::core::context::NodeContext;
+use crate::core::error::NodeError;
+use crate::core::types::ChannelName;
+use crate::features::replay::types::ReplayBatch;
+use crate::features::state::apply::apply_slot;
+
+pub struct StateManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: StateConfig,
+    rx: mpsc::Receiver<ReplayBatch>,
+    cancel: CancellationToken,
+}
+
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockchain> {
+    pub fn new(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        config: StateConfig,
+        rx: mpsc::Receiver<ReplayBatch>,
+        cancel: CancellationToken,
+    ) -> Self {
+        Self {
+            context,
+            config,
+            rx,
+            cancel,
+        }
+    }
+
+    pub async fn run(mut self) -> Result<(), NodeError> {
+        debug!(
+            node_id = self.context.node_id().0,
+            config = ?self.config,
+            "state manager started"
+        );
+
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => return Ok(()),
+                received = self.rx.recv() => {
+                    let Some(batch) = received else {
+                        return if self.cancel.is_cancelled() {
+                            Ok(())
+                        } else {
+                            Err(NodeError::ChannelClosed { channel: ChannelName::StateManager })
+                        };
+                    };
+
+                    persist_batch(self.context.store.as_ref(), &batch)?;
+                }
+            }
+        }
+    }
+}
+
+fn persist_batch<Db: Store>(store: &tape_store::TapeStore<Db>, batch: &ReplayBatch) -> Result<(), NodeError> {
+    apply_slot(store, batch.slot, &batch.events)?;
+    store.set_sync_cursor(batch.slot).map_err(|error| {
+        NodeError::Store(format!("set_sync_cursor: {error}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use store_memory::MemoryStore;
+    use tape_core::snapshot::ReplayableEvent;
+    use tape_core::types::SlotNumber;
+    use tape_store::ops::MetaOps;
+    use tape_store::TapeStore;
+
+    use super::persist_batch;
+    use crate::features::replay::types::ReplayBatch;
+
+    fn test_store() -> TapeStore<MemoryStore> {
+        TapeStore::new(MemoryStore::new())
+    }
+
+    #[test]
+    fn persist_batch_advances_cursor_for_empty_slots() {
+        let store = test_store();
+        let batch = ReplayBatch {
+            slot: SlotNumber(99),
+            events: Vec::new(),
+        };
+
+        persist_batch(&store, &batch).unwrap();
+
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(99)));
+    }
+
+    #[test]
+    fn persist_batch_only_advances_cursor_after_successful_apply() {
+        let store = test_store();
+        let batch = ReplayBatch {
+            slot: SlotNumber(77),
+            events: vec![ReplayableEvent::RegisterTrack {
+                track: [0x11; 32],
+                event_data: vec![0x22; 8],
+            }],
+        };
+
+        assert!(persist_batch(&store, &batch).is_err());
+        assert_eq!(store.get_sync_cursor().unwrap(), None);
+    }
+}

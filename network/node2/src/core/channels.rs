@@ -6,6 +6,7 @@ use crate::core::config::ChannelConfig;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::replay::types::ReplayBatch;
 
 #[derive(Clone)]
 pub struct DownstreamSenders {
@@ -53,4 +54,20 @@ pub async fn send_block(
         .send(block)
         .await
         .map_err(|_| NodeError::ChannelSend { channel })
+}
+
+pub fn state_channel(config: &ChannelConfig) -> (mpsc::Sender<ReplayBatch>, mpsc::Receiver<ReplayBatch>) {
+    mpsc::channel(config.replay_batch_capacity)
+}
+
+pub async fn send_replay_batch(
+    sender: &mpsc::Sender<ReplayBatch>,
+    batch: ReplayBatch,
+) -> Result<(), NodeError> {
+    sender
+        .send(batch)
+        .await
+        .map_err(|_| NodeError::ChannelSend {
+            channel: ChannelName::StateManager,
+        })
 }
