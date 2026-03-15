@@ -41,28 +41,38 @@ pub enum ContextError {
 ///
 /// Generic over storage backend `Db`, cluster API `Cluster`, and RPC `Blockchain`.
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
-    /// Node configuration.
-    pub config: Arc<NodeConfig>,
-    /// This node's authority keypair.
-    pub keypair: Arc<Keypair>,
-    /// BLS private key for committee signing.
-    pub bls_keypair: Arc<BlsPrivateKey>,
-    /// Typed storage layer.
-    pub store: Arc<TapeStore<Db>>,
-    /// Runtime statistics (atomic counters).
-    pub stats: RuntimeStats,
-    /// RPC client for on-chain operations.
-    pub rpc: Arc<RpcClient<Blockchain>>,
-    /// Shared protocol state (epoch, phase, committees, spools).
-    pub state: ArcSwap<ProtocolState>,
-    /// Peer manager for peer lookup, health tracking, and routing.
-    pub peer_manager: Arc<PeerManager>,
-    /// Tape network API.
-    pub api: Arc<Cluster>,
     /// Onchain unique id for this node after registration.
     node_id: NodeId,
+
     /// PDA-derived node account address (cached from authority keypair).
     node_address: Pubkey,
+
+    /// Node configuration.
+    pub config: Arc<NodeConfig>,
+
+    /// This node's authority keypair.
+    pub keypair: Arc<Keypair>,
+
+    /// BLS private key for committee signing.
+    pub bls_keypair: Arc<BlsPrivateKey>,
+
+    /// Typed storage layer.
+    pub store: Arc<TapeStore<Db>>,
+
+    /// Runtime statistics (atomic counters).
+    pub stats: RuntimeStats,
+
+    /// RPC client for on-chain operations.
+    pub rpc: Arc<RpcClient<Blockchain>>,
+
+    /// Shared protocol state (epoch, phase, committees, spools).
+    pub state: ArcSwap<ProtocolState>,
+
+    /// Peer manager for peer lookup, health tracking, and routing.
+    pub peer_manager: Arc<PeerManager>,
+
+    /// Tape network API.
+    pub api: Arc<Cluster>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {

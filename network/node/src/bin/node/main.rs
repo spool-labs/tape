@@ -39,7 +39,8 @@ async fn main() -> Result<()> {
     // Init tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
@@ -72,10 +73,11 @@ async fn main() -> Result<()> {
     // Load Solana keypair
     let keypair = load_node_keypair(&config).context("load node keypair")?;
     let bls_keypair = load_bls_keypair_from_config(&config).context("load BLS keypair")?;
+
     tracing::info!(name = %config.name, "starting node");
+    tracing::info!(path = %config.storage_path, "opening database");
 
     // Open RocksDB
-    tracing::info!(path = %config.storage_path, "opening database");
     let store = open_primary_store(&config).context("open primary store")?;
 
     // Initialize store metrics (registers tape_store_* families with prometheus)
@@ -85,10 +87,12 @@ async fn main() -> Result<()> {
     let rpc_url = cli
         .rpc_url
         .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+
     let rpc_config = RpcConfig {
         endpoints: vec![rpc_url.clone()],
         ..RpcConfig::default()
     };
+
     let rpc = RpcClient::new(rpc_config)
         .with_context(|| format!("failed to create RPC client for {rpc_url}"))?;
 
@@ -96,29 +100,31 @@ async fn main() -> Result<()> {
 
     // Build peer manager and API
     let peer_manager = Arc::new(PeerManager::new());
-    let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
+    let http_api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
 
     // Build context (includes startup node-id resolution from on-chain node account)
-    let context = NodeContextBuilder::new(
+    let ctx = NodeContextBuilder::new(
         config,
         keypair,
         bls_keypair,
         store,
         rpc,
         peer_manager,
-        api,
+        http_api,
     )
     .build()
     .await
     .context("build node context")?;
-    let node_id = context.node_id();
+
+    let node_id = ctx.node_id();
 
     // Cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
 
     // Signal handler
     let shutdown_cancel = cancel.clone();
-    let shutdown_span = tracing::info_span!("", node_id = node_id.0);
+    let shutdown_span = tracing::info_span!("", node_id = node_id.as_u64());
+
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
@@ -139,11 +145,12 @@ async fn main() -> Result<()> {
     }.instrument(shutdown_span));
 
     // Spawn the runtime
-    let handles = spawn_runtime(context, cancel.clone()).await;
+    let handles = spawn_runtime(ctx, cancel.clone()).await;
 
     // Await all runtime handles. If any task fails, trigger cancellation and
     // continue awaiting all remaining handles so none are dropped/detached.
     let mut join_set = tokio::task::JoinSet::new();
+
     join_set.spawn(watch_handle("ingestor", handles.ingestor));
     join_set.spawn(watch_handle("fsm", handles.fsm));
     join_set.spawn(watch_handle("scheduler", handles.scheduler));
@@ -177,6 +184,7 @@ async fn main() -> Result<()> {
         return Err(anyhow::anyhow!("runtime shutdown after failure: {error}"));
     }
 
-    tracing::info!(node_id = node_id.0, "node stopped");
+    tracing::info!(node_id = node_id.as_u64(), "node stopped");
+
     Ok(())
 }
