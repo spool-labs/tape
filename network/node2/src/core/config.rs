@@ -104,6 +104,15 @@ pub struct ReplayConfig;
 pub struct StateConfig;
 
 #[derive(Debug, Clone)]
+pub struct GcConfig {
+    pub enabled: bool,
+    pub scan_interval: Duration,
+    pub track_batch_size: usize,
+    pub slice_batch_size: usize,
+    pub locked_spool_retention_epochs: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub runtime: RuntimeConfig,
     pub node: NodeConfig,
@@ -115,6 +124,7 @@ pub struct AppConfig {
     pub snapshot: SnapshotConfig,
     pub replay: ReplayConfig,
     pub state: StateConfig,
+    pub gc: GcConfig,
 }
 
 impl AppConfig {
@@ -158,6 +168,13 @@ impl AppConfig {
             },
             replay: ReplayConfig,
             state: StateConfig,
+            gc: GcConfig {
+                enabled: true,
+                scan_interval: Duration::from_secs(60),
+                track_batch_size: 256,
+                slice_batch_size: 256,
+                locked_spool_retention_epochs: 4,
+            },
         })
     }
 }

@@ -3,11 +3,14 @@ use tape_api::event::TrackRegistered;
 use tape_core::snapshot::ReplayableEvent;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
+use crate::features::state::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
+
+const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
 pub fn apply_slot<Db: Store>(
     store: &TapeStore<Db>,
@@ -37,7 +40,7 @@ pub fn apply_event<Db: Store>(
             set_certified(store, Pubkey(*track), *epoch)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track(store, Pubkey(*track))?;
+            delete_track_local(store, Pubkey(*track))?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, Pubkey(*track), *epoch, slot)?;
@@ -55,7 +58,7 @@ pub fn apply_event<Db: Store>(
                 .map_err(store_error)?;
         }
         ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape(store, Pubkey(*tape))?;
+            delete_tape_local(store, Pubkey(*tape), DELETE_TAPE_BATCH_SIZE)?;
         }
         ReplayableEvent::AdvanceEpoch { .. }
         | ReplayableEvent::SyncEpoch { .. }
@@ -134,15 +137,6 @@ fn set_certified<Db: Store>(
     Ok(())
 }
 
-fn delete_track<Db: Store>(store: &TapeStore<Db>, track: Pubkey) -> Result<(), NodeError> {
-    if let Some(info) = store.get_track(track).map_err(store_error)? {
-        cleanup_slices(store, track, info.spool_group)?;
-    }
-
-    store.delete_track(track).map_err(store_error)?;
-    store.delete_object_info(track).map_err(store_error)
-}
-
 fn invalidate_track<Db: Store>(
     store: &TapeStore<Db>,
     track: Pubkey,
@@ -150,54 +144,12 @@ fn invalidate_track<Db: Store>(
     slot: SlotNumber,
 ) -> Result<(), NodeError> {
     if let Some(info) = store.get_track(track).map_err(store_error)? {
-        cleanup_slices(store, track, info.spool_group)?;
+        cleanup_track_slices(store, track, info.spool_group)?;
     }
 
     store
         .put_object_info(track, ObjectInfo::Invalid { epoch, slot })
         .map_err(store_error)
-}
-
-fn delete_tape<Db: Store>(store: &TapeStore<Db>, tape: Pubkey) -> Result<(), NodeError> {
-    let mut cursor = None;
-
-    loop {
-        let tracks = store.iter_tracks_from(cursor, 100).map_err(store_error)?;
-
-        if tracks.is_empty() {
-            break;
-        }
-
-        for (track, info) in &tracks {
-            if info.tape_address == tape {
-                cleanup_slices(store, *track, info.spool_group)?;
-                store.delete_track(*track).map_err(store_error)?;
-                store.delete_object_info(*track).map_err(store_error)?;
-            }
-        }
-
-        cursor = tracks.last().map(|(track, _)| *track);
-    }
-
-    store.delete_tape(tape).map_err(store_error)
-}
-
-fn cleanup_slices<Db: Store>(
-    store: &TapeStore<Db>,
-    track: Pubkey,
-    spool_group: SpoolGroup,
-) -> Result<(), NodeError> {
-    let spools = store.iter_all_spools().map_err(store_error)?;
-    for (spool_id, _) in spools {
-        if spool_group.contains(spool_id) {
-            store.delete_slice(spool_id, track).map_err(store_error)?;
-            store
-                .remove_pending_recovery(spool_id, track)
-                .map_err(store_error)?;
-        }
-    }
-
-    Ok(())
 }
 
 fn store_error(error: impl std::fmt::Display) -> NodeError {

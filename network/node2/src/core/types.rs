@@ -8,6 +8,7 @@ pub enum ServiceName {
     SnapshotManager,
     ReplayManager,
     StateManager,
+    GcManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

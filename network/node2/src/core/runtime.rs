@@ -14,6 +14,7 @@ use crate::core::supervisor::Supervisor;
 use crate::core::types::ServiceName;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::epoch::manager::EpochManager;
+use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::replay::manager::ReplayManager;
 use crate::features::snapshot::manager::SnapshotManager;
@@ -124,7 +125,12 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     supervisor.spawn(
         ServiceName::StateManager,
-        StateManager::new(context, config.state.clone(), state_rx, cancel).run(),
+        StateManager::new(context.clone(), config.state.clone(), state_rx, cancel.clone()).run(),
+    );
+
+    supervisor.spawn(
+        ServiceName::GcManager,
+        GcManager::new(context, config.gc.clone(), cancel).run(),
     );
 
     supervisor.supervise().await

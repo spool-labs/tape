@@ -33,6 +33,7 @@ impl StateBus {
             .map_err(|_| NodeError::StatePublish)
     }
 
+    /// Block until published protocol state reaches the requested epoch.
     pub async fn wait_for_epoch(
         &self,
         epoch: EpochNumber,
