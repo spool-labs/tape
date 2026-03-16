@@ -69,7 +69,6 @@ mod tests {
         let addr = Pubkey::new_unique();
 
         let info = ObjectInfo::Valid {
-            is_stored: true,
             track_address: Pubkey::new_unique(),
             registered_epoch: EpochNumber(5),
             certified_epoch: Some(EpochNumber(6)),

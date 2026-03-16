@@ -18,7 +18,7 @@ use rocksdb;
 /// Returns a vector of `ColumnFamilyDescriptor` instances, one for each column family
 /// in the tape-store. Each CF is configured based on its access patterns and data characteristics.
 ///
-/// # Column Family Configurations (11 total)
+/// # Column Family Configurations (12 total)
 ///
 /// ## Metadata Columns
 /// - `meta` - String keys, arbitrary values (BlockBased)
@@ -32,6 +32,7 @@ use rocksdb;
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
 /// - `spool_status` - 2-byte SpoolIndexKey (PlainTable)
+/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
 /// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix (BlockBased)
 /// - `spool_sync_cursor` - 2-byte SpoolIndexKey (PlainTable)
 ///
@@ -72,6 +73,13 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
         // Spool status - 2-byte SpoolIndexKey (PlainTable)
         ColumnFamilyConfig::new("spool_status")
             .with_plain_table(2)
+            .build(),
+
+        // Spool pending repair - 34-byte SliceKey
+        // 2-byte spool prefix for iteration by spool
+        ColumnFamilyConfig::new("spool_pending_repair")
+            .with_block_based()
+            .with_prefix_extractor(2)
             .build(),
 
         // Spool pending recovery - 34-byte SliceKey
@@ -149,7 +157,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 11);
+        assert_eq!(configs.len(), 12);
     }
 
     #[test]
@@ -165,6 +173,7 @@ mod tests {
             "sync_cursor",
             "gc",
             "spool_status",
+            "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
             "spool_sync_cursor",

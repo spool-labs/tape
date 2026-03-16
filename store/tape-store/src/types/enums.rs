@@ -18,7 +18,6 @@ pub enum ObjectInfo {
     },
     /// Object is valid
     Valid {
-        is_stored: bool,
         track_address: Pubkey,
         registered_epoch: EpochNumber,
         certified_epoch: Option<EpochNumber>,
@@ -42,14 +41,12 @@ mod tests {
                 slot: SlotNumber(100),
             },
             ObjectInfo::Valid {
-                is_stored: true,
                 track_address: Pubkey::new([1u8; 32]),
                 registered_epoch: EpochNumber(5),
                 certified_epoch: Some(EpochNumber(6)),
                 slot: SlotNumber(50),
             },
             ObjectInfo::Valid {
-                is_stored: false,
                 track_address: Pubkey::new([2u8; 32]),
                 registered_epoch: EpochNumber(7),
                 certified_epoch: None,

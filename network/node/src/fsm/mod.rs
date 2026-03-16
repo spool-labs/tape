@@ -213,58 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn slice_accepted() {
-        let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
-
-        let track = Pubkey::new_unique();
-        let tape = Pubkey::new_unique();
-        let block = make_block(100, vec![make_register_track(track, tape, 1)]);
-        fsm.apply(&block).unwrap();
-
-        // Verify is_stored starts false
-        let store_track: StorePubkey = track.into();
-        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
-        assert!(matches!(obj, ObjectInfo::Valid { is_stored: false, .. }));
-
-        // Apply SliceAccepted
-        fsm.apply_event(&RuntimeEvent::SliceAccepted { track, spool: 0 })
-            .unwrap();
-
-        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
-        assert!(matches!(obj, ObjectInfo::Valid { is_stored: true, .. }));
-    }
-
-    #[test]
-    fn slice_accepted_idempotent() {
-        let ctx = test_context();
-        let mut fsm = Fsm::new(ctx.clone());
-
-        let track = Pubkey::new_unique();
-        let tape = Pubkey::new_unique();
-        let block = make_block(100, vec![make_register_track(track, tape, 1)]);
-        fsm.apply(&block).unwrap();
-
-        let event = RuntimeEvent::SliceAccepted { track, spool: 0 };
-        fsm.apply_event(&event).unwrap();
-        fsm.apply_event(&event).unwrap();
-
-        let store_track: StorePubkey = track.into();
-        let obj = ctx.store.get_object_info(store_track).unwrap().unwrap();
-        assert!(matches!(obj, ObjectInfo::Valid { is_stored: true, .. }));
-    }
-
-    #[test]
-    fn slice_accepted_missing() {
-        let ctx = test_context();
-        let fsm = Fsm::new(ctx);
-
-        let track = Pubkey::new_unique();
-        let event = RuntimeEvent::SliceAccepted { track, spool: 0 };
-        fsm.apply_event(&event).unwrap(); // no-op, no error
-    }
-
-    #[test]
     fn advance_epoch() {
         let ctx = test_context();
         let mut fsm = Fsm::new(ctx.clone());
@@ -301,7 +249,6 @@ mod tests {
         assert!(matches!(
             obj,
             ObjectInfo::Valid {
-                is_stored: false,
                 registered_epoch,
                 certified_epoch: None,
                 ..

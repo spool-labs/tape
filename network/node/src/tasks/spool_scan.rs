@@ -183,7 +183,6 @@ mod tests {
 
     fn valid_object(addr: StorePubkey) -> ObjectInfo {
         ObjectInfo::Valid {
-            is_stored: true,
             track_address: addr,
             registered_epoch: EpochNumber(1),
             certified_epoch: None,

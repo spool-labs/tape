@@ -92,7 +92,6 @@ fn all_column_families() {
     // Object info
     let object_address = Pubkey::new_unique();
     let object_info = ObjectInfo::Valid {
-        is_stored: true,
         track_address,
         registered_epoch: EpochNumber(5),
         certified_epoch: Some(EpochNumber(6)),
@@ -275,6 +274,35 @@ fn pending_recovery_operations() {
 }
 
 #[test]
+fn pending_repair_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test_db");
+
+    let store = TapeStore::open_primary(&db_path).unwrap();
+
+    let spool_id = 42;
+    let track1 = Pubkey::new_unique();
+    let track2 = Pubkey::new_unique();
+    let track3 = Pubkey::new_unique();
+
+    store.add_pending_repair(spool_id, track1).unwrap();
+    store.add_pending_repair(spool_id, track2).unwrap();
+    store.add_pending_repair(spool_id, track3).unwrap();
+
+    assert!(store.has_pending_repair(spool_id, track1).unwrap());
+    assert!(store.has_pending_repair(spool_id, track2).unwrap());
+    assert!(store.has_pending_repair(spool_id, track3).unwrap());
+
+    let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
+    assert_eq!(pending.len(), 3);
+
+    store.remove_pending_repair(spool_id, track1).unwrap();
+    assert!(!store.has_pending_repair(spool_id, track1).unwrap());
+    assert!(store.has_pending_repair(spool_id, track2).unwrap());
+    assert!(store.has_pending_repair(spool_id, track3).unwrap());
+}
+
+#[test]
 fn slice_operations() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_db");
@@ -346,7 +374,6 @@ fn object_info_operations() {
 
     // Overwrite with Valid
     let info = ObjectInfo::Valid {
-        is_stored: true,
         track_address: Pubkey::new_unique(),
         registered_epoch: EpochNumber(5),
         certified_epoch: Some(EpochNumber(6)),

@@ -15,33 +15,6 @@ use tape_core::snapshot::ReplayableEvent;
 use super::{Fsm, FsmError, StateChange};
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
-    pub fn handle_slice_accepted(&self, track: Pubkey, _spool: u16) -> Result<(), FsmError> {
-        let key: StorePubkey = track.into();
-        let Some(obj) = self.context.store.get_object_info(key)? else {
-            return Ok(());
-        };
-        if let ObjectInfo::Valid {
-            is_stored: false,
-            track_address,
-            registered_epoch,
-            certified_epoch,
-            slot,
-        } = obj
-        {
-            self.context.store.put_object_info(
-                key,
-                ObjectInfo::Valid {
-                    is_stored: true,
-                    track_address,
-                    registered_epoch,
-                    certified_epoch,
-                    slot,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
     pub fn handle_advance_epoch(
         &mut self,
         event: &EpochAdvanced,

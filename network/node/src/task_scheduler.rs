@@ -1562,7 +1562,6 @@ mod tests {
         ctx.store.put_object_info(
             store_track,
             ObjectInfo::Valid {
-                is_stored: false,
                 track_address: store_track,
                 registered_epoch: EpochNumber(1),
                 certified_epoch: None,

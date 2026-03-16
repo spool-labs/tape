@@ -7,9 +7,9 @@
 //! - Track info: Blob metadata with spool allocation and commitments
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
-//! - Spool state: Spool status, sync progress, pending recovery
+//! - Spool state: Spool status, sync progress, pending repair/recovery
 //!
-//! # Column Families (10 total)
+//! # Column Families (11 total)
 //!
 //! ## Metadata Columns
 //! - `meta`: Node configuration and metadata
@@ -23,6 +23,7 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status
+//! - `spool_pending_repair`: Pending repair queue
 //! - `spool_pending_recovery`: Pending recovery queue
 //! - `spool_sync_cursor`: Sync cursor
 //!
@@ -162,7 +163,6 @@ mod tests {
         let address = Pubkey::new_unique();
 
         let info = ObjectInfo::Valid {
-            is_stored: true,
             track_address: Pubkey::new_unique(),
             registered_epoch: EpochNumber(5),
             certified_epoch: Some(EpochNumber(6)),

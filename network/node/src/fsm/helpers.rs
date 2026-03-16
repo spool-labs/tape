@@ -35,7 +35,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         self.context.store.put_object_info(
             track,
             ObjectInfo::Valid {
-                is_stored: false,
                 track_address: track,
                 registered_epoch: event.epoch,
                 certified_epoch: None,
@@ -56,7 +55,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
         };
 
         if let ObjectInfo::Valid {
-            is_stored,
             track_address,
             registered_epoch,
             slot,
@@ -65,7 +63,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
             self.context.store.put_object_info(
                 track,
                 ObjectInfo::Valid {
-                    is_stored,
                     track_address,
                     registered_epoch,
                     certified_epoch: Some(epoch),

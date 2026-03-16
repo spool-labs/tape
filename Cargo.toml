@@ -51,7 +51,6 @@ default-members = [
   "store/store-rocks",
   "store/tape-store",
   "lib/metrics",
-  "network/node",
   "network/node2",
   "network/peer-manager",
   "network/peer-memory",

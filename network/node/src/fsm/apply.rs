@@ -78,7 +78,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Fsm<Db, Cluster, Blockchain> {
     /// Apply a runtime event (e.g. slice accepted by HTTP handler).
     pub fn apply_event(&self, event: &RuntimeEvent) -> Result<(), FsmError> {
         match event {
-            RuntimeEvent::SliceAccepted { track, spool } => self.handle_slice_accepted(*track, *spool),
+            RuntimeEvent::SliceAccepted { .. } => Ok(()),
         }
     }
 

@@ -65,7 +65,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     store.put_object_info(
         obj_address,
         ObjectInfo::Valid {
-            is_stored: true,
             track_address,
             registered_epoch: EpochNumber(5),
             certified_epoch: Some(EpochNumber(6)),
