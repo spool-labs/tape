@@ -52,7 +52,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotFound)?;
 
     let output = extract_repair_data(&track_info, request.helper_spool, &request, &helper_slice)
-        .map_err(RouteError::BadRequest)?;
+        .map_err(|error| RouteError::BadRequest(error.to_string()))?;
 
     Ok((
         StatusCode::OK,

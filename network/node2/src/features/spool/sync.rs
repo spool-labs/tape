@@ -127,13 +127,13 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     }
 
                     if let Some(track_info) = context.store.get_track(track).map_err(store_error)? {
-                        if let Err(reason) =
+                        if let Err(error) =
                             validate_slice_entry(work.spool_id, &track_info, &entry.slice_data)
                         {
                             debug!(
                                 spool_id = work.spool_id,
                                 track = %Pubkey::from(track),
-                                reason,
+                                reason = %error,
                                 "skipping invalid synced slice"
                             );
                             continue;

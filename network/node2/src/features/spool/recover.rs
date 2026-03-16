@@ -140,7 +140,7 @@ async fn recover_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
             &track_info,
             recovered,
         )
-        .map_err(NodeError::Store)?;
+        .map_err(|error| NodeError::Store(error.to_string()))?;
         return Ok(TrackRecovery::Recovered);
     }
 
@@ -154,7 +154,7 @@ async fn recover_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
             &track_info,
             recovered,
         )
-        .map_err(NodeError::Store)?;
+        .map_err(|error| NodeError::Store(error.to_string()))?;
         return Ok(TrackRecovery::Recovered);
     }
 
