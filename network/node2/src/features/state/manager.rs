@@ -65,6 +65,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
 
 fn persist_batch<Db: Store>(store: &tape_store::TapeStore<Db>, batch: &ReplayBatch) -> Result<(), NodeError> {
     apply_slot(store, batch.slot, &batch.events)?;
+
     store.set_sync_cursor(batch.slot).map_err(|error| {
         NodeError::Store(format!("set_sync_cursor: {error}"))
     })

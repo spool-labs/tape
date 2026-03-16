@@ -48,8 +48,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let message = InvalidateMessage::new(epoch, track.to_bytes(), request.proof.observed_root.into());
     let signature = state
         .context
-        .bls_keypair
-        .sign(&message.to_bytes())
+        .bls_sign(&message.to_bytes())
         .map_err(|error| RouteError::Internal(format!("bls sign: {error:?}")))?;
 
     let response = BlsInconsistencyResponse {

@@ -23,6 +23,7 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
+
     let epoch = current_epoch(&state)?;
     let (track, track_key) = parse_track_key(&track_id)?;
 
@@ -51,10 +52,10 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let message = CertifyMessage::new(epoch, track.to_bytes(), track_info.commitment_root().into());
+
     let signature = state
         .context
-        .bls_keypair
-        .sign(&message.to_bytes())
+        .bls_sign(&message.to_bytes())
         .map_err(|error| RouteError::Internal(format!("bls sign: {error:?}")))?;
 
     let response = BlsSignResponse {
@@ -78,6 +79,7 @@ pub async fn put_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((epoch, chunk_index)): Path<(u64, u64)>,
     body: Bytes,
 ) -> Result<StatusCode, RouteError> {
+
     let request: SnapshotSignatureSubmission =
         deserialize_body(&body, "snapshot signature submission")?;
     let epoch = EpochNumber(epoch);

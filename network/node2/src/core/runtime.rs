@@ -22,7 +22,8 @@ use crate::features::spool::manager::SpoolManager;
 use crate::features::state::manager::StateManager;
 
 pub fn init_tracing() -> Result<(), NodeError> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -80,24 +81,43 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     supervisor.spawn(
         ServiceName::HttpServer,
-        HttpServer::new(context.clone(), config.http.clone(), cancel.clone()).run(),
+        HttpServer::new(
+            context.clone(),
+            config.http.clone(),
+            cancel.clone()
+        ).run(),
     );
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
-        BlockIngestor::new(context.clone(), config.block.clone(), senders, cancel.clone()).run(),
+        BlockIngestor::new(
+            context.clone(),
+            config.block.clone(),
+            senders,
+            cancel.clone()
+        ).run(),
     );
 
     supervisor.spawn(
         ServiceName::EpochManager,
-        EpochManager::new(context.clone(), config.epoch.clone(), receivers.epoch, cancel.clone())
-            .run(),
+        EpochManager::new(
+            context.clone(),
+            config.epoch.clone(),
+            receivers.epoch,
+            cancel.clone()
+        )
+        .run(),
     );
 
     supervisor.spawn(
         ServiceName::SpoolManager,
-        SpoolManager::new(context.clone(), config.spool.clone(), receivers.spool, cancel.clone())
-            .run(),
+        SpoolManager::new(
+            context.clone(), 
+            config.spool.clone(), 
+            receivers.spool,
+            cancel.clone()
+        )
+        .run(),
     );
 
     supervisor.spawn(
@@ -125,12 +145,21 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     supervisor.spawn(
         ServiceName::StateManager,
-        StateManager::new(context.clone(), config.state.clone(), state_rx, cancel.clone()).run(),
+        StateManager::new(
+            context.clone(),
+            config.state.clone(),
+            state_rx, 
+            cancel.clone()
+        ).run(),
     );
 
     supervisor.spawn(
         ServiceName::GcManager,
-        GcManager::new(context, config.gc.clone(), cancel).run(),
+        GcManager::new(
+            context, 
+            config.gc.clone(),
+            cancel
+        ).run(),
     );
 
     supervisor.supervise().await

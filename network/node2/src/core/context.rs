@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use solana_sdk::signature::Keypair;
+use solana_sdk::signature::{Keypair, Signature};
 use solana_sdk::signer::Signer;
 
 use peer_manager::{PeerManager, PeerManagerError};
@@ -11,11 +11,12 @@ use rpc_solana::SolanaRpc;
 use store::Store;
 use store_rocks::RocksStore;
 use tape_api::program::tapedrive::node_pda;
-use tape_core::bls::BlsPrivateKey;
+use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_crypto::Pubkey;
+use tape_crypto::bls12254::BLSError;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::TapeStore;
 use tape_store::ops::MetaOps;
@@ -28,29 +29,42 @@ use crate::core::state::StateBus;
 pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
 
 pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
-    node_id: NodeId,
-    node_address: Pubkey,
     pub config: Arc<NodeConfig>,
-    pub keypair: Arc<Keypair>,
-    pub bls_keypair: Arc<BlsPrivateKey>,
     pub store: Arc<TapeStore<Db>>,
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub state: StateBus,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
+
+    node_id: NodeId,
+    node_address: Pubkey,
+    keypair: Arc<Keypair>,
+    bls_keypair: Arc<BlsPrivateKey>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
-    pub fn pubkey(&self) -> Pubkey {
-        self.keypair.pubkey()
-    }
-
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
 
     pub fn node_address(&self) -> Pubkey {
         self.node_address
+    }
+
+    pub fn pubkey(&self) -> Pubkey {
+        self.keypair.pubkey()
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Signature {
+        self.keypair.sign_message(message)
+    }
+
+    pub fn bls_pubkey(&self) -> BlsPubkey {
+        self.bls_keypair.public_key().expect("bls public key")
+    }
+
+    pub fn bls_sign(&self, message: &[u8]) -> Result<BlsSignature, BLSError> {
+        self.bls_keypair.sign(message)
     }
 
     pub fn state(&self) -> Arc<ProtocolState> {
