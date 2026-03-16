@@ -112,6 +112,62 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 }
 
+#[cfg(test)]
+pub mod test_utils {
+    use std::sync::Arc;
+
+    use peer_memory::MemoryApi;
+    use rpc_client::RpcClient;
+    use rpc_litesvm::LiteSvmRpc;
+    use solana_sdk::signature::Keypair;
+    use tape_api::program::tapedrive::node_pda;
+    use tape_core::bls::BlsPrivateKey;
+    use tape_core::types::NodeId;
+    use peer_manager::PeerManager;
+    use store_memory::MemoryStore;
+    use tape_store::TapeStore;
+
+    use super::*;
+
+    pub type TestContext = Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>;
+
+    pub fn test_context() -> TestContext {
+        test_context_with_api(MemoryApi::noop())
+    }
+
+    pub fn test_context_with_api(api: MemoryApi) -> TestContext {
+        let keypair = Keypair::new();
+        let bls = BlsPrivateKey::from_random();
+        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
+        let peer_manager = Arc::new(PeerManager::new());
+        let store = TapeStore::new(MemoryStore::new());
+        let (node_address, _) = node_pda(keypair.pubkey());
+
+        Arc::new(NodeContext {
+            node_id: NodeId(0),
+            node_address,
+            config: Arc::new(test_config()),
+            keypair: Arc::new(keypair),
+            bls_keypair: Arc::new(bls),
+            store: Arc::new(store),
+            rpc: Arc::new(rpc),
+            state: StateBus::default(),
+            peer_manager,
+            api: Arc::new(api),
+        })
+    }
+
+    fn test_config() -> NodeConfig {
+        NodeConfig {
+            node_keypair: String::new(),
+            bls_keypair: std::path::PathBuf::from("/dev/null"),
+            rpc_url: "http://localhost:8899".into(),
+            storage_path: "/tmp".into(),
+            start_slot: tape_core::types::SlotNumber(0),
+        }
+    }
+}
+
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,

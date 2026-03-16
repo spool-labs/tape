@@ -3,529 +3,258 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::system::SpoolState;
+use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
-use tape_crypto::Pubkey;
-use tape_protocol::{Api, ProtocolState};
-use tape_protocol::api::{GetSliceReq, RepairReq, RepairRes};
-use tape_slicer::{ClayCoder, ErasureCoder, RepairPlan, Slicer, SliceIndex, SliceMetadata};
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{ObjectInfo, Pubkey as StorePubkey, TrackInfo};
+use tape_protocol::Api;
+use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, Slicer};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::types::{Pubkey, TrackInfo};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::core::config::SpoolManagerConfig;
 use crate::core::context::NodeContext;
-use crate::core::error::NodeError;
-use crate::core::peer_call::call_peer;
-use crate::features::spool::repair::{build_per_helper_requests, persist_validated_slice};
-use crate::features::spool::types::{SpoolTaskSummary, SpoolWorkItem};
+use crate::features::spool::types::RecoverResult;
 
-struct GroupPeers {
-    current: HashMap<SpoolIndex, NodeId>,
-    previous: HashMap<SpoolIndex, NodeId>,
-}
+// Purpose: Full erasure code recovery for slices that could not be Clay-repaired.
+//          Drains the pending_recoveries queue populated by the Repair task.
+//
+// Algorithm:
+// 1. Load spool state. Derive group and our slice index.
+//    Build two peer maps (previous, current), same as repair.
+//
+// 2. Batch loop over store.iter_pending_recoveries(spool, batch_size):
+//
+//    For each track_address:
+//      a. Check cancellation.
+//      b. Skip if slice already present (has_slice). Remove from queue.
+//      c. Load track_info. If missing, remove from queue, continue.
+//
+//      d. Fetch k full slices (per-track: try prev_helpers first, then current):
+//         - Build ordered list of peer spools (excluding ours).
+//         - Try fetching all from previous peer map via call_peer + api.get_slice.
+//         - If we got >= k valid slices, proceed. Otherwise discard all and
+//           retry the entire set from the current peer map.
+//         - If still < k → track stays pending, continue.
+//
+//      e. Reconstruct:
+//         - ClayCoder::from_params(track_info.profile().clay_params())
+//         - Slicer::with_profile(coder, stripe_size, rotated=true, profile)
+//         - Parse SliceMetadata from any fetched slice to get chunk_index.
+//         - slicer.set_chunk_index(metadata.chunk_index)
+//         - decoded = slicer.decode(&slice_refs)
+//         - reencoded = slicer.encode(&decoded)
+//         - Extract reencoded[our_slice_index].
+//
+//      f. Validate against track_info.verify_slice(our_position, &data).
+//         If invalid → leave pending, continue.
+//
+//      g. Persist: store.put_slice(spool, track_address, data).
+//         Remove from pending_recoveries.
+//
+// 3. Count remaining. Return Done { remaining }.
+//
+// NOTE:  
+//
+// The spool relationships are:
+//   - SpoolGroup::of(spool) → group is derived from spool
+//   - group.slice_of(spool) → slice index is derived from spool + group
+//   - group.spool_at(slice) → spool is derived from group + slice
+//   
+//   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
+//   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
+//   The helpers should just take spool and derive what they need.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
-    work: SpoolWorkItem,
+    spool: SpoolIndex,
     cancel: &CancellationToken,
-) -> Result<SpoolTaskSummary, NodeError> {
-
-    let spool_state = match context.store.get_spool_state(work.spool_id).map_err(store_error)? {
-        Some(state) => state,
-        None => return Ok(SpoolTaskSummary::RecoverDone { remaining: 0 }),
-    };
-
-    let peers = build_peer_maps(&context.state(), &spool_state, work.spool_id);
-    let batch_size = config.recover_batch_size.max(1);
-
-    loop {
-        if cancel.is_cancelled() {
-            break;
-        }
-
-        let pending = context
-            .store
-            .iter_pending_recoveries(work.spool_id, batch_size)
-            .map_err(store_error)?;
-
-        if pending.is_empty() {
-            break;
-        }
-
-        let mut recovered = 0usize;
-
-        for track in pending {
-            if cancel.is_cancelled() {
-                break;
-            }
-
-            match recover_track(&context, config, &peers, work.spool_id, track, cancel).await? {
-                TrackRecovery::Recovered | TrackRecovery::AlreadyPresent | TrackRecovery::Stale => {
-                    context
-                        .store
-                        .remove_pending_recovery(work.spool_id, track)
-                        .map_err(store_error)?;
-                    recovered += 1;
-                }
-                TrackRecovery::Pending => {}
-            }
-        }
-
-        if recovered == 0 {
-            break;
-        }
-    }
-
-    let remaining = context
-        .store
-        .iter_pending_recoveries(work.spool_id, usize::MAX)
-        .map_err(store_error)?
-        .len();
-
-    info!(spool_id = work.spool_id, epoch = work.epoch.0, remaining, "spool recovery pass complete");
-
-    Ok(SpoolTaskSummary::RecoverDone { remaining })
+) -> RecoverResult {
+    todo!()
 }
 
-enum TrackRecovery {
-    Recovered,
-    AlreadyPresent,
-    Stale,
-    Pending,
+/// Fetch k full slices from a peer map for a given track.
+/// Returns collected (slice_index, data) pairs, or Err if < k available.
+async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    config: &SpoolManagerConfig,
+    spool: SpoolIndex,
+    k: usize,
+    peer_map: &HashMap<SpoolIndex, NodeId>,
+    track_addr: Pubkey,
+) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
+    todo!()
 }
 
-async fn recover_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    peers: &GroupPeers,
-    spool_id: SpoolIndex,
-    track: StorePubkey,
-    cancel: &CancellationToken,
-) -> Result<TrackRecovery, NodeError> {
-
-    if context.store.has_slice(spool_id, track).map_err(store_error)? {
-        return Ok(TrackRecovery::AlreadyPresent);
-    }
-
-    let Some(track_info) = context.store.get_track(track).map_err(store_error)? else {
-        return Ok(TrackRecovery::Stale);
-    };
-
-    let object = context.store
-        .get_object_info(track)
-        .map_err(store_error)?;
-
-    if !matches!(
-        object,
-        Some(ObjectInfo::Valid {
-            certified_epoch: Some(_),
-            ..
-        })
-    ) {
-        return Ok(TrackRecovery::Stale);
-    }
-
-    if let Some(recovered) =
-        try_repair(context, config, peers, spool_id, track, &track_info, cancel).await?
-    {
-        persist_validated_slice(
-            context.store.as_ref(),
-            spool_id,
-            track,
-            &track_info,
-            recovered,
-        )
-        .map_err(|error| NodeError::Store(error.to_string()))?;
-        return Ok(TrackRecovery::Recovered);
-    }
-
-    if let Some(recovered) =
-        try_full_recovery(context, config, peers, spool_id, track, &track_info, cancel).await?
-    {
-        persist_validated_slice(
-            context.store.as_ref(),
-            spool_id,
-            track,
-            &track_info,
-            recovered,
-        )
-        .map_err(|error| NodeError::Store(error.to_string()))?;
-        return Ok(TrackRecovery::Recovered);
-    }
-
-    Ok(TrackRecovery::Pending)
+/// Decode k peer slices back to the original blob, re-encode, extract our slice.
+fn reconstruct(
+    slicer: &mut Slicer<ClayCoder>,
+    lost: SliceIndex,
+    peer_slices: &[(SliceIndex, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
+    todo!()
 }
 
-async fn try_repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    peers: &GroupPeers,
-    spool_id: SpoolIndex,
-    track: StorePubkey,
-    track_info: &TrackInfo,
-    cancel: &CancellationToken,
-) -> Result<Option<Vec<u8>>, NodeError> {
-    let profile = track_info.profile();
-    if !profile.is_clay() {
-        return Ok(None);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peer_memory::MemoryApi;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::spooler::SpoolGroup;
+    use tape_core::types::EpochNumber;
+    use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
+    use tape_store::types::{SpoolState, SpoolStatus};
+
+    use crate::core::context::test_utils::{test_context, test_context_with_api};
+
+    const SPOOL: SpoolIndex = 5;
+
+    fn addr(n: u8) -> Pubkey {
+        Pubkey([n; 32])
     }
 
-    let spool_group = SpoolGroup::of(spool_id);
-    let Some(lost_index) = spool_group.slice_of(spool_id) else {
-        return Ok(None);
-    };
-
-    let available: Vec<SliceIndex> = peers
-        .current
-        .keys()
-        .chain(peers.previous.keys())
-        .filter_map(|peer_spool| spool_group.slice_of(*peer_spool))
-        .map(SliceIndex::new)
-        .collect();
-
-    if available.is_empty() {
-        return Ok(None);
-    }
-
-    let coder = ClayCoder::from_params(profile.clay_params());
-    let slicer = Slicer::with_profile(coder, track_info.stripe_size as usize, true, profile);
-    let plan = match slicer.repair_plan_from_params(
-        SliceIndex::new(lost_index),
-        &available,
-        track_info.original_size as usize,
-        track_info.stripe_size as usize,
-    ) {
-        Ok(plan) => plan,
-        Err(_) => return Ok(None),
-    };
-
-    let helper_requests = build_per_helper_requests(&plan, spool_group);
-    if helper_requests.is_empty() {
-        return Ok(None);
-    }
-
-    let mut helper_data = HashMap::new();
-    for (helper_index, stripes) in helper_requests {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
-
-        let helper_spool = spool_group.spool_at(*helper_index);
-        let request = RepairReq {
-            track: Pubkey::from(track),
-            helper_spool,
-            stripes,
-        };
-
-        if let Some(response) = request_repair_data(context, config, peers, track, helper_spool, request, cancel).await? {
-            helper_data.insert(helper_index, response.data);
+    fn clay_track(size: u64, slices: &[Vec<u8>]) -> TrackInfo {
+        let profile = EncodingProfile::clay_default();
+        let commitment = slices
+            .iter()
+            .map(|s| tape_crypto::merkle::hash_leaf(s))
+            .collect();
+        TrackInfo {
+            tape_address: Pubkey([0; 32]),
+            spool_group: SpoolGroup::of(SPOOL),
+            original_size: size,
+            stripe_size: 512,
+            stripe_count: (size + 511) / 512,
+            encoding_type: profile.encoding as u64,
+            encoding_params: profile.params,
+            commitment,
         }
     }
 
-    let required: Vec<SliceIndex> = required_helper_indices(&plan);
-    if !required.iter().all(|helper| helper_data.contains_key(helper)) {
-        return Ok(None);
+    fn recover_state(epoch: EpochNumber) -> SpoolState {
+        SpoolState::new(SpoolStatus::Recover, epoch)
     }
 
-    let metadata = SliceMetadata::with_profile(
-        track_info.original_size as usize,
-        track_info.stripe_size as usize,
-        profile,
-    );
+    #[tokio::test]
+    async fn empty_queue() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
 
-    match slicer.repair(&plan, &helper_data, &metadata.to_bytes()) {
-        Ok(recovered) => Ok(Some(recovered)),
-        Err(error) => {
-            debug!(
-                spool_id,
-                track = %Pubkey::from(track),
-                error = %error,
-                "clay repair failed"
-            );
-            Ok(None)
-        }
-    }
-}
-
-async fn try_full_recovery<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    peers: &GroupPeers,
-    spool_id: SpoolIndex,
-    track: StorePubkey,
-    track_info: &TrackInfo,
-    cancel: &CancellationToken,
-) -> Result<Option<Vec<u8>>, NodeError> {
-    let profile = track_info.profile();
-    if !profile.is_clay() {
-        return Ok(None);
+        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
     }
 
-    let spool_group = SpoolGroup::of(spool_id);
-    let Some(lost_index) = spool_group.slice_of(spool_id) else {
-        return Ok(None);
-    };
+    #[tokio::test]
+    async fn skip_present() {
+        let ctx = test_context();
+        let a = addr(1);
 
-    let coder = ClayCoder::from_params(profile.clay_params());
-    let mut slicer = Slicer::with_profile(coder, track_info.stripe_size as usize, true, profile);
-    let needed = slicer.k();
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
-    let mut peer_spools: Vec<SpoolIndex> = peers
-        .current
-        .keys()
-        .chain(peers.previous.keys())
-        .copied()
-        .collect();
-    peer_spools.sort_unstable();
-    peer_spools.dedup();
-
-    let mut full_slices = Vec::with_capacity(needed);
-    for peer_spool in peer_spools {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
-
-        if full_slices.len() >= needed {
-            break;
-        }
-
-        let request = GetSliceReq {
-            track: Pubkey::from(track),
-            spool: peer_spool,
-        };
-
-        if let Some(data) =
-            request_full_slice(context, config, peers, track, peer_spool, request, cancel).await?
-        {
-            if let Some(slice_index) = spool_group.slice_of(peer_spool) {
-                full_slices.push((SliceIndex::new(slice_index), data));
-            }
-        }
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        assert!(!ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
 
-    if full_slices.len() < needed {
-        warn!(
-            spool_id,
-            track = %Pubkey::from(track),
-            got = full_slices.len(),
-            need = needed,
-            "insufficient full slices for fallback"
+    #[tokio::test]
+    async fn full_recovery() {
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
         );
-        return Ok(None);
-    }
+        let payload = vec![0x42u8; 1024];
+        let slices = slicer.encode(&payload).unwrap();
+        let group = SpoolGroup::of(SPOOL);
+        let lost_pos = group.slice_of(SPOOL).unwrap();
+        let expected = slices[lost_pos].clone();
 
-    let metadata = SliceMetadata::from_slice(&full_slices[0].1)
-        .map_err(|error| NodeError::Store(format!("parse slice metadata: {error}")))?;
-
-    slicer.set_chunk_index(metadata.chunk_index);
-
-    let slice_refs: Vec<(usize, &[u8])> = full_slices
-        .iter()
-        .map(|(index, data)| (**index, data.as_slice()))
-        .collect();
-
-    let decoded = match slicer.decode(&slice_refs) {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            debug!(
-                spool_id,
-                track = %Pubkey::from(track),
-                error = %error,
-                "decode fallback failed"
-            );
-            return Ok(None);
-        }
-    };
-
-    let reencoded = match slicer.encode(&decoded) {
-        Ok(reencoded) => reencoded,
-        Err(error) => {
-            debug!(
-                spool_id,
-                track = %Pubkey::from(track),
-                error = %error,
-                "re-encode fallback failed"
-            );
-            return Ok(None);
-        }
-    };
-
-    Ok(reencoded.get(lost_index).cloned())
-}
-
-async fn request_repair_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    peers: &GroupPeers,
-    track: StorePubkey,
-    helper_spool: SpoolIndex,
-    request: RepairReq,
-    cancel: &CancellationToken,
-) -> Result<Option<RepairRes>, NodeError> {
-    for peer_node in peer_candidates(peers, helper_spool) {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
-
-        if !context.peer_manager.is_healthy(peer_node) {
-            continue;
-        }
-
-        let response = call_peer(
-            context.peer_manager.as_ref(),
-            config.peer_retry.clone(),
-            peer_node,
-            Some(cancel),
-            || {
-                let api = context.api.clone();
-                let request = request.clone();
-                async move { api.repair(peer_node, &request).await }
-            },
-        )
-        .await;
-
-        match response {
-            Ok(response) if !response.data.is_empty() => return Ok(Some(response)),
-            Ok(_) => {
-                debug!(
-                    track = %Pubkey::from(track),
-                    helper_spool,
-                    peer = peer_node.0,
-                    "empty repair response"
-                );
+        let slices_for_api = slices.clone();
+        let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
+            PeerReq::GetSlice(ref r) => {
+                let pos = group.slice_of(r.spool).unwrap();
+                PeerRes::GetSlice(Ok(GetSliceRes {
+                    data: slices_for_api[pos].clone(),
+                }))
             }
-            Err(error) => {
-                debug!(
-                    track = %Pubkey::from(track),
-                    helper_spool,
-                    peer = peer_node.0,
-                    error = %error,
-                    "repair request failed"
-                );
-            }
-        }
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store
+            .put_track(addr(1), clay_track(1024, &slices))
+            .unwrap();
+        ctx.store.add_pending_recovery(SPOOL, addr(1)).unwrap();
+
+        // todo: set up spool_state.prev_helpers or current peers so
+        // fetch_slices can find them. Then:
+        // let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        // assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        // assert_eq!(ctx.store.get_slice(SPOOL, addr(1)).unwrap().unwrap(), expected);
+        // assert!(!ctx.store.has_pending_recovery(SPOOL, addr(1)).unwrap());
+        todo!()
     }
 
-    Ok(None)
-}
+    #[tokio::test]
+    async fn insufficient_peers() {
+        let ctx = test_context(); // noop api returns errors
+        let a = addr(1);
 
-async fn request_full_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    peers: &GroupPeers,
-    track: StorePubkey,
-    peer_spool: SpoolIndex,
-    request: GetSliceReq,
-    cancel: &CancellationToken,
-) -> Result<Option<Vec<u8>>, NodeError> {
-    for peer_node in peer_candidates(peers, peer_spool) {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store
+            .put_track(a, clay_track(1024, &vec![vec![]; 20]))
+            .unwrap();
+        ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
-        if !context.peer_manager.is_healthy(peer_node) {
-            continue;
-        }
-
-        let response = call_peer(
-            context.peer_manager.as_ref(),
-            config.peer_retry.clone(),
-            peer_node,
-            Some(cancel),
-            || {
-                let api = context.api.clone();
-                let request = request.clone();
-                async move { api.get_slice(peer_node, &request).await }
-            },
-        )
-        .await;
-
-        match response {
-            Ok(response) if !response.data.is_empty() => return Ok(Some(response.data)),
-            Ok(_) => {
-                debug!(
-                    track = %Pubkey::from(track),
-                    peer_spool,
-                    peer = peer_node.0,
-                    "empty get_slice response"
-                );
-            }
-            Err(error) => {
-                debug!(
-                    track = %Pubkey::from(track),
-                    peer_spool,
-                    peer = peer_node.0,
-                    error = %error,
-                    "get_slice request failed"
-                );
-            }
-        }
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 1 });
+        assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
 
-    Ok(None)
-}
+    #[test]
+    fn reconstruct_roundtrip() {
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            2_000,
+            true,
+            profile,
+        );
+        slicer.set_chunk_index(42);
 
-fn build_peer_maps(
-    protocol_state: &ProtocolState,
-    spool_state: &SpoolState,
-    spool_id: SpoolIndex
-) -> GroupPeers {
+        let payload: Vec<u8> = (0..50_000).map(|i| (i % 251) as u8).collect();
+        let slices = slicer.encode(&payload).unwrap();
 
-    let spool_group = SpoolGroup::of(spool_id);
-    let current = protocol_state
-        .group_peers(spool_group)
-        .into_iter()
-        .filter(|(peer_spool, _)| *peer_spool != spool_id)
-        .collect();
+        let lost = SliceIndex::new(0);
+        let k = slicer.k();
+        let peer_slices: Vec<(SliceIndex, Vec<u8>)> = slices
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != *lost)
+            .take(k)
+            .map(|(i, data)| (SliceIndex::new(i), data.clone()))
+            .collect();
 
-    let mut previous = HashMap::new();
-
-    for (index, helper) in spool_state.prev_helpers.iter().enumerate().take(SPOOL_GROUP_SIZE) {
-        let peer_spool = spool_group.spool_at(index);
-        if peer_spool == spool_id {
-            continue;
-        }
-        if let Some(node_id) = helper {
-            previous.insert(peer_spool, *node_id);
-        }
+        let mut recovery_slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            2_000,
+            true,
+            profile,
+        );
+        let recovered = reconstruct(&mut recovery_slicer, lost, &peer_slices).unwrap();
+        assert_eq!(recovered, slices[*lost]);
     }
-
-    GroupPeers { current, previous }
-}
-
-fn peer_candidates(peers: &GroupPeers, peer_spool: SpoolIndex) -> Vec<NodeId> {
-    let mut output = Vec::new();
-
-    if let Some(node_id) = peers.previous.get(&peer_spool) {
-        output.push(*node_id);
-    }
-
-    if let Some(node_id) = peers.current.get(&peer_spool) {
-        if output.last().copied() != Some(*node_id) {
-            output.push(*node_id);
-        }
-    }
-
-    output
-}
-
-fn required_helper_indices(plan: &RepairPlan) -> Vec<SliceIndex> {
-    let mut required = Vec::new();
-    for stripe_repair in &plan.stripes {
-        for helper in &stripe_repair.helpers {
-            if !required.contains(&helper.slice) {
-                required.push(helper.slice);
-            }
-        }
-    }
-    required
-}
-
-fn store_error(error: impl std::fmt::Display) -> NodeError {
-    NodeError::Store(error.to_string())
 }

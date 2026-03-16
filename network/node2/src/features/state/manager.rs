@@ -2,29 +2,23 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::snapshot::ReplayableEvent;
 use tape_protocol::Api;
-use tape_store::ops::{MetaOps, SliceOps, TrackOps};
-use tape_store::types::Pubkey;
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::core::channels::send_spool_event;
 use crate::core::config::StateConfig;
 use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::replay::types::ReplayBatch;
-use crate::features::spool::types::SpoolEvent;
 use crate::features::state::apply::apply_slot;
 
 pub struct StateManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: StateConfig,
     rx: mpsc::Receiver<ReplayBatch>,
-    spool_tx: mpsc::Sender<SpoolEvent>,
     cancel: CancellationToken,
 }
 
@@ -33,14 +27,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: StateConfig,
         rx: mpsc::Receiver<ReplayBatch>,
-        spool_tx: mpsc::Sender<SpoolEvent>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
             config,
             rx,
-            spool_tx,
             cancel,
         }
     }
@@ -65,54 +57,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                     };
 
                     persist_batch(self.context.store.as_ref(), &batch)?;
-                    self.emit_missing_certified_slices(&batch).await?;
                 }
             }
         }
-    }
-
-    async fn emit_missing_certified_slices(&self, batch: &ReplayBatch) -> Result<(), NodeError> {
-        let owned_spools = self.context.my_spools();
-        if owned_spools.is_empty() {
-            return Ok(());
-        }
-
-        for event in &batch.events {
-            let ReplayableEvent::CertifyTrack { track, .. } = event else {
-                continue;
-            };
-
-            let track_key = Pubkey(*track);
-            let Some(track_info) = self.context.store.get_track(track_key).map_err(store_error)? else {
-                continue;
-            };
-
-            for spool_id in owned_spools.iter().copied() {
-                if !track_info.spool_group.contains(spool_id) {
-                    continue;
-                }
-
-                if self
-                    .context
-                    .store
-                    .has_slice(spool_id, track_key)
-                    .map_err(store_error)?
-                {
-                    continue;
-                }
-
-                send_spool_event(
-                    &self.spool_tx,
-                    SpoolEvent::MissingCertifiedSlice {
-                        spool_id,
-                        track: track_key,
-                    },
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -122,10 +69,6 @@ fn persist_batch<Db: Store>(store: &TapeStore<Db>, batch: &ReplayBatch) -> Resul
     store.set_sync_cursor(batch.slot).map_err(|error| {
         NodeError::Store(format!("set_sync_cursor: {error}"))
     })
-}
-
-fn store_error(error: impl std::fmt::Display) -> NodeError {
-    NodeError::Store(error.to_string())
 }
 
 #[cfg(test)]

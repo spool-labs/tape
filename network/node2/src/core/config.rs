@@ -71,7 +71,6 @@ pub struct HttpConfig {
 pub struct ChannelConfig {
     pub parsed_block_capacity: usize,
     pub replay_batch_capacity: usize,
-    pub spool_event_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -90,9 +89,24 @@ pub struct SpoolManagerConfig {
     pub max_parallel_spools: usize,
     pub sync_batch_size: usize,
     pub scan_batch_size: usize,
+    pub repair_batch_size: usize,
     pub recover_batch_size: usize,
     pub locked_spool_retention_epochs: u64,
     pub peer_retry: RetryConfig,
+}
+
+impl Default for SpoolManagerConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel_spools: 4,
+            sync_batch_size: 100,
+            scan_batch_size: 100,
+            repair_batch_size: 10,
+            recover_batch_size: 10,
+            locked_spool_retention_epochs: 4,
+            peer_retry: RetryConfig::five(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -151,7 +165,6 @@ impl AppConfig {
             channels: ChannelConfig {
                 parsed_block_capacity: 256,
                 replay_batch_capacity: 256,
-                spool_event_capacity: 256,
             },
             block: BlockIngestorConfig {
                 start_slot: node.start_slot,
@@ -164,6 +177,7 @@ impl AppConfig {
                 max_parallel_spools: worker_threads.clamp(4, 64),
                 sync_batch_size: 100,
                 scan_batch_size: 100,
+                repair_batch_size: 10,
                 recover_batch_size: 10,
                 locked_spool_retention_epochs: 4,
                 peer_retry: RetryConfig::five(),

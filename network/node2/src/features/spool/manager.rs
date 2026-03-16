@@ -1,14 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::{EpochNumber, NodeId};
-use tape_protocol::{Api, ProtocolState};
+use tape_core::spooler::SpoolIndex;
+use tape_core::types::EpochNumber;
+use tape_protocol::Api;
 use tape_store::ops::SpoolOps;
-use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -16,294 +14,168 @@ use tracing::{debug, info, warn};
 use crate::core::config::SpoolManagerConfig;
 use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::core::types::{ChannelName, ServiceName};
-use crate::features::spool::planner::desired_work;
-use crate::features::spool::reducer::apply_event;
-use crate::features::spool::types::{SpoolAssignment, SpoolEvent, SpoolTaskSummary, SpoolWorkItem};
-use crate::features::spool::worker::run_spool_worker;
+use crate::features::spool::types::WorkerDone;
 
-struct ActiveWorker {
-    work: SpoolWorkItem,
-    cancel: CancellationToken,
-}
+// Spool Manager
+//
+// Owns up to 50 concurrent spool workers (one per assigned spool).
+// Each worker runs one step of the FSM for its spool (Sync, Scan, Repair, or Recover).
+//
+// Inputs:
+//   - watch::Receiver<ProtocolState> — epoch/phase changes from the epoch manager.
+//
+// Lifecycle:
+//   1. On startup, read current protocol state to determine our assigned spools.
+//      For each spool, read persisted SpoolState from the store to determine
+//      which FSM step to run. Spawn initial workers.
+//
+//   2. Main loop selects on:
+//      a. cancel — shutdown.
+//      b. state_rx.changed() — epoch advanced.
+//         - If epoch changed: cancel all workers for the old epoch, wait for
+//           them to complete (they check cancellation at batch boundaries),
+//           then re-plan: compute new spool assignments, read persisted state,
+//           spawn new workers.
+//      c. join_set.join_next() — a worker completed.
+//         - Apply the FSM transition based on the WorkerDone result.
+//         - Update the spool's persisted SpoolState.
+//         - If the FSM produces a follow-up task (e.g. Scan→Repair), spawn
+//           a new worker for that spool immediately.
+//
+// Worker management:
+//   - `workers: HashMap<SpoolIndex, CancellationToken>` — tracks which spools
+//     have an active worker and provides a handle to cancel them individually.
+//   - `join_set: JoinSet<WorkerDone>` — collects worker futures for completion
+//     notification.
+//   - Workers are keyed by (spool, epoch). If the epoch changes, all existing
+//     workers are cancelled because spool ownership may have changed.
+//
+// Epoch transition:
+//   1. Cancel all running workers (drop their CancellationTokens or call cancel).
+//   2. Drain join_set to collect any completions (results are discarded since
+//      the epoch they belong to is no longer current).
+//   3. Compute new spool assignments from the updated ProtocolState.
+//   4. For each newly owned spool:
+//      - If we already had it last epoch and it was Active → Scan (re-verify).
+//      - If it's new to us → Sync (fetch from previous owner).
+//      - If it was mid-lifecycle (Scan/Repair/Recover) → restart from Scan.
+//      Read the persisted SpoolState to decide. The FSM epoch event rules
+//      in fsm.rs govern this.
+//   5. For each spool we no longer own:
+//      - Mark as LockedToMove in the store. Data is retained for
+//        `locked_spool_retention_epochs` to serve repair requests from
+//        the new owner.
+//   6. Spawn workers for all owned spools.
+//
+// FSM transitions on worker completion:
+//   See fsm.rs for the full table. Key transitions:
+//
+//   Sync  + Done          → set Scan, spawn scan worker
+//   Sync  + Unavailable   → set Scan, spawn scan worker
+//   Scan  + Done { 0 }    → set Active, no worker needed
+//   Scan  + Done { > 0 }  → set Repair, spawn repair worker
+//   Repair + Done { 0 }   → set Active, no worker needed
+//   Repair + Done { > 0 } → set Recover, spawn recover worker
+//   Recover + Done { 0 }  → set Active, no worker needed
+//   Recover + Done { > 0 } → set Recover, spawn recover worker (retry)
 
 pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SpoolManagerConfig,
-    rx: mpsc::Receiver<SpoolEvent>,
     cancel: CancellationToken,
-    semaphore: Arc<Semaphore>,
-    workers: JoinSet<Result<(SpoolWorkItem, Option<SpoolTaskSummary>), NodeError>>,
-    active: BTreeMap<SpoolIndex, ActiveWorker>,
 }
 
-impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
-    SpoolManager<Db, Cluster, Blockchain>
-{
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> SpoolManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: SpoolManagerConfig,
-        rx: mpsc::Receiver<SpoolEvent>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            semaphore: Arc::new(Semaphore::new(config.max_parallel_spools)),
             config,
-            rx,
             cancel,
-            workers: JoinSet::new(),
-            active: BTreeMap::new(),
         }
     }
 
-    pub async fn run(mut self) -> Result<(), NodeError> {
+    pub async fn run(self) -> Result<(), NodeError> {
         debug!(
             node_id = self.context.node_id().0,
-            max_parallel_spools = self.config.max_parallel_spools,
+            max_parallel = self.config.max_parallel_spools,
             "spool manager started"
         );
 
         let mut state_rx = self.context.subscribe_state();
         let mut observed_epoch = state_rx.borrow().epoch;
 
-        self.reconcile_epoch(observed_epoch).await?;
-        self.replan_all();
+        // Active workers: spool → cancel token for that worker.
+        let mut workers: HashMap<SpoolIndex, CancellationToken> = HashMap::new();
+        let mut join_set: JoinSet<WorkerDone> = JoinSet::new();
+
+        // Initial plan: spawn workers for all currently owned spools.
+        // todo: plan_and_spawn(&self.context, &self.config, observed_epoch, &mut workers, &mut join_set)
 
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
-                    self.shutdown_workers().await?;
+                    // Cancel all workers and drain.
+                    for (_, token) in workers.drain() {
+                        token.cancel();
+                    }
+                    while join_set.join_next().await.is_some() {}
                     return Ok(());
                 }
+
                 changed = state_rx.changed() => {
                     if changed.is_err() {
-                        self.shutdown_workers().await?;
                         return Ok(());
                     }
 
                     let current_epoch = state_rx.borrow().epoch;
-                    if current_epoch > observed_epoch {
-                        observed_epoch = current_epoch;
-                        self.reconcile_epoch(current_epoch).await?;
-                        self.replan_all();
+                    if current_epoch <= observed_epoch {
+                        continue;
                     }
+
+                    info!(
+                        old_epoch = observed_epoch.0,
+                        new_epoch = current_epoch.0,
+                        active_workers = workers.len(),
+                        "epoch advanced, cancelling workers"
+                    );
+
+                    // Cancel all workers from the old epoch.
+                    for (_, token) in workers.drain() {
+                        token.cancel();
+                    }
+
+                    // Drain completions (results are stale, discard).
+                    while join_set.join_next().await.is_some() {}
+
+                    // Re-plan for the new epoch.
+                    // todo: plan_and_spawn(&self.context, &self.config, current_epoch, &mut workers, &mut join_set)
+
+                    observed_epoch = current_epoch;
                 }
-                received = self.rx.recv() => {
-                    let Some(event) = received else {
-                        self.shutdown_workers().await?;
-                        return if self.cancel.is_cancelled() {
-                            Ok(())
-                        } else {
-                            Err(NodeError::ChannelClosed { channel: ChannelName::SpoolManager })
-                        };
+
+                Some(result) = join_set.join_next() => {
+                    let done = match result {
+                        Ok(done) => done,
+                        Err(error) => {
+                            warn!(error = %error, "spool worker panicked");
+                            continue;
+                        }
                     };
 
-                    let spool_id = spool_id(&event);
-                    apply_event(self.context.store.as_ref(), &self.config, &event)?;
-                    self.replan_spool(spool_id);
+                    // todo: apply_transition(done, &self.context, &self.config, observed_epoch, &mut workers, &mut join_set)
+                    //
+                    // 1. Extract spool and epoch from WorkerDone.
+                    // 2. Remove from workers map.
+                    // 3. If the worker's epoch != observed_epoch, discard (stale).
+                    // 4. Match on the result variant to determine the FSM transition.
+                    // 5. Update persisted SpoolState in the store.
+                    // 6. If the transition produces a follow-up task, spawn a new worker.
                 }
-                joined = self.workers.join_next(), if !self.workers.is_empty() => {
-                    if let Some(result) = joined {
-                        self.handle_worker_exit(result)?;
-                    }
-                }
             }
-        }
-    }
-
-    async fn reconcile_epoch(&mut self, epoch: EpochNumber) -> Result<(), NodeError> {
-        self.cancel_all_workers().await?;
-
-        let state = self.context.state();
-        info!(epoch = epoch.0, "reconciling spool ownership");
-
-        for spool_id in 0..SPOOL_COUNT as SpoolIndex {
-            let event = epoch_reconcile_event(state.as_ref(), self.context.node_id(), spool_id);
-            apply_event(self.context.store.as_ref(), &self.config, &event)?;
-        }
-
-        Ok(())
-    }
-
-    fn replan_all(&mut self) {
-        for spool_id in 0..SPOOL_COUNT as SpoolIndex {
-            self.replan_spool(spool_id);
-        }
-    }
-
-    fn replan_spool(&mut self, spool_id: SpoolIndex) {
-        let current = match self.context.store.get_spool_state(spool_id) {
-            Ok(state) => state,
-            Err(error) => {
-                warn!(spool_id, error = %error, "failed to read spool state for planning");
-                return;
-            }
-        };
-
-        let desired = desired_work(spool_id, current);
-        let active = self.active.get(&spool_id).map(|worker| worker.work);
-
-        if active == desired {
-            return;
-        }
-
-        if let Some(worker) = self.active.get(&spool_id) {
-            worker.cancel.cancel();
-            return;
-        }
-
-        if let Some(work) = desired {
-            self.spawn_worker(work);
-        }
-    }
-
-    fn spawn_worker(&mut self, work: SpoolWorkItem) {
-        let cancel = self.cancel.child_token();
-        let assignment = SpoolAssignment {
-            work,
-            cancel: cancel.clone(),
-        };
-
-        self.active.insert(
-            work.spool_id,
-            ActiveWorker {
-                work,
-                cancel,
-            },
-        );
-
-        let context = self.context.clone();
-        let config = self.config.clone();
-        let semaphore = Arc::clone(&self.semaphore);
-
-        self.workers
-            .spawn(async move { run_spool_worker(context, config, assignment, semaphore).await });
-    }
-
-    async fn cancel_all_workers(&mut self) -> Result<(), NodeError> {
-        for worker in self.active.values() {
-            worker.cancel.cancel();
-        }
-
-        while !self.active.is_empty() {
-            let Some(result) = self.workers.join_next().await else {
-                break;
-            };
-            self.handle_worker_exit(result)?;
-        }
-
-        Ok(())
-    }
-
-    async fn shutdown_workers(&mut self) -> Result<(), NodeError> {
-        self.cancel_all_workers().await
-    }
-
-    fn handle_worker_exit(
-        &mut self,
-        result: Result<
-            Result<(SpoolWorkItem, Option<SpoolTaskSummary>), NodeError>,
-            tokio::task::JoinError,
-        >,
-    ) -> Result<(), NodeError> {
-        match result {
-            Ok(Ok((work, summary))) => {
-                self.active.remove(&work.spool_id);
-
-                if let Some(summary) = summary {
-                    let event = SpoolEvent::TaskSummary { work, summary };
-                    apply_event(self.context.store.as_ref(), &self.config, &event)?;
-                }
-
-                self.replan_spool(work.spool_id);
-                Ok(())
-            }
-            Ok(Err(error)) => Err(error),
-            Err(error) => Err(NodeError::ServiceJoin {
-                service: ServiceName::SpoolManager,
-                source: error,
-            }),
-        }
-    }
-}
-
-fn spool_id(event: &SpoolEvent) -> SpoolIndex {
-    match event {
-        SpoolEvent::EpochReconcile { spool_id, .. } => *spool_id,
-        SpoolEvent::TaskSummary { work, .. } => work.spool_id,
-        SpoolEvent::MissingCertifiedSlice { spool_id, .. } => *spool_id,
-    }
-}
-
-fn epoch_reconcile_event(
-    state: &ProtocolState,
-    node_id: NodeId,
-    spool_id: SpoolIndex,
-) -> SpoolEvent {
-    let group = SpoolGroup::of(spool_id);
-    let mut prev_helpers = [None; SPOOL_GROUP_SIZE];
-
-    for (peer_spool, peer_node_id) in state.group_peers_prev(group) {
-        if let Some(index) = group.slice_of(peer_spool) {
-            prev_helpers[index] = Some(peer_node_id);
-        }
-    }
-
-    SpoolEvent::EpochReconcile {
-        spool_id,
-        epoch: state.epoch,
-        owned: state.spool_owner(spool_id) == Some(node_id),
-        prev_owner: state.spool_owner_prev(spool_id),
-        prev_helpers,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tape_core::system::{CommitteeMember, EpochPhase};
-    use tape_core::types::coin::{Coin, TAPE};
-    use tape_core::types::{EpochNumber, NodeId};
-    use tape_protocol::ProtocolState;
-
-    use super::epoch_reconcile_event;
-
-    #[test]
-    fn epoch_reconcile_populates_previous_helpers() {
-        let mut state = ProtocolState {
-            epoch: EpochNumber(7),
-            phase: EpochPhase::Active,
-            ..ProtocolState::default()
-        };
-
-        state
-            .committee
-            .push(CommitteeMember::new(NodeId(11), Coin::<TAPE>::new(100)));
-        state
-            .committee_prev
-            .push(CommitteeMember::new(NodeId(21), Coin::<TAPE>::new(100)));
-        state
-            .committee_prev
-            .push(CommitteeMember::new(NodeId(22), Coin::<TAPE>::new(100)));
-        state.spools.0[5] = 0;
-        state.spools_prev.0[0] = 0;
-        state.spools_prev.0[1] = 1;
-
-        let event = epoch_reconcile_event(&state, NodeId(11), 5);
-
-        match event {
-            crate::features::spool::types::SpoolEvent::EpochReconcile {
-                owned,
-                prev_owner,
-                prev_helpers,
-                ..
-            } => {
-                assert!(owned);
-                assert_eq!(prev_owner, Some(NodeId(21)));
-                assert_eq!(prev_helpers[0], Some(NodeId(21)));
-                assert_eq!(prev_helpers[1], Some(NodeId(22)));
-            }
-            _ => panic!("unexpected event"),
         }
     }
 }

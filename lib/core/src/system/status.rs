@@ -42,6 +42,7 @@ pub enum SpoolStatus {
     Active,
     Sync,
     Scan,
+    Repair,
     Recover,
     LockedToMove,
 }

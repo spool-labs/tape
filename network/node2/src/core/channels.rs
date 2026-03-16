@@ -7,7 +7,6 @@ use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::replay::types::ReplayBatch;
-use crate::features::spool::types::SpoolEvent;
 
 #[derive(Clone)]
 pub struct DownstreamSenders {
@@ -51,12 +50,6 @@ pub fn state_channel(config: &ChannelConfig) -> (mpsc::Sender<ReplayBatch>, mpsc
     mpsc::channel(config.replay_batch_capacity)
 }
 
-pub fn spool_event_channel(
-    config: &ChannelConfig,
-) -> (mpsc::Sender<SpoolEvent>, mpsc::Receiver<SpoolEvent>) {
-    mpsc::channel(config.spool_event_capacity)
-}
-
 pub async fn send_replay_batch(
     sender: &mpsc::Sender<ReplayBatch>,
     batch: ReplayBatch,
@@ -66,17 +59,5 @@ pub async fn send_replay_batch(
         .await
         .map_err(|_| NodeError::ChannelSend {
             channel: ChannelName::StateManager,
-        })
-}
-
-pub async fn send_spool_event(
-    sender: &mpsc::Sender<SpoolEvent>,
-    event: SpoolEvent,
-) -> Result<(), NodeError> {
-    sender
-        .send(event)
-        .await
-        .map_err(|_| NodeError::ChannelSend {
-            channel: ChannelName::SpoolManager,
         })
 }

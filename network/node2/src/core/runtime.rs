@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::core::bootstrap::build_context;
-use crate::core::channels::{downstream_channels, spool_event_channel, state_channel};
+use crate::core::channels::{downstream_channels, state_channel};
 use crate::core::config::{AppConfig, RuntimeConfig};
 use crate::core::error::NodeError;
 use crate::core::supervisor::Supervisor;
@@ -78,7 +78,6 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     let (senders, receivers) = downstream_channels(&config.channels);
     let (state_tx, state_rx) = state_channel(&config.channels);
-    let (spool_tx, spool_rx) = spool_event_channel(&config.channels);
     let mut supervisor = Supervisor::new(cancel.clone());
 
     supervisor.spawn(
@@ -114,10 +113,9 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     supervisor.spawn(
         ServiceName::SpoolManager,
         SpoolManager::new(
-            context.clone(), 
-            config.spool.clone(), 
-            spool_rx,
-            cancel.clone()
+            context.clone(),
+            config.spool.clone(),
+            cancel.clone(),
         )
         .run(),
     );
@@ -150,8 +148,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
             context.clone(),
             config.state.clone(),
             state_rx,
-            spool_tx,
-            cancel.clone()
+            cancel.clone(),
         ).run(),
     );
 

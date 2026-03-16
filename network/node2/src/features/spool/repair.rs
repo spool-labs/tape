@@ -1,136 +1,266 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use rpc::Rpc;
 use store::Store;
-use tape_core::encoding::EncodingType;
-use tape_core::erasure::slice_for_spool;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_protocol::api::types::{RepairRequest, StripeSubChunkRequest};
-use tape_slicer::{RepairPlan, SliceIndex};
-use tape_store::ops::SliceOps;
-use tape_store::TapeStore;
-use tape_store::types::{Pubkey, TrackInfo};
+use tape_core::types::NodeId;
+use tape_protocol::Api;
+use tape_protocol::api::ops::RepairReq;
+use tape_slicer::{RepairPlan, SliceIndex, Slicer};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::types::{Pubkey, SpoolState, TrackInfo};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
-pub fn validate_slice_entry(
+use crate::core::config::SpoolManagerConfig;
+use crate::core::context::NodeContext;
+use crate::features::spool::types::RepairResult;
+
+// Purpose: Bandwidth-optimal Clay repair for missing slices.
+//          Drains the pending_repairs queue populated by Scan.
+//          Tracks that cannot be Clay-repaired are escalated to the
+//          pending_recoveries queue for the Recover task.
+//
+// "Escalate" means: remove from pending_repairs, add to pending_recoveries.
+// Both queues are presence-based, so adds are idempotent.
+//
+// Algorithm:
+// 1. Load spool state. Derive group and our slice index within it.
+//    Build two peer maps from spool_state.prev_helpers (previous)
+//    and peer_manager.healthy_peers_for_group (current).
+//    Exclude our own spool from both maps.
+//
+// 2. Batch loop over store.iter_pending_repairs(spool, batch_size):
+//
+//    For each track_address:
+//      a. Check cancellation.
+//      b. Skip if slice already present (has_slice). Remove from pending_repairs.
+//      c. Load track_info. If missing, remove from pending_repairs, continue.
+//      d. Validate encoding is Clay and stripe params are non-zero.
+//         If not → escalate, continue.
+//
+//      e. Build repair plan:
+//         - ClayCoder::from_params(track_info.profile().clay_params())
+//         - Slicer::with_profile(coder, stripe_size, rotated=true, profile)
+//         - slicer.repair_plan_from_params(lost, &available, original_size, stripe_size)
+//         - If plan fails → escalate, continue.
+//
+//      f. Invert plan into per-helper RepairReq:
+//         Group plan.stripes by helper slice → HashMap<SliceIndex, RepairReq>
+//         Each RepairReq has the helper's spool and the StripeSubChunkRequests.
+//
+//      g. Fetch sub-chunks (per-track: try prev_helpers first, then current):
+//         - For each helper in the plan, send RepairReq via call_peer
+//           using the previous peer map.
+//         - If ANY helper from the previous set fails or is missing,
+//           discard all previous results for this track and retry
+//           the entire helper set using the current peer map.
+//         - If still missing required helpers → escalate, continue.
+//
+//      h. Reconstruct:
+//         - SliceMetadata::with_profile(original_size, stripe_size, profile)
+//         - slicer.repair(&plan, &helper_data, &metadata_bytes)
+//         - If decode fails → escalate, continue.
+//
+//      i. Validate against track_info.verify_slice(our_position, &data).
+//         If invalid → escalate, continue.
+//
+//      j. Persist: store.put_slice(spool, track_address, data).
+//         Remove from pending_repairs.
+//
+// 3. Return Done { unrepairable } — count of tracks escalated.
+//
+// NOTE:  
+//
+// The spool relationships are:
+//   - SpoolGroup::of(spool) → group is derived from spool
+//   - group.slice_of(spool) → slice index is derived from spool + group
+//   - group.spool_at(slice) → spool is derived from group + slice
+//   
+//   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
+//   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
+//   The helpers should just take spool and derive what they need.
+
+pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &SpoolManagerConfig,
     spool: SpoolIndex,
-    track_info: &TrackInfo,
-    data: &[u8],
-) -> Result<(), String> {
-    let Some(slice_index) = slice_for_spool(track_info.spool_group, spool) else {
-        return Err("track not mapped to this spool group".to_string());
-    };
-
-    if track_info.original_size > 0 && data.is_empty() {
-        return Err("empty slice for non-empty track".to_string());
-    }
-
-    let expected_max = track_info
-        .stripe_size
-        .checked_mul(track_info.stripe_count)
-        .ok_or_else(|| "invalid stripe dimensions".to_string())?;
-
-    if expected_max > 0 && data.len() as u64 > expected_max {
-        return Err("slice exceeds expected decoded size".to_string());
-    }
-
-    if !track_info.verify_slice(slice_index, data) {
-        return Err("slice does not match commitment".to_string());
-    }
-
-    Ok(())
+    cancel: &CancellationToken,
+) -> RepairResult {
+    todo!()
 }
 
-pub fn persist_validated_slice<Db: Store>(
-    store: &TapeStore<Db>,
-    spool: SpoolIndex,
-    track: Pubkey,
-    track_info: &TrackInfo,
-    data: Vec<u8>,
-) -> Result<(), String> {
-    validate_slice_entry(spool, track_info, &data)?;
-    store
-        .put_slice(spool, track, data)
-        .map_err(|error| format!("put_slice: {error}"))
+/// Two peer maps: previous epoch helpers and current committee assignments.
+struct GroupPeers {
+    previous: HashMap<SpoolIndex, NodeId>,
+    current: HashMap<SpoolIndex, NodeId>,
 }
 
-pub fn build_per_helper_requests(
+/// Build peer maps for a spool's group, excluding our own spool.
+fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    spool_state: &SpoolState,
+    spool: SpoolIndex,
+) -> GroupPeers {
+    todo!()
+}
+
+/// Attempt Clay repair for a single track.
+/// Returns Ok(repaired_data) or Err(()) to signal escalation.
+async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    config: &SpoolManagerConfig,
+    spool: SpoolIndex,
+    peers: &GroupPeers,
+    track_addr: Pubkey,
+    track_info: &TrackInfo,
+) -> Result<Vec<u8>, ()> {
+    todo!()
+}
+
+/// Fetch sub-chunk data from all helpers in the plan using one peer map.
+/// Returns the collected helper data, or Err if any helper failed.
+async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    config: &SpoolManagerConfig,
+    spool: SpoolIndex,
     plan: &RepairPlan,
-    spool_group: SpoolGroup,
-) -> HashMap<SliceIndex, Vec<StripeSubChunkRequest>> {
-    let mut map: HashMap<SliceIndex, Vec<StripeSubChunkRequest>> = HashMap::new();
-
-    for stripe_repair in &plan.stripes {
-        for helper in &stripe_repair.helpers {
-            map.entry(helper.slice)
-                .or_default()
-                .push(StripeSubChunkRequest {
-                    stripe: stripe_repair.stripe,
-                    sub_chunks: helper.sub_chunks.clone(),
-                });
-        }
-    }
-
-    map.retain(
-        |slice_idx, _| spool_group.slice_of(
-            spool_group.spool_at(**slice_idx)
-        ).is_some());
-
-    map
+    peer_map: &HashMap<SpoolIndex, NodeId>,
+    track_addr: Pubkey,
+) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
+    todo!()
 }
 
-pub fn extract_repair_data(
-    track_info: &TrackInfo,
-    helper_spool: SpoolIndex,
-    request: &RepairRequest,
-    helper_slice: &[u8],
-) -> Result<Vec<u8>, String> {
-    use tape_slicer::ClayCoder;
+/// Invert a RepairPlan into per-helper RepairReqs.
+fn per_helper_reqs(plan: &RepairPlan, spool: SpoolIndex) -> HashMap<SliceIndex, RepairReq> {
+    todo!()
+}
 
-    let profile = track_info.profile();
-    let encoding = profile
-        .encoding_type()
-        .ok_or_else(|| "unknown encoding type".to_string())?;
+/// Remove from pending_repairs, add to pending_recoveries.
+fn escalate<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, track: Pubkey) {
+    todo!()
+}
 
-    if encoding != EncodingType::Clay {
-        return Err("repair only supported for Clay encoding".to_string());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peer_memory::MemoryApi;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::types::EpochNumber;
+    use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
+    use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
+    use tape_store::types::SpoolStatus;
+
+    use crate::core::context::test_utils::{test_context, test_context_with_api};
+
+    const SPOOL: SpoolIndex = 5;
+
+    fn addr(n: u8) -> Pubkey {
+        Pubkey([n; 32])
     }
 
-    let group = track_info.spool_group;
-    let Some(expected_helper_index) = group.slice_of(helper_spool) else {
-        return Err("helper spool not in track group".to_string());
-    };
-    let request_helper_index = group
-        .slice_of(request.helper_spool)
-        .ok_or_else(|| "request helper spool not in track group".to_string())?;
-
-    if expected_helper_index != request_helper_index {
-        return Err("helper spool mismatch".to_string());
-    }
-
-    let coder = ClayCoder::from_params(profile.clay_params());
-    let chunk_size = coder.track_chunk_size(
-        track_info.stripe_size as usize,
-        track_info.original_size as usize,
-    );
-    let sub_chunk_size = chunk_size
-        .checked_div(coder.alpha())
-        .ok_or_else(|| "invalid repair geometry".to_string())?;
-
-    let mut output = Vec::new();
-    for stripe in &request.stripes {
-        let stripe_offset = stripe.stripe as usize * chunk_size;
-        let chunk = helper_slice
-            .get(stripe_offset..stripe_offset + chunk_size)
-            .ok_or_else(|| "stripe out of bounds".to_string())?;
-
-        for &sub_chunk in &stripe.sub_chunks {
-            let start = sub_chunk as usize * sub_chunk_size;
-            let end = start + sub_chunk_size;
-            let data = chunk
-                .get(start..end)
-                .ok_or_else(|| "sub-chunk out of bounds".to_string())?;
-            output.extend_from_slice(data);
+    fn clay_track(size: u64, slices: &[Vec<u8>]) -> TrackInfo {
+        let profile = EncodingProfile::clay_default();
+        let commitment = slices
+            .iter()
+            .map(|s| tape_crypto::merkle::hash_leaf(s))
+            .collect();
+        TrackInfo {
+            tape_address: Pubkey([0; 32]),
+            spool_group: SpoolGroup::of(SPOOL),
+            original_size: size,
+            stripe_size: 512,
+            stripe_count: (size + 511) / 512,
+            encoding_type: profile.encoding as u64,
+            encoding_params: profile.params,
+            commitment,
         }
     }
 
-    Ok(output)
+    fn repair_state(epoch: EpochNumber) -> SpoolState {
+        SpoolState::new(SpoolStatus::Repair, epoch)
+    }
+
+    #[tokio::test]
+    async fn empty_queue() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .unwrap();
+
+        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+    }
+
+    #[tokio::test]
+    async fn skip_present() {
+        let ctx = test_context();
+        let a = addr(1);
+
+        ctx.store
+            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
+        // ctx.store.add_pending_repair(SPOOL, a).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        // assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    #[tokio::test]
+    async fn clay_repair() {
+        // Encode a blob, remove one slice, mock peers returning repair data.
+        // Verify the repaired slice matches the original and is persisted.
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let payload = vec![0x42u8; 1024];
+        let slices = slicer.encode(&payload).unwrap();
+        let lost_pos = SpoolGroup::of(SPOOL).slice_of(SPOOL).unwrap();
+        let _expected = slices[lost_pos].clone();
+        let _track_info = clay_track(1024, &slices);
+
+        // todo: wire up MemoryApi to return repair sub-chunks,
+        // set up spool state with prev_helpers, run repair, verify slice persisted.
+        todo!()
+    }
+
+    #[tokio::test]
+    async fn escalates_failure() {
+        // No peers available → track should be moved to pending_recoveries.
+        let ctx = test_context(); // noop api, no peers
+        let a = addr(1);
+
+        ctx.store
+            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store
+            .put_track(a, clay_track(1024, &vec![vec![]; 20]))
+            .unwrap();
+        // ctx.store.add_pending_repair(SPOOL, a).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 1 });
+        // assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
+        // assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    #[tokio::test]
+    async fn missing_track() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .unwrap();
+        // ctx.store.add_pending_repair(SPOOL, addr(1)).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        // assert!(!ctx.store.has_pending_repair(SPOOL, addr(1)).unwrap());
+    }
 }

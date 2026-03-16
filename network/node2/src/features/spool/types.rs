@@ -1,52 +1,41 @@
-use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolIndex;
-use tape_core::types::{EpochNumber, NodeId};
-use tape_store::types::Pubkey;
-use tokio_util::sync::CancellationToken;
+use tape_core::types::EpochNumber;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpoolTaskKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
     Sync,
     Scan,
+    Repair,
     Recover,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpoolWorkItem {
-    pub spool_id: SpoolIndex,
-    pub epoch: EpochNumber,
-    pub kind: SpoolTaskKind,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncResult {
+    Done,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpoolTaskSummary {
-    SyncDone,
-    SyncUnavailable,
-    ScanDone { gaps: usize },
-    RecoverDone { remaining: usize },
-}
-
-#[derive(Debug, Clone)]
-pub struct SpoolAssignment {
-    pub work: SpoolWorkItem,
-    pub cancel: CancellationToken,
+pub enum ScanResult {
+    Done { gaps: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpoolEvent {
-    EpochReconcile {
-        spool_id: SpoolIndex,
-        epoch: EpochNumber,
-        owned: bool,
-        prev_owner: Option<NodeId>,
-        prev_helpers: [Option<NodeId>; SPOOL_GROUP_SIZE],
-    },
-    TaskSummary {
-        work: SpoolWorkItem,
-        summary: SpoolTaskSummary,
-    },
-    MissingCertifiedSlice {
-        spool_id: SpoolIndex,
-        track: Pubkey,
-    },
+pub enum RepairResult {
+    Done { unrepairable: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoverResult {
+    Done { remaining: usize },
+}
+
+/// Result of a single spool worker completing.
+/// Carries enough info for the manager to apply the FSM transition.
+#[derive(Debug)]
+pub enum WorkerDone {
+    Sync(SpoolIndex, EpochNumber, SyncResult),
+    Scan(SpoolIndex, EpochNumber, ScanResult),
+    Repair(SpoolIndex, EpochNumber, RepairResult),
+    Recover(SpoolIndex, EpochNumber, RecoverResult),
 }
