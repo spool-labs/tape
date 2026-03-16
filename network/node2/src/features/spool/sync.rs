@@ -5,13 +5,15 @@ use store::Store;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
 use tape_protocol::Api;
+use tape_protocol::api::ops::SyncReq;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::Pubkey;
+use tape_store::types::{Pubkey, TrackInfo};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::core::config::SpoolManagerConfig;
 use crate::core::context::NodeContext;
+use crate::core::peer_call::call_peer;
 use crate::features::spool::types::SyncResult;
 
 // Purpose: Transfer slice data for a spool from its previous owner
@@ -47,24 +49,135 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> SyncResult {
-    todo!()
+    let Some(state) = ctx.store.get_spool_state(spool).ok().flatten() else {
+        return SyncResult::Done { synced: 0 };
+    };
+
+    let Some(prev_owner) = state.prev_owner else {
+        return SyncResult::Done { synced: 0 };
+    };
+
+    if prev_owner == ctx.node_id() {
+        return SyncResult::Done { synced: 0 };
+    }
+
+    let mut cursor = ctx.store.get_spool_sync_cursor(spool).ok().flatten();
+    let mut synced = 0;
+
+    loop {
+        if cancel.is_cancelled() {
+            return SyncResult::Done { synced };
+        }
+
+        match pull_batch(ctx.as_ref(), config, spool, prev_owner, cursor).await {
+            Ok((next_cursor, batch_synced)) => {
+                synced += batch_synced;
+                match next_cursor {
+                    Some(c) => {
+                        cursor = Some(c);
+                        if let Err(error) = ctx.store.set_spool_sync_cursor(spool, c) {
+                            warn!(spool, %error, "set_spool_sync_cursor failed");
+                        }
+                    }
+                    None => {
+                        if let Err(error) = ctx.store.remove_spool_sync_cursor(spool) {
+                            warn!(spool, %error, "remove_spool_sync_cursor failed");
+                        }
+                        return SyncResult::Done { synced };
+                    }
+                }
+            }
+            Err(SyncError::Unavailable) => return SyncResult::Unavailable,
+            Err(SyncError::Store(error)) => {
+                warn!(spool, %error, "sync store error");
+                return SyncResult::Done { synced };
+            }
+        }
+    }
 }
 
 /// Pull one page of slices from the previous owner, persist each valid entry.
-/// Returns the next cursor, or None if the peer has no more data.
+/// Returns (next_cursor, batch_synced_count), or an error.
 async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
     prev_owner: NodeId,
     cursor: Option<Pubkey>,
-) -> Result<Option<Pubkey>, SyncError> {
-    todo!()
+) -> Result<(Option<Pubkey>, usize), SyncError> {
+    let req = SyncReq {
+        spool_index: spool,
+        cursor: cursor.map(|track| track.0),
+        limit: config.sync_batch_size.max(1) as u32,
+    };
+
+    let response = call_peer(
+        &ctx.peer_manager,
+        config.peer_retry.clone(),
+        prev_owner,
+        None,
+        || {
+            let api = ctx.api.clone();
+            let req = req.clone();
+            async move { api.sync(prev_owner, &req).await }
+        },
+    )
+    .await
+    .map_err(|_| SyncError::Unavailable)?;
+
+    let mut batch_synced = 0;
+    for entry in response.entries {
+        let track_addr = Pubkey(entry.track_address);
+
+        if ctx
+            .store
+            .has_slice(spool, track_addr)
+            .map_err(|error| SyncError::Store(format!("has_slice: {error}")))?
+        {
+            continue;
+        }
+
+        if let Some(track_info) = ctx
+            .store
+            .get_track(track_addr)
+            .map_err(|error| SyncError::Store(format!("get_track: {error}")))?
+        {
+            if !verify_slice_for_track(spool, &track_info, &entry.slice_data) {
+                debug!(spool, track = %track_addr, "skipping invalid synced slice");
+                continue;
+            }
+        }
+
+        ctx.store
+            .put_slice(spool, track_addr, entry.slice_data)
+            .map_err(|error| SyncError::Store(format!("put_slice: {error}")))?;
+        batch_synced += 1;
+    }
+
+    Ok((response.next_cursor.map(Pubkey), batch_synced))
 }
 
 enum SyncError {
     Unavailable,
     Store(String),
+}
+
+fn verify_slice_for_track(spool: SpoolIndex, track_info: &TrackInfo, data: &[u8]) -> bool {
+    let Some(position) = track_info.spool_group.slice_of(spool) else {
+        return false;
+    };
+
+    if track_info.original_size > 0 && data.is_empty() {
+        return false;
+    }
+
+    if let Some(max_len) = track_info.stripe_size.checked_mul(track_info.stripe_count) {
+        if max_len > 0 && data.len() as u64 > max_len {
+            return false;
+        }
+    }
+
+    track_info.verify_slice(position, data)
 }
 
 #[cfg(test)]
@@ -106,7 +219,7 @@ mod tests {
             .unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, SyncResult::Done);
+        assert!(matches!(result, SyncResult::Done { .. }));
     }
 
     #[tokio::test]
@@ -128,7 +241,7 @@ mod tests {
             .unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, SyncResult::Done);
+        assert!(matches!(result, SyncResult::Done { .. }));
         assert!(ctx.store.has_slice(SPOOL, a).unwrap());
         assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
     }
@@ -150,7 +263,7 @@ mod tests {
         ctx.store.put_slice(SPOOL, a, vec![0xFF; 32]).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, SyncResult::Done);
+        assert!(matches!(result, SyncResult::Done { .. }));
 
         // Original data preserved, not overwritten.
         let stored = ctx.store.get_slice(SPOOL, a).unwrap().unwrap();
@@ -176,16 +289,14 @@ mod tests {
         let counter = call_count.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
-            PeerReq::Sync(ref r) => {
+            PeerReq::Sync(_) => {
                 let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if n == 0 {
-                    // First call: return a1 with cursor pointing to a2.
                     PeerRes::Sync(Ok(SyncRes {
                         entries: vec![entry(a1, &[1; 32])],
                         next_cursor: Some(a2.0),
                     }))
                 } else {
-                    // Second call: return a2, no more.
                     PeerRes::Sync(Ok(SyncRes {
                         entries: vec![entry(a2, &[2; 32])],
                         next_cursor: None,
@@ -200,7 +311,7 @@ mod tests {
             .unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        assert_eq!(result, SyncResult::Done);
+        assert!(matches!(result, SyncResult::Done { .. }));
         assert!(ctx.store.has_slice(SPOOL, a1).unwrap());
         assert!(ctx.store.has_slice(SPOOL, a2).unwrap());
         assert_eq!(call_count.load(std::sync::atomic::Ordering::Relaxed), 2);

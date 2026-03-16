@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::spooler::SpoolIndex;
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey;
@@ -41,15 +41,55 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> ScanResult {
-    todo!()
+    let mut cursor: Option<Pubkey> = None;
+    let mut gaps = 0;
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let tracks = match ctx.store.iter_tracks_from(cursor, config.scan_batch_size.max(1)) {
+            Ok(tracks) => tracks,
+            Err(e) => {
+                debug!(spool, error = %e, "scan store error");
+                break;
+            }
+        };
+
+        if tracks.is_empty() {
+            break;
+        }
+
+        for (track_addr, track_info) in &tracks {
+            if !track_info.spool_group.contains(spool) {
+                continue;
+            }
+
+            match ctx.store.has_slice(spool, *track_addr) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    let _ = ctx.store.add_pending_repair(spool, *track_addr);
+                    gaps += 1;
+                }
+                Err(e) => {
+                    debug!(spool, track = ?track_addr, error = %e, "scan has_slice error");
+                }
+            }
+        }
+
+        cursor = tracks.last().map(|(addr, _)| *addr);
+    }
+
+    ScanResult::Done { gaps }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::EpochNumber;
-    use tape_store::types::{SpoolState, SpoolStatus, TrackInfo};
+    use tape_core::spooler::SpoolGroup;
+    use tape_store::types::TrackInfo;
 
     use crate::core::context::test_utils::test_context;
 
@@ -104,8 +144,7 @@ mod tests {
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
 
-        // Track should be in pending_repairs queue.
-        // assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }
 
     #[tokio::test]

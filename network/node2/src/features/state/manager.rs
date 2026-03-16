@@ -4,6 +4,7 @@ use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_store::TapeStore;
+use tape_store::ops::MetaOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;

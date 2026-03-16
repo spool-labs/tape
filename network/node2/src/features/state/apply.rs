@@ -93,7 +93,6 @@ fn put_track_object<Db: Store>(
         .put_object_info(
             track,
             ObjectInfo::Valid {
-                is_stored: false,
                 track_address: track,
                 registered_epoch: event.epoch,
                 certified_epoch: None,
@@ -113,7 +112,6 @@ fn set_certified<Db: Store>(
     };
 
     if let ObjectInfo::Valid {
-        is_stored,
         track_address,
         registered_epoch,
         slot,
@@ -124,7 +122,6 @@ fn set_certified<Db: Store>(
             .put_object_info(
                 track,
                 ObjectInfo::Valid {
-                    is_stored,
                     track_address,
                     registered_epoch,
                     certified_epoch: Some(epoch),
@@ -237,7 +234,6 @@ mod tests {
         assert_eq!(
             store.get_object_info(Pubkey::from(track)).unwrap(),
             Some(ObjectInfo::Valid {
-                is_stored: false,
                 track_address: Pubkey::from(track),
                 registered_epoch: EpochNumber(6),
                 certified_epoch: Some(EpochNumber(8)),

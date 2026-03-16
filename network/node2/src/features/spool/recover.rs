@@ -3,17 +3,21 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::SpoolIndex;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_protocol::Api;
-use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, Slicer};
+use tape_protocol::api::ops::GetSliceReq;
+use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::{Pubkey, TrackInfo};
+use tape_store::types::Pubkey;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::core::config::SpoolManagerConfig;
 use crate::core::context::NodeContext;
+use crate::core::peer_call::call_peer;
+use crate::features::spool::repair::group_peers;
 use crate::features::spool::types::RecoverResult;
 
 // Purpose: Full erasure code recovery for slices that could not be Clay-repaired.
@@ -54,13 +58,13 @@ use crate::features::spool::types::RecoverResult;
 //
 // 3. Count remaining. Return Done { remaining }.
 //
-// NOTE:  
+// NOTE:
 //
 // The spool relationships are:
 //   - SpoolGroup::of(spool) → group is derived from spool
 //   - group.slice_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
-//   
+//
 //   Given a SpoolIndex, you can always derive the SpoolGroup and the SliceIndex within it. So passing
 //   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
@@ -71,7 +75,133 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> RecoverResult {
-    todo!()
+    let Some(spool_state) = ctx.store.get_spool_state(spool).ok().flatten() else {
+        return RecoverResult::Done { remaining: 0 };
+    };
+
+    let peers = group_peers(ctx.as_ref(), &spool_state, spool);
+    let group = SpoolGroup::of(spool);
+    let position = group.slice_of(spool).unwrap_or_default();
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let pending = match ctx
+            .store
+            .iter_pending_recoveries(spool, config.recover_batch_size.max(1))
+        {
+            Ok(pending) => pending,
+            Err(error) => {
+                warn!(spool, %error, "iter_pending_recoveries failed");
+                break;
+            }
+        };
+
+        if pending.is_empty() {
+            break;
+        }
+
+        let mut made_progress = false;
+        for track_addr in pending {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            let has_slice = match ctx.store.has_slice(spool, track_addr) {
+                Ok(has_slice) => has_slice,
+                Err(error) => {
+                    warn!(spool, track = %track_addr, %error, "has_slice failed");
+                    continue;
+                }
+            };
+
+            if has_slice {
+                let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+                made_progress = true;
+                continue;
+            }
+
+            let Some(track_info) = ctx.store.get_track(track_addr).ok().flatten() else {
+                let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+                made_progress = true;
+                continue;
+            };
+
+            let profile = track_info.profile();
+            if !profile.is_clay() || track_info.stripe_size == 0 {
+                continue;
+            }
+
+            let mut slicer = Slicer::with_profile(
+                ClayCoder::from_params(profile.clay_params()),
+                track_info.stripe_size as usize,
+                true,
+                profile,
+            );
+            let k = slicer.k();
+
+            let peer_slices = match fetch_slices(
+                ctx.as_ref(),
+                config,
+                spool,
+                k,
+                &peers.previous,
+                track_addr,
+            )
+            .await
+            {
+                Ok(peer_slices) => peer_slices,
+                Err(()) => match fetch_slices(
+                    ctx.as_ref(),
+                    config,
+                    spool,
+                    k,
+                    &peers.current,
+                    track_addr,
+                )
+                .await
+                {
+                    Ok(peer_slices) => peer_slices,
+                    Err(()) => continue,
+                },
+            };
+
+            let recovered =
+                match reconstruct(&mut slicer, SliceIndex::new(position), &peer_slices) {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        debug!(spool, track = %track_addr, %error, "reconstruct failed");
+                        continue;
+                    }
+                };
+
+            if !track_info.verify_slice(position, &recovered) {
+                continue;
+            }
+
+            if let Err(error) = ctx.store.put_slice(spool, track_addr, recovered) {
+                warn!(spool, track = %track_addr, %error, "put_slice failed");
+                continue;
+            }
+
+            let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+            made_progress = true;
+        }
+
+        if !made_progress {
+            break;
+        }
+    }
+
+    let remaining = ctx
+        .store
+        .iter_pending_recoveries(spool, usize::MAX)
+        .map(|pending| pending.len())
+        .unwrap_or(0);
+
+    RecoverResult::Done { remaining }
 }
 
 /// Fetch k full slices from a peer map for a given track.
@@ -84,7 +214,55 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     peer_map: &HashMap<SpoolIndex, NodeId>,
     track_addr: Pubkey,
 ) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
-    todo!()
+    let group = SpoolGroup::of(spool);
+    let track: tape_crypto::Pubkey = track_addr.into();
+    let mut slices = Vec::with_capacity(k);
+
+    for helper_slice in 0..SPOOL_GROUP_SIZE {
+        if slices.len() >= k {
+            break;
+        }
+
+        let helper_spool = group.spool_at(helper_slice);
+        if helper_spool == spool {
+            continue;
+        }
+
+        let Some(node_id) = peer_map.get(&helper_spool).copied() else {
+            continue;
+        };
+
+        let request = GetSliceReq {
+            track,
+            spool: helper_spool,
+        };
+
+        let response = match call_peer(
+            &ctx.peer_manager,
+            config.peer_retry.clone(),
+            node_id,
+            None,
+            || {
+                let api = ctx.api.clone();
+                let request = request.clone();
+                async move { api.get_slice(node_id, &request).await }
+            },
+        )
+        .await
+        {
+            Ok(response) if !response.data.is_empty() => response,
+            Ok(_) => continue,
+            Err(_) => continue,
+        };
+
+        slices.push((SliceIndex::new(helper_slice), response.data));
+    }
+
+    if slices.len() < k {
+        return Err(());
+    }
+
+    Ok(slices)
 }
 
 /// Decode k peer slices back to the original blob, re-encode, extract our slice.
@@ -93,7 +271,32 @@ fn reconstruct(
     lost: SliceIndex,
     peer_slices: &[(SliceIndex, Vec<u8>)],
 ) -> Result<Vec<u8>, String> {
-    todo!()
+    let Some((_, sample)) = peer_slices.first() else {
+        return Err("no peer slices provided".into());
+    };
+
+    let metadata = SliceMetadata::from_slice(sample)
+        .map_err(|error| format!("parse peer metadata failed: {error}"))?;
+
+    slicer.set_chunk_index(metadata.chunk_index);
+
+    let refs: Vec<(usize, &[u8])> = peer_slices
+        .iter()
+        .map(|(slice_index, data)| (**slice_index, data.as_slice()))
+        .collect();
+
+    let decoded = slicer
+        .decode(&refs)
+        .map_err(|error| format!("decode failed: {error}"))?;
+
+    let reencoded = slicer
+        .encode(&decoded)
+        .map_err(|error| format!("re-encode failed: {error}"))?;
+
+    reencoded
+        .get(*lost)
+        .cloned()
+        .ok_or_else(|| format!("lost slice index {} out of bounds", *lost))
 }
 
 #[cfg(test)]
@@ -104,7 +307,7 @@ mod tests {
     use tape_core::spooler::SpoolGroup;
     use tape_core::types::EpochNumber;
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
-    use tape_store::types::{SpoolState, SpoolStatus};
+    use tape_store::types::{SpoolState, SpoolStatus, TrackInfo};
 
     use crate::core::context::test_utils::{test_context, test_context_with_api};
 
@@ -116,6 +319,8 @@ mod tests {
 
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> TrackInfo {
         let profile = EncodingProfile::clay_default();
+        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
+        let stripe_size = metadata.stripe_size() as u64;
         let commitment = slices
             .iter()
             .map(|s| tape_crypto::merkle::hash_leaf(s))
@@ -124,8 +329,8 @@ mod tests {
             tape_address: Pubkey([0; 32]),
             spool_group: SpoolGroup::of(SPOOL),
             original_size: size,
-            stripe_size: 512,
-            stripe_count: (size + 511) / 512,
+            stripe_size,
+            stripe_count: size.div_ceil(stripe_size),
             encoding_type: profile.encoding as u64,
             encoding_params: profile.params,
             commitment,
@@ -133,7 +338,11 @@ mod tests {
     }
 
     fn recover_state(epoch: EpochNumber) -> SpoolState {
-        SpoolState::new(SpoolStatus::Recover, epoch)
+        let mut state = SpoolState::new(SpoolStatus::Recover, epoch);
+        for (slice, helper) in state.prev_helpers.iter_mut().enumerate() {
+            *helper = Some(NodeId(200 + slice as u64));
+        }
+        state
     }
 
     #[tokio::test]
@@ -179,6 +388,7 @@ mod tests {
         let expected = slices[lost_pos].clone();
 
         let slices_for_api = slices.clone();
+        let track = addr(1);
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::GetSlice(ref r) => {
                 let pos = group.slice_of(r.spool).unwrap();
@@ -192,31 +402,32 @@ mod tests {
         ctx.store
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
-        ctx.store
-            .put_track(addr(1), clay_track(1024, &slices))
-            .unwrap();
-        ctx.store.add_pending_recovery(SPOOL, addr(1)).unwrap();
+        ctx.store.put_track(track, clay_track(1024, &slices)).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
-        // todo: set up spool_state.prev_helpers or current peers so
-        // fetch_slices can find them. Then:
-        // let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        // assert_eq!(result, RecoverResult::Done { remaining: 0 });
-        // assert_eq!(ctx.store.get_slice(SPOOL, addr(1)).unwrap().unwrap(), expected);
-        // assert!(!ctx.store.has_pending_recovery(SPOOL, addr(1)).unwrap());
-        todo!()
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
+        assert!(!ctx.store.has_pending_recovery(SPOOL, track).unwrap());
     }
 
     #[tokio::test]
     async fn insufficient_peers() {
         let ctx = test_context(); // noop api returns errors
         let a = addr(1);
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let slices = slicer.encode(&vec![0x11; 1024]).unwrap();
 
         ctx.store
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
-        ctx.store
-            .put_track(a, clay_track(1024, &vec![vec![]; 20]))
-            .unwrap();
+        ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;

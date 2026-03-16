@@ -11,7 +11,6 @@ use tape_crypto::Pubkey;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::Pubkey as StorePubkey;
 
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -25,11 +24,13 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("repair request: {error}")))?;
+
     let track: Pubkey = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
 
-    let track_key: StorePubkey = track.into();
+    let track_key = track.into();
+
     state
         .context
         .store
@@ -51,8 +52,11 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
-    let output = extract_repair_data(&track_info, request.helper_spool, &request, &helper_slice)
-        .map_err(|error| RouteError::BadRequest(error.to_string()))?;
+    let output = extract_repair_data(
+        &track_info,
+        &request.stripes, 
+        &helper_slice
+    ).map_err(|error| RouteError::BadRequest(error.to_string()))?;
 
     Ok((
         StatusCode::OK,
@@ -64,3 +68,4 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
+

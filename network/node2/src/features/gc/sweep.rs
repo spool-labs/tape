@@ -219,7 +219,6 @@ mod tests {
 
     fn valid_object(track: Pubkey, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
         ObjectInfo::Valid {
-            is_stored: false,
             track_address: track,
             registered_epoch: epoch,
             certified_epoch: None,
