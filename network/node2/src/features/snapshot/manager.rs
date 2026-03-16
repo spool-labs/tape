@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::types::EpochNumber;
-use tape_protocol::Api;
+use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::EventLogOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -39,9 +39,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
         );
 
         let mut observed_epoch = self.context.state().epoch;
-        let mut next_snapshot_epoch = EpochNumber(1);
+        let mut last_logged_epoch = None;
 
-        self.schedule_closed_epochs(&mut next_snapshot_epoch, observed_epoch)?;
+        self.schedule_snapshot_if_ready(self.context.state().as_ref(), &mut last_logged_epoch)?;
 
         loop {
             let target_epoch = observed_epoch.saturating_add(EpochNumber(1));
@@ -61,23 +61,25 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
             };
 
             observed_epoch = state.epoch;
-            self.schedule_closed_epochs(&mut next_snapshot_epoch, observed_epoch)?;
+            self.schedule_snapshot_if_ready(state.as_ref(), &mut last_logged_epoch)?;
         }
     }
 
-    fn schedule_closed_epochs(
+    fn schedule_snapshot_if_ready(
         &self,
-        next_snapshot_epoch: &mut EpochNumber,
-        current_epoch: EpochNumber,
+        state: &ProtocolState,
+        last_logged_epoch: &mut Option<EpochNumber>,
     ) -> Result<(), NodeError> {
+        let Some(snapshot_epoch) = snapshot_epoch_to_build(state, self.context.node_id()) else {
+            return Ok(());
+        };
 
-        for epoch in pending_snapshot_epochs(*next_snapshot_epoch, current_epoch) {
-            self.log_snapshot_epoch(epoch)?;
-
-            let mut next = epoch;
-            next.increment();
-            *next_snapshot_epoch = next;
+        if last_logged_epoch == &Some(snapshot_epoch) {
+            return Ok(());
         }
+
+        self.log_snapshot_epoch(snapshot_epoch)?;
+        *last_logged_epoch = Some(snapshot_epoch);
 
         Ok(())
     }
@@ -101,30 +103,19 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     }
 }
 
-fn pending_snapshot_epochs(
-    next_snapshot_epoch: EpochNumber,
-    current_epoch: EpochNumber,
-) -> Vec<EpochNumber> {
-    let Some(latest_closed_epoch) = latest_closed_snapshot_epoch(current_epoch) else {
-        return Vec::new();
-    };
-
-    let mut epochs = Vec::new();
-    let mut epoch = next_snapshot_epoch;
-    while epoch <= latest_closed_epoch {
-        epochs.push(epoch);
-        epoch.increment();
+fn snapshot_epoch_to_build(
+    state: &ProtocolState,
+    node_id: tape_core::types::NodeId,
+) -> Option<EpochNumber> {
+    if state.epoch < EpochNumber(2) {
+        return None;
     }
 
-    epochs
-}
-
-fn latest_closed_snapshot_epoch(current_epoch: EpochNumber) -> Option<EpochNumber> {
-    if current_epoch >= EpochNumber(2) {
-        Some(current_epoch - EpochNumber(1))
-    } else {
-        None
+    if state.find_member(node_id).is_none() {
+        return None;
     }
+
+    Some(state.epoch - EpochNumber(1))
 }
 
 fn store_error(error: impl std::fmt::Display) -> NodeError {
@@ -133,25 +124,38 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::types::EpochNumber;
+    use bytemuck::Zeroable;
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::{EpochNumber, NodeId};
+    use tape_protocol::ProtocolState;
 
-    use super::pending_snapshot_epochs;
+    use super::snapshot_epoch_to_build;
 
     #[test]
-    fn pending_snapshot_epochs_waits_for_epoch_two() {
-        assert!(pending_snapshot_epochs(EpochNumber(1), EpochNumber(0)).is_empty());
-        assert!(pending_snapshot_epochs(EpochNumber(1), EpochNumber(1)).is_empty());
+    fn snapshot_epoch_waits_for_epoch_two() {
+        let mut state = ProtocolState::default();
+        state.epoch = EpochNumber(0);
+
+        assert_eq!(snapshot_epoch_to_build(&state, NodeId(7)), None);
+
+        state.epoch = EpochNumber(1);
+        assert_eq!(snapshot_epoch_to_build(&state, NodeId(7)), None);
     }
 
     #[test]
-    fn pending_snapshot_epochs_catches_up_closed_epochs() {
+    fn snapshot_epoch_requires_committee_membership() {
+        let mut state = ProtocolState::default();
+        state.epoch = EpochNumber(4);
+
+        assert_eq!(snapshot_epoch_to_build(&state, NodeId(7)), None);
+
+        let mut member = CommitteeMember::zeroed();
+        member.id = NodeId(7);
+        state.committee.push(member);
+
         assert_eq!(
-            pending_snapshot_epochs(EpochNumber(1), EpochNumber(2)),
-            vec![EpochNumber(1)]
-        );
-        assert_eq!(
-            pending_snapshot_epochs(EpochNumber(3), EpochNumber(5)),
-            vec![EpochNumber(3), EpochNumber(4)]
+            snapshot_epoch_to_build(&state, NodeId(7)),
+            Some(EpochNumber(3))
         );
     }
 }
