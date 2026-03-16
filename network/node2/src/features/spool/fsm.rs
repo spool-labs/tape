@@ -43,11 +43,3 @@
 //   Recover + Done { remaining: > 0 } → Recover
 //       Full recovery is retried until the queue is empty or the
 //       spool is reassigned.
-//
-// ── Runtime events ────────────────────────────────────────────────
-//
-//   Active  + MissingCertifiedSlice → Repair
-//   Repair  + MissingCertifiedSlice → Repair    (already repairing, enqueue)
-//   Recover + MissingCertifiedSlice → Recover   (already recovering, enqueue)
-//       A certified track is missing its slice locally. Add to
-//       pending_repairs and transition to Repair if currently Active.

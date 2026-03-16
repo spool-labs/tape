@@ -11,7 +11,7 @@ pub enum TaskKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncResult {
-    Done,
+    Done { synced: usize },
     Unavailable,
 }
 
