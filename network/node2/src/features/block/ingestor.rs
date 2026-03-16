@@ -53,7 +53,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 _ = self.cancel.cancelled() => return Ok(()),
                 result = self.fetch_parse_and_dispatch(next_slot) => {
                     result?;
-                    next_slot = SlotNumber(next_slot.0.saturating_add(1));
+                    next_slot.increment();
                 }
             }
         }
@@ -101,13 +101,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         send_block(
             &self.senders.spool,
             ChannelName::SpoolManager,
-            Arc::clone(&block),
-        )
-        .await?;
-
-        send_block(
-            &self.senders.snapshot,
-            ChannelName::SnapshotManager,
             Arc::clone(&block),
         )
         .await?;

@@ -125,7 +125,6 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
         SnapshotManager::new(
             context.clone(),
             config.snapshot.clone(),
-            receivers.snapshot,
             cancel.clone(),
         )
         .run(),
