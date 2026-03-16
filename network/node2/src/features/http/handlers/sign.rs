@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -10,13 +12,13 @@ use tape_core::cert::track::CertifyMessage;
 use tape_core::erasure::group_for_spool;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{ChunkIndex, EpochNumber};
+use tape_crypto::Pubkey;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SnapshotSignatureSubmission};
 use tape_store::ops::{MetaOps, SliceOps, TrackOps};
-use tape_store::types::SnapshotPartialSignature;
+use tape_store::types::{Pubkey as StorePubkey, SnapshotPartialSignature};
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::{deserialize_body, parse_track_key, store_error};
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -25,7 +27,10 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
 
     let epoch = current_epoch(&state)?;
-    let (track, track_key) = parse_track_key(&track_id)?;
+    let track: Pubkey = track_id
+        .parse()
+        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+    let track_key: StorePubkey = track.into();
 
     let track_info = state
         .context
@@ -80,8 +85,9 @@ pub async fn put_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
     body: Bytes,
 ) -> Result<StatusCode, RouteError> {
 
-    let request: SnapshotSignatureSubmission =
-        deserialize_body(&body, "snapshot signature submission")?;
+    let request: SnapshotSignatureSubmission = wincode::deserialize(&body).map_err(|error| {
+        RouteError::BadRequest(format!("snapshot signature submission: {error}"))
+    })?;
     let epoch = EpochNumber(epoch);
 
     if request.epoch != epoch {
@@ -140,4 +146,8 @@ pub async fn put_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
 
     Ok(StatusCode::OK)
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }

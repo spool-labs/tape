@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -17,10 +19,9 @@ use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
 };
 use tape_store::ops::TrackOps;
-use tape_store::types::TrackInfo;
+use tape_store::types::{Pubkey as StorePubkey, TrackInfo};
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::{deserialize_body, parse_track_key, store_error};
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -28,9 +29,16 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: InconsistencyRequest = deserialize_body(&body, "inconsistency request")?;
+
+    let request: InconsistencyRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("inconsistency request: {error}")))?;
+
     let epoch = current_epoch(&state)?;
-    let (track, track_key) = parse_track_key(&track_id)?;
+    let track: Pubkey = track_id
+        .parse()
+        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+
+    let track_key: StorePubkey = track.into();
 
     let track_info = state
         .context
@@ -74,6 +82,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     proof: &InconsistencyProof,
 ) -> Result<(), RouteError> {
+
     let protocol = state.context.state();
     if protocol.epoch != epoch || protocol.committee.is_empty() {
         return Err(RouteError::BadRequest("committee missing".into()));
@@ -117,4 +126,8 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|_| RouteError::InvalidSignature)?;
 
     Ok(())
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }

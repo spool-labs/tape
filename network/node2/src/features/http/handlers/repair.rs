@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -5,23 +7,35 @@ use axum::response::IntoResponse;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::encoding::EncodingType;
+use tape_crypto::Pubkey;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
-use tape_slicer::ClayCoder;
-use tape_store::ops::{SliceOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::types::Pubkey as StorePubkey;
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::{deserialize_body, parse_track_key, store_error};
 use crate::features::http::state::AppState;
+use crate::features::spool::repair::extract_repair_data;
 
 pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: RepairRequest = deserialize_body(&body, "repair request")?;
-    let (_, track_key) = parse_track_key(&track_id)?;
+
+    let request: RepairRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("repair request: {error}")))?;
+    let track: Pubkey = track_id
+        .parse()
+        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+
+    let track_key: StorePubkey = track.into();
+    state
+        .context
+        .store
+        .get_spool_state(request.helper_spool)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotResponsible)?;
 
     let track_info = state
         .context
@@ -30,17 +44,6 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
-    let profile = track_info.profile();
-    let encoding = profile
-        .encoding_type()
-        .ok_or_else(|| RouteError::BadRequest("unknown encoding type".into()))?;
-
-    if encoding != EncodingType::Clay {
-        return Err(RouteError::BadRequest(
-            "repair only supported for Clay encoding".into(),
-        ));
-    }
-
     let helper_slice = state
         .context
         .store
@@ -48,35 +51,16 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
-    let coder = ClayCoder::from_params(profile.clay_params());
-    let chunk_size = coder.track_chunk_size(
-        track_info.stripe_size as usize,
-        track_info.original_size as usize,
-    );
-    let sub_chunk_size = chunk_size
-        .checked_div(coder.alpha())
-        .ok_or_else(|| RouteError::BadRequest("invalid repair geometry".into()))?;
-
-    let mut output = Vec::new();
-    for stripe in &request.stripes {
-        let stripe_offset = stripe.stripe as usize * chunk_size;
-        let chunk = helper_slice
-            .get(stripe_offset..stripe_offset + chunk_size)
-            .ok_or_else(|| RouteError::BadRequest("stripe out of bounds".into()))?;
-
-        for &sub_chunk in &stripe.sub_chunks {
-            let start = sub_chunk as usize * sub_chunk_size;
-            let end = start + sub_chunk_size;
-            let data = chunk
-                .get(start..end)
-                .ok_or_else(|| RouteError::BadRequest("sub-chunk out of bounds".into()))?;
-            output.extend_from_slice(data);
-        }
-    }
+    let output = extract_repair_data(&track_info, request.helper_spool, &request, &helper_slice)
+        .map_err(RouteError::BadRequest)?;
 
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, BINARY_CONTENT)],
         output,
     ))
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }

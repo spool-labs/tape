@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
@@ -11,7 +13,6 @@ use tape_protocol::api::BINARY_CONTENT;
 use tape_store::ops::MetaOps;
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::store_error;
 use crate::features::http::state::AppState;
 
 pub async fn get_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -40,4 +41,8 @@ pub async fn get_snapshot<Db: Store, Cluster: Api, Blockchain: Rpc>(
         [(header::CONTENT_TYPE, BINARY_CONTENT)],
         bytes,
     ))
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }

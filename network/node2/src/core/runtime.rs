@@ -2,12 +2,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tape_protocol::fetch::fetch_state;
+use tape_retry::retry_if;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::core::bootstrap::build_context;
-use crate::core::channels::{downstream_channels, state_channel};
+use crate::core::channels::{downstream_channels, spool_event_channel, state_channel};
 use crate::core::config::{AppConfig, RuntimeConfig};
 use crate::core::error::NodeError;
 use crate::core::supervisor::Supervisor;
@@ -53,7 +54,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     let cancel = CancellationToken::new();
     let context = build_context(&config).await?;
 
-    let state = tape_retry::retry_if(
+    let state = retry_if(
         config.epoch.state_retry.clone(),
         Some(&cancel),
         || fetch_state(&context.rpc),
@@ -77,6 +78,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
 
     let (senders, receivers) = downstream_channels(&config.channels);
     let (state_tx, state_rx) = state_channel(&config.channels);
+    let (spool_tx, spool_rx) = spool_event_channel(&config.channels);
     let mut supervisor = Supervisor::new(cancel.clone());
 
     supervisor.spawn(
@@ -114,7 +116,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
         SpoolManager::new(
             context.clone(), 
             config.spool.clone(), 
-            receivers.spool,
+            spool_rx,
             cancel.clone()
         )
         .run(),
@@ -147,7 +149,8 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
         StateManager::new(
             context.clone(),
             config.state.clone(),
-            state_rx, 
+            state_rx,
+            spool_tx,
             cancel.clone()
         ).run(),
     );

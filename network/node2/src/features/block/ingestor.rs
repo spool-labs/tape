@@ -99,13 +99,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         .await?;
 
         send_block(
-            &self.senders.spool,
-            ChannelName::SpoolManager,
-            Arc::clone(&block),
-        )
-        .await?;
-
-        send_block(
             &self.senders.replay, 
             ChannelName::ReplayManager, 
             Arc::clone(&block)

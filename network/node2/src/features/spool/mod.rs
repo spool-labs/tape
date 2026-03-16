@@ -1,3 +1,10 @@
+pub mod fsm;
 pub mod manager;
+pub mod planner;
+pub mod recover;
+pub mod reducer;
+pub mod repair;
+pub mod scan;
+pub mod sync;
 pub mod types;
 pub mod worker;

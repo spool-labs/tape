@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -7,19 +9,24 @@ use rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, SyncSpoolEntry, SyncSpoolRequest, SyncSpoolResponse};
-use tape_store::ops::SliceOps;
+use tape_store::ops::{SliceOps, SpoolOps};
 use tape_store::types::Pubkey as StorePubkey;
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::{deserialize_body, ensure_spool_known, store_error};
 use crate::features::http::state::AppState;
 
 pub async fn sync_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    let request: SyncSpoolRequest = deserialize_body(&body, "sync request")?;
-    let _ = ensure_spool_known(&state, request.spool_index)?;
+    let request: SyncSpoolRequest = wincode::deserialize(&body)
+        .map_err(|error| RouteError::BadRequest(format!("sync request: {error}")))?;
+    state
+        .context
+        .store
+        .get_spool_state(request.spool_index)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotResponsible)?;
 
     let cursor = request.cursor.map(StorePubkey::new);
     let limit = (request.limit as usize).clamp(1, 1000);
@@ -56,4 +63,8 @@ pub async fn sync_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
         [(header::CONTENT_TYPE, BINARY_CONTENT)],
         bytes,
     ))
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }

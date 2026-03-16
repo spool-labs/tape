@@ -8,7 +8,7 @@ use tokio::task::yield_now;
 use crate::core::config::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::state::cleanup::{
-    cleanup_track_slices, delete_tape_local, delete_track_local, purge_spool_local,
+    cleanup_track_slices, delete_tape_local, delete_track_local,
 };
 
 pub async fn sweep_epoch<Db: Store>(
@@ -17,7 +17,6 @@ pub async fn sweep_epoch<Db: Store>(
     current_epoch: EpochNumber,
 ) -> Result<(), NodeError> {
     sweep_expired_tapes(store, config, current_epoch).await?;
-    sweep_retained_spools(store, config, current_epoch).await?;
     sweep_orphan_tracks(store, config).await?;
     sweep_orphan_slices(store, config).await?;
     sweep_stale_recoveries(store).await?;
@@ -34,31 +33,6 @@ async fn sweep_expired_tapes<Db: Store>(
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
             delete_tape_local(store, tape, track_batch_size(config))?;
-        }
-
-        if should_yield(index) {
-            yield_now().await;
-        }
-    }
-
-    Ok(())
-}
-
-async fn sweep_retained_spools<Db: Store>(
-    store: &TapeStore<Db>,
-    config: &GcConfig,
-    current_epoch: EpochNumber,
-) -> Result<(), NodeError> {
-    let spools = store.iter_all_spools().map_err(store_error)?;
-    for (index, (spool_id, state)) in spools.into_iter().enumerate() {
-        if state.is_locked()
-            && state
-                .epoch
-                .0
-                .saturating_add(config.locked_spool_retention_epochs)
-                <= current_epoch.0
-        {
-            purge_spool_local(store, spool_id)?;
         }
 
         if should_yield(index) {
@@ -240,7 +214,6 @@ mod tests {
             scan_interval: Duration::from_secs(60),
             track_batch_size: 2,
             slice_batch_size: 2,
-            locked_spool_retention_epochs: 4,
         }
     }
 
@@ -299,31 +272,6 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn locked_spool_purge_removes_spool_data() {
-        let store = test_store();
-        let config = test_config();
-        let spool_id = 5;
-        let track = Pubkey::new_unique();
-
-        store
-            .set_spool_state(
-                spool_id,
-                SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(1)),
-            )
-            .unwrap();
-        store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
-        store.add_pending_recovery(spool_id, track).unwrap();
-        store.set_spool_sync_cursor(spool_id, track).unwrap();
-
-        sweep_epoch(&store, &config, EpochNumber(5)).await.unwrap();
-
-        assert!(store.get_spool_state(spool_id).unwrap().is_none());
-        assert!(store.get_slice(spool_id, track).unwrap().is_none());
-        assert!(!store.has_pending_recovery(spool_id, track).unwrap());
-        assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
     }
 
     #[tokio::test]

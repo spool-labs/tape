@@ -71,6 +71,7 @@ pub struct HttpConfig {
 pub struct ChannelConfig {
     pub parsed_block_capacity: usize,
     pub replay_batch_capacity: usize,
+    pub spool_event_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -86,9 +87,11 @@ pub struct EpochManagerConfig {
 
 #[derive(Debug, Clone)]
 pub struct SpoolManagerConfig {
-    pub max_spools: usize,
     pub max_parallel_spools: usize,
-    pub worker_heartbeat: Duration,
+    pub sync_batch_size: usize,
+    pub scan_batch_size: usize,
+    pub recover_batch_size: usize,
+    pub locked_spool_retention_epochs: u64,
     pub peer_retry: RetryConfig,
 }
 
@@ -109,7 +112,6 @@ pub struct GcConfig {
     pub scan_interval: Duration,
     pub track_batch_size: usize,
     pub slice_batch_size: usize,
-    pub locked_spool_retention_epochs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +151,7 @@ impl AppConfig {
             channels: ChannelConfig {
                 parsed_block_capacity: 256,
                 replay_batch_capacity: 256,
+                spool_event_capacity: 256,
             },
             block: BlockIngestorConfig {
                 start_slot: node.start_slot,
@@ -158,9 +161,11 @@ impl AppConfig {
                 state_retry: RetryConfig::ten(),
             },
             spool: SpoolManagerConfig {
-                max_spools: 1000,
                 max_parallel_spools: worker_threads.clamp(4, 64),
-                worker_heartbeat: Duration::from_secs(2),
+                sync_batch_size: 100,
+                scan_batch_size: 100,
+                recover_batch_size: 10,
+                locked_spool_retention_epochs: 4,
                 peer_retry: RetryConfig::five(),
             },
             snapshot: SnapshotConfig {
@@ -173,7 +178,6 @@ impl AppConfig {
                 scan_interval: Duration::from_secs(60),
                 track_batch_size: 256,
                 slice_batch_size: 256,
-                locked_spool_retention_epochs: 4,
             },
         })
     }

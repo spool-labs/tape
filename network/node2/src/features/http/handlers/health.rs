@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use axum::extract::State;
 use axum::Json;
 use rpc::Rpc;
@@ -8,7 +10,6 @@ use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 use tracing::debug;
 
 use crate::features::http::error::RouteError;
-use crate::features::http::helpers::store_error;
 use crate::features::http::state::AppState;
 
 #[derive(Debug, serde::Serialize)]
@@ -31,6 +32,7 @@ pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>() -> Json<HealthRe
 pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> Result<Json<NodeStats>, RouteError> {
+
     let store = &state.context.store;
     let current_state = state.context.state();
     let last_processed_slot = store
@@ -39,7 +41,10 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map(|slot| slot.0)
         .unwrap_or(0);
 
-    let owned_spools = store.iter_all_spools().map_err(store_error)?;
+    let owned_spools = store
+        .iter_all_spools()
+        .map_err(store_error)?;
+
     let mut slices_stored = 0u64;
     let mut storage_bytes_used = 0u64;
 
@@ -57,7 +62,9 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         epoch_transitions: 0,
         current_epoch: current_state.epoch.0,
         owned_spools: owned_spools.len() as u64,
-        tracks_stored: store.count_tracks().map_err(store_error)? as u64,
+        tracks_stored: store
+            .count_tracks()
+            .map_err(store_error)? as u64,
         storage_bytes_used,
         slices_stored,
         bytes_uploaded: 0,
@@ -73,4 +80,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
 
     Ok(Json(stats))
+}
+
+fn store_error(error: impl Display) -> RouteError {
+    RouteError::Internal(error.to_string())
 }
