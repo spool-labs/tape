@@ -28,3 +28,39 @@ pub async fn submit_advance_pool<Db: Store, Cluster: Api, Blockchain: Rpc>(
             vec![cu_ix, ix]
     ).await
 }
+
+#[cfg(test)]
+mod tests {
+    use tape_core::system::EpochPhase;
+    use tape_core::types::EpochNumber;
+
+    use super::submit_advance_pool;
+    use crate::harness::NodeHarness;
+
+    const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
+
+    #[tokio::test]
+    async fn success() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+
+        submit_advance_pool(&ctx).await.expect("submit advance pool");
+
+        let node = ctx.rpc.get_node(&ctx.pubkey()).await.expect("fetch node");
+        let history = ctx
+            .rpc
+            .get_history(&harness.node(NODE).node_address)
+            .await
+            .expect("fetch history");
+
+        assert_eq!(node.latest_advance_epoch, EPOCH);
+        assert_eq!(history.latest_epoch, EPOCH);
+    }
+}

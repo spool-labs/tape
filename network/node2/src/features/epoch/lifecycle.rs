@@ -398,13 +398,13 @@ mod tests {
     }
 
     #[test]
-    fn syncing_wait_spools_first() {
+    fn wait_spools() {
         let state = state_with(EpochPhase::Syncing, true, false);
         assert_eq!(next_action(&state, NODE, &HashSet::new()), Some(Action::WaitSpoolReady));
     }
 
     #[test]
-    fn syncing_spools_ready_then_sync() {
+    fn sync_after_spools() {
         let state = state_with(EpochPhase::Syncing, true, false);
         let done = HashSet::from([Action::WaitSpoolReady]);
         assert_eq!(next_action(&state, NODE, &done), Some(Action::SyncEpoch));
@@ -442,20 +442,20 @@ mod tests {
     }
 
     #[test]
-    fn active_pool_not_done() {
+    fn pool_first() {
         let state = state_with(EpochPhase::Active, true, true);
         assert_eq!(next_action(&state, NODE, &HashSet::new()), Some(Action::AdvancePool));
     }
 
     #[test]
-    fn active_pool_done_join_next() {
+    fn join_next() {
         let state = state_with(EpochPhase::Active, true, false);
         let done = HashSet::from([Action::AdvancePool]);
         assert_eq!(next_action(&state, NODE, &done), Some(Action::JoinNetwork));
     }
 
     #[test]
-    fn active_join_done_advance_next() {
+    fn advance_next() {
         let state = state_with(EpochPhase::Active, true, false);
         let done = HashSet::from([Action::AdvancePool, Action::JoinNetwork]);
         assert_eq!(next_action(&state, NODE, &done), Some(Action::AdvanceEpoch));
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_skip_to_active() {
+    fn skip_active() {
         // Node comes online at Active, never synced — skips SyncEpoch,
         // goes straight to AdvancePool (if in committee).
         let state = state_with(EpochPhase::Active, true, true);

@@ -37,3 +37,35 @@ pub async fn submit_sync_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         )
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use tape_core::system::EpochPhase;
+    use tape_core::types::EpochNumber;
+
+    use super::submit_sync_epoch;
+    use crate::harness::NodeHarness;
+
+    const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
+
+    #[tokio::test]
+    async fn success() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let owned_spools = harness.owned_spools(NODE);
+
+        submit_sync_epoch(&ctx, EPOCH, &owned_spools)
+            .await
+            .expect("submit sync epoch");
+
+        let node = ctx.rpc.get_node(&ctx.pubkey()).await.expect("fetch node");
+        assert_eq!(node.latest_sync_epoch, EPOCH);
+    }
+}

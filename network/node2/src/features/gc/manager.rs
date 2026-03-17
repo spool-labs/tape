@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn next_pending_epoch_without_markers_starts_at_current_epoch() {
+    fn no_markers() {
         let store = test_store();
 
         assert_eq!(
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn next_pending_epoch_prefers_incomplete_started_epoch() {
+    fn prefers_started() {
         let store = test_store();
 
         store.set_gc_started_epoch(EpochNumber(5)).unwrap();
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn next_pending_epoch_advances_from_completed_epoch() {
+    fn from_completed() {
         let store = test_store();
 
         store.set_gc_started_epoch(EpochNumber(6)).unwrap();
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gc_completed_epoch_advances_after_successful_sweep() {
+    async fn marks_complete() {
         let store = test_store();
         let config = test_config();
 

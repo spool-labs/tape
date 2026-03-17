@@ -244,3 +244,67 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use peer_manager::PeerManager;
+    use peer_memory::MemoryApi;
+    use rpc_client::RpcClient;
+    use solana_sdk::signature::Keypair;
+    use store_memory::MemoryStore;
+    use tape_chain_harness::ChainHarness;
+    use tape_core::types::EpochNumber;
+    use tape_store::ops::MetaOps;
+    use tape_store::TapeStore;
+
+    use super::{NodeConfig, NodeContextBuilder};
+
+    #[tokio::test]
+    async fn resolves_identity() {
+        let harness = ChainHarness::builder()
+            .nodes(25)
+            .epoch(EpochNumber(3))
+            .build()
+            .await
+            .expect("build harness");
+        let node = harness.node(7);
+        let store = TapeStore::new(MemoryStore::new());
+        let rpc = RpcClient::from_rpc(harness.rpc().clone());
+        let ctx = NodeContextBuilder::new(
+            test_config(),
+            clone_keypair(node.keypair()),
+            *node.bls_keypair(),
+            store,
+            rpc,
+            Arc::new(PeerManager::new()),
+            Arc::new(MemoryApi::noop()),
+        )
+        .build()
+        .await
+        .expect("build context");
+
+        assert_eq!(ctx.node_id(), node.node_id);
+        assert_eq!(ctx.node_address(), node.node_address);
+        assert_eq!(ctx.store.get_node_id().expect("get node id"), Some(node.node_id));
+        assert_eq!(
+            ctx.store.get_node_address().expect("get node address"),
+            Some(node.node_address.into())
+        );
+    }
+
+    fn clone_keypair(keypair: &Keypair) -> Keypair {
+        Keypair::try_from(keypair.to_bytes().as_ref()).expect("clone keypair")
+    }
+
+    fn test_config() -> NodeConfig {
+        NodeConfig {
+            node_keypair: String::new(),
+            bls_keypair: std::path::PathBuf::from("/dev/null"),
+            rpc_url: "http://localhost:8899".into(),
+            storage_path: "/tmp".into(),
+            start_slot: tape_core::types::SlotNumber(0),
+        }
+    }
+}

@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_tape_sweep_cascades() {
+    async fn expires_tape() {
         let store = test_store();
         let config = test_config();
         let tape = Pubkey::new_unique();
@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn orphan_track_without_tape_is_removed() {
+    async fn removes_orphan_track() {
         let store = test_store();
         let config = test_config();
         let tape = Pubkey::new_unique();
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn orphan_slice_without_valid_object_is_removed() {
+    async fn removes_orphan_slice() {
         let store = test_store();
         let config = test_config();
         let tape = Pubkey::new_unique();
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_recovery_without_valid_track_is_removed() {
+    async fn removes_stale_recovery() {
         let store = test_store();
         let config = test_config();
         let tape = Pubkey::new_unique();
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rerunning_same_epoch_sweep_is_a_no_op() {
+    async fn repeat_noop() {
         let store = test_store();
         let config = test_config();
         let tape = Pubkey::new_unique();

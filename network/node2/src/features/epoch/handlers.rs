@@ -101,3 +101,111 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tape_core::system::EpochPhase;
+    use tape_core::types::EpochNumber;
+    use tape_retry::RetryConfig;
+    use tokio_util::sync::CancellationToken;
+
+    use super::EpochHandlers;
+    use crate::chain::submit_advance_epoch;
+    use crate::core::config::EpochManagerConfig;
+    use crate::harness::NodeHarness;
+
+    const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
+
+    #[tokio::test]
+    async fn publishes_state() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .onchain_time_elapsed()
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+
+        submit_advance_epoch(&ctx)
+            .await
+            .expect("submit advance epoch");
+
+        handlers
+            .handle_advance_epoch(EPOCH + EpochNumber(1))
+            .await
+            .expect("handle advance epoch");
+
+        let state = ctx.state();
+        assert_eq!(state.epoch, EPOCH + EpochNumber(1));
+        assert_eq!(state.phase, EpochPhase::Syncing);
+    }
+
+    #[tokio::test]
+    async fn sync_phase() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+
+        handlers
+            .handle_sync_epoch(EPOCH, EpochPhase::Settling as u64)
+            .await
+            .expect("handle sync epoch");
+        assert_eq!(ctx.state().phase, EpochPhase::Settling);
+
+        handlers
+            .handle_sync_epoch(EPOCH + EpochNumber(1), EpochPhase::Active as u64)
+            .await
+            .expect("ignore mismatched epoch");
+        assert_eq!(ctx.state().phase, EpochPhase::Settling);
+    }
+
+    #[tokio::test]
+    async fn pool_phase() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+
+        handlers
+            .handle_advance_pool(
+                harness.node(NODE).node_address,
+                EPOCH,
+                EpochPhase::Active as u64,
+            )
+            .await
+            .expect("handle advance pool");
+        assert_eq!(ctx.state().phase, EpochPhase::Active);
+
+        handlers
+            .handle_advance_pool(
+                harness.node(NODE).node_address,
+                EPOCH + EpochNumber(1),
+                EpochPhase::Syncing as u64,
+            )
+            .await
+            .expect("ignore mismatched epoch");
+        assert_eq!(ctx.state().phase, EpochPhase::Active);
+    }
+
+    fn manager_config() -> EpochManagerConfig {
+        EpochManagerConfig {
+            state_retry: RetryConfig::none(),
+        }
+    }
+}

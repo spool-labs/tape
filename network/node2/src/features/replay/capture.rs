@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_preserves_instruction_order() {
+    fn keeps_order() {
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
         let block = ParsedBlock {
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn advance_epoch_rebuckets_following_events() {
+    fn rebuckets_events() {
         let track = Pubkey::new_unique();
         let tape = Pubkey::new_unique();
         let block = ParsedBlock {

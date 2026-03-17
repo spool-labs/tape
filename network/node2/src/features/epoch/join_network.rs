@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timing_gate_not_met() {
+    async fn gate_wait() {
         let harness = NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)

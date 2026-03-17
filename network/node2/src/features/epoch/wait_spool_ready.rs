@@ -194,14 +194,14 @@ mod tests {
     }
 
     #[test]
-    fn readiness_not_in_committee() {
+    fn no_committee() {
         let ctx = test_context();
         // Default state: empty committee, node_id=0 not a member.
         assert!(matches!(check_readiness(&ctx), Readiness::Ready));
     }
 
     #[test]
-    fn readiness_no_spools_assigned() {
+    fn no_spools() {
         let ctx = test_context();
         // In committee but no spools mapped to member 0.
         let mut state = ProtocolState::default();

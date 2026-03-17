@@ -161,11 +161,12 @@ mod tests {
     use tape_api::event::TrackRegistered;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::SPOOL_GROUP_SIZE;
+    use tape_core::spooler::SpoolGroup;
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
-    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo};
+    use tape_store::ops::{ObjectInfoOps, SliceOps, TapeOps, TrackOps};
+    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
     use tape_store::TapeStore;
 
     use super::apply_slot;
@@ -195,8 +196,21 @@ mod tests {
         }
     }
 
+    fn track_info(tape: Pubkey, spool_group: SpoolGroup) -> TrackInfo {
+        TrackInfo {
+            tape_address: tape,
+            spool_group,
+            original_size: 1024,
+            stripe_size: 64,
+            stripe_count: 2,
+            encoding_type: 0,
+            encoding_params: 0,
+            commitment: Vec::new(),
+        }
+    }
+
     #[test]
-    fn apply_slot_writes_track_tape_and_object_state() {
+    fn writes_state() {
         let store = test_store();
         let slot = SlotNumber(55);
         let track = SolanaPubkey::new_unique();
@@ -240,5 +254,199 @@ mod tests {
                 slot,
             })
         );
+    }
+
+    #[test]
+    fn deletes_track() {
+        let store = test_store();
+        let slot = SlotNumber(21);
+        let track = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(11);
+
+        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+        for slice_index in 0..SPOOL_GROUP_SIZE {
+            store
+                .put_slice(spool_group.spool_at(slice_index), track, vec![slice_index as u8])
+                .unwrap();
+        }
+
+        apply_slot(
+            &store,
+            slot,
+            &[ReplayableEvent::DeleteTrack {
+                track: track.0,
+                epoch: EpochNumber(4),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
+        for slice_index in 0..SPOOL_GROUP_SIZE {
+            assert!(
+                store
+                    .get_slice(spool_group.spool_at(slice_index), track)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn invalidates_track() {
+        let store = test_store();
+        let slot = SlotNumber(34);
+        let track = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(23);
+
+        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+        for slice_index in 0..SPOOL_GROUP_SIZE {
+            store
+                .put_slice(spool_group.spool_at(slice_index), track, vec![0xAB; 8])
+                .unwrap();
+        }
+
+        apply_slot(
+            &store,
+            SlotNumber(55),
+            &[ReplayableEvent::InvalidateTrack {
+                track: track.0,
+                epoch: EpochNumber(8),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_some());
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Invalid {
+                epoch: EpochNumber(8),
+                slot: SlotNumber(55),
+            })
+        );
+        for slice_index in 0..SPOOL_GROUP_SIZE {
+            assert!(
+                store
+                    .get_slice(spool_group.spool_at(slice_index), track)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn destroys_tape() {
+        let store = test_store();
+        let slot = SlotNumber(13);
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let other_tape = Pubkey::from(SolanaPubkey::new_unique());
+        let track_a = Pubkey::from(SolanaPubkey::new_unique());
+        let track_b = Pubkey::from(SolanaPubkey::new_unique());
+        let track_other = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(31);
+
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    end_epoch: EpochNumber(6),
+                },
+            )
+            .unwrap();
+        store
+            .put_tape(
+                other_tape,
+                TapeInfo {
+                    end_epoch: EpochNumber(7),
+                },
+            )
+            .unwrap();
+
+        for track in [track_a, track_b] {
+            store.put_track(track, track_info(tape, spool_group)).unwrap();
+            store
+                .put_object_info(
+                    track,
+                    ObjectInfo::Valid {
+                        track_address: track,
+                        registered_epoch: EpochNumber(3),
+                        certified_epoch: None,
+                        slot,
+                    },
+                )
+                .unwrap();
+            for slice_index in 0..SPOOL_GROUP_SIZE {
+                store
+                    .put_slice(spool_group.spool_at(slice_index), track, vec![0xCD; 8])
+                    .unwrap();
+            }
+        }
+
+        store
+            .put_track(track_other, track_info(other_tape, spool_group))
+            .unwrap();
+        store
+            .put_object_info(
+                track_other,
+                ObjectInfo::Valid {
+                    track_address: track_other,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+
+        apply_slot(
+            &store,
+            SlotNumber(99),
+            &[ReplayableEvent::DestroyTape {
+                tape: tape.0,
+                epoch: EpochNumber(9),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.get_tape(tape).unwrap().is_none());
+        for track in [track_a, track_b] {
+            assert!(store.get_track(track).unwrap().is_none());
+            assert!(store.get_object_info(track).unwrap().is_none());
+            for slice_index in 0..SPOOL_GROUP_SIZE {
+                assert!(
+                    store
+                        .get_slice(spool_group.spool_at(slice_index), track)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+
+        assert!(store.get_tape(other_tape).unwrap().is_some());
+        assert!(store.get_track(track_other).unwrap().is_some());
+        assert!(store.get_object_info(track_other).unwrap().is_some());
     }
 }

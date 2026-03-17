@@ -132,7 +132,7 @@ mod tests {
     use super::snapshot_epoch_to_build;
 
     #[test]
-    fn snapshot_epoch_waits_for_epoch_two() {
+    fn waits_epoch_two() {
         let mut state = ProtocolState::default();
         state.epoch = EpochNumber(0);
 
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_epoch_requires_committee_membership() {
+    fn needs_committee() {
         let mut state = ProtocolState::default();
         state.epoch = EpochNumber(4);
 

@@ -108,3 +108,115 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use rpc::Rpc;
+    use tape_core::snapshot::ReplayableEvent;
+    use tape_core::system::EpochPhase;
+    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_retry::RetryConfig;
+    use tape_store::ops::EventLogOps;
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
+
+    use super::BlockIngestor;
+    use crate::chain::submit_join_network;
+    use crate::core::channels::{downstream_channels, state_channel};
+    use crate::core::config::{BlockIngestorConfig, ChannelConfig, ReplayConfig};
+    use crate::features::replay::manager::ReplayManager;
+    use crate::harness::NodeHarness;
+
+    const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 24;
+
+    #[tokio::test]
+    async fn forwards_batch() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
+
+        submit_join_network(&ctx)
+            .await
+            .expect("submit join network");
+        harness
+            .rpc()
+            .warp_to_slot(confirmed_tip + 1)
+            .expect("confirm produced block");
+        let produced_slot = produced_slot(harness.rpc(), confirmed_tip)
+            .await
+            .expect("discover produced slot");
+
+        let (senders, receivers) = downstream_channels(&ChannelConfig {
+            parsed_block_capacity: 8,
+            replay_batch_capacity: 8,
+        });
+        let (state_tx, mut state_rx) = state_channel(&ChannelConfig {
+            parsed_block_capacity: 8,
+            replay_batch_capacity: 8,
+        });
+        let replay = ReplayManager::new(
+            ctx.clone(),
+            ReplayConfig,
+            receivers.replay,
+            state_tx,
+            CancellationToken::new(),
+        );
+        let replay_task = tokio::spawn(replay.run());
+
+        let ingestor = BlockIngestor::new(
+            ctx.clone(),
+            BlockIngestorConfig {
+                start_slot: produced_slot,
+                fetch_retry: RetryConfig::none(),
+            },
+            senders,
+            CancellationToken::new(),
+        );
+
+        ingestor
+            .fetch_parse_and_dispatch(produced_slot)
+            .await
+            .expect("dispatch produced block");
+
+        let batch = timeout(Duration::from_secs(1), state_rx.recv())
+            .await
+            .expect("receive replay batch in time")
+            .expect("replay batch");
+
+        replay_task.abort();
+        let _ = replay_task.await;
+
+        assert_eq!(batch.slot, produced_slot);
+        assert!(matches!(
+            batch.events.as_slice(),
+            [ReplayableEvent::JoinNetwork { .. }]
+        ));
+
+        let entries = ctx.store.get_epoch_events(EPOCH).expect("get epoch events");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slot, produced_slot);
+        assert!(matches!(
+            entries[0].events.as_slice(),
+            [ReplayableEvent::JoinNetwork { .. }]
+        ));
+    }
+
+    async fn produced_slot(rpc: &rpc_litesvm::LiteSvmRpc, confirmed_tip: u64) -> Option<SlotNumber> {
+        for slot in [confirmed_tip, confirmed_tip + 1] {
+            if rpc.get_block(slot).await.is_ok() {
+                return Some(SlotNumber(slot));
+            }
+        }
+
+        None
+    }
+}

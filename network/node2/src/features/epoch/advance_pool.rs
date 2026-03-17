@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrong_phase_then_cancel() {
+    async fn wrong_phase() {
         let harness = NodeHarness::builder()
             .nodes(20)
             .epoch(EPOCH)

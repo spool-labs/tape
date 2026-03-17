@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_batch_advances_cursor_for_empty_slots() {
+    fn empty_slots() {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(99),
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_batch_only_advances_cursor_after_successful_apply() {
+    fn no_partial_cursor() {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(77),
