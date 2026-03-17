@@ -55,6 +55,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.keypair.pubkey()
     }
 
+    pub fn signer(&self) -> &Keypair {
+        self.keypair.as_ref()
+    }
+
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.keypair.sign_message(message)
     }
@@ -117,7 +121,6 @@ pub mod test_utils {
     use std::sync::Arc;
 
     use peer_memory::MemoryApi;
-    use rpc_client::RpcClient;
     use rpc_litesvm::LiteSvmRpc;
     use solana_sdk::signature::Keypair;
     use tape_api::program::tapedrive::node_pda;
@@ -136,9 +139,17 @@ pub mod test_utils {
     }
 
     pub fn test_context_with_api(api: MemoryApi) -> TestContext {
+        test_context_with_api_and_rpc(api, LiteSvmRpc::new())
+    }
+
+    pub fn test_context_with_rpc(rpc: LiteSvmRpc) -> TestContext {
+        test_context_with_api_and_rpc(MemoryApi::noop(), rpc)
+    }
+
+    pub fn test_context_with_api_and_rpc(api: MemoryApi, rpc: LiteSvmRpc) -> TestContext {
         let keypair = Keypair::new();
         let bls = BlsPrivateKey::from_random();
-        let rpc = RpcClient::from_rpc(LiteSvmRpc::new());
+        let rpc = RpcClient::from_rpc(rpc);
         let peer_manager = Arc::new(PeerManager::new());
         let store = TapeStore::new(MemoryStore::new());
         let (node_address, _) = node_pda(keypair.pubkey());

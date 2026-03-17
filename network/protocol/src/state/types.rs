@@ -14,6 +14,7 @@ use tape_crypto::Hash;
 pub struct ProtocolState {
     pub epoch: EpochNumber,
     pub phase: EpochPhase,
+    pub last_epoch: i64,
     pub nonce: Hash,
     pub committee: Vec<CommitteeMember>,
     pub committee_prev: Vec<CommitteeMember>,
@@ -27,6 +28,7 @@ impl Default for ProtocolState {
         Self {
             epoch: EpochNumber(0),
             phase: EpochPhase::Active,
+            last_epoch: 0,
             nonce: Hash::default(),
             committee: Vec::new(),
             committee_prev: Vec::new(),

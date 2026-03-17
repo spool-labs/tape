@@ -8852,6 +8852,7 @@ dependencies = [
 name = "tape-node2"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "axum",
  "bytemuck",
  "clap",

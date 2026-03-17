@@ -26,6 +26,7 @@ pub async fn fetch_state<R: Rpc>(rpc: &RpcClient<R>)
     Ok(ProtocolState {
         epoch: epoch.id,
         phase,
+        last_epoch: epoch.last_epoch,
         nonce: epoch.nonce,
         committee,
         committee_prev,
