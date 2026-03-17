@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::prelude::SpoolGroup;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
@@ -117,6 +118,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let mut workers: HashMap<SpoolIndex, CancellationToken> = HashMap::new();
         let mut join_set: JoinSet<WorkerDone> = JoinSet::new();
 
+        // Initial spawn for all currently owned spools
         plan_and_spawn(
             &self.context,
             &self.config,
@@ -128,6 +130,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    // Cancel all workers and exit
                     for (_, token) in workers.drain() {
                         token.cancel();
                     }
@@ -152,11 +155,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         "epoch advanced, cancelling workers"
                     );
 
+                    // Cancel all workers from the old epoch 
                     for (_, token) in workers.drain() {
                         token.cancel();
                     }
+
+                    // Drain join_set to collect completions of cancelled workers 
+                    // (results are discarded)
                     while join_set.join_next().await.is_some() {}
 
+                    // Re-plan and spawn new workers for the new epoch
                     plan_and_spawn(
                         &self.context,
                         &self.config,
@@ -213,12 +221,16 @@ where
         .map_err(|error| NodeError::Store(format!("iter_all_spools: {error}")))?;
     let mut persisted_map: HashMap<SpoolIndex, SpoolState> = persisted.into_iter().collect();
 
+    // Handle currently owned spools first
     for spool in owned_sorted {
         let persisted_state = persisted_map.remove(&spool);
 
         match fsm::on_epoch_event(persisted_state.as_ref(), true, epoch) {
             EpochAction::Idle => {}
-            EpochAction::Lock => {} // unreachable for owned spools
+            EpochAction::Lock => {
+                // unreachable for owned spools
+                warn!(spool, "unexpected lock action for owned spool");
+            }
             EpochAction::Spawn { kind, update } => {
                 // Epoch changed or new spool — clean stale task state
                 if update.is_some() {
@@ -241,9 +253,14 @@ where
                     .set_spool_state(spool, state)
                     .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
 
-                if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
-                    spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
+                // Spawn worker if we don't already have one for this spool and haven't hit the max
+                // parallel limit
+
+                if workers.len() >= config.max_parallel_spools || workers.contains_key(&spool) {
+                    continue;
                 }
+
+                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
             }
         }
     }
@@ -268,7 +285,10 @@ where
                     purge_locked_spool(ctx, spool)?;
                 }
             }
-            EpochAction::Spawn { .. } => {} // unreachable for non-owned spools
+            EpochAction::Spawn { .. } => {
+                // unreachable for non-owned spools
+                warn!(spool, "unexpected spawn action for non-owned spool");
+            }
         }
     }
 
@@ -356,11 +376,13 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
 ) -> SpoolState {
     let protocol = ctx.state();
-    let group = tape_core::spooler::SpoolGroup::of(spool);
+    let group = SpoolGroup::of(spool);
     let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
+
     state.prev_owner = protocol.spool_owner_prev(spool);
     for slice in 0..SPOOL_GROUP_SIZE {
-        state.prev_helpers[slice] = protocol.spool_owner_prev(group.spool_at(slice));
+        state.prev_helpers[slice] = protocol
+            .spool_owner_prev(group.spool_at(slice));
     }
     state
 }

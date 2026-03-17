@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_protocol::Api;
@@ -13,7 +12,7 @@ use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey, SpoolState, TrackInfo};
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::core::config::SpoolManagerConfig;
 use crate::core::context::NodeContext;
@@ -91,53 +90,76 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> RepairResult {
-    let state = match ctx.store.get_spool_state(spool) {
+    let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(state)) => state,
         _ => return RepairResult::Done { unrepairable: 0 },
     };
 
-    let peers = group_peers(&ctx, &state, spool);
-    let mut unrepairable = 0;
+    let peers = group_peers(ctx.as_ref(), &spool_state, spool);
 
-    let pending = match ctx.store
-        .iter_pending_repairs(spool, config.repair_batch_size.max(1)) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(spool, error = %e, "repair iter error");
-            return RepairResult::Done { unrepairable: 0 };
-        }
-    };
+    let mut unrepairable = 0usize;
 
-    for track_addr in pending {
+    loop {
         if cancel.is_cancelled() {
             break;
         }
 
-        if ctx.store.has_slice(spool, track_addr).unwrap_or(false) {
-            let _ = ctx.store.remove_pending_repair(spool, track_addr);
-            continue;
-        }
-
-        let Some(track_info) = ctx.store.get_track(track_addr).ok().flatten() else {
-            let _ = ctx.store.remove_pending_repair(spool, track_addr);
-            continue;
+        let pending = match ctx
+            .store
+            .iter_pending_repairs(spool, config.repair_batch_size.max(1))
+        {
+            Ok(pending) => pending,
+            Err(error) => {
+                warn!(spool, %error, "iter_pending_repairs failed");
+                break;
+            }
         };
 
-        let profile = track_info.profile();
-        if !profile.is_clay() {
-            escalate(&ctx.store, spool, track_addr);
-            unrepairable += 1;
-            continue;
+        if pending.is_empty() {
+            break;
         }
 
-        match repair_track(&ctx, config, spool, &peers, track_addr, &track_info).await {
-            Ok(data) => {
-                let _ = ctx.store.put_slice(spool, track_addr, data);
-                let _ = ctx.store.remove_pending_repair(spool, track_addr);
+        for track in pending {
+            if cancel.is_cancelled() {
+                break;
             }
-            Err(()) => {
-                escalate(&ctx.store, spool, track_addr);
-                unrepairable += 1;
+
+            let has_slice = match ctx.store.has_slice(spool, track) {
+                Ok(has_slice) => has_slice,
+                Err(error) => {
+                    warn!(spool, track = %track, %error, "has_slice failed");
+                    continue;
+                }
+            };
+
+            // If slice already exists, just remove from pending_repairs and skip.
+            if has_slice {
+                let _ = ctx.store.remove_pending_repair(spool, track);
+                info!(spool, track = %track, "slice already present, skipping");
+                continue;
+            }
+
+            // Load track_info. If missing, remove from pending_repairs and skip.
+            let Some(track_info) = ctx.store.get_track(track).ok().flatten() else {
+                let _ = ctx.store.remove_pending_repair(spool, track);
+                warn!(spool, track = %track, "track_info missing, skipping");
+                continue;
+            };
+
+            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info).await {
+                Ok(data) => {
+                    if let Err(error) = ctx.store.put_slice(spool, track, data) {
+                        warn!(spool, track = %track, %error, "put_slice failed");
+                        continue;
+                    }
+                    let _ = ctx.store.remove_pending_repair(spool, track);
+                }
+                Err(()) => {
+                    info!(spool, track = %track, "repair failed, escalating to recovery");
+                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    let _ = ctx.store.add_pending_recovery(spool, track);
+                    unrepairable += 1;
+                }
             }
         }
     }
@@ -158,27 +180,27 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
 ) -> GroupPeers {
     let group = SpoolGroup::of(spool);
+    let previous = spool_state
+        .prev_helpers
+        .iter()
+        .enumerate()
+        .filter_map(|(slice, node_id)| {
+            let helper_spool = group.spool_at(slice);
+            if helper_spool == spool {
+                None
+            } else {
+                node_id.map(|node_id| (helper_spool, node_id))
+            }
+        })
+        .collect();
 
-    let mut previous = HashMap::new();
-    for i in 0..SPOOL_GROUP_SIZE {
-        let peer_spool = group.spool_at(i);
-        if peer_spool == spool {
-            continue;
-        }
-        if let Some(node_id) = spool_state.prev_helpers[i] {
-            previous.insert(peer_spool, node_id);
-        }
-    }
-
-    let state = ctx.state();
-    let healthy = ctx.peer_manager.healthy_peers_for_group(&state, group);
-    let mut current = HashMap::new();
-    for (peer_spool, node_id) in healthy {
-        if peer_spool == spool {
-            continue;
-        }
-        current.insert(peer_spool, node_id);
-    }
+    let protocol = ctx.state();
+    let current = ctx
+        .peer_manager
+        .healthy_peers_for_group(protocol.as_ref(), group)
+        .into_iter()
+        .filter(|(helper_spool, _)| *helper_spool != spool)
+        .collect();
 
     GroupPeers { previous, current }
 }
@@ -190,18 +212,33 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
     peers: &GroupPeers,
-    track_addr: Pubkey,
+    track: Pubkey,
     track_info: &TrackInfo,
 ) -> Result<Vec<u8>, ()> {
-    let group = SpoolGroup::of(spool);
-    let lost_pos = group.slice_of(spool).ok_or(())?;
-    let lost = SliceIndex::new(lost_pos);
 
     let profile = track_info.profile();
-    let available: Vec<SliceIndex> = (0..SPOOL_GROUP_SIZE)
-        .filter(|&i| i != lost_pos)
-        .map(SliceIndex::new)
+    if !profile.is_clay() || track_info.stripe_size == 0 || track_info.stripe_count == 0 {
+        return Err(());
+    }
+
+    let group = SpoolGroup::of(spool);
+    let position = group.slice_of(spool).ok_or(())?;
+    let lost = SliceIndex::new(position);
+
+    // Merge previous and current helpers, excluding duplicates and our own slice. 
+    let mut available: Vec<SliceIndex> = peers
+        .previous
+        .keys()
+        .chain(peers.current.keys())
+        .filter_map(|helper_spool| group.slice_of(*helper_spool).map(SliceIndex::new))
         .collect();
+
+    available.sort_unstable();
+    available.dedup();
+
+    if available.is_empty() {
+        return Err(());
+    }
 
     let slicer = Slicer::with_profile(
         ClayCoder::from_params(profile.clay_params()),
@@ -219,25 +256,23 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
         )
         .map_err(|_| ())?;
 
-    // Try previous helpers first, then current
-    let helper_data =
-        match fetch_helpers(ctx, config, spool, &plan, &peers.previous, track_addr).await {
-            Ok(data) => data,
-            Err(()) => fetch_helpers(ctx, config, spool, &plan, &peers.current, track_addr).await?,
-        };
+    // Try fetching helper data using the previous peer map first, then fall back to current if any
+    // are missing. There is a chance that the difference between the two maps could cause the
+    // repair to fail even if helpers are available.
+    let helper_data = match fetch_helpers(ctx, config, spool, &plan, &peers.previous, track).await {
+        Ok(helper_data) => helper_data,
+        Err(()) => fetch_helpers(ctx, config, spool, &plan, &peers.current, track).await?,
+    };
 
     let metadata = SliceMetadata::with_profile(
         track_info.original_size as usize,
         track_info.stripe_size as usize,
         profile,
-    );
+    )
+    .to_bytes();
 
-    let metadata_bytes: &[u8; SliceMetadata::SIZE] =
-        bytemuck::bytes_of(&metadata).try_into().map_err(|_| ())?;
-
-    let repaired = slicer.repair(&plan, &helper_data, metadata_bytes).map_err(|_| ())?;
-
-    if !track_info.verify_slice(lost_pos, &repaired) {
+    let repaired = slicer.repair(&plan, &helper_data, &metadata).map_err(|_| ())?;
+    if !track_info.verify_slice(position, &repaired) {
         return Err(());
     }
 
@@ -252,9 +287,9 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     plan: &RepairPlan,
     peer_map: &HashMap<SpoolIndex, NodeId>,
-    track_addr: Pubkey,
+    track: Pubkey,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
-    let reqs = per_helper_reqs(plan, spool, track_addr);
+    let reqs = per_helper_reqs(plan, spool, track);
     let mut helper_data = HashMap::new();
 
     for (slice_idx, req) in &reqs {
@@ -286,7 +321,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn per_helper_reqs(
     plan: &RepairPlan,
     spool: SpoolIndex,
-    track_addr: Pubkey,
+    track: Pubkey,
 ) -> HashMap<SliceIndex, RepairReq> {
     let group = SpoolGroup::of(spool);
     let mut reqs: HashMap<SliceIndex, RepairReq> = HashMap::new();
@@ -294,7 +329,7 @@ fn per_helper_reqs(
     for stripe_repair in &plan.stripes {
         for helper in &stripe_repair.helpers {
             let entry = reqs.entry(helper.slice).or_insert_with(|| RepairReq {
-                track: track_addr.into(),
+                track: track.into(),
                 helper_spool: group.spool_at(*helper.slice),
                 stripes: vec![],
             });
@@ -308,11 +343,6 @@ fn per_helper_reqs(
     reqs
 }
 
-/// Remove from pending_repairs, add to pending_recoveries.
-fn escalate<Db: Store>(store: &tape_store::TapeStore<Db>, spool: SpoolIndex, track: Pubkey) {
-    let _ = store.remove_pending_repair(spool, track);
-    let _ = store.add_pending_recovery(spool, track);
-}
 
 /// Extract sub-chunk data from a local slice to serve a repair request.
 /// Called by the HTTP handler when a peer asks for repair data.

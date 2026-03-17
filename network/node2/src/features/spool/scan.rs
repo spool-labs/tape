@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::spooler::SpoolIndex;
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
-use tape_store::types::Pubkey;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -41,18 +40,24 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> ScanResult {
-    let mut cursor: Option<Pubkey> = None;
-    let mut gaps = 0;
+
+    let group = SpoolGroup::of(spool);
+
+    let mut cursor = None;
+    let mut gaps = 0usize;
 
     loop {
         if cancel.is_cancelled() {
             break;
         }
 
-        let tracks = match ctx.store.iter_tracks_from(cursor, config.scan_batch_size.max(1)) {
+        let tracks = match ctx
+            .store
+            .iter_tracks_from(cursor, config.scan_batch_size.max(1))
+        {
             Ok(tracks) => tracks,
-            Err(e) => {
-                debug!(spool, error = %e, "scan store error");
+            Err(error) => {
+                debug!(spool, %error, "scan iter_tracks_from failed");
                 break;
             }
         };
@@ -62,23 +67,31 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         for (track_addr, track_info) in &tracks {
-            if !track_info.spool_group.contains(spool) {
+            if track_info.spool_group != group {
                 continue;
             }
 
-            match ctx.store.has_slice(spool, *track_addr) {
-                Ok(true) => continue,
-                Ok(false) => {
-                    let _ = ctx.store.add_pending_repair(spool, *track_addr);
-                    gaps += 1;
+            let has_slice = match ctx.store.has_slice(spool, *track_addr) {
+                Ok(has_slice) => has_slice,
+                Err(error) => {
+                    debug!(spool, track = %track_addr, %error, "scan has_slice failed");
+                    continue;
                 }
-                Err(e) => {
-                    debug!(spool, track = ?track_addr, error = %e, "scan has_slice error");
-                }
+            };
+
+            if has_slice {
+                continue;
             }
+
+            if let Err(error) = ctx.store.add_pending_repair(spool, *track_addr) {
+                debug!(spool, track = %track_addr, %error, "scan add_pending_repair failed");
+                continue;
+            }
+
+            gaps += 1;
         }
 
-        cursor = tracks.last().map(|(addr, _)| *addr);
+        cursor = tracks.last().map(|(track_addr, _)| *track_addr);
     }
 
     ScanResult::Done { gaps }
@@ -88,8 +101,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::spooler::SpoolGroup;
-    use tape_store::types::TrackInfo;
+    use tape_store::types::{Pubkey, TrackInfo};
 
     use crate::core::context::test_utils::test_context;
 

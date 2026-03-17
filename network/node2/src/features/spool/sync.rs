@@ -105,6 +105,8 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     prev_owner: NodeId,
     cursor: Option<Pubkey>,
 ) -> Result<(Option<Pubkey>, usize), SyncError> {
+    let mut batch_synced = 0;
+
     let req = SyncReq {
         spool_index: spool,
         cursor: cursor.map(|track| track.0),
@@ -125,7 +127,6 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     .await
     .map_err(|_| SyncError::Unavailable)?;
 
-    let mut batch_synced = 0;
     for entry in response.entries {
         let track_addr = Pubkey(entry.track_address);
 
@@ -151,6 +152,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         ctx.store
             .put_slice(spool, track_addr, entry.slice_data)
             .map_err(|error| SyncError::Store(format!("put_slice: {error}")))?;
+
         batch_synced += 1;
     }
 
