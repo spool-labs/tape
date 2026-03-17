@@ -14,6 +14,7 @@ use crate::core::error::NodeError;
 use crate::core::supervisor::Supervisor;
 use crate::core::types::ServiceName;
 use crate::features::block::ingestor::BlockIngestor;
+use crate::features::epoch::lifecycle::LifecycleWorker;
 use crate::features::epoch::manager::EpochManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
@@ -106,6 +107,16 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
             config.epoch.clone(),
             receivers.epoch,
             cancel.clone()
+        )
+        .run(),
+    );
+
+    supervisor.spawn(
+        ServiceName::EpochLifecycle,
+        LifecycleWorker::new(
+            context.clone(),
+            config.epoch_lifecycle.clone(),
+            cancel.clone(),
         )
         .run(),
     );

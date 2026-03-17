@@ -4,6 +4,7 @@ pub enum ServiceName {
     HttpServer,
     BlockIngestor,
     EpochManager,
+    EpochLifecycle,
     SpoolManager,
     SnapshotManager,
     ReplayManager,
