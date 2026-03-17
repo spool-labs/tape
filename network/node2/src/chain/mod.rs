@@ -11,9 +11,3 @@ pub use invalidate_track::submit_invalidate_track;
 pub use join_network::submit_join_network;
 pub use snapshot::{submit_certify, submit_register};
 pub use sync_epoch::submit_sync_epoch;
-
-#[cfg(test)]
-mod fixture;
-
-#[cfg(test)]
-pub use fixture::ChainFixture;

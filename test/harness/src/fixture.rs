@@ -4,11 +4,14 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rpc::Rpc;
+use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
+use solana_sdk::instruction::Instruction;
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signature};
 use tape_api::program::{exchange, staking, tapedrive, token};
+use tracing::trace;
 
-/// Shared chain fixture backed by LiteSVM.
 #[derive(Clone)]
 pub struct ChainFixture {
     rpc: LiteSvmRpc,
@@ -55,7 +58,6 @@ impl ChainFixture {
         workspace_root.join("test/elfs").join(format!("{name}.so"))
     }
 
-    /// Loads tapedrive programs expected by node flows.
     pub fn load_default_programs(&self, workspace_root: &Path) -> Result<()> {
         self.rpc
             .add_program_from_file(
@@ -98,12 +100,7 @@ impl ChainFixture {
         self.rpc.airdrop(pubkey, lamports).context("airdrop")
     }
 
-    pub fn seed_account(
-        &self,
-        address: &Pubkey,
-        owner: &Pubkey,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn seed_account(&self, address: &Pubkey, owner: &Pubkey, data: &[u8]) -> Result<()> {
         self.rpc
             .set_account_data(*address, *owner, data)
             .map_err(anyhow::Error::from)
@@ -112,5 +109,63 @@ impl ChainFixture {
 
     pub async fn current_slot(&self) -> Result<u64> {
         self.rpc.get_slot().await.context("get_slot")
+    }
+
+    pub async fn advance_slots(&self, delta: u64) -> Result<u64> {
+        let current = self.current_slot().await?;
+        let target = current.saturating_add(delta);
+        trace!(
+            from_slot = current,
+            to_slot = target,
+            delta = delta,
+            "advancing litesvm slot cursor"
+        );
+        self.rpc.warp_to_slot(target).context("warp_to_slot")?;
+        Ok(target)
+    }
+
+    pub async fn send_instructions_and_advance(
+        &self,
+        payer: &Keypair,
+        instructions: Vec<Instruction>,
+        slot_advance_per_tx: u64,
+    ) -> Result<Signature> {
+        let client = RpcClient::from_rpc(self.rpc.clone());
+        let sig = client
+            .send_instructions(payer, instructions)
+            .await
+            .context("send_instructions")?;
+
+        if slot_advance_per_tx > 0 {
+            let _ = self.advance_slots(slot_advance_per_tx).await?;
+        }
+
+        Ok(sig)
+    }
+
+    pub async fn send_instructions_with_signers_and_advance(
+        &self,
+        payer: &Keypair,
+        instructions: Vec<Instruction>,
+        signers: &[&Keypair],
+        slot_advance_per_tx: u64,
+    ) -> Result<Signature> {
+        let client = RpcClient::from_rpc(self.rpc.clone());
+        let sig = client
+            .send_instructions_with_signers(payer, instructions, signers)
+            .await
+            .context("send_instructions_with_signers")?;
+
+        if slot_advance_per_tx > 0 {
+            let _ = self.advance_slots(slot_advance_per_tx).await?;
+        }
+
+        Ok(sig)
+    }
+}
+
+impl Default for ChainFixture {
+    fn default() -> Self {
+        Self::new()
     }
 }

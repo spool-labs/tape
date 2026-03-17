@@ -6,6 +6,7 @@ members = [
   "lib/crypto",
   "solana/framework",
   "lib/blocks",
+  "test/harness",
   "solana/programs/exchange",
   "solana/programs/staking",
   "solana/programs/tapedrive",
@@ -90,6 +91,7 @@ store-memory = { version = "0.3.0", path = "./store/store-memory" }
 store-rocks = { version = "0.3.0", path = "./store/store-rocks" }
 tape-sdk = { version = "0.3.0", path = "./sdk" }
 tape-test = { version = "0.3.0", path = "./test" }
+tape-chain-harness = { version = "0.3.0", path = "./test/harness" }
 tape-metrics = { version = "0.3.0", path = "./lib/metrics" }
 tape-node = { version = "0.3.0", path = "./network/node" }
 tape-node2 = { version = "0.3.0", path = "./network/node2" }

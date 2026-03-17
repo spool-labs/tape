@@ -1,0 +1,27 @@
+[package]
+name = "tape-chain-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "LiteSVM-backed chain harness for Tapedrive integration and runtime tests"
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+rpc.workspace = true
+rpc-client.workspace = true
+rpc-litesvm.workspace = true
+solana-sdk.workspace = true
+tape-api.workspace = true
+tape-core.workspace = true
+tape-crypto.workspace = true
+tape-protocol.workspace = true
+tracing = "0.1"
+
+[dev-dependencies]
+tokio.workspace = true

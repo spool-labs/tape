@@ -103,86 +103,120 @@ fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::spooler::SpoolIndex;
-    use tape_store::ops::SpoolOps;
-    use tape_store::types::{SpoolState, SpoolStatus};
 
-    use crate::core::context::test_utils::test_context;
+    use tape_core::system::EpochPhase;
+    use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
 
-    // Spools all Active → should proceed to submit and return Done.
     #[tokio::test]
-    #[ignore] // run() not yet implemented
-    async fn all_spools_ready() {
-        let ctx = test_context();
-        // TODO: set protocol state with node in committee + spool assignments
-        // TODO: set all owned spools to SpoolStatus::Active in store
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+    async fn success() {
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::SyncEpoch, _)));
     }
 
-    // Some spools still syncing → should poll until ready or cancelled.
-    // Cancel after a short delay to verify it polls and exits cleanly.
     #[tokio::test]
-    #[ignore]
-    async fn spools_not_ready_then_cancel() {
-        let ctx = test_context();
-        // TODO: set protocol state with node in committee + spool assignments
-        // Set one spool to Sync (not Active)
-        ctx.store
-            .set_spool_state(5 as SpoolIndex, SpoolState::new(SpoolStatus::Sync, EPOCH))
-            .unwrap();
-
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            cancel_clone.cancel();
-        });
-
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
-        assert!(matches!(result, TaskDone::Cancelled(Action::SyncEpoch, _)));
-    }
-
-    // No spools assigned (empty committee member) → should proceed directly.
-    #[tokio::test]
-    #[ignore]
-    async fn no_spools_assigned() {
-        let ctx = test_context();
-        // TODO: set protocol state with node in committee but 0 spools
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
-        assert!(matches!(result, TaskDone::Done(Action::SyncEpoch, _)));
-    }
-
-    // On-chain program returns AlreadySynced → should return Done.
-    #[tokio::test]
-    #[ignore]
     async fn already_synced() {
-        let ctx = test_context();
-        // TODO: set up on-chain state where node has already synced
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .node(NODE, |node| node.latest_sync_epoch = EPOCH)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::SyncEpoch, _)));
     }
 
-    // Phase has moved past Syncing → should return Rejected.
     #[tokio::test]
-    #[ignore]
     async fn phase_past_syncing() {
-        let ctx = test_context();
-        // TODO: set up on-chain state where epoch phase is Settling/Active
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Rejected(Action::SyncEpoch, _)));
     }
 
-    // Immediate cancel → should return Cancelled without submitting.
     #[tokio::test]
-    #[ignore]
+    async fn not_in_committee() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .current_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(24),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, TaskDone::Rejected(Action::SyncEpoch, _)));
+    }
+
+    #[tokio::test]
     async fn immediate_cancel() {
-        let ctx = test_context();
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            cancel,
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::SyncEpoch, _)));
     }
 }

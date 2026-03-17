@@ -8697,6 +8697,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-chain-harness"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "rpc",
+ "rpc-client",
+ "rpc-litesvm",
+ "solana-sdk",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-protocol",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tape-core"
 version = "0.3.0"
 dependencies = [
@@ -8781,6 +8799,7 @@ dependencies = [
  "rustls-pki-types",
  "solana-sdk",
  "tape-api",
+ "tape-chain-harness",
  "tape-core",
  "tape-crypto",
  "tape-node",
@@ -8872,6 +8891,7 @@ dependencies = [
  "store-rocks",
  "tape-api",
  "tape-blocks",
+ "tape-chain-harness",
  "tape-core",
  "tape-crypto",
  "tape-protocol",

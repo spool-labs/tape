@@ -24,6 +24,7 @@ peer-manager.workspace = true
 peer-http.workspace = true
 rpc.workspace = true
 tape-core.workspace = true
+tape-chain-harness.workspace = true
 tokio-util = "0.7"
 solana-sdk.workspace = true
 tracing-subscriber = "0.3"

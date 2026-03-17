@@ -165,67 +165,135 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    use crate::core::context::test_utils::test_context;
+    use tape_core::types::coin::TAPE;
+    use tape_core::system::EpochPhase;
+
+    use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 24;
 
-    // 90% of epoch duration elapsed, node eligible → should submit and return Done.
     #[tokio::test]
-    #[ignore]
     async fn success() {
-        let ctx = test_context();
-        // TODO: deploy program, init system/epoch, register node
-        // TODO: set last_epoch timestamp such that 90% has elapsed
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .time_elapsed()
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::JoinNetwork, _)));
     }
 
-    // Less than 90% elapsed → should wait at timing gate until cancelled.
     #[tokio::test]
-    #[ignore]
     async fn timing_gate_not_met() {
-        let ctx = test_context();
-        // TODO: set last_epoch to recent timestamp (< 90% elapsed)
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .last_epoch(unix_now())
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            cancel,
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::JoinNetwork, _)));
     }
 
-    // Node already in committee_next → should return Done (idempotent).
     #[tokio::test]
-    #[ignore]
     async fn already_joined() {
-        let ctx = test_context();
-        // TODO: set up on-chain state where node is already in committee_next
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .time_elapsed()
+            .next_committee_nodes([NODE])
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::JoinNetwork, _)));
     }
 
-    // Node not staked → should return Rejected.
     #[tokio::test]
-    #[ignore]
     async fn not_staked() {
-        let ctx = test_context();
-        // TODO: set up on-chain state where node has no active stake
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .time_elapsed()
+            .node(NODE, |node| node.stake = TAPE(0))
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Rejected(Action::JoinNetwork, _)));
     }
 
-    // Immediate cancel → should return Cancelled before timing gate.
     #[tokio::test]
-    #[ignore]
     async fn immediate_cancel() {
-        let ctx = test_context();
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .last_epoch(unix_now())
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            cancel,
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::JoinNetwork, _)));
     }
 }

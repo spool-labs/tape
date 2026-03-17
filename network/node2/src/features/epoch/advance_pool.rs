@@ -96,66 +96,137 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    use crate::core::context::test_utils::test_context;
+    use tape_core::system::EpochPhase;
+    use tape_retry::RetryConfig;
+
+    use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
 
-    // Settling phase, node in committee → should submit and return Done.
     #[tokio::test]
-    #[ignore]
     async fn success() {
-        let ctx = test_context();
-        // TODO: deploy program, init system/epoch, register node, advance to Settling
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
     }
 
-    // Pool already advanced → should return Done (idempotent).
     #[tokio::test]
-    #[ignore]
     async fn already_advanced() {
-        let ctx = test_context();
-        // TODO: set up on-chain state where AdvancePool was already called
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .node(NODE, |node| node.latest_advance_epoch = EPOCH)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
     }
 
-    // Phase not yet Settling → should retry internally until cancelled.
     #[tokio::test]
-    #[ignore]
     async fn wrong_phase_then_cancel() {
-        let ctx = test_context();
-        // TODO: set up on-chain state in Syncing phase (too early for AdvancePool)
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Syncing)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+        let result = run(harness.ctx_for(NODE), fast_retry_config(), EPOCH, cancel).await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvancePool, _)));
     }
 
-    // Immediate cancel → should return Cancelled without submitting.
     #[tokio::test]
-    #[ignore]
     async fn immediate_cancel() {
-        let ctx = test_context();
+        let harness = NodeHarness::builder()
+            .nodes(20)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            cancel,
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvancePool, _)));
     }
 
-    // Node was in prev committee but not current → should still submit.
     #[tokio::test]
-    #[ignore]
     async fn prev_committee_only() {
-        let ctx = test_context();
-        // TODO: set up state where node is in committee_prev but not committee
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let current_committee: Vec<_> = (0..=20).filter(|&index| index != NODE).collect();
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .current_committee_nodes(current_committee)
+            .prev_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
+    }
+
+    fn fast_retry_config() -> EpochLifecycleConfig {
+        EpochLifecycleConfig {
+            tx_retry: RetryConfig {
+                base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                max_retries: None,
+            },
+            ..EpochLifecycleConfig::default()
+        }
     }
 }

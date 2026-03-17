@@ -110,81 +110,146 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    use crate::core::context::test_utils::test_context;
+    use tape_core::system::EpochPhase;
+    use tape_retry::RetryConfig;
+
+    use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
+    const NODE: usize = 7;
 
-    // Active phase, enough time elapsed, enough committee_next → should return Done.
     #[tokio::test]
-    #[ignore]
     async fn success() {
-        let ctx = test_context();
-        // TODO: deploy program, init system/epoch, register nodes, advance
-        //       to Active phase with enough time elapsed and enough joins
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .onchain_time_elapsed()
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            CancellationToken::new(),
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Done(Action::AdvanceEpoch, _)));
     }
 
-    // Not enough time elapsed → should retry internally (TooSoon) until cancelled.
     #[tokio::test]
-    #[ignore]
     async fn too_soon() {
-        let ctx = test_context();
-        // TODO: set up on-chain state in Active phase but epoch just started
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .last_epoch(0)
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+        let result = run(harness.ctx_for(NODE), fast_retry_config(), EPOCH, cancel).await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvanceEpoch, _)));
     }
 
-    // Not enough nodes in committee_next → should retry until cancelled.
     #[tokio::test]
-    #[ignore]
     async fn insufficient_committee() {
-        let ctx = test_context();
-        // TODO: set up on-chain state with enough time but too few joins
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .onchain_time_elapsed()
+            .next_committee_size(1)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+        let result = run(harness.ctx_for(NODE), fast_retry_config(), EPOCH, cancel).await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvanceEpoch, _)));
     }
 
-    // Phase not Active → should retry (BadEpochState) until cancelled.
     #[tokio::test]
-    #[ignore]
     async fn wrong_phase() {
-        let ctx = test_context();
-        // TODO: set up on-chain state in Settling phase
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Settling)
+            .onchain_time_elapsed()
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
             cancel_clone.cancel();
         });
 
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+        let result = run(harness.ctx_for(NODE), fast_retry_config(), EPOCH, cancel).await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvanceEpoch, _)));
     }
 
-    // Immediate cancel → should return Cancelled without submitting.
     #[tokio::test]
-    #[ignore]
     async fn immediate_cancel() {
-        let ctx = test_context();
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .onchain_time_elapsed()
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
+
+        let result = run(
+            harness.ctx_for(NODE),
+            EpochLifecycleConfig::default(),
+            EPOCH,
+            cancel,
+        )
+        .await;
+
         assert!(matches!(result, TaskDone::Cancelled(Action::AdvanceEpoch, _)));
     }
+
+    fn fast_retry_config() -> EpochLifecycleConfig {
+        EpochLifecycleConfig {
+            tx_retry: RetryConfig {
+                base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
+                max_retries: None,
+            },
+            ..EpochLifecycleConfig::default()
+        }
+    }
+
 }
