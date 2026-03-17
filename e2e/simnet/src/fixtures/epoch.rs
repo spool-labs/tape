@@ -112,36 +112,11 @@ impl SimnetScenario<'_> {
             self.pool_many(participants).await?;
             self.join_many(participants).await?;
             self.wait_next_quorum(participants.len(), timeout).await?;
-            self.wait_snapshot_ready_for(current, timeout).await?;
 
             let next = self.wait_epoch_change(current, timeout).await?;
             self.wait_phase("Active", timeout).await?;
             self.wait_for_nodes_epoch(participants, Some(EpochNumber(next)), timeout)
                 .await?;
-        }
-    }
-
-    async fn wait_snapshot_ready_for(&self, current_epoch: u64, timeout: Duration) -> Result<()> {
-        if current_epoch <= 1 {
-            return Ok(());
-        }
-        let required = current_epoch.saturating_sub(1);
-        let start = std::time::Instant::now();
-        loop {
-            let state = self.read_snapshot_state().await?;
-            let latest = state.latest_epoch.as_u64();
-            if latest >= required {
-                return Ok(());
-            }
-            if start.elapsed() >= timeout {
-                bail!(
-                    "timed out waiting snapshot latest_epoch >= {required}; latest={}, certifying={}, certified_count={}",
-                    latest,
-                    state.certifying_epoch.as_u64(),
-                    state.certified_count
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 }

@@ -9,7 +9,7 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder};
 use tape_store::types::SpoolStatus;
 
 /// Full spool recovery flow: upload blob, drop nodes, verify
-/// ActiveSync → ActiveRecover → Active, then download and verify.
+/// Sync/Scan/Repair/Recover workers converge back to Active, then download.
 #[test]
 fn spool_recovery() {
     let thread = std::thread::Builder::new()
@@ -101,7 +101,7 @@ async fn spool_recovery_inner() {
         .kill_nodes(&drop_indices)
         .expect("kill dropped nodes");
 
-    // Advance epoch 3 → 4 (surviving nodes get reassigned spools as ActiveSync)
+    // Advance epoch 3 → 4 (surviving nodes get reassigned spools and begin Sync).
     let scenario = harness.scenario();
     let epoch4 = scenario
         .self_advance_epoch(epoch_timeout)
@@ -136,15 +136,15 @@ async fn spool_recovery_inner() {
         .expect("total spool count");
     assert_eq!(alive_total, SPOOL_COUNT);
 
-    // Poll until ActiveSync spools transition to ActiveRecover (~45s with threshold of 5)
-    let recover_timeout = Duration::from_secs(120);
+    // Poll until any Sync spools transition into later phases.
+    let sync_timeout = Duration::from_secs(120);
     let start = Instant::now();
     loop {
         let mut any_sync = false;
         for &i in &alive_indices {
             let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
             for (_, state) in &statuses {
-                if matches!(state.status, SpoolStatus::ActiveSync) {
+                if matches!(state.status, SpoolStatus::Sync) {
                     any_sync = true;
                     break;
                 }
@@ -159,13 +159,13 @@ async fn spool_recovery_inner() {
         }
 
         assert!(
-            start.elapsed() < recover_timeout,
-            "timed out waiting for ActiveSync → ActiveRecover transition"
+            start.elapsed() < sync_timeout,
+            "timed out waiting for Sync spools to transition"
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // Poll until all spools reach Active (RecoveryScan + SpoolRecovery)
+    // Poll until all spools reach terminal states again.
     let active_timeout = Duration::from_secs(120);
     let start = Instant::now();
     loop {

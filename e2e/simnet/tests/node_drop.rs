@@ -87,24 +87,29 @@ async fn spool_node_drop() {
         "expected >= {SPOOL_COUNT} spools on alive nodes, got {alive_total}"
     );
 
-    // Verify newly gained spools have ActiveSync status
-    let mut sync_count = 0usize;
+    // Verify some surviving nodes gained ownership after redistribution.
+    let gained_spools = alive_indices
+        .iter()
+        .any(|&i| scenario.node_spool_count(i).expect("spool count") > initial_counts[i]);
+    assert!(gained_spools, "expected surviving nodes to gain redistributed spools");
+
     for &i in &alive_indices {
         let statuses = scenario.node_spool_statuses(i).expect("spool statuses");
         for (spool_id, state) in &statuses {
-            if matches!(state.status, SpoolStatus::ActiveSync) {
-                sync_count += 1;
-            }
             assert!(
-                matches!(state.status, SpoolStatus::Active | SpoolStatus::ActiveSync | SpoolStatus::LockedToMove),
+                matches!(
+                    state.status,
+                    SpoolStatus::Active
+                        | SpoolStatus::Sync
+                        | SpoolStatus::Scan
+                        | SpoolStatus::Repair
+                        | SpoolStatus::Recover
+                        | SpoolStatus::LockedToMove
+                ),
                 "node {i} spool {spool_id} unexpected status {:?}", state.status
             );
         }
     }
-    assert!(
-        sync_count > 0,
-        "expected some spools in ActiveSync from departed nodes"
-    );
 
     harness.stop_all().await.expect("stop all");
 }

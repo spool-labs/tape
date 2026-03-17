@@ -71,8 +71,6 @@ impl SimnetBuilder {
             return Err(anyhow!("node_count must be > 0"));
         }
 
-        tls::init_tls();
-
         if self.config.file_log {
             log::init_log();
             log::append_log("simnet builder start");

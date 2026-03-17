@@ -92,7 +92,8 @@ impl SimnetScenario<'_> {
         let state = fetch_state(&ctx.rpc)
             .await
             .map_err(|e| anyhow::anyhow!("fetch protocol state: {e}"))?;
-        ctx.set_state(state);
+        ctx.set_state(state)
+            .map_err(|e| anyhow::anyhow!("publish protocol state: {e}"))?;
         ctx.refresh_peers()
             .await
             .map_err(|e| anyhow::anyhow!("resolve peers: {e}"))?;

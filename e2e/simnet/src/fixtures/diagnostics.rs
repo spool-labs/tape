@@ -16,11 +16,7 @@ impl SimnetScenario<'_> {
             None => return false,
         };
 
-        let url = format!(
-            "http://{}:{}/v1/health",
-            node.context().config.public_host,
-            node.context().config.public_port
-        );
+        let url = format!("{}/v1/health", node.base_url());
 
         let client = match Client::builder().timeout(Duration::from_secs(2)).build() {
             Ok(client) => client,
@@ -82,7 +78,7 @@ impl SimnetScenario<'_> {
     pub fn read_node_log(&self, index: usize) -> Option<String> {
         let node = self.harness.node(index)?;
         let raw = read_log()?;
-        let name = &node.context().config.name;
+        let name = node.name();
 
         let lines: Vec<_> = raw.lines().filter(|line| line.contains(name)).collect();
         if lines.is_empty() {
@@ -95,11 +91,11 @@ impl SimnetScenario<'_> {
     pub fn read_runtime_log(&self, index: usize) -> Option<String> {
         let node = self.harness.node(index)?;
         let raw = read_log()?;
-        let name = &node.context().config.name;
+        let name = node.name();
 
         let lines: Vec<_> = raw
             .lines()
-            .filter(|line| line.contains("tape_node"))
+            .filter(|line| line.contains("tape_node2"))
             .filter(|line| line.contains(name))
             .collect();
 
@@ -114,13 +110,7 @@ impl SimnetScenario<'_> {
         self.harness
             .nodes()
             .iter()
-            .map(|node| {
-                format!(
-                    "http://{}:{}",
-                    node.context().config.public_host,
-                    node.context().config.public_port
-                )
-            })
+            .map(|node| node.base_url())
             .collect()
     }
 

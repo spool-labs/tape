@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -6,6 +7,7 @@ use tape_blocks::ParsedInstruction;
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
 use tape_retry::retry_if;
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
@@ -19,6 +21,13 @@ use crate::core::types::ChannelName;
 pub struct ParsedBlock {
     pub slot: SlotNumber,
     pub instructions: Vec<ParsedInstruction>,
+}
+
+const TIP_POLL_MS: u64 = 400;
+
+enum IngestStep {
+    Continue,
+    Wait,
 }
 
 pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -52,14 +61,22 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
                 result = self.fetch_parse_and_dispatch(next_slot) => {
-                    result?;
-                    next_slot.increment();
+                    match result? {
+                        IngestStep::Continue => next_slot.increment(),
+                        IngestStep::Wait => {}
+                    }
                 }
             }
         }
     }
 
-    async fn fetch_parse_and_dispatch(&self, slot: SlotNumber) -> Result<(), NodeError> {
+    async fn fetch_parse_and_dispatch(&self, slot: SlotNumber) -> Result<IngestStep, NodeError> {
+        let tip = self.context.rpc.get_slot().await?;
+        if slot.0 > tip {
+            sleep(Duration::from_millis(TIP_POLL_MS)).await;
+            return Ok(IngestStep::Wait);
+        }
+
         let context = self.context.clone();
 
         let block = retry_if(
@@ -77,7 +94,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             Ok(block) => block,
             Err(error) if error.is_skipped_slot() => {
                 debug!(slot = slot.0, "slot skipped");
-                return Ok(());
+                return Ok(IngestStep::Continue);
             }
             Err(error) => return Err(NodeError::from(error)),
         };
@@ -105,7 +122,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         ).await?;
 
         info!(slot = slot.0, "dispatched parsed block");
-        Ok(())
+        Ok(IngestStep::Continue)
     }
 }
 

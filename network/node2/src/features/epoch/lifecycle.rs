@@ -115,6 +115,11 @@ pub fn next_action(
 ) -> Option<Action> {
     let in_committee = state.find_member(node_id).is_some();
     let in_prev = state.committee_prev.iter().any(|m| m.id == node_id);
+    let bootstrap_committee_member =
+        state.committee.is_empty() && state.find_member_next(node_id).is_some();
+    let can_advance_pool = in_committee || in_prev;
+    let can_join_network = in_committee || in_prev;
+    let can_advance_epoch = in_committee || bootstrap_committee_member;
 
     match state.phase {
         EpochPhase::Syncing => {
@@ -127,24 +132,27 @@ pub fn next_action(
             None
         }
         EpochPhase::Settling => {
-            if (in_committee || in_prev) && !done.contains(&Action::AdvancePool) {
+            if can_advance_pool && !done.contains(&Action::AdvancePool) {
                 return Some(Action::AdvancePool);
             }
             None
         }
         EpochPhase::Active => {
             // AdvancePool can still be submitted during Active if we missed Settling.
-            if (in_committee || in_prev) && !done.contains(&Action::AdvancePool) {
+            if can_advance_pool && !done.contains(&Action::AdvancePool) {
                 return Some(Action::AdvancePool);
             }
 
             // JoinNetwork: gated by time, checked by the task itself.
-            if (in_committee || in_prev) && !done.contains(&Action::JoinNetwork) {
+            if can_join_network && !done.contains(&Action::JoinNetwork) {
                 return Some(Action::JoinNetwork);
             }
 
-            // AdvanceEpoch: any committee member can submit it.
-            if in_committee && !done.contains(&Action::AdvanceEpoch) {
+            // AdvanceEpoch can be submitted by current committee members.
+            // During bootstrap, nodes already admitted to committee_next can
+            // also drive the first epoch transition because there is no
+            // current or previous committee yet.
+            if can_advance_epoch && !done.contains(&Action::AdvanceEpoch) {
                 return Some(Action::AdvanceEpoch);
             }
 
@@ -379,7 +387,6 @@ mod tests {
     use tape_core::types::coin::{Coin, TAPE};
 
     const NODE: NodeId = NodeId(1);
-    const OTHER: NodeId = NodeId(2);
 
     fn state_with(phase: EpochPhase, in_current: bool, in_prev: bool) -> ProtocolState {
         let mut state = ProtocolState::default();
@@ -394,6 +401,15 @@ mod tests {
                 .committee_prev
                 .push(CommitteeMember::new(NODE, Coin::<TAPE>::new(1000)));
         }
+        state
+    }
+
+    fn bootstrap_state() -> ProtocolState {
+        let mut state = ProtocolState::default();
+        state.phase = EpochPhase::Active;
+        state
+            .committee_next
+            .push(CommitteeMember::new(NODE, Coin::<TAPE>::new(1000)));
         state
     }
 
@@ -489,6 +505,12 @@ mod tests {
         // But cannot AdvanceEpoch — not in current committee.
         let done = HashSet::from([Action::AdvancePool, Action::JoinNetwork]);
         assert_eq!(next_action(&state, NODE, &done), None);
+    }
+
+    #[test]
+    fn bootstrap_advances() {
+        let state = bootstrap_state();
+        assert_eq!(next_action(&state, NODE, &HashSet::new()), Some(Action::AdvanceEpoch));
     }
 
     #[test]
