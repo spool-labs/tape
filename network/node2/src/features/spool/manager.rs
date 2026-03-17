@@ -232,35 +232,34 @@ where
                 warn!(spool, "unexpected lock action for owned spool");
             }
             EpochAction::Spawn { kind, update } => {
-                // Epoch changed or new spool — clean stale task state
                 if update.is_some() {
                     reset_spool_task_state(ctx, spool);
                 }
-
-                let state = if kind == TaskKind::Sync {
-                    make_sync_state(ctx, spool, epoch)
+                
+                // Decide what (if anything) we need to store
+                let maybe_new_state = if kind == TaskKind::Sync {
+                    Some(make_sync_state(ctx, spool, epoch))
                 } else if let Some(s) = update {
-                    s
+                    Some(s)
                 } else {
-                    // Resume: no state update needed, just spawn
-                    if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
-                        spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
-                    }
-                    continue;
+                    // Resume case -> we usually don't need to write anything new
+                    None
                 };
-
-                ctx.store
-                    .set_spool_state(spool, state)
-                    .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
-
-                // Spawn worker if we don't already have one for this spool and haven't hit the max
-                // parallel limit
-
-                if workers.len() >= config.max_parallel_spools || workers.contains_key(&spool) {
-                    continue;
+                
+                // Store new state only when we actually have something to write
+                if let Some(state) = maybe_new_state {
+                    ctx.store
+                        .set_spool_state(spool, state)
+                        .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
                 }
-
-                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
+                
+                // Check if we can spawn a worker for this spool
+                let can_spawn = workers.len() < config.max_parallel_spools
+                    && !workers.contains_key(&spool);
+                
+                if can_spawn {
+                    spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
+                }
             }
         }
     }
