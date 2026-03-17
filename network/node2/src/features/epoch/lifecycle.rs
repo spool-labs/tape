@@ -10,16 +10,17 @@
 //
 // ── Decision table ──────────────────────────────────────────────────
 //
-//   Phase     | Condition                           | Action
-//   ----------|-------------------------------------|---------------
-//   Syncing   | in committee, SyncEpoch not done    | SyncEpoch
-//   Syncing   | SyncEpoch done or not in committee  | None (wait for phase)
-//   Settling  | in committee or prev, pool not done | AdvancePool
-//   Settling  | pool done or not in either          | None (wait for phase)
-//   Active    | pool not done, in committee or prev | AdvancePool (late)
-//   Active    | join not done, 90% time elapsed     | JoinNetwork
-//   Active    | join done, advance not done         | AdvanceEpoch
-//   Active    | all done                            | None (wait for next epoch)
+//   Phase     | Condition                                   | Action
+//   ----------|---------------------------------------------|----------------
+//   Syncing   | in committee, spools not ready               | WaitSpoolReady
+//   Syncing   | in committee, spools ready, sync not done    | SyncEpoch
+//   Syncing   | SyncEpoch done or not in committee           | None (wait)
+//   Settling  | in committee or prev, pool not done          | AdvancePool
+//   Settling  | pool done or not in either                   | None (wait)
+//   Active    | pool not done, in committee or prev          | AdvancePool
+//   Active    | join not done, 90% time elapsed              | JoinNetwork
+//   Active    | join done, advance not done                  | AdvanceEpoch
+//   Active    | all done                                     | None (wait)
 //
 // ── Phase skipping ──────────────────────────────────────────────────
 //
@@ -36,12 +37,14 @@
 //   When epoch advances, the done set is cleared and the lifecycle
 //   restarts from Syncing.
 //
-// ── Spool readiness (for SyncEpoch) ────────────────────────────────
+// ── Spool readiness (WaitSpoolReady) ─────────────────────────────────
 //
 //   Before submitting SyncEpoch, the node must have all its assigned
-//   spools in a ready state. Readiness is determined by polling the
-//   store (iter_all_spools) — not via a cross-feature channel.
-//   The sync_epoch task handles this polling internally.
+//   spools in a ready state. This is a separate lifecycle action
+//   (WaitSpoolReady) that polls the store until all owned spools are
+//   Active. Once done, the lifecycle advances to SyncEpoch.
+//   Readiness is determined by polling the store (iter_all_spools) —
+//   not via a cross-feature channel.
 //
 // ── JoinNetwork timing gate ────────────────────────────────────────
 //
@@ -100,7 +103,7 @@ use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::epoch::types::{Action, TaskDone};
-use crate::features::epoch::{advance_epoch, advance_pool, join_network, sync_epoch};
+use crate::features::epoch::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
 
 /// Determine the next epoch action based on current state.
 ///
@@ -115,6 +118,9 @@ pub fn next_action(
 
     match state.phase {
         EpochPhase::Syncing => {
+            if in_committee && !done.contains(&Action::WaitSpoolReady) {
+                return Some(Action::WaitSpoolReady);
+            }
             if in_committee && !done.contains(&Action::SyncEpoch) {
                 return Some(Action::SyncEpoch);
             }
@@ -320,6 +326,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         debug!(action = ?action, epoch = epoch.0, "lifecycle: spawning task");
 
         match action {
+            Action::WaitSpoolReady => {
+                join_set.spawn(wait_spool_ready::run(
+                    self.context.clone(),
+                    self.config.clone(),
+                    epoch,
+                    token.clone(),
+                ));
+            }
             Action::SyncEpoch => {
                 join_set.spawn(sync_epoch::run(
                     self.context.clone(),
@@ -384,9 +398,16 @@ mod tests {
     }
 
     #[test]
-    fn syncing_active_node() {
+    fn syncing_wait_spools_first() {
         let state = state_with(EpochPhase::Syncing, true, false);
-        assert_eq!(next_action(&state, NODE, &HashSet::new()), Some(Action::SyncEpoch));
+        assert_eq!(next_action(&state, NODE, &HashSet::new()), Some(Action::WaitSpoolReady));
+    }
+
+    #[test]
+    fn syncing_spools_ready_then_sync() {
+        let state = state_with(EpochPhase::Syncing, true, false);
+        let done = HashSet::from([Action::WaitSpoolReady]);
+        assert_eq!(next_action(&state, NODE, &done), Some(Action::SyncEpoch));
     }
 
     #[test]
@@ -396,9 +417,9 @@ mod tests {
     }
 
     #[test]
-    fn syncing_done() {
+    fn syncing_all_done() {
         let state = state_with(EpochPhase::Syncing, true, false);
-        let done = HashSet::from([Action::SyncEpoch]);
+        let done = HashSet::from([Action::WaitSpoolReady, Action::SyncEpoch]);
         assert_eq!(next_action(&state, NODE, &done), None);
     }
 

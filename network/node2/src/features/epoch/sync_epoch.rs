@@ -2,10 +2,16 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::errors::TapeError;
+use tape_core::spooler::SpoolIndex;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
+use tape_retry::Backoff;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
+use crate::chain::submit_sync_epoch;
+use crate::core::chain_tx::{TxOutcome, backoff_or_cancel, classify_tx};
 use crate::core::config::EpochLifecycleConfig;
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
@@ -13,43 +19,23 @@ use crate::features::epoch::types::{Action, TaskDone};
 // Purpose: Submit a SyncEpoch transaction to attest that this node
 //          has synced all its assigned spool data for the current epoch.
 //
-// Precondition: all owned spools must be in a ready state (Active, or
-// at minimum past their Sync/Scan/Repair/Recover lifecycle). Readiness
-// is determined by polling the store — no cross-feature coupling.
+// Precondition: WaitSpoolReady must have completed before this task
+// is spawned. The lifecycle worker enforces this ordering.
 //
 // Algorithm:
-// 1. Loop (with backoff, checking cancel):
+// 1. Read current protocol state to get our committee index and
+//    assigned spools. Build a sorted spool list.
+// 2. Submit loop (with backoff, checking cancel):
 //    a. Check cancel token.
-//    b. Poll spool readiness:
-//       - Read current protocol state to get our committee index.
-//       - Get our assigned spools via state.member_spools(index).
-//       - For each spool, read SpoolState from store.
-//       - If any spool is not Active → sleep for poll_interval, retry.
-//       - If all spools are Active (or we have no spools) → proceed.
-//    c. Build owned spool list (sorted).
-//    d. Submit SyncEpoch transaction via rpc.send_instructions:
-//       - build_epoch_sync_ix(fee_payer, authority, node_address, epoch, &spools)
-//       - Wrap with compute budget instruction.
-//    e. On success → return Done.
-//    f. On AlreadySynced → return Done (idempotent).
-//    g. On BadEpochState → the phase has moved past Syncing.
+//    b. Submit SyncEpoch transaction via submit_sync_epoch.
+//    c. On success → return Done.
+//    d. On AlreadySynced → return Done (idempotent).
+//    e. On BadEpochState → the phase has moved past Syncing.
 //       Return Rejected. The lifecycle worker will re-evaluate and
 //       skip to the next relevant action.
-//    h. On NotInCommittee / BadSpoolHash / BadEpochId → return Rejected.
-//       These indicate a fundamental mismatch. The lifecycle worker
-//       will re-evaluate with current state.
-//    i. On retriable errors (RPC timeout, connection, etc.) →
+//    f. On NotInCommittee / BadSpoolHash / BadEpochId → return Rejected.
+//    g. On retriable transport errors (RPC timeout, connection, etc.) →
 //       backoff and retry within this loop.
-//
-// The task never gives up on its own for retriable errors. It only exits
-// via Done, Rejected, or cancellation.
-//
-// Spool readiness polling:
-//   We poll store.iter_all_spools() and check each owned spool's status.
-//   This is at most 50 spools (MAX_SPOOL_ALLOCATION). The poll interval
-//   is configurable (default: 1 second). We do NOT use a watch channel
-//   from SpoolManager — polling the store avoids brittle coupling between
-//   the spool and epoch features.
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -57,7 +43,61 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    todo!()
+    let owned_spools = owned_spool_list(&ctx);
+
+    info!(epoch = epoch.0, spools = owned_spools.len(), "sync_epoch: submitting");
+
+    let mut backoff = Backoff::new(config.tx_retry);
+
+    loop {
+        if cancel.is_cancelled() {
+            return TaskDone::Cancelled(Action::SyncEpoch, epoch);
+        }
+
+        let result = submit_sync_epoch(&ctx, epoch, &owned_spools).await;
+
+        match classify_tx(result) {
+            TxOutcome::Confirmed(sig) => {
+                info!(epoch = epoch.0, %sig, "sync_epoch: confirmed");
+                return TaskDone::Done(Action::SyncEpoch, epoch);
+            }
+            TxOutcome::Program(TapeError::AlreadySynced) => {
+                info!(epoch = epoch.0, "sync_epoch: already synced");
+                return TaskDone::Done(Action::SyncEpoch, epoch);
+            }
+            TxOutcome::Program(
+                err @ (TapeError::BadEpochState
+                | TapeError::NotInCommittee
+                | TapeError::BadSpoolHash
+                | TapeError::BadEpochId),
+            ) => {
+                warn!(epoch = epoch.0, ?err, "sync_epoch: rejected");
+                return TaskDone::Rejected(Action::SyncEpoch, epoch);
+            }
+            TxOutcome::Program(err) => {
+                warn!(epoch = epoch.0, ?err, "sync_epoch: unexpected program error");
+                return TaskDone::Rejected(Action::SyncEpoch, epoch);
+            }
+            TxOutcome::Transport(err) => {
+                debug!(epoch = epoch.0, %err, "sync_epoch: transport error, retrying");
+                if backoff_or_cancel(&mut backoff, &cancel).await {
+                    return TaskDone::Cancelled(Action::SyncEpoch, epoch);
+                }
+            }
+        }
+    }
+}
+
+fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+) -> Vec<SpoolIndex> {
+    let state = ctx.state();
+    let Some((member_index, _)) = state.find_member(ctx.node_id()) else {
+        return Vec::new();
+    };
+    let mut spools = state.member_spools(member_index);
+    spools.sort_unstable();
+    spools
 }
 
 #[cfg(test)]

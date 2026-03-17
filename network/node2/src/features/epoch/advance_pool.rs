@@ -2,10 +2,15 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
+use tape_retry::Backoff;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
+use crate::chain::submit_advance_pool;
+use crate::core::chain_tx::{TxOutcome, backoff_or_cancel, classify_tx};
 use crate::core::config::EpochLifecycleConfig;
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
@@ -44,7 +49,48 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    todo!()
+    info!(epoch = epoch.0, "advance_pool: submitting");
+
+    let mut backoff = Backoff::new(config.tx_retry);
+
+    loop {
+        if cancel.is_cancelled() {
+            return TaskDone::Cancelled(Action::AdvancePool, epoch);
+        }
+
+        let result = submit_advance_pool(&ctx).await;
+
+        match classify_tx(result) {
+            TxOutcome::Confirmed(sig) => {
+                info!(epoch = epoch.0, %sig, "advance_pool: confirmed");
+                return TaskDone::Done(Action::AdvancePool, epoch);
+            }
+            TxOutcome::Program(TapeError::AlreadyAdvanced) => {
+                info!(epoch = epoch.0, "advance_pool: already advanced");
+                return TaskDone::Done(Action::AdvancePool, epoch);
+            }
+            TxOutcome::Program(err @ (TapeError::NoRewards | TapeError::RewardsOverflow)) => {
+                warn!(epoch = epoch.0, ?err, "advance_pool: rejected");
+                return TaskDone::Rejected(Action::AdvancePool, epoch);
+            }
+            TxOutcome::Program(TapeError::BadEpochState) => {
+                debug!(epoch = epoch.0, "advance_pool: bad epoch state, retrying");
+                if backoff_or_cancel(&mut backoff, &cancel).await {
+                    return TaskDone::Cancelled(Action::AdvancePool, epoch);
+                }
+            }
+            TxOutcome::Program(err) => {
+                warn!(epoch = epoch.0, ?err, "advance_pool: unexpected program error");
+                return TaskDone::Rejected(Action::AdvancePool, epoch);
+            }
+            TxOutcome::Transport(err) => {
+                debug!(epoch = epoch.0, %err, "advance_pool: transport error, retrying");
+                if backoff_or_cancel(&mut backoff, &cancel).await {
+                    return TaskDone::Cancelled(Action::AdvancePool, epoch);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

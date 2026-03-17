@@ -2,10 +2,15 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_api::errors::TapeError;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
+use tape_retry::Backoff;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
+use crate::chain::submit_advance_epoch;
+use crate::core::chain_tx::{TxOutcome, backoff_or_cancel, classify_tx};
 use crate::core::config::EpochLifecycleConfig;
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
@@ -57,7 +62,49 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    todo!()
+    info!(epoch = epoch.0, "advance_epoch: submitting");
+
+    let mut backoff = Backoff::new(config.tx_retry);
+
+    loop {
+        if cancel.is_cancelled() {
+            return TaskDone::Cancelled(Action::AdvanceEpoch, epoch);
+        }
+
+        let result = submit_advance_epoch(&ctx).await;
+
+        match classify_tx(result) {
+            TxOutcome::Confirmed(sig) => {
+                info!(epoch = epoch.0, %sig, "advance_epoch: confirmed");
+                return TaskDone::Done(Action::AdvanceEpoch, epoch);
+            }
+            TxOutcome::Program(
+                err @ (TapeError::TooSoon
+                | TapeError::InsufficientCommittee
+                | TapeError::SnapshotIncomplete
+                | TapeError::BadEpochState),
+            ) => {
+                debug!(epoch = epoch.0, ?err, "advance_epoch: not ready, retrying");
+                if backoff_or_cancel(&mut backoff, &cancel).await {
+                    return TaskDone::Cancelled(Action::AdvanceEpoch, epoch);
+                }
+            }
+            TxOutcome::Program(TapeError::BadSchedule) => {
+                warn!(epoch = epoch.0, "advance_epoch: bad schedule, rejected");
+                return TaskDone::Rejected(Action::AdvanceEpoch, epoch);
+            }
+            TxOutcome::Program(err) => {
+                warn!(epoch = epoch.0, ?err, "advance_epoch: unexpected program error");
+                return TaskDone::Rejected(Action::AdvanceEpoch, epoch);
+            }
+            TxOutcome::Transport(err) => {
+                debug!(epoch = epoch.0, %err, "advance_epoch: transport error, retrying");
+                if backoff_or_cancel(&mut backoff, &cancel).await {
+                    return TaskDone::Cancelled(Action::AdvanceEpoch, epoch);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

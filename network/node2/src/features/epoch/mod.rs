@@ -6,3 +6,4 @@ pub mod lifecycle;
 pub mod manager;
 pub mod sync_epoch;
 pub mod types;
+pub mod wait_spool_ready;

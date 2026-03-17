@@ -28,9 +28,8 @@ impl StateBus {
     }
 
     pub fn publish(&self, state: ProtocolState) -> Result<(), NodeError> {
-        self.tx
-            .send(Arc::new(state))
-            .map_err(|_| NodeError::StatePublish)
+        self.tx.send_replace(Arc::new(state));
+        Ok(())
     }
 
     /// Block until published protocol state reaches the requested epoch.

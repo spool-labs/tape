@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod chain_tx;
 pub mod channels;
 pub mod config;
 pub mod context;
