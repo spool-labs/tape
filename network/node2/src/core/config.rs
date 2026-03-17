@@ -85,6 +85,26 @@ pub struct EpochManagerConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct EpochLifecycleConfig {
+    /// Retry config for Solana transaction submissions.
+    pub tx_retry: RetryConfig,
+    /// How often to poll spool readiness before SyncEpoch (seconds).
+    pub spool_poll_interval: Duration,
+    /// How often to check timing gate for JoinNetwork (seconds).
+    pub time_poll_interval: Duration,
+}
+
+impl Default for EpochLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            tx_retry: RetryConfig::infinite(),
+            spool_poll_interval: Duration::from_secs(1),
+            time_poll_interval: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SpoolManagerConfig {
     pub max_parallel_spools: usize,
     pub sync_batch_size: usize,
@@ -136,6 +156,7 @@ pub struct AppConfig {
     pub channels: ChannelConfig,
     pub block: BlockIngestorConfig,
     pub epoch: EpochManagerConfig,
+    pub epoch_lifecycle: EpochLifecycleConfig,
     pub spool: SpoolManagerConfig,
     pub snapshot: SnapshotConfig,
     pub replay: ReplayConfig,
@@ -173,6 +194,7 @@ impl AppConfig {
             epoch: EpochManagerConfig {
                 state_retry: RetryConfig::ten(),
             },
+            epoch_lifecycle: EpochLifecycleConfig::default(),
             spool: SpoolManagerConfig {
                 max_parallel_spools: worker_threads.clamp(4, 64),
                 sync_batch_size: 100,
