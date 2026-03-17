@@ -224,44 +224,15 @@ where
     // Handle currently owned spools first
     for spool in owned_sorted {
         let persisted_state = persisted_map.remove(&spool);
-
-        match fsm::on_epoch_event(persisted_state.as_ref(), true, epoch) {
-            EpochAction::Idle => {}
-            EpochAction::Lock => {
-                // unreachable for owned spools
-                warn!(spool, "unexpected lock action for owned spool");
-            }
-            EpochAction::Spawn { kind, update } => {
-                if update.is_some() {
-                    reset_spool_task_state(ctx, spool);
-                }
-                
-                // Decide what (if anything) we need to store
-                let maybe_new_state = if kind == TaskKind::Sync {
-                    Some(make_sync_state(ctx, spool, epoch))
-                } else if let Some(s) = update {
-                    Some(s)
-                } else {
-                    // Resume case -> we usually don't need to write anything new
-                    None
-                };
-                
-                // Store new state only when we actually have something to write
-                if let Some(state) = maybe_new_state {
-                    ctx.store
-                        .set_spool_state(spool, state)
-                        .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
-                }
-                
-                // Check if we can spawn a worker for this spool
-                let can_spawn = workers.len() < config.max_parallel_spools
-                    && !workers.contains_key(&spool);
-                
-                if can_spawn {
-                    spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
-                }
-            }
-        }
+        schedule_owned_spool(
+            ctx,
+            config,
+            spool,
+            persisted_state.as_ref(),
+            epoch,
+            workers,
+            join_set,
+        )?;
     }
 
     // Handle spools we no longer own
@@ -345,6 +316,8 @@ where
         }
     }
 
+    backfill_workers(ctx, config, epoch, workers, join_set)?;
+
     Ok(())
 }
 
@@ -367,6 +340,101 @@ fn spawn_worker<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + '
         epoch,
         cancel,
     ));
+}
+
+fn schedule_owned_spool<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &SpoolManagerConfig,
+    spool: SpoolIndex,
+    persisted_state: Option<&SpoolState>,
+    epoch: EpochNumber,
+    workers: &mut HashMap<SpoolIndex, CancellationToken>,
+    join_set: &mut JoinSet<WorkerDone>,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    match fsm::on_epoch_event(persisted_state, true, epoch) {
+        EpochAction::Idle => {}
+        EpochAction::Lock => {
+            // unreachable for owned spools
+            warn!(spool, "unexpected lock action for owned spool");
+        }
+        EpochAction::Spawn { kind, update } => {
+            if update.is_some() {
+                reset_spool_task_state(ctx, spool);
+            }
+
+            let maybe_new_state = if kind == TaskKind::Sync {
+                Some(make_sync_state(ctx, spool, epoch))
+            } else if let Some(state) = update {
+                Some(state)
+            } else {
+                None
+            };
+
+            if let Some(state) = maybe_new_state {
+                ctx.store
+                    .set_spool_state(spool, state)
+                    .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
+            }
+
+            if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
+                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn backfill_workers<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &SpoolManagerConfig,
+    epoch: EpochNumber,
+    workers: &mut HashMap<SpoolIndex, CancellationToken>,
+    join_set: &mut JoinSet<WorkerDone>,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if workers.len() >= config.max_parallel_spools {
+        return Ok(());
+    }
+
+    let mut owned_spools: Vec<_> = ctx.my_spools().into_iter().collect();
+    owned_spools.sort_unstable();
+
+    for spool in owned_spools {
+        if workers.len() >= config.max_parallel_spools {
+            break;
+        }
+
+        if workers.contains_key(&spool) {
+            continue;
+        }
+
+        let persisted_state = ctx
+            .store
+            .get_spool_state(spool)
+            .map_err(|error| NodeError::Store(format!("get_spool_state({spool}): {error}")))?;
+
+        schedule_owned_spool(
+            ctx,
+            config,
+            spool,
+            persisted_state.as_ref(),
+            epoch,
+            workers,
+            join_set,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -414,4 +482,88 @@ fn retention_expired(
     retention_epochs: u64,
 ) -> bool {
     current_epoch.0.saturating_sub(locked_epoch.0) >= retention_epochs
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tape_core::erasure::SPOOL_COUNT;
+    use tape_core::spooler::{SpoolAssignment, SpoolIndex};
+    use tape_core::system::{CommitteeMember, EpochPhase};
+    use tape_core::types::{EpochNumber, NodeId};
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_protocol::ProtocolState;
+    use tape_store::ops::SpoolOps;
+    use tape_store::types::SpoolStatus;
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
+
+    use super::SpoolManager;
+    use crate::core::config::SpoolManagerConfig;
+    use crate::core::context::test_utils::{TestContext, test_context};
+
+    const EPOCH: EpochNumber = EpochNumber(2);
+
+    fn owned_state(spools: &[SpoolIndex]) -> ProtocolState {
+        let mut state = ProtocolState::default();
+        state.epoch = EPOCH;
+        state.phase = EpochPhase::Syncing;
+        state
+            .committee
+            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
+
+        let mut mapping = [255u8; SPOOL_COUNT];
+        for &spool in spools {
+            mapping[spool as usize] = 0;
+        }
+        state.spools = SpoolAssignment::new(mapping);
+        state
+    }
+
+    async fn wait_all_active(
+        ctx: &TestContext,
+        spools: &[SpoolIndex],
+    ) {
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let states = ctx.store.iter_all_spools().expect("iter_all_spools");
+                let active = states
+                    .iter()
+                    .filter(|(spool, state)| spools.contains(spool) && state.status == SpoolStatus::Active)
+                    .count();
+
+                if active == spools.len() {
+                    return;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("all owned spools become active");
+    }
+
+    #[tokio::test]
+    async fn backfills_pending() {
+        let ctx = test_context();
+        let spools: Vec<SpoolIndex> = (0..6).collect();
+        ctx.set_state(owned_state(&spools)).expect("set state");
+
+        let cancel = CancellationToken::new();
+        let manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig {
+                max_parallel_spools: 2,
+                ..SpoolManagerConfig::default()
+            },
+            cancel.clone(),
+        );
+        let task = tokio::spawn(manager.run());
+
+        wait_all_active(&ctx, &spools).await;
+
+        cancel.cancel();
+        task.await.expect("manager task").expect("manager run");
+    }
 }

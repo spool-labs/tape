@@ -117,15 +117,19 @@ mod tests {
     use tape_core::types::coin::{Coin, TAPE};
     use tape_protocol::ProtocolState;
     use tape_store::types::SpoolState;
+    use tokio::time::timeout;
+    use tokio_util::sync::CancellationToken;
 
+    use crate::core::config::SpoolManagerConfig;
     use crate::core::context::test_utils::{TestContext, test_context};
+    use crate::features::spool::manager::SpoolManager;
 
     const EPOCH: EpochNumber = EpochNumber(3);
 
     /// ProtocolState where node_id=0 is member 0, assigned the given spools.
-    fn syncing_state(spools: &[SpoolIndex]) -> ProtocolState {
+    fn syncing_state(epoch: EpochNumber, spools: &[SpoolIndex]) -> ProtocolState {
         let mut state = ProtocolState::default();
-        state.epoch = EPOCH;
+        state.epoch = epoch;
         state.phase = EpochPhase::Syncing;
         state
             .committee
@@ -140,11 +144,12 @@ mod tests {
 
     fn set_spools_active(
         ctx: &TestContext,
+        epoch: EpochNumber,
         spools: &[SpoolIndex],
     ) {
         for &s in spools {
             ctx.store
-                .set_spool_state(s, SpoolState::new(SpoolStatus::Active, EPOCH))
+                .set_spool_state(s, SpoolState::new(SpoolStatus::Active, epoch))
                 .unwrap();
         }
     }
@@ -155,8 +160,8 @@ mod tests {
     fn readiness_all_active() {
         let ctx = test_context();
         let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(&spools)).unwrap();
-        set_spools_active(&ctx, &spools);
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
+        set_spools_active(&ctx, EPOCH, &spools);
 
         assert!(matches!(check_readiness(&ctx), Readiness::Ready));
     }
@@ -165,8 +170,8 @@ mod tests {
     fn readiness_partial() {
         let ctx = test_context();
         let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(&spools)).unwrap();
-        set_spools_active(&ctx, &[0, 40]);
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
+        set_spools_active(&ctx, EPOCH, &[0, 40]);
 
         match check_readiness(&ctx) {
             Readiness::NotReady { ready, total } => {
@@ -181,7 +186,7 @@ mod tests {
     fn readiness_none_persisted() {
         let ctx = test_context();
         let spools = vec![0, 20];
-        ctx.set_state(syncing_state(&spools)).unwrap();
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
         // No spool states in store at all.
 
         match check_readiness(&ctx) {
@@ -219,8 +224,8 @@ mod tests {
     fn readiness_wrong_status() {
         let ctx = test_context();
         let spools = vec![0, 20];
-        ctx.set_state(syncing_state(&spools)).unwrap();
-        set_spools_active(&ctx, &[0]);
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
+        set_spools_active(&ctx, EPOCH, &[0]);
         ctx.store
             .set_spool_state(20, SpoolState::new(SpoolStatus::Repair, EPOCH))
             .unwrap();
@@ -252,8 +257,8 @@ mod tests {
     async fn already_ready() {
         let ctx = test_context();
         let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(&spools)).unwrap();
-        set_spools_active(&ctx, &spools);
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
+        set_spools_active(&ctx, EPOCH, &spools);
 
         let result =
             run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
@@ -279,8 +284,8 @@ mod tests {
     async fn polls_until_ready() {
         let ctx = test_context();
         let spools = vec![0, 20];
-        ctx.set_state(syncing_state(&spools)).unwrap();
-        set_spools_active(&ctx, &[0]); // spool 20 not ready yet
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
+        set_spools_active(&ctx, EPOCH, &[0]); // spool 20 not ready yet
 
         let ctx_clone = ctx.clone();
         tokio::spawn(async move {
@@ -305,7 +310,7 @@ mod tests {
     async fn cancel_while_polling() {
         let ctx = test_context();
         let spools = vec![0, 20];
-        ctx.set_state(syncing_state(&spools)).unwrap();
+        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
         // spool 20 never becomes ready
 
         let cancel = CancellationToken::new();
@@ -322,6 +327,45 @@ mod tests {
         assert!(matches!(
             result,
             TaskDone::Cancelled(Action::WaitSpoolReady, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_ready() {
+        let ctx = test_context();
+        let bootstrap_epoch = EpochNumber(2);
+        let spools: Vec<SpoolIndex> = (0..12).collect();
+        let state = syncing_state(bootstrap_epoch, &spools);
+        assert!(state.committee_prev.is_empty());
+        ctx.set_state(state).unwrap();
+
+        let manager_cancel = CancellationToken::new();
+        let manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig {
+                max_parallel_spools: 10,
+                ..SpoolManagerConfig::default()
+            },
+            manager_cancel.clone(),
+        );
+        let manager_task = tokio::spawn(manager.run());
+
+        let mut config = EpochLifecycleConfig::default();
+        config.spool_poll_interval = Duration::from_millis(10);
+
+        let result = timeout(
+            Duration::from_secs(1),
+            run(ctx, config, bootstrap_epoch, CancellationToken::new()),
+        )
+        .await
+        .expect("wait_spool_ready completes");
+
+        manager_cancel.cancel();
+        manager_task.await.expect("manager task").expect("manager run");
+
+        assert!(matches!(
+            result,
+            TaskDone::Done(Action::WaitSpoolReady, _)
         ));
     }
 }
