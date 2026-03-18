@@ -181,11 +181,13 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
+            let recovered_len = recovered.len() as u64;
             if let Err(error) = ctx.store.put_slice(spool, track_addr, recovered) {
                 warn!(spool, track = %track_addr, %error, "put_slice failed");
                 continue;
             }
 
+            ctx.metrics.add_recover_persisted(recovered_len);
             let _ = ctx.store.remove_pending_recovery(spool, track_addr);
             made_progress = true;
         }
@@ -250,7 +252,10 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         )
         .await
         {
-            Ok(response) if !response.data.is_empty() => response,
+            Ok(response) if !response.data.is_empty() => {
+                ctx.metrics.add_recover_fetched(response.data.len() as u64);
+                response
+            }
             Ok(_) => continue,
             Err(_) => continue,
         };

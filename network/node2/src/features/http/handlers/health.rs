@@ -35,6 +35,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let store = &state.context.store;
     let current_state = state.context.state();
+    let metrics = state.context.metrics.snapshot();
     let last_processed_slot = store
         .get_sync_cursor()
         .map_err(store_error)?
@@ -58,8 +59,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let stats = NodeStats {
         last_processed_slot,
-        blocks_processed: 0,
-        epoch_transitions: 0,
+        blocks_processed: metrics.blocks_processed_total,
+        epoch_transitions: metrics.epoch_transitions_total,
         current_epoch: current_state.epoch.0,
         owned_spools: owned_spools.len() as u64,
         tracks_stored: store
@@ -67,9 +68,9 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .map_err(store_error)? as u64,
         storage_bytes_used,
         slices_stored,
-        bytes_uploaded: 0,
-        bytes_downloaded: 0,
-        requests_total: 0,
+        bytes_uploaded: metrics.bytes_uploaded,
+        bytes_downloaded: metrics.bytes_downloaded,
+        requests_total: metrics.requests_total,
     };
 
     debug!(

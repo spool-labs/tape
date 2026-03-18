@@ -34,6 +34,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
     }
 
     pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+        let previous_epoch = self.context.state().epoch;
         let context = self.context.clone();
         let state = retry_if(
             self.config.state_retry.clone(),
@@ -54,6 +55,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         }
 
         self.context.set_state(state)?;
+        if epoch > previous_epoch {
+            self.context.metrics.inc_epoch_transitions();
+        }
 
         if let Err(error) = self.context.refresh_peers().await {
             warn!(error = %error, epoch = epoch.0, "peer refresh failed after epoch advance");

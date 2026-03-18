@@ -51,6 +51,8 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
 
+    state.context.metrics.add_downloaded(data.len() as u64);
+
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, BINARY_CONTENT)],
@@ -111,11 +113,13 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotResponsible);
     }
 
+    let data_len = payload.data.len() as u64;
     state
         .context
         .store
         .put_slice(spool_id, track_key, payload.data)
         .map_err(store_error)?;
+    state.context.metrics.add_uploaded(data_len);
 
     debug!(track_id = %track_id, spool_id, "http put_slice success");
 

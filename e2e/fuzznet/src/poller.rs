@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -11,7 +10,7 @@ use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::system::EpochPhase;
 use peer_http::HttpApi;
-use tape_node::core::NodeContext;
+use tape_node2::core::context::NodeContext;
 use tape_store::MemoryStore;
 use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
@@ -350,16 +349,17 @@ async fn poll_once(
     let mut node_snapshots = Vec::with_capacity(state.nodes.len());
 
     for tracked in &mut state.nodes {
-        let sync = tracked.ctx.stats.sync_bytes_received.load(Ordering::Relaxed);
-        let repair = tracked.ctx.stats.repair_bytes_received.load(Ordering::Relaxed);
-        let recovery = tracked.ctx.stats.recovery_bytes_received.load(Ordering::Relaxed);
-        let upload = tracked.ctx.stats.bytes_uploaded.load(Ordering::Relaxed);
+        let metrics = tracked.ctx.metrics.snapshot();
+        let sync = metrics.sync_bytes_fetched;
+        let repair = metrics.repair_bytes_fetched;
+        let recovery = metrics.recover_bytes_fetched;
+        let upload = metrics.bytes_uploaded;
 
         let sync_delta = sync.saturating_sub(tracked.prev_sync);
         let repair_delta = repair.saturating_sub(tracked.prev_repair);
         let recovery_delta = recovery.saturating_sub(tracked.prev_recovery);
         let upload_delta = upload.saturating_sub(tracked.prev_upload);
-        let events = tracked.ctx.stats.events.load(Ordering::Relaxed);
+        let events = metrics.events_total;
         let event_delta = events.saturating_sub(tracked.prev_events);
         let transport_delta = sync_delta
             .saturating_add(repair_delta)
@@ -389,7 +389,7 @@ async fn poll_once(
             None
         };
 
-        let authority = tracked.ctx.keypair.pubkey();
+        let authority = tracked.ctx.pubkey();
         if let Ok(node) = tracked.ctx.rpc.get_node(&authority).await {
             tracked.pool_stake = node.pool.stake.as_u64();
         }

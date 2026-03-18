@@ -4,6 +4,7 @@ pub mod channels;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod metrics;
 pub mod peer_call;
 pub mod runtime;
 pub mod signals;

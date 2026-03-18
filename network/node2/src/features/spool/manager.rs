@@ -118,13 +118,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let mut workers: HashMap<SpoolIndex, CancellationToken> = HashMap::new();
         let mut join_set: JoinSet<WorkerDone> = JoinSet::new();
 
-        // Initial spawn for all currently owned spools
-        plan_and_spawn(
+        reconcile_epoch(&self.context, &self.config, observed_epoch)?;
+        fill_capacity(
             &self.context,
             &self.config,
             observed_epoch,
             &mut workers,
             &mut join_set,
+            None,
         )?;
 
         loop {
@@ -164,13 +165,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     // (results are discarded)
                     while join_set.join_next().await.is_some() {}
 
-                    // Re-plan and spawn new workers for the new epoch
-                    plan_and_spawn(
+                    reconcile_epoch(&self.context, &self.config, current_epoch)?;
+                    fill_capacity(
                         &self.context,
                         &self.config,
                         current_epoch,
                         &mut workers,
                         &mut join_set,
+                        None,
                     )?;
 
                     observed_epoch = current_epoch;
@@ -199,12 +201,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     }
 }
 
-fn plan_and_spawn<Db, Cluster, Blockchain>(
+fn reconcile_epoch<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     epoch: EpochNumber,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -224,15 +224,7 @@ where
     // Handle currently owned spools first
     for spool in owned_sorted {
         let persisted_state = persisted_map.remove(&spool);
-        schedule_owned_spool(
-            ctx,
-            config,
-            spool,
-            persisted_state.as_ref(),
-            epoch,
-            workers,
-            join_set,
-        )?;
+        reconcile_owned_spool(ctx, spool, persisted_state.as_ref(), epoch)?;
     }
 
     // Handle spools we no longer own
@@ -310,13 +302,11 @@ where
         info!(spool, epoch = epoch.0, "spool active");
     }
 
-    if let Some(kind) = next_task {
-        if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
-            spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
-        }
+    if next_task.is_some() {
+        fill_capacity(ctx, config, epoch, workers, join_set, Some(spool))?;
+    } else {
+        fill_capacity(ctx, config, epoch, workers, join_set, None)?;
     }
-
-    backfill_workers(ctx, config, epoch, workers, join_set)?;
 
     Ok(())
 }
@@ -342,14 +332,11 @@ fn spawn_worker<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + '
     ));
 }
 
-fn schedule_owned_spool<Db, Cluster, Blockchain>(
+fn reconcile_owned_spool<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
     spool: SpoolIndex,
     persisted_state: Option<&SpoolState>,
     epoch: EpochNumber,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -380,22 +367,19 @@ where
                     .set_spool_state(spool, state)
                     .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
             }
-
-            if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
-                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
-            }
         }
     }
 
     Ok(())
 }
 
-fn backfill_workers<Db, Cluster, Blockchain>(
+fn fill_capacity<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     epoch: EpochNumber,
     workers: &mut HashMap<SpoolIndex, CancellationToken>,
     join_set: &mut JoinSet<WorkerDone>,
+    preferred_spool: Option<SpoolIndex>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -406,9 +390,7 @@ where
         return Ok(());
     }
 
-    let mut owned_spools: Vec<_> = ctx.my_spools().into_iter().collect();
-    owned_spools.sort_unstable();
-
+    let owned_spools = ordered_owned_spools(ctx, preferred_spool);
     for spool in owned_spools {
         if workers.len() >= config.max_parallel_spools {
             break;
@@ -418,20 +400,81 @@ where
             continue;
         }
 
-        let persisted_state = ctx
-            .store
-            .get_spool_state(spool)
-            .map_err(|error| NodeError::Store(format!("get_spool_state({spool}): {error}")))?;
-
-        schedule_owned_spool(
+        spawn_owned_spool_if_runnable(
             ctx,
             config,
             spool,
-            persisted_state.as_ref(),
             epoch,
             workers,
             join_set,
         )?;
+    }
+
+    Ok(())
+}
+
+fn ordered_owned_spools<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
+    preferred_spool: Option<SpoolIndex>,
+) -> Vec<SpoolIndex> {
+    let mut owned_spools: Vec<_> = ctx.my_spools().into_iter().collect();
+    owned_spools.sort_unstable();
+
+    if let Some(preferred) = preferred_spool {
+        if let Some(index) = owned_spools.iter().position(|spool| *spool == preferred) {
+            owned_spools.swap(0, index);
+        }
+    }
+
+    owned_spools
+}
+
+fn spawn_owned_spool_if_runnable<Db, Cluster, Blockchain>(
+    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &SpoolManagerConfig,
+    spool: SpoolIndex,
+    epoch: EpochNumber,
+    workers: &mut HashMap<SpoolIndex, CancellationToken>,
+    join_set: &mut JoinSet<WorkerDone>,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let persisted_state = ctx
+        .store
+        .get_spool_state(spool)
+        .map_err(|error| NodeError::Store(format!("get_spool_state({spool}): {error}")))?;
+
+    match fsm::on_epoch_event(persisted_state.as_ref(), true, epoch) {
+        EpochAction::Idle => {}
+        EpochAction::Lock => {
+            warn!(spool, "unexpected lock action for owned spool");
+        }
+        EpochAction::Spawn { kind, update } => {
+            if update.is_some() {
+                reset_spool_task_state(ctx, spool);
+            }
+
+            let maybe_new_state = if kind == TaskKind::Sync {
+                Some(make_sync_state(ctx, spool, epoch))
+            } else if let Some(state) = update {
+                Some(state)
+            } else {
+                None
+            };
+
+            if let Some(state) = maybe_new_state {
+                ctx.store
+                    .set_spool_state(spool, state)
+                    .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
+            }
+
+            if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
+                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
+            }
+        }
     }
 
     Ok(())

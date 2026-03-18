@@ -24,6 +24,7 @@ use tape_store::types::NodeStatus;
 
 use crate::core::config::NodeConfig;
 use crate::core::error::NodeError;
+use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 
 pub type AppContext = Arc<NodeContext<RocksStore, HttpApi, SolanaRpc>>;
@@ -35,6 +36,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub state: StateBus,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
+    pub metrics: NodeMetrics,
 
     node_id: NodeId,
     node_address: Pubkey,
@@ -165,6 +167,7 @@ pub mod test_utils {
             state: StateBus::default(),
             peer_manager,
             api: Arc::new(api),
+            metrics: NodeMetrics::default(),
         })
     }
 
@@ -241,6 +244,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             state: StateBus::default(),
             peer_manager: self.peer_manager,
             api: self.api,
+            metrics: NodeMetrics::default(),
         }))
     }
 }

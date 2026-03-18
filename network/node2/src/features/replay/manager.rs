@@ -89,6 +89,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
         let event_count = batch.events.len();
 
         send_replay_batch(&self.state_tx, batch).await?;
+        self.context.metrics.add_events(event_count as u64);
 
         debug!(
             node_id = self.context.node_id().0,

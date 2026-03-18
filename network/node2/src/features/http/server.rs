@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
+use axum::extract::{Request, State};
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
+use axum::middleware::{from_fn_with_state, Next};
 use axum::routing::{get, post};
+use axum::response::Response;
 use axum::{BoxError, Router};
 
 use rpc::Rpc;
@@ -94,6 +97,12 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
             )
             .with_state(state)
+            .layer(from_fn_with_state(
+                AppState {
+                    context: self.context.clone(),
+                },
+                count_requests::<Db, Cluster, Blockchain>,
+            ))
             .layer(DefaultBodyLimit::disable())
             .layer(
                 ServiceBuilder::new()
@@ -132,4 +141,13 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    state.context.metrics.inc_requests_total();
+    next.run(req).await
 }

@@ -8750,7 +8750,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-e2e-simnet",
- "tape-node",
+ "tape-node2",
  "tape-protocol",
  "tape-sdk",
  "tape-store",

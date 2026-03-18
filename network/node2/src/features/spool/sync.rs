@@ -70,9 +70,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         match pull_batch(ctx.as_ref(), config, spool, prev_owner, cursor).await {
-            Ok((next_cursor, batch_synced)) => {
-                synced += batch_synced;
-                match next_cursor {
+            Ok(batch) => {
+                synced += batch.synced;
+                if batch.fetched_bytes > 0 {
+                    ctx.metrics.add_sync_fetched(batch.fetched_bytes);
+                }
+                if batch.persisted_bytes > 0 {
+                    ctx.metrics.add_sync_persisted(batch.persisted_bytes);
+                }
+
+                match batch.next_cursor {
                     Some(c) => {
                         cursor = Some(c);
                         if let Err(error) = ctx.store.set_spool_sync_cursor(spool, c) {
@@ -97,15 +104,17 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// Pull one page of slices from the previous owner, persist each valid entry.
-/// Returns (next_cursor, batch_synced_count), or an error.
+/// Returns the next cursor plus fetched/persisted batch accounting.
 async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
     prev_owner: NodeId,
     cursor: Option<Pubkey>,
-) -> Result<(Option<Pubkey>, usize), SyncError> {
+) -> Result<SyncBatch, SyncError> {
     let mut batch_synced = 0;
+    let mut fetched_bytes = 0u64;
+    let mut persisted_bytes = 0u64;
 
     let req = SyncReq {
         spool_index: spool,
@@ -129,6 +138,8 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     for entry in response.entries {
         let track_addr = Pubkey(entry.track_address);
+        let slice_len = entry.slice_data.len() as u64;
+        fetched_bytes += slice_len;
 
         if ctx
             .store
@@ -154,14 +165,27 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .map_err(|error| SyncError::Store(format!("put_slice: {error}")))?;
 
         batch_synced += 1;
+        persisted_bytes += slice_len;
     }
 
-    Ok((response.next_cursor.map(Pubkey), batch_synced))
+    Ok(SyncBatch {
+        next_cursor: response.next_cursor.map(Pubkey),
+        synced: batch_synced,
+        fetched_bytes,
+        persisted_bytes,
+    })
 }
 
 enum SyncError {
     Unavailable,
     Store(String),
+}
+
+struct SyncBatch {
+    next_cursor: Option<Pubkey>,
+    synced: usize,
+    fetched_bytes: u64,
+    persisted_bytes: u64,
 }
 
 fn verify_slice_for_track(spool: SpoolIndex, track_info: &TrackInfo, data: &[u8]) -> bool {

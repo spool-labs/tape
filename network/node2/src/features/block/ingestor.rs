@@ -121,6 +121,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             Arc::clone(&block)
         ).await?;
 
+        self.context.metrics.inc_blocks_processed();
         info!(slot = slot.0, "dispatched parsed block");
         Ok(IngestStep::Continue)
     }

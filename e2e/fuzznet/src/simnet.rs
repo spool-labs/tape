@@ -22,7 +22,7 @@ use tape_core::types::coin::TAPE;
 use tape_core::types::StorageUnits;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
-use tape_e2e_simnet::tls::{init_tls, pick_bind};
+use tape_e2e_simnet::tls::pick_bind;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
 use tape_sdk::{TapeKey, Tapedrive, TapedriveError};
 
@@ -101,9 +101,6 @@ async fn async_run(
     snapshot: SnapshotHandle,
     histogram: LogHistogram,
 ) {
-    tracing::info!("initializing tls");
-    init_tls();
-
     tracing::info!("creating chain");
     let chain = ChainFixture::new();
 

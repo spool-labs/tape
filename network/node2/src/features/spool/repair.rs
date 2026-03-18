@@ -148,16 +148,19 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
             match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info).await {
                 Ok(data) => {
+                    let repaired_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
                         warn!(spool, track = %track, %error, "put_slice failed");
                         continue;
                     }
+                    ctx.metrics.add_repair_persisted(repaired_len);
                     let _ = ctx.store.remove_pending_repair(spool, track);
                 }
                 Err(()) => {
                     info!(spool, track = %track, "repair failed, escalating to recovery");
                     let _ = ctx.store.remove_pending_repair(spool, track);
                     let _ = ctx.store.add_pending_recovery(spool, track);
+                    ctx.metrics.inc_repair_escalations();
                     unrepairable += 1;
                 }
             }
@@ -308,6 +311,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match result {
             Ok(res) => {
+                ctx.metrics.add_repair_fetched(res.data.len() as u64);
                 helper_data.insert(*slice_idx, res.data);
             }
             Err(_) => return Err(()),
