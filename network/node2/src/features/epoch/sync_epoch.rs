@@ -15,6 +15,7 @@ use crate::chain::submit_sync_epoch;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
+use crate::features::epoch::wait_spool_ready::{Readiness, check_readiness};
 
 // Purpose: Submit a SyncEpoch transaction to attest that this node
 //          has synced all its assigned spool data for the current epoch.
@@ -45,7 +46,15 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let owned_spools = owned_spool_list(&ctx);
 
-    info!(epoch = epoch.0, spools = owned_spools.len());
+    if owned_spools.is_empty() {
+        info!(epoch = epoch.0, "sync_epoch: no spools assigned");
+        return TaskDone::Done(Action::SyncEpoch, epoch);
+    }
+
+    if let Readiness::NotReady { ready, total } = check_readiness(&ctx) {
+        debug!(epoch = epoch.0, ready, total, "sync_epoch: not ready to sync");
+        return TaskDone::Rejected(Action::SyncEpoch, epoch);
+    }
 
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
@@ -91,10 +100,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Vec<SpoolIndex> {
+
     let state = ctx.state();
     let Some((member_index, _)) = state.find_member(ctx.node_id()) else {
         return Vec::new();
     };
+
     let mut spools = state.member_spools(member_index);
     spools.sort_unstable();
     spools

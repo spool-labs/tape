@@ -94,6 +94,7 @@ use tape_core::types::EpochNumber;
 use tape_core::system::EpochPhase;
 use tape_core::types::NodeId;
 use tape_protocol::{Api, ProtocolState};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -113,28 +114,33 @@ pub fn next_action(
 ) -> Option<Action> {
 
     let in_committee = state.find_member(node_id).is_some();
-    let in_prev = state.committee_prev.iter().any(|m| m.id == node_id);
 
     match state.phase {
         EpochPhase::Syncing => {
+
+            // Wait for our spools to be ready before attesting SyncEpoch.
             if in_committee && !done.contains(&Action::WaitSpoolReady) {
                 return Some(Action::WaitSpoolReady);
             }
+
+            // Once spools are ready, we can submit SyncEpoch to attest that we're synced.
             if in_committee && !done.contains(&Action::SyncEpoch) {
                 return Some(Action::SyncEpoch);
             }
+
             None
         }
         EpochPhase::Settling => {
-            if (in_committee || in_prev) && !done.contains(&Action::AdvancePool) {
+            // AdvancePool is permissionless and should be called once per epoch.
+            if !done.contains(&Action::AdvancePool) {
                 return Some(Action::AdvancePool);
             }
+
             None
         }
         EpochPhase::Active => {
-
             // AdvancePool can still be submitted during Active if we missed Settling.
-            if (in_committee || in_prev) && !done.contains(&Action::AdvancePool) {
+            if !done.contains(&Action::AdvancePool) {
                 return Some(Action::AdvancePool);
             }
 
@@ -176,27 +182,52 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
-
         let mut state_rx = self.context.subscribe_state();
         let mut observed_epoch = state_rx.borrow().epoch;
         let mut done: HashSet<Action> = HashSet::new();
+        let mut tasks: JoinSet<TaskDone> = JoinSet::new();
 
+        let mut running: Option<Action> = None;
 
         loop {
             tokio::select! {
+                // Shutdown signal
                 _ = self.cancel.cancelled() => {
-                    // Cancel any active task before exiting.
-                    
+                    info!("lifecycle: shutting down, aborting tasks");
+                    tasks.abort_all();
                     return Ok(());
                 }
 
+                // Task completed
+                Some(completion) = tasks.join_next() => {
+                    match completion {
+                        Ok(result) => {
+                            self.handle_task_completion(result, &mut done, &mut running);
+                        }
+                        Err(e) => {
+                            if e.is_cancelled() {
+                                debug!("lifecycle: task was aborted");
+                            } else {
+                                warn!(?e, "lifecycle: task panicked");
+                            }
+
+                            // Clear running on panic/abort too
+                            running = None;
+                        }
+                    }
+                }
+
+                // State changed ("replan" signal)
                 changed = state_rx.changed() => {
                     if changed.is_err() {
-                        warn!("lifecycle: state channel closed, exiting");
+                        warn!("lifecycle: state channel closed");
+
+                        tasks.abort_all();
                         return Ok(());
                     }
 
                     let state = state_rx.borrow().clone();
+
                     if state.epoch != observed_epoch {
                         info!(
                             old_epoch = observed_epoch.0,
@@ -205,66 +236,97 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         );
 
                         done.clear();
+                        tasks.abort_all();
+                        running = None;
+
                         observed_epoch = state.epoch;
                     }
 
-                    // Try to make progress after a state change
-                    self.run_next(observed_epoch, &mut done, self.cancel.clone()).await;
+                    self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
                 }
 
+                // Periodic heartbeat
                 _ = tokio::time::sleep(self.config.interval) => {
-                    // We use the last known epoch we processed
-                    self.run_next(observed_epoch, &mut done, self.cancel.clone()).await;
+                    self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
                 }
             }
         }
     }
 
-    /// Evaluate what lifecycle action should run next, and run it if needed.
-    async fn run_next(
+    /// Try to spawn the next pending action — but only if nothing is currently running.
+    fn try_spawn_next(
         &self,
-        epoch: EpochNumber,
+        tasks: &mut JoinSet<TaskDone>,
+        running: &mut Option<Action>,
         done: &mut HashSet<Action>,
-        token: CancellationToken,
+        epoch: EpochNumber,
     ) {
 
-        let context = self.context.clone();
-        let state = context.state();
-        let node_id = context.node_id();
+        // If something is already running -> skip
+        if running.is_some() {
+            return;
+        }
 
-        if let Some(action) = next_action(&state, node_id, done) {
-            let result = match action {
-                Action::WaitSpoolReady => {
-                    wait_spool_ready::run(context, epoch, token).await
-                }
-                Action::SyncEpoch => {
-                    sync_epoch::run(context, epoch, token).await
-                }
-                Action::AdvancePool => {
-                    advance_pool::run(context, epoch, token).await
-                }
-                Action::JoinNetwork => {
-                    join_network::run(context, epoch, token).await
-                }
-                Action::AdvanceEpoch => {
-                    advance_epoch::run(context, epoch, token).await
-                }
-            };
+        let state = self.context.state();
+        let node_id = self.context.node_id();
 
-            // Determine if the task completed successfully, was cancelled, or rejected.
-            match result {
-                TaskDone::Done(action, epoch) => {
-                    info!(action = ?action, epoch = epoch.0, "lifecycle: task completed");
-                    done.insert(action);
-                }
-                TaskDone::Rejected(action, epoch) => {
-                    debug!(action = ?action, epoch = epoch.0, "lifecycle: task rejected");
-                }
-                TaskDone::Cancelled(action, epoch) => {
-                    debug!(action = ?action, epoch = epoch.0, "lifecycle: task cancelled");
-                }
+        let Some(action) = next_action(&state, node_id, done) else {
+            return;
+        };
+
+        info!(?action, epoch = epoch.0, "lifecycle: spawning task (serial execution)");
+
+        let ctx = self.context.clone();
+        let token = self.cancel.child_token();
+
+        tasks.spawn(async move {
+            match action {
+                Action::WaitSpoolReady => wait_spool_ready::run(ctx, epoch, token).await,
+                Action::SyncEpoch      => sync_epoch::run(ctx, epoch, token).await,
+                Action::AdvancePool    => advance_pool::run(ctx, epoch, token).await,
+                Action::JoinNetwork    => join_network::run(ctx, epoch, token).await,
+                Action::AdvanceEpoch   => advance_epoch::run(ctx, epoch, token).await,
+            }
+        });
+
+        *running = Some(action);
+    }
+
+    fn handle_task_completion(
+        &self,
+        result: TaskDone,
+        done: &mut HashSet<Action>,
+        running: &mut Option<Action>,
+    ) {
+        let action = match &result {
+            TaskDone::Done(a, _) | 
+            TaskDone::Rejected(a, _) | 
+            TaskDone::Cancelled(a, _) => *a,
+        };
+
+        // Clear running only if it matches the completed action (defensive)
+        if running.as_ref() == Some(&action) {
+            *running = None;
+        }
+
+        match result {
+            TaskDone::Done(action, epoch) => {
+                info!(?action, epoch = epoch.0, "lifecycle: task completed");
+
+                done.insert(action);
+            }
+            TaskDone::Rejected(action, epoch) => {
+                debug!(?action, epoch = epoch.0, "lifecycle: task rejected");
+
+                // a rejected task indicates a permanent failure for that action in the current
+                // epoch.
+
+                // TODO: we need to figure out what to do in this case, it might be fine to leave
+                // it as is and just wait for the next epoch.
+            }
+            TaskDone::Cancelled(action, epoch) => {
+                debug!(?action, epoch = epoch.0, "lifecycle: task cancelled");
             }
         }
     }
 }
-

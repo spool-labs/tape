@@ -71,12 +71,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     return TaskDone::Cancelled(Action::WaitSpoolReady, epoch);
 }
 
-enum Readiness {
+pub enum Readiness {
     Ready,
     NotReady { ready: usize, total: usize },
 }
 
-fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Readiness {
     let state = ctx.state();
