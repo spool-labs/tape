@@ -88,18 +88,15 @@ pub struct EpochManagerConfig {
 pub struct EpochLifecycleConfig {
     /// Retry config for Solana transaction submissions.
     pub tx_retry: RetryConfig,
-    /// How often to poll spool readiness before SyncEpoch (seconds).
-    pub spool_poll_interval: Duration,
-    /// How often to check timing gate for JoinNetwork (seconds).
-    pub time_poll_interval: Duration,
+    /// Interval for lifecycle tasks.
+    pub interval: Duration,
 }
 
 impl Default for EpochLifecycleConfig {
     fn default() -> Self {
         Self {
             tx_retry: RetryConfig::infinite(),
-            spool_poll_interval: Duration::from_secs(1),
-            time_poll_interval: Duration::from_secs(5),
+            interval: Duration::from_secs(1),
         }
     }
 }

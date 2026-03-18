@@ -3,7 +3,7 @@ use crate::bft::is_supermajority;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[repr(u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, IntoPrimitive, TryFromPrimitive)]
 pub enum EpochPhase {
     Unknown = 0,
     /// Nodes are attesting they have synced their spool data.

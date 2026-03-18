@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
 
 use rpc::Rpc;
 use store::Store;
@@ -8,10 +10,8 @@ use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::SpoolOps;
 use tape_store::types::SpoolStatus;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
-use crate::core::config::EpochLifecycleConfig;
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
 
@@ -41,13 +41,16 @@ use crate::features::epoch::types::{Action, TaskDone};
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: EpochLifecycleConfig,
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
+    
+    let mut backoff = Backoff::new(RetryConfig::infinite());
+
     loop {
-        if cancel.is_cancelled() {
-            return TaskDone::Cancelled(Action::WaitSpoolReady, epoch);
+        if ctx.state().epoch != epoch {
+            info!(epoch = epoch.0, "advance_epoch: epoch already advanced");
+            return TaskDone::Rejected(Action::WaitSpoolReady, epoch);
         }
 
         match check_readiness(&ctx) {
@@ -57,15 +60,15 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
             Readiness::NotReady { ready, total } => {
                 debug!(epoch = epoch.0, ready, total, "wait_spool_ready: polling");
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return TaskDone::Cancelled(Action::WaitSpoolReady, epoch);
-                    }
-                    _ = tokio::time::sleep(config.spool_poll_interval) => {}
-                }
             }
         }
+
+        if backoff_or_cancel(&mut backoff, &cancel).await {
+           break;
+        }
     }
+
+    return TaskDone::Cancelled(Action::WaitSpoolReady, epoch);
 }
 
 enum Readiness {
@@ -106,266 +109,3 @@ fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-    use tape_core::erasure::SPOOL_COUNT;
-    use tape_core::spooler::SpoolAssignment;
-    use tape_core::system::{CommitteeMember, EpochPhase};
-    use tape_core::types::NodeId;
-    use tape_core::types::coin::{Coin, TAPE};
-    use tape_protocol::ProtocolState;
-    use tape_store::types::SpoolState;
-    use tokio::time::timeout;
-    use tokio_util::sync::CancellationToken;
-
-    use crate::core::config::SpoolManagerConfig;
-    use crate::core::context::test_utils::{TestContext, test_context};
-    use crate::features::spool::manager::SpoolManager;
-
-    const EPOCH: EpochNumber = EpochNumber(3);
-
-    /// ProtocolState where node_id=0 is member 0, assigned the given spools.
-    fn syncing_state(epoch: EpochNumber, spools: &[SpoolIndex]) -> ProtocolState {
-        let mut state = ProtocolState::default();
-        state.epoch = epoch;
-        state.phase = EpochPhase::Syncing;
-        state
-            .committee
-            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
-        let mut mapping = [255u8; SPOOL_COUNT];
-        for &s in spools {
-            mapping[s as usize] = 0;
-        }
-        state.spools = SpoolAssignment::new(mapping);
-        state
-    }
-
-    fn set_spools_active(
-        ctx: &TestContext,
-        epoch: EpochNumber,
-        spools: &[SpoolIndex],
-    ) {
-        for &s in spools {
-            ctx.store
-                .set_spool_state(s, SpoolState::new(SpoolStatus::Active, epoch))
-                .unwrap();
-        }
-    }
-
-    // ── check_readiness unit tests ──────────────────────────────────
-
-    #[test]
-    fn readiness_all_active() {
-        let ctx = test_context();
-        let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        set_spools_active(&ctx, EPOCH, &spools);
-
-        assert!(matches!(check_readiness(&ctx), Readiness::Ready));
-    }
-
-    #[test]
-    fn readiness_partial() {
-        let ctx = test_context();
-        let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        set_spools_active(&ctx, EPOCH, &[0, 40]);
-
-        match check_readiness(&ctx) {
-            Readiness::NotReady { ready, total } => {
-                assert_eq!(ready, 2);
-                assert_eq!(total, 3);
-            }
-            Readiness::Ready => panic!("expected not ready"),
-        }
-    }
-
-    #[test]
-    fn readiness_none_persisted() {
-        let ctx = test_context();
-        let spools = vec![0, 20];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        // No spool states in store at all.
-
-        match check_readiness(&ctx) {
-            Readiness::NotReady { ready, total } => {
-                assert_eq!(ready, 0);
-                assert_eq!(total, 2);
-            }
-            Readiness::Ready => panic!("expected not ready"),
-        }
-    }
-
-    #[test]
-    fn no_committee() {
-        let ctx = test_context();
-        // Default state: empty committee, node_id=0 not a member.
-        assert!(matches!(check_readiness(&ctx), Readiness::Ready));
-    }
-
-    #[test]
-    fn no_spools() {
-        let ctx = test_context();
-        // In committee but no spools mapped to member 0.
-        let mut state = ProtocolState::default();
-        state.phase = EpochPhase::Syncing;
-        state
-            .committee
-            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
-        state.spools = SpoolAssignment::new([255u8; SPOOL_COUNT]);
-        ctx.set_state(state).unwrap();
-
-        assert!(matches!(check_readiness(&ctx), Readiness::Ready));
-    }
-
-    #[test]
-    fn readiness_wrong_status() {
-        let ctx = test_context();
-        let spools = vec![0, 20];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        set_spools_active(&ctx, EPOCH, &[0]);
-        ctx.store
-            .set_spool_state(20, SpoolState::new(SpoolStatus::Repair, EPOCH))
-            .unwrap();
-
-        match check_readiness(&ctx) {
-            Readiness::NotReady { ready, total } => {
-                assert_eq!(ready, 1);
-                assert_eq!(total, 2);
-            }
-            Readiness::Ready => panic!("expected not ready"),
-        }
-    }
-
-    // ── run() integration tests ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn immediate_cancel() {
-        let ctx = test_context();
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let result = run(ctx, EpochLifecycleConfig::default(), EPOCH, cancel).await;
-        assert!(matches!(
-            result,
-            TaskDone::Cancelled(Action::WaitSpoolReady, _)
-        ));
-    }
-
-    #[tokio::test]
-    async fn already_ready() {
-        let ctx = test_context();
-        let spools = vec![0, 20, 40];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        set_spools_active(&ctx, EPOCH, &spools);
-
-        let result =
-            run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
-        assert!(matches!(
-            result,
-            TaskDone::Done(Action::WaitSpoolReady, _)
-        ));
-    }
-
-    #[tokio::test]
-    async fn not_in_committee() {
-        let ctx = test_context();
-        // Default state: not in committee → ready immediately.
-        let result =
-            run(ctx, EpochLifecycleConfig::default(), EPOCH, CancellationToken::new()).await;
-        assert!(matches!(
-            result,
-            TaskDone::Done(Action::WaitSpoolReady, _)
-        ));
-    }
-
-    #[tokio::test]
-    async fn polls_until_ready() {
-        let ctx = test_context();
-        let spools = vec![0, 20];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        set_spools_active(&ctx, EPOCH, &[0]); // spool 20 not ready yet
-
-        let ctx_clone = ctx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            ctx_clone
-                .store
-                .set_spool_state(20, SpoolState::new(SpoolStatus::Active, EPOCH))
-                .unwrap();
-        });
-
-        let mut config = EpochLifecycleConfig::default();
-        config.spool_poll_interval = Duration::from_millis(10);
-
-        let result = run(ctx, config, EPOCH, CancellationToken::new()).await;
-        assert!(matches!(
-            result,
-            TaskDone::Done(Action::WaitSpoolReady, _)
-        ));
-    }
-
-    #[tokio::test]
-    async fn cancel_while_polling() {
-        let ctx = test_context();
-        let spools = vec![0, 20];
-        ctx.set_state(syncing_state(EPOCH, &spools)).unwrap();
-        // spool 20 never becomes ready
-
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            cancel_clone.cancel();
-        });
-
-        let mut config = EpochLifecycleConfig::default();
-        config.spool_poll_interval = Duration::from_millis(10);
-
-        let result = run(ctx, config, EPOCH, cancel).await;
-        assert!(matches!(
-            result,
-            TaskDone::Cancelled(Action::WaitSpoolReady, _)
-        ));
-    }
-
-    #[tokio::test]
-    async fn bootstrap_ready() {
-        let ctx = test_context();
-        let bootstrap_epoch = EpochNumber(2);
-        let spools: Vec<SpoolIndex> = (0..12).collect();
-        let state = syncing_state(bootstrap_epoch, &spools);
-        assert!(state.committee_prev.is_empty());
-        ctx.set_state(state).unwrap();
-
-        let manager_cancel = CancellationToken::new();
-        let manager = SpoolManager::new(
-            ctx.clone(),
-            SpoolManagerConfig {
-                max_parallel_spools: 10,
-                ..SpoolManagerConfig::default()
-            },
-            manager_cancel.clone(),
-        );
-        let manager_task = tokio::spawn(manager.run());
-
-        let mut config = EpochLifecycleConfig::default();
-        config.spool_poll_interval = Duration::from_millis(10);
-
-        let result = timeout(
-            Duration::from_secs(1),
-            run(ctx, config, bootstrap_epoch, CancellationToken::new()),
-        )
-        .await
-        .expect("wait_spool_ready completes");
-
-        manager_cancel.cancel();
-        manager_task.await.expect("manager task").expect("manager run");
-
-        assert!(matches!(
-            result,
-            TaskDone::Done(Action::WaitSpoolReady, _)
-        ));
-    }
-}

@@ -38,17 +38,6 @@ pub fn classify_tx(result: Result<Signature, RpcError>) -> TxOutcome {
     }
 }
 
-/// Sleep for the next backoff delay, or return `true` if cancelled.
-pub async fn backoff_or_cancel(backoff: &mut Backoff, cancel: &CancellationToken) -> bool {
-    if let Some(delay) = backoff.next_delay() {
-        tokio::select! {
-            _ = cancel.cancelled() => true,
-            _ = tokio::time::sleep(delay) => false,
-        }
-    } else {
-        false
-    }
-}
 
 #[cfg(test)]
 mod tests {

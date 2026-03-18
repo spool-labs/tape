@@ -77,6 +77,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.state.current()
     }
 
+    pub fn phase(&self) -> EpochPhase {
+        self.state().phase
+    }
+
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
         self.state.publish(state)
     }

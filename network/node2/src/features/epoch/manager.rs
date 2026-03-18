@@ -23,6 +23,7 @@ pub struct EpochManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochManager<Db, Cluster, Blockchain> {
+
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: EpochManagerConfig,
@@ -78,9 +79,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochManager<Db, Cluster, Blockch
                     handlers.handle_sync_epoch(event.epoch, event.phase).await?;
                 }
                 ParsedInstruction::AdvancePool { node, event } => {
-                    handlers
-                        .handle_advance_pool(*node, event.epoch, event.phase)
-                        .await?;
+                    handlers.handle_advance_pool(*node, event.epoch, event.phase).await?;
                 }
                 ParsedInstruction::JoinNetwork { event, .. } => {
                     handlers.handle_join_network(event.id).await?;

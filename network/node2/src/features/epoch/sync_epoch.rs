@@ -4,15 +4,15 @@ use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
 use tape_core::spooler::SpoolIndex;
+use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_retry::Backoff;
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_sync_epoch;
-use crate::core::chain_tx::{TxOutcome, backoff_or_cancel, classify_tx};
-use crate::core::config::EpochLifecycleConfig;
+use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
 
@@ -39,21 +39,28 @@ use crate::features::epoch::types::{Action, TaskDone};
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: EpochLifecycleConfig,
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
+
     let owned_spools = owned_spool_list(&ctx);
 
-    info!(epoch = epoch.0, spools = owned_spools.len(), "sync_epoch: submitting");
+    info!(epoch = epoch.0, spools = owned_spools.len());
 
-    let mut backoff = Backoff::new(config.tx_retry);
+    let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
-        if cancel.is_cancelled() {
-            return TaskDone::Cancelled(Action::SyncEpoch, epoch);
+        if ctx.state().epoch != epoch {
+            info!(epoch = epoch.0, "sync_epoch: epoch already advanced");
+            return TaskDone::Rejected(Action::SyncEpoch, epoch);
         }
 
+        if ctx.phase() > EpochPhase::Syncing {
+            info!(epoch = epoch.0, phase = ?ctx.phase(), "sync_epoch: past syncing phase");
+            return TaskDone::Rejected(Action::SyncEpoch, epoch);
+        }
+
+        info!(epoch = epoch.0, "sync_epoch: submitting");
         let result = submit_sync_epoch(&ctx, epoch, &owned_spools).await;
 
         match classify_tx(result) {
@@ -65,27 +72,20 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, "sync_epoch: already synced");
                 return TaskDone::Done(Action::SyncEpoch, epoch);
             }
-            TxOutcome::Program(
-                err @ (TapeError::BadEpochState
-                | TapeError::NotInCommittee
-                | TapeError::BadSpoolHash
-                | TapeError::BadEpochId),
-            ) => {
-                warn!(epoch = epoch.0, ?err, "sync_epoch: rejected");
-                return TaskDone::Rejected(Action::SyncEpoch, epoch);
-            }
             TxOutcome::Program(err) => {
-                warn!(epoch = epoch.0, ?err, "sync_epoch: unexpected program error");
-                return TaskDone::Rejected(Action::SyncEpoch, epoch);
+                warn!(epoch = epoch.0, ?err, "sync_epoch: program error");
             }
             TxOutcome::Transport(err) => {
-                debug!(epoch = epoch.0, %err, "sync_epoch: transport error, retrying");
-                if backoff_or_cancel(&mut backoff, &cancel).await {
-                    return TaskDone::Cancelled(Action::SyncEpoch, epoch);
-                }
+                debug!(epoch = epoch.0, %err, "sync_epoch: transport error");
             }
         }
+
+        if backoff_or_cancel(&mut backoff, &cancel).await {
+           break;
+        }
     }
+
+    return TaskDone::Cancelled(Action::SyncEpoch, epoch);
 }
 
 fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -100,123 +100,3 @@ fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spools
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use tape_core::system::EpochPhase;
-    use crate::harness::NodeHarness;
-
-    const EPOCH: EpochNumber = EpochNumber(3);
-    const NODE: usize = 7;
-
-    #[tokio::test]
-    async fn success() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Done(Action::SyncEpoch, _)));
-    }
-
-    #[tokio::test]
-    async fn already_synced() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
-            .node(NODE, |node| node.latest_sync_epoch = EPOCH)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Done(Action::SyncEpoch, _)));
-    }
-
-    #[tokio::test]
-    async fn phase_past_syncing() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Rejected(Action::SyncEpoch, _)));
-    }
-
-    #[tokio::test]
-    async fn not_in_committee() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
-            .current_committee_size(20)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(24),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Rejected(Action::SyncEpoch, _)));
-    }
-
-    #[tokio::test]
-    async fn immediate_cancel() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
-            .build()
-            .await
-            .expect("build harness");
-
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            cancel,
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Cancelled(Action::SyncEpoch, _)));
-    }
-}

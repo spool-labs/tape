@@ -69,6 +69,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
 
     pub async fn handle_sync_epoch(&self, epoch: EpochNumber, phase: u64) -> Result<(), NodeError> {
         let state = self.context.state();
+
         if state.epoch == epoch {
             if let Ok(phase) = EpochPhase::try_from(phase) {
                 if phase != state.phase {
@@ -88,6 +89,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         phase: u64,
     ) -> Result<(), NodeError> {
         let state = self.context.state();
+
         if state.epoch == epoch {
             if let Ok(phase) = EpochPhase::try_from(phase) {
                 if phase != state.phase {

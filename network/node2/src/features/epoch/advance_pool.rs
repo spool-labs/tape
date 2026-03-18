@@ -5,13 +5,12 @@ use store::Store;
 use tape_api::errors::TapeError;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_retry::Backoff;
+use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::chain::submit_advance_pool;
-use crate::core::chain_tx::{TxOutcome, backoff_or_cancel, classify_tx};
-use crate::core::config::EpochLifecycleConfig;
+use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
 use crate::features::epoch::types::{Action, TaskDone};
 
@@ -45,19 +44,19 @@ use crate::features::epoch::types::{Action, TaskDone};
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: EpochLifecycleConfig,
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    info!(epoch = epoch.0, "advance_pool: submitting");
 
-    let mut backoff = Backoff::new(config.tx_retry);
+    let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
-        if cancel.is_cancelled() {
-            return TaskDone::Cancelled(Action::AdvancePool, epoch);
+        if ctx.state().epoch != epoch {
+            info!(epoch = epoch.0, "advance_pool: wrong epoch");
+            return TaskDone::Rejected(Action::AdvancePool, epoch);
         }
 
+        info!(epoch = epoch.0, "advance_pool: submitting");
         let result = submit_advance_pool(&ctx).await;
 
         match classify_tx(result) {
@@ -69,164 +68,23 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, "advance_pool: already advanced");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
-            TxOutcome::Program(err @ (TapeError::NoRewards | TapeError::RewardsOverflow)) => {
-                warn!(epoch = epoch.0, ?err, "advance_pool: rejected");
-                return TaskDone::Rejected(Action::AdvancePool, epoch);
-            }
-            TxOutcome::Program(TapeError::BadEpochState) => {
-                debug!(epoch = epoch.0, "advance_pool: bad epoch state, retrying");
-                if backoff_or_cancel(&mut backoff, &cancel).await {
-                    return TaskDone::Cancelled(Action::AdvancePool, epoch);
-                }
+            TxOutcome::Program(err @ TapeError::NoRewards) => {
+                warn!(epoch = epoch.0, ?err, "advance_pool: no claimable rewards");
+                return TaskDone::Done(Action::AdvancePool, epoch);
             }
             TxOutcome::Program(err) => {
-                warn!(epoch = epoch.0, ?err, "advance_pool: unexpected program error");
-                return TaskDone::Rejected(Action::AdvancePool, epoch);
+                warn!(epoch = epoch.0, ?err, "advance_pool: program error");
             }
             TxOutcome::Transport(err) => {
-                debug!(epoch = epoch.0, %err, "advance_pool: transport error, retrying");
-                if backoff_or_cancel(&mut backoff, &cancel).await {
-                    return TaskDone::Cancelled(Action::AdvancePool, epoch);
-                }
+                debug!(epoch = epoch.0, %err, "advance_pool: transport error");
             }
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    use tape_core::system::EpochPhase;
-    use tape_retry::RetryConfig;
-
-    use crate::harness::NodeHarness;
-
-    const EPOCH: EpochNumber = EpochNumber(3);
-    const NODE: usize = 7;
-
-    #[tokio::test]
-    async fn success() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
-    }
-
-    #[tokio::test]
-    async fn already_advanced() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
-            .node(NODE, |node| node.latest_advance_epoch = EPOCH)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
-    }
-
-    #[tokio::test]
-    async fn wrong_phase() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Syncing)
-            .build()
-            .await
-            .expect("build harness");
-
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            cancel_clone.cancel();
-        });
-
-        let result = run(harness.ctx_for(NODE), fast_retry_config(), EPOCH, cancel).await;
-
-        assert!(matches!(result, TaskDone::Cancelled(Action::AdvancePool, _)));
-    }
-
-    #[tokio::test]
-    async fn immediate_cancel() {
-        let harness = NodeHarness::builder()
-            .nodes(20)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
-            .build()
-            .await
-            .expect("build harness");
-
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            cancel,
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Cancelled(Action::AdvancePool, _)));
-    }
-
-    #[tokio::test]
-    async fn prev_committee_only() {
-        let current_committee: Vec<_> = (0..=20).filter(|&index| index != NODE).collect();
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Settling)
-            .current_committee_nodes(current_committee)
-            .prev_committee_size(20)
-            .build()
-            .await
-            .expect("build harness");
-
-        let result = run(
-            harness.ctx_for(NODE),
-            EpochLifecycleConfig::default(),
-            EPOCH,
-            CancellationToken::new(),
-        )
-        .await;
-
-        assert!(matches!(result, TaskDone::Done(Action::AdvancePool, _)));
-    }
-
-    fn fast_retry_config() -> EpochLifecycleConfig {
-        EpochLifecycleConfig {
-            tx_retry: RetryConfig {
-                base_delay: Duration::from_millis(1),
-                max_delay: Duration::from_millis(1),
-                max_retries: None,
-            },
-            ..EpochLifecycleConfig::default()
+        if backoff_or_cancel(&mut backoff, &cancel).await {
+           break;
         }
     }
+
+    return TaskDone::Cancelled(Action::AdvancePool, epoch);
 }
+

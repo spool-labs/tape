@@ -3,9 +3,7 @@ use tape_core::types::EpochNumber;
 /// Actions the lifecycle worker can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
-    /// Poll store until all owned spools are Active.
     WaitSpoolReady,
-    /// Submit SyncEpoch transaction.
     SyncEpoch,
     AdvancePool,
     JoinNetwork,

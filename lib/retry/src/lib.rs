@@ -122,6 +122,22 @@ pub fn compute_delay(config: &RetryConfig, attempt: u32) -> Duration {
     half + jitter
 }
 
+/// Sleep for the next backoff delay, or return `true` if cancelled.
+pub async fn backoff_or_cancel(
+    backoff: &mut Backoff, 
+    cancel: &CancellationToken
+    ) -> bool {
+
+    if let Some(delay) = backoff.next_delay() {
+        tokio::select! {
+            _ = cancel.cancelled() => true,
+            _ = tokio::time::sleep(delay) => false,
+        }
+    } else {
+        true
+    }
+}
+
 /// Retry all errors with exponential backoff.
 pub async fn retry<F, Fut, T, E>(
     config: RetryConfig,
