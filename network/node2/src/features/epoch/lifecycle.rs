@@ -274,7 +274,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             return;
         };
 
-        info!(?action, epoch = epoch.0, "lifecycle: spawning task (serial execution)");
+        info!(?action, epoch = epoch.0, "lifecycle: spawning task");
 
         let ctx = self.context.clone();
         let token = self.cancel.child_token();

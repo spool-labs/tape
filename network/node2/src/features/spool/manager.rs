@@ -166,6 +166,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     while join_set.join_next().await.is_some() {}
 
                     reconcile_epoch(&self.context, &self.config, current_epoch)?;
+
                     fill_capacity(
                         &self.context,
                         &self.config,
