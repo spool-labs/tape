@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::system::EpochPhase;
-use tape_core::types::{EpochNumber, NodeId};
-use tape_crypto::Pubkey;
+use tape_api::event::NodeJoinedCommittee;
+use tape_core::erasure::MEMBER_COUNT;
+use tape_core::system::{Committee, CommitteeMember, EpochPhase};
+use tape_core::types::coin::{Coin, TAPE};
+use tape_core::types::EpochNumber;
 use tape_protocol::{Api, fetch::fetch_state};
 use tape_retry::retry_if;
 use tokio_util::sync::CancellationToken;
@@ -84,7 +86,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
 
     pub async fn handle_advance_pool(
         &self,
-        node: Pubkey,
+        node: tape_crypto::Pubkey,
         epoch: EpochNumber,
         phase: u64,
     ) -> Result<(), NodeError> {
@@ -102,16 +104,75 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         Ok(())
     }
 
-    pub async fn handle_join_network(&self, node_id: NodeId) -> Result<(), NodeError> {
-        debug!(node_id = node_id.0, "received join network");
+    pub async fn handle_join_network(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
+        let mut state = (*self.context.state()).clone();
+        let expected_activation_epoch = state.epoch + EpochNumber(1);
+
+        if event.activation_epoch != expected_activation_epoch {
+            debug!(
+                node_id = event.id.0,
+                current_epoch = state.epoch.0,
+                activation_epoch = event.activation_epoch.0,
+                "ignoring join network for stale epoch"
+            );
+            return Ok(());
+        }
+
+        let member = CommitteeMember {
+            id: event.id,
+            stake: Coin::<TAPE>::new(u64::from_le_bytes(event.stake)),
+            key: event.key,
+            blacklist: event.blacklist,
+            preferences: event.preferences,
+            weight: 0,
+        };
+
+        if let Some((_, existing)) = state.find_member_next(event.id) {
+            if *existing == member {
+                debug!(node_id = event.id.0, "join network already applied");
+                return Ok(());
+            }
+        }
+
+        let mut committee_next = Committee::<MEMBER_COUNT>::from_members(&state.committee_next);
+        if let Err(error) = committee_next.try_join(&member) {
+            warn!(?error, node_id = event.id.0, "join network state diverged, refetching");
+            let context = self.context.clone();
+            let fresh = retry_if(
+                self.config.state_retry.clone(),
+                Some(&self.cancel),
+                move || {
+                    let context = context.clone();
+                    async move { fetch_state(&context.rpc).await }
+                },
+                |error| error.is_retriable() && !error.is_skipped_slot(),
+            )
+            .await
+            .map_err(NodeError::from)?;
+            self.context.set_state(fresh)?;
+            return Ok(());
+        }
+
+        state.committee_next = committee_next.iter().copied().collect();
+        self.context.set_state(state)?;
+
+        if let Err(error) = self.context.refresh_peers().await {
+            warn!(error = %error, node_id = event.id.0, "peer refresh failed after join network");
+        }
+
+        debug!(node_id = event.id.0, "received join network");
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tape_api::event::NodeJoinedCommittee;
+    use tape_core::system::NodePreferences;
     use tape_core::system::EpochPhase;
+    use tape_core::types::coin::TAPE;
     use tape_core::types::EpochNumber;
+    use tape_core::types::StorageUnits;
     use tape_retry::RetryConfig;
     use tokio_util::sync::CancellationToken;
 
@@ -207,6 +268,57 @@ mod tests {
             .await
             .expect("ignore mismatched epoch");
         assert_eq!(ctx.state().phase, EpochPhase::Active);
+    }
+
+    #[tokio::test]
+    async fn join_updates_committee_next() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .next_committee_size(0)
+            .build()
+            .await
+            .expect("build harness");
+
+        let ctx = harness.ctx_for(NODE);
+
+        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+
+        let joined = harness.node(NODE);
+        let key = joined
+            .bls_keypair()
+            .public_key()
+            .expect("bls public key");
+
+        let preferences = NodePreferences {
+            storage_capacity: StorageUnits::mb(123),
+            storage_price: TAPE(7),
+        };
+
+        handlers
+            .handle_join_network(NodeJoinedCommittee {
+                node: joined.node_address,
+                id: joined.node_id,
+                stake: 500u64.to_le_bytes(),
+                key,
+                blacklist: StorageUnits::mb(11),
+                preferences,
+                activation_epoch: EPOCH + EpochNumber(1),
+            })
+            .await
+            .expect("handle join network");
+
+        let state = ctx.state();
+        let (_, member) = state
+            .find_member_next(joined.node_id)
+            .expect("member added to committee_next");
+
+        assert_eq!(member.stake, TAPE(500));
+        assert_eq!(member.key, key);
+        assert_eq!(member.blacklist, StorageUnits::mb(11));
+        assert_eq!(member.preferences, preferences);
+        assert_eq!(member.weight, 0);
     }
 
     fn manager_config() -> EpochManagerConfig {

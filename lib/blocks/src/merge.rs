@@ -201,6 +201,7 @@ pub fn merge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::Zeroable;
     use solana_sdk::pubkey::Pubkey;
     use tape_api::event::{
         EpochAdvanced, NodeJoinedCommittee, NodeRegistered, NodeSynced, TapeDestroyed, TapeReserved,
@@ -561,6 +562,9 @@ mod tests {
                     node: join_node,
                     id: NodeId::new(2),
                     stake: [0; 8],
+                    key: BlsPubkey::new_unique(),
+                    blacklist: StorageUnits::default(),
+                    preferences: NodePreferences::zeroed(),
                     activation_epoch: EpochNumber(1),
                 }),
             ),

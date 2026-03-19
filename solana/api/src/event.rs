@@ -1,8 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use solana_program::pubkey::Pubkey;
+use tape_core::bls::BlsPubkey;
 use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
+use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, StorageUnits};
 use tape_crypto::Hash;
 
@@ -173,6 +175,12 @@ pub struct NodeJoinedCommittee {
     pub id: NodeId,
     /// Stake in TAPE flux units
     pub stake: [u8; 8],
+    /// Current BLS public key used once this node rotates into the active committee
+    pub key: BlsPubkey,
+    /// Total blacklisted storage units carried into committee scoring/rewards
+    pub blacklist: StorageUnits,
+    /// Storage preferences used when the joined committee rotates into active service
+    pub preferences: NodePreferences,
     /// When node becomes active
     pub activation_epoch: EpochNumber,
 }

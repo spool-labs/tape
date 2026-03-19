@@ -113,18 +113,19 @@ pub fn next_action(
     done: &HashSet<Action>,
 ) -> Option<Action> {
 
-    let in_committee = state.find_member(node_id).is_some();
+    let in_current = state.find_member(node_id).is_some();
+    let in_next    = state.find_member_next(node_id).is_some();
 
     match state.phase {
         EpochPhase::Syncing => {
 
             // Wait for our spools to be ready before attesting SyncEpoch.
-            if in_committee && !done.contains(&Action::WaitSpoolReady) {
+            if in_current && !done.contains(&Action::WaitSpoolReady) {
                 return Some(Action::WaitSpoolReady);
             }
 
             // Once spools are ready, we can submit SyncEpoch to attest that we're synced.
-            if in_committee && !done.contains(&Action::SyncEpoch) {
+            if in_current && !done.contains(&Action::SyncEpoch) {
                 return Some(Action::SyncEpoch);
             }
 
@@ -145,7 +146,7 @@ pub fn next_action(
             }
 
             // JoinNetwork: gated by time, checked by the task itself.
-            if !done.contains(&Action::JoinNetwork) {
+            if !in_next && !done.contains(&Action::JoinNetwork) {
                 return Some(Action::JoinNetwork);
             }
 
@@ -328,5 +329,31 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 debug!(?action, epoch = epoch.0, "lifecycle: task cancelled");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use tape_core::system::CommitteeMember;
+    use tape_core::types::coin::TAPE;
+    use tape_core::types::NodeId;
+    use tape_protocol::ProtocolState;
+
+    use super::next_action;
+    use crate::features::epoch::types::Action;
+
+    #[test]
+    fn active_skips_join_when_already_in_next_committee() {
+        let node_id = NodeId(7);
+        let mut state = ProtocolState::default();
+        state.committee_next.push(CommitteeMember::new(node_id, TAPE(100)));
+        let mut done = HashSet::new();
+        done.insert(Action::AdvancePool);
+
+        let action = next_action(&state, node_id, &done);
+
+        assert_eq!(action, Some(Action::AdvanceEpoch));
     }
 }

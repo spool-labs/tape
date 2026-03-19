@@ -64,12 +64,21 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
+        let has_joined = ctx.state()
+            .find_member_next(ctx.node_id()).is_some();
+
         if ctx.state().epoch != epoch {
             info!(epoch = epoch.0, "advance_pool: wrong epoch");
             return TaskDone::Rejected(Action::JoinNetwork, epoch);
         }
 
+        if has_joined {
+            info!(epoch = epoch.0, "join_network: already in next committee");
+            return TaskDone::Done(Action::JoinNetwork, epoch);
+        }
+
         info!(epoch = epoch.0, "join_network: submitting");
+
         let result = submit_join_network(&ctx).await;
 
         match classify_tx(result) {

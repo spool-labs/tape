@@ -68,8 +68,11 @@ pub fn process_join_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     NodeJoinedCommittee {
         node: *node_info.key,
-        id: node.id,
-        stake: balance.as_u64().to_le_bytes(),
+        id: member.id,
+        stake: member.stake.as_u64().to_le_bytes(),
+        key: member.key,
+        blacklist: member.blacklist,
+        preferences: member.preferences,
         activation_epoch: next_epoch(epoch),
     }.log();
 
