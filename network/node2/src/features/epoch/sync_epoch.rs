@@ -45,10 +45,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> TaskDone {
 
     let owned_spools = owned_spool_list(&ctx);
-
     if owned_spools.is_empty() {
         info!(epoch = epoch.0, "sync_epoch: no spools assigned");
-        return TaskDone::Done(Action::SyncEpoch, epoch);
+        // We don't return early here because we still want to submit the SyncEpoch transaction
     }
 
     if let Readiness::NotReady { ready, total } = check_readiness(&ctx) {
