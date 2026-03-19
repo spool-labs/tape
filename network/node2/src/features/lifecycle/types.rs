@@ -1,6 +1,6 @@
 use tape_core::types::EpochNumber;
 
-/// Actions the lifecycle worker can run.
+/// Actions the lifecycle manager can run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     WaitSpoolReady,

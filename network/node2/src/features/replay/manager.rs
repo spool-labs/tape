@@ -22,7 +22,7 @@ pub struct ReplayManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: ReplayConfig,
     rx: mpsc::Receiver<Arc<ParsedBlock>>,
-    state_tx: mpsc::Sender<ReplayBatch>,
+    store_tx: mpsc::Sender<ReplayBatch>,
     cancel: CancellationToken,
 }
 
@@ -31,14 +31,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: ReplayConfig,
         rx: mpsc::Receiver<Arc<ParsedBlock>>,
-        state_tx: mpsc::Sender<ReplayBatch>,
+        store_tx: mpsc::Sender<ReplayBatch>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
             config,
             rx,
-            state_tx,
+            store_tx,
             cancel,
         }
     }
@@ -88,7 +88,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
         let batch = captured.into_batch(block.slot);
         let event_count = batch.events.len();
 
-        send_replay_batch(&self.state_tx, batch).await?;
+        send_replay_batch(&self.store_tx, batch).await?;
         self.context.metrics.add_events(event_count as u64);
 
         debug!(

@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_advance_epoch;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
-use crate::features::epoch::types::{Action, TaskDone};
+use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit an AdvanceEpoch transaction to advance the network
 //          to the next epoch. Any committee member can submit this.
@@ -28,10 +28,10 @@ use crate::features::epoch::types::{Action, TaskDone};
 //       - build_advance_epoch_ix(fee_payer, authority)
 //       - Wrap with compute budget instruction.
 //    c. On success → return Done.
-//       The epoch has advanced. The EpochManager will observe the
+//       The epoch has advanced. The StateManager will observe the
 //       AdvanceEpoch instruction in the block stream, fetch new
 //       protocol state, and publish it via state_rx. The lifecycle
-//       worker will then see the new epoch and reset.
+//       manager will then see the new epoch and reset.
 //    d. On TooSoon → not enough time has elapsed.
 //       Sleep for a portion of the remaining time, then retry.
 //    e. On InsufficientCommittee → not enough nodes have joined.
@@ -43,14 +43,14 @@ use crate::features::epoch::types::{Action, TaskDone};
 //       decision function is working correctly, but it's recoverable.
 //    h. On BadSchedule → return Rejected. This is a permanent error
 //       indicating an on-chain bug or misconfiguration. The lifecycle
-//       worker will re-evaluate and respawn (since we never give up),
+//       manager will re-evaluate and respawn (since we never give up),
 //       but it will keep hitting this until the epoch advances via
 //       another node.
 //    i. On retriable errors → backoff and retry.
 //
 // Note: Multiple nodes may attempt AdvanceEpoch simultaneously.
 // Only the first one to land will succeed. The others will observe
-// the epoch advance via the block stream and the lifecycle worker
+// the epoch advance via the block stream and the lifecycle manager
 // will reset. This is fine — the on-chain check is idempotent in
 // the sense that a stale AdvanceEpoch attempt simply fails.
 
@@ -91,4 +91,3 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     return TaskDone::Cancelled(Action::AdvanceEpoch, epoch);
 }
-

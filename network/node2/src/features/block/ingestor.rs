@@ -109,8 +109,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         );
 
         send_block(
-            &self.senders.epoch,
-            ChannelName::EpochManager,
+            &self.senders.state,
+            ChannelName::StateManager,
             Arc::clone(&block),
         )
         .await?;
@@ -142,7 +142,7 @@ mod tests {
 
     use super::BlockIngestor;
     use crate::chain::submit_join_network;
-    use crate::core::channels::{downstream_channels, state_channel};
+    use crate::core::channels::{downstream_channels, store_channel};
     use crate::core::config::{BlockIngestorConfig, ChannelConfig, ReplayConfig};
     use crate::features::replay::manager::ReplayManager;
     use crate::harness::NodeHarness;
@@ -177,7 +177,7 @@ mod tests {
             parsed_block_capacity: 8,
             replay_batch_capacity: 8,
         });
-        let (state_tx, mut state_rx) = state_channel(&ChannelConfig {
+        let (store_tx, mut store_rx) = store_channel(&ChannelConfig {
             parsed_block_capacity: 8,
             replay_batch_capacity: 8,
         });
@@ -185,7 +185,7 @@ mod tests {
             ctx.clone(),
             ReplayConfig,
             receivers.replay,
-            state_tx,
+            store_tx,
             CancellationToken::new(),
         );
         let replay_task = tokio::spawn(replay.run());
@@ -205,7 +205,7 @@ mod tests {
             .await
             .expect("dispatch produced block");
 
-        let batch = timeout(Duration::from_secs(1), state_rx.recv())
+        let batch = timeout(Duration::from_secs(1), store_rx.recv())
             .await
             .expect("receive replay batch in time")
             .expect("replay batch");

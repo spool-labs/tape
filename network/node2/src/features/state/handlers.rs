@@ -12,25 +12,21 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::core::config::EpochManagerConfig;
 use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
 
-pub struct EpochHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
+pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: EpochManagerConfig,
     cancel: CancellationToken,
 }
 
-impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockchain> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> ProtocolStateHandlers<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: EpochManagerConfig,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             cancel,
         }
     }
@@ -164,12 +160,10 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::types::EpochNumber;
     use tape_core::types::StorageUnits;
-    use tape_retry::RetryConfig;
     use tokio_util::sync::CancellationToken;
 
-    use super::EpochHandlers;
+    use super::ProtocolStateHandlers;
     use crate::chain::submit_advance_epoch;
-    use crate::core::config::EpochManagerConfig;
     use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
@@ -187,7 +181,7 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
-        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         submit_advance_epoch(&ctx)
             .await
@@ -213,7 +207,7 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
-        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
             .handle_sync_epoch(EPOCH, EpochPhase::Settling as u64)
@@ -238,7 +232,7 @@ mod tests {
             .await
             .expect("build harness");
         let ctx = harness.ctx_for(NODE);
-        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
             .handle_advance_pool(
@@ -274,7 +268,7 @@ mod tests {
 
         let ctx = harness.ctx_for(NODE);
 
-        let handlers = EpochHandlers::new(ctx.clone(), manager_config(), CancellationToken::new());
+        let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         let joined = harness.node(NODE);
         let key = joined
@@ -312,9 +306,4 @@ mod tests {
         assert_eq!(member.weight, 0);
     }
 
-    fn manager_config() -> EpochManagerConfig {
-        EpochManagerConfig {
-            state_retry: RetryConfig::none(),
-        }
-    }
 }

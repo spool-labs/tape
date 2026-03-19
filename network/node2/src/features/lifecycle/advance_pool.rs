@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_advance_pool;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
-use crate::features::epoch::types::{Action, TaskDone};
+use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit an AdvancePool transaction to settle rewards for this
 //          node's staking pool. This is required for any node that was
@@ -87,4 +87,3 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     return TaskDone::Cancelled(Action::AdvancePool, epoch);
 }
-

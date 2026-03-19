@@ -14,14 +14,14 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_sync_epoch;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
-use crate::features::epoch::types::{Action, TaskDone};
-use crate::features::epoch::wait_spool_ready::{Readiness, check_readiness};
+use crate::features::lifecycle::types::{Action, TaskDone};
+use crate::features::lifecycle::wait_spool_ready::{Readiness, check_readiness};
 
 // Purpose: Submit a SyncEpoch transaction to attest that this node
 //          has synced all its assigned spool data for the current epoch.
 //
 // Precondition: WaitSpoolReady must have completed before this task
-// is spawned. The lifecycle worker enforces this ordering.
+// is spawned. The lifecycle manager enforces this ordering.
 //
 // Algorithm:
 // 1. Read current protocol state to get our committee index and
@@ -32,7 +32,7 @@ use crate::features::epoch::wait_spool_ready::{Readiness, check_readiness};
 //    c. On success → return Done.
 //    d. On AlreadySynced → return Done (idempotent).
 //    e. On BadEpochState → the phase has moved past Syncing.
-//       Return Rejected. The lifecycle worker will re-evaluate and
+//       Return Rejected. The lifecycle manager will re-evaluate and
 //       skip to the next relevant action.
 //    f. On NotInCommittee / BadSpoolHash / BadEpochId → return Rejected.
 //    g. On retriable transport errors (RPC timeout, connection, etc.) →
@@ -109,4 +109,3 @@ fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spools.sort_unstable();
     spools
 }
-

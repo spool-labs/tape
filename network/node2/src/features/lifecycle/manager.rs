@@ -4,7 +4,7 @@
 // Not a traditional FSM — it's a single sequential progression through
 // epoch phases, gated by both the on-chain phase and local completion state.
 //
-// The lifecycle worker (spawned alongside the EpochManager) calls
+// The lifecycle manager (spawned alongside the StateManager) calls
 // next_action() on every state change and task completion to decide
 // what to do. At most one action runs at a time.
 //
@@ -29,7 +29,7 @@
 //       would reject a late sync anyway.
 //
 //   If the phase jumps ahead while a task is running:
-//     - The lifecycle worker cancels the current task via its CancellationToken.
+//     - The lifecycle manager cancels the current task via its CancellationToken.
 //     - Re-evaluates next_action() with the new phase.
 //
 // ── Epoch reset ─────────────────────────────────────────────────────
@@ -60,15 +60,15 @@
 //
 // ── No permanent failure ────────────────────────────────────────────
 //
-//   The lifecycle worker never gives up. If a task returns Rejected
-//   or any error, the worker re-evaluates. If the state hasn't changed,
+//   The lifecycle manager never gives up. If a task returns Rejected
+//   or any error, the manager re-evaluates. If the state hasn't changed,
 //   it respawns the same task. The system must be resilient to outages
 //   and resume on its own.
 //
-// ── Worker architecture ─────────────────────────────────────────────
+// ── Manager architecture ────────────────────────────────────────────
 //
-//   The lifecycle worker is a long-lived task that:
-//     1. Subscribes to state_rx (epoch/phase changes from EpochManager).
+//   The lifecycle manager is a long-lived task that:
+//     1. Subscribes to state_rx (epoch/phase changes from StateManager).
 //     2. Maintains at most ONE active task in a JoinSet.
 //     3. Selects on: state_rx.changed(), join_set.join_next(), cancel.
 //     4. On any wake-up: re-evaluate next_action().
@@ -79,10 +79,10 @@
 //   Individual tasks loop internally with retry and backoff.
 //   They only return on: success, cancel, or permanent rejection.
 //
-// ── Relationship to EpochManager ────────────────────────────────────
+// ── Relationship to StateManager ────────────────────────────────────
 //
-//   EpochManager is the reactive side (processes blocks, updates state).
-//   Lifecycle worker is the proactive side (submits transactions).
+//   StateManager is the reactive side (processes blocks, updates state).
+//   Lifecycle manager is the proactive side (submits transactions).
 //   They share the same state_rx but are independent services.
 
 use std::collections::HashSet;
@@ -101,8 +101,8 @@ use tracing::{debug, info, warn};
 use crate::core::config::EpochLifecycleConfig;
 use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::epoch::types::{Action, TaskDone};
-use crate::features::epoch::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
+use crate::features::lifecycle::types::{Action, TaskDone};
+use crate::features::lifecycle::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
 
 /// Determine the next epoch action based on current state.
 ///
@@ -161,14 +161,14 @@ pub fn next_action(
     }
 }
 
-pub struct LifecycleWorker<Db: Store, Cluster: Api, Blockchain: Rpc> {
+pub struct LifecycleManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: EpochLifecycleConfig,
     cancel: CancellationToken,
 }
 
 impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
-    LifecycleWorker<Db, Cluster, Blockchain>
+    LifecycleManager<Db, Cluster, Blockchain>
 {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -319,7 +319,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             TaskDone::Rejected(action, epoch) => {
                 debug!(?action, epoch = epoch.0, "lifecycle: task rejected");
 
-                // a rejected task indicates a permanent failure for that action in the current
+                // A rejected task indicates a permanent failure for that action in the current
                 // epoch.
 
                 // TODO: we need to figure out what to do in this case, it might be fine to leave
@@ -342,7 +342,7 @@ mod tests {
     use tape_protocol::ProtocolState;
 
     use super::next_action;
-    use crate::features::epoch::types::Action;
+    use crate::features::lifecycle::types::Action;
 
     #[test]
     fn active_skips_join_when_already_in_next_committee() {

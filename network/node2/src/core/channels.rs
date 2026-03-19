@@ -10,26 +10,26 @@ use crate::features::replay::types::ReplayBatch;
 
 #[derive(Clone)]
 pub struct DownstreamSenders {
-    pub epoch: mpsc::Sender<Arc<ParsedBlock>>,
+    pub state: mpsc::Sender<Arc<ParsedBlock>>,
     pub replay: mpsc::Sender<Arc<ParsedBlock>>,
 }
 
 pub struct DownstreamReceivers {
-    pub epoch: mpsc::Receiver<Arc<ParsedBlock>>,
+    pub state: mpsc::Receiver<Arc<ParsedBlock>>,
     pub replay: mpsc::Receiver<Arc<ParsedBlock>>,
 }
 
 pub fn downstream_channels(config: &ChannelConfig) -> (DownstreamSenders, DownstreamReceivers) {
-    let (epoch_tx, epoch_rx) = mpsc::channel(config.parsed_block_capacity);
+    let (state_tx, state_rx) = mpsc::channel(config.parsed_block_capacity);
     let (replay_tx, replay_rx) = mpsc::channel(config.parsed_block_capacity);
 
     (
         DownstreamSenders {
-            epoch: epoch_tx,
+            state: state_tx,
             replay: replay_tx,
         },
         DownstreamReceivers {
-            epoch: epoch_rx,
+            state: state_rx,
             replay: replay_rx,
         },
     )
@@ -46,7 +46,7 @@ pub async fn send_block(
         .map_err(|_| NodeError::ChannelSend { channel })
 }
 
-pub fn state_channel(config: &ChannelConfig) -> (mpsc::Sender<ReplayBatch>, mpsc::Receiver<ReplayBatch>) {
+pub fn store_channel(config: &ChannelConfig) -> (mpsc::Sender<ReplayBatch>, mpsc::Receiver<ReplayBatch>) {
     mpsc::channel(config.replay_batch_capacity)
 }
 
@@ -58,6 +58,6 @@ pub async fn send_replay_batch(
         .send(batch)
         .await
         .map_err(|_| NodeError::ChannelSend {
-            channel: ChannelName::StateManager,
+            channel: ChannelName::StoreManager,
         })
 }

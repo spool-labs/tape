@@ -3,22 +3,22 @@ pub enum ServiceName {
     Unknown,
     HttpServer,
     BlockIngestor,
-    EpochManager,
-    EpochLifecycle,
+    LifecycleManager,
     SpoolManager,
     SnapshotManager,
     ReplayManager,
+    StoreManager,
     StateManager,
     GcManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelName {
-    EpochManager,
+    StateManager,
     SpoolManager,
     SnapshotManager,
     ReplayManager,
-    StateManager,
+    StoreManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

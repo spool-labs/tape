@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_blocks::ParsedInstruction;
 use tape_protocol::Api;
-use tape_store::TapeStore;
-use tape_store::ops::MetaOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -13,13 +12,13 @@ use crate::core::config::StateConfig;
 use crate::core::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
-use crate::features::replay::types::ReplayBatch;
-use crate::features::state::apply::apply_slot;
+use crate::features::block::ingestor::ParsedBlock;
+use crate::features::state::handlers::ProtocolStateHandlers;
 
 pub struct StateManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: StateConfig,
-    rx: mpsc::Receiver<ReplayBatch>,
+    rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
 }
 
@@ -27,7 +26,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: StateConfig,
-        rx: mpsc::Receiver<ReplayBatch>,
+        rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -39,6 +38,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
+        let handlers = ProtocolStateHandlers::new(self.context.clone(), self.cancel.clone());
+
         debug!(
             node_id = self.context.node_id().0,
             config = ?self.config,
@@ -50,7 +51,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                 _ = self.cancel.cancelled() => return Ok(()),
 
                 received = self.rx.recv() => {
-                    let Some(batch) = received else {
+                    let Some(block) = received else {
                         return if self.cancel.is_cancelled() {
                             Ok(())
                         } else {
@@ -58,61 +59,37 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                         };
                     };
 
-                    persist_batch(self.context.store.as_ref(), &batch)?;
+                    self.handle_block(&handlers, block).await?;
                 }
             }
         }
     }
-}
 
-fn persist_batch<Db: Store>(store: &TapeStore<Db>, batch: &ReplayBatch) -> Result<(), NodeError> {
-    apply_slot(store, batch.slot, &batch.events)?;
+    async fn handle_block(
+        &self,
+        handlers: &ProtocolStateHandlers<Db, Cluster, Blockchain>,
+        block: Arc<ParsedBlock>,
+    ) -> Result<(), NodeError> {
+        debug!(slot = block.slot.0, "state manager received block");
 
-    store.set_sync_cursor(batch.slot).map_err(|error| {
-        NodeError::Store(format!("set_sync_cursor: {error}"))
-    })
-}
+        for instruction in &block.instructions {
+            match instruction {
+                ParsedInstruction::AdvanceEpoch { event } => {
+                    handlers.handle_advance_epoch(event.new_epoch).await?;
+                }
+                ParsedInstruction::SyncEpoch { event } => {
+                    handlers.handle_sync_epoch(event.epoch, event.phase).await?;
+                }
+                ParsedInstruction::AdvancePool { node, event } => {
+                    handlers.handle_advance_pool(*node, event.epoch, event.phase).await?;
+                }
+                ParsedInstruction::JoinNetwork { event, .. } => {
+                    handlers.handle_join_network(*event).await?;
+                }
+                _ => {}
+            }
+        }
 
-#[cfg(test)]
-mod tests {
-    use store_memory::MemoryStore;
-    use tape_core::snapshot::ReplayableEvent;
-    use tape_core::types::SlotNumber;
-    use tape_store::ops::MetaOps;
-    use tape_store::TapeStore;
-
-    use super::persist_batch;
-    use crate::features::replay::types::ReplayBatch;
-
-    fn test_store() -> TapeStore<MemoryStore> {
-        TapeStore::new(MemoryStore::new())
-    }
-
-    #[test]
-    fn empty_slots() {
-        let store = test_store();
-        let batch = ReplayBatch {
-            slot: SlotNumber(99),
-            events: Vec::new(),
-        };
-
-        persist_batch(&store, &batch).unwrap();
-
-        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(99)));
-    }
-
-    #[test]
-    fn no_partial_cursor() {
-        let store = test_store();
-        let batch = ReplayBatch {
-            slot: SlotNumber(77),
-            events: vec![ReplayableEvent::RegisterTrack {
-                track: [0x11; 32],
-                event_data: vec![0x22; 8],
-            }],
-        };
-
-        assert!(persist_batch(&store, &batch).is_err());
-        assert_eq!(store.get_sync_cursor().unwrap(), None);
+        Ok(())
     }
 }

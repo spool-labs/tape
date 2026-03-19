@@ -13,7 +13,7 @@ use tape_store::types::SpoolStatus;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
 use crate::core::context::NodeContext;
-use crate::features::epoch::types::{Action, TaskDone};
+use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Wait until all spools assigned to this node are Active.
 //          This is a precondition for submitting SyncEpoch — the node
@@ -110,4 +110,3 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 }
-

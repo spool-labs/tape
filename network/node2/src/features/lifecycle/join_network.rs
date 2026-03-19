@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use crate::chain::submit_join_network;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
 use crate::core::context::NodeContext;
-use crate::features::epoch::types::{Action, TaskDone};
+use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit a JoinNetwork transaction to volunteer for the next
 //          epoch's committee. This signals the node intends to serve
@@ -47,7 +47,7 @@ use crate::features::epoch::types::{Action, TaskDone};
 //       - If not → retry with backoff.
 //    e. On NodeStale / NotStaked → return Rejected.
 //       These indicate the node's on-chain state is not suitable for
-//       joining. The lifecycle worker re-evaluates.
+//       joining. The lifecycle manager re-evaluates.
 //    f. On BadEpochState → retry with backoff.
 //       Phase may not have reached the required state yet.
 //    g. On retriable errors → backoff and retry.

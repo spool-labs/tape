@@ -8,19 +8,19 @@ use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::core::bootstrap::build_context;
-use crate::core::channels::{downstream_channels, state_channel};
+use crate::core::channels::{downstream_channels, store_channel};
 use crate::core::config::{AppConfig, RuntimeConfig};
 use crate::core::error::NodeError;
 use crate::core::supervisor::Supervisor;
 use crate::core::types::ServiceName;
 use crate::features::block::ingestor::BlockIngestor;
-use crate::features::epoch::lifecycle::LifecycleWorker;
-use crate::features::epoch::manager::EpochManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
+use crate::features::lifecycle::manager::LifecycleManager;
 use crate::features::replay::manager::ReplayManager;
 use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
+use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
 
 pub fn init_tracing() -> Result<(), NodeError> {
@@ -78,7 +78,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     }
 
     let (senders, receivers) = downstream_channels(&config.channels);
-    let (state_tx, state_rx) = state_channel(&config.channels);
+    let (store_tx, store_rx) = store_channel(&config.channels);
     let mut supervisor = Supervisor::new(cancel.clone());
 
     supervisor.spawn(
@@ -101,19 +101,18 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     );
 
     supervisor.spawn(
-        ServiceName::EpochManager,
-        EpochManager::new(
+        ServiceName::StateManager,
+        StateManager::new(
             context.clone(),
-            config.epoch.clone(),
-            receivers.epoch,
-            cancel.clone()
-        )
-        .run(),
+            config.state.clone(),
+            receivers.state,
+            cancel.clone(),
+        ).run(),
     );
 
     supervisor.spawn(
-        ServiceName::EpochLifecycle,
-        LifecycleWorker::new(
+        ServiceName::LifecycleManager,
+        LifecycleManager::new(
             context.clone(),
             config.epoch_lifecycle.clone(),
             cancel.clone(),
@@ -147,18 +146,18 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
             context.clone(),
             config.replay.clone(),
             receivers.replay,
-            state_tx,
+            store_tx,
             cancel.clone(),
         )
         .run(),
     );
 
     supervisor.spawn(
-        ServiceName::StateManager,
-        StateManager::new(
+        ServiceName::StoreManager,
+        StoreManager::new(
             context.clone(),
-            config.state.clone(),
-            state_rx,
+            config.store.clone(),
+            store_rx,
             cancel.clone(),
         ).run(),
     );

@@ -7,7 +7,7 @@ use tokio::task::yield_now;
 
 use crate::core::config::GcConfig;
 use crate::core::error::NodeError;
-use crate::features::state::cleanup::{
+use crate::features::store::cleanup::{
     cleanup_track_slices, delete_tape_local, delete_track_local,
 };
 

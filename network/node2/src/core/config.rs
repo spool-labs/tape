@@ -80,10 +80,6 @@ pub struct BlockIngestorConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct EpochManagerConfig {
-}
-
-#[derive(Debug, Clone)]
 pub struct EpochLifecycleConfig {
     /// Retry config for Solana transaction submissions.
     pub tx_retry: RetryConfig,
@@ -137,6 +133,9 @@ pub struct ReplayConfig;
 pub struct StateConfig;
 
 #[derive(Debug, Clone)]
+pub struct StoreConfig;
+
+#[derive(Debug, Clone)]
 pub struct GcConfig {
     pub enabled: bool,
     pub scan_interval: Duration,
@@ -151,12 +150,12 @@ pub struct AppConfig {
     pub http: HttpConfig,
     pub channels: ChannelConfig,
     pub block: BlockIngestorConfig,
-    pub epoch: EpochManagerConfig,
     pub epoch_lifecycle: EpochLifecycleConfig,
     pub spool: SpoolManagerConfig,
     pub snapshot: SnapshotConfig,
     pub replay: ReplayConfig,
     pub state: StateConfig,
+    pub store: StoreConfig,
     pub gc: GcConfig,
 }
 
@@ -187,8 +186,6 @@ impl AppConfig {
                 start_slot: node.start_slot,
                 fetch_retry: RetryConfig::infinite(),
             },
-            epoch: EpochManagerConfig {
-            },
             epoch_lifecycle: EpochLifecycleConfig::default(),
             spool: SpoolManagerConfig {
                 max_parallel_spools: worker_threads.clamp(4, 64),
@@ -204,6 +201,7 @@ impl AppConfig {
             },
             replay: ReplayConfig,
             state: StateConfig,
+            store: StoreConfig,
             gc: GcConfig {
                 enabled: true,
                 scan_interval: Duration::from_secs(60),

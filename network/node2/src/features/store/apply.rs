@@ -8,7 +8,7 @@ use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
-use crate::features::state::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
+use crate::features::store::cleanup::{cleanup_track_slices, delete_tape_local, delete_track_local};
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
