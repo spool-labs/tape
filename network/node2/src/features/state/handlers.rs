@@ -12,7 +12,7 @@ use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {

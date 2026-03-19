@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::core::config::StateConfig;
-use crate::core::context::NodeContext;
+use crate::config::StateConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;

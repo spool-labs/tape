@@ -9,7 +9,7 @@ use tape_api::instruction::build_epoch_sync_ix;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 
 pub async fn submit_sync_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,

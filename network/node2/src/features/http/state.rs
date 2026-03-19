@@ -5,7 +5,7 @@ use store::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::features::http::error::RouteError;
 
 pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {

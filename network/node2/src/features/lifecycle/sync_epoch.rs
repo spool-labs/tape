@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::chain::submit_sync_epoch;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::wait_spool_ready::{Readiness, check_readiness};
 

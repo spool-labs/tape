@@ -210,6 +210,20 @@ impl AppConfig {
             },
         })
     }
+
+    pub fn testing(node: NodeConfig, bind_addr: SocketAddr) -> Result<Self, NodeError> {
+        Ok(Self::production(node)?.with_http_bind_addr(bind_addr))
+    }
+
+    pub fn with_http_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.http.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn with_block_start_slot(mut self, start_slot: SlotNumber) -> Self {
+        self.block.start_slot = start_slot;
+        self
+    }
 }
 
 pub fn default_config_path() -> PathBuf {

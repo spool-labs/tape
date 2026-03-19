@@ -8,8 +8,8 @@ use tape_store::ops::EventLogOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::core::config::SnapshotConfig;
-use crate::core::context::NodeContext;
+use crate::config::SnapshotConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {

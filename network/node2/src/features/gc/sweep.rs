@@ -5,7 +5,7 @@ use tape_store::types::{ObjectInfo, Pubkey};
 use tape_store::TapeStore;
 use tokio::task::yield_now;
 
-use crate::core::config::GcConfig;
+use crate::config::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{
     cleanup_track_slices, delete_tape_local, delete_track_local,
@@ -202,7 +202,7 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::sweep_epoch;
-    use crate::core::config::GcConfig;
+    use crate::config::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())

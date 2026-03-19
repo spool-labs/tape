@@ -1,11 +1,12 @@
 use std::future::Future;
+
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::core::error::NodeError;
-use crate::core::types::ServiceName;
 use crate::core::signals::wait_for_shutdown_signal;
+use crate::core::types::ServiceName;
 
 pub struct Supervisor {
     cancel: CancellationToken,

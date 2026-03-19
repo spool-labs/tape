@@ -8,8 +8,8 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::core::config::SpoolManagerConfig;
-use crate::core::context::NodeContext;
+use crate::config::SpoolManagerConfig;
+use crate::context::NodeContext;
 use crate::features::spool::types::ScanResult;
 
 // Purpose: Audit local storage to find missing slices that need repair.
@@ -103,7 +103,7 @@ mod tests {
     use tape_core::encoding::EncodingProfile;
     use tape_store::types::{Pubkey, TrackInfo};
 
-    use crate::core::context::test_utils::test_context;
+    use crate::context::test_utils::test_context;
 
     const SPOOL: SpoolIndex = 5;
 

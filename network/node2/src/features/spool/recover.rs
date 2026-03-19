@@ -14,8 +14,8 @@ use tape_store::types::Pubkey;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::core::config::SpoolManagerConfig;
-use crate::core::context::NodeContext;
+use crate::config::SpoolManagerConfig;
+use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::repair::group_peers;
 use crate::features::spool::types::RecoverResult;
@@ -314,7 +314,7 @@ mod tests {
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
     use tape_store::types::{SpoolState, SpoolStatus, TrackInfo};
 
-    use crate::core::context::test_utils::{test_context, test_context_with_api};
+    use crate::context::test_utils::{test_context, test_context_with_api};
 
     const SPOOL: SpoolIndex = 5;
 

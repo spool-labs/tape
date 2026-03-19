@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::chain::submit_advance_epoch;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit an AdvanceEpoch transaction to advance the network

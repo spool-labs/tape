@@ -8,7 +8,7 @@ use tape_api::compute::JOIN_NETWORK_CU;
 use tape_api::instruction::build_join_network_ix;
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 
 pub async fn submit_join_network<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,

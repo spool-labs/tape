@@ -22,8 +22,8 @@ use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 
-use crate::core::config::HttpConfig;
-use crate::core::context::NodeContext;
+use crate::config::HttpConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::http::handlers;
 use crate::features::http::state::AppState;

@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use tape_node2::core::config::{AppConfig, NodeConfig, default_config_path};
-use tape_node2::core::runtime::{build_runtime, init_tracing, run_application};
+use tape_node2::config::{AppConfig, NodeConfig, default_config_path};
+use tape_node2::runtime::{build_runtime, init_tracing, run_application};
 
 #[derive(Parser)]
 #[command(name = "tape-node2", about = "Tapedrive storage node runtime v2")]

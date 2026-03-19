@@ -16,8 +16,8 @@ use tape_store::TapeStore;
 use tape_store::ops::SpoolOps;
 use tape_store::types::{SpoolState, SpoolStatus};
 
-use crate::core::config::NodeConfig;
-use crate::core::context::{NodeContext, NodeContextBuilder};
+use crate::config::NodeConfig;
+use crate::context::{NodeContext, NodeContextBuilder};
 
 pub type TestContext = Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>;
 

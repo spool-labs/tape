@@ -10,8 +10,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::core::config::GcConfig;
-use crate::core::context::NodeContext;
+use crate::config::GcConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::gc::sweep::sweep_epoch;
 
@@ -151,7 +151,7 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::{next_pending_epoch, run_epoch_sweep};
-    use crate::core::config::GcConfig;
+    use crate::config::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())

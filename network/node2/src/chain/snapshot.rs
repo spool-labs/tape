@@ -15,7 +15,7 @@ use tape_crypto::Hash;
 use tape_store::types::{SnapshotCertResult, SnapshotChunkMeta};
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 
 pub async fn submit_register<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,

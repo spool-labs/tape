@@ -12,7 +12,7 @@ use tape_store::ops::SpoolOps;
 use tape_store::types::SpoolStatus;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Wait until all spools assigned to this node are Active.

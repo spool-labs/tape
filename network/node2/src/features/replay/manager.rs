@@ -10,8 +10,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::core::channels::send_replay_batch;
-use crate::core::config::ReplayConfig;
-use crate::core::context::NodeContext;
+use crate::config::ReplayConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::ingestor::ParsedBlock;

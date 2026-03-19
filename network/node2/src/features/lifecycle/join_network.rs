@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::chain::submit_join_network;
 use crate::core::chain_tx::{TxOutcome, classify_tx};
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 use crate::features::lifecycle::types::{Action, TaskDone};
 
 // Purpose: Submit a JoinNetwork transaction to volunteer for the next

@@ -8,8 +8,8 @@ use tape_protocol::Api;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::core::config::SpoolManagerConfig;
-use crate::core::context::NodeContext;
+use crate::config::SpoolManagerConfig;
+use crate::context::NodeContext;
 use crate::features::spool::types::{TaskKind, WorkerDone};
 use crate::features::spool::{recover, repair, scan, sync};
 

@@ -7,8 +7,8 @@ use rpc_solana::{RpcConfig, SolanaRpc};
 use store_rocks::RocksStore;
 use tape_store::TapeStore;
 
-use crate::core::config::{AppConfig, NodeConfig, load_bls_keypair_from_config, load_node_keypair};
-use crate::core::context::{AppContext, NodeContextBuilder};
+use crate::config::{AppConfig, NodeConfig, load_bls_keypair_from_config, load_node_keypair};
+use crate::context::{AppContext, NodeContextBuilder};
 use crate::core::error::NodeError;
 
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<RocksStore>, NodeError> {

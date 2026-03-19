@@ -98,68 +98,11 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::core::config::EpochLifecycleConfig;
-use crate::core::context::NodeContext;
+use crate::config::EpochLifecycleConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
-
-/// Determine the next epoch action based on current state.
-///
-/// Returns None if no action is needed (waiting for phase change or next epoch).
-pub fn next_action(
-    state: &ProtocolState,
-    node_id: NodeId,
-    done: &HashSet<Action>,
-) -> Option<Action> {
-
-    let in_current = state.find_member(node_id).is_some();
-    let in_next    = state.find_member_next(node_id).is_some();
-
-    match state.phase {
-        EpochPhase::Syncing => {
-
-            // Wait for our spools to be ready before attesting SyncEpoch.
-            if in_current && !done.contains(&Action::WaitSpoolReady) {
-                return Some(Action::WaitSpoolReady);
-            }
-
-            // Once spools are ready, we can submit SyncEpoch to attest that we're synced.
-            if in_current && !done.contains(&Action::SyncEpoch) {
-                return Some(Action::SyncEpoch);
-            }
-
-            None
-        }
-        EpochPhase::Settling => {
-            // AdvancePool is permissionless and should be called once per epoch.
-            if !done.contains(&Action::AdvancePool) {
-                return Some(Action::AdvancePool);
-            }
-
-            None
-        }
-        EpochPhase::Active => {
-            // AdvancePool can still be submitted during Active if we missed Settling.
-            if !done.contains(&Action::AdvancePool) {
-                return Some(Action::AdvancePool);
-            }
-
-            // JoinNetwork: gated by time, checked by the task itself.
-            if !in_next && !done.contains(&Action::JoinNetwork) {
-                return Some(Action::JoinNetwork);
-            }
-
-            // AdvanceEpoch: anyone can submit it.
-            if !done.contains(&Action::AdvanceEpoch) {
-                return Some(Action::AdvanceEpoch);
-            }
-
-            None
-        }
-        EpochPhase::Unknown => None,
-    }
-}
 
 pub struct LifecycleManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -331,6 +274,64 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         }
     }
 }
+
+/// Determine the next epoch action based on current state.
+///
+/// Returns None if no action is needed (waiting for phase change or next epoch).
+pub fn next_action(
+    state: &ProtocolState,
+    node_id: NodeId,
+    done: &HashSet<Action>,
+) -> Option<Action> {
+
+    let in_current = state.find_member(node_id).is_some();
+    let in_next    = state.find_member_next(node_id).is_some();
+
+    match state.phase {
+        EpochPhase::Syncing => {
+
+            // Wait for our spools to be ready before attesting SyncEpoch.
+            if in_current && !done.contains(&Action::WaitSpoolReady) {
+                return Some(Action::WaitSpoolReady);
+            }
+
+            // Once spools are ready, we can submit SyncEpoch to attest that we're synced.
+            if in_current && !done.contains(&Action::SyncEpoch) {
+                return Some(Action::SyncEpoch);
+            }
+
+            None
+        }
+        EpochPhase::Settling => {
+            // AdvancePool is permissionless and should be called once per epoch.
+            if !done.contains(&Action::AdvancePool) {
+                return Some(Action::AdvancePool);
+            }
+
+            None
+        }
+        EpochPhase::Active => {
+            // AdvancePool can still be submitted during Active if we missed Settling.
+            if !done.contains(&Action::AdvancePool) {
+                return Some(Action::AdvancePool);
+            }
+
+            // JoinNetwork: gated by time, checked by the task itself.
+            if !in_next && !done.contains(&Action::JoinNetwork) {
+                return Some(Action::JoinNetwork);
+            }
+
+            // AdvanceEpoch: anyone can submit it.
+            if !done.contains(&Action::AdvanceEpoch) {
+                return Some(Action::AdvanceEpoch);
+            }
+
+            None
+        }
+        EpochPhase::Unknown => None,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

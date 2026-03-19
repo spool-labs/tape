@@ -11,7 +11,7 @@ use tape_api::program::tapedrive::{CommitteeBitmap, epoch_pda, system_pda};
 use tape_crypto::Hash;
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 
 pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,

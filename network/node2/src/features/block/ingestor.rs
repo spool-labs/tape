@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use crate::core::channels::{DownstreamSenders, send_block};
-use crate::core::config::BlockIngestorConfig;
-use crate::core::context::NodeContext;
+use crate::config::BlockIngestorConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 
@@ -143,7 +143,7 @@ mod tests {
     use super::BlockIngestor;
     use crate::chain::submit_join_network;
     use crate::core::channels::{downstream_channels, store_channel};
-    use crate::core::config::{BlockIngestorConfig, ChannelConfig, ReplayConfig};
+    use crate::config::{BlockIngestorConfig, ChannelConfig, ReplayConfig};
     use crate::features::replay::manager::ReplayManager;
     use crate::harness::NodeHarness;
 

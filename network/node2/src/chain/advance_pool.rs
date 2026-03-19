@@ -8,7 +8,7 @@ use tape_api::compute::ADVANCE_POOL_CU;
 use tape_api::instruction::build_advance_pool_ix;
 use tape_protocol::Api;
 
-use crate::core::context::NodeContext;
+use crate::context::NodeContext;
 
 pub async fn submit_advance_pool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,

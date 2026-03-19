@@ -14,8 +14,8 @@ use tape_store::types::{Pubkey, SpoolState, TrackInfo};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::core::config::SpoolManagerConfig;
-use crate::core::context::NodeContext;
+use crate::config::SpoolManagerConfig;
+use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::types::RepairResult;
 
@@ -419,7 +419,7 @@ mod tests {
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
     use tape_store::types::SpoolStatus;
 
-    use crate::core::context::test_utils::{test_context, test_context_with_api};
+    use crate::context::test_utils::{test_context, test_context_with_api};
 
     const SPOOL: SpoolIndex = 5;
 

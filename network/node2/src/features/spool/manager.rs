@@ -14,8 +14,8 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::core::config::SpoolManagerConfig;
-use crate::core::context::NodeContext;
+use crate::config::SpoolManagerConfig;
+use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::spool::fsm::{self, EpochAction};
 use crate::features::spool::types::{TaskKind, WorkerDone};
@@ -544,8 +544,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::SpoolManager;
-    use crate::core::config::SpoolManagerConfig;
-    use crate::core::context::test_utils::{TestContext, test_context};
+    use crate::config::SpoolManagerConfig;
+    use crate::context::test_utils::{TestContext, test_context};
 
     const EPOCH: EpochNumber = EpochNumber(2);
 

@@ -22,7 +22,7 @@ use tape_store::TapeStore;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
-use crate::core::config::NodeConfig;
+use crate::config::NodeConfig;
 use crate::core::error::NodeError;
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
