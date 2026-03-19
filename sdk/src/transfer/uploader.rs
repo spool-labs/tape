@@ -14,7 +14,7 @@ use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::Hash;
 use tape_protocol::api::{Api, SlicePayload, PutSliceReq};
-use tape_retry::RetryConfig;
+use tape_retry::{retry, RetryConfig};
 use tape_protocol::ProtocolState;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
@@ -158,7 +158,7 @@ impl DistributedUploader {
                             payload,
                         };
 
-                        if let Err(e) = tape_retry::retry(
+                        if let Err(e) = retry(
                             RetryConfig::ten(),
                             None,
                             || peer_client.put_slice(node_id, &req),

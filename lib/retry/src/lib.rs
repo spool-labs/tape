@@ -19,32 +19,6 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
-    /// No retries — fail immediately.
-    pub fn none() -> Self {
-        Self {
-            base_delay: Duration::ZERO,
-            max_delay: Duration::ZERO,
-            max_retries: Some(0),
-        }
-    }
-
-    /// 3 retries, 100ms base, 2s max.
-    pub fn three() -> Self {
-        Self {
-            base_delay: Duration::from_millis(100),
-            max_delay: Duration::from_secs(2),
-            max_retries: Some(3),
-        }
-    }
-
-    /// 5 retries, 500ms base, 10s max.
-    pub fn five() -> Self {
-        Self {
-            base_delay: Duration::from_millis(500),
-            max_delay: Duration::from_secs(10),
-            max_retries: Some(5),
-        }
-    }
 
     /// 10 retries, 1s base, 30s max.
     pub fn ten() -> Self {

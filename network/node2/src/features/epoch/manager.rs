@@ -48,6 +48,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochManager<Db, Cluster, Blockch
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
+
                 received = self.rx.recv() => {
                     let Some(block) = received else {
                         return if self.cancel.is_cancelled() {

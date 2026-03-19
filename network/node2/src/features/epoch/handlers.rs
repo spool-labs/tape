@@ -8,7 +8,7 @@ use tape_core::system::{Committee, CommitteeMember, EpochPhase};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::EpochNumber;
 use tape_protocol::{Api, fetch::fetch_state};
-use tape_retry::retry_if;
+use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -38,23 +38,30 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
     pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
         let previous_epoch = self.context.state().epoch;
         let context = self.context.clone();
+
         let state = retry_if(
-            self.config.state_retry.clone(),
+            RetryConfig::infinite(),
             Some(&self.cancel),
             move || {
                 let context = context.clone();
-                async move { fetch_state(&context.rpc).await }
-            },
-            |error| error.is_retriable() && !error.is_skipped_slot(),
-        )
-        .await
-        .map_err(NodeError::from)?;
+                async move {
+                    let state = fetch_state(&context.rpc).await
+                        .map_err(NodeError::from)?;
 
-        if state.epoch < epoch {
-            return Err(NodeError::StateUnavailable {
-                expected_epoch: epoch,
-            });
-        }
+                    if state.epoch < epoch {
+                        return Err(NodeError::StateUnavailable { expected_epoch: epoch });
+                    }
+
+                    Ok(state)
+                }
+            },
+            |error| match error {
+                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
+                NodeError::StateUnavailable { expected_epoch } => *expected_epoch == epoch,
+                _ => false,
+            },
+        )
+        .await?;
 
         self.context.set_state(state)?;
         if epoch > previous_epoch {
@@ -105,6 +112,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
     }
 
     pub async fn handle_join_network(&self, event: NodeJoinedCommittee) -> Result<(), NodeError> {
+        debug!(node_id = event.id.0, "received join network");
+
         let mut state = (*self.context.state()).clone();
         let expected_activation_epoch = state.epoch + EpochNumber(1);
 
@@ -135,32 +144,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> EpochHandlers<Db, Cluster, Blockc
         }
 
         let mut committee_next = Committee::<MEMBER_COUNT>::from_members(&state.committee_next);
+
         if let Err(error) = committee_next.try_join(&member) {
-            warn!(?error, node_id = event.id.0, "join network state diverged, refetching");
-            let context = self.context.clone();
-            let fresh = retry_if(
-                self.config.state_retry.clone(),
-                Some(&self.cancel),
-                move || {
-                    let context = context.clone();
-                    async move { fetch_state(&context.rpc).await }
-                },
-                |error| error.is_retriable() && !error.is_skipped_slot(),
-            )
-            .await
-            .map_err(NodeError::from)?;
-            self.context.set_state(fresh)?;
-            return Ok(());
+            warn!(?error, node_id = event.id.0, "join network state diverged");
+        } else {
+            state.committee_next = committee_next.iter().copied().collect();
+            self.context.set_state(state)?;
         }
 
-        state.committee_next = committee_next.iter().copied().collect();
-        self.context.set_state(state)?;
-
-        if let Err(error) = self.context.refresh_peers().await {
-            warn!(error = %error, node_id = event.id.0, "peer refresh failed after join network");
-        }
-
-        debug!(node_id = event.id.0, "received join network");
         Ok(())
     }
 }

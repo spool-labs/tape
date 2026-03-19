@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tape_protocol::fetch::fetch_state;
-use tape_retry::retry_if;
+use tape_retry::{retry_if, RetryConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
@@ -56,7 +56,7 @@ pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
     let context = build_context(&config).await?;
 
     let state = retry_if(
-        config.epoch.state_retry.clone(),
+        RetryConfig::infinite(),
         Some(&cancel),
         || fetch_state(&context.rpc),
         |error| error.is_retriable() && !error.is_skipped_slot(),

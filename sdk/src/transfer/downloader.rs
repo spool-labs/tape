@@ -8,6 +8,7 @@ use tape_core::spooler::SpoolIndex;
 use tape_core::types::NodeId;
 use tape_protocol::api::{Api, GetSliceReq};
 use solana_sdk::pubkey::Pubkey;
+use tape_retry::{retry_if, RetryConfig, Retryable};
 use tokio::sync::Semaphore;
 
 use crate::error::DownloadError;
@@ -100,11 +101,11 @@ impl ParallelDownloader {
                     track: track.into(),
                     spool: slice_idx,
                 };
-                let result = tape_retry::retry_if(
-                    tape_retry::RetryConfig::three(),
+                let result = retry_if(
+                    RetryConfig::ten(),
                     None,
                     || peer_client.get_slice(node_id, &req),
-                    tape_retry::Retryable::is_retryable,
+                    Retryable::is_retryable,
                 ).await;
                 (slice_idx, result)
             });
@@ -144,8 +145,8 @@ impl ParallelDownloader {
             spool: slice_idx,
         };
 
-        let res = tape_retry::retry_if(
-            tape_retry::RetryConfig::three(),
+        let res = retry_if(
+            RetryConfig::ten(),
             None,
             || peer_client.get_slice(node_id, &req),
             tape_retry::Retryable::is_retryable,

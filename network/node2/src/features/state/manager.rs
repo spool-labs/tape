@@ -48,6 +48,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
+
                 received = self.rx.recv() => {
                     let Some(batch) = received else {
                         return if self.cancel.is_cancelled() {

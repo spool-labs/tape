@@ -26,7 +26,7 @@ pub async fn retry_fetch_track<Blockchain: Rpc, Cluster: Api>(
     address: &Pubkey,
 ) -> Result<Track, TapedriveError> {
     tape_retry::retry(
-        tape_retry::RetryConfig::five(),
+        tape_retry::RetryConfig::ten(),
         None,
         || async { client.rpc().get_track_by_address(address).await },
     )

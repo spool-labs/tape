@@ -25,6 +25,7 @@ use tape_core::erasure::{spool_for_slice, SPOOL_GROUP_SIZE};
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, NodeId};
 use tape_crypto::Hash;
+use tape_retry::{retry, RetryConfig};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
 
 /// Errors that can occur during certification.
@@ -238,11 +239,11 @@ impl CertificationCollector {
             let track = track_pubkey;
             async move {
                 let req = CertifyReq { track };
-                let config = tape_retry::RetryConfig {
+                let config = RetryConfig {
                     max_retries: Some(max_retries as u32),
-                    ..tape_retry::RetryConfig::three()
+                    ..RetryConfig::ten()
                 };
-                let result = tape_retry::retry(config, None, || peer_client.certify(request.node_id, &req)).await;
+                let result = retry(config, None, || peer_client.certify(request.node_id, &req)).await;
                 NodeResult {
                     node_id: request.node_id,
                     member_idx: request.member_idx,

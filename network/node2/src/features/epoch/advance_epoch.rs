@@ -65,7 +65,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     loop {
         if ctx.state().epoch != epoch {
             info!(epoch = epoch.0, "advance_epoch: epoch already advanced");
-            return TaskDone::Done(Action::AdvanceEpoch, epoch);
+            return TaskDone::Rejected(Action::AdvanceEpoch, epoch);
         }
 
         info!(epoch = epoch.0, "advance_epoch: submitting");

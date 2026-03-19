@@ -100,8 +100,10 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .count();
 
     if ready_count >= assigned.len() {
+        info!(ready = ready_count, total = assigned.len(), "check_readiness: all assigned spools are active");
         Readiness::Ready
     } else {
+        info!(ready = ready_count, total = assigned.len(), "check_readiness: not all assigned spools are active");
         Readiness::NotReady {
             ready: ready_count,
             total: assigned.len(),

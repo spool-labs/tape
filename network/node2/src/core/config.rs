@@ -81,7 +81,6 @@ pub struct BlockIngestorConfig {
 
 #[derive(Debug, Clone)]
 pub struct EpochManagerConfig {
-    pub state_retry: RetryConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +120,7 @@ impl Default for SpoolManagerConfig {
             repair_batch_size: 10,
             recover_batch_size: 10,
             locked_spool_retention_epochs: 4,
-            peer_retry: RetryConfig::five(),
+            peer_retry: RetryConfig::ten(),
         }
     }
 }
@@ -189,7 +188,6 @@ impl AppConfig {
                 fetch_retry: RetryConfig::infinite(),
             },
             epoch: EpochManagerConfig {
-                state_retry: RetryConfig::ten(),
             },
             epoch_lifecycle: EpochLifecycleConfig::default(),
             spool: SpoolManagerConfig {
@@ -199,7 +197,7 @@ impl AppConfig {
                 repair_batch_size: 10,
                 recover_batch_size: 10,
                 locked_spool_retention_epochs: 4,
-                peer_retry: RetryConfig::five(),
+                peer_retry: RetryConfig::ten(),
             },
             snapshot: SnapshotConfig {
                 max_snapshot_items: 10_000,
