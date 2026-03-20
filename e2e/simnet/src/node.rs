@@ -16,7 +16,7 @@ use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
 use tape_node2::config::{AppConfig, NodeConfig};
 use tape_node2::context::{NodeContext, NodeContextBuilder};
-use tape_node2::runtime::{NodeRuntimeHandle, start_with_context};
+use tape_node2::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tape_store::{TapeStore, ops::MetaOps};
 use tokio::time::Duration;
 
@@ -135,11 +135,15 @@ impl TestNode {
     pub fn is_running(&self) -> bool {
         self.runtime
             .as_ref()
-            .is_some_and(|runtime| !runtime.is_finished())
+            .is_some_and(|runtime| runtime.is_running())
+    }
+
+    pub fn runtime_status(&self) -> Option<NodeRuntimeStatus> {
+        self.runtime.as_ref().map(|runtime| runtime.status())
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        if self.runtime.as_ref().is_some_and(|runtime| !runtime.is_finished()) {
+        if self.runtime.as_ref().is_some_and(|runtime| runtime.is_running()) {
             return Ok(());
         }
 

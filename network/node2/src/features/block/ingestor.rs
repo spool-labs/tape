@@ -9,7 +9,7 @@ use tape_protocol::Api;
 use tape_retry::retry_if;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::core::channels::{DownstreamSenders, send_block};
 use crate::config::BlockIngestorConfig;
@@ -71,7 +71,19 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     }
 
     async fn fetch_parse_and_dispatch(&self, slot: SlotNumber) -> Result<IngestStep, NodeError> {
-        let tip = self.context.rpc.get_slot().await?;
+        let tip = match self.context.rpc.get_slot().await {
+            Ok(tip) => tip,
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: get_slot failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+
         if slot.0 > tip {
             sleep(Duration::from_millis(TIP_POLL_MS)).await;
             return Ok(IngestStep::Wait);
@@ -96,10 +108,30 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 debug!(slot = slot.0, "slot skipped");
                 return Ok(IngestStep::Continue);
             }
-            Err(error) => return Err(NodeError::from(error)),
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: get_block failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
         };
 
-        let instructions = tape_blocks::parse_and_merge(&block)?;
+        let instructions = match tape_blocks::parse_and_merge(&block) {
+            Ok(instructions) => instructions,
+            Err(error) => {
+                error!(
+                    slot = slot.0,
+                    error = %error,
+                    "block_ingestor: parse_and_merge failed: {}",
+                    error
+                );
+                return Err(NodeError::from(error));
+            }
+        };
+
         let block = Arc::new(ParsedBlock { slot, instructions });
 
         debug!(
@@ -108,18 +140,36 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             "parsed block"
         );
 
-        send_block(
+        if let Err(error) = send_block(
             &self.senders.state,
             ChannelName::StateManager,
             Arc::clone(&block),
         )
-        .await?;
+        .await
+        {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: send to StateManager failed: {}",
+                error
+            );
+            return Err(error);
+        }
 
-        send_block(
+        if let Err(error) = send_block(
             &self.senders.replay, 
             ChannelName::ReplayManager, 
             Arc::clone(&block)
-        ).await?;
+        ).await
+        {
+            error!(
+                slot = slot.0,
+                error = %error,
+                "block_ingestor: send to ReplayManager failed: {}",
+                error
+            );
+            return Err(error);
+        }
 
         self.context.metrics.inc_blocks_processed();
         info!(slot = slot.0, "dispatched parsed block");

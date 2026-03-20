@@ -223,7 +223,7 @@ pub fn parse_raw_instruction(
         }
 
         TapeInstruction::RegisterNode => {
-            let authority = get_account(0)?;
+            let authority = get_account(1)?;
             let node = get_account(5)?;
             Ok(Some(RawInstruction::RegisterNode { authority, node }))
         }

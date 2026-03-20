@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rpc::Rpc;
@@ -57,45 +57,84 @@ pub fn build_runtime(config: &RuntimeConfig) -> Result<tokio::runtime::Runtime, 
         .map_err(NodeError::RuntimeBuild)
 }
 
+#[derive(Clone)]
+pub struct NodeRuntimeStatus {
+    running: Arc<AtomicBool>,
+}
+
+impl NodeRuntimeStatus {
+    fn new_running() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    fn mark_stopped(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+}
+
 pub struct NodeRuntimeHandle {
     cancel: CancellationToken,
     task: JoinHandle<Result<(), NodeError>>,
+    status: NodeRuntimeStatus,
 }
 
 impl NodeRuntimeHandle {
+    pub fn is_running(&self) -> bool {
+        self.status.is_running()
+    }
+
     pub fn is_finished(&self) -> bool {
         self.task.is_finished()
     }
 
+    pub fn status(&self) -> NodeRuntimeStatus {
+        self.status.clone()
+    }
+
     pub fn abort(self) {
+        self.status.mark_stopped();
         self.task.abort();
     }
 
     pub async fn wait(self) -> Result<(), NodeError> {
-        match self.task.await {
+        let status = self.status;
+        let result = match self.task.await {
             Ok(result) => result,
             Err(source) => Err(NodeError::ServiceJoin {
                 service: ServiceName::Unknown,
                 source,
             }),
-        }
+        };
+        status.mark_stopped();
+        result
     }
 
     pub async fn shutdown(self, timeout_duration: Duration) -> Result<(), NodeError> {
+        let status = self.status;
         let mut task = self.task;
         self.cancel.cancel();
 
-        match timeout(timeout_duration, &mut task).await {
+        let result = match timeout(timeout_duration, &mut task).await {
             Ok(Ok(result)) => result,
             Ok(Err(source)) => Err(NodeError::ServiceJoin {
                 service: ServiceName::Unknown,
                 source,
             }),
             Err(_) => {
+                status.mark_stopped();
                 task.abort();
-                Ok(())
+                return Ok(());
             }
-        }
+        };
+
+        status.mark_stopped();
+        result
     }
 }
 
@@ -266,14 +305,22 @@ where
 {
     let cancel = CancellationToken::new();
     initialize_context(&context, &cancel).await?;
+    let status = NodeRuntimeStatus::new_running();
+    let task_status = status.clone();
+    let task_cancel = cancel.clone();
 
-    let task = tokio::spawn(supervise_with_context(
-        context,
-        config,
-        cancel.clone(),
-    ));
+    let task = tokio::spawn(async move {
+        let result = supervise_with_context(
+            context,
+            config,
+            task_cancel,
+        )
+        .await;
+        task_status.mark_stopped();
+        result
+    });
 
-    Ok(NodeRuntimeHandle { cancel, task })
+    Ok(NodeRuntimeHandle { cancel, task, status })
 }
 
 pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {

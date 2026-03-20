@@ -59,21 +59,40 @@ impl Supervisor {
                     match joined {
                         Ok((service, Ok(()))) => {
                             if self.cancel.is_cancelled() {
-                                info!(service = ?service, "service stopped");
+                                info!(
+                                    service = ?service,
+                                    "service stopped: {}",
+                                    service.as_str()
+                                );
                             } else {
-                                warn!(service = ?service, "service exited before shutdown");
+                                warn!(
+                                    service = ?service,
+                                    "service exited before shutdown: {}",
+                                    service.as_str()
+                                );
                                 self.cancel.cancel();
                                 first_error = first_error.or(Some(NodeError::UnexpectedServiceExit { service }));
                             }
                         }
                         Ok((service, Err(error))) => {
-                            error!(service = ?service, error = %error, "service failed");
+                            error!(
+                                service = ?service,
+                                error = %error,
+                                "service failed: {}: {}",
+                                service.as_str(),
+                                error
+                            );
                             self.cancel.cancel();
                             first_error = first_error.or(Some(error));
                         }
                         Err(error) => {
                             let service = ServiceName::Unknown;
-                            error!(error = %error, "service task join failed");
+                            error!(
+                                error = %error,
+                                "service task join failed: {}: {}",
+                                service.as_str(),
+                                error
+                            );
                             self.cancel.cancel();
                             first_error = first_error.or(Some(NodeError::ServiceJoin { service, source: error }));
                         }

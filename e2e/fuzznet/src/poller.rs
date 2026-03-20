@@ -5,12 +5,12 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use solana_sdk::signature::Signer;
 use tape_api::state::Track;
 use tape_core::erasure::SPOOL_COUNT;
 use tape_core::system::EpochPhase;
 use peer_http::HttpApi;
-use tape_node2::core::context::NodeContext;
+use tape_node2::context::NodeContext;
+use tape_node2::runtime::NodeRuntimeStatus;
 use tape_store::MemoryStore;
 use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
@@ -25,7 +25,11 @@ use crate::log_layer::LogHistogram;
 pub type SnapshotHandle = Arc<ArcSwap<PollSnapshot>>;
 
 pub enum PollerUpdate {
-    AddNode(usize, Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>),
+    AddNode(
+        usize,
+        Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>,
+        NodeRuntimeStatus,
+    ),
     RemoveNode(usize),
     StakeFuzzStatus {
         enabled: bool,
@@ -75,6 +79,7 @@ impl PollerHandle {
 struct TrackedNode {
     id: usize,
     ctx: Arc<NodeContext<MemoryStore, HttpApi, LiteSvmRpc>>,
+    runtime_status: NodeRuntimeStatus,
     prev_sync: u64,
     prev_repair: u64,
     prev_recovery: u64,
@@ -197,10 +202,11 @@ async fn poller_task(
             }
             msg = update_rx.recv() => {
                 match msg {
-                    Some(PollerUpdate::AddNode(id, ctx)) => {
+                    Some(PollerUpdate::AddNode(id, ctx, runtime_status)) => {
                         state.nodes.push(TrackedNode {
                             id,
                             ctx,
+                            runtime_status,
                             prev_sync: 0,
                             prev_repair: 0,
                             prev_recovery: 0,
@@ -332,6 +338,10 @@ async fn poll_once(
     // status overwrite an Active one.
     let mut spool_available = [false; SPOOL_COUNT];
     for tracked in &state.nodes {
+        if !tracked.runtime_status.is_running() {
+            continue;
+        }
+
         if let Ok(spools) = tracked.ctx.store.iter_all_spools() {
             for (spool_id, spool_state) in spools {
                 if (spool_id as usize) < SPOOL_COUNT && spool_state.is_active() {
@@ -345,10 +355,16 @@ async fn poll_once(
     let mut total_repair_delta = 0u64;
     let mut total_recovery_delta = 0u64;
     let mut total_upload_delta = 0u64;
+    let mut running_node_count = 0usize;
 
     let mut node_snapshots = Vec::with_capacity(state.nodes.len());
 
     for tracked in &mut state.nodes {
+        let is_running = tracked.runtime_status.is_running();
+        if is_running {
+            running_node_count += 1;
+        }
+
         let metrics = tracked.ctx.metrics.snapshot();
         let sync = metrics.sync_bytes_fetched;
         let repair = metrics.repair_bytes_fetched;
@@ -383,7 +399,7 @@ async fn poll_once(
 
         let state = tracked.ctx.state();
         let spool_count = tracked.ctx.my_spools().len();
-        let node_status = if !state.epoch.is_zero() {
+        let node_status = if is_running && !state.epoch.is_zero() {
             Some(tracked.ctx.node_status())
         } else {
             None
@@ -396,6 +412,7 @@ async fn poll_once(
 
         let mut ns = NodeSnapshot {
             id: tracked.id,
+            is_running,
             sync_bytes: sync,
             repair_bytes: repair,
             recovery_bytes: recovery,
@@ -411,6 +428,9 @@ async fn poll_once(
         ns.sync_bw_history.push(sync_delta);
         node_snapshots.push(ns);
     }
+
+    let tracked_node_count = state.nodes.len();
+    let dead_node_count = tracked_node_count.saturating_sub(running_node_count);
 
     state.sync_accum += total_sync_delta;
     state.repair_accum += total_repair_delta;
@@ -474,7 +494,9 @@ async fn poll_once(
         nodes: node_snapshots,
         spool_owners,
         spool_available,
-        node_count: state.nodes.len(),
+        node_count: running_node_count,
+        tracked_node_count,
+        dead_node_count,
         epoch_duration_history: state.epoch_duration_history.clone(),
         total_store_history: state.total_store_history.clone(),
         repair_bw_history: state.repair_bw_history.clone(),

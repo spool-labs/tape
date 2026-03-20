@@ -571,7 +571,11 @@ impl SimnetState {
         node.start().await.with_context(|| format!("start node {id}"))?;
 
         let ctx = node.context();
-        self.poller.send(PollerUpdate::AddNode(id, ctx));
+        let runtime_status = node
+            .runtime_status()
+            .expect("runtime status available after start");
+        self.poller
+            .send(PollerUpdate::AddNode(id, ctx, runtime_status));
         self.nodes.push(node);
 
         Ok(())

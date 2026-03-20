@@ -168,8 +168,9 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
             format!(
-                "  Nodes: {}  Stake: {}  C[{}/{}/{}]",
+                "  Nodes: {}  Dead: {}  Stake: {}  C[{}/{}/{}]",
                 snap.node_count,
+                snap.dead_node_count,
                 format_tape(snap.total_stake),
                 snap.committee_prev_size,
                 snap.committee_size,
@@ -194,8 +195,8 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     // Right side: epoch | slot | time
     let elapsed = format_duration(snap.runtime_secs);
     let right = format!(
-        "Epoch: {}  Nodes: {}  {}  slot:{} ",
-        snap.epoch, snap.node_count, elapsed, snap.slot,
+        "Epoch: {}  Tracked: {}  {}  slot:{} ",
+        snap.epoch, snap.tracked_node_count, elapsed, snap.slot,
     );
 
     let left_len: usize = left_spans.iter().map(|s| s.width()).sum();
@@ -289,7 +290,10 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title(format!(" Nodes ({}) ", snap.node_count));
+        .title(format!(
+            " Nodes ({} up, {} dead) ",
+            snap.node_count, snap.dead_node_count
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -307,7 +311,11 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut current_spans: Vec<Span> = Vec::new();
 
     let mut sorted: Vec<_> = snap.nodes.iter().collect();
-    sorted.sort_by(|a, b| b.pool_stake.cmp(&a.pool_stake));
+    sorted.sort_by(|a, b| {
+        b.is_running
+            .cmp(&a.is_running)
+            .then_with(|| b.pool_stake.cmp(&a.pool_stake))
+    });
 
     let node_event_max = sorted
         .iter()
@@ -316,7 +324,17 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         .unwrap_or(0);
 
     for (i, ns) in sorted.iter().enumerate() {
-        let glyph_color = node_color(ns.id + 1);
+        let glyph = if ns.is_running { "\u{25a0}" } else { "\u{00d7}" };
+        let glyph_color = if ns.is_running {
+            node_color(ns.id + 1)
+        } else {
+            Color::Red
+        };
+        let text_color = if ns.is_running {
+            Color::White
+        } else {
+            Color::DarkGray
+        };
         let stake = format_tape_fixed_width(ns.pool_stake, NODE_STAKE_WIDTH);
         let chip_text = format!(
             "{:>id_width$} [{:>spools_width$}] {:>stake_width$}",
@@ -329,8 +347,8 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         );
         let spark = render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH, node_event_max);
         let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len() + 1 + spark.len());
-        current_spans.push(Span::styled("\u{25a0}", Style::default().fg(glyph_color)));
-        current_spans.push(Span::styled(chip_text, Style::default().fg(Color::White)));
+        current_spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
+        current_spans.push(Span::styled(chip_text, Style::default().fg(text_color)));
         current_spans.push(Span::raw(" "));
         current_spans.extend_from_slice(&spark);
         current_spans.push(Span::raw(" ".repeat(pad_len)));
