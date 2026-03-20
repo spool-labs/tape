@@ -27,6 +27,7 @@ use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
 use tape_sdk::{TapeKey, Tapedrive, TapedriveError};
 
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::app::Command;
 use crate::log_layer::LogHistogram;
@@ -218,8 +219,25 @@ async fn async_run(
                     }
                     Some(Command::Quit) | None => {
                         tracing::info!("shutting down");
-                        for node in &mut state.nodes {
-                            let _ = node.stop().await;
+                        let mut stops = JoinSet::new();
+                        for mut node in std::mem::take(&mut state.nodes) {
+                            stops.spawn(async move {
+                                let id = node.id();
+                                let result = node.stop().await;
+                                (id, result)
+                            });
+                        }
+
+                        while let Some(result) = stops.join_next().await {
+                            match result {
+                                Ok((id, Err(error))) => {
+                                    tracing::warn!(id, "node stop failed during shutdown: {error:#}");
+                                }
+                                Ok((_id, Ok(()))) => {}
+                                Err(error) => {
+                                    tracing::warn!("node stop task join failed during shutdown: {error}");
+                                }
+                            }
                         }
                         break;
                     }

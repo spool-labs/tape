@@ -88,7 +88,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
-    cancel: &CancellationToken,
+    token: &CancellationToken,
 ) -> RepairResult {
 
     let spool_state = match ctx.store.get_spool_state(spool) {
@@ -101,7 +101,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut unrepairable = 0usize;
 
     loop {
-        if cancel.is_cancelled() {
+        if token.is_cancelled() {
             break;
         }
 
@@ -121,7 +121,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         for track in pending {
-            if cancel.is_cancelled() {
+            if token.is_cancelled() {
                 break;
             }
 
@@ -147,7 +147,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             };
 
-            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info).await {
+            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info, token).await {
                 Ok(data) => {
                     let repaired_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
@@ -218,6 +218,7 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     peers: &GroupPeers,
     track: Pubkey,
     track_info: &TrackInfo,
+    token: &CancellationToken,
 ) -> Result<Vec<u8>, ()> {
 
     let profile = track_info.profile();
@@ -263,9 +264,13 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Try fetching helper data using the previous peer map first, then fall back to current if any
     // are missing. There is a chance that the difference between the two maps could cause the
     // repair to fail even if helpers are available.
-    let helper_data = match fetch_helpers(ctx, config, spool, &plan, &peers.previous, track).await {
+    let helper_data = match fetch_helpers(
+        ctx, config, spool, &plan, &peers.previous, track, token,
+    ).await {
         Ok(helper_data) => helper_data,
-        Err(()) => fetch_helpers(ctx, config, spool, &plan, &peers.current, track).await?,
+        Err(()) => fetch_helpers(
+            ctx, config, spool, &plan, &peers.current, track, token,
+        ).await?,
     };
 
     let metadata = SliceMetadata::with_profile(
@@ -292,6 +297,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     plan: &RepairPlan,
     peer_map: &HashMap<SpoolIndex, NodeId>,
     track: Pubkey,
+    token: &CancellationToken,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
     let reqs = per_helper_reqs(plan, spool, track);
     let mut helper_data = HashMap::new();
@@ -305,7 +311,7 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
             &ctx.peer_manager,
             config.peer_retry.clone(),
             node_id,
-            None,
+            Some(token),
             || ctx.api.repair(node_id, req),
         )
         .await;

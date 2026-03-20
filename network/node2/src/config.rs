@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use solana_sdk::signature::Keypair;
+use tape_api::prelude::{SPOOL_COUNT, SPOOL_GROUP_COUNT};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_retry::RetryConfig;
 use tape_sdk::{load_bls_keypair, load_solana_keypair};
+use tape_slicer::SPOOL_GROUP_SIZE;
 
 use crate::core::error::NodeError;
 
@@ -111,7 +113,7 @@ pub struct SpoolManagerConfig {
 impl Default for SpoolManagerConfig {
     fn default() -> Self {
         Self {
-            max_parallel_spools: 4,
+            max_parallel_spools: 50,
             sync_batch_size: 100,
             scan_batch_size: 100,
             repair_batch_size: 10,
@@ -190,7 +192,7 @@ impl AppConfig {
             },
             epoch_lifecycle: EpochLifecycleConfig::default(),
             spool: SpoolManagerConfig {
-                max_parallel_spools: worker_threads.clamp(4, 64),
+                max_parallel_spools: SPOOL_GROUP_COUNT,
                 sync_batch_size: 100,
                 scan_batch_size: 100,
                 repair_batch_size: 10,

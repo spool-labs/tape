@@ -33,7 +33,7 @@ impl RetryConfig {
     pub fn ten() -> Self {
         Self {
             base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(30),
+            max_delay: Duration::from_secs(5),
             max_retries: Some(10),
         }
     }
@@ -42,7 +42,7 @@ impl RetryConfig {
     pub fn infinite() -> Self {
         Self {
             base_delay: Duration::from_millis(500),
-            max_delay: Duration::from_secs(30),
+            max_delay: Duration::from_secs(5),
             max_retries: None,
         }
     }

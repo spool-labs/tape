@@ -146,8 +146,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
             let peer_slices = match fetch_slices(
                 ctx.as_ref(), config, spool, k, &peers.previous, track_addr, token
-            )
-            .await
+            ).await
             {
                 Ok(peer_slices) => peer_slices,
                 Err(()) => match fetch_slices(
