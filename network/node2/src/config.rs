@@ -105,6 +105,7 @@ pub struct SpoolManagerConfig {
     pub recover_batch_size: usize,
     pub locked_spool_retention_epochs: u64,
     pub peer_retry: RetryConfig,
+    pub interval: Duration,
 }
 
 impl Default for SpoolManagerConfig {
@@ -117,6 +118,7 @@ impl Default for SpoolManagerConfig {
             recover_batch_size: 10,
             locked_spool_retention_epochs: 4,
             peer_retry: RetryConfig::ten(),
+            interval: Duration::from_secs(1),
         }
     }
 }

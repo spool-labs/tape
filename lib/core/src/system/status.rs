@@ -62,6 +62,14 @@ impl SpoolState {
         Self { status, epoch, prev_owner: None, prev_helpers: [None; SPOOL_GROUP_SIZE] }
     }
 
+    pub fn set_status(&mut self, status: SpoolStatus) {
+        self.status = status;
+    }
+
+    pub fn set_epoch(&mut self, epoch: EpochNumber) {
+        self.epoch = epoch;
+    }
+
     pub fn is_locked(&self) -> bool { self.status == SpoolStatus::LockedToMove }
     pub fn is_active(&self) -> bool { self.status == SpoolStatus::Active }
     pub fn is_syncing(&self) -> bool { self.status == SpoolStatus::Sync }

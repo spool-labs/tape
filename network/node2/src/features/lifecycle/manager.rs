@@ -138,6 +138,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 // Shutdown signal
                 _ = self.cancel.cancelled() => {
                     info!("lifecycle: shutting down, aborting tasks");
+
                     tasks.abort_all();
                     return Ok(());
                 }

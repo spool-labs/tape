@@ -90,6 +90,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> RepairResult {
+
     let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(state)) => state,
         _ => return RepairResult::Done { unrepairable: 0 },

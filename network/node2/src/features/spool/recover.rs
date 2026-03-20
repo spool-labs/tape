@@ -73,8 +73,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
-    cancel: &CancellationToken,
+    token: &CancellationToken,
 ) -> RecoverResult {
+
     let Some(spool_state) = ctx.store.get_spool_state(spool).ok().flatten() else {
         return RecoverResult::Done { remaining: 0 };
     };
@@ -82,15 +83,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
     let group = SpoolGroup::of(spool);
     let position = group.slice_of(spool).unwrap_or_default();
+    let batch_size = config.recover_batch_size.max(1);
 
     loop {
-        if cancel.is_cancelled() {
+        if token.is_cancelled() {
             break;
         }
 
         let pending = match ctx
             .store
-            .iter_pending_recoveries(spool, config.recover_batch_size.max(1))
+            .iter_pending_recoveries(spool, batch_size)
         {
             Ok(pending) => pending,
             Err(error) => {
@@ -105,7 +107,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         let mut made_progress = false;
         for track_addr in pending {
-            if cancel.is_cancelled() {
+            if token.is_cancelled() {
                 break;
             }
 
@@ -143,23 +145,13 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             let k = slicer.k();
 
             let peer_slices = match fetch_slices(
-                ctx.as_ref(),
-                config,
-                spool,
-                k,
-                &peers.previous,
-                track_addr,
+                ctx.as_ref(), config, spool, k, &peers.previous, track_addr, token
             )
             .await
             {
                 Ok(peer_slices) => peer_slices,
                 Err(()) => match fetch_slices(
-                    ctx.as_ref(),
-                    config,
-                    spool,
-                    k,
-                    &peers.current,
-                    track_addr,
+                    ctx.as_ref(), config, spool, k, &peers.current, track_addr, token
                 )
                 .await
                 {
@@ -189,6 +181,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
             ctx.metrics.add_recover_persisted(recovered_len);
             let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+
             made_progress = true;
         }
 
@@ -215,7 +208,9 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     k: usize,
     peer_map: &HashMap<SpoolIndex, NodeId>,
     track_addr: Pubkey,
+    token: &CancellationToken,
 ) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
+
     let group = SpoolGroup::of(spool);
     let track: tape_crypto::Pubkey = track_addr.into();
     let mut slices = Vec::with_capacity(k);
@@ -239,28 +234,23 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
             spool: helper_spool,
         };
 
-        let response = match call_peer(
+        let Ok(res) = call_peer(
             &ctx.peer_manager,
             config.peer_retry.clone(),
             node_id,
-            None,
-            || {
-                let api = ctx.api.clone();
-                let request = request.clone();
-                async move { api.get_slice(node_id, &request).await }
-            },
-        )
-        .await
-        {
-            Ok(response) if !response.data.is_empty() => {
-                ctx.metrics.add_recover_fetched(response.data.len() as u64);
-                response
-            }
-            Ok(_) => continue,
-            Err(_) => continue,
+            Some(token),
+            || { ctx.api.get_slice(node_id, &request) },
+        ).await else {
+            continue;
         };
 
-        slices.push((SliceIndex::new(helper_slice), response.data));
+        if res.data.is_empty() {
+            continue;
+        }
+
+        ctx.metrics.add_recover_fetched(res.data.len() as u64);
+
+        slices.push((SliceIndex::new(helper_slice), res.data));
     }
 
     if slices.len() < k {
