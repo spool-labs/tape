@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 /// Configuration for exponential backoff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
     pub base_delay: Duration,
     pub max_delay: Duration,
@@ -19,6 +19,15 @@ pub struct RetryConfig {
 }
 
 impl RetryConfig {
+    /// No retries, 0s base, 0s max.
+    /// Useful for disabling retries in tests
+    pub fn none() -> Self {
+        Self {
+            base_delay: Duration::from_secs(0),
+            max_delay: Duration::from_secs(0),
+            max_retries: Some(0),
+        }
+    }
 
     /// 10 retries, 1s base, 30s max.
     pub fn ten() -> Self {
@@ -306,19 +315,6 @@ mod tests {
 
     #[test]
     fn presets() {
-        let none = RetryConfig::none();
-        assert_eq!(none.max_retries, Some(0));
-
-        let three = RetryConfig::three();
-        assert_eq!(three.max_retries, Some(3));
-        assert_eq!(three.base_delay, Duration::from_millis(100));
-        assert_eq!(three.max_delay, Duration::from_secs(2));
-
-        let five = RetryConfig::five();
-        assert_eq!(five.max_retries, Some(5));
-        assert_eq!(five.base_delay, Duration::from_millis(500));
-        assert_eq!(five.max_delay, Duration::from_secs(10));
-
         let ten = RetryConfig::ten();
         assert_eq!(ten.max_retries, Some(10));
         assert_eq!(ten.base_delay, Duration::from_secs(1));
@@ -333,14 +329,14 @@ mod tests {
     #[tokio::test]
     async fn retry_succeeds_immediately() {
         let result: Result<i32, String> =
-            retry(RetryConfig::three(), None, || async { Ok(42) }).await;
+            retry(RetryConfig::ten(), None, || async { Ok(42) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 
     #[tokio::test]
     async fn retry_succeeds_after_failures() {
         let mut call_count = 0u32;
-        let result: Result<i32, String> = retry(RetryConfig::five(), None, || {
+        let result: Result<i32, String> = retry(RetryConfig::ten(), None, || {
             call_count += 1;
             let count = call_count;
             async move {

@@ -6,7 +6,7 @@ use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
@@ -41,10 +41,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     cancel: &CancellationToken,
 ) -> ScanResult {
 
-    let group = SpoolGroup::of(spool);
-
     let mut cursor = None;
     let mut gaps = 0usize;
+
+    let group = SpoolGroup::of(spool);
+    let batch_size = config.scan_batch_size.max(1);
 
     loop {
         if cancel.is_cancelled() {
@@ -53,7 +54,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         let tracks = match ctx
             .store
-            .iter_tracks_from(cursor, config.scan_batch_size.max(1))
+            .iter_tracks_from(cursor, batch_size)
         {
             Ok(tracks) => tracks,
             Err(error) => {
@@ -67,14 +68,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         for (track_addr, track_info) in &tracks {
+            // Skip tracks not in this spool's group.
             if track_info.spool_group != group {
                 continue;
             }
 
+            // Check if slice exists locally.
             let has_slice = match ctx.store.has_slice(spool, *track_addr) {
                 Ok(has_slice) => has_slice,
                 Err(error) => {
-                    debug!(spool, track = %track_addr, %error, "scan has_slice failed");
+                    warn!(spool, track = %track_addr, %error, "scan has_slice failed");
                     continue;
                 }
             };
@@ -84,14 +87,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
 
             if let Err(error) = ctx.store.add_pending_repair(spool, *track_addr) {
-                debug!(spool, track = %track_addr, %error, "scan add_pending_repair failed");
+                warn!(spool, track = %track_addr, %error, "scan add_pending_repair failed");
                 continue;
             }
 
             gaps += 1;
         }
 
-        cursor = tracks.last().map(|(track_addr, _)| *track_addr);
+        cursor = tracks
+            .last()
+            .map(|(track_addr, _)| *track_addr);
     }
 
     ScanResult::Done { gaps }
