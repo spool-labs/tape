@@ -197,6 +197,7 @@ impl AppConfig {
                 recover_batch_size: 10,
                 locked_spool_retention_epochs: 4,
                 peer_retry: RetryConfig::ten(),
+                interval: Duration::from_secs(1),
             },
             snapshot: SnapshotConfig {
                 max_snapshot_items: 10_000,

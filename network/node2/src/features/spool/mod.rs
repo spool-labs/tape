@@ -1,9 +1,6 @@
-//pub mod fsm;
-//pub mod manager;
-pub mod manager2;
-//pub mod recover;
-//pub mod repair;
-//pub mod scan;
-//pub mod sync;
+pub mod manager;
+pub mod recover;
+pub mod repair;
+pub mod scan;
+pub mod sync;
 pub mod types;
-//pub mod worker;

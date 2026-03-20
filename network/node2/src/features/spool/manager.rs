@@ -1,11 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::prelude::SpoolGroup;
-use tape_core::erasure::SPOOL_GROUP_SIZE;
-use tape_core::spooler::SpoolIndex;
+use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_SIZE};
+use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -17,77 +16,15 @@ use tracing::{debug, info, warn};
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::spool::fsm::{self, EpochAction};
-use crate::features::spool::types::{TaskKind, WorkerDone};
-use crate::features::spool::worker;
-
-// Spool Manager
-//
-// Owns up to 50 concurrent spool workers (one per assigned spool).
-// Each worker runs one step of the FSM for its spool (Sync, Scan, Repair, or Recover).
-//
-// Inputs:
-//   - watch::Receiver<ProtocolState> — epoch/phase changes from the epoch manager.
-//
-// Lifecycle:
-//   1. On startup, read current protocol state to determine our assigned spools.
-//      For each spool, read persisted SpoolState from the store to determine
-//      which FSM step to run. Spawn initial workers.
-//
-//   2. Main loop selects on:
-//      a. cancel — shutdown.
-//      b. state_rx.changed() — epoch advanced.
-//         - If epoch changed: cancel all workers for the old epoch, wait for
-//           them to complete (they check cancellation at batch boundaries),
-//           then re-plan: compute new spool assignments, read persisted state,
-//           spawn new workers.
-//      c. join_set.join_next() — a worker completed.
-//         - Apply the FSM transition based on the WorkerDone result.
-//         - Update the spool's persisted SpoolState.
-//         - If the FSM produces a follow-up task (e.g. Scan→Repair), spawn
-//           a new worker for that spool immediately.
-//
-// Worker management:
-//   - `workers: HashMap<SpoolIndex, CancellationToken>` — tracks which spools
-//     have an active worker and provides a handle to cancel them individually.
-//   - `join_set: JoinSet<WorkerDone>` — collects worker futures for completion
-//     notification.
-//   - Workers are keyed by (spool, epoch). If the epoch changes, all existing
-//     workers are cancelled because spool ownership may have changed.
-//
-// Epoch transition:
-//   1. Cancel all running workers (drop their CancellationTokens or call cancel).
-//   2. Drain join_set to collect any completions (results are discarded since
-//      the epoch they belong to is no longer current).
-//   3. Compute new spool assignments from the updated ProtocolState.
-//   4. For each newly owned spool:
-//      - If we already had it last epoch and it was Active → Scan (re-verify).
-//      - If it's new to us → Sync (fetch from previous owner).
-//      - If it was mid-lifecycle (Scan/Repair/Recover) → restart from Scan.
-//      Read the persisted SpoolState to decide. The FSM epoch event rules
-//      in fsm.rs govern this.
-//   5. For each spool we no longer own:
-//      - Mark as LockedToMove in the store. Data is retained for
-//        `locked_spool_retention_epochs` to serve repair requests from
-//        the new owner.
-//   6. Spawn workers for all owned spools.
-//
-// FSM transitions on worker completion:
-//   See fsm.rs for the full table. Key transitions:
-//
-//   Sync  + Done          → set Scan, spawn scan worker
-//   Sync  + Unavailable   → set Scan, spawn scan worker
-//   Scan  + Done { 0 }    → set Active, no worker needed
-//   Scan  + Done { > 0 }  → set Repair, spawn repair worker
-//   Repair + Done { 0 }   → set Active, no worker needed
-//   Repair + Done { > 0 } → set Recover, spawn recover worker
-//   Recover + Done { 0 }  → set Active, no worker needed
-//   Recover + Done { > 0 } → set Recover, spawn recover worker (retry)
+use crate::features::spool::types::{Action, RecoverResult, RepairResult, ScanResult, TaskDone, TaskResult};
+use crate::features::spool::{recover, repair, scan, sync};
 
 pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: SpoolManagerConfig,
     cancel: CancellationToken,
+    workers: HashMap<SpoolIndex, CancellationToken>,
+    join_set: JoinSet<TaskDone>,
 }
 
 impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
@@ -98,387 +35,409 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         config: SpoolManagerConfig,
         cancel: CancellationToken,
     ) -> Self {
+        let workers = HashMap::new();
+        let join_set = JoinSet::new();
+
         Self {
             context,
             config,
             cancel,
+            workers, 
+            join_set,
         }
     }
 
-    pub async fn run(self) -> Result<(), NodeError> {
-        debug!(
-            node_id = self.context.node_id().0,
-            max_parallel = self.config.max_parallel_spools,
-            "spool manager started"
-        );
+    /// Spawn tasks based on state changes and task completions.
+    pub async fn run(mut self) -> Result<(), NodeError> {
 
         let mut state_rx = self.context.subscribe_state();
         let mut observed_epoch = state_rx.borrow().epoch;
 
-        let mut workers: HashMap<SpoolIndex, CancellationToken> = HashMap::new();
-        let mut join_set: JoinSet<WorkerDone> = JoinSet::new();
-
-        reconcile_epoch(&self.context, &self.config, observed_epoch)?;
-        fill_capacity(
-            &self.context,
-            &self.config,
-            observed_epoch,
-            &mut workers,
-            &mut join_set,
-            None,
-        )?;
+        self.advance(observed_epoch)?;
+        self.try_spawn(observed_epoch)?;
 
         loop {
             tokio::select! {
+                // Shutdown signal
                 _ = self.cancel.cancelled() => {
-                    // Cancel all workers and exit
-                    for (_, token) in workers.drain() {
-                        token.cancel();
-                    }
-                    while join_set.join_next().await.is_some() {}
+                    info!("spool: shutdown signal received, exiting");
+
+                    self.stop().await;
+
                     return Ok(());
                 }
 
-                changed = state_rx.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-
-                    let current_epoch = state_rx.borrow().epoch;
-                    if current_epoch <= observed_epoch {
-                        continue;
-                    }
-
-                    info!(
-                        old_epoch = observed_epoch.0,
-                        new_epoch = current_epoch.0,
-                        active_workers = workers.len(),
-                        "epoch advanced, cancelling workers"
-                    );
-
-                    // Cancel all workers from the old epoch 
-                    for (_, token) in workers.drain() {
-                        token.cancel();
-                    }
-
-                    // Drain join_set to collect completions of cancelled workers 
-                    // (results are discarded)
-                    while join_set.join_next().await.is_some() {}
-
-                    reconcile_epoch(&self.context, &self.config, current_epoch)?;
-
-                    fill_capacity(
-                        &self.context,
-                        &self.config,
-                        current_epoch,
-                        &mut workers,
-                        &mut join_set,
-                        None,
-                    )?;
-
-                    observed_epoch = current_epoch;
-                }
-
-                Some(result) = join_set.join_next() => {
+                // Worker completion
+                Some(result) = self.join_set.join_next() => {
                     let done = match result {
                         Ok(done) => done,
-                        Err(error) => {
-                            warn!(error = %error, "spool worker panicked");
+                        Err(e) => {
+                            if e.is_cancelled() {
+                                debug!("spool: task was aborted");
+                            } else {
+                                warn!(?e, "spool: task panicked");
+                            }
                             continue;
                         }
                     };
 
-                    apply_transition(
-                        done,
-                        &self.context,
-                        &self.config,
-                        observed_epoch,
-                        &mut workers,
-                        &mut join_set,
-                    )?;
+                    self.handle_done(done, observed_epoch)?;
+                    self.try_spawn(observed_epoch)?;
+                }
+
+                // State changed ("replan" signal)
+                changed = state_rx.changed() => {
+                    if changed.is_err() {
+                        warn!("spool: state channel closed");
+
+                        self.stop().await;
+
+                        return Ok(());
+                    }
+
+                    let state = state_rx.borrow().clone();
+
+                    if state.epoch != observed_epoch {
+                        info!(
+                            old_epoch = observed_epoch.0,
+                            new_epoch = state.epoch.0,
+                            "spool: epoch advanced, resetting"
+                        );
+
+                        self.stop().await;
+
+                        observed_epoch = state.epoch;
+
+                        self.advance(observed_epoch)?;
+                    }
+
+                    self.try_spawn(observed_epoch)?;
+                }
+
+                // Periodic heartbeat
+                _ = tokio::time::sleep(self.config.interval) => {
+                    self.try_spawn(observed_epoch)?;
                 }
             }
         }
     }
-}
 
-fn reconcile_epoch<Db, Cluster, Blockchain>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    epoch: EpochNumber,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    let owned_spools = ctx.my_spools();
-    let mut owned_sorted: Vec<_> = owned_spools.iter().copied().collect();
-    owned_sorted.sort_unstable();
-
-    let persisted = ctx
-        .store
-        .iter_all_spools()
-        .map_err(|error| NodeError::Store(format!("iter_all_spools: {error}")))?;
-    let mut persisted_map: HashMap<SpoolIndex, SpoolState> = persisted.into_iter().collect();
-
-    // Handle currently owned spools first
-    for spool in owned_sorted {
-        let persisted_state = persisted_map.remove(&spool);
-        reconcile_owned_spool(ctx, spool, persisted_state.as_ref(), epoch)?;
+    /// Determine the next action based on current state.
+    pub fn next_action(
+        &self,
+        epoch: EpochNumber,
+    ) -> Result<Option<Action>, NodeError> {
+        if self.workers.len() >= self.config.max_parallel_spools {
+            return Ok(None);
+        }
+    
+        let mut spools = self
+            .context
+            .store
+            .iter_all_spools()
+            .map_err(|e| NodeError::Store(format!("iter_all_spools: {e}")))?;
+    
+        spools
+            .sort_unstable_by_key(
+                |(spool, state)| (status_priority(state.status), *spool)
+        );
+    
+        for (spool, state) in spools {
+            if state.epoch != epoch {
+                continue;
+            }
+    
+            if self.is_running(spool) {
+                continue;
+            }
+    
+            if let Some(action) = action_for_status(spool, epoch, state.status) {
+                return Ok(Some(action));
+            }
+        }
+    
+        Ok(None)
     }
 
-    // Handle spools we no longer own
-    let mut retained: Vec<_> = persisted_map.into_iter().collect();
-    retained.sort_unstable_by_key(|(spool, _)| *spool);
+    /// Try to spawn new tasks up to the parallel limit.
+    fn try_spawn(
+        &mut self,
+        epoch: EpochNumber,
+    ) -> Result<(), NodeError> {
+        while self.workers.len() < self.config.max_parallel_spools {
+            let Some(action) = self.next_action(epoch)? else {
+                break;
+            };
 
-    for (spool, state) in retained {
-        match fsm::on_epoch_event(Some(&state), false, epoch) {
-            EpochAction::Lock => {
-                reset_spool_task_state(ctx, spool);
-                ctx.store
-                    .set_spool_state(spool, SpoolState::new(SpoolStatus::LockedToMove, epoch))
-                    .map_err(|error| NodeError::Store(format!("lock_spool({spool}): {error}")))?;
+            // Check if we're already running a task for this spool
+            let spool = action.spool();
+            if self.is_running(spool) {
+                continue;
             }
-            EpochAction::Idle => {
-                // Already LockedToMove — check retention expiry
-                if state.is_locked()
-                    && retention_expired(state.epoch, epoch, config.locked_spool_retention_epochs)
-                {
-                    purge_locked_spool(ctx, spool)?;
+
+            let ctx = self.context.clone();
+            let config = self.config.clone();
+            let token = self.cancel.child_token();
+
+            self.workers.insert(spool, token.clone());
+
+            info!(?action, epoch = epoch.0, "spool: spawning task");
+
+            self.join_set.spawn(async move {
+                let result = match action {
+                    Action::Sync { spool, .. } => {
+                        TaskResult::Sync(sync::run(ctx, &config, spool, &token).await)
+                    }
+                    Action::Scan { spool, .. } => {
+                        TaskResult::Scan(scan::run(ctx, &config, spool, &token).await)
+                    }
+                    Action::Repair { spool, .. } => {
+                        TaskResult::Repair(repair::run(ctx, &config, spool, &token).await)
+                    }
+                    Action::Recover { spool, .. } => {
+                        TaskResult::Recover(recover::run(ctx, &config, spool, &token).await)
+                    }
+                };
+
+                if token.is_cancelled() {
+                    TaskDone::Cancelled(action, result)
+                } else {
+                    TaskDone::Done(action, result)
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    fn handle_done(
+        &mut self,
+        done: TaskDone,
+        observed_epoch: EpochNumber,
+    ) -> Result<(), NodeError> {
+        let action = done.action();
+        let spool = action.spool();
+        let worker_epoch = action.epoch();
+
+        self.workers.remove(&spool);
+
+        if worker_epoch != observed_epoch {
+            debug!(
+                ?action,
+                observed_epoch = observed_epoch.0,
+                "spool: ignoring stale task completion"
+            );
+            return Ok(());
+        }
+
+        match done {
+            TaskDone::Done(action, result) => {
+                let Some(mut state) = self
+                    .context
+                    .store
+                    .get_spool_state(spool)
+                    .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?
+                else {
+                    debug!(spool, "spool: missing state for completed task");
+                    return Ok(());
+                };
+
+                let Some(next_status) = transition_status(action, result) else {
+                    warn!(?action, ?result, "spool: invalid task completion");
+                    return Ok(());
+                };
+
+                state.set_status(next_status);
+
+                self.context
+                    .store
+                    .set_spool_state(spool, state)
+                    .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
+
+                info!(spool, epoch = observed_epoch.0, status = ?next_status, "spool: task completed");
+            }
+            TaskDone::Cancelled(action, result) => {
+                debug!(?action, ?result, "spool: task cancelled");
+            }
+            TaskDone::Rejected(action, result) => {
+                warn!(?action, ?result, "spool: task rejected");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update the current spool states based on the assignements
+    pub fn advance(
+        &self,
+        epoch: EpochNumber,
+    ) -> Result<(), NodeError> {
+
+        // Get the spools we've been assigned for the current epoch
+        let assignments : HashSet<SpoolIndex> = self.context.my_spools();
+
+        // iterate over all spools
+        for spool in 0..SPOOL_COUNT {
+            let spool : SpoolIndex = spool as u16;
+
+            let is_assigned = assignments.contains(&spool);
+            let state = self.context.store.get_spool_state(spool)
+                .map_err(|e| NodeError::Store(format!("get_spool_state: {e}")))?;
+
+            match (is_assigned, state) {
+
+                // Not assigned, no state → nothing to do
+                (false, None) => {
+                    // If we don't have a state for a spool and it's not assigned to us, we can
+                    // just ignore it.
+                }
+
+                // Not assigned, have state → lost ownership -> (lock)
+                (false, Some(state)) => {
+                    if state.is_locked() {
+                        if check_expiry(state.epoch, epoch, self.config.locked_spool_retention_epochs) {
+                            info!(spool, epoch = epoch.0, "spool: purging locked spool after retention period");
+
+                            purge_locked_spool(self.context.as_ref(), spool)?;
+                        }
+                    } else {
+                        info!(spool, epoch = epoch.0, "spool: locking spool due to lost ownership");
+
+                        reset_spool_state(self.context.as_ref(), spool)?;
+
+                        let mut state = state;
+                        state.set_status(SpoolStatus::LockedToMove);
+                        state.set_epoch(epoch);
+
+                        self.context
+                            .store
+                            .set_spool_state(spool, state)
+                            .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
+                    }
+                }
+
+                // Assigned, no state → create state -> (sync)
+                (true, None) => {
+                    info!(spool, epoch = epoch.0, "spool: creating state for newly assigned spool");
+
+                    // If we don't have a state for a spool but it's assigned to us, we need to
+                    // create an initial state and start syncing it. The initial state will have
+                    // the previous owner set, which allows the sync task to know where to sync
+                    // from.
+
+                    let state = make_sync_state(self.context.as_ref(), spool, epoch);
+
+                    self.context
+                        .store
+                        .set_spool_state(spool, state)
+                        .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
+                }
+
+                // Assigned, have state AND epoch matches -> resume or continue
+                (true, Some(_state)) if _state.epoch == epoch => {}
+
+                // Assigned, have state AND epoch doesn't match -> (sync)
+                (true, Some(_state)) => {
+                    info!(spool, epoch = epoch.0, "spool: refreshing assigned spool for new epoch");
+
+                    reset_spool_state(self.context.as_ref(), spool)?;
+
+                    let state = make_sync_state(self.context.as_ref(), spool, epoch);
+
+                    self.context
+                        .store
+                        .set_spool_state(spool, state)
+                        .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
                 }
             }
-            EpochAction::Spawn { .. } => {
-                // unreachable for non-owned spools
-                warn!(spool, "unexpected spawn action for non-owned spool");
-            }
         }
+
+        Ok(())
     }
 
-    Ok(())
+    /// Check if the spool manager already has a running task for the given spool index.
+    fn is_running(&self, spool: SpoolIndex) -> bool {
+        self.workers.contains_key(&spool)
+    }
+
+    /// Stop all workers
+    async fn stop(&mut self) {
+        for (_, token) in self.workers.drain() {
+         token.cancel();
+        }
+
+        while self.join_set.join_next().await.is_some() {}
+    }
 }
 
-fn apply_transition<Db, Cluster, Blockchain>(
-    done: WorkerDone,
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    epoch: EpochNumber,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    let (spool, worker_epoch) = match &done {
-        WorkerDone::Sync(s, e, _) => (*s, *e),
-        WorkerDone::Scan(s, e, _) => (*s, *e),
-        WorkerDone::Repair(s, e, _) => (*s, *e),
-        WorkerDone::Recover(s, e, _) => (*s, *e),
-    };
 
-    workers.remove(&spool);
-
-    if worker_epoch != epoch {
-        return Ok(());
-    }
-
-    let Some(mut state) = ctx
-        .store
-        .get_spool_state(spool)
-        .map_err(|error| NodeError::Store(format!("get_spool_state({spool}): {error}")))?
-    else {
-        return Ok(());
-    };
-
-    let (next_status, next_task) = fsm::on_task_result(&done);
-
-    state.status = next_status;
-    ctx.store
-        .set_spool_state(spool, state)
-        .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
-
-    if next_status == SpoolStatus::Active {
-        info!(spool, epoch = epoch.0, "spool active");
-    }
-
-    if next_task.is_some() {
-        fill_capacity(ctx, config, epoch, workers, join_set, Some(spool))?;
-    } else {
-        fill_capacity(ctx, config, epoch, workers, join_set, None)?;
-    }
-
-    Ok(())
-}
-
-fn spawn_worker<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
+fn action_for_status(
     spool: SpoolIndex,
     epoch: EpochNumber,
-    kind: TaskKind,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
-) {
-    let cancel = CancellationToken::new();
-    workers.insert(spool, cancel.clone());
-    join_set.spawn(worker::run(
-        ctx.clone(),
-        config.clone(),
-        kind,
-        spool,
-        epoch,
-        cancel,
-    ));
+    status: SpoolStatus,
+) -> Option<Action> {
+    match status {
+        SpoolStatus::Sync => Some(Action::Sync { spool, epoch }),
+        SpoolStatus::Scan => Some(Action::Scan { spool, epoch }),
+        SpoolStatus::Repair => Some(Action::Repair { spool, epoch }),
+        SpoolStatus::Recover => Some(Action::Recover { spool, epoch }),
+        SpoolStatus::Active | SpoolStatus::LockedToMove => None,
+    }
 }
 
-fn reconcile_owned_spool<Db, Cluster, Blockchain>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    spool: SpoolIndex,
-    persisted_state: Option<&SpoolState>,
-    epoch: EpochNumber,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    match fsm::on_epoch_event(persisted_state, true, epoch) {
-        EpochAction::Idle => {}
-        EpochAction::Lock => {
-            // unreachable for owned spools
-            warn!(spool, "unexpected lock action for owned spool");
-        }
-        EpochAction::Spawn { kind, update } => {
-            if update.is_some() {
-                reset_spool_task_state(ctx, spool);
-            }
-
-            let maybe_new_state = if kind == TaskKind::Sync {
-                Some(make_sync_state(ctx, spool, epoch))
-            } else if let Some(state) = update {
-                Some(state)
-            } else {
-                None
-            };
-
-            if let Some(state) = maybe_new_state {
-                ctx.store
-                    .set_spool_state(spool, state)
-                    .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
-            }
-        }
+fn status_priority(status: SpoolStatus) -> u8 {
+    match status {
+        SpoolStatus::Sync => 0,
+        SpoolStatus::Scan => 1,
+        SpoolStatus::Repair => 2,
+        SpoolStatus::Recover => 3,
+        SpoolStatus::Active => 4,
+        SpoolStatus::LockedToMove => 5,
     }
-
-    Ok(())
 }
 
-fn fill_capacity<Db, Cluster, Blockchain>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    epoch: EpochNumber,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
-    preferred_spool: Option<SpoolIndex>,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    if workers.len() >= config.max_parallel_spools {
-        return Ok(());
+fn transition_status(action: Action, result: TaskResult) -> Option<SpoolStatus> {
+    match (action, result) {
+        // Sync always goes to Scan, even if it reports 0 synced, because we may still need to scan
+        // for gaps.
+        (Action::Sync { .. }, TaskResult::Sync(_)) => {
+            Some(SpoolStatus::Scan)
+        }
+
+        // If a scan reports 0 gaps, we can go straight to Active. Otherwise, we need to go to
+        // Repair first.
+        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Done { gaps: 0 })) => {
+            Some(SpoolStatus::Active)
+        }
+
+        // If a scan reports gaps, we need to go to Repair.
+        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Done { .. })) => {
+            Some(SpoolStatus::Repair)
+        }
+
+        // If a repair reports 0 unrepairable slices, we can go straight to Active
+        (Action::Repair { .. }, TaskResult::Repair(RepairResult::Done { unrepairable: 0 })) => {
+            Some(SpoolStatus::Active)
+        }
+
+        // If a repair reports unrepairable slices, we need to go to Recover.
+        (Action::Repair { .. }, TaskResult::Repair(RepairResult::Done { .. })) => {
+            Some(SpoolStatus::Recover)
+        }
+
+        // If a recover reports 0 remaining slices, we can go to Active
+        (Action::Recover { .. }, TaskResult::Recover(RecoverResult::Done { remaining: 0 })) => {
+            Some(SpoolStatus::Active)
+        }
+
+        // If a recover reports remaining slices, we stay in Recover to try again later
+        (Action::Recover { .. }, TaskResult::Recover(RecoverResult::Done { .. })) => {
+            Some(SpoolStatus::Recover)
+        }
+
+        // Any other combination is invalid
+        _ => None,
     }
-
-    let owned_spools = ordered_owned_spools(ctx, preferred_spool);
-    for spool in owned_spools {
-        if workers.len() >= config.max_parallel_spools {
-            break;
-        }
-
-        if workers.contains_key(&spool) {
-            continue;
-        }
-
-        spawn_owned_spool_if_runnable(
-            ctx,
-            config,
-            spool,
-            epoch,
-            workers,
-            join_set,
-        )?;
-    }
-
-    Ok(())
-}
-
-fn ordered_owned_spools<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    preferred_spool: Option<SpoolIndex>,
-) -> Vec<SpoolIndex> {
-    let mut owned_spools: Vec<_> = ctx.my_spools().into_iter().collect();
-    owned_spools.sort_unstable();
-
-    if let Some(preferred) = preferred_spool {
-        if let Some(index) = owned_spools.iter().position(|spool| *spool == preferred) {
-            owned_spools.swap(0, index);
-        }
-    }
-
-    owned_spools
-}
-
-fn spawn_owned_spool_if_runnable<Db, Cluster, Blockchain>(
-    ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
-    spool: SpoolIndex,
-    epoch: EpochNumber,
-    workers: &mut HashMap<SpoolIndex, CancellationToken>,
-    join_set: &mut JoinSet<WorkerDone>,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    let persisted_state = ctx
-        .store
-        .get_spool_state(spool)
-        .map_err(|error| NodeError::Store(format!("get_spool_state({spool}): {error}")))?;
-
-    match fsm::on_epoch_event(persisted_state.as_ref(), true, epoch) {
-        EpochAction::Idle => {}
-        EpochAction::Lock => {
-            warn!(spool, "unexpected lock action for owned spool");
-        }
-        EpochAction::Spawn { kind, update } => {
-            if update.is_some() {
-                reset_spool_task_state(ctx, spool);
-            }
-
-            let maybe_new_state = if kind == TaskKind::Sync {
-                Some(make_sync_state(ctx, spool, epoch))
-            } else if let Some(state) = update {
-                Some(state)
-            } else {
-                None
-            };
-
-            if let Some(state) = maybe_new_state {
-                ctx.store
-                    .set_spool_state(spool, state)
-                    .map_err(|error| NodeError::Store(format!("set_spool_state({spool}): {error}")))?;
-            }
-
-            if workers.len() < config.max_parallel_spools && !workers.contains_key(&spool) {
-                spawn_worker(ctx, config, spool, epoch, kind, workers, join_set);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -492,60 +451,77 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     state.prev_owner = protocol.spool_owner_prev(spool);
     for slice in 0..SPOOL_GROUP_SIZE {
-        state.prev_helpers[slice] = protocol
-            .spool_owner_prev(group.spool_at(slice));
+        state.prev_helpers[slice] = protocol.spool_owner_prev(group.spool_at(slice));
     }
+
     state
 }
 
-fn reset_spool_task_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
+fn reset_spool_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
-) {
-    let _ = ctx.store.clear_all_pending_repairs(spool);
-    let _ = ctx.store.clear_all_pending_recoveries(spool);
-    let _ = ctx.store.remove_spool_sync_cursor(spool);
+) -> Result<(), NodeError> {
+
+    ctx.store
+        .clear_all_pending_repairs(spool)
+        .map_err(|e| NodeError::Store(format!("clear_all_pending_repairs({spool}): {e}")))?;
+
+    ctx.store
+        .clear_all_pending_recoveries(spool)
+        .map_err(|e| NodeError::Store(format!("clear_all_pending_recoveries({spool}): {e}")))?;
+
+    ctx.store
+        .remove_spool_sync_cursor(spool)
+        .map_err(|e| NodeError::Store(format!("remove_spool_sync_cursor({spool}): {e}")))?;
+
+    Ok(())
 }
 
 fn purge_locked_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
 ) -> Result<(), NodeError> {
+
     ctx.store
         .delete_all_slices_for_spool(spool)
-        .map_err(|error| NodeError::Store(format!("delete_all_slices_for_spool({spool}): {error}")))?;
-    reset_spool_task_state(ctx, spool);
+        .map_err(|e| NodeError::Store(format!("delete_all_slices_for_spool({spool}): {e}")))?;
+
+    reset_spool_state(ctx, spool)?;
+
     ctx.store
         .remove_spool_state(spool)
-        .map_err(|error| NodeError::Store(format!("remove_spool_state({spool}): {error}")))
+        .map_err(|e| NodeError::Store(format!("remove_spool_state({spool}): {e}")))?;
+
+    Ok(())
 }
 
-fn retention_expired(
+fn check_expiry(
     locked_epoch: EpochNumber,
     current_epoch: EpochNumber,
     retention_epochs: u64,
 ) -> bool {
-    current_epoch.0.saturating_sub(locked_epoch.0) >= retention_epochs
+    current_epoch
+        .saturating_sub(locked_epoch)
+        .as_u64() >= retention_epochs
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tape_core::erasure::SPOOL_COUNT;
     use tape_core::spooler::{SpoolAssignment, SpoolIndex};
     use tape_core::system::{CommitteeMember, EpochPhase};
-    use tape_core::types::{EpochNumber, NodeId};
+    use tape_core::types::EpochNumber;
     use tape_core::types::coin::{Coin, TAPE};
+    use tape_core::types::NodeId;
     use tape_protocol::ProtocolState;
     use tape_store::ops::SpoolOps;
-    use tape_store::types::SpoolStatus;
-    use tokio::time::timeout;
+    use tape_store::types::{SpoolState, SpoolStatus};
     use tokio_util::sync::CancellationToken;
 
     use super::SpoolManager;
     use crate::config::SpoolManagerConfig;
-    use crate::context::test_utils::{TestContext, test_context};
+    use crate::context::test_utils::test_context;
+    use crate::features::spool::types::{Action, SyncResult, TaskDone, TaskResult};
+    use tape_core::erasure::SPOOL_COUNT;
 
     const EPOCH: EpochNumber = EpochNumber(2);
 
@@ -565,49 +541,80 @@ mod tests {
         state
     }
 
-    async fn wait_all_active(
-        ctx: &TestContext,
-        spools: &[SpoolIndex],
-    ) {
-        timeout(Duration::from_secs(1), async {
-            loop {
-                let states = ctx.store.iter_all_spools().expect("iter_all_spools");
-                let active = states
-                    .iter()
-                    .filter(|(spool, state)| spools.contains(spool) && state.status == SpoolStatus::Active)
-                    .count();
-
-                if active == spools.len() {
-                    return;
-                }
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("all owned spools become active");
-    }
-
-    #[tokio::test]
-    async fn backfills_pending() {
+    #[test]
+    fn advance_creates_sync_state_for_new_spool() {
         let ctx = test_context();
-        let spools: Vec<SpoolIndex> = (0..6).collect();
-        ctx.set_state(owned_state(&spools)).expect("set state");
+        ctx.set_state(owned_state(&[5])).unwrap();
 
-        let cancel = CancellationToken::new();
         let manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig {
-                max_parallel_spools: 2,
-                ..SpoolManagerConfig::default()
-            },
-            cancel.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
         );
-        let task = tokio::spawn(manager.run());
 
-        wait_all_active(&ctx, &spools).await;
+        manager.advance(EPOCH).unwrap();
 
-        cancel.cancel();
-        task.await.expect("manager task").expect("manager run");
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Sync);
+        assert_eq!(state.epoch, EPOCH);
+    }
+
+    #[test]
+    fn next_action_prefers_sync_then_lowest_spool() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(7, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .unwrap();
+        ctx.store
+            .set_spool_state(6, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .unwrap();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .unwrap();
+
+        let manager = SpoolManager::new(
+            ctx,
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        assert_eq!(
+            manager.next_action(EPOCH).unwrap(),
+            Some(Action::Sync {
+                spool: 5,
+                epoch: EPOCH,
+            })
+        );
+    }
+
+    #[test]
+    fn handle_task_done_advances_state() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .unwrap();
+
+        let mut manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Sync {
+                        spool: 5,
+                        epoch: EPOCH,
+                    },
+                    TaskResult::Sync(SyncResult::Done { synced: 3 }),
+                ),
+                EPOCH,
+            )
+            .unwrap();
+
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Scan);
+        assert_eq!(state.epoch, EPOCH);
     }
 }
