@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use tape_node2::config::{AppConfig, NodeConfig, default_config_path};
+use tape_node2::core::limits::check_fd_limit;
 use tape_node2::runtime::{build_runtime, init_tracing, run_application};
 
 #[derive(Parser)]
@@ -15,6 +16,8 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    check_fd_limit();
+
     if let Err(error) = init_tracing() {
         eprintln!("tracing initialization failed: {error}");
         return ExitCode::FAILURE;

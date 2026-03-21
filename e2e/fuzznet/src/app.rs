@@ -16,6 +16,7 @@ pub enum Command {
 pub struct NodeSnapshot {
     pub id: usize,
     pub is_running: bool,
+    pub http_healthy: Option<bool>,
     pub sync_bytes: u64,
     pub repair_bytes: u64,
     pub recovery_bytes: u64,
@@ -59,6 +60,7 @@ pub struct PollSnapshot {
     pub node_count: usize,
     pub tracked_node_count: usize,
     pub dead_node_count: usize,
+    pub http_unhealthy_count: usize,
     pub epoch_duration_history: Vec<u64>,
     pub total_store_history: Vec<u64>,
     pub repair_bw_history: Vec<u64>,
@@ -106,6 +108,7 @@ impl Default for PollSnapshot {
             node_count: 0,
             tracked_node_count: 0,
             dead_node_count: 0,
+            http_unhealthy_count: 0,
             epoch_duration_history: Vec::new(),
             total_store_history: Vec::new(),
             repair_bw_history: Vec::new(),

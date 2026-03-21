@@ -15,6 +15,7 @@ use tape_store::MemoryStore;
 use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
+use tracing::{info, warn};
 
 use crate::app::{
     NodeSnapshot, PollSnapshot, TrackSnapshot, TrackStatus,
@@ -31,6 +32,10 @@ pub enum PollerUpdate {
         NodeRuntimeStatus,
     ),
     RemoveNode(usize),
+    NodeHttpStatus {
+        id: usize,
+        healthy: bool,
+    },
     StakeFuzzStatus {
         enabled: bool,
         succeeded: u64,
@@ -86,6 +91,7 @@ struct TrackedNode {
     prev_upload: u64,
     prev_events: u64,
     pool_stake: u64,
+    http_healthy: Option<bool>,
     event_history: Vec<u64>,
     node_event_accum: u64,
 }
@@ -213,12 +219,25 @@ async fn poller_task(
                             prev_upload: 0,
                             prev_events: 0,
                             pool_stake: 0,
+                            http_healthy: None,
                             event_history: Vec::new(),
                             node_event_accum: 0,
                         });
                     }
                     Some(PollerUpdate::RemoveNode(id)) => {
                         state.nodes.retain(|n| n.id != id);
+                    }
+                    Some(PollerUpdate::NodeHttpStatus { id, healthy }) => {
+                        if let Some(node) = state.nodes.iter_mut().find(|n| n.id == id) {
+                            if node.http_healthy != Some(healthy) {
+                                if healthy {
+                                    info!(id, "node HTTP health recovered");
+                                } else {
+                                    warn!(id, "node HTTP health probe failed");
+                                }
+                            }
+                            node.http_healthy = Some(healthy);
+                        }
                     }
                     Some(PollerUpdate::StakeFuzzStatus { enabled, succeeded, failed }) => {
                         state.stake_fuzz_enabled = enabled;
@@ -413,6 +432,7 @@ async fn poll_once(
         let mut ns = NodeSnapshot {
             id: tracked.id,
             is_running,
+            http_healthy: if is_running { tracked.http_healthy } else { None },
             sync_bytes: sync,
             repair_bytes: repair,
             recovery_bytes: recovery,
@@ -431,6 +451,10 @@ async fn poll_once(
 
     let tracked_node_count = state.nodes.len();
     let dead_node_count = tracked_node_count.saturating_sub(running_node_count);
+    let http_unhealthy_count = node_snapshots
+        .iter()
+        .filter(|node| node.is_running && matches!(node.http_healthy, Some(false)))
+        .count();
 
     state.sync_accum += total_sync_delta;
     state.repair_accum += total_repair_delta;
@@ -497,6 +521,7 @@ async fn poll_once(
         node_count: running_node_count,
         tracked_node_count,
         dead_node_count,
+        http_unhealthy_count,
         epoch_duration_history: state.epoch_duration_history.clone(),
         total_store_history: state.total_store_history.clone(),
         repair_bw_history: state.repair_bw_history.clone(),

@@ -31,6 +31,7 @@ fn install_panic_hook() {
 }
 
 fn main() {
+    tape_node2::core::limits::check_fd_limit();
     install_panic_hook();
 
     let histogram = LogHistogram::new();

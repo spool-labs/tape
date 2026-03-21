@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rand::RngCore;
+use reqwest::Client;
 use rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
@@ -24,6 +25,7 @@ use tape_core::types::network::NetworkAddress;
 use tape_core::types::BasisPoints;
 use tape_e2e_simnet::tls::pick_bind;
 use tape_e2e_simnet::{ChainFixture, NodeRuntimeMode, TestNode};
+use tape_protocol::api::HEALTH_PATH;
 use tape_sdk::{TapeKey, Tapedrive, TapedriveError};
 
 use tokio::sync::mpsc;
@@ -42,6 +44,8 @@ const UPLOAD_MAX_RETRIES: u32 = 8;
 const UPLOAD_RETRY_BASE_MS: u64 = 500;
 const UPLOAD_RETRY_MAX_MS: u64 = 30_000;
 const UPLOAD_STALL_THRESHOLD_SECS: u64 = 20;
+const HTTP_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const HTTP_HEALTH_TIMEOUT: Duration = Duration::from_millis(750);
 
 enum UploadResult {
     AttemptStarted {
@@ -152,6 +156,12 @@ async fn async_run(
 
     let mut epoch_interval = tokio::time::interval(Duration::from_secs(2));
     let mut status_interval = tokio::time::interval(Duration::from_millis(250));
+    let mut health_interval = tokio::time::interval(HTTP_HEALTH_POLL_INTERVAL);
+    health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let http_client = Client::builder()
+        .timeout(HTTP_HEALTH_TIMEOUT)
+        .build()
+        .expect("build fuzznet health client");
 
     loop {
         tokio::select! {
@@ -358,6 +368,9 @@ async fn async_run(
                     next_retry_in_ms: state.upload_next_retry_in_ms,
                     retry_in_progress: state.upload_retry_in_progress,
                 });
+            }
+            _ = health_interval.tick() => {
+                state.poll_http_health(&http_client).await;
             }
         }
     }
@@ -726,6 +739,40 @@ impl SimnetState {
                 .with_context(|| format!("stop node {id}"))?;
         }
         Ok(())
+    }
+
+    async fn poll_http_health(&self, client: &Client) {
+        let mut probes = JoinSet::new();
+
+        for node in &self.nodes {
+            if !node.is_running() {
+                continue;
+            }
+
+            let id = node.id();
+            let url = format!("{}{}", node.base_url(), HEALTH_PATH);
+            let client = client.clone();
+
+            probes.spawn(async move {
+                let healthy = match client.get(url).send().await {
+                    Ok(response) => response.status().is_success(),
+                    Err(_) => false,
+                };
+                (id, healthy)
+            });
+        }
+
+        while let Some(result) = probes.join_next().await {
+            match result {
+                Ok((id, healthy)) => {
+                    self.poller
+                        .send(PollerUpdate::NodeHttpStatus { id, healthy });
+                }
+                Err(error) => {
+                    tracing::warn!("node health probe join failed: {error}");
+                }
+            }
+        }
     }
 
     fn refresh_upload_retry_countdown(&mut self) {

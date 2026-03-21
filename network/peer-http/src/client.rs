@@ -72,13 +72,25 @@ fn resolve(scheme: &str, pm: &PeerManager, node: NodeId) -> Result<String, ApiEr
 }
 
 fn map_reqwest(e: reqwest::Error) -> ApiError {
+    let msg = error_chain(&e);
     if e.is_timeout() {
         ApiError::Timeout
     } else if e.is_connect() {
-        ApiError::ConnectionFailed(e.to_string())
+        ApiError::ConnectionFailed(msg)
     } else {
-        ApiError::Other(e.to_string())
+        ApiError::Other(msg)
     }
+}
+
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut msg = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
 }
 
 async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiError> {

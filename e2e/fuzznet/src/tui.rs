@@ -168,9 +168,10 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         Span::styled(" TAPEDRIVE", Style::default().fg(Color::White)),
         Span::styled(
             format!(
-                "  Nodes: {}  Dead: {}  Stake: {}  C[{}/{}/{}]",
+                "  Nodes: {}  Dead: {}  Http: {}  Stake: {}  C[{}/{}/{}]",
                 snap.node_count,
                 snap.dead_node_count,
+                snap.http_unhealthy_count,
                 format_tape(snap.total_stake),
                 snap.committee_prev_size,
                 snap.committee_size,
@@ -291,8 +292,8 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(format!(
-            " Nodes ({} up, {} dead) ",
-            snap.node_count, snap.dead_node_count
+            " Nodes ({} up, {} dead, {} http down) ",
+            snap.node_count, snap.dead_node_count, snap.http_unhealthy_count
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -311,11 +312,7 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
     let mut current_spans: Vec<Span> = Vec::new();
 
     let mut sorted: Vec<_> = snap.nodes.iter().collect();
-    sorted.sort_by(|a, b| {
-        b.is_running
-            .cmp(&a.is_running)
-            .then_with(|| b.pool_stake.cmp(&a.pool_stake))
-    });
+    sorted.sort_by_key(|ns| ns.id);
 
     let node_event_max = sorted
         .iter()
@@ -324,33 +321,60 @@ fn render_node_chips(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         .unwrap_or(0);
 
     for (i, ns) in sorted.iter().enumerate() {
-        let glyph = if ns.is_running { "\u{25a0}" } else { "\u{00d7}" };
-        let glyph_color = if ns.is_running {
-            node_color(ns.id + 1)
+        let http_down = ns.is_running && matches!(ns.http_healthy, Some(false));
+        let glyph = if !ns.is_running {
+            "\u{00d7}"
+        } else if http_down {
+            "!"
         } else {
+            "\u{25a0}"
+        };
+        let glyph_color = if !ns.is_running {
             Color::Red
-        };
-        let text_color = if ns.is_running {
-            Color::White
+        } else if http_down {
+            Color::Yellow
         } else {
-            Color::DarkGray
+            node_color(ns.id + 1)
         };
-        let stake = format_tape_fixed_width(ns.pool_stake, NODE_STAKE_WIDTH);
-        let chip_text = format!(
-            "{:>id_width$} [{:>spools_width$}] {:>stake_width$}",
-            ns.id,
-            ns.spool_count,
-            stake,
-            id_width = NODE_ID_WIDTH,
-            spools_width = NODE_SPOOL_WIDTH,
-            stake_width = NODE_STAKE_WIDTH,
-        );
-        let spark = render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH, node_event_max);
-        let pad_len = CHIP_WIDTH.saturating_sub(1 + chip_text.len() + 1 + spark.len());
+        let text_color = if !ns.is_running {
+            Color::DarkGray
+        } else if http_down {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+        let chip_text = if !ns.is_running {
+            format!("{:>id_width$} stopped", ns.id, id_width = NODE_ID_WIDTH)
+        } else if http_down {
+            format!("{:>id_width$} http down", ns.id, id_width = NODE_ID_WIDTH)
+        } else {
+            let stake = format_tape_fixed_width(ns.pool_stake, NODE_STAKE_WIDTH);
+            format!(
+                "{:>id_width$} [{:>spools_width$}] {:>stake_width$}",
+                ns.id,
+                ns.spool_count,
+                stake,
+                id_width = NODE_ID_WIDTH,
+                spools_width = NODE_SPOOL_WIDTH,
+                stake_width = NODE_STAKE_WIDTH,
+            )
+        };
+        let spark = if ns.is_running && !http_down {
+            render_node_sparkline(&ns.event_history, NODE_EVENT_SPARK_WIDTH, node_event_max)
+        } else {
+            Vec::new()
+        };
+        let pad_len = if ns.is_running && !http_down {
+            CHIP_WIDTH.saturating_sub(1 + chip_text.len() + 1 + spark.len())
+        } else {
+            CHIP_WIDTH.saturating_sub(1 + chip_text.len())
+        };
         current_spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
         current_spans.push(Span::styled(chip_text, Style::default().fg(text_color)));
-        current_spans.push(Span::raw(" "));
-        current_spans.extend_from_slice(&spark);
+        if ns.is_running && !http_down {
+            current_spans.push(Span::raw(" "));
+            current_spans.extend_from_slice(&spark);
+        }
         current_spans.push(Span::raw(" ".repeat(pad_len)));
 
         if (i + 1) % chips_per_row == 0 {

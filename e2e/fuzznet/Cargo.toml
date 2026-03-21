@@ -29,3 +29,4 @@ rpc-client.workspace = true
 rpc-litesvm.workspace = true
 tape-node2.workspace = true
 arc-swap = "1"
+reqwest.workspace = true

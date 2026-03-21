@@ -203,6 +203,12 @@ impl PeerManager {
                 PeerStatus::Healthy => true,
                 PeerStatus::Hostile => false,
                 PeerStatus::Down { failures, last_failure } => {
+                    tracing::warn!(
+                        node = node_id.0,
+                        failures,
+                        "peer is down with {failures} consecutive failures"
+                    );
+
                     let cooldown_secs = 1u64 << failures.min(6);
                     last_failure.elapsed().as_secs() >= cooldown_secs
                 }
