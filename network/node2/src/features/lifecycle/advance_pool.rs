@@ -34,9 +34,9 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 //       This happens if the phase hasn't reached Settling yet (we were
 //       scheduled too early) or if the epoch state is somehow wrong.
 //       Retry with backoff — the phase may advance soon.
-//    f. On NoRewards / RewardsOverflow → return Rejected.
-//       These indicate the node has no claimable rewards. The lifecycle
-//       worker marks AdvancePool as done and moves on.
+//    f. On NoRewards / RewardsOverflow / PoolAccountingFailed → stop retrying
+//       for this epoch. These are deterministic program failures, not
+//       transport/transient errors.
 //    g. On retriable errors → backoff and retry.
 //
 // Unlike SyncEpoch, AdvancePool has no preconditions beyond being in
@@ -68,8 +68,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 info!(epoch = epoch.0, "advance_pool: already advanced");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
-            TxOutcome::Program(err @ TapeError::NoRewards) => {
-                warn!(epoch = epoch.0, ?err, "advance_pool: no claimable rewards");
+            TxOutcome::Program(
+                err @ (
+                    TapeError::NoRewards
+                    | TapeError::RewardsOverflow
+                    | TapeError::PoolAccountingFailed
+                )
+            ) => {
+                warn!(epoch = epoch.0, ?err, "advance_pool: terminal program error");
                 return TaskDone::Done(Action::AdvancePool, epoch);
             }
             TxOutcome::Program(err) => {

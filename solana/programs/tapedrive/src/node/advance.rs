@@ -95,7 +95,10 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     node.latest_advance_epoch = current_epoch(epoch);
     node.pool
         .advance_epoch(current_epoch(epoch), rewards_owed)
-        .map_err(|_| ProgramError::Custom(1))?;
+        .map_err(|err| {
+            solana_program::msg!("advance_pool: pool accounting failed: {:?}", err);
+            TapeError::PoolAccountingFailed
+        })?;
 
     // Update history
 
@@ -137,7 +140,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

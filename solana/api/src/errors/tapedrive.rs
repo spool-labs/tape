@@ -70,7 +70,7 @@ pub enum TapeError {
     #[error("no commission")]
     NoCommission = 0x55,
 
-    // Staking (0x60-0x66)
+    // Staking (0x60-0x67)
     #[error("staking failed")]
     StakingFailed = 0x60,
     #[error("bad stake state")]
@@ -85,6 +85,8 @@ pub enum TapeError {
     EpochNotReached = 0x65,
     #[error("zero shares")]
     ZeroShares = 0x66,
+    #[error("pool accounting failed")]
+    PoolAccountingFailed = 0x67,
 
     // Commitment (0x70-0x74)
     #[error("bad proof")]
@@ -180,6 +182,7 @@ impl TapeError {
             Self::RateMissing => "Rate not found",
             Self::EpochNotReached => "Target epoch not reached",
             Self::ZeroShares => "Cannot operate on zero shares",
+            Self::PoolAccountingFailed => "Pool accounting failed during advance",
             Self::BadProof => "Invalid proof",
             Self::ListFull => "Blacklist is full",
             Self::InvalidCommitment => "Leaf hashes do not match commitment root",

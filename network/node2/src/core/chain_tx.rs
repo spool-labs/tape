@@ -59,6 +59,13 @@ mod tests {
     }
 
     #[test]
+    fn pool_accounting_failed_program_error() {
+        let err = RpcError::Transaction("custom program error: 0x67".to_string());
+        let outcome = classify_tx(Err(err));
+        assert!(matches!(outcome, TxOutcome::Program(TapeError::PoolAccountingFailed)));
+    }
+
+    #[test]
     fn transport_error() {
         let err = RpcError::Timeout(Duration::from_secs(5));
         let outcome = classify_tx(Err(err));
