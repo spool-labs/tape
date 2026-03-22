@@ -145,6 +145,7 @@ pub struct GcConfig {
     pub scan_interval: Duration,
     pub track_batch_size: usize,
     pub slice_batch_size: usize,
+    pub uncertified_retention_epochs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +213,7 @@ impl AppConfig {
                 scan_interval: Duration::from_secs(60),
                 track_batch_size: 256,
                 slice_batch_size: 256,
+                uncertified_retention_epochs: 2,
             },
         })
     }

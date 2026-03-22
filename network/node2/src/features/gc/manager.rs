@@ -163,6 +163,7 @@ mod tests {
             scan_interval: Duration::from_secs(60),
             track_batch_size: 2,
             slice_batch_size: 2,
+            uncertified_retention_epochs: 2,
         }
     }
 

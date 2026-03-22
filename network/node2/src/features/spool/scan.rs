@@ -4,7 +4,8 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_protocol::Api;
-use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::types::ObjectInfo;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -73,6 +74,18 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
+            // Skip uncertified tracks -- the uploader is responsible for
+            // completing the upload. Uncertified data may be partially
+            // distributed and cannot be repaired/recovered.
+            let is_certified = matches!(
+                ctx.store.get_object_info(*track_addr),
+                Ok(Some(ObjectInfo::Valid { certified_epoch: Some(_), .. }))
+            );
+
+            if !is_certified {
+                continue;
+            }
+
             // Check if slice exists locally.
             let has_slice = match ctx.store.has_slice(spool, *track_addr) {
                 Ok(has_slice) => has_slice,
@@ -106,7 +119,9 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_store::types::{Pubkey, TrackInfo};
+    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_store::ops::ObjectInfoOps;
+    use tape_store::types::{ObjectInfo, Pubkey, TrackInfo};
 
     use crate::context::test_utils::test_context;
 
@@ -149,14 +164,24 @@ mod tests {
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
+    fn certified(track_address: Pubkey) -> ObjectInfo {
+        ObjectInfo::Valid {
+            track_address,
+            registered_epoch: EpochNumber(1),
+            certified_epoch: Some(EpochNumber(2)),
+            slot: SlotNumber(10),
+        }
+    }
+
     #[tokio::test]
     async fn finds_gaps() {
         let ctx = test_context();
         let a = addr(1);
         let group = SpoolGroup::of(SPOOL);
 
-        // Track exists but no slice data.
+        // Certified track exists but no slice data.
         ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
@@ -183,11 +208,47 @@ mod tests {
         let group = SpoolGroup::of(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
 
         // Run scan twice — same result, no duplicates.
         let r1 = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         let r2 = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(r1, ScanResult::Done { gaps: 1 });
         assert_eq!(r2, ScanResult::Done { gaps: 1 });
+    }
+
+    #[tokio::test]
+    async fn skips_uncertified() {
+        let ctx = test_context();
+        let a = addr(1);
+        let group = SpoolGroup::of(SPOOL);
+
+        // Track exists, no slice, but NOT certified.
+        ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, ObjectInfo::Valid {
+            track_address: a,
+            registered_epoch: EpochNumber(1),
+            certified_epoch: None,
+            slot: SlotNumber(10),
+        }).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, ScanResult::Done { gaps: 0 });
+        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    #[tokio::test]
+    async fn scans_certified() {
+        let ctx = test_context();
+        let a = addr(1);
+        let group = SpoolGroup::of(SPOOL);
+
+        // Track exists, no slice, IS certified -> should be a gap.
+        ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, ScanResult::Done { gaps: 1 });
+        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }
 }

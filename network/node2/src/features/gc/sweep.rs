@@ -17,6 +17,7 @@ pub async fn sweep_epoch<Db: Store>(
     current_epoch: EpochNumber,
 ) -> Result<(), NodeError> {
     sweep_expired_tapes(store, config, current_epoch).await?;
+    sweep_uncertified_tracks(store, config, current_epoch).await?;
     sweep_orphan_tracks(store, config).await?;
     sweep_orphan_slices(store, config).await?;
     sweep_stale_recoveries(store).await?;
@@ -38,6 +39,46 @@ async fn sweep_expired_tapes<Db: Store>(
         if should_yield(index) {
             yield_now().await;
         }
+    }
+
+    Ok(())
+}
+
+async fn sweep_uncertified_tracks<Db: Store>(
+    store: &TapeStore<Db>,
+    config: &GcConfig,
+    current_epoch: EpochNumber,
+) -> Result<(), NodeError> {
+    let mut cursor = None;
+    let retention = config.uncertified_retention_epochs;
+
+    loop {
+        let tracks = store
+            .iter_tracks_from(cursor, track_batch_size(config))
+            .map_err(store_error)?;
+
+        if tracks.is_empty() {
+            break;
+        }
+
+        for (track, info) in &tracks {
+            let object = store.get_object_info(*track).map_err(store_error)?;
+
+            if let Some(ObjectInfo::Valid {
+                certified_epoch: None,
+                registered_epoch,
+                ..
+            }) = object
+            {
+                if current_epoch.saturating_sub(registered_epoch).as_u64() >= retention {
+                    cleanup_track_slices(store, *track, info.spool_group)?;
+                    delete_track_local(store, *track)?;
+                }
+            }
+        }
+
+        cursor = tracks.last().map(|(track, _)| *track);
+        yield_now().await;
     }
 
     Ok(())
@@ -214,6 +255,7 @@ mod tests {
             scan_interval: Duration::from_secs(60),
             track_batch_size: 2,
             slice_batch_size: 2,
+            uncertified_retention_epochs: 2,
         }
     }
 
@@ -406,5 +448,66 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn sweeps_stale_uncertified() {
+        let store = test_store();
+        let config = test_config();
+
+        let tape = Pubkey::new_unique();
+        let track_stale = Pubkey::new_unique();
+        let track_recent = Pubkey::new_unique();
+        let spool_group = SpoolGroup(1);
+        let spool_id = spool_group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
+            .unwrap();
+        store
+            .put_tape(tape, TapeInfo { end_epoch: EpochNumber(20) })
+            .unwrap();
+
+        // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2
+        store.put_track(track_stale, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track_stale,
+                ObjectInfo::Valid {
+                    track_address: track_stale,
+                    registered_epoch: EpochNumber(2),
+                    certified_epoch: None,
+                    slot: SlotNumber(10),
+                },
+            )
+            .unwrap();
+        store.put_slice(spool_id, track_stale, vec![1, 2, 3]).unwrap();
+
+        // Recent uncertified: registered epoch 4, current epoch 5 -> age 1 < threshold 2
+        store.put_track(track_recent, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track_recent,
+                ObjectInfo::Valid {
+                    track_address: track_recent,
+                    registered_epoch: EpochNumber(4),
+                    certified_epoch: None,
+                    slot: SlotNumber(40),
+                },
+            )
+            .unwrap();
+        store.put_slice(spool_id, track_recent, vec![4, 5, 6]).unwrap();
+
+        sweep_epoch(&store, &config, EpochNumber(5)).await.unwrap();
+
+        // Stale track should be gone
+        assert!(store.get_track(track_stale).unwrap().is_none());
+        assert!(store.get_object_info(track_stale).unwrap().is_none());
+        assert!(store.get_slice(spool_id, track_stale).unwrap().is_none());
+
+        // Recent track should remain
+        assert!(store.get_track(track_recent).unwrap().is_some());
+        assert!(store.get_object_info(track_recent).unwrap().is_some());
+        assert!(store.get_slice(spool_id, track_recent).unwrap().is_some());
     }
 }
