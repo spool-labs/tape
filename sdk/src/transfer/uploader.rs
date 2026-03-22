@@ -8,13 +8,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
-use tape_core::bft::min_correct;
+use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{SPOOL_GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_core::types::NodeId;
 use tape_crypto::Hash;
-use tape_protocol::api::{Api, SlicePayload, PutSliceReq};
-use tape_retry::{retry, RetryConfig};
+use tape_protocol::api::{Api, ApiError, SlicePayload, PutSliceReq};
+use tape_retry::{Retryable, retry_if, RetryConfig};
 use tape_protocol::ProtocolState;
 use solana_sdk::pubkey::Pubkey;
 use tokio::sync::Semaphore;
@@ -66,6 +66,7 @@ pub struct DistributedUploader {
 struct NodeUploadResult {
     stored: Vec<SpoolIndex>,
     failed: Vec<SpoolIndex>,
+    not_responsible: Vec<SpoolIndex>,
 }
 
 impl DistributedUploader {
@@ -149,6 +150,7 @@ impl DistributedUploader {
 
                     let mut stored = Vec::new();
                     let mut failed = Vec::new();
+                    let mut not_responsible = Vec::new();
 
                     for (global_spool, slice) in slices {
                         let payload = slice.to_payload();
@@ -158,24 +160,29 @@ impl DistributedUploader {
                             payload,
                         };
 
-                        if let Err(e) = retry(
+                        if let Err(e) = retry_if(
                             RetryConfig::ten(),
                             None,
                             || peer_client.put_slice(node_id, &req),
+                            |e: &ApiError| e.is_retryable(),
                         ).await {
                             warn!(
                                 slice = global_spool,
                                 node = %node_id,
                                 error = %e,
-                                "Slice upload failed after retries, left for recovery"
+                                "Slice upload failed, left for recovery"
                             );
-                            failed.push(global_spool);
+                            if matches!(e, ApiError::NotResponsible) {
+                                not_responsible.push(global_spool);
+                            } else {
+                                failed.push(global_spool);
+                            }
                         } else {
                             stored.push(global_spool);
                         }
                     }
 
-                    Ok::<_, UploadError>(NodeUploadResult { stored, failed })
+                    Ok::<_, UploadError>(NodeUploadResult { stored, failed, not_responsible })
                 }
             })
             .collect();
@@ -188,6 +195,7 @@ impl DistributedUploader {
 
         // Count members that stored all assigned slices and total landed slices.
         let mut total_failed_slices = 0;
+        let mut not_responsible_count = 0usize;
         let mut member_failures = 0;
         let mut fully_successful_members = 0;
         let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
@@ -196,8 +204,9 @@ impl DistributedUploader {
             match result {
                 Ok(node) => {
                     total_failed_slices += node.failed.len();
+                    not_responsible_count += node.not_responsible.len();
                     stored_slices.extend(node.stored.iter().copied());
-                    if node.failed.is_empty() {
+                    if node.failed.is_empty() && node.not_responsible.is_empty() {
                         fully_successful_members += 1;
                     }
                 }
@@ -205,6 +214,15 @@ impl DistributedUploader {
                     member_failures += 1;
                 }
             }
+        }
+
+        // If more than f slices were rejected as NotResponsible, the epoch
+        // has changed. A Byzantine minority (at most f nodes) cannot fake this.
+        let f = max_faulty(SPOOL_GROUP_SIZE as u64) as usize;
+        if not_responsible_count > f {
+            return Err(UploadError::EpochChanged {
+                not_responsible: not_responsible_count,
+            });
         }
 
         // Check quorum - need 2f+1 fully successful group members and 2f+1 landed slices.

@@ -63,6 +63,9 @@ pub enum UploadError {
 
     #[error("invalid slice count: expected {expected}, got {got}")]
     InvalidSliceCount { expected: usize, got: usize },
+
+    #[error("epoch changed during upload: {not_responsible} slices rejected")]
+    EpochChanged { not_responsible: usize },
 }
 
 /// Errors that can occur during download.

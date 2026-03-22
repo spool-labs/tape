@@ -273,13 +273,35 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     )
     .await?;
 
-    upload_registered_track(
-        client,
-        registered.address,
-        registered.track.data.spool_group(),
-        plan.slices,
-    )
-    .await?;
+    const MAX_EPOCH_RETRIES: u32 = 3;
+    let mut epoch_attempts = 0u32;
+
+    loop {
+        match upload_registered_track(
+            client,
+            registered.address,
+            registered.track.data.spool_group(),
+            plan.slices.clone(),
+        )
+        .await
+        {
+            Ok(()) => break,
+            Err(TapedriveError::Upload(UploadError::EpochChanged { not_responsible })) => {
+                epoch_attempts += 1;
+                if epoch_attempts >= MAX_EPOCH_RETRIES {
+                    return Err(TapedriveError::Upload(UploadError::EpochChanged {
+                        not_responsible,
+                    }));
+                }
+                tracing::warn!(
+                    attempt = epoch_attempts,
+                    not_responsible,
+                    "epoch changed during upload, re-bootstrapping"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     certify_registered_track(
         client,
