@@ -24,6 +24,7 @@ pub enum SyncResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanResult {
     Done { gaps: usize },
+    Retry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

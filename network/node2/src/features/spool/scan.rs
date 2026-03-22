@@ -4,13 +4,13 @@ use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
 use tape_protocol::Api;
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
-use tape_store::types::ObjectInfo;
+use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
+use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::ScanResult;
 
 // Purpose: Audit local storage to find missing slices that need repair.
@@ -44,6 +44,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let mut cursor = None;
     let mut gaps = 0usize;
+    let mut had_error = false;
 
     let group = SpoolGroup::of(spool);
     let batch_size = config.scan_batch_size.max(1);
@@ -59,7 +60,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         {
             Ok(tracks) => tracks,
             Err(error) => {
-                debug!(spool, %error, "scan iter_tracks_from failed");
+                warn!(spool, %error, "scan iter_tracks_from failed");
+                had_error = true;
                 break;
             }
         };
@@ -74,16 +76,19 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            // Skip uncertified tracks -- the uploader is responsible for
-            // completing the upload. Uncertified data may be partially
-            // distributed and cannot be repaired/recovered.
-            let is_certified = matches!(
-                ctx.store.get_object_info(*track_addr),
-                Ok(Some(ObjectInfo::Valid { certified_epoch: Some(_), .. }))
-            );
-
-            if !is_certified {
-                continue;
+            match track_requirement(ctx.store.as_ref(), *track_addr) {
+                Ok(TrackRequirement::Required) => {}
+                Ok(TrackRequirement::NotRequired) => continue,
+                Ok(TrackRequirement::Inconsistent) => {
+                    warn!(spool, track = %track_addr, "scan: track exists but ObjectInfo missing");
+                    had_error = true;
+                    continue;
+                }
+                Err(error) => {
+                    warn!(spool, track = %track_addr, %error, "scan track_requirement failed");
+                    had_error = true;
+                    continue;
+                }
             }
 
             // Check if slice exists locally.
@@ -91,6 +96,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 Ok(has_slice) => has_slice,
                 Err(error) => {
                     warn!(spool, track = %track_addr, %error, "scan has_slice failed");
+                    had_error = true;
                     continue;
                 }
             };
@@ -101,6 +107,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
             if let Err(error) = ctx.store.add_pending_repair(spool, *track_addr) {
                 warn!(spool, track = %track_addr, %error, "scan add_pending_repair failed");
+                had_error = true;
                 continue;
             }
 
@@ -112,7 +119,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .map(|(track_addr, _)| *track_addr);
     }
 
-    ScanResult::Done { gaps }
+    if had_error {
+        ScanResult::Retry
+    } else {
+        ScanResult::Done { gaps }
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +169,7 @@ mod tests {
         let group = SpoolGroup::of(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
 
         let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;

@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::spool::types::{Action, RecoverResult, RepairResult, ScanResult, TaskDone, TaskResult};
+use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
 use crate::features::spool::{recover, repair, scan, sync};
 
 pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -146,16 +146,26 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             if state.epoch != epoch {
                 continue;
             }
-    
+
             if self.is_running(spool) {
                 continue;
             }
-    
+
             if let Some(action) = action_for_status(spool, epoch, state.status) {
                 return Ok(Some(action));
             }
+
+            // Active spools: check if pending work appeared (e.g. from CertifyTrack hook)
+            if state.status == SpoolStatus::Active {
+                let (has_repair, has_recovery) = has_pending_work(&self.context.store, spool)?;
+                if has_repair {
+                    return Ok(Some(Action::Repair { spool, epoch }));
+                } else if has_recovery {
+                    return Ok(Some(Action::Recover { spool, epoch }));
+                }
+            }
         }
-    
+
         Ok(None)
     }
 
@@ -173,6 +183,29 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             let spool = action.spool();
             if self.is_running(spool) {
                 continue;
+            }
+
+            // If the spool is Active but we're about to run work, persist the transition.
+            if let Some(mut state) = self
+                .context
+                .store
+                .get_spool_state(spool)
+                .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?
+            {
+                if state.status == SpoolStatus::Active {
+                    let next_status = match action {
+                        Action::Repair { .. } => SpoolStatus::Repair,
+                        Action::Recover { .. } => SpoolStatus::Recover,
+                        _ => state.status,
+                    };
+                    if next_status != state.status {
+                        state.set_status(next_status);
+                        self.context
+                            .store
+                            .set_spool_state(spool, state)
+                            .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
+                    }
+                }
             }
 
             let ctx = self.context.clone();
@@ -242,7 +275,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     return Ok(());
                 };
 
-                let Some(next_status) = transition_status(action, result) else {
+                let Some(next_status) = transition_status(&self.context.store, spool, action, result)? else {
                     warn!(?action, ?result, "spool: invalid task completion");
                     return Ok(());
                 };
@@ -371,6 +404,21 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 }
 
 
+pub(crate) fn has_pending_work<Db: Store>(
+    store: &tape_store::TapeStore<Db>,
+    spool: SpoolIndex,
+) -> Result<(bool, bool), NodeError> {
+    let has_repair = !store
+        .iter_pending_repairs(spool, 1)
+        .map_err(|e| NodeError::Store(format!("iter_pending_repairs({spool}): {e}")))?
+        .is_empty();
+    let has_recovery = !store
+        .iter_pending_recoveries(spool, 1)
+        .map_err(|e| NodeError::Store(format!("iter_pending_recoveries({spool}): {e}")))?
+        .is_empty();
+    Ok((has_repair, has_recovery))
+}
+
 fn action_for_status(
     spool: SpoolIndex,
     epoch: EpochNumber,
@@ -396,47 +444,44 @@ fn status_priority(status: SpoolStatus) -> u8 {
     }
 }
 
-fn transition_status(action: Action, result: TaskResult) -> Option<SpoolStatus> {
+fn transition_status<Db: Store>(
+    store: &tape_store::TapeStore<Db>,
+    spool: SpoolIndex,
+    action: Action,
+    result: TaskResult,
+) -> Result<Option<SpoolStatus>, NodeError> {
     match (action, result) {
-        // Sync always goes to Scan, even if it reports 0 synced, because we may still need to scan
-        // for gaps.
-        (Action::Sync { .. }, TaskResult::Sync(_)) => {
-            Some(SpoolStatus::Scan)
-        }
+        (Action::Sync { .. }, TaskResult::Sync(_)) => Ok(Some(SpoolStatus::Scan)),
 
-        // If a scan reports 0 gaps, we can go straight to Active. Otherwise, we need to go to
-        // Repair first.
-        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Done { gaps: 0 })) => {
-            Some(SpoolStatus::Active)
-        }
+        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Retry)) => Ok(Some(SpoolStatus::Scan)),
 
-        // If a scan reports gaps, we need to go to Repair.
         (Action::Scan { .. }, TaskResult::Scan(ScanResult::Done { .. })) => {
-            Some(SpoolStatus::Repair)
+            reconcile_terminal(store, spool).map(Some)
         }
 
-        // If a repair reports 0 unrepairable slices, we can go straight to Active
-        (Action::Repair { .. }, TaskResult::Repair(RepairResult::Done { unrepairable: 0 })) => {
-            Some(SpoolStatus::Active)
+        (Action::Repair { .. }, TaskResult::Repair(_)) => {
+            reconcile_terminal(store, spool).map(Some)
         }
 
-        // If a repair reports unrepairable slices, we need to go to Recover.
-        (Action::Repair { .. }, TaskResult::Repair(RepairResult::Done { .. })) => {
-            Some(SpoolStatus::Recover)
+        (Action::Recover { .. }, TaskResult::Recover(_)) => {
+            reconcile_terminal(store, spool).map(Some)
         }
 
-        // If a recover reports 0 remaining slices, we can go to Active
-        (Action::Recover { .. }, TaskResult::Recover(RecoverResult::Done { remaining: 0 })) => {
-            Some(SpoolStatus::Active)
-        }
+        _ => Ok(None),
+    }
+}
 
-        // If a recover reports remaining slices, we stay in Recover to try again later
-        (Action::Recover { .. }, TaskResult::Recover(RecoverResult::Done { .. })) => {
-            Some(SpoolStatus::Recover)
-        }
-
-        // Any other combination is invalid
-        _ => None,
+fn reconcile_terminal<Db: Store>(
+    store: &tape_store::TapeStore<Db>,
+    spool: SpoolIndex,
+) -> Result<SpoolStatus, NodeError> {
+    let (has_repair, has_recovery) = has_pending_work(store, spool)?;
+    if has_repair {
+        Ok(SpoolStatus::Repair)
+    } else if has_recovery {
+        Ok(SpoolStatus::Recover)
+    } else {
+        Ok(SpoolStatus::Active)
     }
 }
 
@@ -520,8 +565,9 @@ mod tests {
     use super::SpoolManager;
     use crate::config::SpoolManagerConfig;
     use crate::context::test_utils::test_context;
-    use crate::features::spool::types::{Action, SyncResult, TaskDone, TaskResult};
+    use crate::features::spool::types::{Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult};
     use tape_core::erasure::SPOOL_COUNT;
+    use tape_store::types::Pubkey;
 
     const EPOCH: EpochNumber = EpochNumber(2);
 
@@ -616,5 +662,141 @@ mod tests {
         let state = ctx.store.get_spool_state(5).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Scan);
         assert_eq!(state.epoch, EPOCH);
+    }
+
+    #[test]
+    fn active_pending_repair() {
+        let ctx = test_context();
+        ctx.set_state(owned_state(&[5])).unwrap();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+
+        let manager = SpoolManager::new(ctx, SpoolManagerConfig::default(), CancellationToken::new());
+        assert_eq!(
+            manager.next_action(EPOCH).unwrap(),
+            Some(Action::Repair { spool: 5, epoch: EPOCH })
+        );
+    }
+
+    #[test]
+    fn active_pending_recovery() {
+        let ctx = test_context();
+        ctx.set_state(owned_state(&[5])).unwrap();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_recovery(5, Pubkey([1; 32])).unwrap();
+
+        let manager = SpoolManager::new(ctx, SpoolManagerConfig::default(), CancellationToken::new());
+        assert_eq!(
+            manager.next_action(EPOCH).unwrap(),
+            Some(Action::Recover { spool: 5, epoch: EPOCH })
+        );
+    }
+
+    #[test]
+    fn reconcile_stays_repair_with_pending() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Scan, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+
+        let mut manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Scan { spool: 5, epoch: EPOCH },
+                    TaskResult::Scan(ScanResult::Done { gaps: 0 }),
+                ),
+                EPOCH,
+            )
+            .unwrap();
+
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Repair);
+    }
+
+    #[test]
+    fn scan_retry_stays_scan() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Scan, EPOCH))
+            .unwrap();
+
+        let mut manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Scan { spool: 5, epoch: EPOCH },
+                    TaskResult::Scan(ScanResult::Retry),
+                ),
+                EPOCH,
+            )
+            .unwrap();
+
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Scan);
+    }
+
+    #[test]
+    fn reconcile_active_when_empty() {
+        let ctx = test_context();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .unwrap();
+
+        let mut manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Repair { spool: 5, epoch: EPOCH },
+                    TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
+                ),
+                EPOCH,
+            )
+            .unwrap();
+
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn try_spawn_persists_repair_before_worker() {
+        let ctx = test_context();
+        ctx.set_state(owned_state(&[5])).unwrap();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+
+        let mut manager = SpoolManager::new(
+            ctx.clone(),
+            SpoolManagerConfig::default(),
+            CancellationToken::new(),
+        );
+
+        manager.try_spawn(EPOCH).unwrap();
+
+        let state = ctx.store.get_spool_state(5).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Repair);
+        assert!(manager.is_running(5));
     }
 }

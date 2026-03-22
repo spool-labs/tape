@@ -1,10 +1,11 @@
 use store::Store;
 use tape_api::event::TrackRegistered;
+use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::snapshot::ReplayableEvent;
 use tape_core::spooler::SpoolGroup;
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
-use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+use tape_store::types::{ObjectInfo, Pubkey, SpoolStatus, TapeInfo, TrackInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -129,6 +130,47 @@ fn set_certified<Db: Store>(
                 },
             )
             .map_err(store_error)?;
+
+        enqueue_certified_repairs(store, track)?;
+    }
+
+    Ok(())
+}
+
+fn enqueue_certified_repairs<Db: Store>(
+    store: &TapeStore<Db>,
+    track: Pubkey,
+) -> Result<(), NodeError> {
+    let Some(track_info) = store.get_track(track).map_err(store_error)? else {
+        return Ok(());
+    };
+
+    let group = track_info.spool_group;
+
+    for slice in 0..SPOOL_GROUP_SIZE {
+        let spool = group.spool_at(slice);
+
+        let Some(mut state) = store.get_spool_state(spool).map_err(store_error)? else {
+            continue;
+        };
+
+        if state.is_locked() {
+            continue;
+        }
+
+        if store.has_slice(spool, track).map_err(store_error)? {
+            continue;
+        }
+
+        store.add_pending_repair(spool, track).map_err(store_error)?;
+
+        // Only transition Active → Repair. Active means no worker is running,
+        // so this is safe. For other states, the in-flight worker will see the
+        // pending entry via reconcile_terminal when it completes.
+        if state.status == SpoolStatus::Active {
+            state.set_status(SpoolStatus::Repair);
+            store.set_spool_state(spool, state).map_err(store_error)?;
+        }
     }
 
     Ok(())
@@ -165,8 +207,8 @@ mod tests {
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits};
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, SliceOps, TapeOps, TrackOps};
-    use tape_store::types::{ObjectInfo, Pubkey, TapeInfo, TrackInfo};
+    use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps};
+    use tape_store::types::{ObjectInfo, Pubkey, SpoolState, SpoolStatus, TapeInfo, TrackInfo};
     use tape_store::TapeStore;
 
     use super::apply_slot;
@@ -448,5 +490,120 @@ mod tests {
         assert!(store.get_tape(other_tape).unwrap().is_some());
         assert!(store.get_track(track_other).unwrap().is_some());
         assert!(store.get_object_info(track_other).unwrap().is_some());
+    }
+
+    #[test]
+    fn certify_enqueues_repair() {
+        let store = test_store();
+        let slot = SlotNumber(10);
+        let track = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(7);
+        let spool_id = spool_group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
+            .unwrap();
+        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+
+        apply_slot(
+            &store,
+            slot,
+            &[ReplayableEvent::CertifyTrack {
+                track: track.0,
+                epoch: EpochNumber(4),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.has_pending_repair(spool_id, track).unwrap());
+        let state = store.get_spool_state(spool_id).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Repair);
+    }
+
+    #[test]
+    fn certify_noop_when_slice_present() {
+        let store = test_store();
+        let slot = SlotNumber(10);
+        let track = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(7);
+        let spool_id = spool_group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
+            .unwrap();
+        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+        store.put_slice(spool_id, track, vec![0xAB; 64]).unwrap();
+
+        apply_slot(
+            &store,
+            slot,
+            &[ReplayableEvent::CertifyTrack {
+                track: track.0,
+                epoch: EpochNumber(4),
+            }],
+        )
+        .unwrap();
+
+        assert!(!store.has_pending_repair(spool_id, track).unwrap());
+        assert_eq!(
+            store.get_spool_state(spool_id).unwrap().unwrap().status,
+            SpoolStatus::Active
+        );
+    }
+
+    #[test]
+    fn certify_noop_when_not_owner() {
+        let store = test_store();
+        let slot = SlotNumber(10);
+        let track = Pubkey::from(SolanaPubkey::new_unique());
+        let tape = Pubkey::from(SolanaPubkey::new_unique());
+        let spool_group = SpoolGroup::from(7);
+
+        store.put_track(track, track_info(tape, spool_group)).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+
+        apply_slot(
+            &store,
+            slot,
+            &[ReplayableEvent::CertifyTrack {
+                track: track.0,
+                epoch: EpochNumber(4),
+            }],
+        )
+        .unwrap();
     }
 }

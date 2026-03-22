@@ -50,9 +50,16 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         // We don't return early here because we still want to submit the SyncEpoch transaction
     }
 
-    if let Readiness::NotReady { ready, total } = check_readiness(&ctx) {
-        debug!(epoch = epoch.0, ready, total, "sync_epoch: not ready to sync");
-        return TaskDone::Rejected(Action::SyncEpoch, epoch);
+    match check_readiness(&ctx) {
+        Ok(Readiness::NotReady { ready, total }) => {
+            debug!(epoch = epoch.0, ready, total, "sync_epoch: not ready to sync");
+            return TaskDone::Rejected(Action::SyncEpoch, epoch);
+        }
+        Err(error) => {
+            debug!(epoch = epoch.0, %error, "sync_epoch: readiness check failed");
+            return TaskDone::Rejected(Action::SyncEpoch, epoch);
+        }
+        Ok(Readiness::Ready) => {}
     }
 
     let mut backoff = Backoff::new(RetryConfig::infinite());

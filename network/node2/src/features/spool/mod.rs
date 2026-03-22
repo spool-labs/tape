@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod policy;
 pub mod recover;
 pub mod repair;
 pub mod scan;

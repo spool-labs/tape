@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
+use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::repair::group_peers;
 use crate::features::spool::types::RecoverResult;
 
@@ -125,11 +126,31 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 continue;
             }
 
-            let Some(track_info) = ctx.store.get_track(track_addr).ok().flatten() else {
-                let _ = ctx.store.remove_pending_recovery(spool, track_addr);
-                made_progress = true;
-                continue;
+            let track_info = match ctx.store.get_track(track_addr) {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+                    made_progress = true;
+                    continue;
+                }
+                Err(error) => {
+                    warn!(spool, track = %track_addr, %error, "get_track failed");
+                    continue;
+                }
             };
+
+            match track_requirement(ctx.store.as_ref(), track_addr) {
+                Ok(TrackRequirement::Required) => {}
+                Ok(TrackRequirement::NotRequired) => {
+                    let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+                    made_progress = true;
+                    continue;
+                }
+                Ok(TrackRequirement::Inconsistent) | Err(_) => {
+                    warn!(spool, track = %track_addr, "recover: skipping, state inconsistent or unreadable");
+                    continue;
+                }
+            }
 
             let profile = track_info.profile();
             if !profile.is_clay() || track_info.stripe_size == 0 {
@@ -299,9 +320,10 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
-    use tape_store::types::{SpoolState, SpoolStatus, TrackInfo};
+    use tape_store::ops::ObjectInfoOps;
+    use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus, TrackInfo};
 
     use crate::context::test_utils::{test_context, test_context_with_api};
 
@@ -328,6 +350,15 @@ mod tests {
             encoding_type: profile.encoding as u64,
             encoding_params: profile.params,
             commitment,
+        }
+    }
+
+    fn certified(track: Pubkey) -> ObjectInfo {
+        ObjectInfo::Valid {
+            track_address: track,
+            registered_epoch: EpochNumber(1),
+            certified_epoch: Some(EpochNumber(2)),
+            slot: SlotNumber(10),
         }
     }
 
@@ -397,6 +428,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -422,11 +454,47 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 1 });
         assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
+    }
+
+    #[tokio::test]
+    async fn skips_uncertified() {
+        let ctx = test_context();
+        let a = addr(2);
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let slices = slicer.encode(&vec![0x33; 1024]).unwrap();
+
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store
+            .put_object_info(
+                a,
+                ObjectInfo::Valid {
+                    track_address: a,
+                    registered_epoch: EpochNumber(2),
+                    certified_epoch: None,
+                    slot: SlotNumber(10),
+                },
+            )
+            .unwrap();
+        ctx.store.add_pending_recovery(SPOOL, a).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        assert!(!ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
 
     #[test]

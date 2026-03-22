@@ -13,7 +13,9 @@ use tape_store::types::SpoolStatus;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
 use crate::context::NodeContext;
+use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
+use crate::features::spool::manager::has_pending_work;
 
 // Purpose: Wait until all spools assigned to this node are Active.
 //          This is a precondition for submitting SyncEpoch — the node
@@ -54,12 +56,15 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         match check_readiness(&ctx) {
-            Readiness::Ready => {
+            Ok(Readiness::Ready) => {
                 info!(epoch = epoch.0, "wait_spool_ready: all spools active");
                 return TaskDone::Done(Action::WaitSpoolReady, epoch);
             }
-            Readiness::NotReady { ready, total } => {
+            Ok(Readiness::NotReady { ready, total }) => {
                 debug!(epoch = epoch.0, ready, total, "wait_spool_ready: polling");
+            }
+            Err(error) => {
+                debug!(epoch = epoch.0, %error, "wait_spool_ready: store error, retrying");
             }
         }
 
@@ -78,35 +83,89 @@ pub enum Readiness {
 
 pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-) -> Readiness {
+) -> Result<Readiness, NodeError> {
     let state = ctx.state();
     let node_id = ctx.node_id();
 
     let Some((member_index, _)) = state.find_member(node_id) else {
-        return Readiness::Ready;
+        return Ok(Readiness::Ready);
     };
 
     let assigned: Vec<SpoolIndex> = state.member_spools(member_index);
     if assigned.is_empty() {
-        return Readiness::Ready;
+        return Ok(Readiness::Ready);
     }
 
     let assigned_set: HashSet<SpoolIndex> = assigned.iter().copied().collect();
-    let persisted = ctx.store.iter_all_spools().unwrap_or_default();
+    let persisted = ctx.store
+        .iter_all_spools()
+        .map_err(|e| NodeError::Store(format!("iter_all_spools: {e}")))?;
 
-    let ready_count = persisted
-        .iter()
-        .filter(|(spool, s)| assigned_set.contains(spool) && s.status == SpoolStatus::Active)
-        .count();
+    let mut ready_count = 0usize;
+    for (spool, s) in &persisted {
+        if !assigned_set.contains(spool) || s.status != SpoolStatus::Active {
+            continue;
+        }
+
+        let (has_repair, has_recovery) = has_pending_work(&ctx.store, *spool)?;
+        if !has_repair && !has_recovery {
+            ready_count += 1;
+        }
+    }
 
     if ready_count >= assigned.len() {
         info!(ready = ready_count, total = assigned.len(), "check_readiness: all assigned spools are active");
-        Readiness::Ready
+        Ok(Readiness::Ready)
     } else {
         info!(ready = ready_count, total = assigned.len(), "check_readiness: not all assigned spools are active");
-        Readiness::NotReady {
+        Ok(Readiness::NotReady {
             ready: ready_count,
             total: assigned.len(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tape_core::erasure::SPOOL_COUNT;
+    use tape_core::spooler::SpoolAssignment;
+    use tape_core::system::{CommitteeMember, EpochPhase};
+    use tape_core::types::NodeId;
+    use tape_core::types::coin::{Coin, TAPE};
+    use tape_protocol::ProtocolState;
+    use tape_store::types::{Pubkey, SpoolState};
+
+    use crate::context::test_utils::test_context;
+
+    const EPOCH: EpochNumber = EpochNumber(2);
+
+    fn owned_state(spools: &[SpoolIndex]) -> ProtocolState {
+        let mut state = ProtocolState::default();
+        state.epoch = EPOCH;
+        state.phase = EpochPhase::Syncing;
+        state
+            .committee
+            .push(CommitteeMember::new(NodeId(0), Coin::<TAPE>::new(1000)));
+
+        let mut mapping = [255u8; SPOOL_COUNT];
+        for &spool in spools {
+            mapping[spool as usize] = 0;
         }
+        state.spools = SpoolAssignment::new(mapping);
+        state
+    }
+
+    #[test]
+    fn active_with_pending_not_ready() {
+        let ctx = test_context();
+        ctx.set_state(owned_state(&[5])).unwrap();
+        ctx.store
+            .set_spool_state(5, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
+
+        let result = check_readiness(&ctx).unwrap();
+        assert!(matches!(result, Readiness::NotReady { .. }));
     }
 }

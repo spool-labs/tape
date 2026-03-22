@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
+use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::RepairResult;
 
 // Purpose: Bandwidth-optimal Clay repair for missing slices.
@@ -141,11 +142,31 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
 
             // Load track_info. If missing, remove from pending_repairs and skip.
-            let Some(track_info) = ctx.store.get_track(track).ok().flatten() else {
-                let _ = ctx.store.remove_pending_repair(spool, track);
-                warn!(spool, track = %track, "track_info missing, skipping");
-                continue;
+            let track_info = match ctx.store.get_track(track) {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    warn!(spool, track = %track, "track_info missing, removing");
+                    continue;
+                }
+                Err(error) => {
+                    warn!(spool, track = %track, %error, "get_track failed");
+                    continue;
+                }
             };
+
+            // Only repair certified tracks.
+            match track_requirement(ctx.store.as_ref(), track) {
+                Ok(TrackRequirement::Required) => {}
+                Ok(TrackRequirement::NotRequired) => {
+                    let _ = ctx.store.remove_pending_repair(spool, track);
+                    continue;
+                }
+                Ok(TrackRequirement::Inconsistent) | Err(_) => {
+                    warn!(spool, track = %track, "repair: skipping, state inconsistent or unreadable");
+                    continue;
+                }
+            }
 
             match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_info, token).await {
                 Ok(data) => {
@@ -159,8 +180,14 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 }
                 Err(()) => {
                     info!(spool, track = %track, "repair failed, escalating to recovery");
-                    let _ = ctx.store.remove_pending_repair(spool, track);
-                    let _ = ctx.store.add_pending_recovery(spool, track);
+                    match ctx.store.add_pending_recovery(spool, track) {
+                        Ok(()) => {
+                            let _ = ctx.store.remove_pending_repair(spool, track);
+                        }
+                        Err(error) => {
+                            warn!(spool, track = %track, %error, "add_pending_recovery failed, keeping in repair");
+                        }
+                    }
                     ctx.metrics.inc_repair_escalations();
                     unrepairable += 1;
                 }
@@ -421,10 +448,11 @@ mod tests {
     use super::*;
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
     use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
-    use tape_store::types::SpoolStatus;
+    use tape_store::ops::ObjectInfoOps;
+    use tape_store::types::{ObjectInfo, SpoolStatus};
 
     use crate::context::test_utils::{test_context, test_context_with_api};
 
@@ -451,6 +479,15 @@ mod tests {
             encoding_type: profile.encoding as u64,
             encoding_params: profile.params,
             commitment,
+        }
+    }
+
+    fn certified(track: Pubkey) -> ObjectInfo {
+        ObjectInfo::Valid {
+            track_address: track,
+            registered_epoch: EpochNumber(1),
+            certified_epoch: Some(EpochNumber(2)),
+            slot: SlotNumber(10),
         }
     }
 
@@ -527,6 +564,7 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
+        ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -552,6 +590,7 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.add_pending_repair(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -571,5 +610,40 @@ mod tests {
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RepairResult::Done { unrepairable: 0 });
         assert!(!ctx.store.has_pending_repair(SPOOL, addr(1)).unwrap());
+    }
+
+    #[tokio::test]
+    async fn skips_uncertified() {
+        let ctx = test_context();
+        let a = addr(2);
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let slices = slicer.encode(&vec![0x33; 1024]).unwrap();
+
+        ctx.store
+            .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
+        ctx.store
+            .put_object_info(
+                a,
+                ObjectInfo::Valid {
+                    track_address: a,
+                    registered_epoch: EpochNumber(2),
+                    certified_epoch: None,
+                    slot: SlotNumber(10),
+                },
+            )
+            .unwrap();
+        ctx.store.add_pending_repair(SPOOL, a).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }
 }
