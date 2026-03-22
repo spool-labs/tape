@@ -451,27 +451,31 @@ fn transition_status<Db: Store>(
     result: TaskResult,
 ) -> Result<Option<SpoolStatus>, NodeError> {
     match (action, result) {
-        (Action::Sync { .. }, TaskResult::Sync(_)) => Ok(Some(SpoolStatus::Scan)),
+        (Action::Sync { .. }, TaskResult::Sync(_)) => {
+            Ok(Some(SpoolStatus::Scan))
+        }
 
-        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Retry)) => Ok(Some(SpoolStatus::Scan)),
+        (Action::Scan { .. }, TaskResult::Scan(ScanResult::Retry)) => {
+            Ok(Some(SpoolStatus::Scan))
+        }
 
         (Action::Scan { .. }, TaskResult::Scan(ScanResult::Done { .. })) => {
-            reconcile_terminal(store, spool).map(Some)
+            reconcile(store, spool).map(Some)
         }
 
         (Action::Repair { .. }, TaskResult::Repair(_)) => {
-            reconcile_terminal(store, spool).map(Some)
+            reconcile(store, spool).map(Some)
         }
 
         (Action::Recover { .. }, TaskResult::Recover(_)) => {
-            reconcile_terminal(store, spool).map(Some)
+            reconcile(store, spool).map(Some)
         }
 
         _ => Ok(None),
     }
 }
 
-fn reconcile_terminal<Db: Store>(
+fn reconcile<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<SpoolStatus, NodeError> {
