@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -13,15 +14,18 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::config::SpoolManagerConfig;
+use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
 use crate::features::spool::{recover, repair, scan, sync};
 
+const SPOOL_MANAGER_HEARTBEAT: Duration = Duration::from_secs(1);
+const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
+
 pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: SpoolManagerConfig,
+    config: RecoveryConfig,
     cancel: CancellationToken,
     workers: HashMap<SpoolIndex, CancellationToken>,
     join_set: JoinSet<TaskDone>,
@@ -32,7 +36,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: SpoolManagerConfig,
+        config: RecoveryConfig,
         cancel: CancellationToken,
     ) -> Self {
         let workers = HashMap::new();
@@ -115,7 +119,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 }
 
                 // Periodic heartbeat
-                _ = tokio::time::sleep(self.config.interval) => {
+                _ = tokio::time::sleep(SPOOL_MANAGER_HEARTBEAT) => {
                     self.try_spawn(observed_epoch)?;
                 }
             }
@@ -127,7 +131,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         &self,
         epoch: EpochNumber,
     ) -> Result<Option<Action>, NodeError> {
-        if self.workers.len() >= self.config.max_parallel_spools {
+        if self.workers.len() >= self.config.max_workers {
             return Ok(None);
         }
     
@@ -174,7 +178,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         &mut self,
         epoch: EpochNumber,
     ) -> Result<(), NodeError> {
-        while self.workers.len() < self.config.max_parallel_spools {
+        while self.workers.len() < self.config.max_workers {
             let Some(action) = self.next_action(epoch)? else {
                 break;
             };
@@ -328,7 +332,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 // Not assigned, have state → lost ownership -> (lock)
                 (false, Some(state)) => {
                     if state.is_locked() {
-                        if check_expiry(state.epoch, epoch, self.config.locked_spool_retention_epochs) {
+                        if check_expiry(
+                            state.epoch,
+                            epoch,
+                            LOCKED_SPOOL_RETENTION_EPOCHS,
+                        ) {
                             info!(spool, epoch = epoch.0, "spool: purging locked spool after retention period");
 
                             purge_locked_spool(self.context.as_ref(), spool)?;
@@ -567,7 +575,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::SpoolManager;
-    use crate::config::SpoolManagerConfig;
+    use crate::config::recovery::RecoveryConfig;
     use crate::context::test_utils::test_context;
     use crate::features::spool::types::{Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult};
     use tape_core::erasure::SPOOL_COUNT;
@@ -598,7 +606,7 @@ mod tests {
 
         let manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -624,7 +632,7 @@ mod tests {
 
         let manager = SpoolManager::new(
             ctx,
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -646,7 +654,7 @@ mod tests {
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -677,7 +685,7 @@ mod tests {
             .unwrap();
         ctx.store.add_pending_repair(5, Pubkey([1; 32])).unwrap();
 
-        let manager = SpoolManager::new(ctx, SpoolManagerConfig::default(), CancellationToken::new());
+        let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
             Some(Action::Repair { spool: 5, epoch: EPOCH })
@@ -693,7 +701,7 @@ mod tests {
             .unwrap();
         ctx.store.add_pending_recovery(5, Pubkey([1; 32])).unwrap();
 
-        let manager = SpoolManager::new(ctx, SpoolManagerConfig::default(), CancellationToken::new());
+        let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
             manager.next_action(EPOCH).unwrap(),
             Some(Action::Recover { spool: 5, epoch: EPOCH })
@@ -710,7 +718,7 @@ mod tests {
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -737,7 +745,7 @@ mod tests {
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -764,7 +772,7 @@ mod tests {
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 
@@ -793,7 +801,7 @@ mod tests {
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
-            SpoolManagerConfig::default(),
+            RecoveryConfig::default(),
             CancellationToken::new(),
         );
 

@@ -8,7 +8,7 @@ use tape_protocol::Api;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::config::SpoolManagerConfig;
+use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::features::spool::types::{TaskKind, WorkerDone};
 use crate::features::spool::{recover, repair, scan, sync};
@@ -19,7 +19,7 @@ use crate::features::spool::{recover, repair, scan, sync};
 /// carries enough context for the manager to apply the FSM transition.
 pub async fn run<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: SpoolManagerConfig,
+    config: RecoveryConfig,
     kind: TaskKind,
     spool: SpoolIndex,
     epoch: EpochNumber,

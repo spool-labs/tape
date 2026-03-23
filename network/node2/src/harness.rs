@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -11,12 +12,12 @@ use tape_chain_harness::{
 };
 use tape_core::spooler::SpoolIndex;
 use tape_core::system::EpochPhase;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_store::TapeStore;
 use tape_store::ops::SpoolOps;
 use tape_store::types::{SpoolState, SpoolStatus};
 
-use crate::config::NodeConfig;
+use crate::config::node::NodeConfig;
 use crate::context::{NodeContext, NodeContextBuilder};
 
 pub type TestContext = Arc<NodeContext<MemoryStore, MemoryApi, LiteSvmRpc>>;
@@ -211,11 +212,11 @@ fn clone_keypair(keypair: &solana_sdk::signature::Keypair) -> solana_sdk::signat
 }
 
 fn test_config() -> NodeConfig {
-    NodeConfig {
-        node_keypair: String::new(),
-        bls_keypair: std::path::PathBuf::from("/dev/null"),
-        rpc_url: "http://localhost:8899".into(),
-        storage_path: "/tmp".into(),
-        start_slot: tape_core::types::SlotNumber(0),
-    }
+    let mut config = NodeConfig::default();
+    config.node.node_keypair = PathBuf::from("/dev/null");
+    config.node.bls_keypair = PathBuf::from("/dev/null");
+    config.solana.rpc = "http://localhost:8899".into();
+    config.solana.start_slot = Some(SlotNumber(0));
+    config.store.path = PathBuf::from("/tmp");
+    config
 }

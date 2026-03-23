@@ -2,8 +2,6 @@ use rpc::RpcError;
 use rpc_client::parse_tape_error;
 use solana_sdk::signature::Signature;
 use tape_api::errors::TapeError;
-use tape_retry::Backoff;
-use tokio_util::sync::CancellationToken;
 
 /// Outcome of a Solana transaction submission attempt.
 ///

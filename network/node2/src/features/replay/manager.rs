@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::core::channels::send_replay_batch;
-use crate::config::ReplayConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -20,7 +19,6 @@ use crate::features::replay::types::ReplayBatch;
 
 pub struct ReplayManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: ReplayConfig,
     rx: mpsc::Receiver<Arc<ParsedBlock>>,
     store_tx: mpsc::Sender<ReplayBatch>,
     cancel: CancellationToken,
@@ -29,14 +27,12 @@ pub struct ReplayManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: ReplayConfig,
         rx: mpsc::Receiver<Arc<ParsedBlock>>,
         store_tx: mpsc::Sender<ReplayBatch>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             rx,
             store_tx,
             cancel,
@@ -46,7 +42,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
     pub async fn run(mut self) -> Result<(), NodeError> {
         debug!(
             node_id = self.context.node_id().0,
-            config = ?self.config,
             "replay manager started"
         );
 

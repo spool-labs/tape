@@ -120,6 +120,12 @@ pub fn create_tape_store_configs() -> Vec<ColumnFamilyDescriptor> {
 /// - **Compression**: LZ4 for fast compression/decompression
 /// - **Rate Limiting**: 100 MB/s to prevent I/O spikes during compaction
 pub fn create_db_options() -> Options {
+    create_db_options_with_compaction_rate_limit_mb_per_sec(100)
+}
+
+pub fn create_db_options_with_compaction_rate_limit_mb_per_sec(
+    rate_limit_mb_per_sec: u64,
+) -> Options {
     let mut opts = Options::default();
 
     // Basic database options
@@ -145,7 +151,10 @@ pub fn create_db_options() -> Options {
     // Rate limiting for compaction to prevent I/O spikes
     // 100 MB/s should be gentle on the system
     // set_ratelimiter(rate_bytes_per_sec, refill_period_us, fairness)
-    opts.set_ratelimiter(100 * 1024 * 1024, 100_000, 10);
+    let rate_limit_bytes_per_sec = rate_limit_mb_per_sec
+        .saturating_mul(1024 * 1024)
+        .min(i64::MAX as u64) as i64;
+    opts.set_ratelimiter(rate_limit_bytes_per_sec, 100_000, 10);
 
     opts
 }

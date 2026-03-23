@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::error_handling::HandleErrorLayer;
@@ -22,7 +23,7 @@ use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info};
 
-use crate::config::HttpConfig;
+use crate::config::http::HttpConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::http::handlers;
@@ -54,7 +55,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             context: self.context.clone(),
         };
 
-        Router::new()
+        let base_routes = Router::new()
             .route(
                 api_routes::HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>),
@@ -64,14 +65,31 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
+                api_routes::METADATA_PATH,
+                get(handlers::metadata::get_metadata::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SIGN_PATH,
+                get(handlers::sign::certify::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SNAPSHOT_COMMITMENTS_PATH,
+                get(handlers::snapshot::get_snapshot::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                api_routes::SNAPSHOT_SIG_PATH,
+                post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
+            );
+
+        let slice_routes = Router::new()
+            .route(
                 api_routes::SLICE_PATH,
                 get(handlers::slice::get_slice::<Db, Cluster, Blockchain>)
                     .put(handlers::slice::put_slice::<Db, Cluster, Blockchain>),
             )
-            .route(
-                api_routes::METADATA_PATH,
-                get(handlers::metadata::get_metadata::<Db, Cluster, Blockchain>),
-            )
+            .layer(DefaultBodyLimit::max(self.config.slice_max_bytes));
+
+        let peer_post_routes = Router::new()
             .route(
                 api_routes::SYNC_SPOOL_PATH,
                 post(handlers::sync::sync_spool::<Db, Cluster, Blockchain>),
@@ -81,21 +99,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 post(handlers::repair::repair::<Db, Cluster, Blockchain>),
             )
             .route(
-                api_routes::SIGN_PATH,
-                get(handlers::sign::certify::<Db, Cluster, Blockchain>),
-            )
-            .route(
                 api_routes::INCONSISTENCY_PATH,
                 post(handlers::inconsistency::invalidate::<Db, Cluster, Blockchain>),
             )
-            .route(
-                api_routes::SNAPSHOT_COMMITMENTS_PATH,
-                get(handlers::snapshot::get_snapshot::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                api_routes::SNAPSHOT_SIG_PATH,
-                post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
-            )
+            .layer(DefaultBodyLimit::max(self.config.peer_max_bytes));
+
+        base_routes
+            .merge(slice_routes)
+            .merge(peer_post_routes)
             .with_state(state)
             .layer(from_fn_with_state(
                 AppState {
@@ -103,26 +114,27 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 },
                 count_requests::<Db, Cluster, Blockchain>,
             ))
-            .layer(DefaultBodyLimit::disable())
             .layer(
                 ServiceBuilder::new()
                     .layer(HandleErrorLayer::new(handle_http_error))
                     .layer(TraceLayer::new_for_http())
                     .layer(LoadShedLayer::new())
-                    .layer(ConcurrencyLimitLayer::new(self.config.concurrency_limit))
-                    .layer(TimeoutLayer::new(self.config.request_timeout)),
+                    .layer(ConcurrencyLimitLayer::new(self.config.concurrency))
+                    .layer(TimeoutLayer::new(Duration::from_secs(
+                        self.config.timeout_secs,
+                    ))),
             )
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
-        debug!(bind_addr = %self.config.bind_addr, "http server starting");
+        debug!(listen = %self.config.listen, "http server starting");
 
         let app = self.build_router();
-        let listener = TcpListener::bind(self.config.bind_addr)
+        let listener = TcpListener::bind(self.config.listen)
             .await
             .map_err(NodeError::Io)?;
 
-        info!(address = %self.config.bind_addr, "http server listening");
+        info!(listen = %self.config.listen, "http server listening");
 
         let cancel = self.cancel.clone();
 

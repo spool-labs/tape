@@ -85,7 +85,17 @@ impl<S: Store> std::ops::DerefMut for TapeStore<S> {
 impl TapeStore<RocksStore> {
     /// Open a primary TapeStore database with optimized configuration
     pub fn open_primary<P: AsRef<std::path::Path>>(path: P) -> Result<Self, store::Error> {
-        let db_opts = config::create_db_options();
+        Self::open_primary_with_compaction_rate_limit(path, 100)
+    }
+
+    pub fn open_primary_with_compaction_rate_limit<P: AsRef<std::path::Path>>(
+        path: P,
+        compaction_rate_limit_mb_per_sec: u64,
+    ) -> Result<Self, store::Error> {
+        let db_opts =
+            config::create_db_options_with_compaction_rate_limit_mb_per_sec(
+                compaction_rate_limit_mb_per_sec,
+            );
         let cf_configs = config::create_tape_store_configs();
         let rocks = RocksStore::open_with_cf_config(path, db_opts, cf_configs)?;
         Ok(Self::new(rocks))

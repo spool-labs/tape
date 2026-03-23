@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -10,7 +11,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::config::GcConfig;
+use crate::config::store::GcConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::gc::sweep::sweep_epoch;
@@ -38,7 +39,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain
         debug!(
             node_id = self.context.node_id().0,
             enabled = self.config.enabled,
-            scan_interval = ?self.config.scan_interval,
+            interval_secs = self.config.interval_secs,
             "gc manager started"
         );
 
@@ -52,7 +53,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, Blockchain
 
         catch_up_epochs(self.context.store.as_ref(), &self.config, observed_epoch).await?;
 
-        let mut ticker = interval(self.config.scan_interval);
+        let mut ticker = interval(Duration::from_secs(self.config.interval_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
 
@@ -143,15 +144,13 @@ fn next_pending_epoch<Db: Store>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
     use tape_store::ops::MetaOps;
     use tape_store::TapeStore;
 
     use super::{next_pending_epoch, run_epoch_sweep};
-    use crate::config::GcConfig;
+    use crate::config::store::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -160,10 +159,9 @@ mod tests {
     fn test_config() -> GcConfig {
         GcConfig {
             enabled: true,
-            scan_interval: Duration::from_secs(60),
-            track_batch_size: 2,
-            slice_batch_size: 2,
-            uncertified_retention_epochs: 2,
+            interval_secs: 60,
+            track_batch: 2,
+            slice_batch: 2,
         }
     }
 

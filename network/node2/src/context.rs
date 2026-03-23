@@ -22,7 +22,7 @@ use tape_store::TapeStore;
 use tape_store::ops::MetaOps;
 use tape_store::types::NodeStatus;
 
-use crate::config::NodeConfig;
+use crate::config::node::NodeConfig;
 use crate::core::error::NodeError;
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
@@ -124,6 +124,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use peer_memory::MemoryApi;
@@ -131,7 +132,7 @@ pub mod test_utils {
     use solana_sdk::signature::Keypair;
     use tape_api::program::tapedrive::node_pda;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::types::NodeId;
+    use tape_core::types::{NodeId, SlotNumber};
     use peer_manager::PeerManager;
     use store_memory::MemoryStore;
     use tape_store::TapeStore;
@@ -176,13 +177,13 @@ pub mod test_utils {
     }
 
     fn test_config() -> NodeConfig {
-        NodeConfig {
-            node_keypair: String::new(),
-            bls_keypair: std::path::PathBuf::from("/dev/null"),
-            rpc_url: "http://localhost:8899".into(),
-            storage_path: "/tmp".into(),
-            start_slot: tape_core::types::SlotNumber(0),
-        }
+        let mut config = NodeConfig::default();
+        config.node.node_keypair = PathBuf::from("/dev/null");
+        config.node.bls_keypair = PathBuf::from("/dev/null");
+        config.solana.rpc = "http://localhost:8899".into();
+        config.solana.start_slot = Some(SlotNumber(0));
+        config.store.path = PathBuf::from("/tmp");
+        config
     }
 }
 
@@ -255,6 +256,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use peer_manager::PeerManager;
@@ -263,7 +265,7 @@ mod tests {
     use solana_sdk::signature::Keypair;
     use store_memory::MemoryStore;
     use tape_chain_harness::ChainHarness;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store::ops::MetaOps;
     use tape_store::TapeStore;
 
@@ -307,12 +309,12 @@ mod tests {
     }
 
     fn test_config() -> NodeConfig {
-        NodeConfig {
-            node_keypair: String::new(),
-            bls_keypair: std::path::PathBuf::from("/dev/null"),
-            rpc_url: "http://localhost:8899".into(),
-            storage_path: "/tmp".into(),
-            start_slot: tape_core::types::SlotNumber(0),
-        }
+        let mut config = NodeConfig::default();
+        config.node.node_keypair = PathBuf::from("/dev/null");
+        config.node.bls_keypair = PathBuf::from("/dev/null");
+        config.solana.rpc = "http://localhost:8899".into();
+        config.solana.start_slot = Some(SlotNumber(0));
+        config.store.path = PathBuf::from("/tmp");
+        config
     }
 }

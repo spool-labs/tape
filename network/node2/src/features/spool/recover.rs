@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::config::SpoolManagerConfig;
+use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::policy::{track_requirement, TrackRequirement};
@@ -75,7 +75,7 @@ const RECOVER_FETCH_CONCURRENCY: usize = 4;
 
 pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
+    config: &RecoveryConfig,
     spool: SpoolIndex,
     token: &CancellationToken,
 ) -> RecoverResult {
@@ -87,7 +87,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
     let group = SpoolGroup::of(spool);
     let position = group.slice_of(spool).unwrap_or_default();
-    let batch_size = config.recover_batch_size.max(1);
+    let batch_size = config.recover_batch.max(1);
 
     loop {
         if token.is_cancelled() {
@@ -467,7 +467,7 @@ mod tests {
             .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
             .unwrap();
 
-        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
     }
 
@@ -482,7 +482,7 @@ mod tests {
         ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert!(!ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
@@ -521,7 +521,7 @@ mod tests {
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
         assert!(!ctx.store.has_pending_recovery(SPOOL, track).unwrap());
@@ -547,7 +547,7 @@ mod tests {
         ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 1 });
         assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
@@ -582,7 +582,7 @@ mod tests {
             .unwrap();
         ctx.store.add_pending_recovery(SPOOL, a).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert!(!ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
@@ -649,7 +649,7 @@ mod tests {
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
     }
@@ -745,7 +745,7 @@ mod tests {
         ctx.store.put_object_info(track, certified(track)).unwrap();
         ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
         assert!(!ctx.store.has_pending_recovery(SPOOL, track).unwrap());

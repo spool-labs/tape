@@ -8,25 +8,21 @@ use tape_store::ops::EventLogOps;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use crate::config::SnapshotConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: SnapshotConfig,
     cancel: CancellationToken,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: SnapshotConfig,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             cancel,
         }
     }
@@ -34,7 +30,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> SnapshotManager<Db, Cluster, Bloc
     pub async fn run(self) -> Result<(), NodeError> {
         debug!(
             node_id = self.context.node_id().0,
-            config = ?self.config,
             "snapshot manager started"
         );
 

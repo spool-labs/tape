@@ -12,7 +12,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey, TrackInfo};
 use tape_retry::RetryConfig;
 
-use crate::config::SpoolManagerConfig;
+use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::types::SyncResult;
@@ -53,7 +53,7 @@ struct SyncBatch {
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
+    config: &RecoveryConfig,
     spool: SpoolIndex,
     token: &CancellationToken,
 ) -> SyncResult {
@@ -126,7 +126,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// Returns the next cursor plus fetched/persisted batch accounting.
 async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    config: &SpoolManagerConfig,
+    config: &RecoveryConfig,
     spool: SpoolIndex,
     prev_owner: NodeId,
     cursor: Option<Pubkey>,
@@ -140,7 +140,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let req = SyncReq {
         spool_index: spool,
         cursor: cursor.map(|track| track.0),
-        limit: config.sync_batch_size.max(1) as u32,
+        limit: config.sync_batch.max(1) as u32,
     };
 
     let res = call_peer(
@@ -284,7 +284,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), None))
             .unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { .. }));
     }
 
@@ -307,7 +307,7 @@ mod tests {
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
         assert!(matches!(result, SyncResult::Done { synced: 1 }));
         assert!(ctx.store.has_slice(SPOOL, a).unwrap());
@@ -337,7 +337,7 @@ mod tests {
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_slice(SPOOL, a, stale_data).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { synced: 1 }));
 
         let stored = ctx.store.get_slice(SPOOL, a).unwrap().unwrap();
@@ -351,7 +351,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, SyncResult::Done { synced: 0 });
     }
 
@@ -373,7 +373,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(PEER)))
             .unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
         assert_eq!(result, SyncResult::Done { synced: 0 });
         assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
@@ -400,7 +400,7 @@ mod tests {
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
         assert_eq!(result, SyncResult::Done { synced: 0 });
         assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
@@ -440,7 +440,7 @@ mod tests {
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { .. }));
         assert!(ctx.store.has_slice(SPOOL, a1).unwrap());
         assert!(ctx.store.has_slice(SPOOL, a2).unwrap());

@@ -14,7 +14,7 @@ use store_memory::MemoryStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_core::types::network::NetworkAddress;
-use tape_node2::config::{AppConfig, NodeConfig};
+use tape_node2::config::node::NodeConfig;
 use tape_node2::context::{NodeContext, NodeContextBuilder};
 use tape_node2::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
 use tape_store::{TapeStore, ops::MetaOps};
@@ -48,7 +48,7 @@ pub struct TestNode {
     keypair: Keypair,
     bls_keypair: BlsPrivateKey,
     rpc: LiteSvmRpc,
-    app_config: AppConfig,
+    app_config: NodeConfig,
     context: Option<TestNodeContext>,
     test_config: TestConfig,
     runtime: Option<NodeRuntimeHandle>,
@@ -174,10 +174,8 @@ impl TestNode {
                             .saturating_add(1),
                     ),
                 };
-                let config = self
-                    .app_config
-                    .clone()
-                    .with_block_start_slot(start_slot);
+                let mut config = self.app_config.clone();
+                config.solana.start_slot = Some(start_slot);
 
                 self.runtime = Some(
                     start_with_context(context, config)
@@ -214,7 +212,7 @@ impl TestNode {
         let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
 
         let context = NodeContextBuilder::<MemoryStore, HttpApi, LiteSvmRpc>::new(
-            self.app_config.node.clone(),
+            self.app_config.clone(),
             clone_keypair(&self.keypair),
             self.bls_keypair.clone(),
             store,
@@ -230,16 +228,15 @@ impl TestNode {
     }
 }
 
-fn test_app_config(bind_addr: SocketAddr) -> Result<AppConfig> {
-    let node = NodeConfig {
-        node_keypair: String::new(),
-        bls_keypair: PathBuf::from("/dev/null"),
-        rpc_url: "http://127.0.0.1:8899".into(),
-        storage_path: "/tmp".into(),
-        start_slot: SlotNumber(1),
-    };
-
-    AppConfig::testing(node, bind_addr).context("build node2 app config")
+fn test_app_config(bind_addr: SocketAddr) -> Result<NodeConfig> {
+    let mut config = NodeConfig::default();
+    config.node.node_keypair = PathBuf::from("/dev/null");
+    config.node.bls_keypair = PathBuf::from("/dev/null");
+    config.solana.rpc = "http://127.0.0.1:8899".into();
+    config.solana.start_slot = Some(SlotNumber(1));
+    config.http.listen = bind_addr;
+    config.store.path = PathBuf::from("/tmp");
+    Ok(config)
 }
 
 fn clone_keypair(keypair: &Keypair) -> Keypair {

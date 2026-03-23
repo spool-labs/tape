@@ -8,7 +8,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::config::SpoolManagerConfig;
+use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::ScanResult;
@@ -37,7 +37,7 @@ use crate::features::spool::types::ScanResult;
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: &SpoolManagerConfig,
+    config: &RecoveryConfig,
     spool: SpoolIndex,
     cancel: &CancellationToken,
 ) -> ScanResult {
@@ -47,7 +47,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut had_error = false;
 
     let group = SpoolGroup::of(spool);
-    let batch_size = config.scan_batch_size.max(1);
+    let batch_size = config.scan_batch.max(1);
 
     loop {
         if cancel.is_cancelled() {
@@ -158,7 +158,7 @@ mod tests {
     #[tokio::test]
     async fn no_tracks() {
         let ctx = test_context();
-        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
@@ -172,7 +172,7 @@ mod tests {
         ctx.store.put_object_info(a, certified(a)).unwrap();
         ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
 
-        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
@@ -195,7 +195,7 @@ mod tests {
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
 
         assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
@@ -209,7 +209,7 @@ mod tests {
 
         ctx.store.put_track(a, track(other_group)).unwrap();
 
-        let result = run(ctx, &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
     }
 
@@ -223,8 +223,8 @@ mod tests {
         ctx.store.put_object_info(a, certified(a)).unwrap();
 
         // Run scan twice — same result, no duplicates.
-        let r1 = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
-        let r2 = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let r1 = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let r2 = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(r1, ScanResult::Done { gaps: 1 });
         assert_eq!(r2, ScanResult::Done { gaps: 1 });
     }
@@ -244,7 +244,7 @@ mod tests {
             slot: SlotNumber(10),
         }).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 0 });
         assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }
@@ -259,7 +259,7 @@ mod tests {
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
 
-        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
         assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
     }

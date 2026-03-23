@@ -7,9 +7,7 @@ use tape_store::ops::MetaOps;
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 
-use crate::config::StoreConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -18,7 +16,6 @@ use crate::features::store::apply::apply_slot;
 
 pub struct StoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: StoreConfig,
     rx: mpsc::Receiver<ReplayBatch>,
     cancel: CancellationToken,
 }
@@ -26,25 +23,17 @@ pub struct StoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: StoreConfig,
         rx: mpsc::Receiver<ReplayBatch>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             rx,
             cancel,
         }
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
-        debug!(
-            node_id = self.context.node_id().0,
-            config = ?self.config,
-            "store manager started"
-        );
-
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),

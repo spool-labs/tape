@@ -12,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::config::{AppConfig, RuntimeConfig};
+use crate::config::node::NodeConfig;
+use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
 use crate::core::bootstrap::build_context;
 use crate::core::channels::{downstream_channels, store_channel};
@@ -29,25 +30,41 @@ use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
 use crate::supervisor::Supervisor;
 
-pub fn init_tracing() -> Result<(), NodeError> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+const MIN_WORKER_THREADS: usize = 4;
+const MAX_BLOCKING_THREAD_MULTIPLIER: usize = 4;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .compact()
-        .try_init()
-        .map_err(NodeError::TracingInit)
+pub fn init_tracing(logging: &LoggingConfig) -> Result<(), NodeError> {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(logging.filter.clone()));
+
+    match logging.format {
+        LoggingFormat::Compact => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .compact()
+            .try_init()
+            .map_err(NodeError::TracingInit),
+        LoggingFormat::Json => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .json()
+            .try_init()
+            .map_err(NodeError::TracingInit),
+    }
 }
 
-pub fn build_runtime(config: &RuntimeConfig) -> Result<tokio::runtime::Runtime, NodeError> {
+pub fn build_runtime() -> Result<tokio::runtime::Runtime, NodeError> {
     let thread_counter = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&thread_counter);
+    let available_threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(MIN_WORKER_THREADS);
+    let worker_threads = available_threads.max(MIN_WORKER_THREADS);
+    let max_blocking_threads = worker_threads.saturating_mul(MAX_BLOCKING_THREAD_MULTIPLIER);
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(config.worker_threads)
-        .max_blocking_threads(config.max_blocking_threads)
+        .worker_threads(worker_threads)
+        .max_blocking_threads(max_blocking_threads)
         .thread_name_fn(move || {
             let index = counter.fetch_add(1, Ordering::Relaxed);
             format!("node-{index}")
@@ -175,7 +192,7 @@ where
 
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: AppConfig,
+    config: NodeConfig,
     cancel: CancellationToken,
 ) -> Result<(), NodeError>
 where
@@ -183,8 +200,8 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let (senders, receivers) = downstream_channels(&config.channels);
-    let (store_tx, store_rx) = store_channel(&config.channels);
+    let (senders, receivers) = downstream_channels();
+    let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
     supervisor.spawn(
@@ -200,7 +217,7 @@ where
         ServiceName::BlockIngestor,
         BlockIngestor::new(
             context.clone(),
-            config.block.clone(),
+            config.solana.block_start_slot(),
             senders,
             cancel.clone()
         ).run(),
@@ -210,7 +227,6 @@ where
         ServiceName::StateManager,
         StateManager::new(
             context.clone(),
-            config.state.clone(),
             receivers.state,
             cancel.clone(),
         ).run(),
@@ -220,7 +236,6 @@ where
         ServiceName::LifecycleManager,
         LifecycleManager::new(
             context.clone(),
-            config.epoch_lifecycle.clone(),
             cancel.clone(),
         )
         .run(),
@@ -230,7 +245,7 @@ where
         ServiceName::SpoolManager,
         SpoolManager::new(
             context.clone(),
-            config.spool.clone(),
+            config.recovery.clone(),
             cancel.clone(),
         )
         .run(),
@@ -240,7 +255,6 @@ where
         ServiceName::SnapshotManager,
         SnapshotManager::new(
             context.clone(),
-            config.snapshot.clone(),
             cancel.clone(),
         )
         .run(),
@@ -250,7 +264,6 @@ where
         ServiceName::ReplayManager,
         ReplayManager::new(
             context.clone(),
-            config.replay.clone(),
             receivers.replay,
             store_tx,
             cancel.clone(),
@@ -262,7 +275,6 @@ where
         ServiceName::StoreManager,
         StoreManager::new(
             context.clone(),
-            config.store.clone(),
             store_rx,
             cancel.clone(),
         ).run(),
@@ -272,7 +284,7 @@ where
         ServiceName::GcManager,
         GcManager::new(
             context, 
-            config.gc.clone(),
+            config.store.gc.clone(),
             cancel
         ).run(),
     );
@@ -282,7 +294,7 @@ where
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: AppConfig,
+    config: NodeConfig,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -296,7 +308,7 @@ where
 
 pub async fn start_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: AppConfig,
+    config: NodeConfig,
 ) -> Result<NodeRuntimeHandle, NodeError>
 where
     Db: Store + 'static,
@@ -323,7 +335,7 @@ where
     Ok(NodeRuntimeHandle { cancel, task, status })
 }
 
-pub async fn run_application(config: AppConfig) -> Result<(), NodeError> {
+pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {
     let context = build_context(&config).await?;
     run_with_context(context, config).await
 }

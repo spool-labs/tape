@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::config::StateConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -17,7 +16,6 @@ use crate::features::state::handlers::ProtocolStateHandlers;
 
 pub struct StateManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: StateConfig,
     rx: mpsc::Receiver<Arc<ParsedBlock>>,
     cancel: CancellationToken,
 }
@@ -25,13 +23,11 @@ pub struct StateManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: StateConfig,
         rx: mpsc::Receiver<Arc<ParsedBlock>>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             rx,
             cancel,
         }
@@ -42,7 +38,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
 
         debug!(
             node_id = self.context.node_id().0,
-            config = ?self.config,
             "state manager started"
         );
 

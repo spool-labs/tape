@@ -6,13 +6,12 @@ use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_core::types::SlotNumber;
 use tape_protocol::Api;
-use tape_retry::retry_if;
+use tape_retry::{RetryConfig, retry_if};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::core::channels::{DownstreamSenders, send_block};
-use crate::config::BlockIngestorConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
@@ -32,7 +31,7 @@ enum IngestStep {
 
 pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: BlockIngestorConfig,
+    start_slot: SlotNumber,
     senders: DownstreamSenders,
     cancel: CancellationToken,
 }
@@ -42,20 +41,20 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: BlockIngestorConfig,
+        start_slot: SlotNumber,
         senders: DownstreamSenders,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
+            start_slot,
             senders,
             cancel,
         }
     }
 
     pub async fn run(self) -> Result<(), NodeError> {
-        let mut next_slot = self.config.start_slot;
+        let mut next_slot = self.start_slot;
 
         loop {
             tokio::select! {
@@ -92,7 +91,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let context = self.context.clone();
 
         let block = retry_if(
-            self.config.fetch_retry.clone(),
+            RetryConfig::infinite(),
             Some(&self.cancel),
             move || {
                 let context = context.clone();
@@ -185,7 +184,6 @@ mod tests {
     use tape_core::snapshot::ReplayableEvent;
     use tape_core::system::EpochPhase;
     use tape_core::types::{EpochNumber, SlotNumber};
-    use tape_retry::RetryConfig;
     use tape_store::ops::EventLogOps;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
@@ -193,7 +191,6 @@ mod tests {
     use super::BlockIngestor;
     use crate::chain::submit_join_network;
     use crate::core::channels::{downstream_channels, store_channel};
-    use crate::config::{BlockIngestorConfig, ChannelConfig, ReplayConfig};
     use crate::features::replay::manager::ReplayManager;
     use crate::harness::NodeHarness;
 
@@ -223,17 +220,10 @@ mod tests {
             .await
             .expect("discover produced slot");
 
-        let (senders, receivers) = downstream_channels(&ChannelConfig {
-            parsed_block_capacity: 8,
-            replay_batch_capacity: 8,
-        });
-        let (store_tx, mut store_rx) = store_channel(&ChannelConfig {
-            parsed_block_capacity: 8,
-            replay_batch_capacity: 8,
-        });
+        let (senders, receivers) = downstream_channels();
+        let (store_tx, mut store_rx) = store_channel();
         let replay = ReplayManager::new(
             ctx.clone(),
-            ReplayConfig,
             receivers.replay,
             store_tx,
             CancellationToken::new(),
@@ -242,10 +232,7 @@ mod tests {
 
         let ingestor = BlockIngestor::new(
             ctx.clone(),
-            BlockIngestorConfig {
-                start_slot: produced_slot,
-                fetch_retry: RetryConfig::none(),
-            },
+            produced_slot,
             senders,
             CancellationToken::new(),
         );

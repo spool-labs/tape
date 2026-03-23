@@ -5,11 +5,13 @@ use tape_store::types::{ObjectInfo, Pubkey};
 use tape_store::TapeStore;
 use tokio::task::yield_now;
 
-use crate::config::GcConfig;
+use crate::config::store::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::store::cleanup::{
     cleanup_track_slices, delete_tape_local, delete_track_local,
 };
+
+const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
 
 pub async fn sweep_epoch<Db: Store>(
     store: &TapeStore<Db>,
@@ -33,7 +35,7 @@ async fn sweep_expired_tapes<Db: Store>(
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
-            delete_tape_local(store, tape, track_batch_size(config))?;
+            delete_tape_local(store, tape, track_batch(config))?;
         }
 
         if should_yield(index) {
@@ -50,11 +52,11 @@ async fn sweep_uncertified_tracks<Db: Store>(
     current_epoch: EpochNumber,
 ) -> Result<(), NodeError> {
     let mut cursor = None;
-    let retention = config.uncertified_retention_epochs;
+    let retention = UNCERTIFIED_RETENTION_EPOCHS;
 
     loop {
         let tracks = store
-            .iter_tracks_from(cursor, track_batch_size(config))
+            .iter_tracks_from(cursor, track_batch(config))
             .map_err(store_error)?;
 
         if tracks.is_empty() {
@@ -92,7 +94,7 @@ async fn sweep_orphan_tracks<Db: Store>(
 
     loop {
         let tracks = store
-            .iter_tracks_from(cursor, track_batch_size(config))
+            .iter_tracks_from(cursor, track_batch(config))
             .map_err(store_error)?;
 
         if tracks.is_empty() {
@@ -130,7 +132,7 @@ async fn sweep_orphan_slices<Db: Store>(
 
         loop {
             let slices = store
-                .iter_slices_by_spool_from(spool_id, cursor, slice_batch_size(config))
+                .iter_slices_by_spool_from(spool_id, cursor, slice_batch(config))
                 .map_err(store_error)?;
 
             if slices.is_empty() {
@@ -212,12 +214,12 @@ fn recovery_is_stale<Db: Store>(
     Ok(!matches!(object, Some(ObjectInfo::Valid { .. })))
 }
 
-fn track_batch_size(config: &GcConfig) -> usize {
-    config.track_batch_size.max(1)
+fn track_batch(config: &GcConfig) -> usize {
+    config.track_batch.max(1)
 }
 
-fn slice_batch_size(config: &GcConfig) -> usize {
-    config.slice_batch_size.max(1)
+fn slice_batch(config: &GcConfig) -> usize {
+    config.slice_batch.max(1)
 }
 
 fn should_yield(index: usize) -> bool {
@@ -230,8 +232,6 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use store_memory::MemoryStore;
     use tape_core::spooler::SpoolGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
@@ -243,7 +243,7 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::sweep_epoch;
-    use crate::config::GcConfig;
+    use crate::config::store::GcConfig;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -252,10 +252,9 @@ mod tests {
     fn test_config() -> GcConfig {
         GcConfig {
             enabled: true,
-            scan_interval: Duration::from_secs(60),
-            track_batch_size: 2,
-            slice_batch_size: 2,
-            uncertified_retention_epochs: 2,
+            interval_secs: 60,
+            track_batch: 2,
+            slice_batch: 2,
         }
     }
 

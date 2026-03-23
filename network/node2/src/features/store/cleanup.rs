@@ -22,13 +22,13 @@ pub fn delete_track_local<Db: Store>(
 pub fn delete_tape_local<Db: Store>(
     store: &TapeStore<Db>,
     tape: Pubkey,
-    track_batch_size: usize,
+    track_batch: usize,
 ) -> Result<(), NodeError> {
     let mut cursor = None;
 
     loop {
         let tracks = store
-            .iter_tracks_from(cursor, track_batch_size)
+            .iter_tracks_from(cursor, track_batch)
             .map_err(store_error)?;
 
         if tracks.is_empty() {

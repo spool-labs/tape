@@ -101,6 +101,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -112,15 +113,15 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::config::EpochLifecycleConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
 use crate::features::lifecycle::{advance_epoch, advance_pool, join_network, sync_epoch, wait_spool_ready};
 
+const LIFECYCLE_HEARTBEAT: Duration = Duration::from_secs(1);
+
 pub struct LifecycleManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    config: EpochLifecycleConfig,
     cancel: CancellationToken,
 }
 
@@ -129,12 +130,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
-        config: EpochLifecycleConfig,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
-            config,
             cancel,
         }
     }
@@ -214,7 +213,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 }
 
                 // Periodic heartbeat
-                _ = tokio::time::sleep(self.config.interval) => {
+                _ = tokio::time::sleep(LIFECYCLE_HEARTBEAT) => {
                     self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
                 }
             }
