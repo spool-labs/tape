@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use solana_sdk::signature::Keypair;
 use tape_core::bls::BlsPrivateKey;
+use tape_api::consts::NAME_LENGTH;
 use tape_core::types::BasisPoints;
 use tape_sdk::{load_bls_keypair, load_solana_keypair};
 
@@ -107,6 +108,13 @@ impl NodeConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.node.name.trim().is_empty() {
             return Err(ConfigError::Invalid("node.name is required".into()));
+        }
+
+        if self.node.name.as_bytes().len() > NAME_LENGTH {
+            return Err(ConfigError::Invalid(format!(
+                "node.name exceeds {} bytes",
+                NAME_LENGTH
+            )));
         }
 
         if self.solana.rpc.trim().is_empty() {
@@ -231,7 +239,7 @@ solana:
   rpc: "http://127.0.0.1:8899"
   start_slot: 12
 network:
-  host: "node1.tapedrive.io"
+  host: "10.0.0.1"
   port: 443
 http:
   listen: "0.0.0.0:8080"
@@ -278,7 +286,7 @@ tls:
         assert_eq!(config.node.commission, BasisPoints(0));
         assert_eq!(config.solana.rpc, "http://127.0.0.1:8899");
         assert_eq!(config.solana.start_slot, Some(SlotNumber(12)));
-        assert_eq!(config.network.host.as_deref(), Some("node1.tapedrive.io"));
+        assert_eq!(config.network.host.as_deref(), Some("10.0.0.1"));
         assert_eq!(config.network.port, 443);
         assert_eq!(config.http.listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.http.timeout_secs, 7);
@@ -422,5 +430,31 @@ recovery:
     fn default_config_path_points_to_node_yaml() {
         let path = default_config_path();
         assert!(path.to_string_lossy().contains("node.yaml"));
+    }
+
+    #[test]
+    fn rejects_overlong_name() {
+        let long = "a".repeat(33);
+        let yaml = format!(
+            r#"
+node:
+  name: "{long}"
+"#
+        );
+        let result = NodeConfig::from_yaml_str(&yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_max_length_name() {
+        let name = "a".repeat(32);
+        let yaml = format!(
+            r#"
+node:
+  name: "{name}"
+"#
+        );
+        let config = NodeConfig::from_yaml_str(&yaml).unwrap();
+        assert_eq!(config.node.name, name);
     }
 }

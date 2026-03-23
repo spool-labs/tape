@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer};
 /// Network advertisement settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct NetworkConfig {
-    /// Public hostname this node intends to advertise.
+    /// Public IP address this node intends to advertise.
     #[serde(default)]
     pub host: Option<String>,
 

@@ -2,6 +2,7 @@ pub mod advance_epoch;
 pub mod advance_pool;
 pub mod invalidate_track;
 pub mod join_network;
+pub mod register_node;
 pub mod snapshot;
 pub mod sync_epoch;
 
