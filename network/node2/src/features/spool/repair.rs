@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
@@ -8,9 +9,11 @@ use tape_core::types::NodeId;
 use tape_protocol::Api;
 use tape_protocol::api::ops::RepairReq;
 use tape_protocol::api::types::StripeSubChunkRequest;
+use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, RepairPlan, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey, SpoolState, TrackInfo};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -19,6 +22,8 @@ use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::types::RepairResult;
+
+const REPAIR_FETCH_CONCURRENCY: usize = 4;
 
 // Purpose: Bandwidth-optimal Clay repair for missing slices.
 //          Drains the pending_repairs queue populated by Scan.
@@ -83,7 +88,7 @@ use crate::features::spool::types::RepairResult;
 //   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
-pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
@@ -239,7 +244,7 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// Attempt Clay repair for a single track.
 /// Returns Ok(repaired_data) or Err(()) to signal escalation.
-async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
@@ -308,12 +313,39 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(repaired)
 }
 
-/// Fetch sub-chunk data from all helpers in the plan using per-helper fallback.
+/// Fetch sub-chunk data from one helper using per-helper fallback.
+///
+/// Tries the previous peer first, then the current.
+/// Returns the fetched data on first success, or the slice index on failure.
+async fn fetch_one_helper<Cluster: Api + 'static>(
+    peer_manager: Arc<PeerManager>,
+    api: Arc<Cluster>,
+    retry: RetryConfig,
+    token: CancellationToken,
+    candidates: [Option<NodeId>; 2],
+    req: RepairReq,
+    slice_idx: SliceIndex,
+) -> Result<(SliceIndex, Vec<u8>), SliceIndex> {
+    for node_id in candidates.into_iter().flatten() {
+        if let Ok(res) = call_peer(
+            &peer_manager,
+            retry.clone(),
+            node_id,
+            Some(&token),
+            || api.repair(node_id, &req),
+        ).await {
+            return Ok((slice_idx, res.data));
+        }
+    }
+    Err(slice_idx)
+}
+
+/// Fetch sub-chunk data from all helpers in the plan using bounded concurrency.
 ///
 /// For each helper, tries the previous peer map first, then the current.
-/// Keeps the first success per helper and accumulates across both sources.
+/// Runs up to REPAIR_FETCH_CONCURRENCY helper fetches in parallel.
 /// Returns Err if any required helper is unavailable in both maps.
-async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
@@ -323,35 +355,76 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     token: &CancellationToken,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
     let reqs = per_helper_reqs(plan, spool, track);
-    let mut helper_data = HashMap::new();
+    let mut work: Vec<(SliceIndex, RepairReq)> = reqs.into_iter().collect();
+    work.sort_by_key(|(idx, _)| *idx);
+    let mut work_iter = work.into_iter();
 
-    for (slice_idx, req) in &reqs {
+    let mut helper_data = HashMap::new();
+    let mut join_set: JoinSet<Result<(SliceIndex, Vec<u8>), SliceIndex>> = JoinSet::new();
+
+    // Seed initial batch.
+    for _ in 0..REPAIR_FETCH_CONCURRENCY {
+        if token.is_cancelled() {
+            return Err(());
+        }
+        let Some((slice_idx, req)) = work_iter.next() else { break };
         let prev_id = peers.previous.get(&req.helper_spool).copied();
         let curr_id = peers.current.get(&req.helper_spool).copied();
-
         let candidates = [
             prev_id,
             curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
         ];
+        join_set.spawn(fetch_one_helper(
+            ctx.peer_manager.clone(),
+            ctx.api.clone(),
+            config.peer_retry.clone(),
+            token.clone(),
+            candidates,
+            req,
+            slice_idx,
+        ));
+    }
 
-        let mut success = false;
-        for node_id in candidates.into_iter().flatten() {
-            if let Ok(res) = call_peer(
-                &ctx.peer_manager,
-                config.peer_retry.clone(),
-                node_id,
-                Some(token),
-                || ctx.api.repair(node_id, req),
-            ).await {
-                ctx.metrics.add_repair_fetched(res.data.len() as u64);
-                helper_data.insert(*slice_idx, res.data);
-                success = true;
-                break;
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok((slice_idx, data))) => {
+                ctx.metrics.add_repair_fetched(data.len() as u64);
+                helper_data.insert(slice_idx, data);
+
+                if token.is_cancelled() {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Err(());
+                }
+
+                if let Some((next_idx, next_req)) = work_iter.next() {
+                    let prev_id = peers.previous.get(&next_req.helper_spool).copied();
+                    let curr_id = peers.current.get(&next_req.helper_spool).copied();
+                    let candidates = [
+                        prev_id,
+                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                    ];
+                    join_set.spawn(fetch_one_helper(
+                        ctx.peer_manager.clone(),
+                        ctx.api.clone(),
+                        config.peer_retry.clone(),
+                        token.clone(),
+                        candidates,
+                        next_req,
+                        next_idx,
+                    ));
+                }
             }
-        }
-
-        if !success {
-            return Err(());
+            Ok(Err(_failed_idx)) => {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                return Err(());
+            }
+            Err(_join_error) => {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                return Err(());
+            }
         }
     }
 

@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
+use peer_manager::PeerManager;
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
+use tape_core::types::NodeId;
 use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
+use tape_retry::RetryConfig;
 use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::Pubkey;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -18,6 +22,8 @@ use crate::core::peer_call::call_peer;
 use crate::features::spool::policy::{track_requirement, TrackRequirement};
 use crate::features::spool::repair::{GroupPeers, group_peers};
 use crate::features::spool::types::RecoverResult;
+
+const RECOVER_FETCH_CONCURRENCY: usize = 4;
 
 // Purpose: Full erasure code recovery for slices that could not be Clay-repaired.
 //          Drains the pending_recoveries queue populated by the Repair task.
@@ -67,7 +73,7 @@ use crate::features::spool::types::RecoverResult;
 //   spool, group, AND lost is redundant — any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
-pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
@@ -209,12 +215,41 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     RecoverResult::Done { remaining }
 }
 
-/// Fetch k full slices for a given track using per-helper fallback.
+/// Fetch one full slice from a helper position using per-helper fallback.
+///
+/// Tries the previous peer first, then the current.
+/// Returns the fetched slice data on first non-empty success, or Err on failure.
+async fn fetch_one_slice<Cluster: Api + 'static>(
+    peer_manager: Arc<PeerManager>,
+    api: Arc<Cluster>,
+    retry: RetryConfig,
+    token: CancellationToken,
+    candidates: [Option<NodeId>; 2],
+    request: GetSliceReq,
+    helper_slice: usize,
+) -> Result<(SliceIndex, Vec<u8>), ()> {
+    for node_id in candidates.into_iter().flatten() {
+        if let Ok(res) = call_peer(
+            &peer_manager,
+            retry.clone(),
+            node_id,
+            Some(&token),
+            || api.get_slice(node_id, &request),
+        ).await {
+            if !res.data.is_empty() {
+                return Ok((SliceIndex::new(helper_slice), res.data));
+            }
+        }
+    }
+    Err(())
+}
+
+/// Fetch k full slices for a given track using bounded concurrency.
 ///
 /// For each helper position, tries the previous peer map first, then the current.
-/// Keeps the first success per position and accumulates across both sources.
+/// Runs up to RECOVER_FETCH_CONCURRENCY helper-position fetches in parallel.
 /// Returns collected (slice_index, data) pairs, or Err if < k available.
-async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
+async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
@@ -228,49 +263,108 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track: tape_crypto::Pubkey = track_addr.into();
     let mut slices = Vec::with_capacity(k);
 
-    for helper_slice in 0..SPOOL_GROUP_SIZE {
-        if slices.len() >= k {
-            break;
-        }
+    let positions: Vec<usize> = (0..SPOOL_GROUP_SIZE)
+        .filter(|&pos| group.spool_at(pos) != spool)
+        .collect();
+    let mut pos_iter = positions.into_iter();
 
+    let mut join_set: JoinSet<Result<(SliceIndex, Vec<u8>), ()>> = JoinSet::new();
+
+    // Seed initial batch.
+    for _ in 0..RECOVER_FETCH_CONCURRENCY {
+        if token.is_cancelled() {
+            return Err(());
+        }
+        let Some(helper_slice) = pos_iter.next() else { break };
         let helper_spool = group.spool_at(helper_slice);
-        if helper_spool == spool {
-            continue;
-        }
-
         let prev_id = peers.previous.get(&helper_spool).copied();
         let curr_id = peers.current.get(&helper_spool).copied();
-
         let candidates = [
             prev_id,
             curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
         ];
+        let request = GetSliceReq { track, spool: helper_spool };
+        join_set.spawn(fetch_one_slice(
+            ctx.peer_manager.clone(),
+            ctx.api.clone(),
+            config.peer_retry.clone(),
+            token.clone(),
+            candidates,
+            request,
+            helper_slice,
+        ));
+    }
 
-        let request = GetSliceReq {
-            track,
-            spool: helper_spool,
-        };
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok((idx, data))) => {
+                ctx.metrics.add_recover_fetched(data.len() as u64);
+                slices.push((idx, data));
 
-        let mut fetched = false;
-        for node_id in candidates.into_iter().flatten() {
-            if let Ok(res) = call_peer(
-                &ctx.peer_manager,
-                config.peer_retry.clone(),
-                node_id,
-                Some(token),
-                || { ctx.api.get_slice(node_id, &request) },
-            ).await {
-                if !res.data.is_empty() {
-                    ctx.metrics.add_recover_fetched(res.data.len() as u64);
-                    slices.push((SliceIndex::new(helper_slice), res.data));
-                    fetched = true;
-                    break;
+                if slices.len() >= k {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Ok(slices);
+                }
+
+                if token.is_cancelled() {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Err(());
+                }
+
+                if let Some(next_pos) = pos_iter.next() {
+                    let helper_spool = group.spool_at(next_pos);
+                    let prev_id = peers.previous.get(&helper_spool).copied();
+                    let curr_id = peers.current.get(&helper_spool).copied();
+                    let candidates = [
+                        prev_id,
+                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                    ];
+                    let request = GetSliceReq { track, spool: helper_spool };
+                    join_set.spawn(fetch_one_slice(
+                        ctx.peer_manager.clone(),
+                        ctx.api.clone(),
+                        config.peer_retry.clone(),
+                        token.clone(),
+                        candidates,
+                        request,
+                        next_pos,
+                    ));
                 }
             }
-        }
+            Ok(Err(())) => {
+                if token.is_cancelled() {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Err(());
+                }
 
-        if !fetched && token.is_cancelled() {
-            break;
+                if let Some(next_pos) = pos_iter.next() {
+                    let helper_spool = group.spool_at(next_pos);
+                    let prev_id = peers.previous.get(&helper_spool).copied();
+                    let curr_id = peers.current.get(&helper_spool).copied();
+                    let candidates = [
+                        prev_id,
+                        curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+                    ];
+                    let request = GetSliceReq { track, spool: helper_spool };
+                    join_set.spawn(fetch_one_slice(
+                        ctx.peer_manager.clone(),
+                        ctx.api.clone(),
+                        config.peer_retry.clone(),
+                        token.clone(),
+                        candidates,
+                        request,
+                        next_pos,
+                    ));
+                }
+            }
+            Err(_join_error) => {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                return Err(());
+            }
         }
     }
 
@@ -597,5 +691,68 @@ mod tests {
         );
         let recovered = reconstruct(&mut recovery_slicer, lost, &peer_slices).unwrap();
         assert_eq!(recovered, slices[*lost]);
+    }
+
+    /// Only k helper positions return valid data; the rest return errors.
+    /// Recovery should succeed without waiting for all positions.
+    #[tokio::test]
+    async fn early_stop() {
+        let profile = EncodingProfile::clay_default();
+        let k = profile.k() as usize;
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let payload = vec![0x42u8; 1024];
+        let slices = slicer.encode(&payload).unwrap();
+        let group = SpoolGroup::of(SPOOL);
+        let lost_pos = group.slice_of(SPOOL).unwrap();
+        let expected = slices[lost_pos].clone();
+
+        // Compute which helper positions will succeed (first k, excluding ours).
+        let mut good_spools = std::collections::HashSet::new();
+        let mut count = 0;
+        for pos in 0..SPOOL_GROUP_SIZE {
+            let helper_spool = group.spool_at(pos);
+            if helper_spool == SPOOL {
+                continue;
+            }
+            if count < k {
+                good_spools.insert(helper_spool);
+                count += 1;
+            }
+        }
+
+        let slices_for_api = slices.clone();
+        let track = addr(1);
+        let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
+            PeerReq::GetSlice(ref r) => {
+                if good_spools.contains(&r.spool) {
+                    let pos = group.slice_of(r.spool).unwrap();
+                    PeerRes::GetSlice(Ok(GetSliceRes {
+                        data: slices_for_api[pos].clone(),
+                    }))
+                } else {
+                    PeerRes::GetSlice(Err(tape_protocol::api::ApiError::Other(
+                        "simulated failure".into(),
+                    )))
+                }
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        ctx.store
+            .set_spool_state(SPOOL, recover_state(EpochNumber(3)))
+            .unwrap();
+        ctx.store.put_track(track, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_object_info(track, certified(track)).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, track).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
+        assert!(!ctx.store.has_pending_recovery(SPOOL, track).unwrap());
     }
 }
