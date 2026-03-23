@@ -151,15 +151,18 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         }
                         Err(e) => {
                             if e.is_cancelled() {
+                                // Abort was intentional (epoch change). running was
+                                // already updated by the abort site — don't clear it
+                                // or try_spawn_next will duplicate the replacement task.
                                 debug!("lifecycle: task was aborted");
                             } else {
                                 warn!(?e, "lifecycle: task panicked");
+                                running = None;
                             }
-
-                            // Clear running on panic/abort too
-                            running = None;
                         }
                     }
+
+                    self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
                 }
 
                 // State changed ("replan" signal)

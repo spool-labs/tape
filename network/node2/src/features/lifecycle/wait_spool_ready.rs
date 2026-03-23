@@ -6,6 +6,7 @@ use tracing::{debug, info};
 use rpc::Rpc;
 use store::Store;
 use tape_core::spooler::SpoolIndex;
+use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::SpoolOps;
@@ -51,7 +52,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     loop {
         if ctx.state().epoch != epoch {
-            info!(epoch = epoch.0, "advance_epoch: epoch already advanced");
+            info!(epoch = epoch.0, "wait_spool_ready: epoch already advanced");
+            return TaskDone::Rejected(Action::WaitSpoolReady, epoch);
+        }
+
+        if ctx.phase() > EpochPhase::Syncing {
+            info!(epoch = epoch.0, phase = ?ctx.phase(), "wait_spool_ready: past syncing phase");
             return TaskDone::Rejected(Action::WaitSpoolReady, epoch);
         }
 
