@@ -31,7 +31,7 @@ use crate::features::spool::types::RepairResult;
 // Algorithm:
 // 1. Load spool state. Derive group and our slice index within it.
 //    Build two peer maps from spool_state.prev_helpers (previous)
-//    and peer_manager.healthy_peers_for_group (current).
+//    and protocol.group_peers(group) (current).
 //    Exclude our own spool from both maps.
 //
 // 2. Batch loop over store.iter_pending_repairs(spool, batch_size):
@@ -203,6 +203,10 @@ pub struct GroupPeers {
 }
 
 /// Build peer maps for a spool's group, excluding our own spool.
+///
+/// Node2 does not yet have its own peer-refresh/malicious-peer policy, so the
+/// current committee map is taken directly from protocol state instead of
+/// prefiltering via PeerManager health cooldowns.
 pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool_state: &SpoolState,
@@ -224,9 +228,8 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect();
 
     let protocol = ctx.state();
-    let current = ctx
-        .peer_manager
-        .healthy_peers_for_group(protocol.as_ref(), group)
+    let current = protocol
+        .group_peers(group)
         .into_iter()
         .filter(|(helper_spool, _)| *helper_spool != spool)
         .collect();
