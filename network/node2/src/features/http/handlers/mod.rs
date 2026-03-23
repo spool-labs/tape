@@ -1,5 +1,7 @@
 pub mod health;
 pub mod inconsistency;
+#[cfg(feature = "metrics")]
+pub mod metrics;
 pub mod metadata;
 pub mod repair;
 pub mod sign;

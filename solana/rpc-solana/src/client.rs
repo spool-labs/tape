@@ -104,7 +104,7 @@ impl SolanaRpc {
 
         let new_endpoint = failover.next_endpoint()?;
         let new_endpoint_str = new_endpoint.to_string();
-        let _current_index = failover.current_index();
+        let current_index = failover.current_index();
 
         #[cfg(feature = "metrics")]
         tracing::info!(endpoint = %new_endpoint_str, "Switching RPC endpoint");

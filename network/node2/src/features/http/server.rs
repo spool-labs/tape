@@ -32,6 +32,8 @@ use crate::features::http::state::AppState;
 pub struct HttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: HttpConfig,
+    #[cfg_attr(not(feature = "metrics"), allow(dead_code))]
+    metrics_enabled: bool,
     cancel: CancellationToken,
 }
 
@@ -41,11 +43,13 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         config: HttpConfig,
+        metrics_enabled: bool,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
             config,
+            metrics_enabled,
             cancel,
         }
     }
@@ -55,7 +59,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             context: self.context.clone(),
         };
 
-        let base_routes = Router::new()
+        #[allow(unused_mut)]
+        let mut base_routes = Router::new()
             .route(
                 api_routes::HEALTH_PATH,
                 get(handlers::health::health::<Db, Cluster, Blockchain>),
@@ -80,6 +85,14 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 api_routes::SNAPSHOT_SIG_PATH,
                 post(handlers::sign::put_snapshot::<Db, Cluster, Blockchain>),
             );
+
+        #[cfg(feature = "metrics")]
+        if self.metrics_enabled {
+            base_routes = base_routes.route(
+                api_routes::METRICS_PATH,
+                get(handlers::metrics::metrics),
+            );
+        }
 
         let slice_routes = Router::new()
             .route(

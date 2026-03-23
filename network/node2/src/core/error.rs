@@ -40,6 +40,9 @@ pub enum NodeError {
     #[error("rpc error: {0}")]
     Rpc(#[from] RpcError),
 
+    #[error("peer HTTP client error: {0}")]
+    PeerHttp(#[from] peer_tls::TlsError),
+
     #[error("block parse error: {0}")]
     BlockParse(#[from] ParseError),
 

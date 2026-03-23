@@ -34,25 +34,71 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<RocksStore>, 
     })
 }
 
-pub fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
+fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {
         endpoints: vec![config.solana.rpc.clone()],
         ..RpcConfig::default()
     };
 
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled {
+        return RpcClient::new_with_metrics(rpc_config).map_err(NodeError::from);
+    }
+
     RpcClient::new(rpc_config).map_err(NodeError::from)
+}
+
+fn build_peer_api(
+    #[cfg_attr(not(feature = "metrics"), allow(unused))]
+    config: &NodeConfig,
+    peer_manager: Arc<PeerManager>,
+) -> Result<Arc<HttpApi>, NodeError> {
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled {
+        if let Some(registry) = tape_metrics::MetricsRegistry::get() {
+            let metrics = Arc::new(
+                peer_http::ApiMetrics::new(registry.prometheus_registry()),
+            );
+            let api = peer_http::HttpApiBuilder::new()
+                .metrics(metrics)
+                .build(peer_manager)?;
+            return Ok(Arc::new(api));
+        }
+    }
+
+    Ok(Arc::new(HttpApi::with_default_timeouts(peer_manager)))
+}
+
+fn init_metrics(config: &NodeConfig) {
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled {
+        tape_metrics::MetricsRegistry::init();
+        store::metrics::init_metrics();
+        info!("prometheus metrics initialized");
+        return;
+    }
+
+    #[cfg(not(feature = "metrics"))]
+    if config.metrics.enabled {
+        tracing::warn!(
+            "metrics.enabled = true but binary was built without the 'metrics' feature"
+        );
+    }
 }
 
 pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError> {
     let keypair = config.load_node_keypair()?;
     let bls_keypair = config.load_bls_keypair()?;
+
+    init_metrics(config);
+
     let store = open_primary_store(config)?;
     let rpc = build_rpc_client(config)?;
 
     ensure_registered(config, &rpc, &keypair, &bls_keypair).await?;
 
     let peer_manager = Arc::new(PeerManager::new());
-    let api = Arc::new(HttpApi::with_default_timeouts(peer_manager.clone()));
+    let api = build_peer_api(config, peer_manager.clone())?;
 
     NodeContextBuilder::new(
         config.clone(),
