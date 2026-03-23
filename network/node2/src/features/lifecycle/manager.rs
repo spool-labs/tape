@@ -61,9 +61,16 @@
 // ── No permanent failure ────────────────────────────────────────────
 //
 //   The lifecycle manager never gives up. If a task returns Rejected
-//   or any error, the manager re-evaluates. If the state hasn't changed,
-//   it respawns the same task. The system must be resilient to outages
-//   and resume on its own.
+//   or any error, the manager keeps the action eligible and will retry
+//   it on the next heartbeat or state change. Successful completions
+//   still replan immediately so the happy path stays fast.
+//
+//   This deliberately avoids a tight respawn loop when a task can
+//   reject quickly against unchanged local or on-chain state (for
+//   example JoinNetwork returning NotStaked/NodeStale). The system
+//   remains resilient to outages and resumes on its own, but retries
+//   are paced by the existing lifecycle interval instead of a raw
+//   completion-driven spin loop.
 //
 // ── Manager architecture ────────────────────────────────────────────
 //
@@ -71,10 +78,17 @@
 //     1. Subscribes to state_rx (epoch/phase changes from StateManager).
 //     2. Maintains at most ONE active task in a JoinSet.
 //     3. Selects on: state_rx.changed(), join_set.join_next(), cancel.
-//     4. On any wake-up: re-evaluate next_action().
+//     4. On state change or heartbeat: re-evaluate next_action().
 //        - If current action is still correct: no-op (task continues).
 //        - If action changed: cancel current task, spawn new one.
 //        - If no action needed: ensure no task is running.
+//     5. On task completion:
+//        - Done → re-evaluate immediately so the next lifecycle step
+//          can start without waiting for the heartbeat.
+//        - Rejected / panic → wait for heartbeat or state change before
+//          retrying, which prevents a hot loop on unchanged state.
+//        - Cancelled → rely on the state-change path that caused the
+//          cancellation.
 //
 //   Individual tasks loop internally with retry and backoff.
 //   They only return on: success, cancel, or permanent rejection.
@@ -145,24 +159,30 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Task completed
                 Some(completion) = tasks.join_next() => {
-                    match completion {
+                    let replan_immediately = match completion {
                         Ok(result) => {
-                            self.handle_task_completion(result, &mut done, &mut running);
+                            self.handle_task_completion(result, &mut done, &mut running)
                         }
                         Err(e) => {
                             if e.is_cancelled() {
-                                // Abort was intentional (epoch change). running was
-                                // already updated by the abort site — don't clear it
-                                // or try_spawn_next will duplicate the replacement task.
+                                // Abort was intentional (epoch change). The state-change path
+                                // already cleared or replaced `running`, so we intentionally
+                                // defer replanning to that path to avoid duplicating work.
                                 debug!("lifecycle: task was aborted");
                             } else {
+                                // A panic can otherwise cause an immediate respawn on unchanged
+                                // state and devolve into a tight loop, so wait for the
+                                // heartbeat or a fresh state update before trying again.
                                 warn!(?e, "lifecycle: task panicked");
                                 running = None;
                             }
+                            false
                         }
-                    }
+                    };
 
-                    self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
+                    if replan_immediately {
+                        self.try_spawn_next(&mut tasks, &mut running, &mut done, observed_epoch);
+                    }
                 }
 
                 // State changed ("replan" signal)
@@ -245,7 +265,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         result: TaskDone,
         done: &mut HashSet<Action>,
         running: &mut Option<Action>,
-    ) {
+    ) -> bool {
+        let replan_immediately = matches!(result, TaskDone::Done(..));
         let action = match &result {
             TaskDone::Done(a, _) | 
             TaskDone::Rejected(a, _) | 
@@ -266,16 +287,16 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             TaskDone::Rejected(action, epoch) => {
                 debug!(?action, epoch = epoch.0, "lifecycle: task rejected");
 
-                // A rejected task indicates a permanent failure for that action in the current
-                // epoch.
-
-                // TODO: we need to figure out what to do in this case, it might be fine to leave
-                // it as is and just wait for the next epoch.
+                // Keep the action eligible, but let the heartbeat/state-change path pace retries.
+                // This avoids immediately respawning a task that just rejected against unchanged
+                // prerequisites (for example JoinNetwork on a stale or unstaked node).
             }
             TaskDone::Cancelled(action, epoch) => {
                 debug!(?action, epoch = epoch.0, "lifecycle: task cancelled");
             }
         }
+
+        replan_immediately
     }
 }
 
@@ -345,7 +366,6 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::types::NodeId;
     use tape_protocol::ProtocolState;
-
     use super::next_action;
     use crate::features::lifecycle::types::Action;
 

@@ -1,11 +1,9 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
 use tape_core::erasure::SPOOL_GROUP_SIZE;
 use tape_core::spooler::{SpoolGroup, SpoolIndex};
-use tape_core::types::NodeId;
 use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
 use tape_slicer::{ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
@@ -18,7 +16,7 @@ use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
 use crate::features::spool::policy::{track_requirement, TrackRequirement};
-use crate::features::spool::repair::group_peers;
+use crate::features::spool::repair::{GroupPeers, group_peers};
 use crate::features::spool::types::RecoverResult;
 
 // Purpose: Full erasure code recovery for slices that could not be Clay-repaired.
@@ -35,12 +33,11 @@ use crate::features::spool::types::RecoverResult;
 //      b. Skip if slice already present (has_slice). Remove from queue.
 //      c. Load track_info. If missing, remove from queue, continue.
 //
-//      d. Fetch k full slices (per-track: try prev_helpers first, then current):
-//         - Build ordered list of peer spools (excluding ours).
-//         - Try fetching all from previous peer map via call_peer + api.get_slice.
-//         - If we got >= k valid slices, proceed. Otherwise discard all and
-//           retry the entire set from the current peer map.
-//         - If still < k → track stays pending, continue.
+//      d. Fetch k full slices (per-track: per-helper fallback across both peer maps):
+//         - For each helper position in the spool group (excluding ours):
+//           try the previous peer map first, fall back to the current peer map.
+//           Keep the first success per position. Accumulate across both sources.
+//         - If total >= k valid slices → proceed. Otherwise track stays pending.
 //
 //      e. Reconstruct:
 //         - ClayCoder::from_params(track_info.profile().clay_params())
@@ -166,18 +163,11 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             let k = slicer.k();
 
             let peer_slices = match fetch_slices(
-                ctx.as_ref(), config, spool, k, &peers.previous, track_addr, token
+                ctx.as_ref(), config, spool, k, &peers, track_addr, token
             ).await
             {
                 Ok(peer_slices) => peer_slices,
-                Err(()) => match fetch_slices(
-                    ctx.as_ref(), config, spool, k, &peers.current, track_addr, token
-                )
-                .await
-                {
-                    Ok(peer_slices) => peer_slices,
-                    Err(()) => continue,
-                },
+                Err(()) => continue,
             };
 
             let recovered =
@@ -219,14 +209,17 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     RecoverResult::Done { remaining }
 }
 
-/// Fetch k full slices from a peer map for a given track.
+/// Fetch k full slices for a given track using per-helper fallback.
+///
+/// For each helper position, tries the previous peer map first, then the current.
+/// Keeps the first success per position and accumulates across both sources.
 /// Returns collected (slice_index, data) pairs, or Err if < k available.
 async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
     k: usize,
-    peer_map: &HashMap<SpoolIndex, NodeId>,
+    peers: &GroupPeers,
     track_addr: Pubkey,
     token: &CancellationToken,
 ) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
@@ -245,32 +238,40 @@ async fn fetch_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
-        let Some(node_id) = peer_map.get(&helper_spool).copied() else {
-            continue;
-        };
+        let prev_id = peers.previous.get(&helper_spool).copied();
+        let curr_id = peers.current.get(&helper_spool).copied();
+
+        let candidates = [
+            prev_id,
+            curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+        ];
 
         let request = GetSliceReq {
             track,
             spool: helper_spool,
         };
 
-        let Ok(res) = call_peer(
-            &ctx.peer_manager,
-            config.peer_retry.clone(),
-            node_id,
-            Some(token),
-            || { ctx.api.get_slice(node_id, &request) },
-        ).await else {
-            continue;
-        };
-
-        if res.data.is_empty() {
-            continue;
+        let mut fetched = false;
+        for node_id in candidates.into_iter().flatten() {
+            if let Ok(res) = call_peer(
+                &ctx.peer_manager,
+                config.peer_retry.clone(),
+                node_id,
+                Some(token),
+                || { ctx.api.get_slice(node_id, &request) },
+            ).await {
+                if !res.data.is_empty() {
+                    ctx.metrics.add_recover_fetched(res.data.len() as u64);
+                    slices.push((SliceIndex::new(helper_slice), res.data));
+                    fetched = true;
+                    break;
+                }
+            }
         }
 
-        ctx.metrics.add_recover_fetched(res.data.len() as u64);
-
-        slices.push((SliceIndex::new(helper_slice), res.data));
+        if !fetched && token.is_cancelled() {
+            break;
+        }
     }
 
     if slices.len() < k {
@@ -320,7 +321,7 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::EncodingProfile;
     use tape_core::spooler::SpoolGroup;
-    use tape_core::types::{EpochNumber, SlotNumber};
+    use tape_core::types::{EpochNumber, NodeId, SlotNumber};
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
     use tape_store::ops::ObjectInfoOps;
     use tape_store::types::{ObjectInfo, SpoolState, SpoolStatus, TrackInfo};
@@ -495,6 +496,73 @@ mod tests {
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RecoverResult::Done { remaining: 0 });
         assert!(!ctx.store.has_pending_recovery(SPOOL, a).unwrap());
+    }
+
+    /// Neither previous nor current alone has k=7 helpers, but combined they do.
+    /// Previous has positions 0..3 (4 helpers), current has positions 15..19 (5 helpers).
+    /// Per-helper fallback collects from both sources and recovers successfully.
+    #[tokio::test]
+    async fn split_peers() {
+        use tape_core::erasure::SPOOL_COUNT;
+        use tape_core::spooler::SpoolAssignment;
+        use tape_core::system::CommitteeMember;
+        use tape_core::types::coin::{Coin, TAPE};
+        use tape_protocol::ProtocolState;
+
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let payload = vec![0x42u8; 1024];
+        let slices = slicer.encode(&payload).unwrap();
+        let group = SpoolGroup::of(SPOOL);
+        let lost_pos = group.slice_of(SPOOL).unwrap();
+        let expected = slices[lost_pos].clone();
+
+        let slices_for_api = slices.clone();
+        let track = addr(1);
+
+        let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
+            PeerReq::GetSlice(ref r) => {
+                let pos = group.slice_of(r.spool).unwrap();
+                PeerRes::GetSlice(Ok(GetSliceRes {
+                    data: slices_for_api[pos].clone(),
+                }))
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        // Previous: only positions 0..3 → 4 helpers (< k=7)
+        let mut state = SpoolState::new(SpoolStatus::Recover, EpochNumber(3));
+        for pos in 0..4 {
+            state.prev_helpers[pos] = Some(NodeId(200 + pos as u64));
+        }
+
+        // Current: only positions 15..19 → 5 helpers (< k=7)
+        let mut protocol = ProtocolState::default();
+        for i in 0..5u64 {
+            protocol
+                .committee
+                .push(CommitteeMember::new(NodeId(300 + i), Coin::<TAPE>::new(1000)));
+        }
+        let mut mapping = [255u8; SPOOL_COUNT];
+        for i in 0..5 {
+            mapping[group.spool_at(15 + i) as usize] = i as u8;
+        }
+        protocol.spools = SpoolAssignment::new(mapping);
+        ctx.set_state(protocol).unwrap();
+
+        ctx.store.set_spool_state(SPOOL, state).unwrap();
+        ctx.store.put_track(track, clay_track(1024, &slices)).unwrap();
+        ctx.store.put_object_info(track, certified(track)).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, track).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RecoverResult::Done { remaining: 0 });
+        assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
     }
 
     #[test]

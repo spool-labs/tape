@@ -53,13 +53,11 @@ use crate::features::spool::types::RepairResult;
 //         Group plan.stripes by helper slice → HashMap<SliceIndex, RepairReq>
 //         Each RepairReq has the helper's spool and the StripeSubChunkRequests.
 //
-//      g. Fetch sub-chunks (per-track: try prev_helpers first, then current):
-//         - For each helper in the plan, send RepairReq via call_peer
-//           using the previous peer map.
-//         - If ANY helper from the previous set fails or is missing,
-//           discard all previous results for this track and retry
-//           the entire helper set using the current peer map.
-//         - If still missing required helpers → escalate, continue.
+//      g. Fetch sub-chunks (per-track: per-helper fallback across both peer maps):
+//         - For each helper in the plan, try the previous peer map first,
+//           fall back to the current peer map. Keep the first success per helper.
+//           Accumulate across both sources.
+//         - If any required helper is unavailable in both maps → escalate, continue.
 //
 //      h. Reconstruct:
 //         - SliceMetadata::with_profile(original_size, stripe_size, profile)
@@ -288,17 +286,9 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
         )
         .map_err(|_| ())?;
 
-    // Try fetching helper data using the previous peer map first, then fall back to current if any
-    // are missing. There is a chance that the difference between the two maps could cause the
-    // repair to fail even if helpers are available.
-    let helper_data = match fetch_helpers(
-        ctx, config, spool, &plan, &peers.previous, track, token,
-    ).await {
-        Ok(helper_data) => helper_data,
-        Err(()) => fetch_helpers(
-            ctx, config, spool, &plan, &peers.current, track, token,
-        ).await?,
-    };
+    let helper_data = fetch_helpers(
+        ctx, config, spool, &plan, peers, track, token,
+    ).await?;
 
     let metadata = SliceMetadata::with_profile(
         track_info.original_size as usize,
@@ -315,14 +305,17 @@ async fn repair_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(repaired)
 }
 
-/// Fetch sub-chunk data from all helpers in the plan using one peer map.
-/// Returns the collected helper data, or Err if any helper failed.
+/// Fetch sub-chunk data from all helpers in the plan using per-helper fallback.
+///
+/// For each helper, tries the previous peer map first, then the current.
+/// Keeps the first success per helper and accumulates across both sources.
+/// Returns Err if any required helper is unavailable in both maps.
 async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &SpoolManagerConfig,
     spool: SpoolIndex,
     plan: &RepairPlan,
-    peer_map: &HashMap<SpoolIndex, NodeId>,
+    peers: &GroupPeers,
     track: Pubkey,
     token: &CancellationToken,
 ) -> Result<HashMap<SliceIndex, Vec<u8>>, ()> {
@@ -330,25 +323,32 @@ async fn fetch_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut helper_data = HashMap::new();
 
     for (slice_idx, req) in &reqs {
-        let Some(&node_id) = peer_map.get(&req.helper_spool) else {
-            return Err(());
-        };
+        let prev_id = peers.previous.get(&req.helper_spool).copied();
+        let curr_id = peers.current.get(&req.helper_spool).copied();
 
-        let result = call_peer(
-            &ctx.peer_manager,
-            config.peer_retry.clone(),
-            node_id,
-            Some(token),
-            || ctx.api.repair(node_id, req),
-        )
-        .await;
+        let candidates = [
+            prev_id,
+            curr_id.filter(|id| prev_id.map_or(true, |p| p != *id)),
+        ];
 
-        match result {
-            Ok(res) => {
+        let mut success = false;
+        for node_id in candidates.into_iter().flatten() {
+            if let Ok(res) = call_peer(
+                &ctx.peer_manager,
+                config.peer_retry.clone(),
+                node_id,
+                Some(token),
+                || ctx.api.repair(node_id, req),
+            ).await {
                 ctx.metrics.add_repair_fetched(res.data.len() as u64);
                 helper_data.insert(*slice_idx, res.data);
+                success = true;
+                break;
             }
-            Err(_) => return Err(()),
+        }
+
+        if !success {
+            return Err(());
         }
     }
 
@@ -645,5 +645,79 @@ mod tests {
         let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, RepairResult::Done { unrepairable: 0 });
         assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    /// The repair plan requires d=16 helpers. Previous map covers positions 0..9 (excluding 5),
+    /// current map covers positions 10..19. Neither alone satisfies all plan helpers.
+    /// Per-helper fallback finds each helper in whichever map has it.
+    #[tokio::test]
+    async fn split_peers() {
+        use tape_core::erasure::SPOOL_COUNT;
+        use tape_core::spooler::SpoolAssignment;
+        use tape_core::system::CommitteeMember;
+        use tape_core::types::coin::{Coin, TAPE};
+        use tape_protocol::ProtocolState;
+
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            512,
+            true,
+            profile,
+        );
+        let payload = vec![0x42u8; 1024];
+        let slices = slicer.encode(&payload).unwrap();
+        let track = addr(9);
+        let group = SpoolGroup::of(SPOOL);
+        let lost_pos = group.slice_of(SPOOL).unwrap();
+        let expected = slices[lost_pos].clone();
+        let track_info = clay_track(1024, &slices);
+        let track_info_for_api = track_info.clone();
+        let slices_for_api = slices.clone();
+
+        let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
+            PeerReq::Repair(ref req) => {
+                let helper_slice = &slices_for_api[group.slice_of(req.helper_spool).unwrap()];
+                let data = extract_repair_data(
+                    &track_info_for_api,
+                    &req.stripes,
+                    helper_slice,
+                ).unwrap();
+                PeerRes::Repair(Ok(RepairRes { data }))
+            }
+            _ => panic!("unexpected request"),
+        }));
+
+        // Previous: positions 0..9 (excluding 5) → 9 helpers
+        let mut state = SpoolState::new(SpoolStatus::Repair, EpochNumber(3));
+        for pos in 0..10 {
+            if pos != 5 {
+                state.prev_helpers[pos] = Some(NodeId(100 + pos as u64));
+            }
+        }
+
+        // Current: positions 10..19 → 10 helpers
+        let mut protocol = ProtocolState::default();
+        for i in 0..10u64 {
+            protocol
+                .committee
+                .push(CommitteeMember::new(NodeId(300 + i), Coin::<TAPE>::new(1000)));
+        }
+        let mut mapping = [255u8; SPOOL_COUNT];
+        for i in 0..10 {
+            mapping[group.spool_at(10 + i) as usize] = i as u8;
+        }
+        protocol.spools = SpoolAssignment::new(mapping);
+        ctx.set_state(protocol).unwrap();
+
+        ctx.store.set_spool_state(SPOOL, state).unwrap();
+        ctx.store.put_track(track, track_info).unwrap();
+        ctx.store.put_object_info(track, certified(track)).unwrap();
+        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+
+        let result = run(ctx.clone(), &SpoolManagerConfig::default(), SPOOL, &CancellationToken::new()).await;
+        assert_eq!(result, RepairResult::Done { unrepairable: 0 });
+        assert_eq!(ctx.store.get_slice(SPOOL, track).unwrap().unwrap(), expected);
+        assert!(!ctx.store.has_pending_repair(SPOOL, track).unwrap());
     }
 }
