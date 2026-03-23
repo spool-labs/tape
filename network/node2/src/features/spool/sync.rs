@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use rpc::Rpc;
 use store::Store;
@@ -8,8 +10,7 @@ use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::SyncReq;
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 use tape_store::types::{Pubkey, TrackInfo};
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tape_retry::RetryConfig;
 
 use crate::config::SpoolManagerConfig;
 use crate::context::NodeContext;
@@ -144,7 +145,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let res = call_peer(
         &ctx.peer_manager,
-        config.peer_retry,
+        RetryConfig::ten(),
         prev_owner,
         Some(token),
         || { ctx.api.sync(prev_owner, &req) },

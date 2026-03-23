@@ -5,12 +5,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use solana_sdk::signature::Keypair;
-use tape_api::prelude::{SPOOL_COUNT, SPOOL_GROUP_COUNT};
+use tape_api::prelude::SPOOL_GROUP_COUNT;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::SlotNumber;
 use tape_retry::RetryConfig;
 use tape_sdk::{load_bls_keypair, load_solana_keypair};
-use tape_slicer::SPOOL_GROUP_SIZE;
 
 use crate::core::error::NodeError;
 
@@ -106,7 +105,6 @@ pub struct SpoolManagerConfig {
     pub repair_batch_size: usize,
     pub recover_batch_size: usize,
     pub locked_spool_retention_epochs: u64,
-    pub peer_retry: RetryConfig,
     pub interval: Duration,
 }
 
@@ -119,7 +117,6 @@ impl Default for SpoolManagerConfig {
             repair_batch_size: 10,
             recover_batch_size: 10,
             locked_spool_retention_epochs: 4,
-            peer_retry: RetryConfig::ten(),
             interval: Duration::from_secs(1),
         }
     }
@@ -199,7 +196,6 @@ impl AppConfig {
                 repair_batch_size: 10,
                 recover_batch_size: 10,
                 locked_spool_retention_epochs: 4,
-                peer_retry: RetryConfig::ten(),
                 interval: Duration::from_secs(1),
             },
             snapshot: SnapshotConfig {

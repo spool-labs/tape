@@ -295,7 +295,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         .map_err(|_| ())?;
 
     let helper_data = fetch_helpers(
-        ctx, config, spool, &plan, peers, track, token,
+        ctx, spool, &plan, peers, track, token,
     ).await?;
 
     let metadata = SliceMetadata::with_profile(
@@ -320,7 +320,6 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 async fn fetch_one_helper<Cluster: Api + 'static>(
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
-    retry: RetryConfig,
     token: CancellationToken,
     candidates: [Option<NodeId>; 2],
     req: RepairReq,
@@ -329,7 +328,7 @@ async fn fetch_one_helper<Cluster: Api + 'static>(
     for node_id in candidates.into_iter().flatten() {
         if let Ok(res) = call_peer(
             &peer_manager,
-            retry.clone(),
+            RetryConfig::three(),
             node_id,
             Some(&token),
             || api.repair(node_id, &req),
@@ -347,7 +346,6 @@ async fn fetch_one_helper<Cluster: Api + 'static>(
 /// Returns Err if any required helper is unavailable in both maps.
 async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    config: &SpoolManagerConfig,
     spool: SpoolIndex,
     plan: &RepairPlan,
     peers: &GroupPeers,
@@ -377,7 +375,6 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         join_set.spawn(fetch_one_helper(
             ctx.peer_manager.clone(),
             ctx.api.clone(),
-            config.peer_retry.clone(),
             token.clone(),
             candidates,
             req,
@@ -407,7 +404,6 @@ async fn fetch_helpers<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     join_set.spawn(fetch_one_helper(
                         ctx.peer_manager.clone(),
                         ctx.api.clone(),
-                        config.peer_retry.clone(),
                         token.clone(),
                         candidates,
                         next_req,

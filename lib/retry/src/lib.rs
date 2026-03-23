@@ -29,7 +29,16 @@ impl RetryConfig {
         }
     }
 
-    /// 10 retries, 1s base, 30s max.
+    /// 3 retries, 1s base, 5s max.
+    pub fn three() -> Self {
+        Self {
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(5),
+            max_retries: Some(3),
+        }
+    }
+
+    /// 10 retries, 1s base, 5s max.
     pub fn ten() -> Self {
         Self {
             base_delay: Duration::from_secs(1),

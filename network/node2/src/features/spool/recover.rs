@@ -169,7 +169,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             let k = slicer.k();
 
             let peer_slices = match fetch_slices(
-                ctx.as_ref(), config, spool, k, &peers, track_addr, token
+                ctx.as_ref(), spool, k, &peers, track_addr, token
             ).await
             {
                 Ok(peer_slices) => peer_slices,
@@ -222,7 +222,6 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
 async fn fetch_one_slice<Cluster: Api + 'static>(
     peer_manager: Arc<PeerManager>,
     api: Arc<Cluster>,
-    retry: RetryConfig,
     token: CancellationToken,
     candidates: [Option<NodeId>; 2],
     request: GetSliceReq,
@@ -231,7 +230,7 @@ async fn fetch_one_slice<Cluster: Api + 'static>(
     for node_id in candidates.into_iter().flatten() {
         if let Ok(res) = call_peer(
             &peer_manager,
-            retry.clone(),
+            RetryConfig::three(),
             node_id,
             Some(&token),
             || api.get_slice(node_id, &request),
@@ -251,7 +250,6 @@ async fn fetch_one_slice<Cluster: Api + 'static>(
 /// Returns collected (slice_index, data) pairs, or Err if < k available.
 async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    config: &SpoolManagerConfig,
     spool: SpoolIndex,
     k: usize,
     peers: &GroupPeers,
@@ -287,7 +285,6 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         join_set.spawn(fetch_one_slice(
             ctx.peer_manager.clone(),
             ctx.api.clone(),
-            config.peer_retry.clone(),
             token.clone(),
             candidates,
             request,
@@ -325,7 +322,6 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     join_set.spawn(fetch_one_slice(
                         ctx.peer_manager.clone(),
                         ctx.api.clone(),
-                        config.peer_retry.clone(),
                         token.clone(),
                         candidates,
                         request,
@@ -352,7 +348,6 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                     join_set.spawn(fetch_one_slice(
                         ctx.peer_manager.clone(),
                         ctx.api.clone(),
-                        config.peer_retry.clone(),
                         token.clone(),
                         candidates,
                         request,
