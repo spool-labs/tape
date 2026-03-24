@@ -32,6 +32,7 @@ members = [
   "lib/retry",
   "e2e/simnet",
   "e2e/fuzznet",
+  "e2e/prodnet",
 ]
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf

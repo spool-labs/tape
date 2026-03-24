@@ -1,0 +1,29 @@
+[package]
+name = "tape-e2e-prodnet"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "prodnet"
+path = "src/bin/prodnet/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+solana-sdk.workspace = true
+solana-client.workspace = true
+rpc.workspace = true
+rpc-client.workspace = true
+rpc-solana.workspace = true
+tape-api.workspace = true
+tape-core.workspace = true
+tape-crypto.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap.workspace = true
+nix = { version = "0.29", features = ["signal"] }
