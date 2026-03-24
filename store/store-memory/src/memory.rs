@@ -422,6 +422,10 @@ impl Store for MemoryStore {
 
         result
     }
+
+    fn actual_size_bytes(&self) -> Result<u64> {
+        Ok(self.total_size_bytes() as u64)
+    }
 }
 
 #[cfg(test)]

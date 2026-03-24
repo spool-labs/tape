@@ -4,6 +4,7 @@
 /deploy
 
 /test-ledger
+*/**/test-ledger
 /db_tapestore*
 
 /*.json

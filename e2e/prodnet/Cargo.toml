@@ -21,8 +21,17 @@ rpc-solana.workspace = true
 tape-api.workspace = true
 tape-core.workspace = true
 tape-crypto.workspace = true
+tape-protocol.workspace = true
+tape-sdk.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+futures.workspace = true
 reqwest.workspace = true
+axum.workspace = true
+arc-swap.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap.workspace = true

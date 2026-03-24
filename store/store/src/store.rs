@@ -48,4 +48,13 @@ pub trait Store: Send + Sync {
 
     /// Iterate over entries in the key range [start, end) in lexicographic order.
     fn iter_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<StoreIter<'_>>;
+
+    /// Best-effort total backend size in bytes.
+    ///
+    /// Persistent stores should include DB overhead such as SSTs, WALs, indexes,
+    /// metadata, and similar files. In-memory stores can return an approximate
+    /// resident footprint.
+    fn actual_size_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
 }

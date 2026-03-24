@@ -5,7 +5,6 @@ pub struct ProdnetConfig {
     pub node_binary: PathBuf,
     pub data_dir: PathBuf,
     pub base_port: u16,
-    pub node_count: usize,
     pub sol_airdrop: u64,
     pub stake_amount: u64,
 }
@@ -17,7 +16,6 @@ impl Default for ProdnetConfig {
             node_binary: PathBuf::from("target/debug/tape-node2"),
             data_dir: PathBuf::from("target/prodnet"),
             base_port: 4000,
-            node_count: 3,
             sol_airdrop: 50_000_000_000,
             stake_amount: 1_000_000,
         }

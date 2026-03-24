@@ -1,6 +1,7 @@
 //! RocksDB implementation of the Store trait
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use rocksdb::{
     ColumnFamilyDescriptor, DBWithThreadMode, IteratorMode, MultiThreaded, Options,
@@ -19,25 +20,27 @@ use tape_metrics::OperationTimer;
 /// Uses multi-threaded column family access for concurrent operations.
 pub struct RocksStore {
     db: DBWithThreadMode<MultiThreaded>,
+    path: PathBuf,
 }
 
 impl RocksStore {
     /// Open a RocksDB database at the specified path.
     pub fn open<P: AsRef<Path>>(path: P, column_families: &[&str]) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
         // If no column families specified, just open with default
         let db = if column_families.is_empty() {
-            DBWithThreadMode::open(&db_opts, path)
+            DBWithThreadMode::open(&db_opts, &path)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
-            DBWithThreadMode::open_cf(&db_opts, path, column_families)
+            DBWithThreadMode::open_cf(&db_opts, &path, column_families)
                 .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self { db, path })
     }
 
     /// Open a RocksDB database with custom options.
@@ -46,15 +49,16 @@ impl RocksStore {
         db_opts: Options,
         column_families: &[&str],
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let db = if column_families.is_empty() {
-            DBWithThreadMode::open(&db_opts, path)
+            DBWithThreadMode::open(&db_opts, &path)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
-            DBWithThreadMode::open_cf(&db_opts, path, column_families)
+            DBWithThreadMode::open_cf(&db_opts, &path, column_families)
                 .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self { db, path })
     }
 
     /// Open a RocksDB database with custom per-column-family configuration.
@@ -63,15 +67,16 @@ impl RocksStore {
         db_opts: Options,
         cf_configs: Vec<ColumnFamilyDescriptor>,
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let db = if cf_configs.is_empty() {
-            DBWithThreadMode::open(&db_opts, path)
+            DBWithThreadMode::open(&db_opts, &path)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
-            DBWithThreadMode::open_cf_descriptors(&db_opts, path, cf_configs)
+            DBWithThreadMode::open_cf_descriptors(&db_opts, &path, cf_configs)
                 .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self { db, path })
     }
 
     /// Create a new column family.
@@ -94,17 +99,18 @@ impl RocksStore {
         path: P,
         column_families: &[&str],
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let db_opts = Options::default();
 
         let db = if column_families.is_empty() {
-            DBWithThreadMode::open_for_read_only(&db_opts, path, false)
+            DBWithThreadMode::open_for_read_only(&db_opts, &path, false)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
-            DBWithThreadMode::open_cf_for_read_only(&db_opts, path, column_families, false)
+            DBWithThreadMode::open_cf_for_read_only(&db_opts, &path, column_families, false)
                 .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self { db, path })
     }
 
     /// Open database in read-only mode with custom column family configuration.
@@ -113,15 +119,16 @@ impl RocksStore {
         db_opts: Options,
         cf_configs: Vec<ColumnFamilyDescriptor>,
     ) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let db = if cf_configs.is_empty() {
-            DBWithThreadMode::open_for_read_only(&db_opts, path, false)
+            DBWithThreadMode::open_for_read_only(&db_opts, &path, false)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
-            DBWithThreadMode::open_cf_descriptors_read_only(&db_opts, path, cf_configs, false)
+            DBWithThreadMode::open_cf_descriptors_read_only(&db_opts, &path, cf_configs, false)
                 .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self { db, path })
     }
 
     /// Open as secondary instance that can catch up with primary.
@@ -130,24 +137,29 @@ impl RocksStore {
         secondary_path: P,
         column_families: &[&str],
     ) -> Result<Self> {
+        let primary_path = primary_path.as_ref().to_path_buf();
+        let secondary_path = secondary_path.as_ref().to_path_buf();
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
 
         let db = if column_families.is_empty() {
-            DBWithThreadMode::open_as_secondary(&db_opts, primary_path, secondary_path)
+            DBWithThreadMode::open_as_secondary(&db_opts, &primary_path, &secondary_path)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
             DBWithThreadMode::open_cf_as_secondary(
                 &db_opts,
-                primary_path,
-                secondary_path,
+                &primary_path,
+                &secondary_path,
                 column_families,
             )
             .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            path: secondary_path,
+        })
     }
 
     /// Open as secondary instance with custom column family configuration.
@@ -157,20 +169,25 @@ impl RocksStore {
         db_opts: Options,
         cf_configs: Vec<ColumnFamilyDescriptor>,
     ) -> Result<Self> {
+        let primary_path = primary_path.as_ref().to_path_buf();
+        let secondary_path = secondary_path.as_ref().to_path_buf();
         let db = if cf_configs.is_empty() {
-            DBWithThreadMode::open_as_secondary(&db_opts, primary_path, secondary_path)
+            DBWithThreadMode::open_as_secondary(&db_opts, &primary_path, &secondary_path)
                 .map_err(|e| Error::Database(e.to_string()))?
         } else {
             DBWithThreadMode::open_cf_descriptors_as_secondary(
                 &db_opts,
-                primary_path,
-                secondary_path,
+                &primary_path,
+                &secondary_path,
                 cf_configs,
             )
             .map_err(|e| Error::Database(e.to_string()))?
         };
 
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            path: secondary_path,
+        })
     }
 
     /// Sync secondary instance with primary database.
@@ -638,6 +655,31 @@ impl Store for RocksStore {
 
         result
     }
+
+    fn actual_size_bytes(&self) -> Result<u64> {
+        directory_size_bytes(&self.path)
+    }
+}
+
+fn directory_size_bytes(path: &Path) -> Result<u64> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(Error::Io(error)),
+    };
+
+    let mut total = 0u64;
+    for entry in entries {
+        let entry = entry.map_err(Error::Io)?;
+        let file_type = entry.file_type().map_err(Error::Io)?;
+        if file_type.is_dir() {
+            total = total.saturating_add(directory_size_bytes(&entry.path())?);
+        } else if file_type.is_file() {
+            total = total.saturating_add(entry.metadata().map_err(Error::Io)?.len());
+        }
+    }
+
+    Ok(total)
 }
 
 #[cfg(test)]

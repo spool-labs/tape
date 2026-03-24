@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rpc_client::RpcClient;
+use rpc::RpcError;
 use rpc_solana::{RpcConfig, SolanaRpc};
 use solana_client::nonblocking::rpc_client::RpcClient as SolRpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -79,34 +80,53 @@ impl ChainManager {
         anyhow::bail!("airdrop confirmation timeout for {pubkey}");
     }
 
-    /// Initialize chain state. Mirrors `e2e/simnet/src/scenario.rs:43-127`.
+    /// Ensure chain state exists. Safe to call repeatedly against the same ledger.
     ///
     /// Programs must already be loaded via solana-test-validator --bpf-program flags.
-    pub async fn init_chain(&self) -> Result<()> {
+    pub async fn ensure_chain_initialized(&self, admin_airdrop: u64) -> Result<()> {
         let admin_pub = self.admin.pubkey();
 
         info!("airdropping SOL to admin");
-        self.airdrop(&admin_pub, 50_000_000_000)
+        self.airdrop(&admin_pub, admin_airdrop)
             .await
             .context("airdrop admin")?;
 
-        info!("initializing mint");
-        self.rpc
+        info!("ensuring mint exists");
+        let mint_result = self
+            .rpc
             .send_instructions(
                 &self.admin,
                 vec![build_initialize_mint_ix(admin_pub, admin_pub)],
             )
-            .await
-            .context("initialize_mint")?;
+            .await;
+        match mint_result {
+            Ok(_) => info!("mint initialized"),
+            Err(e) if is_already_initialized(&e) => info!("mint already initialized"),
+            Err(e) => return Err(e).context("initialize_mint"),
+        }
 
-        info!("creating system account");
-        self.rpc
-            .send_instructions(
-                &self.admin,
-                vec![build_create_system_ix(admin_pub, admin_pub)],
-            )
-            .await
-            .context("create_system")?;
+        match self.rpc.get_system().await {
+            Ok(_) => info!("system account already exists"),
+            Err(RpcError::AccountNotFound(_)) => {
+                info!("creating system account");
+                let result = self
+                    .rpc
+                    .send_instructions(
+                        &self.admin,
+                        vec![build_create_system_ix(admin_pub, admin_pub)],
+                    )
+                    .await;
+                match result {
+                    Ok(_) => info!("system account created"),
+                    Err(e) if is_already_initialized(&e) => info!("system account already created"),
+                    Err(e) => return Err(e).context("create_system"),
+                }
+            }
+            Err(RpcError::Deserialization(_)) => {
+                info!("system account exists but is not fully expanded yet");
+            }
+            Err(e) => return Err(e).context("get_system"),
+        }
 
         info!("expanding system account");
         for i in 0..10 {
@@ -134,23 +154,47 @@ impl ChainManager {
             }
         }
 
-        info!("initializing archive/epoch");
-        self.rpc
-            .send_instructions(
-                &self.admin,
-                vec![build_initialize_ix(admin_pub, admin_pub)],
-            )
-            .await
-            .context("initialize archive/epoch")?;
+        let epoch_exists = self.rpc.get_epoch().await.is_ok();
+        let archive_exists = self.rpc.get_archive().await.is_ok();
+        if epoch_exists && archive_exists {
+            info!("archive/epoch already initialized");
+        } else {
+            info!("initializing archive/epoch");
+            let result = self
+                .rpc
+                .send_instructions(
+                    &self.admin,
+                    vec![build_initialize_ix(admin_pub, admin_pub)],
+                )
+                .await;
+            match result {
+                Ok(_) => info!("archive/epoch initialized"),
+                Err(e) if is_already_initialized(&e) => info!("archive/epoch already initialized"),
+                Err(e) => return Err(e).context("initialize archive/epoch"),
+            }
+        }
 
-        info!("reserving snapshot tape");
-        self.rpc
-            .send_instructions(
-                &self.admin,
-                vec![build_reserve_snapshot_tape_ix(admin_pub)],
-            )
-            .await
-            .context("reserve snapshot tape")?;
+        match self.rpc.get_snapshot_state().await {
+            Ok(_) => info!("snapshot tape already reserved"),
+            Err(RpcError::AccountNotFound(_)) => {
+                info!("reserving snapshot tape");
+                let result = self
+                    .rpc
+                    .send_instructions(
+                        &self.admin,
+                        vec![build_reserve_snapshot_tape_ix(admin_pub)],
+                    )
+                    .await;
+                match result {
+                    Ok(_) => info!("snapshot tape reserved"),
+                    Err(e) if is_already_initialized(&e) => {
+                        info!("snapshot tape already reserved")
+                    }
+                    Err(e) => return Err(e).context("reserve snapshot tape"),
+                }
+            }
+            Err(e) => return Err(e).context("get_snapshot_state"),
+        }
 
         info!("chain initialization complete");
         Ok(())
@@ -188,6 +232,40 @@ impl ChainManager {
             .context("stake_node")?;
 
         Ok(())
+    }
+
+    pub async fn ensure_node_staked(
+        &self,
+        authority_keypair: &Keypair,
+        target_amount_tape: u64,
+    ) -> Result<()> {
+        let authority = authority_keypair.pubkey();
+        let current_amount = match self.rpc.get_stake(&authority).await {
+            Ok(stake) => stake.inner.amount.as_u64(),
+            Err(RpcError::AccountNotFound(_)) => 0,
+            Err(e) => return Err(e).context("get_stake"),
+        };
+
+        if current_amount >= target_amount_tape {
+            info!(
+                authority = %authority,
+                current = current_amount,
+                target = target_amount_tape,
+                "stake already satisfied",
+            );
+            return Ok(());
+        }
+
+        let top_up_amount = target_amount_tape - current_amount;
+        info!(
+            authority = %authority,
+            current = current_amount,
+            target = target_amount_tape,
+            top_up = top_up_amount,
+            "topping up node stake",
+        );
+
+        self.stake_node(authority_keypair, top_up_amount).await
     }
 
     pub async fn advance_pool(&self, authority: Pubkey) -> Result<()> {
@@ -252,4 +330,11 @@ fn is_join_done(error: &rpc::RpcError) -> bool {
         program_error(error),
         Some(ProgramError::Tape(TapeError::UnexpectedState))
     )
+}
+
+fn is_already_initialized(error: &rpc::RpcError) -> bool {
+    let message = error.to_string().to_lowercase();
+    message.contains("accountalreadyinitialized")
+        || message.contains("already initialized")
+        || message.contains("already in use")
 }

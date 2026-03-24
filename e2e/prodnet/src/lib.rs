@@ -1,4 +1,9 @@
+pub mod api;
 pub mod chain;
 pub mod config;
+pub mod observer;
 pub mod orchestrator;
+pub mod poller;
 pub mod process;
+pub mod tui;
+pub mod view;

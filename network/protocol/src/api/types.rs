@@ -77,7 +77,10 @@ pub struct NodeStats {
     pub current_epoch: u64,
     pub owned_spools: u64,
     pub tracks_stored: u64,
-    pub storage_bytes_used: u64,
+    /// Logical slice payload bytes stored by this node.
+    pub slice_payload_bytes: u64,
+    /// Actual backend store size including DB overhead and metadata.
+    pub store_disk_bytes: u64,
     pub slices_stored: u64,
     pub bytes_uploaded: u64,
     pub bytes_downloaded: u64,

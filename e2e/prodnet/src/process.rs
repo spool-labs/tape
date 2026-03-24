@@ -4,9 +4,30 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use solana_sdk::signature::Keypair;
+use solana_sdk::signer::Signer as _;
 use tape_core::bls::BlsPrivateKey;
+use tape_sdk::{load_bls_keypair, load_solana_keypair};
 use tokio::process::{Child, Command};
 use tracing::info;
+
+use crate::observer::NodeRef;
+
+#[derive(Debug)]
+pub enum RemoveNodeError {
+    NotFound,
+    AlreadyStopped,
+    StopFailed(anyhow::Error),
+}
+
+impl std::fmt::Display for RemoveNodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "node not found"),
+            Self::AlreadyStopped => write!(f, "node already stopped"),
+            Self::StopFailed(e) => write!(f, "stop failed: {e:#}"),
+        }
+    }
+}
 
 pub struct NodeHandle {
     pub id: usize,
@@ -46,10 +67,92 @@ impl ProcessSupervisor {
         &self.nodes[id]
     }
 
+    pub fn load_existing_nodes(&mut self) -> Result<usize> {
+        if !self.data_root.exists() {
+            return Ok(0);
+        }
+
+        let mut node_dirs = std::fs::read_dir(&self.data_root)
+            .with_context(|| format!("read prodnet data dir: {}", self.data_root.display()))?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let file_type = entry.file_type().ok()?;
+                if !file_type.is_dir() {
+                    return None;
+                }
+
+                let name = entry.file_name();
+                let name = name.to_str()?;
+                let id = name.strip_prefix("node-")?.parse::<usize>().ok()?;
+                Some((id, entry.path()))
+            })
+            .collect::<Vec<_>>();
+
+        node_dirs.sort_by_key(|(id, _)| *id);
+
+        let mut nodes = Vec::with_capacity(node_dirs.len());
+        for (expected_id, (id, node_dir)) in node_dirs.into_iter().enumerate() {
+            if id != expected_id {
+                anyhow::bail!(
+                    "node directories must be contiguous starting at node-0; expected node-{expected_id}, found node-{id}"
+                );
+            }
+
+            nodes.push(self.load_node_handle(id, &node_dir)?);
+        }
+
+        self.nodes = nodes;
+        Ok(self.nodes.len())
+    }
+
+    pub fn node_refs(&self) -> Vec<NodeRef> {
+        self.nodes
+            .iter()
+            .map(|h| NodeRef {
+                id: h.id,
+                port: h.port,
+                authority: h.authority.pubkey(),
+            })
+            .collect()
+    }
+
+    pub fn running_node_count(&self) -> usize {
+        self.nodes.iter().filter(|handle| handle.child.is_some()).count()
+    }
+
+    pub fn first_stopped_node_id(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .find(|handle| handle.child.is_none())
+            .map(|handle| handle.id)
+    }
+
+    pub fn stopped_node_ids(&self) -> Vec<usize> {
+        self.nodes
+            .iter()
+            .filter(|handle| handle.child.is_none())
+            .map(|handle| handle.id)
+            .collect()
+    }
+
+    pub fn last_running_node_id(&self) -> Option<usize> {
+        self.nodes
+            .iter()
+            .rev()
+            .find(|handle| handle.child.is_some())
+            .map(|handle| handle.id)
+    }
+
     pub fn prepare_node(&mut self) -> Result<usize> {
         let id = self.nodes.len();
         let port = self.base_port + id as u16;
         let node_dir = self.data_root.join(format!("node-{id}"));
+        if node_dir.exists() {
+            anyhow::bail!(
+                "node directory already exists for node {id}: {}",
+                node_dir.display()
+            );
+        }
         std::fs::create_dir_all(&node_dir)
             .with_context(|| format!("create node dir: {}", node_dir.display()))?;
 
@@ -95,11 +198,24 @@ impl ProcessSupervisor {
 
     pub fn spawn_node(&mut self, id: usize) -> Result<()> {
         let handle = &mut self.nodes[id];
+        if handle.child.is_some() {
+            return Ok(());
+        }
+        let log_path = handle.data_dir.join("node.log");
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("open node log file: {}", log_path.display()))?;
+        let stderr = stdout
+            .try_clone()
+            .with_context(|| format!("clone node log handle: {}", log_path.display()))?;
+
         let child = Command::new(&self.node_binary)
             .arg("--config")
             .arg(&handle.config_path)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .with_context(|| {
                 format!(
@@ -185,6 +301,16 @@ impl ProcessSupervisor {
         );
     }
 
+    pub async fn remove_node(&mut self, id: usize) -> Result<(), RemoveNodeError> {
+        if id >= self.nodes.len() {
+            return Err(RemoveNodeError::NotFound);
+        }
+        if self.nodes[id].child.is_none() {
+            return Err(RemoveNodeError::AlreadyStopped);
+        }
+        self.stop_node(id).await.map_err(RemoveNodeError::StopFailed)
+    }
+
     pub async fn shutdown_all(&mut self) -> Result<()> {
         let mut first_error: Option<anyhow::Error> = None;
         for id in (0..self.nodes.len()).rev() {
@@ -200,9 +326,32 @@ impl ProcessSupervisor {
             None => Ok(()),
         }
     }
+
+    fn load_node_handle(&self, id: usize, node_dir: &Path) -> Result<NodeHandle> {
+        let keypair_path = node_dir.join("id.json");
+        let bls_path = node_dir.join("bls.key");
+        let config_path = node_dir.join("config.yaml");
+
+        let authority = load_solana_keypair(&keypair_path)?;
+        let bls_keypair = load_bls_keypair(&bls_path)?;
+
+        if !config_path.exists() {
+            anyhow::bail!("missing config file: {}", config_path.display());
+        }
+
+        Ok(NodeHandle {
+            id,
+            port: self.base_port + id as u16,
+            authority,
+            bls_keypair,
+            config_path,
+            data_dir: node_dir.to_path_buf(),
+            child: None,
+        })
+    }
 }
 
-fn write_solana_keypair(path: &Path, keypair: &Keypair) -> Result<()> {
+pub(crate) fn write_solana_keypair(path: &Path, keypair: &Keypair) -> Result<()> {
     let bytes = keypair.to_bytes().to_vec();
     let json = serde_json::to_vec(&bytes).context("serialize keypair")?;
     std::fs::write(path, json).with_context(|| format!("write keypair: {}", path.display()))

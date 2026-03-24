@@ -47,15 +47,21 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
 
     let mut slices_stored = 0u64;
-    let mut storage_bytes_used = 0u64;
+    let mut slice_payload_bytes = 0u64;
 
     for (spool_id, _) in &owned_spools {
         let slices = store
             .iter_slices_by_spool(*spool_id)
             .map_err(store_error)?;
         slices_stored += slices.len() as u64;
-        storage_bytes_used += slices.iter().map(|(_, data)| data.len() as u64).sum::<u64>();
+        slice_payload_bytes += slices.iter().map(|(_, data)| data.len() as u64).sum::<u64>();
     }
+
+    let store_disk_bytes = store
+        .inner()
+        .inner()
+        .actual_size_bytes()
+        .map_err(store_error)?;
 
     let stats = NodeStats {
         last_processed_slot,
@@ -66,7 +72,8 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         tracks_stored: store
             .count_tracks()
             .map_err(store_error)? as u64,
-        storage_bytes_used,
+        slice_payload_bytes,
+        store_disk_bytes,
         slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
         bytes_downloaded: metrics.bytes_downloaded,
