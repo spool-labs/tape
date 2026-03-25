@@ -13,11 +13,13 @@ use tower_http::cors::CorsLayer;
 
 use crate::orchestrator::Orchestrator;
 use crate::process::RemoveNodeError;
+use crate::upload::UploadManager;
 use crate::view::ProdnetView;
 
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator: Arc<Mutex<Orchestrator>>,
+    pub upload_manager: Arc<UploadManager>,
     pub snapshot: Arc<ArcSwap<ProdnetView>>,
 }
 
@@ -26,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/nodes", get(list_nodes).post(add_node))
         .route("/api/nodes/{id}", delete(remove_node))
+        .route("/api/uploads", get(list_uploads).post(start_upload))
         .route("/api/snapshot", get(snapshot))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -67,6 +70,17 @@ async fn remove_node(
         Err(RemoveNodeError::StopFailed(e)) => {
             error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}"))
         }
+    }
+}
+
+async fn list_uploads(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.upload_manager.snapshot()).into_response()
+}
+
+async fn start_upload(State(state): State<AppState>) -> impl IntoResponse {
+    match state.upload_manager.start_random_upload() {
+        Ok(upload) => (StatusCode::ACCEPTED, Json(upload)).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
     }
 }
 

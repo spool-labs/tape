@@ -6,4 +6,5 @@ pub mod orchestrator;
 pub mod poller;
 pub mod process;
 pub mod tui;
+pub mod upload;
 pub mod view;

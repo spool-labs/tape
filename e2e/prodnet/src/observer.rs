@@ -208,6 +208,7 @@ impl Observer {
             },
             nodes: node_views,
             spools,
+            uploads: Vec::new(),
         })
     }
 }

@@ -33,11 +33,22 @@ pub struct SpoolView {
     pub owner_local_id: Option<usize>,
 }
 
+#[derive(Clone, Serialize, Default)]
+pub struct UploadView {
+    pub tape_id: String,
+    pub size_bytes: u64,
+    pub cert_status: String,
+    pub tape_address: String,
+    pub track_address: String,
+    pub last_error: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 pub struct ProdnetView {
     pub cluster: ClusterView,
     pub nodes: Vec<NodeView>,
     pub spools: Vec<SpoolView>,
+    pub uploads: Vec<UploadView>,
 }
 
 impl Default for ProdnetView {
@@ -52,6 +63,7 @@ impl Default for ProdnetView {
                     owner_local_id: None,
                 })
                 .collect(),
+            uploads: Vec::new(),
         }
     }
 }

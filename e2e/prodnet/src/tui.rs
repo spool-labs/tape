@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::{SPOOL_COUNT, SPOOL_GROUP_COUNT, SPOOL_GROUP_SIZE};
 
-use crate::view::{NodeView, ProdnetView};
+use crate::view::{NodeView, ProdnetView, UploadView};
 
 const GROUP_COLS: usize = 7;
 const GROUP_ROWS: usize = 3;
@@ -26,6 +26,7 @@ const GROUP_ROWS: usize = 3;
 pub enum Command {
     AddNode,
     RemoveNode,
+    UploadBlob,
     Quit,
 }
 
@@ -55,6 +56,9 @@ pub fn run_tui(
                         }
                         KeyCode::Char('r') => {
                             let _ = cmd_tx.send(Command::RemoveNode);
+                        }
+                        KeyCode::Char('u') => {
+                            let _ = cmd_tx.send(Command::UploadBlob);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = cmd_tx.send(Command::Quit);
@@ -116,15 +120,21 @@ fn render_frame(frame: &mut Frame<'_>, view: &ProdnetView, disconnected: bool) {
         .constraints([
             Constraint::Length(1),
             Constraint::Length(capped_spool_h),
-            Constraint::Min(8),
+            Constraint::Min(16),
             Constraint::Length(1),
         ])
         .split(area);
 
+    let body_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(8)])
+        .split(chunks[2]);
+
     render_title_bar(frame, chunks[0], view);
     render_spool_grid(frame, chunks[1], view);
-    render_node_table(frame, chunks[2], view);
-    render_help_bar(frame, chunks[3], disconnected);
+    render_node_table(frame, body_chunks[0], view);
+    render_upload_table(frame, body_chunks[1], view);
+    render_help_bar(frame, chunks[3], view, disconnected);
 }
 
 fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
@@ -302,7 +312,7 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
                     .map(format_tape)
                     .unwrap_or_else(|| "-".into()),
             ),
-            Cell::from(short_authority(&node.authority)),
+            Cell::from(short_pubkey(&node.authority)),
         ])
     });
 
@@ -346,18 +356,73 @@ fn render_node_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
     frame.render_widget(table, inner);
 }
 
-fn render_help_bar(frame: &mut Frame<'_>, area: Rect, disconnected: bool) {
+fn render_help_bar(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView, disconnected: bool) {
     let status = if disconnected { "disconnected" } else { "ready" };
-    let text = Line::from(vec![
+    let mut spans = vec![
         Span::styled(" a ", Style::default().fg(Color::Green)),
         Span::raw("add node  "),
         Span::styled(" r ", Style::default().fg(Color::Yellow)),
         Span::raw("remove last node  "),
+        Span::styled(" u ", Style::default().fg(Color::Cyan)),
+        Span::raw("upload blob  "),
         Span::styled(" q ", Style::default().fg(Color::Red)),
         Span::raw("quit"),
         Span::raw(format!("  [{status}]")),
-    ]);
-    frame.render_widget(Paragraph::new(text), area);
+    ];
+
+    if let Some(upload) = view.uploads.first() {
+        if let Some(error) = upload.last_error.as_deref() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                truncate_tail(&format!("upload: {error}"), area.width.saturating_sub(40) as usize),
+                Style::default().fg(Color::Red),
+            ));
+        } else if upload.cert_status == "pending" || upload.cert_status == "retry" {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("upload: {}", upload.cert_status),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_upload_table(frame: &mut Frame<'_>, area: Rect, view: &ProdnetView) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Uploads ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = view.uploads.iter().map(upload_row);
+
+    let widths = [
+        Constraint::Length(14),
+        Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(14),
+        Constraint::Min(14),
+    ];
+
+    let table = Table::new(rows, widths).header(
+        Row::new(vec!["TapeId", "Size", "Cert", "Tape", "Track"])
+            .style(Style::default().fg(Color::DarkGray)),
+    );
+
+    frame.render_widget(table, inner);
+}
+
+fn upload_row(upload: &UploadView) -> Row<'static> {
+    Row::new(vec![
+        Cell::from(short_pubkey(&upload.tape_id)),
+        Cell::from(format_bytes(upload.size_bytes)),
+        Cell::from(upload.cert_status.clone()).style(cert_style(&upload.cert_status)),
+        Cell::from(short_pubkey(&upload.tape_address)),
+        Cell::from(short_pubkey(&upload.track_address)),
+    ])
 }
 
 fn pad_left(area: Rect) -> Rect {
@@ -368,11 +433,21 @@ fn pad_left(area: Rect) -> Rect {
     }
 }
 
-fn short_authority(authority: &str) -> String {
-    if authority.len() <= 12 {
-        return authority.to_string();
+fn short_pubkey(value: &str) -> String {
+    if value.len() <= 12 {
+        return value.to_string();
     }
-    format!("{}..{}", &authority[..4], &authority[authority.len() - 4..])
+    format!("{}..{}", &value[..4], &value[value.len() - 4..])
+}
+
+fn truncate_tail(value: &str, max_len: usize) -> String {
+    if max_len == 0 || value.len() <= max_len {
+        return value.to_string();
+    }
+    if max_len <= 3 {
+        return ".".repeat(max_len);
+    }
+    format!("{}...", &value[..max_len - 3])
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -401,6 +476,15 @@ fn format_tape(value: u64) -> String {
         format!("{:.1}K", value as f64 / 1_000.0)
     } else {
         value.to_string()
+    }
+}
+
+fn cert_style(status: &str) -> Style {
+    match status {
+        "yes" => Style::default().fg(Color::Green),
+        "pending" => Style::default().fg(Color::Yellow),
+        "failed" => Style::default().fg(Color::Red),
+        _ => Style::default().fg(Color::DarkGray),
     }
 }
 

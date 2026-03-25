@@ -15,6 +15,7 @@ use tape_e2e_prodnet::observer::Observer;
 use tape_e2e_prodnet::orchestrator::Orchestrator;
 use tape_e2e_prodnet::poller;
 use tape_e2e_prodnet::tui::{self, Command as TuiCommand};
+use tape_e2e_prodnet::upload::UploadManager;
 use tape_e2e_prodnet::view::ProdnetView;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
@@ -59,6 +60,7 @@ async fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let api_port = cli.api_port;
+    let admin_keypair_path = cli.data_dir.join("admin.json");
 
     let config = ProdnetConfig {
         rpc_url: cli.rpc_url.clone(),
@@ -101,10 +103,15 @@ async fn main() -> ExitCode {
     let snapshot = Arc::new(ArcSwap::from_pointee(ProdnetView::default()));
     let observer = Arc::new(observer);
     let orchestrator = Arc::new(Mutex::new(orch));
+    let upload_manager = Arc::new(UploadManager::new(
+        cli.rpc_url.clone(),
+        admin_keypair_path,
+    ));
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let state = AppState {
         orchestrator: orchestrator.clone(),
+        upload_manager: upload_manager.clone(),
         snapshot: snapshot.clone(),
     };
 
@@ -122,6 +129,7 @@ async fn main() -> ExitCode {
     let poller_task = tokio::spawn(poller::run(
         observer,
         orchestrator.clone(),
+        upload_manager.clone(),
         snapshot.clone(),
     ));
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<TuiCommand>();
@@ -166,6 +174,11 @@ async fn main() -> ExitCode {
                         match orch.remove_last_node().await {
                             Ok(Some(_)) | Ok(None) => {}
                             Err(error) => tracing::error!(error = %error, "remove node failed"),
+                        }
+                    }
+                    TuiCommand::UploadBlob => {
+                        if let Err(error) = upload_manager.start_random_upload() {
+                            tracing::error!(error = %error, "upload failed to start");
                         }
                     }
                     TuiCommand::Quit => break ExitCode::SUCCESS,

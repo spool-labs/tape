@@ -7,6 +7,7 @@ use tracing::warn;
 
 use crate::observer::Observer;
 use crate::orchestrator::Orchestrator;
+use crate::upload::UploadManager;
 use crate::view::ProdnetView;
 
 pub type SnapshotHandle = Arc<ArcSwap<ProdnetView>>;
@@ -14,6 +15,7 @@ pub type SnapshotHandle = Arc<ArcSwap<ProdnetView>>;
 pub async fn run(
     observer: Arc<Observer>,
     orchestrator: Arc<Mutex<Orchestrator>>,
+    upload_manager: Arc<UploadManager>,
     snapshot: SnapshotHandle,
 ) {
     loop {
@@ -23,7 +25,10 @@ pub async fn run(
         };
 
         match observer.snapshot(node_refs).await {
-            Ok(view) => snapshot.store(Arc::new(view)),
+            Ok(mut view) => {
+                view.uploads = upload_manager.snapshot();
+                snapshot.store(Arc::new(view));
+            }
             Err(error) => warn!(error = %error, "prodnet snapshot refresh failed"),
         }
 
